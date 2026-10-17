@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -260,8 +263,16 @@ func main() {
 		log.Println("product contribution: not signed in; opted-in products stay in this pantry")
 	}
 
+	sentrySettings := server.LoadSentrySettings(os.Getenv)
+	if err := server.InitSentry(sentrySettings); err != nil || sentrySettings.DSN == "" {
+		log.Print("sentry: error reporting is off")
+	} else {
+		log.Print("sentry: error reporting is on")
+	}
+
 	opts := []server.Option{
 		server.WithBroadcaster(broadcaster),
+		server.WithSentryTunnel(sentrySettings.TunnelConfig()),
 		server.WithScannerConfig(server.ScannerConfig{
 			StockInBarcode:  stockInBarcode,
 			StockOutBarcode: stockOutBarcode,
@@ -300,9 +311,38 @@ func main() {
 		go listener.Run(context.Background())
 	}
 
-	if err := <-serveErr; err != nil && err != http.ErrServerClosed {
+	stop := make(chan struct{})
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		close(stop)
+	}()
+	if err := runHTTPServer(srv, serveErr, stop, server.FlushSentry); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+}
+
+// runHTTPServer waits until stop is closed or the listener's Serve returns,
+// then flushes error reports. main has already bound the port and started
+// Serve, so this does not listen again. A closed stop shuts that listener down.
+func runHTTPServer(srv *http.Server, serveErr <-chan error, stop <-chan struct{}, flush func()) error {
+	var err error
+	select {
+	case err = <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+	case <-stop:
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = srv.Shutdown(ctx)
+		<-serveErr
+	}
+	if flush != nil {
+		flush()
+	}
+	return err
 }
 
 // loadPushConfig reads the VAPID pair setup stores in the environment.
