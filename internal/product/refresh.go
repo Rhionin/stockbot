@@ -59,6 +59,11 @@ type Refresher struct {
 	// when zero.
 	BackgroundTimeout time.Duration
 
+	// Tags stores Open Food Facts category tags seen during a refresh. Nil skips that write.
+	Tags interface {
+		SaveOffTags(ctx context.Context, productID string, categories, foodGroups []string) error
+	}
+
 	mu       sync.Mutex
 	inFlight map[string]struct{}
 	wg       sync.WaitGroup
@@ -227,6 +232,9 @@ func (r *Refresher) Refresh(ctx context.Context, productID string) (RefreshOutco
 	writeCtx, cancel := r.catalogWriteContext(ctx)
 	defer cancel()
 	if err := r.Catalog.SaveRefresh(writeCtx, merged, now); err != nil {
+		return OutcomeUnchanged, err
+	}
+	if err := saveOffTags(writeCtx, r.Tags, upstream); err != nil {
 		return OutcomeUnchanged, err
 	}
 	return classify(*row, merged), nil

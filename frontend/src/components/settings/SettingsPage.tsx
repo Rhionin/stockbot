@@ -3,6 +3,7 @@ import { Alert, NumberInput, Select, Stack, Text, Title } from '@mantine/core';
 import { getDefaultGroupRule, getSupplySettings, setDefaultGroupRule, setSupplyMonths } from '../../api/client';
 import { ruleLabels } from '../groups/copy';
 import { WipeInventoryDialog } from '../inventory/WipeInventoryDialog';
+import { RestockSettings } from '../restock/RestockSettings';
 import { ScanAlertSetting } from './ScanAlertSetting';
 
 export const SettingsPage = () => {
@@ -85,6 +86,7 @@ export const SettingsPage = () => {
         w={280}
       />
       <ScanAlertSetting />
+      <RestockSettings />
       {error !== '' && <Alert color="red" py="xs">{error}</Alert>}
       <Stack gap="xs" mt="xl">
         <Text size="sm" c="dimmed">

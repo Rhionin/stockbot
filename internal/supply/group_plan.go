@@ -16,6 +16,11 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 		return Line{}, false
 	}
 	head := members[0]
+	for _, member := range members {
+		if member.Resolved.Level == "group" && member.Resolved.Target.Value == 0 {
+			return Line{}, false
+		}
+	}
 	picked, gm := pickMembers(head, members)
 	if picked.ProductID == "" {
 		return Line{}, false

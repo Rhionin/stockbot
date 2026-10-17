@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stockbot #231 v2 — restock targets (mockups)</title>
+<style>
+/* Mockup of Stockbot's React + Mantine UI. Tokens copied from frontend/src/theme.ts,
+   index.css and App.css: teal primary #0D9488 (Full), amber #F59E0B (Low), red #EF4444 (Out),
+   4px radius, system sans. Stock colors only ever describe quantity. */
+:root{
+  --ink:#101113; --mute:#495057; --dim:#868e96; --line:#dee2e6; --line2:#e9ecef;
+  --well:#f1f3f5; --paper:#fff;
+  --teal:#0d9488; --teal-ink:#0f766e; --teal-wash:#f0fdfa; --teal-light:rgba(13,148,136,.10);
+  --amber:#f59e0b; --amber-ink:#b45309; --amber-wash:#fffbeb;
+  --out:#ef4444; --out-ink:#b91c1c;
+  --sans: Inter, system-ui, "Segoe UI", Roboto, sans-serif;
+  --shadow-md: 0 1px 3px rgba(0,0,0,.05), 0 10px 15px -5px rgba(0,0,0,.08), 0 7px 7px -5px rgba(0,0,0,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.4 var(--sans);-webkit-font-smoothing:antialiased}
+h1,h2,h3,p{margin:0}
+button{font:inherit;cursor:pointer}
+.screen{display:none;position:relative;min-height:100vh}
+.screen.on{display:block}
+
+/* App header (App.tsx): brand + menu, nav row on phones; one row at sm+ */
+.hdr{border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;grid-template-areas:"brand menu" "nav nav";gap:6px 8px;padding:10px 10px 8px;background:#fff}
+.brand{grid-area:brand;display:flex;align-items:center;gap:8px;font-weight:700;font-size:18px}
+.brand svg{width:28px;height:28px}
+.burger{grid-area:menu;width:36px;height:36px;border:0;background:none;display:grid;place-items:center}
+.nav{grid-area:nav;display:flex;gap:2px;padding:3px;border-radius:999px;background:var(--well);overflow:hidden}
+.nav a{flex:1 0 auto;text-align:center;font-size:13px;font-weight:550;color:var(--mute);padding:7px 8px;border-radius:999px;text-decoration:none;white-space:nowrap}
+.nav a.cur{background:#fff;color:#000;font-weight:650;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+@media (min-width:48em){
+  .hdr{grid-template-columns:auto 1fr auto;grid-template-areas:"brand nav menu";height:56px;padding:0 16px;align-items:center}
+  .nav{justify-self:start;flex:none}
+  .nav a{flex:none;font-size:14px;padding:8px 12px}
+}
+
+.page{padding:14px 12px 40px;max-width:46rem;margin:0 auto}
+.page.wide{max-width:none;padding:16px 24px 40px}
+.title{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.sub{color:var(--mute);font-size:14px;margin-top:2px}
+.back{display:inline-flex;align-items:center;gap:4px;color:var(--teal-ink);font-weight:600;font-size:14px;text-decoration:none;margin-bottom:8px}
+.row-between{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+
+/* Mantine-ish atoms */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:4px;border:1px solid transparent;font-weight:600;font-size:14px;background:var(--teal);color:#fff;white-space:nowrap}
+.btn.light{background:var(--teal-light);color:var(--teal-ink)}
+.btn.default{background:#fff;border-color:var(--line);color:var(--ink)}
+.btn.subtle{background:transparent;color:var(--teal-ink);padding:0 8px}
+.btn.xs{height:30px;padding:0 12px;font-size:13px}
+.btn.full{width:100%}
+.badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;background:var(--teal-light);color:var(--teal-ink);white-space:nowrap}
+.badge.gray{background:var(--well);color:var(--mute)}
+.badge.amber{background:var(--amber-wash);color:var(--amber-ink)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--line);font-size:13px;color:var(--ink);background:#fff;white-space:nowrap}
+.chip.add{color:var(--teal-ink);border-style:dashed}
+.kebab{width:44px;height:44px;flex:none;border:0;background:transparent;border-radius:4px;display:grid;place-items:center;color:var(--ink)}
+.kebab.open{background:var(--well)}
+.kebab svg{width:16px;height:16px}
+.photo{width:44px;height:44px;flex:none;border-radius:6px;background:var(--well);display:grid;place-items:center;font-weight:700;color:var(--mute);font-size:15px}
+.photo.sm{width:32px;height:32px;font-size:12px;border-radius:5px}
+.muted{color:var(--mute)} .dim{color:var(--dim)}
+.small{font-size:13px} .xs{font-size:12px}
+
+
+/* Filters (Inventory chips) */
+.filters{display:flex;gap:6px;overflow:hidden;margin:12px 0 6px}
+.filter{flex:none;height:32px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:14px;color:var(--mute);display:inline-flex;align-items:center;gap:6px}
+.filter.cur{background:var(--well);border-color:var(--well);color:var(--ink);font-weight:650}
+.filter .n{font-size:12px;color:var(--dim)}
+
+/* Shelf rows (ItemRow.tsx / shelf.css) */
+.shelf{list-style:none;margin:0;padding:0}
+.srow{position:relative;padding:12px 0 12px 12px;border-bottom:1px solid var(--line)}
+.srow::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:99px;background:var(--teal)}
+.srow[data-stock=low]::before{background:var(--amber)}
+.srow[data-stock=out]::before{background:var(--out)}
+.shead{display:flex;gap:12px;align-items:flex-start}
+.scopy{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.sname{font-size:16px;font-weight:650}
+.smeta{font-size:14px;color:var(--mute);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.sdetails{margin:10px 0 2px 56px}
+.notre{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:var(--mute)}
+.notre svg{width:13px;height:13px}
+
+/* Target block: the one new component everywhere */
+.target{border:1px solid var(--line);border-radius:6px;padding:12px;background:#fff}
+.target .lbl{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.target .val{font-size:20px;font-weight:700;margin-top:2px;letter-spacing:-.01em}
+.target .val .unit{font-weight:500;color:var(--mute);font-size:15px}
+.src{display:flex;align-items:center;gap:6px;font-size:14px;margin-top:4px;color:var(--mute)}
+.src b{color:var(--ink);font-weight:600}
+.src .dot{width:8px;height:8px;border-radius:50%;border:2px solid var(--teal);flex:none}
+.src .dot.solid{background:var(--teal)}
+.chain{display:flex;margin-top:10px;border-radius:4px;overflow:hidden;border:1px solid var(--line2)}
+.chain .lv{flex:1;min-width:0;padding:6px 8px;background:#fafbfc;border-right:1px solid var(--line2)}
+.chain .lv:last-child{border-right:0}
+.chain .lv .k{font-size:12px;color:var(--dim);font-weight:600;white-space:nowrap}
+.chain .lv .v{font-size:13px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chain .lv.win{background:var(--teal-wash);box-shadow:inset 0 -2px 0 var(--teal)}
+.chain .lv.win .v{color:var(--teal-ink);font-weight:650}
+.chain .lv.over .v{text-decoration:line-through}
+.tactions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+/* Menu (Mantine Menu.Dropdown) */
+.menu{position:absolute;z-index:20;min-width:236px;background:#fff;border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow-md);padding:4px}
+.menu .mi{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:4px;font-size:14px;color:var(--ink)}
+.menu .mi svg{width:16px;height:16px;flex:none;color:var(--mute)}
+.menu .mi .hint{display:block;font-size:12px;color:var(--dim);margin-top:1px}
+.menu .mi.hover{background:var(--well)}
+.menu .mi.dis{color:#adb5bd}.menu .mi.dis svg{color:#ced4da}
+.menu .mi.red{color:#e03131}.menu .mi.red svg{color:#e03131}
+.menu .lab{font-size:12px;color:var(--dim);font-weight:600;padding:6px 10px 2px}
+.menu .div{height:1px;background:var(--line2);margin:4px 0}
+
+/* Modal */
+.overlay{position:absolute;inset:0;background:rgba(0,0,0,.45);z-index:30}
+.modal{position:absolute;z-index:31;left:8px;right:8px;top:70px;background:#fff;border-radius:8px;box-shadow:0 20px 40px rgba(0,0,0,.2);overflow:hidden}
+@media (min-width:48em){.modal{left:50%;right:auto;width:520px;transform:translateX(-50%);top:72px}}
+.mhead{padding:16px 16px 0;display:flex;justify-content:space-between;gap:8px}
+.mhead h2{font-size:18px;font-weight:700}
+.mbody{padding:8px 16px 4px}
+.mfoot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--line2);margin-top:8px}
+.close{width:28px;height:28px;border:0;background:none;color:var(--mute);display:grid;place-items:center}
+.grp{margin-top:12px}
+.grp h3{font-size:13px;font-weight:700;color:var(--mute);display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.li{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line2)}
+.li:last-child{border-bottom:0}
+.li .nm{flex:1;min-width:0;font-size:14px;font-weight:600}
+.li .nm .s{display:block;font-weight:400;color:var(--mute);font-size:12px}
+.li .ch{font-size:13px;white-space:nowrap;color:var(--mute)}
+.li .ch b{color:var(--ink)}
+.arrow{color:var(--dim);margin:0 3px}
+
+/* Notification (Mantine Notifications) */
+.toast{position:absolute;z-index:25;left:12px;right:12px;bottom:16px;background:#fff;border-radius:6px;box-shadow:var(--shadow-md);border:1px solid var(--line);padding:12px 12px 12px 16px;display:flex;gap:10px;align-items:center}
+.toast::before{content:"";position:absolute;left:6px;top:10px;bottom:10px;width:4px;border-radius:4px;background:var(--teal)}
+.toast .t{flex:1;font-size:14px}
+.toast .t b{display:block;font-size:14px}
+.toast .t span{color:var(--mute);font-size:13px}
+
+/* Shopping plan cards (mobile view of the Table) */
+.toolbar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.toolbar .title{grid-column:1/-1}
+.plan{border-top:1px solid var(--line)}
+.prow{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);position:relative}
+.prow .pc{flex:1;min-width:0}
+.prow .pn{font-weight:650}
+.prow .pq{font-size:14px;margin-top:2px}
+.prow .pb{font-size:12px;margin-top:2px;color:var(--mute)}
+.prow.gone{opacity:.0}
+
+/* Settings */
+.sect{margin-top:18px}
+.sect h2{font-size:16px;font-weight:700;margin-bottom:2px}
+.field{margin-top:10px}
+.field label{display:block;font-size:14px;font-weight:600;margin-bottom:4px}
+.input{display:flex;align-items:center;height:36px;border:1px solid var(--line);border-radius:4px;padding:0 10px;font-size:15px;width:120px;justify-content:space-between}
+.input .sp{display:flex;flex-direction:column;color:var(--dim);font-size:9px;line-height:9px}
+.seg{display:inline-flex;background:var(--well);border-radius:4px;padding:3px;gap:2px}
+.seg span{padding:5px 12px;font-size:13px;border-radius:3px;color:var(--mute);font-weight:550}
+.seg span.cur{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1);font-weight:650}
+.desc{font-size:13px;color:var(--mute);margin-top:4px}
+.prec{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:8px;font-size:13px;color:var(--mute)}
+.prec .p{padding:2px 8px;border-radius:999px;background:var(--well);color:var(--ink);font-weight:600;font-size:12px}
+.prec .p.here{background:var(--teal-light);color:var(--teal-ink)}
+.crow{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line2)}
+.crow .cn{flex:1;min-width:0}
+.crow .cn b{display:block;font-size:15px}
+.crow .cn span{font-size:13px;color:var(--mute)}
+.crow .ct{text-align:right;font-size:14px;white-space:nowrap}
+.crow .ct span{display:block;font-size:12px;color:var(--dim)}
+.alertbox{border-radius:6px;background:var(--teal-wash);padding:12px;display:flex;gap:10px;align-items:center;margin-top:12px}
+.alertbox .t{flex:1;font-size:14px}
+
+/* Suggestions */
+.card{border:1px solid var(--line);border-radius:6px;padding:12px;margin-top:12px}
+.card .ch2{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.card h2{font-size:16px;font-weight:700}
+.cb{width:18px;height:18px;border-radius:4px;border:1.5px solid #ced4da;flex:none;display:grid;place-items:center;background:#fff}
+.cb.on{background:var(--teal);border-color:var(--teal)}
+.cb.on svg{width:12px;height:12px}
+.why{font-size:12px;color:var(--dim)}
+.why code{font:12px ui-monospace,Consolas,monospace;background:var(--well);padding:1px 4px;border-radius:3px;color:var(--mute)}
+.note{font-size:13px;color:var(--mute);background:var(--well);border-radius:4px;padding:8px 10px;margin-top:8px}
+.cardfoot{display:flex;gap:8px;margin-top:10px}
+
+/* Desktop shopping table */
+table.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th{text-align:left;font-size:13px;color:var(--mute);font-weight:650;padding:8px 10px;border-bottom:1px solid var(--line)}
+.tbl td{padding:10px;border-bottom:1px solid var(--line2);vertical-align:top}
+.split{display:grid;grid-template-columns:minmax(0,1fr);gap:24px}
+.full-ink{color:var(--teal-ink)!important}.low-ink{color:var(--amber-ink)!important}.out-ink{color:var(--out-ink)!important}
+.mobonly{display:block}.deskonly{display:none}
+@media (min-width:48em){.mobonly{display:none}.deskonly{display:block}.target.deskonly{max-width:440px}}
+.mockflag{position:absolute;top:0;right:0;font-size:10px;color:#adb5bd;padding:2px 6px;z-index:50}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="mark" viewBox="0 0 128 128">
+      <g fill="none" stroke="#0D9488" stroke-width="5.5"><path d="M22 44V20H40"/><path d="M88 20H106V44"/><path d="M22 84V108H40"/><path d="M88 108H106V84"/></g>
+      <ellipse cx="64" cy="91.2" rx="24" ry="5.6" fill="#A8B0B8"/><ellipse cx="64" cy="89.2" rx="24" ry="4.8" fill="#E6EAEE"/>
+      <rect x="42" y="39.2" width="44" height="52" fill="#0D9488"/><rect x="42" y="39.2" width="9" height="52" fill="#149E92"/><rect x="77" y="39.2" width="9" height="52" fill="#0E7C72"/>
+      <ellipse cx="64" cy="39.2" rx="24" ry="7.2" fill="#B5BDC6"/><ellipse cx="64" cy="37.4" rx="24" ry="6.2" fill="#EEF1F4"/>
+      <ellipse cx="64" cy="36.8" rx="15.4" ry="3.6" fill="#C8CFD6"/><ellipse cx="64" cy="36.4" rx="14.2" ry="2.9" fill="#F4F6F8"/>
+    </symbol>
+    <symbol id="kebab" viewBox="0 0 16 16"><circle cx="8" cy="3.1" r="1.35" fill="currentColor"/><circle cx="8" cy="8" r="1.35" fill="currentColor"/><circle cx="8" cy="12.9" r="1.35" fill="currentColor"/></symbol>
+    <symbol id="burger" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M4 4v4h4"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 4v5a6 6 0 0 0 6 6h6M15 12l3 3-3 3M6 20v-4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="i-cart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 4h2l2.5 11h10L20 8H7"/><circle cx="9" cy="19" r="1.4"/><circle cx="17" cy="19" r="1.4"/></symbol>
+  </defs>
+</svg>
+
+<template id="hdr">
+  <header class="hdr">
+    <div class="brand"><svg><use href="#mark"/></svg>Stockbot</div>
+    <nav class="nav"><a data-n="queue">Scan Queue</a><a data-n="inventory">Inventory</a><a data-n="history">History</a><a data-n="shopping">Shopping List</a></nav>
+    <button class="burger" aria-label="Menu"><svg width="24" height="24"><use href="#burger"/></svg></button>
+  </header>
+</template>
+
+<!-- ============ 1a. ITEM: target from its category (Inventory, expanded row) ============ -->
+<section class="screen" id="item-from-category" data-nav="inventory">
+  <main class="page">
+    <h1 class="title">Inventory</h1>
+    <div class="filters"><span class="filter cur">All</span><span class="filter">Groups</span><span class="filter">Categories</span><span class="filter">Running low</span><span class="filter">Not restocked <span class="n">12</span></span></div>
+    <ul class="shelf">
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">TC</div><div class="scopy"><div class="sname">Tortilla chips</div><div class="smeta">Snacks &amp; sweets</div><div class="smeta full-ink">3 bags</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="low">
+        <div class="shead"><div class="photo">PT</div><div class="scopy"><div class="sname">Pretzel twists</div><div class="smeta">Snacks &amp; sweets</div><div class="smeta low-ink">1 bag</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="sdetails">
+          <div class="target">
+            <div class="lbl">Restock target</div>
+            <div class="val">2 months <span class="unit">of supply · about 4 bags</span></div>
+            <div class="src"><span class="dot"></span>From <b>Snacks &amp; sweets</b></div>
+            <div class="chain">
+              <div class="lv"><div class="k">Item</div><div class="v">—</div></div>
+              <div class="lv"><div class="k">Group</div><div class="v">—</div></div>
+              <div class="lv win"><div class="k">Category</div><div class="v">2 mo</div></div>
+              <div class="lv over"><div class="k">Default</div><div class="v">3 mo</div></div>
+            </div>
+            <div class="tactions"><button class="btn light xs">Set for this item</button><button class="btn subtle xs">Open Snacks &amp; sweets</button></div>
+          </div>
+          <div class="smeta" style="margin-top:10px;gap:6px"><span class="chip">Snacks &amp; sweets</span><span class="chip add">+ Category</span></div>
+        </div>
+      </li>
+      <li class="srow" data-stock="out"><div class="shead"><div class="photo">BA</div><div class="scopy"><div class="sname">Bananas</div><div class="smeta">Produce</div><div class="smeta"><span class="out-ink">0 bunches</span><span class="notre"><svg><use href="#i-ban"/></svg>Not restocked · Produce</span></div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">GB</div><div class="scopy"><div class="sname">Granola bars</div><div class="smeta">Group · 3 kinds · Snacks &amp; sweets</div><div class="smeta full-ink">14 bars</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+    </ul>
+  </main>
+</section>
+
+<!-- ============ 1b. ITEM: own override + ⋯ menu ============ -->
+<section class="screen" id="item-menu" data-nav="inventory">
+  <main class="page">
+    <h1 class="title">Inventory</h1>
+    <div class="filters"><span class="filter cur">All</span><span class="filter">Groups</span><span class="filter">Categories</span><span class="filter">Running low</span><span class="filter">Not restocked <span class="n">12</span></span></div>
+    <ul class="shelf">
+      <li class="srow" data-stock="low" style="position:relative">
+        <div class="shead"><div class="photo">PT</div><div class="scopy"><div class="sname">Pretzel twists</div><div class="smeta">Snacks &amp; sweets</div><div class="smeta"><span class="low-ink">1 bag</span></div><div class="smeta small mobonly"><span class="notre" style="color:var(--teal-ink)"><svg><use href="#i-target"/></svg>Keep 6 · set on this item</span></div></div><button class="kebab open"><svg><use href="#kebab"/></svg></button></div>
+        <div class="sdetails deskonly">
+          <div class="target">
+            <div class="lbl">Restock target</div>
+            <div class="val">Keep 6 <span class="unit">bags</span></div>
+            <div class="src"><span class="dot solid"></span><b>Set on this item</b></div>
+            <div class="chain">
+              <div class="lv win"><div class="k">Item</div><div class="v">6 bags</div></div>
+              <div class="lv"><div class="k">Group</div><div class="v">—</div></div>
+              <div class="lv over"><div class="k">Category</div><div class="v">2 mo</div></div>
+              <div class="lv over"><div class="k">Default</div><div class="v">3 mo</div></div>
+            </div>
+            <div class="tactions"><button class="btn light xs">Change</button><button class="btn subtle xs">Use category target</button></div>
+          </div>
+        </div>
+        <div class="menu" style="right:0;top:56px">
+          <div class="mi"><svg><use href="#i-target"/></svg><div>Restock target…</div></div>
+          <div class="mi hover"><svg><use href="#i-ban"/></svg><div>Don't restock<span class="hint">Sets this item's target to 0</span></div></div>
+          <div class="mi"><svg><use href="#i-reset"/></svg><div>Use category target<span class="hint">Snacks &amp; sweets · 2 months</span></div></div>
+          <div class="div"></div>
+          <div class="mi"><svg><use href="#i-tag"/></svg><div>Categories…</div></div>
+          <div class="mi"><svg><use href="#i-box"/></svg><div>Add to a group…</div></div>
+          <div class="mi"><svg><use href="#i-list"/></svg><div>View instances</div></div>
+          <div class="mi"><svg><use href="#i-clock"/></svg><div>History</div></div>
+        </div>
+      </li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">TC</div><div class="scopy"><div class="sname">Tortilla chips</div><div class="smeta">Snacks &amp; sweets</div><div class="smeta full-ink">3 bags</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="out"><div class="shead"><div class="photo">BA</div><div class="scopy"><div class="sname">Bananas</div><div class="smeta">Produce</div><div class="smeta"><span class="out-ink">0 bunches</span><span class="notre"><svg><use href="#i-ban"/></svg>Not restocked · Produce</span></div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+    </ul>
+  </main>
+</section>
+
+<!-- ============ 2a. CATEGORY view + ⋯ menu ============ -->
+<section class="screen" id="category-menu" data-nav="inventory">
+  <main class="page" style="position:relative">
+    <a class="back"><svg width="16" height="16"><use href="#i-left"/></svg>Inventory</a>
+    <div class="row-between" style="position:relative">
+      <div><h1 class="title">Produce</h1><div class="sub">Household category · 9 items</div></div>
+      <button class="kebab open"><svg><use href="#kebab"/></svg></button>
+      <div class="menu" style="right:0;top:46px">
+        <div class="mi"><svg><use href="#i-target"/></svg><div>Restock target…</div></div>
+        <div class="mi hover"><svg><use href="#i-ban"/></svg><div>Don't restock…<span class="hint">Preview the 9 items first</span></div></div>
+        <div class="div"></div>
+        <div class="mi"><svg><use href="#i-edit"/></svg><div>Rename</div></div>
+        <div class="mi"><svg><use href="#i-merge"/></svg><div>Merge into…</div></div>
+        <div class="mi red"><svg><use href="#i-trash"/></svg><div>Delete category…</div></div>
+      </div>
+    </div>
+    <div class="target" style="margin-top:12px">
+      <div class="lbl">Restock target</div>
+      <div class="val">3 months <span class="unit">of supply</span></div>
+      <div class="src"><span class="dot"></span><b>Household default</b></div>
+      <div class="tactions"><button class="btn light xs">Set for Produce</button></div>
+    </div>
+    <div class="sub" style="margin-top:14px">Items get this target unless they, or their group, set their own.</div>
+    <ul class="shelf" style="margin-top:4px">
+      <li class="srow" data-stock="out"><div class="shead"><div class="photo">BA</div><div class="scopy"><div class="sname">Bananas</div><div class="smeta out-ink">0 bunches</div><div class="smeta small">3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">LE</div><div class="scopy"><div class="sname">Lemons</div><div class="smeta full-ink">5</div><div class="smeta small">Keep 6, set on this item</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="low"><div class="shead"><div class="photo">SP</div><div class="scopy"><div class="sname">Baby spinach</div><div class="smeta low-ink">1 tub</div><div class="smeta small">3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">GA</div><div class="scopy"><div class="sname">Garlic</div><div class="smeta full-ink">2 bulbs</div><div class="smeta small">Keep 1, from Spices &amp; seasonings</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">SK</div><div class="scopy"><div class="sname">Salad kits</div><div class="smeta">Group · 2 kinds · 1 month, set on this group. Caesar kit sets its own.</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div></li>
+    </ul>
+  </main>
+</section>
+
+<!-- ============ 2b. CATEGORY → Don't restock: preview & confirm ============ -->
+<section class="screen" id="category-confirm" data-nav="inventory">
+  <main class="page" id="cc-page">
+    <a class="back"><svg width="16" height="16"><use href="#i-left"/></svg>Inventory</a>
+    <div class="row-between"><div><h1 class="title">Produce</h1><div class="sub">Household category · 9 items</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+    <div class="target" style="margin-top:12px"><div class="lbl">Restock target</div><div class="val">3 months <span class="unit">of supply</span></div><div class="src"><span class="dot"></span><b>Household default</b></div></div>
+    <ul class="shelf" style="margin-top:8px">
+      <li class="srow" data-stock="out"><div class="shead"><div class="photo">BA</div><div class="scopy"><div class="sname">Bananas</div><div class="smeta">0 bunches</div></div></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">LE</div><div class="scopy"><div class="sname">Lemons</div><div class="smeta">5</div></div></div></li>
+      <li class="srow" data-stock="low"><div class="shead"><div class="photo">SP</div><div class="scopy"><div class="sname">Baby spinach</div><div class="smeta">1 tub</div></div></div></li>
+      <li class="srow" data-stock="full"><div class="shead"><div class="photo">GA</div><div class="scopy"><div class="sname">Garlic</div><div class="smeta">2 bulbs</div></div></div></li>
+    </ul>
+  </main>
+  <div class="overlay"></div>
+  <div class="modal" role="dialog">
+    <div class="mhead"><h2>Stop restocking Produce?</h2><button class="close"><svg width="18" height="18"><use href="#i-x"/></svg></button></div>
+    <div class="mbody">
+      <p class="small muted">Produce's target becomes 0. These items leave the shopping plan. They stay in inventory, and you can still add them to the list by hand.</p>
+      <div class="grp"><h3>Will stop restocking · 5</h3>
+        <div class="li"><div class="photo sm">BA</div><div class="nm">Bananas</div><div class="ch">3 mo<span class="arrow">→</span><b>0</b></div></div>
+        <div class="li"><div class="photo sm">SP</div><div class="nm">Baby spinach</div><div class="ch">3 mo<span class="arrow">→</span><b>0</b></div></div>
+        <div class="li"><div class="photo sm">ST</div><div class="nm">Strawberries</div><div class="ch">3 mo<span class="arrow">→</span><b>0</b></div></div>
+        <div class="li"><div class="photo sm">AV</div><div class="nm">Avocados</div><div class="ch">3 mo<span class="arrow">→</span><b>0</b></div></div>
+        <div class="li"><div class="photo sm">RR</div><div class="nm">Romaine hearts</div><div class="ch">3 mo<span class="arrow">→</span><b>0</b></div></div>
+      </div>
+      <div class="grp"><h3>Won't change · 4</h3>
+        <div class="li"><div class="photo sm">LE</div><div class="nm">Lemons<span class="s">Set on this item</span></div><div class="ch"><b>Keep 6</b></div></div>
+        <div class="li"><div class="photo sm">SM</div><div class="nm">Spring mix kit<span class="s">From Salad kits group</span></div><div class="ch"><b>1 mo</b></div></div>
+        <div class="li"><div class="photo sm">CK</div><div class="nm">Caesar kit<span class="s">Set on this item (in Salad kits group)</span></div><div class="ch"><b>Keep 2</b></div></div>
+        <div class="li"><div class="photo sm">GA</div><div class="nm">Garlic<span class="s">From Spices &amp; seasonings, the higher of its two categories</span></div><div class="ch"><b>Keep 1</b></div></div>
+      </div>
+    </div>
+    <div class="mfoot"><button class="btn default">Cancel</button><button class="btn">Stop restocking 5</button></div>
+  </div>
+</section>
+
+<!-- ============ 3a. SHOPPING row ⋯ ============ -->
+<section class="screen" id="shop-menu" data-nav="shopping">
+  <main class="page">
+    <div class="toolbar"><h1 class="title">Shopping plan</h1><button class="btn"><svg width="16" height="16"><use href="#i-cart"/></svg>Fill cart</button><button class="btn default">Send to Kroger</button></div>
+    <div class="plan">
+      <div class="prow"><div class="photo">OM</div><div class="pc"><div class="pn">Oat milk</div><div class="pq">4 cartons</div><div class="pb"><span class="low-ink">1 on hand</span> · 3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow" style="position:relative"><div class="photo">TC</div><div class="pc"><div class="pn">Tortilla chips</div><div class="pq">2 bags</div><div class="pb"><span class="low-ink">1 on hand</span> · 2 months, from Snacks &amp; sweets</div></div><button class="kebab open"><svg><use href="#kebab"/></svg></button>
+        <div class="menu" style="right:0;top:52px;min-width:260px">
+          <div class="mi"><svg><use href="#i-target"/></svg><div>Change target…</div></div>
+          <div class="mi hover"><svg><use href="#i-ban"/></svg><div>Don't restock Tortilla chips<span class="hint">Sets the item target to 0</span></div></div>
+          <div class="mi"><svg><use href="#i-tag"/></svg><div>Don't restock Snacks &amp; sweets…<span class="hint">Preview 14 items first</span></div></div>
+        </div>
+      </div>
+      <div class="prow"><div class="photo">GB</div><div class="pc"><div class="pn">Cut green beans</div><div class="smeta small" style="margin-top:2px"><span class="badge gray">Group</span>Del Monte, this trip</div><div class="pq">6 cans</div><div class="pb"><span class="low-ink">2 on hand</span> · 3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow"><div class="photo">PB</div><div class="pc"><div class="pn">Peanut butter</div><div class="pq">1 jar</div><div class="pb"><span class="out-ink">0 on hand</span> · Keep 2, set on this item</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow"><div class="photo">BC</div><div class="pc"><div class="pn">Birthday candles</div><div class="pq">1 pack</div><div class="pb"><span class="badge gray">Manual</span> Added by you</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+    </div>
+  </main>
+</section>
+
+<!-- ============ 3b. SHOPPING after Don't restock: undo ============ -->
+<section class="screen" id="shop-undo" data-nav="shopping">
+  <main class="page">
+    <div class="toolbar"><h1 class="title">Shopping plan</h1><button class="btn"><svg width="16" height="16"><use href="#i-cart"/></svg>Fill cart</button><button class="btn default">Send to Kroger</button></div>
+    <div class="plan">
+      <div class="prow"><div class="photo">OM</div><div class="pc"><div class="pn">Oat milk</div><div class="pq">4 cartons</div><div class="pb"><span class="low-ink">1 on hand</span> · 3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow"><div class="photo">GB</div><div class="pc"><div class="pn">Cut green beans</div><div class="smeta small" style="margin-top:2px"><span class="badge gray">Group</span>Del Monte, this trip</div><div class="pq">6 cans</div><div class="pb"><span class="low-ink">2 on hand</span> · 3 months, household default</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow"><div class="photo">PB</div><div class="pc"><div class="pn">Peanut butter</div><div class="pq">1 jar</div><div class="pb"><span class="out-ink">0 on hand</span> · Keep 2, set on this item</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <div class="prow"><div class="photo">BC</div><div class="pc"><div class="pn">Birthday candles</div><div class="pq">1 pack</div><div class="pb"><span class="badge gray">Manual</span> Added by you</div></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      <p class="small dim" style="padding:12px 0">13 items aren't restocked. <a class="full-ink" style="font-weight:600">Review</a></p>
+    </div>
+  </main>
+  <div class="toast"><div class="t"><b>Tortilla chips won't be restocked</b><span>Its target is now 0. Snacks &amp; sweets is unchanged.</span></div><button class="btn subtle">Undo</button></div>
+</section>
+
+<!-- ============ 4. SETTINGS: household default + categories ============ -->
+<section class="screen" id="settings" data-nav="">
+  <main class="page">
+    <h1 class="title">Settings</h1>
+    <div class="sect">
+      <h2>Restock targets</h2>
+      <p class="desc">The most specific target wins. Anything that doesn't set one uses the household default.</p>
+      <div class="prec"><span class="p">Item</span>›<span class="p">Group</span>›<span class="p">Category</span>›<span class="p here">Household default</span></div>
+      <div class="field"><label>Household default</label>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="seg"><span class="cur">Months of supply</span><span>Fixed amount</span></div><div class="input">3<span class="sp">▲<br>▼</span></div></div>
+        <p class="desc">Applies to 211 of 283 items. 0 means don't restock anything by default.</p>
+      </div>
+    </div>
+    <div class="sect">
+      <div class="row-between" style="align-items:center"><h2>Categories</h2><button class="btn subtle xs">+ New category</button></div>
+      <p class="desc">Shared by everyone in the household.</p>
+      <div class="alertbox"><div class="t"><b>9 suggestions</b> from Open Food Facts tags and product names</div><button class="btn xs">Review</button></div>
+      <div style="margin-top:6px">
+        <div class="crow"><div class="cn"><b>Produce</b><span>9 items · 4 have their own target</span></div><div class="ct"><span class="notre" style="justify-content:flex-end"><svg><use href="#i-ban"/></svg>Don't restock</span><span>Set on category</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="crow"><div class="cn"><b>Snacks &amp; sweets</b><span>14 items</span></div><div class="ct">2 months<span>Set on category</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="crow"><div class="cn"><b>Spices &amp; seasonings</b><span>11 items</span></div><div class="ct">Keep 1 each<span>Set on category</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="crow"><div class="cn"><b>Canned &amp; jarred</b><span>25 items</span></div><div class="ct dim">3 months<span>Household default</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="crow"><div class="cn"><b>Pasta, rice &amp; grains</b><span>40 items</span></div><div class="ct dim">3 months<span>Household default</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+        <div class="crow"><div class="cn"><b>Beverages</b><span>12 items</span></div><div class="ct dim">3 months<span>Household default</span></div><button class="kebab"><svg><use href="#kebab"/></svg></button></div>
+      </div>
+      <p class="small" style="margin-top:10px"><a class="full-ink" style="font-weight:600">Show 10 more</a></p>
+    </div>
+  </main>
+</section>
+
+<!-- ============ 5. CATEGORY SUGGESTIONS (from OFF tags) ============ -->
+<section class="screen" id="suggest" data-nav="">
+  <main class="page">
+    <a class="back"><svg width="16" height="16"><use href="#i-left"/></svg>Settings</a>
+    <h1 class="title">Category suggestions</h1>
+    <p class="sub">From Open Food Facts tags and product names. Nothing changes until you add it.</p>
+
+    <div class="card">
+      <div class="ch2"><div><h2>Spices &amp; seasonings</h2><div class="why">5 items · Open Food Facts</div></div><span class="badge">New</span></div>
+      <div style="margin-top:6px">
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Ground cumin<span class="s why">Open Food Facts: Spices</span></div></div>
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Smoked paprika<span class="s why">Open Food Facts: Paprika, a spice</span></div></div>
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Iodized salt<span class="s why">Open Food Facts: Salts</span></div></div>
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Black peppercorns<span class="s why">Open Food Facts: Black peppers, a spice</span></div></div>
+        <div class="li"><span class="cb"></span><div class="nm">Vanilla extract<span class="s why">Name looks like a seasoning. No Open Food Facts tags.</span></div></div>
+      </div>
+      <div class="cardfoot"><button class="btn xs">Add 4 to Spices &amp; seasonings</button><button class="btn default xs">Not now</button></div>
+    </div>
+
+    <div class="card">
+      <div class="ch2"><div><h2>Produce</h2><div class="why">3 items · fresh only</div></div></div>
+      <div class="note">Only items marked fresh count as Produce. Canned, frozen, and dried fruit and vegetables stay out.</div>
+      <div style="margin-top:4px">
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Raspberries<span class="s why">Open Food Facts: Fresh fruits</span></div></div>
+        <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Cilantro<span class="s why">Loose-produce code (PLU 4889)</span></div></div>
+        <div class="li"><span class="cb"></span><div class="nm">Grapes<span class="s why">Open Food Facts: Fruits, but not fresh. Check it if they are.</span></div></div>
+      </div>
+      <p class="why" style="margin-top:6px">Not suggested: Crushed tomatoes, Pumpkin puree, Frozen OJ (fruit or vegetable, not fresh).</p>
+      <div class="cardfoot"><button class="btn xs">Add 2 to Produce</button><button class="btn default xs">Not now</button></div>
+    </div>
+
+    <div class="card">
+      <div class="ch2"><div><h2>Canned &amp; jarred</h2><div class="why">2 items · already in your categories</div></div></div>
+      <div class="li"><span class="cb on"><svg><use href="#i-check"/></svg></span><div class="nm">Garbanzo beans<span class="s why">Open Food Facts: Canned chickpeas. Also in Legumes &amp; nuts.</span></div></div>
+    </div>
+  </main>
+</section>
+
+<script>
+const s = new URLSearchParams(location.search).get('s') || 'item-from-category';
+const el = document.getElementById(s) || document.querySelector('.screen');
+el.classList.add('on');
+const h = document.getElementById('hdr').content.cloneNode(true);
+h.querySelectorAll('.nav a').forEach(a => { if (a.dataset.n === el.dataset.nav) a.classList.add('cur'); });
+el.prepend(h);
+if (location.search.includes('wide')) { el.querySelectorAll('.page').forEach(p => p.classList.add('wide-ish')); }
+</script>
+</body>
+</html>

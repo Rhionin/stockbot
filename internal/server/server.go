@@ -19,6 +19,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/push"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/shopping"
@@ -396,8 +397,9 @@ func newAPIMux(
 	createHandler.Groups = groups
 	updateHandler.Groups = groups
 	lookupHandler.Groups = groups
-	supplyOverrideGetHandler := &SupplyOverrideGetHandler{Supply: supplySvc, Groups: groups}
-	supplyOverridePutHandler := &SupplyOverridePutHandler{Supply: supplySvc, Groups: groups}
+	restockTargets := restock.NewTargets(db)
+	supplyOverrideGetHandler := &SupplyOverrideGetHandler{Targets: restockTargets, Groups: groups}
+	supplyOverridePutHandler := &SupplyOverridePutHandler{Targets: restockTargets, Groups: groups}
 	onboardingCompleteHandler := &OnboardingCompleteHandler{Supply: supplySvc}
 
 	apiMux.HandleFunc("GET /api/inventory", HandleJSON(inventoryListHandler.Handle))
@@ -425,6 +427,26 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/products/{id}/supply-override", HandleJSON(supplyOverrideGetHandler.Handle))
 	apiMux.HandleFunc("PUT /api/products/{id}/supply-override", HandleJSON(supplyOverridePutHandler.Handle))
 	apiMux.HandleFunc("POST /api/onboarding/complete", HandleJSON(onboardingCompleteHandler.Handle))
+
+	restockHandler := &RestockHandler{Targets: restockTargets}
+	apiMux.HandleFunc("GET /api/restock", HandleJSON(restockHandler.Snapshot))
+	apiMux.HandleFunc("PUT /api/restock/household", HandleJSON(restockHandler.PutHousehold))
+	apiMux.HandleFunc("PUT /api/restock/items/{itemId}", HandleJSON(restockHandler.PutItem))
+	apiMux.HandleFunc("DELETE /api/restock/items/{itemId}", HandleJSON(restockHandler.DeleteItem))
+	apiMux.HandleFunc("POST /api/restock/items/{itemId}/dont-restock", HandleJSON(restockHandler.DontRestock))
+	apiMux.HandleFunc("POST /api/restock/items/{itemId}/categories", HandleJSON(restockHandler.AddItemCategory))
+	apiMux.HandleFunc("DELETE /api/restock/items/{itemId}/categories/{categoryId}", HandleJSON(restockHandler.RemoveItemCategory))
+	apiMux.HandleFunc("GET /api/restock/categories", HandleJSON(restockHandler.Categories))
+	apiMux.HandleFunc("POST /api/restock/categories", HandleJSON(restockHandler.CreateCategory))
+	apiMux.HandleFunc("PUT /api/restock/categories/{id}/target", HandleJSON(restockHandler.PutCategoryTarget))
+	apiMux.HandleFunc("POST /api/restock/categories/{id}/preview", HandleJSON(restockHandler.PreviewCategory))
+	apiMux.HandleFunc("PATCH /api/restock/categories/{id}", HandleJSON(restockHandler.RenameCategory))
+	apiMux.HandleFunc("POST /api/restock/categories/{id}/merge", HandleJSON(restockHandler.MergeCategory))
+	apiMux.HandleFunc("DELETE /api/restock/categories/{id}", HandleJSON(restockHandler.DeleteCategory))
+	apiMux.HandleFunc("POST /api/restock/groups/{id}/preview", HandleJSON(restockHandler.PreviewGroup))
+	apiMux.HandleFunc("GET /api/restock/suggestions", HandleJSON(restockHandler.Suggestions))
+	apiMux.HandleFunc("POST /api/restock/suggestions/apply", HandleJSON(restockHandler.ApplySuggestions))
+	apiMux.HandleFunc("POST /api/restock/suggestions/dismiss", HandleJSON(restockHandler.DismissSuggestions))
 
 	groupHandler := &GroupHandler{Groups: groups, Supply: supplySvc}
 	apiMux.HandleFunc("GET /api/groups", HandleJSON(groupHandler.List))

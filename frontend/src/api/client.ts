@@ -2,6 +2,17 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
+import {
+  asRestock,
+  asSuggestions as asCategorySuggestions,
+  type CategorySummary,
+  type DontRestockResult,
+  type RestockItem,
+  type RestockPreview,
+  type RestockSnapshot,
+  type RestockTarget,
+  type SuggestionCard,
+} from '../restock/types';
 import type {
   BatchCommitResponse,
   BuildInfo,
@@ -639,5 +650,85 @@ export function deletePushSubscription(endpoint: string): Promise<void> {
   return apiFetch('/api/push/subscriptions', {
     method: 'DELETE',
     body: JSON.stringify({ endpoint }),
+  });
+}
+
+export async function getRestock(): Promise<RestockSnapshot | null> {
+  return asRestock(await apiFetch<unknown>('/api/restock'));
+}
+
+export function setHouseholdTarget(target: RestockTarget): Promise<RestockSnapshot> {
+  return apiFetch('/api/restock/household', { method: 'PUT', body: JSON.stringify(target) });
+}
+
+export function setItemTarget(itemId: string, target: RestockTarget): Promise<RestockItem> {
+  return apiFetch(`/api/restock/items/${itemId}`, { method: 'PUT', body: JSON.stringify(target) });
+}
+
+export function clearItemTarget(itemId: string): Promise<RestockItem> {
+  return apiFetch(`/api/restock/items/${itemId}`, { method: 'DELETE' });
+}
+
+export function dontRestockItem(itemId: string): Promise<DontRestockResult> {
+  return apiFetch(`/api/restock/items/${itemId}/dont-restock`, { method: 'POST' });
+}
+
+export function addItemCategory(itemId: string, categoryId: string): Promise<RestockItem> {
+  return apiFetch(`/api/restock/items/${itemId}/categories`, {
+    method: 'POST',
+    body: JSON.stringify({ categoryId }),
+  });
+}
+
+export function removeItemCategory(itemId: string, categoryId: string): Promise<RestockItem> {
+  return apiFetch(`/api/restock/items/${itemId}/categories/${categoryId}`, { method: 'DELETE' });
+}
+
+export function createCategory(name: string): Promise<CategorySummary> {
+  return apiFetch('/api/restock/categories', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function setCategoryTarget(id: string, target: RestockTarget | null): Promise<RestockSnapshot> {
+  return apiFetch(`/api/restock/categories/${id}/target`, {
+    method: 'PUT',
+    body: JSON.stringify(target ? target : { clear: true }),
+  });
+}
+
+export function previewCategoryTarget(id: string, target: RestockTarget): Promise<RestockPreview> {
+  return apiFetch(`/api/restock/categories/${id}/preview`, { method: 'POST', body: JSON.stringify(target) });
+}
+
+export function renameCategory(id: string, name: string): Promise<RestockSnapshot> {
+  return apiFetch(`/api/restock/categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+}
+
+export function mergeCategory(id: string, intoId: string): Promise<RestockSnapshot> {
+  return apiFetch(`/api/restock/categories/${id}/merge`, { method: 'POST', body: JSON.stringify({ intoId }) });
+}
+
+export function deleteCategory(id: string): Promise<RestockSnapshot> {
+  return apiFetch(`/api/restock/categories/${id}`, { method: 'DELETE' });
+}
+
+export function previewGroupTarget(id: string, target: RestockTarget): Promise<RestockPreview> {
+  return apiFetch(`/api/restock/groups/${id}/preview`, { method: 'POST', body: JSON.stringify(target) });
+}
+
+export async function getCategorySuggestions(): Promise<SuggestionCard[]> {
+  return asCategorySuggestions(await apiFetch<unknown>('/api/restock/suggestions'));
+}
+
+export function applyCategorySuggestions(category: string, itemIds: string[]): Promise<RestockSnapshot> {
+  return apiFetch('/api/restock/suggestions/apply', {
+    method: 'POST',
+    body: JSON.stringify({ category, itemIds }),
+  });
+}
+
+export function dismissCategorySuggestions(category: string, itemIds: string[]): Promise<SuggestionCard[]> {
+  return apiFetch('/api/restock/suggestions/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ category, itemIds }),
   });
 }

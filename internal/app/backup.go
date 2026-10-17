@@ -14,6 +14,9 @@ const shoppingChangeMigration = "012_shopping_list_group.sql"
 // restockChangeMigration rebuilds the group rule check and adds no_restock.
 const restockChangeMigration = "013_group_restock.sql"
 
+// targetsChangeMigration copies legacy restock rows into item targets.
+const targetsChangeMigration = "019_restock_targets.sql"
+
 // snapshotShoppingDB runs once, immediately before shoppingChangeMigration.
 // Tests replace it to simulate a backup that cannot be written.
 var snapshotShoppingDB = writePreGroupsBackup
@@ -21,6 +24,10 @@ var snapshotShoppingDB = writePreGroupsBackup
 // snapshotRestockDB runs once, immediately before restockChangeMigration.
 // Tests replace it to simulate a backup that cannot be written.
 var snapshotRestockDB = writePreRestockBackup
+
+// snapshotTargetsDB runs once, immediately before targetsChangeMigration.
+// Tests replace it to simulate a backup that cannot be written.
+var snapshotTargetsDB = writePreTargetsBackup
 
 type snapshotSpec struct {
 	prefix  string
@@ -44,6 +51,15 @@ func writePreRestockBackup(db *sql.DB) error {
 		already: "restock backup already exists",
 		wrote:   "wrote restock backup",
 		fail:    "could not back up the pantry before updating restock rules",
+	})
+}
+
+func writePreTargetsBackup(db *sql.DB) error {
+	return writeSnapshot(db, snapshotSpec{
+		prefix:  "pantry-pre-targets",
+		already: "restock targets backup already exists",
+		wrote:   "wrote restock targets backup",
+		fail:    "could not back up the pantry before updating restock targets",
 	})
 }
 

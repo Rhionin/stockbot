@@ -180,7 +180,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 		}
 	}
 	if status >= 500 {
-		log.Printf("request failed: %s", message)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("request failed: %s", message)
+		}
 		message = "Something went wrong. Please try again."
 		extra = false
 	}

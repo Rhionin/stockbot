@@ -14,6 +14,10 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// prepareMigrationSQL returns the SQL applied for a migration. Tests replace
+// it to append a statement that fails partway through.
+var prepareMigrationSQL = func(_ string, sqlText string) string { return sqlText }
+
 // RunMigrations applies all numbered .sql files embedded in the migrations
 // directory, in lexicographic order, skipping any that have already been
 // recorded in the schema_migrations table. It is idempotent.
@@ -60,20 +64,28 @@ func RunMigrations(db *sql.DB) error {
 				return fmt.Errorf("apply migration %q: %w", name, err)
 			}
 		}
+		if name == targetsChangeMigration {
+			if err := snapshotTargetsDB(db); err != nil {
+				return fmt.Errorf("apply migration %q: %w", name, err)
+			}
+		}
 
 		// Read the embedded SQL file.
 		sqlBytes, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return fmt.Errorf("read embedded migration %q: %w", name, err)
 		}
+		sqlText := prepareMigrationSQL(name, string(sqlBytes))
 
-		if _, err := db.Exec(string(sqlBytes)); err != nil {
+		// 019 rebuilds tables and copies rows. VACUUM INTO cannot run inside a
+		// transaction, so the snapshot above stays outside, and the file plus
+		// its schema_migrations row commit together.
+		if name == targetsChangeMigration {
+			if err := applyMigrationTx(db, name, sqlText); err != nil {
+				return fmt.Errorf("apply migration %q: %w", name, err)
+			}
+		} else if err := applyMigration(db, name, sqlText); err != nil {
 			return fmt.Errorf("apply migration %q: %w", name, err)
-		}
-
-		// Record it as applied.
-		if _, err := db.Exec(`INSERT INTO schema_migrations (filename) VALUES (?)`, name); err != nil {
-			return fmt.Errorf("record migration %q: %w", name, err)
 		}
 
 		log.Printf("applied migration: %s", name)
@@ -85,4 +97,29 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func applyMigration(db *sql.DB, name, sqlText string) error {
+	if _, err := db.Exec(sqlText); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations (filename) VALUES (?)`, name); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyMigrationTx(db *sql.DB, name, sqlText string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(sqlText); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (filename) VALUES (?)`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

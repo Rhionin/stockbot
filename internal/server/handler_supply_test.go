@@ -44,8 +44,8 @@ func TestSupplyPolicy(t *testing.T) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-qty", "Flour", "item-day29-qty")
 				setSupplyQuantity(env.T, env.DB, "prod-day29-qty", 12)
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-window", "Sugar", "item-day29-window")
-				if _, err := env.DB.Exec(`INSERT INTO supply_overrides (product_id, window_months) VALUES ('prod-day29-window', 6)`); err != nil {
-					env.T.Fatalf("window override: %v", err)
+				if _, err := env.DB.Exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-day29-window', 'months', 6)`); err != nil {
+					env.T.Fatalf("window target: %v", err)
 				}
 				insertConsumptionEvent(env.T, env.DB, "ce-day29-window", "item-day29-window", now.Add(-1*24*time.Hour))
 			},
@@ -326,7 +326,8 @@ func TestSupplyPolicy(t *testing.T) {
 					path:           "/api/products/prod-wipe-supply/supply-override",
 					expectedStatus: http.StatusOK,
 					assertions: []assertion{
-						{path: "$.quantity", value: float64(8)},
+						{path: "$.quantity", absent: true},
+						{path: "$.windowMonths", absent: true},
 					},
 				},
 				httpExchange{

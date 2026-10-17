@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
+  ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Button,
   Group,
   Loader,
+  Menu,
   NativeSelect,
   NumberInput,
   Stack,
@@ -16,8 +20,14 @@ import {
   addShoppingListItem,
   clearItemDeal,
   fillShoppingCart,
+  clearItemTarget,
+  dontRestockItem,
   getInventoryList,
+  getRestock,
   getShoppingList,
+  previewCategoryTarget,
+  setCategoryTarget,
+  setItemTarget,
   listProviders,
   markShoppingListItemPurchased,
   removeShoppingListItem,
@@ -26,6 +36,12 @@ import {
   setShoppingListAdjustment,
 } from '../../api/client';
 import type { InventoryItem, ProviderInfo, ShoppingListEntry } from '../../types';
+import type { RestockSnapshot } from '../../restock/types';
+import { restockCopy } from '../../restock/copy';
+import { StopDialog } from '../restock/StopDialog';
+import { TargetEditor } from '../restock/TargetEditor';
+import { showUndo } from '../restock/undo';
+import type { RestockPreview, RestockTarget } from '../../restock/types';
 import { ruleLabel } from '../groups/copy';
 import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
@@ -39,6 +55,10 @@ export const ShoppingListPage = () => {
   const [entries, setEntries] = useState<ShoppingListEntry[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [restock, setRestock] = useState<RestockSnapshot | null>(null);
+  const [editorId, setEditorId] = useState('');
+  const [preview, setPreview] = useState<RestockPreview | null>(null);
+  const [pendingCategory, setPendingCategory] = useState('');
   const [selectedItemId, setSelectedItemId] = useState('');
   const [quantity, setQuantity] = useState<number | string>(1);
   const [saleItemId, setSaleItemId] = useState('');
@@ -52,13 +72,15 @@ export const ShoppingListPage = () => {
   const refresh = useCallback(async () => {
     const providerRows = await listProviders();
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
-    const [shoppingEntries, inventoryItems] = await Promise.all([
+    const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
+      getRestock().catch(() => null),
     ]);
     setProviders(providerRows);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
+    setRestock(snapshot);
   }, []);
 
   const loadShoppingList = useCallback(async () => {
@@ -361,6 +383,9 @@ export const ShoppingListPage = () => {
                             className={`stock-note stock-note--${stockState(entry.basis.instanceCount, entry.basis.instanceCount > 0)}`}
                           >
                             {`${entry.basis.instanceCount} on hand`}
+                            {restock?.items.find((item) => item.itemId === entry.itemId)?.rowSource
+                              ? ` · ${restock.items.find((item) => item.itemId === entry.itemId)?.rowSource}`
+                              : ''}
                           </Text>
                         )}
                       </Stack>
@@ -371,6 +396,42 @@ export const ShoppingListPage = () => {
                         <Text size="sm" c="dimmed">Updates when inventory changes</Text>
                       ) : (
                         <Group gap="xs">
+                          {restock?.items.some((item) => item.itemId === entry.itemId) && (
+                            <Menu position="bottom-end">
+                              <Menu.Target>
+                                <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
+                              </Menu.Target>
+                              <Menu.Dropdown>
+                                <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
+                                <Menu.Item onClick={() => {
+                                  const view = restock.items.find((item) => item.itemId === entry.itemId);
+                                  if (!view) return;
+                                  void dontRestockItem(view.itemId).then((result) => {
+                                    showUndo(result.title, result.detail, () => {
+                                      void (result.previous ? setItemTarget(view.itemId, result.previous) : clearItemTarget(view.itemId)).then(() => refresh());
+                                    });
+                                    void refresh();
+                                  });
+                                }}
+                                >
+                                  {`Don't restock ${productName}`}
+                                </Menu.Item>
+                                {restock.items.find((item) => item.itemId === entry.itemId)?.categories[0] && (
+                                  <Menu.Item onClick={() => {
+                                    const category = restock.items.find((item) => item.itemId === entry.itemId)?.categories[0];
+                                    if (!category) return;
+                                    void previewCategoryTarget(category.id, { kind: 'months', value: 0 }).then((next) => {
+                                      setPendingCategory(category.id);
+                                      setPreview(next);
+                                    });
+                                  }}
+                                  >
+                                    {`Don't restock ${restock.items.find((item) => item.itemId === entry.itemId)?.categories[0]?.name}…`}
+                                  </Menu.Item>
+                                )}
+                              </Menu.Dropdown>
+                            </Menu>
+                          )}
                           <Button size="xs" onClick={() => void updateEntry(entry, 'purchase')}>
                             Mark {productName} purchased
                           </Button>
@@ -392,6 +453,34 @@ export const ShoppingListPage = () => {
           </Table>
         </div>
       )}
+      {restock && restock.notRestocked > 0 && (
+        <Text size="sm" c="dimmed">
+          {restockCopy.notRestocked(restock.notRestocked)}{' '}
+          <Anchor component={Link} to="/inventory?filter=restock">{restockCopy.review}</Anchor>
+        </Text>
+      )}
+      <TargetEditor
+        opened={editorId !== ''}
+        title="Restock target"
+        initial={restock?.items.find((item) => item.itemId === editorId)?.target}
+        onClose={() => setEditorId('')}
+        onSave={async (target: RestockTarget) => {
+          await setItemTarget(editorId, target);
+          await refresh();
+        }}
+      />
+      <StopDialog
+        opened={preview !== null}
+        preview={preview}
+        onClose={() => { setPreview(null); setPendingCategory(''); }}
+        onConfirm={() => {
+          void setCategoryTarget(pendingCategory, { kind: 'months', value: 0 }).then(() => {
+            setPreview(null);
+            setPendingCategory('');
+            void refresh();
+          });
+        }}
+      />
     </Stack>
   );
 };

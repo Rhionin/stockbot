@@ -21,6 +21,14 @@ export interface ItemRowProps {
   onChecked?: (checked: boolean) => void;
   onLongPress?: () => void;
   onViewHistory?: () => void;
+  quietLine?: string;
+  onRestockTarget?: () => void;
+  onDontRestock?: () => void;
+  dontRestockHint?: string;
+  useBroaderLabel?: string;
+  useBroaderHint?: string;
+  onUseBroader?: () => void;
+  onCategories?: () => void;
   children?: ReactNode;
 }
 
@@ -49,6 +57,14 @@ export const ItemRow = memo(({
   onChecked,
   onLongPress,
   onViewHistory,
+  quietLine,
+  onRestockTarget,
+  onDontRestock,
+  dontRestockHint,
+  useBroaderLabel,
+  useBroaderHint,
+  onUseBroader,
+  onCategories,
   children,
 }: ItemRowProps) => {
   const { item, nearExpiryCount, expiredCount } = inventoryItem;
@@ -91,6 +107,9 @@ export const ItemRow = memo(({
           {category !== null && <p className="shelf-category">{category}</p>}
           <div className="shelf-meta">
             <span>{hand}</span>
+            {quietLine && (
+              <span className={quietLine.startsWith('Keep') ? 'restock-quiet is-own' : 'restock-quiet'}>{quietLine}</span>
+            )}
             {onViewHistory && (
               <button
                 type="button"
@@ -124,6 +143,21 @@ export const ItemRow = memo(({
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown className="bin-member-menu">
+              {onRestockTarget && <Menu.Item onClick={onRestockTarget}>Restock target…</Menu.Item>}
+              {onDontRestock && (
+                <Menu.Item onClick={onDontRestock}>
+                  <span className="bin-menu-label">Don't restock</span>
+                  {dontRestockHint && <span className="bin-menu-hint">{dontRestockHint}</span>}
+                </Menu.Item>
+              )}
+              {onUseBroader && useBroaderLabel && (
+                <Menu.Item onClick={onUseBroader}>
+                  <span className="bin-menu-label">{useBroaderLabel}</span>
+                  {useBroaderHint && <span className="bin-menu-hint">{useBroaderHint}</span>}
+                </Menu.Item>
+              )}
+              {(onRestockTarget || onDontRestock) && <Menu.Divider />}
+              {onCategories && <Menu.Item onClick={onCategories}>Categories…</Menu.Item>}
               <Menu.Item onClick={onAdd}>Add to a group…</Menu.Item>
               <Menu.Item onClick={onStartGroup}>Start a group with this</Menu.Item>
               <Menu.Item aria-expanded={selected} aria-controls={controlsId} onClick={onSelect}>

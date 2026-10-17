@@ -4,7 +4,7 @@ import {
 } from '../groups/copy';
 import { seesawView, stockMeter } from '../groups/seesaw';
 
-export type ShelfFilter = 'all' | 'low' | 'groups' | 'ungrouped';
+export type ShelfFilter = 'all' | 'low' | 'groups' | 'ungrouped' | 'categories' | 'restock';
 
 export interface ShelfMember extends MemberPackage {
   imageUrl?: string;
@@ -51,7 +51,7 @@ export interface ShelfInput {
 }
 
 export function parseShelfFilter(value: string | null): ShelfFilter {
-  if (value === 'low' || value === 'groups' || value === 'ungrouped') return value;
+  if (value === 'low' || value === 'groups' || value === 'ungrouped' || value === 'categories' || value === 'restock') return value;
   return 'all';
 }
 

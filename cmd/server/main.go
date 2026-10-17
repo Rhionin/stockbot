@@ -20,6 +20,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/push"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/server"
@@ -187,17 +188,20 @@ func main() {
 	if !externalLookupEnabled {
 		upstream = disabledExternalLookup{}
 	}
+	restockTargets := restock.NewTargets(sqlDB)
 	refresher := &product.Refresher{
 		Catalog:               catalog,
 		Upstream:              upstream,
 		TTL:                   productCacheTTL(),
 		ExternalLookupEnabled: externalLookupEnabled,
+		Tags:                  restockTargets,
 	}
 	lookupService := &product.LookupService{
 		Catalog:   catalog,
 		Upstream:  upstream,
 		Refresher: refresher,
 		MissTTL:   productMissTTL(),
+		Tags:      restockTargets,
 	}
 
 	// One Broadcaster shared by the HTTP handlers and the headless listener, so

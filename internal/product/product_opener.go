@@ -149,6 +149,8 @@ type productOpenerResponse struct {
 		Quantity            string    `json:"quantity"`
 		ProductQuantity     flexFloat `json:"product_quantity"`
 		ProductQuantityUnit string    `json:"product_quantity_unit"`
+		CategoriesTags      []string  `json:"categories_tags"`
+		FoodGroupsTags      []string  `json:"food_groups_tags"`
 	} `json:"product"`
 	Status int `json:"status"`
 }
@@ -241,11 +243,13 @@ func (c *ProductOpenerClient) LookupBarcode(ctx context.Context, barcode string)
 	}
 
 	ps := &ProductSummary{
-		ID:            barcode,
-		Name:          data.Product.Name,
-		Category:      data.Product.Category,
-		UnitOfMeasure: "",
-		ImageURL:      SafeImageURL(data.Product.ImageThumbURL),
+		ID:             barcode,
+		Name:           data.Product.Name,
+		Category:       data.Product.Category,
+		UnitOfMeasure:  "",
+		ImageURL:       SafeImageURL(data.Product.ImageThumbURL),
+		CategoriesTags: data.Product.CategoriesTags,
+		FoodGroupsTags: data.Product.FoodGroupsTags,
 	}
 	quantity := 0.0
 	if data.Product.ProductQuantity.Set {
