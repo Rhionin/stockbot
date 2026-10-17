@@ -1,10 +1,6 @@
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { commitSelectedScan, resetToStockIn, scanBarcode } from './helpers'
-
-const artifacts = '/opt/cursor/artifacts'
 
 // The suite shares one database. These scans have to land after opening so
 // variety can see a stock-in time. Shopping list, which runs later, still
@@ -27,8 +23,8 @@ async function restoreOpeningSnapshot(request: APIRequestContext) {
 }
 
 async function shot(page: Page, name: string) {
-  mkdirSync(artifacts, { recursive: true })
-  await page.screenshot({ path: join(artifacts, name) })
+  // Named screenshots belong in this test's output directory (test-results/).
+  await page.screenshot({ path: test.info().outputPath(name) })
 }
 
 async function createProduct(
