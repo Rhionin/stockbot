@@ -943,8 +943,8 @@ cmd_reconcile_env() {
     [[ "$key" =~ ^# ]] && continue
     [[ -z "$key" ]] && continue
 
-    # Check if key exists in .env
-    if ! grep -q "^${key}=" "${PANTRY_DIR}/.env"; then
+    # An `export KEY=` line is already set. Do not add a second KEY=.
+    if ! env_has_key "$key"; then
       echo "${key}=${value}" >> "${PANTRY_DIR}/.env"
       log_info "Added missing key: $key"
       added=$((added + 1))
@@ -960,8 +960,14 @@ cmd_reconcile_env() {
   fi
 }
 
-# append_empty_env_keys adds KEY= lines that are missing. An existing value
-# is left as it is, and the file mode is not changed.
+# env_has_key is true when KEY= or export KEY= is already in .env.
+env_has_key() {
+  grep -qE "^(export[[:space:]]+)?${1}=" "${PANTRY_DIR}/.env"
+}
+
+# append_empty_env_keys adds KEY= lines that are missing. An existing value,
+# including one written as `export KEY=`, is left as it is, and the file mode
+# is not changed.
 append_empty_env_keys() {
   local key
   # cmd_reconcile_env owns added. A direct call starts from zero.
@@ -975,7 +981,7 @@ append_empty_env_keys() {
     printf '\n' >> "${PANTRY_DIR}/.env"
   fi
   for key in "$@"; do
-    if ! grep -q "^${key}=" "${PANTRY_DIR}/.env"; then
+    if ! env_has_key "$key"; then
       printf '%s=\n' "$key" >> "${PANTRY_DIR}/.env"
       log_info "Added missing key: $key"
       added=$((added + 1))

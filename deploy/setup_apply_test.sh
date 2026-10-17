@@ -929,6 +929,22 @@ PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; appen
 [[ $(grep -c '^SENTRY_ENVIRONMENT=' "$sentry_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated SENTRY_ENVIRONMENT"
 [[ $(stat -c '%a' "$sentry_dir/.env") == "$sentry_mode" ]] || fail "second append changed the .env mode"
 
-rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir"
+# An exported assignment is already present. Neither the empty-key helper nor
+# reconcile may append a second KEY= line, and neither may rewrite the value.
+export_dir=$(mktemp -d)
+printf '%s\n' 'export SENTRY_DSN=keep-export' > "$export_dir/.env"
+chmod 640 "$export_dir/.env"
+export_mode=$(stat -c '%a' "$export_dir/.env")
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "append_empty_env_keys changed the exported .env mode"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "append_empty_env_keys rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated export SENTRY_DSN"
+printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=' 'SENTRY_ENVIRONMENT=' > "$export_dir/.env.example"
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
+
+rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
 rm -f /tmp/pantry-chown-fail.out /tmp/pantry-chown-skip.out
 echo "setup_apply_test ok"

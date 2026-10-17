@@ -135,11 +135,16 @@ func withSentry(next http.Handler) http.Handler {
 }
 
 func nameSentryTransaction(r *http.Request) {
-	if r == nil || r.Pattern == "" {
+	if r == nil {
 		return
 	}
 	span := sentry.SpanFromContext(r.Context())
 	if span == nil {
+		return
+	}
+	if r.Pattern == "" {
+		span.Name = r.Method + " <unmatched>"
+		span.Source = sentry.SourceCustom
 		return
 	}
 	name := r.Pattern

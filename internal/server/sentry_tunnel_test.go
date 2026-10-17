@@ -255,6 +255,166 @@ func TestSentryTunnelGlobalLimit(t *testing.T) {
 	}
 }
 
+func TestSentryTunnelBlankLineEnvelopeIsLinear(t *testing.T) {
+	header := `{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dsn":"https://key@o1.ingest.example/123","sent_at":"2026-01-01T00:00:00.000Z"}` + "\n"
+	item := `{"type":"event"}` + "\n" + `{"message":"ok"}` + "\n"
+	gap := sentryTunnelMaxBody - len(header) - len(item)
+	if gap < 200000 {
+		t.Fatalf("blank run = %d", gap)
+	}
+	body := header + strings.Repeat("\n", gap) + item
+	if len(body) != sentryTunnelMaxBody {
+		t.Fatalf("body length = %d", len(body))
+	}
+
+	// The old walk re-trimmed the remaining body on every blank line, so this
+	// envelope took many seconds. A linear parse finishes immediately; the
+	// bound is only wide enough to stay quiet on a busy CI machine.
+	const bound = 250 * time.Millisecond
+
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	before := envelopeItemParses.Load()
+	start := time.Now()
+	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+	if elapsed := time.Since(start); elapsed > bound {
+		t.Fatalf("allowed host took %s", elapsed)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if calls != 0 {
+		t.Fatal("blank-line envelope was forwarded")
+	}
+	if envelopeItemParses.Load() != before+1 {
+		t.Fatalf("item parses = %d, want %d", envelopeItemParses.Load(), before+1)
+	}
+
+	wrong := newSentryTunnel(SentryTunnelConfig{
+		IngestHost: "elsewhere.example",
+		ProjectIDs: map[string]struct{}{"123": {}},
+		Client:     okTransport(),
+		PerIP:      100,
+		Global:     100,
+	})
+	before = envelopeItemParses.Load()
+	start = time.Now()
+	rec = postTunnel(wrong, http.MethodPost, body, sentryEnvelopeMediaType)
+	if elapsed := time.Since(start); elapsed > bound {
+		t.Fatalf("rejected host took %s", elapsed)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rejected host status = %d", rec.Code)
+	}
+	if envelopeItemParses.Load() != before {
+		t.Fatal("rejected host parsed items")
+	}
+
+	trailing := envelope("https://key@o1.ingest.example/123") + "\n\n  \t"
+	rec = postTunnel(handler, http.MethodPost, trailing, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("trailing space status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("trailing space calls = %d", calls)
+	}
+}
+
+func TestSentryTunnelRejectsCaseVariantKeys(t *testing.T) {
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	header := `{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dsn":"https://key@o1.ingest.example/123","sent_at":"2026-01-01T00:00:00.000Z"}` + "\n"
+	bodies := []string{
+		header + `{"type":"replay_recording","Type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+		header + `{"type":"event","Length":1}` + "\n" + "x\n",
+		header + `{"type":"event","type":"replay_recording"}` + "\n" + `{"message":"ok"}` + "\n",
+		header + `{"Type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+		`{"DSN":"https://key@o1.ingest.example/123"}` + "\n" + `{"type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+		`{"dsn":"https://key@o1.ingest.example/123","dsn":"https://key@o1.ingest.example/123"}` + "\n" + `{"type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+		`{"dsn":"https://key@o1.ingest.example/123","DSN":"https://other@o1.ingest.example/123"}` + "\n" + `{"type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+		header + `{"type":"event"}{"type":"event"}` + "\n" + `{"message":"ok"}` + "\n",
+	}
+	for _, body := range bodies {
+		rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d", body, rec.Code)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("case-variant envelope was forwarded")
+	}
+}
+
+func TestSentryTunnelItemAllowlist(t *testing.T) {
+	for _, typ := range []string{"event", "transaction", "session", "sessions", "client_report"} {
+		t.Run(typ, func(t *testing.T) {
+			var calls int
+			handler := allowedTunnel(t, &calls)
+			body := `{"dsn":"https://key@o1.ingest.example/123","sdk":{"name":"browser","version":"8"}}` + "\n" +
+				`{"type":"` + typ + `"}` + "\n" + `{"ok":true}` + "\n"
+			rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+			}
+			if calls != 1 {
+				t.Fatalf("calls = %d", calls)
+			}
+		})
+	}
+
+	t.Run("attachment", func(t *testing.T) {
+		var calls int
+		handler := allowedTunnel(t, &calls)
+		payload := "hello"
+		body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n" +
+			`{"type":"attachment","length":` + strconv.Itoa(len(payload)) + `,"content_type":"text/plain","filename":"note.txt"}` + "\n" +
+			payload + "\n"
+		rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+		}
+		if calls != 1 {
+			t.Fatalf("calls = %d", calls)
+		}
+	})
+
+	t.Run("replay_recording", func(t *testing.T) {
+		var calls int
+		handler := allowedTunnel(t, &calls)
+		body := envelope("https://key@o1.ingest.example/123")
+		body = strings.Replace(body, `{"type":"event"}`, `{"type":"replay_recording"}`, 1)
+		rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if calls != 0 {
+			t.Fatal("replay_recording was forwarded")
+		}
+	})
+}
+
+func TestSentryTunnelItemLengthBound(t *testing.T) {
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	header := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n"
+	bodies := []string{
+		header + `{"type":"attachment","length":300000}` + "\n" + "hi\n",
+		header + `{"type":"attachment","length":50}` + "\n" + "hi\n",
+		header + `{"type":"attachment","length":999999999999999999999}` + "\n" + "hi\n",
+		header + `{"type":"attachment","length":-1}` + "\n" + "hi\n",
+		header + `{"type":"attachment","length":"5"}` + "\n" + "hello\n",
+	}
+	for _, body := range bodies {
+		rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d", body, rec.Code)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("oversize item was forwarded")
+	}
+}
+
 func TestSentryTunnelRejectsOtherItemTypes(t *testing.T) {
 	var calls int
 	handler := allowedTunnel(t, &calls)

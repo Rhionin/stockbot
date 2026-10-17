@@ -445,6 +445,116 @@ func TestPanicIsReportedAndRepanics(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 }
 
+func TestTunnelConfigCarriesPublicKeys(t *testing.T) {
+	settings := LoadSentrySettings(func(key string) string {
+		switch key {
+		case "SENTRY_DSN":
+			return fakeSentryDSN
+		case "SENTRY_TUNNEL_PROJECT_IDS":
+			return "123, 124"
+		case "SENTRY_TUNNEL_PUBLIC_KEYS":
+			return "browser-key, other-key"
+		default:
+			return ""
+		}
+	})
+	cfg := settings.TunnelConfig()
+	if cfg.IngestHost != "o1.ingest.example" {
+		t.Fatalf("host = %q", cfg.IngestHost)
+	}
+	if _, ok := cfg.ProjectIDs["123"]; !ok {
+		t.Fatalf("projects = %#v", cfg.ProjectIDs)
+	}
+	if _, ok := cfg.ProjectIDs["124"]; !ok {
+		t.Fatalf("projects = %#v", cfg.ProjectIDs)
+	}
+	if _, ok := cfg.PublicKeys["browser-key"]; !ok || len(cfg.PublicKeys) != 2 {
+		t.Fatalf("public keys = %#v", cfg.PublicKeys)
+	}
+	if _, ok := cfg.PublicKeys["other-key"]; !ok {
+		t.Fatalf("public keys = %#v", cfg.PublicKeys)
+	}
+}
+
+func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
+	prevRate := sentryTracesSampleRate
+	sentryTracesSampleRate = 1
+	t.Cleanup(func() { sentryTracesSampleRate = prevRate })
+
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/build", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withSentry(mux)
+
+	miss := httptest.NewRequest(http.MethodGet, "/api/items/item-9", nil)
+	missRec := httptest.NewRecorder()
+	handler.ServeHTTP(missRec, miss)
+	if missRec.Code != http.StatusNotFound {
+		t.Fatalf("unmatched status = %d", missRec.Code)
+	}
+
+	health := httptest.NewRequest(http.MethodGet, "/health", nil)
+	healthRec := httptest.NewRecorder()
+	handler.ServeHTTP(healthRec, health)
+	if healthRec.Code != http.StatusOK {
+		t.Fatalf("health status = %d", healthRec.Code)
+	}
+
+	build := httptest.NewRequest(http.MethodGet, "/api/build", nil)
+	buildRec := httptest.NewRecorder()
+	handler.ServeHTTP(buildRec, build)
+	if buildRec.Code != http.StatusOK {
+		t.Fatalf("build status = %d", buildRec.Code)
+	}
+
+	gate := testHousehold(t, "pantry", "correct-horse-battery")
+	authed := http.NewServeMux()
+	authed.HandleFunc("POST /api/items/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	locked := withSentry(gate.Middleware(authed))
+	denied := httptest.NewRequest(http.MethodPost, "/api/items/item-9", nil)
+	denied.Header.Set(entryHeader, entryPublic)
+	deniedRec := httptest.NewRecorder()
+	locked.ServeHTTP(deniedRec, denied)
+	if deniedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d body %s", deniedRec.Code, deniedRec.Body.String())
+	}
+
+	var unmatched, buildName, deniedName string
+	for _, event := range tr.snapshot() {
+		if event.Type != "transaction" {
+			continue
+		}
+		if strings.Contains(event.Transaction, "item-9") {
+			t.Fatalf("transaction name = %q", event.Transaction)
+		}
+		switch event.Transaction {
+		case "GET <unmatched>":
+			unmatched = event.Transaction
+		case "GET /api/build":
+			buildName = event.Transaction
+		case "POST <unmatched>":
+			deniedName = event.Transaction
+		case "GET /health":
+			t.Fatal("health was traced")
+		}
+	}
+	if unmatched == "" || buildName == "" || deniedName == "" {
+		t.Fatalf("names unmatched=%q build=%q denied=%q", unmatched, buildName, deniedName)
+	}
+}
+
 func TestSentryMiddlewareScrubsErrorAndTransaction(t *testing.T) {
 	prevRate := sentryTracesSampleRate
 	sentryTracesSampleRate = 1

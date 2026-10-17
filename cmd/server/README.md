@@ -158,7 +158,7 @@ call the ingest host itself.
 | Content-Type | `application/x-sentry-envelope` |
 | Body limit | 256 KB. Larger bodies return `413` |
 | Rate limit | Per client IP and a global cap. Excess requests return `429` |
-| `400` | Missing or wrong content type, an envelope header that is not valid, or an item type other than `event`, `transaction`, `session`, `sessions`, `client_report`, or `attachment` |
+| `400` | Missing or wrong content type, an envelope or item header that is not valid (duplicate or differently-cased keys, a blank line between items, or an item length past the body), or an item type other than `event`, `transaction`, `session`, `sessions`, `client_report`, or `attachment` |
 | `403` | The envelope DSN host is not the ingest host of `SENTRY_DSN`, its project id is not listed in `SENTRY_TUNNEL_PROJECT_IDS`, or `SENTRY_TUNNEL_PUBLIC_KEYS` is set and does not contain the envelope's public key |
 | `404` | `SENTRY_DSN` or `SENTRY_TUNNEL_PROJECT_IDS` is empty |
 | `405` | Any method other than `POST` while the tunnel is configured |

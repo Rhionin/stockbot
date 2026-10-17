@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -139,23 +140,15 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
+	if host != h.host || !projectAllowed(h.projects, project) || !publicKeyAllowed(h.publicKeys, publicKey) {
+		writeError(w, http.StatusForbidden, "This envelope is not accepted.")
+		return
+	}
+	// Item parsing walks the body. It stays after the checks above so a
+	// rejected envelope does not pay for that walk.
 	if err := envelopeItems(body); err != nil {
 		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
-	}
-	if host != h.host {
-		writeError(w, http.StatusForbidden, "This envelope is not accepted.")
-		return
-	}
-	if _, ok := h.projects[project]; !ok {
-		writeError(w, http.StatusForbidden, "This envelope is not accepted.")
-		return
-	}
-	if len(h.publicKeys) > 0 {
-		if _, ok := h.publicKeys[publicKey]; !ok {
-			writeError(w, http.StatusForbidden, "This envelope is not accepted.")
-			return
-		}
 	}
 	endpoint := "https://" + host + "/api/" + project + "/envelope/"
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
@@ -184,19 +177,35 @@ func copyResponseHeader(w http.ResponseWriter, resp *http.Response, name string)
 	}
 }
 
+func projectAllowed(projects map[string]struct{}, project string) bool {
+	_, ok := projects[project]
+	return ok
+}
+
+func publicKeyAllowed(keys map[string]struct{}, publicKey string) bool {
+	if len(keys) == 0 {
+		return true
+	}
+	_, ok := keys[publicKey]
+	return ok
+}
+
 func envelopeTarget(body []byte) (host, project, publicKey string, err error) {
 	line, _, _ := bytes.Cut(body, []byte("\n"))
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 {
+	line = bytes.TrimRight(line, "\r")
+	fields, err := strictJSONObject(line, envelopeHeaderFields)
+	if err != nil {
 		return "", "", "", errInvalidEnvelope
 	}
-	var header struct {
-		DSN string `json:"dsn"`
-	}
-	if err := json.Unmarshal(line, &header); err != nil || strings.TrimSpace(header.DSN) == "" {
+	raw, ok := fields["dsn"]
+	if !ok {
 		return "", "", "", errInvalidEnvelope
 	}
-	return dsnHostAndProject(header.DSN)
+	var dsn string
+	if err := json.Unmarshal(raw, &dsn); err != nil || strings.TrimSpace(dsn) == "" {
+		return "", "", "", errInvalidEnvelope
+	}
+	return dsnHostAndProject(dsn)
 }
 
 func dsnHostAndProject(raw string) (host, project, publicKey string, err error) {
@@ -218,38 +227,56 @@ func dsnHostAndProject(raw string) (host, project, publicKey string, err error) 
 	return strings.ToLower(u.Hostname()), project, publicKey, nil
 }
 
+// envelopeItemParses counts item walks. A rejected host, project, or key
+// must not increment it.
+var envelopeItemParses atomic.Int64
+
+var envelopeHeaderFields = []string{"dsn", "event_id", "sent_at", "sdk", "trace"}
+
+var envelopeItemFields = []string{"type", "length", "content_type", "filename", "attachment_type"}
+
 func envelopeItems(body []byte) error {
+	envelopeItemParses.Add(1)
 	_, rest, ok := bytes.Cut(body, []byte("\n"))
 	if !ok {
 		return errInvalidEnvelope
 	}
 	var sawItem bool
-	for len(bytes.TrimSpace(rest)) > 0 {
+	for len(rest) > 0 {
+		// A blank or indented line is only the trailing padding at EOF.
+		// Checking that once is linear; trimming the whole tail on every
+		// blank line is not.
+		if rest[0] == '\n' || rest[0] == '\r' || rest[0] == ' ' || rest[0] == '\t' {
+			if !onlySpace(rest) {
+				return errInvalidEnvelope
+			}
+			break
+		}
 		line, after, found := bytes.Cut(rest, []byte("\n"))
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			rest = after
-			continue
+		line = bytes.TrimRight(line, "\r")
+		fields, err := strictJSONObject(line, envelopeItemFields)
+		if err != nil {
+			return errInvalidEnvelope
 		}
-		var hdr struct {
-			Type   string `json:"type"`
-			Length *int   `json:"length"`
-		}
-		if err := json.Unmarshal(line, &hdr); err != nil || hdr.Type == "" || !allowedEnvelopeItem(hdr.Type) {
+		rawType, ok := fields["type"]
+		var typ string
+		if !ok || json.Unmarshal(rawType, &typ) != nil || !allowedEnvelopeItem(typ) {
 			return errInvalidEnvelope
 		}
 		sawItem = true
-		if hdr.Length == nil {
+		lengthRaw, hasLength := fields["length"]
+		if !hasLength {
 			if !found {
 				return errInvalidEnvelope
 			}
 			_, rest, _ = bytes.Cut(after, []byte("\n"))
 			continue
 		}
-		if *hdr.Length < 0 || *hdr.Length > len(after) {
+		length, ok := jsonUnsigned(lengthRaw)
+		if !ok || length > len(after) || length > sentryTunnelMaxBody {
 			return errInvalidEnvelope
 		}
-		rest = after[*hdr.Length:]
+		rest = after[length:]
 		if len(rest) > 0 {
 			if rest[0] != '\n' {
 				return errInvalidEnvelope
@@ -261,6 +288,81 @@ func envelopeItems(body []byte) error {
 		return errInvalidEnvelope
 	}
 	return nil
+}
+
+func onlySpace(b []byte) bool {
+	for _, c := range b {
+		if c != '\n' && c != '\r' && c != ' ' && c != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+func strictJSONObject(line []byte, canonical []string) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil, errInvalidEnvelope
+	}
+	exact := make(map[string]struct{}, len(canonical))
+	for _, key := range canonical {
+		exact[key] = struct{}{}
+	}
+	fields := make(map[string]json.RawMessage)
+	folded := make(map[string]struct{}, len(canonical))
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, errInvalidEnvelope
+		}
+		key, ok := keyTok.(string)
+		if !ok || key == "" {
+			return nil, errInvalidEnvelope
+		}
+		fold := strings.ToLower(key)
+		if _, seen := folded[fold]; seen {
+			return nil, errInvalidEnvelope
+		}
+		folded[fold] = struct{}{}
+		if _, known := exact[fold]; known {
+			if _, spelled := exact[key]; !spelled {
+				return nil, errInvalidEnvelope
+			}
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, errInvalidEnvelope
+		}
+		fields[key] = raw
+	}
+	tok, err = dec.Token()
+	if err != nil || tok != json.Delim('}') {
+		return nil, errInvalidEnvelope
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, errInvalidEnvelope
+	}
+	return fields, nil
+}
+
+func jsonUnsigned(raw json.RawMessage) (int, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] == '-' || raw[0] == '"' {
+		return 0, false
+	}
+	n := 0
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+		if n > sentryTunnelMaxBody {
+			return 0, false
+		}
+	}
+	return n, true
 }
 
 func allowedEnvelopeItem(typ string) bool {
