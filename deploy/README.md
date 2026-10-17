@@ -587,6 +587,7 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `SENTRY_DSN` | empty | Error reporting. Empty keeps it off, including on the Pi, and the process makes no error-reporting calls. Set this in `/opt/pantry/.env` only. That file is mode `0600` and owned by root, so editing it needs `sudo` |
 | `SENTRY_ENVIRONMENT` | empty | Optional label sent with errors. Empty means `production` when `SENTRY_DSN` is set |
 | `SENTRY_TUNNEL_PROJECT_IDS` | empty | Comma-separated project ids `POST /api/sentry-tunnel` may forward. Empty leaves that route hidden |
+| `SENTRY_TUNNEL_PUBLIC_KEYS` | empty | Optional comma-separated DSN public keys the tunnel accepts. Empty does not check the key. Set this in `/opt/pantry/.env` only |
 | `PANTRY_LAN_FIREWALL` | `on` | `off` leaves `HOST_PORT` reachable from any source. Any other value, including empty, installs the LAN-only rule when compose publishes that port or the public proxy is on |
 | `PANTRY_LAN_IPV4` | empty | Private LAN address of the Pi, such as `192.168.1.203`. Empty detects it. Set this when detection prints a Docker bridge instead of the address phones should open |
 | `PANTRY_SPLIT_DNS` | `off` | `on` answers `PUBLIC_HOST` with `PANTRY_LAN_IPV4` from dnsmasq on the Pi. Public DNS and the shared password stay as they are. Leave off unless clients use the Pi for DNS. Do not forward port 53 |

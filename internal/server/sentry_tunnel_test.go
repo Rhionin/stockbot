@@ -1,13 +1,16 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSentryTunnel(t *testing.T) {
@@ -95,6 +98,17 @@ func TestSentryTunnel(t *testing.T) {
 		}
 		if sentryTunnelMaxBody != 256*1024 {
 			t.Fatalf("cap = %d", sentryTunnelMaxBody)
+		}
+
+		// A chunked body has no Content-Length, so only MaxBytesReader can reject it.
+		chunked := httptest.NewRequest(http.MethodPost, sentryTunnelPath, strings.NewReader(strings.Repeat("b", 65)))
+		chunked.ContentLength = -1
+		chunked.Header.Set("Content-Type", sentryEnvelopeMediaType)
+		chunked.Header.Del("Content-Length")
+		chunkedRec := httptest.NewRecorder()
+		handler.ServeHTTP(chunkedRec, chunked)
+		if chunkedRec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("chunked status = %d body %s", chunkedRec.Code, chunkedRec.Body.String())
 		}
 	})
 
@@ -238,6 +252,154 @@ func TestSentryTunnelGlobalLimit(t *testing.T) {
 	handler.ServeHTTP(rec, tunnelReq(body, "192.0.2.3"))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("global status = %d", rec.Code)
+	}
+}
+
+func TestSentryTunnelRejectsOtherItemTypes(t *testing.T) {
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	body := `{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dsn":"https://key@o1.ingest.example/123","sent_at":"2026-01-01T00:00:00.000Z"}` + "\n" +
+		`{"type":"replay_event"}` + "\n" + `{"message":"Oat Milk"}` + "\n"
+	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if calls != 0 {
+		t.Fatal("disallowed item was forwarded")
+	}
+
+	payload := "hello"
+	attachment := `{"type":"attachment","length":` + strconv.Itoa(len(payload)) + `}` + "\n" + payload + "\n"
+	ok := envelope("https://key@o1.ingest.example/123") + attachment
+	rec = postTunnel(handler, http.MethodPost, ok, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("attachment status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("forwarded calls = %d", calls)
+	}
+}
+
+func TestSentryTunnelPublicKey(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	handler := newSentryTunnel(SentryTunnelConfig{
+		IngestHost: "o1.ingest.example",
+		ProjectIDs: map[string]struct{}{"123": {}},
+		PublicKeys: map[string]struct{}{"browser-key": {}},
+		Client:     &http.Client{Transport: rewriteHost(upstream.URL)},
+		PerIP:      10,
+		Global:     10,
+	})
+	wrong := postTunnel(handler, http.MethodPost, envelope("https://key@o1.ingest.example/123"), sentryEnvelopeMediaType)
+	if wrong.Code != http.StatusForbidden {
+		t.Fatalf("wrong key status = %d", wrong.Code)
+	}
+	if calls != 0 {
+		t.Fatal("wrong key was forwarded")
+	}
+	right := postTunnel(handler, http.MethodPost, envelope("https://browser-key@o1.ingest.example/123"), sentryEnvelopeMediaType)
+	if right.Code != http.StatusNoContent {
+		t.Fatalf("right key status = %d body %s", right.Code, right.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d", calls)
+	}
+}
+
+func TestSentryTunnelPassesUpstreamRateLimitHeaders(t *testing.T) {
+	handler := newSentryTunnel(SentryTunnelConfig{
+		IngestHost: "o1.ingest.example",
+		ProjectIDs: map[string]struct{}{"123": {}},
+		Client: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			header := make(http.Header)
+			header.Set("Retry-After", "12")
+			header.Set("X-Sentry-Rate-Limits", "60:transaction")
+			header.Set("X-Other", "nope")
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("slow down")),
+			}, nil
+		})},
+	})
+	rec := postTunnel(handler, http.MethodPost, envelope("https://key@o1.ingest.example/123"), sentryEnvelopeMediaType)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "12" || rec.Header().Get("X-Sentry-Rate-Limits") != "60:transaction" {
+		t.Fatalf("headers = %#v", rec.Header())
+	}
+	if rec.Header().Get("X-Other") != "" {
+		t.Fatal("unrelated upstream header was copied")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestSentryTunnelDefaultClient(t *testing.T) {
+	if sentryTunnelTimeout != 5*time.Second {
+		t.Fatalf("timeout constant = %s", sentryTunnelTimeout)
+	}
+	var landed bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/landed") {
+			landed = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Location", "/landed")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler := newSentryTunnel(SentryTunnelConfig{
+		IngestHost: "o1.ingest.example",
+		ProjectIDs: map[string]struct{}{"123": {}},
+	})
+	tun := handler.(*sentryTunnel)
+	if tun.client.Timeout != 5*time.Second {
+		t.Fatalf("client timeout = %s", tun.client.Timeout)
+	}
+	if tun.client.CheckRedirect == nil {
+		t.Fatal("CheckRedirect is nil")
+	}
+	redirectErr := tun.client.CheckRedirect(httptest.NewRequest(http.MethodPost, "https://o1.ingest.example/api/123/envelope/", nil), nil)
+	if !errors.Is(redirectErr, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect = %v", redirectErr)
+	}
+	tun.client.Transport = rewriteHost(upstream.URL)
+	rec := postTunnel(handler, http.MethodPost, envelope("https://key@o1.ingest.example/123"), sentryEnvelopeMediaType)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, redirect followed=%v", rec.Code, landed)
+	}
+	if landed {
+		t.Fatal("default client followed the redirect")
+	}
+}
+
+func TestSentryTunnelSweepsStaleIPKeys(t *testing.T) {
+	lim := newTunnelLimiter(2, 10, time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	if _, ok := lim.allow(now, "198.51.100.9"); !ok {
+		t.Fatal("first allow")
+	}
+	if _, ok := lim.hits["198.51.100.9"]; !ok {
+		t.Fatal("ip key missing")
+	}
+	if _, ok := lim.allow(now.Add(2*time.Minute), "192.0.2.9"); !ok {
+		t.Fatal("later allow")
+	}
+	if _, ok := lim.hits["198.51.100.9"]; ok {
+		t.Fatal("stale per-IP key kept")
+	}
+	if _, ok := lim.hits["192.0.2.9"]; !ok {
+		t.Fatal("current ip key missing")
 	}
 }
 

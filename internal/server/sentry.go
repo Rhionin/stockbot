@@ -12,13 +12,12 @@ import (
 	sentryhttp "github.com/getsentry/sentry-go/http"
 )
 
-const (
-	// sentryTracesSampleRate is the fraction of ordinary requests traced.
-	// The Pi is a small host, and /health and the event stream are not traced.
-	sentryTracesSampleRate = 0.1
+const sentryFlushTimeout = 2 * time.Second
 
-	sentryFlushTimeout = 2 * time.Second
-)
+// sentryTracesSampleRate is the fraction of ordinary requests traced.
+// The Pi is a small host, and /health and the event stream are not traced.
+// Tests set this to 1 and restore it.
+var sentryTracesSampleRate = 0.1
 
 // sentryEnabled is set only after InitSentry accepts a DSN. An empty DSN
 // leaves the SDK uninitialized so the process makes no Sentry calls.
@@ -34,6 +33,7 @@ type SentrySettings struct {
 	Environment string
 	IngestHost  string
 	ProjectIDs  map[string]struct{}
+	PublicKeys  map[string]struct{}
 	// Rejected is true when SENTRY_DSN was set but could not be parsed.
 	// The value itself is never kept.
 	Rejected bool
@@ -50,6 +50,7 @@ func LoadSentrySettings(getenv func(string) string) SentrySettings {
 	settings := SentrySettings{
 		Environment: strings.TrimSpace(getenv("SENTRY_ENVIRONMENT")),
 		ProjectIDs:  parseProjectIDs(getenv("SENTRY_TUNNEL_PROJECT_IDS")),
+		PublicKeys:  parsePublicKeys(getenv("SENTRY_TUNNEL_PUBLIC_KEYS")),
 	}
 	if rawDSN == "" {
 		return settings
@@ -72,6 +73,7 @@ func (s SentrySettings) TunnelConfig() SentryTunnelConfig {
 	return SentryTunnelConfig{
 		IngestHost: s.IngestHost,
 		ProjectIDs: s.ProjectIDs,
+		PublicKeys: s.PublicKeys,
 	}
 }
 
@@ -123,7 +125,29 @@ func withSentry(next http.Handler) http.Handler {
 	if next == nil || !sentryEnabled.Load() {
 		return next
 	}
-	return sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(next)
+	// The mux sets r.Pattern while next runs. Rename before sentryhttp
+	// finishes the transaction, so the name is the route and not the raw path.
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer nameSentryTransaction(r)
+		next.ServeHTTP(w, r)
+	})
+	return sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(wrapped)
+}
+
+func nameSentryTransaction(r *http.Request) {
+	if r == nil || r.Pattern == "" {
+		return
+	}
+	span := sentry.SpanFromContext(r.Context())
+	if span == nil {
+		return
+	}
+	name := r.Pattern
+	if !strings.Contains(name, " ") {
+		name = r.Method + " " + name
+	}
+	span.Name = name
+	span.Source = sentry.SourceRoute
 }
 
 func sentryTracesSampler(ctx sentry.SamplingContext) float64 {
@@ -181,6 +205,17 @@ func parseProjectIDs(raw string) map[string]struct{} {
 	for _, part := range strings.Split(raw, ",") {
 		part = strings.TrimSpace(part)
 		if projectIDPattern.MatchString(part) {
+			out[part] = struct{}{}
+		}
+	}
+	return out
+}
+
+func parsePublicKeys(raw string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
 			out[part] = struct{}{}
 		}
 	}

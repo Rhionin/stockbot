@@ -9,7 +9,8 @@ import (
 
 // scrubSentryEvent removes request bodies, cookies, credentials, query
 // strings, and free-text that can carry a household name, note, or email.
-// The request keeps its path, including ids.
+// The request keeps its path, including ids, and only the Content-Type and
+// User-Agent headers. The same function runs for errors and transactions.
 func scrubSentryEvent(event *sentry.Event) *sentry.Event {
 	if event == nil {
 		return nil
@@ -90,9 +91,9 @@ func scrubHeaders(headers map[string]string) map[string]string {
 	if len(headers) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(headers))
+	out := make(map[string]string, 2)
 	for name, value := range headers {
-		if sensitiveHeader(name) {
+		if !allowedRequestHeader(name) {
 			continue
 		}
 		out[name] = value
@@ -103,17 +104,13 @@ func scrubHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
-func sensitiveHeader(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	switch n {
-	case "authorization", "cookie", "set-cookie":
+func allowedRequestHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "content-type", "user-agent":
 		return true
+	default:
+		return false
 	}
-	if strings.HasSuffix(n, "-token") {
-		return true
-	}
-	// X-*-Secret, with a real middle segment.
-	return strings.HasPrefix(n, "x-") && strings.HasSuffix(n, "-secret") && strings.Count(n, "-") >= 2
 }
 
 func scrubTags(tags map[string]string) map[string]string {

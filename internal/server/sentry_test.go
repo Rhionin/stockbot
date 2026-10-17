@@ -129,12 +129,18 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 			Data:        `{"name":"Oat Milk","note":"weekly"}`,
 			Cookies:     "pantry_session=cookie-secret",
 			Headers: map[string]string{
-				"Authorization":   "Bearer auth-secret",
-				"Cookie":          "pantry_session=cookie-secret",
-				"Set-Cookie":      "pantry_session=cookie-secret",
-				"X-Sync-Token":    "header-token",
-				"X-Pantry-Secret": "header-secret",
-				"Content-Type":    "application/json",
+				"Authorization":             "Bearer auth-secret",
+				"Cookie":                    "pantry_session=cookie-secret",
+				"Set-Cookie":                "pantry_session=cookie-secret",
+				"X-Sync-Token":              "header-token",
+				"X-Pantry-Secret":           "header-secret",
+				"X-Pantry-Client-Ip":        "198.51.100.77",
+				"Cf-Connecting-Ip":          "203.0.113.77",
+				"X-Pantry-Deploy-Signature": "deploy-signature-value",
+				"Cf-Ray":                    "cf-ray-value",
+				"Host":                      "stockbot.example",
+				"Content-Type":              "application/json",
+				"User-Agent":                "Stockbot/1",
 			},
 			Env: map[string]string{"REMOTE_ADDR": "203.0.113.8", "QUERY_STRING": "token=query-secret"},
 		},
@@ -169,7 +175,8 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	for _, secret := range []string{
 		"Oat Milk", "ada@example.com", "query-secret", "cookie-secret",
 		"auth-secret", "header-token", "header-secret", "weekly", "the good oats",
-		"a note", "203.0.113.8",
+		"a note", "203.0.113.8", "198.51.100.77", "203.0.113.77",
+		"deploy-signature-value", "cf-ray-value", "stockbot.example",
 	} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("event still contains %q: %s", secret, body)
@@ -181,14 +188,11 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	if got.Request.QueryString != "" || got.Request.Data != "" || got.Request.Cookies != "" {
 		t.Fatalf("request kept query, body, or cookies: %+v", got.Request)
 	}
-	if got.Request.Headers["Content-Type"] != "application/json" {
-		t.Fatalf("content-type = %#v", got.Request.Headers)
+	if got.Request.Headers["Content-Type"] != "application/json" || got.Request.Headers["User-Agent"] != "Stockbot/1" {
+		t.Fatalf("headers = %#v", got.Request.Headers)
 	}
-	if _, ok := got.Request.Headers["Authorization"]; ok {
-		t.Fatal("authorization header kept")
-	}
-	if _, ok := got.Request.Headers["X-Sync-Token"]; ok {
-		t.Fatal("token header kept")
+	if len(got.Request.Headers) != 2 {
+		t.Fatalf("headers = %#v", got.Request.Headers)
 	}
 	if got.Exception[0].Type != "*scan.CommitError" {
 		t.Fatalf("type = %s", got.Exception[0].Type)
@@ -439,4 +443,133 @@ func TestPanicIsReportedAndRepanics(t *testing.T) {
 		}
 	}()
 	handler.ServeHTTP(rec, req)
+}
+
+func TestSentryMiddlewareScrubsErrorAndTransaction(t *testing.T) {
+	prevRate := sentryTracesSampleRate
+	sentryTracesSampleRate = 1
+	t.Cleanup(func() { sentryTracesSampleRate = prevRate })
+
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/items/{id}", HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, fmt.Errorf("stock item Oat Milk: %w", errors.New("disk full"))
+	}))
+	handler := withSentry(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/items/item-9?token=query-secret", strings.NewReader(`{"name":"Oat Milk"}`))
+	req.Host = "stockbot.example"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Stockbot/1")
+	req.Header.Set("Cookie", "pantry_session=cookie-secret")
+	req.Header.Set("Authorization", "Bearer auth-secret")
+	req.Header.Set("X-Pantry-Client-Ip", "198.51.100.77")
+	req.Header.Set("Cf-Connecting-Ip", "203.0.113.77")
+	req.Header.Set("X-Pantry-Deploy-Signature", "deploy-signature-value")
+	req.Header.Set("Cf-Ray", "cf-ray-value")
+	req.Header.Set("Cf-Visitor", "cf-visitor-value")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+
+	var errorEvent, transaction *sentry.Event
+	for _, event := range tr.snapshot() {
+		if event.Type == "transaction" {
+			if transaction != nil {
+				t.Fatal("two transactions")
+			}
+			transaction = event
+			continue
+		}
+		if errorEvent != nil {
+			t.Fatal("two errors")
+		}
+		errorEvent = event
+	}
+	if errorEvent == nil || transaction == nil {
+		t.Fatalf("error present=%v transaction present=%v", errorEvent != nil, transaction != nil)
+	}
+	assertScrubbedTransportEvent(t, errorEvent)
+	assertScrubbedTransportEvent(t, transaction)
+	if transaction.Transaction != "POST /api/items/{id}" || strings.Contains(transaction.Transaction, "item-9") {
+		t.Fatalf("transaction name = %q", transaction.Transaction)
+	}
+}
+
+func assertScrubbedTransportEvent(t *testing.T, event *sentry.Event) {
+	t.Helper()
+	if event.Request == nil {
+		t.Fatal("missing request")
+	}
+	if event.Request.URL != "/api/items/item-9" {
+		t.Fatalf("url = %q", event.Request.URL)
+	}
+	if event.Request.QueryString != "" || event.Request.Data != "" || event.Request.Cookies != "" {
+		t.Fatalf("request kept query, body, or cookies: %+v", event.Request)
+	}
+	if event.Request.Headers["Content-Type"] != "application/json" || event.Request.Headers["User-Agent"] != "Stockbot/1" || len(event.Request.Headers) != 2 {
+		t.Fatalf("headers = %#v", event.Request.Headers)
+	}
+	for _, name := range []string{
+		"Authorization", "Cookie", "Set-Cookie", "Host",
+		"X-Pantry-Client-Ip", "Cf-Connecting-Ip", "X-Pantry-Deploy-Signature",
+		"Cf-Ray", "Cf-Visitor",
+	} {
+		if _, ok := event.Request.Headers[name]; ok {
+			t.Fatalf("header %s kept", name)
+		}
+	}
+	var blob strings.Builder
+	blob.WriteString(event.Message)
+	blob.WriteString(event.Transaction)
+	blob.WriteString(event.Request.URL)
+	blob.WriteString(event.Request.QueryString)
+	blob.WriteString(event.Request.Data)
+	blob.WriteString(event.Request.Cookies)
+	for name, value := range event.Request.Headers {
+		blob.WriteString(name)
+		blob.WriteString(value)
+	}
+	for _, ex := range event.Exception {
+		blob.WriteString(ex.Value)
+		blob.WriteString(ex.Type)
+	}
+	for key, value := range event.Tags {
+		blob.WriteString(key)
+		blob.WriteString(value)
+	}
+	for _, span := range event.Spans {
+		if span == nil {
+			continue
+		}
+		blob.WriteString(span.Name)
+		blob.WriteString(span.Description)
+	}
+	for _, crumb := range event.Breadcrumbs {
+		if crumb == nil {
+			continue
+		}
+		blob.WriteString(crumb.Message)
+		for key, value := range crumb.Data {
+			blob.WriteString(key)
+			if text, ok := value.(string); ok {
+				blob.WriteString(text)
+			}
+		}
+	}
+	for _, secret := range []string{
+		"query-secret", "cookie-secret", "auth-secret", "198.51.100.77", "203.0.113.77",
+		"deploy-signature-value", "cf-ray-value", "cf-visitor-value", "stockbot.example", "Oat Milk",
+	} {
+		if strings.Contains(blob.String(), secret) {
+			t.Fatalf("event kept %q", secret)
+		}
+	}
 }

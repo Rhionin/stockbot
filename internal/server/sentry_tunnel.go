@@ -30,9 +30,11 @@ var errInvalidEnvelope = errors.New("invalid envelope")
 
 // SentryTunnelConfig is the allowlist for POST /api/sentry-tunnel.
 // An empty host or an empty project list leaves the route hidden.
+// PublicKeys, when non-empty, must contain the envelope DSN's public key.
 type SentryTunnelConfig struct {
 	IngestHost string
 	ProjectIDs map[string]struct{}
+	PublicKeys map[string]struct{}
 	Client     *http.Client
 	PerIP      int
 	Global     int
@@ -41,11 +43,12 @@ type SentryTunnelConfig struct {
 }
 
 type sentryTunnel struct {
-	host     string
-	projects map[string]struct{}
-	client   *http.Client
-	limiter  *tunnelLimiter
-	maxBody  int64
+	host       string
+	projects   map[string]struct{}
+	publicKeys map[string]struct{}
+	client     *http.Client
+	limiter    *tunnelLimiter
+	maxBody    int64
 }
 
 func newSentryTunnel(cfg SentryTunnelConfig) http.Handler {
@@ -56,12 +59,7 @@ func newSentryTunnel(cfg SentryTunnelConfig) http.Handler {
 	}
 	client := cfg.Client
 	if client == nil {
-		client = &http.Client{
-			Timeout: sentryTunnelTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
+		client = newTunnelHTTPClient()
 	}
 	perIP := cfg.PerIP
 	if perIP <= 0 {
@@ -76,11 +74,21 @@ func newSentryTunnel(cfg SentryTunnelConfig) http.Handler {
 		window = sentryTunnelWindow
 	}
 	return &sentryTunnel{
-		host:     host,
-		projects: cfg.ProjectIDs,
-		client:   client,
-		limiter:  newTunnelLimiter(perIP, global, window),
-		maxBody:  maxBody,
+		host:       host,
+		projects:   cfg.ProjectIDs,
+		publicKeys: cfg.PublicKeys,
+		client:     client,
+		limiter:    newTunnelLimiter(perIP, global, window),
+		maxBody:    maxBody,
+	}
+}
+
+func newTunnelHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: sentryTunnelTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 }
 
@@ -126,8 +134,12 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
-	host, project, err := envelopeTarget(body)
+	host, project, publicKey, err := envelopeTarget(body)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		return
+	}
+	if err := envelopeItems(body); err != nil {
 		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
@@ -138,6 +150,12 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.projects[project]; !ok {
 		writeError(w, http.StatusForbidden, "This envelope is not accepted.")
 		return
+	}
+	if len(h.publicKeys) > 0 {
+		if _, ok := h.publicKeys[publicKey]; !ok {
+			writeError(w, http.StatusForbidden, "This envelope is not accepted.")
+			return
+		}
 	}
 	endpoint := "https://" + host + "/api/" + project + "/envelope/"
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
@@ -153,35 +171,105 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
+	if resp.StatusCode == http.StatusTooManyRequests {
+		copyResponseHeader(w, resp, "Retry-After")
+		copyResponseHeader(w, resp, "X-Sentry-Rate-Limits")
+	}
 	w.WriteHeader(resp.StatusCode)
 }
 
-func envelopeTarget(body []byte) (host, project string, err error) {
+func copyResponseHeader(w http.ResponseWriter, resp *http.Response, name string) {
+	if v := resp.Header.Get(name); v != "" {
+		w.Header().Set(name, v)
+	}
+}
+
+func envelopeTarget(body []byte) (host, project, publicKey string, err error) {
 	line, _, _ := bytes.Cut(body, []byte("\n"))
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return "", "", errInvalidEnvelope
+		return "", "", "", errInvalidEnvelope
 	}
 	var header struct {
 		DSN string `json:"dsn"`
 	}
 	if err := json.Unmarshal(line, &header); err != nil || strings.TrimSpace(header.DSN) == "" {
-		return "", "", errInvalidEnvelope
+		return "", "", "", errInvalidEnvelope
 	}
 	return dsnHostAndProject(header.DSN)
 }
 
-func dsnHostAndProject(raw string) (host, project string, err error) {
+func dsnHostAndProject(raw string) (host, project, publicKey string, err error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Hostname() == "" || u.Scheme != "https" {
-		return "", "", errInvalidEnvelope
+		return "", "", "", errInvalidEnvelope
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	project = parts[len(parts)-1]
 	if !projectIDPattern.MatchString(project) {
-		return "", "", errInvalidEnvelope
+		return "", "", "", errInvalidEnvelope
 	}
-	return strings.ToLower(u.Hostname()), project, nil
+	if u.User != nil {
+		publicKey = u.User.Username()
+	}
+	if publicKey == "" {
+		return "", "", "", errInvalidEnvelope
+	}
+	return strings.ToLower(u.Hostname()), project, publicKey, nil
+}
+
+func envelopeItems(body []byte) error {
+	_, rest, ok := bytes.Cut(body, []byte("\n"))
+	if !ok {
+		return errInvalidEnvelope
+	}
+	var sawItem bool
+	for len(bytes.TrimSpace(rest)) > 0 {
+		line, after, found := bytes.Cut(rest, []byte("\n"))
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			rest = after
+			continue
+		}
+		var hdr struct {
+			Type   string `json:"type"`
+			Length *int   `json:"length"`
+		}
+		if err := json.Unmarshal(line, &hdr); err != nil || hdr.Type == "" || !allowedEnvelopeItem(hdr.Type) {
+			return errInvalidEnvelope
+		}
+		sawItem = true
+		if hdr.Length == nil {
+			if !found {
+				return errInvalidEnvelope
+			}
+			_, rest, _ = bytes.Cut(after, []byte("\n"))
+			continue
+		}
+		if *hdr.Length < 0 || *hdr.Length > len(after) {
+			return errInvalidEnvelope
+		}
+		rest = after[*hdr.Length:]
+		if len(rest) > 0 {
+			if rest[0] != '\n' {
+				return errInvalidEnvelope
+			}
+			rest = rest[1:]
+		}
+	}
+	if !sawItem {
+		return errInvalidEnvelope
+	}
+	return nil
+}
+
+func allowedEnvelopeItem(typ string) bool {
+	switch typ {
+	case "event", "transaction", "session", "sessions", "client_report", "attachment":
+		return true
+	default:
+		return false
+	}
 }
 
 func itoa(n int) string {
@@ -221,8 +309,7 @@ func (l *tunnelLimiter) allow(now time.Time, key string) (time.Duration, bool) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.prune(now, "global")
-	l.prune(now, key)
+	l.sweep(now)
 	if len(l.hits["global"]) >= l.global {
 		return l.retry(now, "global"), false
 	}
@@ -234,17 +321,21 @@ func (l *tunnelLimiter) allow(now time.Time, key string) (time.Duration, bool) {
 	return 0, true
 }
 
-func (l *tunnelLimiter) prune(now time.Time, key string) {
+func (l *tunnelLimiter) sweep(now time.Time) {
 	cut := now.Add(-l.window)
-	hits := l.hits[key]
-	i := 0
-	for i < len(hits) && !hits[i].After(cut) {
-		i++
+	for key, hits := range l.hits {
+		i := 0
+		for i < len(hits) && !hits[i].After(cut) {
+			i++
+		}
+		if i == len(hits) {
+			delete(l.hits, key)
+			continue
+		}
+		if i > 0 {
+			l.hits[key] = append([]time.Time(nil), hits[i:]...)
+		}
 	}
-	if i == 0 {
-		return
-	}
-	l.hits[key] = append([]time.Time(nil), hits[i:]...)
 }
 
 func (l *tunnelLimiter) retry(now time.Time, key string) time.Duration {

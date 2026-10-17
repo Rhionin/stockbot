@@ -951,11 +951,36 @@ cmd_reconcile_env() {
     fi
   done < "${PANTRY_DIR}/.env.example"
 
+  append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS
+
   if [[ $added -gt 0 ]]; then
     log_success "Added $added missing keys to .env"
   else
     log_success ".env is up to date"
   fi
+}
+
+# append_empty_env_keys adds KEY= lines that are missing. An existing value
+# is left as it is, and the file mode is not changed.
+append_empty_env_keys() {
+  local key
+  # cmd_reconcile_env owns added. A direct call starts from zero.
+  if [[ -z ${added+x} ]]; then
+    added=0
+  fi
+  [[ -f ${PANTRY_DIR}/.env ]] || return 0
+  # wc -l counts the trailing newline. A file that already ends with one
+  # stays as it is; appending a key never rewrites earlier lines.
+  if [[ -s ${PANTRY_DIR}/.env ]] && [[ $(tail -c 1 "${PANTRY_DIR}/.env" | wc -l) -eq 0 ]]; then
+    printf '\n' >> "${PANTRY_DIR}/.env"
+  fi
+  for key in "$@"; do
+    if ! grep -q "^${key}=" "${PANTRY_DIR}/.env"; then
+      printf '%s=\n' "$key" >> "${PANTRY_DIR}/.env"
+      log_info "Added missing key: $key"
+      added=$((added + 1))
+    fi
+  done
 }
 
 # ============================================================================
@@ -1450,4 +1475,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

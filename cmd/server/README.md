@@ -32,6 +32,7 @@ go run ./cmd/server
 | `SENTRY_DSN` | empty | Error reporting. Empty disables it and makes no network calls |
 | `SENTRY_ENVIRONMENT` | empty | Sent with errors when `SENTRY_DSN` is set. Empty means `production` |
 | `SENTRY_TUNNEL_PROJECT_IDS` | empty | Comma-separated project ids the browser tunnel may forward. Empty hides `POST /api/sentry-tunnel` |
+| `SENTRY_TUNNEL_PUBLIC_KEYS` | empty | Optional comma-separated DSN public keys for that tunnel. Empty does not check the key |
 
 ## Headless Scanner Input
 
@@ -157,11 +158,12 @@ call the ingest host itself.
 | Content-Type | `application/x-sentry-envelope` |
 | Body limit | 256 KB. Larger bodies return `413` |
 | Rate limit | Per client IP and a global cap. Excess requests return `429` |
-| `400` | Missing or wrong content type, or an envelope header that is not valid |
-| `403` | The envelope DSN host is not the ingest host of `SENTRY_DSN`, or its project id is not listed in `SENTRY_TUNNEL_PROJECT_IDS` |
+| `400` | Missing or wrong content type, an envelope header that is not valid, or an item type other than `event`, `transaction`, `session`, `sessions`, `client_report`, or `attachment` |
+| `403` | The envelope DSN host is not the ingest host of `SENTRY_DSN`, its project id is not listed in `SENTRY_TUNNEL_PROJECT_IDS`, or `SENTRY_TUNNEL_PUBLIC_KEYS` is set and does not contain the envelope's public key |
 | `404` | `SENTRY_DSN` or `SENTRY_TUNNEL_PROJECT_IDS` is empty |
 | `405` | Any method other than `POST` while the tunnel is configured |
-| `502` | The ingest host did not accept the forward |
+| `429` from ingest | That status is passed through, with `Retry-After` and `X-Sentry-Rate-Limits` when ingest sent them |
+| `502` | The forward to ingest failed |
 | Success | The ingest status, with an empty body |
 
 The route is open before household login, including on the login page, and
