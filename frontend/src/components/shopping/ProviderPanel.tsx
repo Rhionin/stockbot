@@ -82,15 +82,15 @@ const ProviderRow = ({
 
   return (
     <Stack gap="xs">
-      <Group justify="flex-start" align="flex-start" wrap="wrap">
-        <Group gap="xs">
+      <Group className="provider-row" justify="flex-start" align="flex-start" wrap="nowrap" gap="xs">
+        <Group className="provider-identity" gap="xs" wrap="wrap">
           <Text fw={600}>{provider.displayName}</Text>
           {!provider.credentialsConfigured && <Badge color="gray">unconfigured</Badge>}
           {provider.credentialsConfigured && provider.connectionState !== 'not_required' && (
             <Badge variant="light">{stateLabel[provider.connectionState]}</Badge>
           )}
         </Group>
-        <Group gap="xs">
+        <Group className="provider-actions" gap="xs" wrap="nowrap">
           {provider.credentialsConfigured && provider.connectionState === 'disconnected' && (
             <Button size="xs" loading={busy} onClick={onConnect}>
               Connect
@@ -102,8 +102,9 @@ const ProviderRow = ({
             </Button>
           )}
           {provider.credentialsConfigured && (provider.connectionState === 'connected' || provider.connectionState === 'not_required') && (
-            <Stack gap={2} align="flex-end">
+            <Stack className="provider-cart" gap={2} align="flex-end">
               <Button
+                className="provider-new-cart"
                 size="xs"
                 variant="light"
                 loading={pending === `${provider.id}-ledger`}
@@ -111,14 +112,14 @@ const ProviderRow = ({
               >
                 Start a new cart
               </Button>
-              <Text size="xs" c="dimmed" className="cart-reset-note">This forgets what was already sent and clears checked-off lines.</Text>
+              <Text className="provider-hint cart-reset-note" size="xs" c="dimmed">This forgets what was already sent and clears checked-off lines.</Text>
             </Stack>
           )}
         </Group>
-        {provider.connectionState === 'reauth_required' && (
-          <Text size="sm" c="dimmed">The connection expired. Reconnect to keep provisioning.</Text>
-        )}
       </Group>
+      {provider.connectionState === 'reauth_required' && (
+        <Text size="sm" c="dimmed">The connection expired. Reconnect to keep provisioning.</Text>
+      )}
     </Stack>
   );
 };
