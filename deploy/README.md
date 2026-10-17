@@ -835,10 +835,11 @@ For automatic updates, you can install systemd units that periodically check for
 ### ⚠️ Important Considerations
 
 **Before enabling automatic updates, understand:**
-- The service runs as root because it drives the Docker daemon
+- The service runs as root because it drives the Docker daemon. The update script does not call `sudo`.
 - Enabling automatic updates means **every push to master deploys unattended** with no approval step
 - Container recreation drops the attached scanner session, but the listener reconnects on its own within 30 seconds
 - If you pin to a specific commit SHA, leave automatic updates disabled (they would run forever finding nothing)
+- A pull that does not change a running image does nothing else. When an image does change, the updater keeps it only if `GET /health` on `127.0.0.1:$HOST_PORT` is ok and `GET /api/build`'s `commit` matches the pantry image label `org.opencontainers.image.revision`. Otherwise it starts the previous image digest again. That does not undo a database migration.
 
 ### Installation
 
@@ -933,7 +934,13 @@ sudo systemctl daemon-reload
 
 ### Rollback After Automatic Update
 
-If an automatic update causes issues:
+`pantry-update.sh` records the image digest of each running service before `docker compose pull`. If the pull does not change those image ids, it stops. If one changed, it recreates the stack and polls `http://127.0.0.1:$HOST_PORT/health` and `http://127.0.0.1:$HOST_PORT/api/build` until `commit` equals the new pantry image's `org.opencontainers.image.revision` label (90 seconds, or `PANTRY_UPDATE_HEALTH_TIMEOUT`). The public hostname is not used for this check: `/health` there asks for the household password.
+
+On timeout, a compose failure, or a commit that does not match, the script starts the previous digest again (`docker compose up -d --pull never` with a one-shot override) and points the local image tag compose uses, such as `ghcr.io/rhionin/pantry:latest`, back at that previous digest. The same retag is applied to any other service whose digest changed. A later manual `docker compose up -d` or `sudo ./setup.sh` then starts the previous image instead of the rejected one. The script exits non-zero. It does not change `.env` or `PANTRY_IMAGE_TAG`. The next timer run still pulls. A new remote digest is deployed. The rejected digest is not started, and the local tag is put back on the previous digest after that pull. A digest that failed this way is listed in `/opt/pantry/.update-rejected-digest`, and later runs leave the previous image running instead of recreating the stack every minute. That file is not the setup last-known-good sha. Removing a line is how you retry that exact digest.
+
+An image rollback cannot undo a migration. The migration runner is not transactional. If the new image migrated the database before it failed, the previous image is running against that schema. Automatic pre-migration snapshots, when one was taken, are files named `pantry-pre-*.db` in `/data` on the `pantry-data` volume. Restoring one over `/data/pantry.db` is manual. The update script does not restore the database.
+
+If an automatic update causes issues and you want to pin a commit yourself:
 
 1. Disable automatic updates. The path unit has to stop too, or the next hook pulls `latest` again:
    ```bash

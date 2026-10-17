@@ -70,10 +70,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       
       - name: Lint deploy shell scripts
-        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/firewall/pantry-lan-only.sh deploy/setup_apply_test.sh deploy/mdns/pantry-mdns.sh deploy/dns/pantry-split-dns.sh deploy/mdns/lan-ipv4.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh scripts/check-stockbot-names.sh
+        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/firewall/pantry-lan-only.sh deploy/setup_apply_test.sh deploy/pantry_update_test.sh deploy/mdns/pantry-mdns.sh deploy/dns/pantry-split-dns.sh deploy/mdns/lan-ipv4.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh scripts/check-stockbot-names.sh
 
       - name: Setup script syntax and behavior
-        run: bash -n deploy/setup.sh deploy/firewall/pantry-lan-only.sh deploy/systemd/pantry-update.sh deploy/mdns/pantry-mdns.sh deploy/mdns/lan-ipv4.sh deploy/dns/pantry-split-dns.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh && bash deploy/setup_apply_test.sh
+        run: bash -n deploy/setup.sh deploy/firewall/pantry-lan-only.sh deploy/systemd/pantry-update.sh deploy/mdns/pantry-mdns.sh deploy/mdns/lan-ipv4.sh deploy/dns/pantry-split-dns.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh deploy/pantry_update_test.sh && bash deploy/setup_apply_test.sh && bash deploy/pantry_update_test.sh
 
       - name: Publish modes compose config and Caddyfile adapt
         run: bash deploy/check-publish-modes.sh
