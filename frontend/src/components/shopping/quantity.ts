@@ -1,6 +1,6 @@
-// The package word and the size share one label. "boxes" is only a count.
-// "14.5 oz" is a size, so a count beside it needs a separator.
-const sizeLabel = /\d+(?:[.,]\d+)?\s*(?:fl\.?\s*oz|lbs?|kg|ml|oz|g|l)\b/i;
+// unitOfMeasure is free text. A label that starts with a digit is a size
+// ("14.5 oz", "1 gal", "16oz"). A package word ("boxes") is only a count.
+const sizeLabel = /^\d/;
 
 export function formatShoppingQuantity(count: number | null | undefined, label: string): string {
   const text = label.trim();

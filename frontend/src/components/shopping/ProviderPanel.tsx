@@ -104,7 +104,6 @@ const ProviderRow = ({
           {provider.credentialsConfigured && (provider.connectionState === 'connected' || provider.connectionState === 'not_required') && (
             <Stack className="provider-cart" gap={2} align="flex-end">
               <Button
-                className="provider-new-cart"
                 size="xs"
                 variant="light"
                 loading={pending === `${provider.id}-ledger`}

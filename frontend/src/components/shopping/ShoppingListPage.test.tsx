@@ -220,6 +220,32 @@ describe('ShoppingListPage', () => {
     expect(await screen.findByText('1 item sent to Kroger.')).toBeInTheDocument();
   });
 
+  it('separates a count from a size on the row and the computed line', async () => {
+    const beans = inventoryItem('beans', 'Cut green beans', null);
+    beans.item.product.unitOfMeasure = '14.5 oz';
+    const entry: ShoppingListEntry = {
+      id: 'line-beans',
+      itemId: 'beans',
+      quantity: 1,
+      computedQuantity: 2,
+      adjustment: 1,
+      source: 'manual',
+      purchasedAt: null,
+    };
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([beans]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    renderPage();
+
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(within(table).getByText('1 × 14.5 oz')).toBeInTheDocument();
+    expect(within(table).getByText('Computed 2 × 14.5 oz')).toBeInTheDocument();
+  });
+
   it('shows a group line with its rule and swap, and hides brand controls', async () => {
     const entry: ShoppingListEntry = {
       id: 'line-1',

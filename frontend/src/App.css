@@ -345,8 +345,10 @@ a.group-row {
   width: 100%;
 }
 
+/* A long store name yields width so the cart control stays on the screen. */
 .provider-identity {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .provider-actions {
@@ -358,10 +360,6 @@ a.group-row {
 .provider-cart {
   max-width: 100%;
   min-width: 0;
-}
-
-.provider-new-cart {
-  flex-shrink: 0;
 }
 
 .provider-hint {

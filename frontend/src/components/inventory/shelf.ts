@@ -3,6 +3,7 @@ import {
   memberLine, memberPackage, onHandOunces, onHandPhrase, rulePillLabel, suggestionReason, type MemberPackage,
 } from '../groups/copy';
 import { seesawView, stockMeter } from '../groups/seesaw';
+import { formatShoppingQuantity } from '../shopping/quantity';
 
 export type ShelfFilter = 'all' | 'low' | 'groups' | 'ungrouped' | 'categories' | 'restock';
 
@@ -96,7 +97,7 @@ export function itemHand(item: InventoryItem): string {
       product,
     ));
   }
-  return `${item.instanceCount} ${product.unitOfMeasure}`;
+  return formatShoppingQuantity(item.instanceCount, product.unitOfMeasure);
 }
 
 export function buildShelf(input: ShelfInput): ShelfRow[] {
