@@ -101,6 +101,10 @@ Vite serves the live UI, usually at `http://127.0.0.1:5173`, and proxies `/api` 
 
 Playwright MCP is the `playwright` server in `.cursor/mcp.json`. The server command is `npx @playwright/mcp@latest`, matching the [Playwright MCP getting-started guide](https://playwright.dev/docs/next/getting-started-mcp). After both processes are up, point that browser at the Vite origin (the URL Vite printed, typically `http://127.0.0.1:5173`) and use its snapshot and screenshot tools to check layout. That origin proxies API calls, so the page is the running app. On a machine with no display, add `--headless` to the server args in `.cursor/mcp.json`.
 
+## Frontend Node version
+
+The frontend requires Node.js 24. `frontend/.nvmrc` pins `24`. Vitest crashes under Node 20 (jsdom/undici). `frontend/package.json` sets `"engines": { "node": ">=24" }` and `frontend/.npmrc` sets `engine-strict=true`, so `npm ci` on an older Node fails immediately.
+
 ## Cursor Cloud specific instructions
 
-Go coverage is `./scripts/test-coverage.sh` (needs `bc` and the Go version in `go.mod`). Frontend checks from `frontend/` are `npm test` (`vitest --run`), `npm run lint`, and `npx tsc -b`. `npm ci` installs frontend dependencies. The Cloud Agent image is `.cursor/Dockerfile`, referenced by `.cursor/environment.json`.
+Go coverage is `./scripts/test-coverage.sh` (needs `bc` and the Go version in `go.mod`). Frontend checks from `frontend/` need Node 24 (`frontend/.nvmrc`; Vitest crashes under Node 20): `npm test` (`vitest --run`), `npm run lint`, and `npx tsc -b`. `npm ci` installs frontend dependencies. The Cloud Agent image is `.cursor/Dockerfile`, referenced by `.cursor/environment.json`.
