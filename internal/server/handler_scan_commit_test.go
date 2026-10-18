@@ -496,12 +496,12 @@ func TestScanCommitStockInErrors(t *testing.T) {
 				path:           "/api/scans/scan-wrong-dir/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "none_on_hand"},
-					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions", absent: true},
 					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"no_item", "Not in your pantry"},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first."},
 			},
 		},
 		{
@@ -586,11 +586,11 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-shelved/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "none_on_hand"},
-					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{"no_item", "Not in your pantry"},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first."},
 			},
 		},
 		{
@@ -618,12 +618,23 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-no-item/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "none_on_hand"},
-					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{"no_item", "Not in your pantry", `no item found for user`},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first.", `no item found for user`},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-no-item", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-no-item"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 		{
 			name: "error when specified instanceID does not exist",
@@ -1045,19 +1056,25 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name:  "stock-out of an unstocked product is nothing on hand and writes nothing",
+			name:  "stock-out of an unlinked barcode offers ranked links and writes nothing",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/scan-pears/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "none_on_hand"},
-					{path: "$.error", value: "Nothing on hand to take out."},
-					{path: "$.suggestions", absent: true},
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Which item is this?"},
+					{path: "$.suggestions[0].name", value: "Sliced Pears"},
+					{path: "$.suggestions[0].productId", value: "prod-pears"},
+					{path: "$.suggestions[0].itemId", value: "item-pears"},
+					{path: "$.suggestions[0].onHand", value: float64(3)},
+					{path: "$.suggestions[1].name", value: "Unrelated Crackers"},
+					{path: "$.suggestions[2].name", value: "Pear Slices"},
+					{path: "$.suggestions[3]", absent: true},
 					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"no_item", "Not in your pantry", "Canned Tuna", "Black Beans", "no item found"},
+				bodyExcludes: []string{"Not in your pantry", "No close match found.", "Nothing on hand to take out.", "Pick a product for this scan first.", "Canned Tuna", "Black Beans", "no item found"},
 			},
 			afterRequest: exchanges(
 				httpExchange{

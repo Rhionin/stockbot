@@ -11,8 +11,13 @@ const InstanceGoneMessage = "That one was already taken out. Pick another."
 // NotPendingMessage is the sentence when a scan was already committed or cancelled.
 const NotPendingMessage = "This scan was already handled."
 
-// ProductUnresolvedMessage is the sentence when a scan has no product yet.
+// ProductUnresolvedMessage is the sentence when a scan has no product yet,
+// and when a batch stock-out barcode is not linked to a household product.
 const ProductUnresolvedMessage = "Pick a product for this scan first."
+
+// WhichItemMessage is the sentence on a single stock-out whose barcode is
+// not linked to a household product. The client matches the code, not this sentence.
+const WhichItemMessage = "Which item is this?"
 
 // ScanNotFoundMessage is the sentence when the scan is no longer in the queue.
 const ScanNotFoundMessage = "This scan is no longer in the queue."
@@ -30,6 +35,7 @@ const (
 	CodeInstanceGone      = "instance_gone"
 	CodeNotPending        = "not_pending"
 	CodeProductUnresolved = "product_unresolved"
+	CodeNoItem            = "no_item"
 	CodeScanNotFound      = "scan_not_found"
 	CodeDirectionUnset    = "direction_unset"
 	CodeInternal          = "internal"

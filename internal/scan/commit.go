@@ -511,7 +511,9 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	).Scan(&itemID, &shelved)
 
 	// A wipe keeps the item row and hides it. Scanning that product out is
-	// the same as scanning a product the household does not stock.
+	// the same as a barcode that is not linked to a household product.
+	// An item that is on the shelf with nothing left does not come through
+	// here: that is ErrNoneOnHand, and this function does not rank links for it.
 	if err == sql.ErrNoRows || (err == nil && shelved != 0) {
 		if linkProductID != "" {
 			return ErrLinkNotStocked

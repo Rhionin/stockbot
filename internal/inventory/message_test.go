@@ -22,6 +22,7 @@ func TestCommitFailureCopy(t *testing.T) {
 	}{
 		{"not pending", NotPendingMessage, "This scan was already handled."},
 		{"product unresolved", ProductUnresolvedMessage, "Pick a product for this scan first."},
+		{"which item", WhichItemMessage, "Which item is this?"},
 		{"scan not found", ScanNotFoundMessage, "This scan is no longer in the queue."},
 		{"direction unset", DirectionUnsetMessage, "Choose stock in or stock out first."},
 		{"internal", InternalMessage, "Something went wrong. Try again."},
@@ -35,8 +36,8 @@ func TestCommitFailureCopy(t *testing.T) {
 	}
 	if CodeNotPending != "not_pending" || CodeProductUnresolved != "product_unresolved" ||
 		CodeScanNotFound != "scan_not_found" || CodeDirectionUnset != "direction_unset" ||
-		CodeInternal != "internal" {
-		t.Fatalf("codes drifted: %s %s %s %s %s", CodeNotPending, CodeProductUnresolved, CodeScanNotFound, CodeDirectionUnset, CodeInternal)
+		CodeInternal != "internal" || CodeNoItem != "no_item" {
+		t.Fatalf("codes drifted: %s %s %s %s %s %s", CodeNotPending, CodeProductUnresolved, CodeScanNotFound, CodeDirectionUnset, CodeInternal, CodeNoItem)
 	}
 }
 
