@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
 import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
-import type { PantryLinkSuggestion, RemovalCounts, ScanEntry } from '../../types';
+import type { PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -27,7 +27,6 @@ export interface ScanEntryCardProps {
   itemId?: string;
   justCaptured?: boolean;
   commitNotice?: string;
-  instanceReloadKey?: number;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onCommitNote?: (note: string) => void;
@@ -39,7 +38,6 @@ export const ScanEntryCard = ({
   itemId,
   justCaptured = false,
   commitNotice = '',
-  instanceReloadKey = 0,
   onSelectedChange,
   onChanged,
   onCommitNote,
@@ -87,15 +85,6 @@ export const ScanEntryCard = ({
   }, [entry.unitCount]);
 
   useEffect(() => () => window.clearTimeout(saveTimer.current), []);
-
-  // A batch or single confirm learned the picked unit is already gone.
-  useEffect(() => {
-    if (instanceReloadKey === 0) return;
-    // Open the pick list on the refreshed instances so the missing unit is gone.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setInstancePickerOpen(true);
-    setInstanceId('');
-  }, [instanceReloadKey]);
 
   useEffect(() => {
     // Deliberate prop->draft sync: reset the controlled draft when the server value changes.
@@ -151,8 +140,8 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
-  const noteCommitted = (committed: ScanEntry & RemovalCounts) => {
-    onCommitNote?.(formatPartialRemoval(committed) ?? '');
+  const noteCommitted = (committed: ScanEntry) => {
+    onCommitNote?.(formatPartialRemoval(entry.unitCount, committed) ?? '');
   };
 
   // Returns true when the failure was shown and the scan stays pending.
@@ -168,11 +157,8 @@ export const ScanEntryCard = ({
       setInstanceId('');
       setLocalInstanceReload((current) => current + 1);
     }
-    if (behavior.showMessage) {
-      setApproveError(requestError.message || 'Unable to confirm scan.');
-      return true;
-    }
-    return false;
+    setApproveError(requestError.message || 'Unable to confirm scan.');
+    return true;
   };
 
   const handleApprove = async () => {
@@ -595,7 +581,7 @@ export const ScanEntryCard = ({
             itemId={itemId}
             value={instanceId}
             onChange={setInstanceId}
-            reloadKey={instanceReloadKey + localInstanceReload}
+            reloadKey={localInstanceReload}
           />
         </div>
       )}

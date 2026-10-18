@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices, partialRemovalNotices } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices } from '../../api/contract';
 import type { BatchCommitResponse, InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
@@ -18,11 +18,6 @@ import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesFor
 import { scannerModeFromEventData } from './scannerModeEvent';
 
 const DEFAULT_USER_ID = 'user-1';
-
-interface CardFailure {
-  message: string;
-  reloadKey: number;
-}
 
 export type QueueView = 'stock_in' | 'stock_out';
 
@@ -40,9 +35,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [failureById, setFailureById] = useState<Map<string, CardFailure>>(new Map());
+  const [failureById, setFailureById] = useState<Map<string, string>>(new Map());
   const [removalNotes, setRemovalNotes] = useState<string[]>([]);
-  const instanceReloadSerial = useRef(0);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
@@ -100,9 +94,9 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         if (current.size === 0) return current;
         const pendingIds = new Set(pending.map((entry) => entry.id));
         let changed = false;
-        const next = new Map<string, CardFailure>();
-        for (const [id, notice] of current) {
-          if (pendingIds.has(id)) next.set(id, notice);
+        const next = new Map<string, string>();
+        for (const [id, message] of current) {
+          if (pendingIds.has(id)) next.set(id, message);
           else changed = true;
         }
         return changed ? next : current;
@@ -316,13 +310,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
 
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
-    const next = new Map<string, CardFailure>();
-    for (const notice of notices) {
-      const reloadKey = notice.refreshInstances ? ++instanceReloadSerial.current : 0;
-      next.set(notice.id, { message: notice.message, reloadKey });
-    }
-    setFailureById(next);
-    setRemovalNotes(partialRemovalNotices(response));
+    setFailureById(new Map(notices.map((notice) => [notice.id, notice.message])));
+    setRemovalNotes([]);
     setSelectedIds(notices.map((notice) => notice.id));
     void loadQueue();
   };
@@ -476,8 +465,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
-                  commitNotice={failureById.get(entry.id)?.message ?? ''}
-                  instanceReloadKey={failureById.get(entry.id)?.reloadKey ?? 0}
+                  commitNotice={failureById.get(entry.id) ?? ''}
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
                   onChanged={() => void loadQueue()}

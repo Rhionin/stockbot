@@ -1,116 +1,114 @@
-// Commit outcomes shared by the web queue and the Expo app.
-// requestedCount and removedCount are provisional until the backend confirms them.
-import type { RemovalCounts } from '../types';
+// Request paths and body shapes shared by the web client and the Expo app.
+// The phone sends HTTP Basic auth instead of the browser session cookie, but
+// both call these same routes.
+import type { ScanDirection, ScanStatus } from '../types';
 
-export const NO_CLOSE_MATCH = 'No close match. Search or add it as new.';
+export interface HouseholdSession {
+  required: boolean;
+  username: string;
+  error: string;
+}
+
+export interface CreateScanEntryInput {
+  barcode: string;
+  direction?: ScanDirection;
+  unitCount?: number;
+  expiresAt?: string;
+  userId: string;
+}
+
+export interface BatchCommitInput {
+  scanEntryIds: string[];
+  direction?: ScanDirection;
+  unitCount?: number;
+  expiresAt?: string;
+  commit: boolean;
+}
+
+export interface SetScannerModeResponse {
+  mode: ScanDirection;
+}
+
+// Headless scans and the browser queue both use this household user unless
+// HEADLESS_USER_ID is changed on the server. Session does not return it.
+export const DEFAULT_SCAN_USER_ID = 'user-1';
+
+export const SESSION_PATH = '/api/session';
+export const SCANS_PATH = '/api/scans';
+export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';
+export const SCANNER_CONFIG_PATH = '/api/scanner/config';
+export const SCANNER_MODE_PATH = '/api/scanner/mode';
+
+export function scansQuery(userId: string, status?: ScanStatus): string {
+  return `${SCANS_PATH}${toQueryString({ userId, status })}`;
+}
+
+export function scanCommitPath(id: string): string {
+  return `${SCANS_PATH}/${id}/commit`;
+}
+
+export function toQueryString(params: Record<string, string | undefined>): string {
+  const entries = Object.entries(params).filter(
+    (entry): entry is [string, string] => entry[1] !== undefined,
+  );
+  if (entries.length === 0) return '';
+  return `?${new URLSearchParams(entries).toString()}`;
+}
+
+// Commit outcomes for the web queue. Appended after the shared routes so a
+// merge with the Expo client keeps that half of the file and adds this half.
+
+export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
-const KNOWN_CODE_MESSAGE: Record<string, string> = {
-  instance_gone: 'That one was already taken out. Pick another.',
-  none_on_hand: 'Nothing on hand to take out.',
-};
+// The only stock-out count the server has to send. A rename is this one edit.
+export const REMOVED_COUNT_FIELD = 'removedCount';
 
 export interface CommitConflictBehavior {
   linkOffer: boolean;
   refreshInstances: boolean;
-  showMessage: boolean;
 }
 
-// Branch on the server's code. An absent or unknown code keeps today's 409:
-// show the message, and leave instance refresh and the link offer alone.
+// Branch on the server's code. An absent or unknown code shows the server
+// text and leaves the pick list alone.
 export function commitConflictBehavior(code: string | undefined): CommitConflictBehavior {
   switch (code) {
     case 'instance_gone':
-      return { linkOffer: false, refreshInstances: true, showMessage: true };
-    case 'none_on_hand':
-      return { linkOffer: false, refreshInstances: false, showMessage: true };
+      return { linkOffer: false, refreshInstances: true };
     case 'no_item':
-      return { linkOffer: true, refreshInstances: false, showMessage: false };
+      return { linkOffer: true, refreshInstances: false };
     default:
-      return { linkOffer: false, refreshInstances: false, showMessage: true };
+      return { linkOffer: false, refreshInstances: false };
   }
 }
 
 export interface BatchFailureNotice {
   id: string;
   message: string;
-  refreshInstances: boolean;
 }
 
-// Pair each failed id with its reason. A blank reason uses the shared fallback.
-// A reason may be the sentence the server sends today, or a code (string or
-// object) if the batch payload grows to match a single-card 409.
+// Pair each failed id with the server's reason string. A missing or non-string
+// reason stays blank; the queue banner is the one fallback sentence.
 export function batchFailureNotices(response: {
   failedIds?: string[];
-  failedReasons?: unknown;
+  failedReasons?: string[];
 }): BatchFailureNotice[] {
   const ids = response.failedIds ?? [];
-  const reasons = Array.isArray(response.failedReasons) ? response.failedReasons : [];
+  const reasons = response.failedReasons ?? [];
   return ids.map((id, index) => {
-    const parsed = readFailureReason(reasons[index]);
-    return {
-      id,
-      message: parsed.message !== '' ? parsed.message : BATCH_FAILURE_FALLBACK,
-      refreshInstances: parsed.refreshInstances,
-    };
+    const reason = reasons[index];
+    return { id, message: typeof reason === 'string' ? reason : '' };
   });
 }
 
-function readFailureReason(reason: unknown): { message: string; refreshInstances: boolean } {
-  if (typeof reason === 'string') {
-    const text = reason.trim();
-    if (Object.prototype.hasOwnProperty.call(KNOWN_CODE_MESSAGE, text)) {
-      return {
-        message: KNOWN_CODE_MESSAGE[text],
-        refreshInstances: commitConflictBehavior(text).refreshInstances,
-      };
-    }
-    return { message: text, refreshInstances: false };
-  }
-  if (reason !== null && typeof reason === 'object') {
-    const record = reason as Record<string, unknown>;
-    const code = typeof record.code === 'string' ? record.code : '';
-    const sentence = [record.reason, record.message, record.error].find(
-      (value): value is string => typeof value === 'string' && value.trim() !== '',
-    );
-    const behavior = commitConflictBehavior(code);
-    const known = Object.prototype.hasOwnProperty.call(KNOWN_CODE_MESSAGE, code)
-      ? KNOWN_CODE_MESSAGE[code]
-      : '';
-    return {
-      message: sentence?.trim() || known,
-      refreshInstances: behavior.refreshInstances,
-    };
-  }
-  return { message: '', refreshInstances: false };
-}
-
-// n is removedCount. Equal or missing counts say nothing, which is today's confirm.
-export function formatPartialRemoval(counts: Partial<RemovalCounts> | null | undefined): string | null {
-  if (counts === null || counts === undefined) return null;
-  const { requestedCount, removedCount } = counts;
-  if (typeof requestedCount !== 'number' || typeof removedCount !== 'number') return null;
-  if (!Number.isInteger(requestedCount) || !Number.isInteger(removedCount)) return null;
-  if (removedCount < 0 || removedCount >= requestedCount) return null;
+// Requested count is the card's own unitCount. removedCount below 1, missing,
+// or already at that count says nothing.
+export function formatPartialRemoval(unitCount: number, body: object | null | undefined): string | null {
+  if (body === null || body === undefined) return null;
+  const removedCount = (body as Record<string, unknown>)[REMOVED_COUNT_FIELD];
+  if (typeof removedCount !== 'number' || !Number.isInteger(removedCount)) return null;
+  if (removedCount < 1 || removedCount >= unitCount) return null;
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
-}
-
-// A successful stock-out, single or batch, may carry the provisional counts on
-// the response itself or on a per-scan result entry.
-export function partialRemovalNotices(response: object | null | undefined): string[] {
-  if (response === null || response === undefined) return [];
-  const notes: string[] = [];
-  const top = formatPartialRemoval(response as RemovalCounts);
-  if (top !== null) notes.push(top);
-  for (const value of Object.values(response)) {
-    if (!Array.isArray(value)) continue;
-    for (const item of value) {
-      if (item === null || typeof item !== 'object') continue;
-      const note = formatPartialRemoval(item as RemovalCounts);
-      if (note !== null) notes.push(note);
-    }
-  }
-  return [...new Set(notes)];
 }

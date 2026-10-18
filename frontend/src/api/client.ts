@@ -41,7 +41,6 @@ import type {
   HistoryView,
   HistoryLedger,
   PantryLinkSuggestion,
-  RemovalCounts,
   TargetConflictMember,
 } from '../types';
 
@@ -222,7 +221,7 @@ export function commitScanEntry(
   id: string,
   instanceId?: string,
   linkProductId?: string,
-): Promise<ScanEntry & RemovalCounts> {
+): Promise<ScanEntry> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;

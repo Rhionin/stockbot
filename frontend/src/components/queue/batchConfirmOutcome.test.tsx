@@ -37,7 +37,7 @@ const scanEntry = (overrides: Partial<ScanEntry>): ScanEntry => ({
   barcode: '111',
   scannedAt: '2026-03-20T16:02:00Z',
   direction: 'stock_out',
-  unitCount: 2,
+  unitCount: 4,
   expiresAt: null,
   status: 'pending',
   productId: 'prod-milk',
@@ -123,21 +123,25 @@ const pendingEntries = (which: PendingSet): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'confirm-oats-instance';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance';
   pendingAfter: PendingSet;
   commit?: { status: number; body: unknown };
   batch?: unknown;
   instancesAfter?: ItemInstanceWithStatus[];
   visible: string[];
   absent: string[];
+  once?: string[];
   pendingBarcodes: string[];
   goneBarcodes: string[];
   cardReason?: { barcode: string; text: string };
+  cardWithoutAlert?: string;
   instanceFetches?: number;
   dismiss?: boolean;
+  quiet?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
+const fallback = 'Some scans could not be confirmed.';
 
 const cases: OutcomeCase[] = [
   {
@@ -150,14 +154,15 @@ const cases: OutcomeCase[] = [
       failedIds: ['scan-oats'],
       failedReasons: ['Nothing on hand to take out.'],
     },
-    visible: ['Nothing on hand to take out.', 'Some scans could not be confirmed.'],
-    absent: ['Confirmed 2', 'All scans confirmed'],
+    visible: ['Nothing on hand to take out.', fallback],
+    absent: [],
+    once: [fallback],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
     cardReason: { barcode: '222', text: 'Nothing on hand to take out.' },
   },
   {
-    name: 'batch failure without a reason uses the shared fallback',
+    name: 'a blank batch reason uses the fallback once',
     action: 'batch',
     pendingAfter: 'oats',
     batch: {
@@ -166,11 +171,45 @@ const cases: OutcomeCase[] = [
       failedIds: ['scan-oats'],
       failedReasons: [''],
     },
-    visible: ['Some scans could not be confirmed.'],
-    absent: ['Confirmed 2'],
+    visible: [fallback],
+    absent: [],
+    once: [fallback],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
-    cardReason: { barcode: '222', text: 'Some scans could not be confirmed.' },
+    cardWithoutAlert: '222',
+  },
+  {
+    name: 'missing failedReasons still leaves the failed card pending',
+    action: 'batch',
+    pendingAfter: 'oats',
+    batch: {
+      updatedCount: 2,
+      committedIds: ['scan-milk'],
+      failedIds: ['scan-oats'],
+    },
+    visible: [fallback],
+    absent: [],
+    once: [fallback],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    cardWithoutAlert: '222',
+  },
+  {
+    name: 'a short failedReasons list does not invent the missing reason',
+    action: 'batch',
+    pendingAfter: 'both',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ['Nothing on hand to take out.'],
+    },
+    visible: ['Nothing on hand to take out.', fallback],
+    absent: [],
+    once: [fallback],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+    cardWithoutAlert: '222',
   },
   {
     name: 'instance_gone shows the server message and drops the removed unit',
@@ -196,7 +235,6 @@ const cases: OutcomeCase[] = [
       status: 409,
       body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' },
     },
-    instancesAfter: [goneInstance, keptInstance],
     visible: ['Nothing on hand to take out.'],
     absent: [],
     pendingBarcodes: ['111', '222'],
@@ -205,59 +243,73 @@ const cases: OutcomeCase[] = [
     instanceFetches: 1,
   },
   {
-    name: 'a 409 without a code still shows the server message',
+    name: 'a 400 without a code still shows the server message',
     action: 'confirm-milk',
     pendingAfter: 'both',
-    commit: { status: 409, body: { error: 'That product is not in your pantry' } },
+    commit: { status: 400, body: { error: 'That product is not in your pantry' } },
     visible: ['That product is not in your pantry'],
-    absent: ['No close match. Search or add it as new.'],
+    absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardReason: { barcode: '111', text: 'That product is not in your pantry' },
+  },
+  {
+    name: 'a 500 with the picker open shows the message and does not reload',
+    action: 'confirm-milk-instance',
+    pendingAfter: 'both',
+    commit: { status: 500, body: { error: 'Something went wrong. Please try again.' } },
+    visible: ['Something went wrong. Please try again.', goneLabel],
+    absent: [],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: 'Something went wrong. Please try again.' },
+    instanceFetches: 1,
   },
   {
     name: 'no close match copy when nothing is suggested',
     action: 'confirm-milk',
     pendingAfter: 'both',
     commit: { status: 409, body: { error: 'Not in your pantry', code: 'no_item', suggestions: [] } },
-    visible: ['No close match. Search or add it as new.'],
-    absent: ['No stocked item matches this barcode.'],
+    visible: ['No close match found.'],
+    absent: ['No close match. Search or add it as new.', 'No stocked item matches this barcode.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
+    cardWithoutAlert: '111',
     dismiss: true,
   },
   {
-    name: 'partial removal of one uses singular grammar',
+    name: 'removedCount alone, one unit, uses singular grammar',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, requestedCount: 3, removedCount: 1 } },
+    commit: { status: 200, body: { ...committedMilk, removedCount: 1 } },
     visible: ['Only 1 was on hand, so 1 was taken out.'],
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
   },
   {
-    name: 'partial removal of several uses plural grammar',
+    name: 'removedCount of several uses plural grammar',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, requestedCount: 4, removedCount: 2 } },
+    commit: { status: 200, body: { ...committedMilk, removedCount: 2 } },
     visible: ['Only 2 were on hand, so 2 were taken out.'],
     absent: ['Only 2 was on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
   },
   {
-    name: 'equal removal counts add no notice',
+    name: 'removedCount equal to the card count adds no notice',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, requestedCount: 2, removedCount: 2 } },
+    commit: { status: 200, body: { ...committedMilk, removedCount: 4 } },
     visible: [],
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    quiet: true,
   },
   {
-    name: 'missing removal counts behave as a normal confirm',
+    name: 'a missing removedCount behaves as a normal confirm',
     action: 'confirm-milk',
     pendingAfter: 'oats',
     commit: { status: 200, body: committedMilk },
@@ -265,38 +317,29 @@ const cases: OutcomeCase[] = [
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    quiet: true,
   },
   {
-    name: 'batch result entry with a short removal shows the notice',
-    action: 'batch',
-    pendingAfter: 'none',
-    batch: {
-      updatedCount: 2,
-      committedIds: ['scan-milk', 'scan-oats'],
-      results: [{ id: 'scan-milk', requestedCount: 3, removedCount: 1 }],
-    },
-    visible: ['Only 1 was on hand, so 1 was taken out.'],
-    absent: ['Some scans could not be confirmed.'],
-    pendingBarcodes: [],
-    goneBarcodes: ['111', '222'],
-  },
-  {
-    name: 'batch reason carrying instance_gone refreshes that card',
-    action: 'confirm-oats-instance',
+    name: 'a removedCount of zero adds no notice',
+    action: 'confirm-milk',
     pendingAfter: 'oats',
-    batch: {
-      updatedCount: 2,
-      committedIds: ['scan-milk'],
-      failedIds: ['scan-oats'],
-      failedReasons: [{ code: 'instance_gone', error: 'That one was already taken out. Pick another.' }],
-    },
-    instancesAfter: [keptInstance],
-    visible: ['That one was already taken out. Pick another.', 'Some scans could not be confirmed.'],
-    absent: [goneLabel],
+    commit: { status: 200, body: { ...committedMilk, removedCount: 0 } },
+    visible: [],
+    absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
-    cardReason: { barcode: '222', text: 'That one was already taken out. Pick another.' },
-    instanceFetches: 2,
+    quiet: true,
+  },
+  {
+    name: 'a fractional removedCount adds no notice',
+    action: 'confirm-milk',
+    pendingAfter: 'oats',
+    commit: { status: 200, body: { ...committedMilk, removedCount: 1.5 } },
+    visible: [],
+    absent: ['was taken out', 'were taken out'],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    quiet: true,
   },
 ];
 
@@ -350,15 +393,12 @@ describe('scan commit outcomes', () => {
     const milkCard = await screen.findByRole('article', { name: 'Scan 111' });
     expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
 
-    if (row.action === 'confirm-milk-instance' || row.action === 'confirm-oats-instance') {
-      const card = row.action === 'confirm-milk-instance'
-        ? milkCard
-        : screen.getByRole('article', { name: 'Scan 222' });
-      fireEvent.click(within(card).getByRole('button', { name: 'More' }));
-      fireEvent.click(await within(card).findByRole('radio', { name: goneLabel }));
+    if (row.action === 'confirm-milk-instance') {
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+      fireEvent.click(await within(milkCard).findByRole('radio', { name: goneLabel }));
     }
 
-    if (row.action === 'batch' || row.action === 'confirm-oats-instance') {
+    if (row.action === 'batch') {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
     } else {
@@ -373,7 +413,18 @@ describe('scan commit outcomes', () => {
         expect(screen.getAllByText(text).length).toBeGreaterThan(0);
       }
       for (const text of row.absent) {
-        expect(screen.queryByText(text)).not.toBeInTheDocument();
+        expect(screen.queryByText(text, { exact: false })).not.toBeInTheDocument();
+      }
+      for (const text of row.once ?? []) {
+        expect(screen.getAllByText(text)).toHaveLength(1);
+      }
+      if (row.cardWithoutAlert !== undefined) {
+        const card = screen.getByRole('article', { name: `Scan ${row.cardWithoutAlert}` });
+        expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
+      }
+      if (row.quiet) {
+        const extra = screen.getAllByRole('alert').filter((alert) => !alert.textContent?.includes('Mode:'));
+        expect(extra).toEqual([]);
       }
       if (row.instanceFetches !== undefined) {
         expect(instanceFetches).toBe(row.instanceFetches);
@@ -388,17 +439,11 @@ describe('scan commit outcomes', () => {
       const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
       expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
     }
-    for (const text of row.absent) {
-      expect(screen.queryByText(text)).not.toBeInTheDocument();
-    }
     if (row.dismiss) {
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
     }
-    if (row.instanceFetches !== undefined) {
-      expect(instanceFetches).toBe(row.instanceFetches);
-    }
-    if (row.action === 'confirm-milk-instance' && row.instancesAfter?.length === 1) {
+    if (row.instanceFetches !== undefined && row.instancesAfter?.length === 1) {
       expect(screen.getByRole('radio', { name: keptLabel })).toBeInTheDocument();
     }
   });
