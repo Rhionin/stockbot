@@ -56,6 +56,7 @@ type config struct {
 	household        *HouseholdAuth
 	syncToken        string
 	push             push.Config
+	sentryTunnel     SentryTunnelConfig
 }
 
 // Option is a functional option for NewHandler.
@@ -145,6 +146,14 @@ func WithDeployHook(secret, path string) Option {
 	}
 }
 
+// WithSentryTunnel enables POST /api/sentry-tunnel. An empty host or an
+// empty project list leaves the route looking like it is not there.
+func WithSentryTunnel(cfg SentryTunnelConfig) Option {
+	return func(c *config) {
+		c.sentryTunnel = cfg
+	}
+}
+
 // WithPush supplies the VAPID keys used to send scan alerts when no tab is
 // open. An unconfigured value leaves the subscribe route explaining that
 // background alerts are not set up, and the open tab still notifies itself.
@@ -207,7 +216,7 @@ func NewHandler(
 	// still asks a person to sign in. A wrong or missing token never falls
 	// through to the open LAN listener.
 	handler = syncGate(syncToken, handler)
-	return observeHTTP(reg, secureHeaders(handler)), scanQueue
+	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
 // newAPIMux creates the API-only mux with all existing route registrations.
@@ -286,6 +295,14 @@ func newAPIMux(
 		deployPath = cfg.deployHookPath
 	}
 	apiMux.HandleFunc("POST /api/deploy-hook", deployhook.New(deploySecret, deployPath).ServeHTTP)
+
+	// Open before household login so a signed-out page can report a failure.
+	// syncGate also lets this path through. Nothing else is exempted with it.
+	var tunnelCfg SentryTunnelConfig
+	if cfg != nil {
+		tunnelCfg = cfg.sentryTunnel
+	}
+	apiMux.Handle(sentryTunnelPath, newSentryTunnel(tunnelCfg))
 
 	// Scanner mode + config handlers. The mode handler publishes through the
 	// same broadcaster GET /api/events uses, so a browser-initiated mode switch

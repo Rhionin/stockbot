@@ -245,6 +245,11 @@ run_setup "$lan"
 [[ "$LAST_RC" -eq 0 ]] || fail "second LAN setup exited $LAST_RC: $LAST_OUT"
 secret2=$(grep '^DEPLOY_HOOK_SECRET=' "$lan/.env" | cut -d= -f2-)
 [[ "$secret1" == "$secret2" ]] || fail "setup rotated DEPLOY_HOOK_SECRET"
+grep -q '^SENTRY_DSN=$' "$lan/.env" || fail "setup did not append an empty SENTRY_DSN"
+grep -q '^SENTRY_ENVIRONMENT=$' "$lan/.env" || fail "setup did not append an empty SENTRY_ENVIRONMENT"
+grep -q '^SENTRY_TUNNEL_PROJECT_IDS=$' "$lan/.env" || fail "setup did not append an empty SENTRY_TUNNEL_PROJECT_IDS"
+grep -q '^SENTRY_TUNNEL_PUBLIC_KEYS=$' "$lan/.env" || fail "setup did not append an empty SENTRY_TUNNEL_PUBLIC_KEYS"
+[[ $(grep -c '^SENTRY_DSN=' "$lan/.env") -eq 1 ]] || fail "setup duplicated SENTRY_DSN"
 vapid_pub1=$(grep '^VAPID_PUBLIC_KEY=' "$lan/.env" | cut -d= -f2-)
 vapid_priv1=$(grep '^VAPID_PRIVATE_KEY=' "$lan/.env" | cut -d= -f2-)
 vapid_sub1=$(grep '^VAPID_SUBJECT=' "$lan/.env" | cut -d= -f2-)
@@ -907,6 +912,39 @@ PANTRY_INPUT_DEVICES="$none_devices" PANTRY_UDEV_RULE_FILE="$none_rule" \
 have "$LAST_OUT" "$none_rule" "failure names the rule path"
 [[ ! -e "$none_rule" ]] || fail "rule with no scanner wrote $none_rule"
 
-rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir"
+# Appending the empty Sentry lines must not rewrite a value that is already
+# set and must not change the file mode. This calls the helper directly so
+# the rest of setup, which restricts .env to its owner, is not involved.
+sentry_dir=$(mktemp -d)
+printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=keep-this' > "$sentry_dir/.env"
+chmod 640 "$sentry_dir/.env"
+sentry_mode=$(stat -c '%a' "$sentry_dir/.env")
+PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(stat -c '%a' "$sentry_dir/.env") == "$sentry_mode" ]] || fail "append_empty_env_keys changed the .env mode"
+grep -q '^SENTRY_DSN=keep-this$' "$sentry_dir/.env" || fail "append_empty_env_keys rewrote SENTRY_DSN"
+grep -q '^SENTRY_ENVIRONMENT=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_ENVIRONMENT"
+grep -q '^SENTRY_TUNNEL_PROJECT_IDS=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_TUNNEL_PROJECT_IDS"
+grep -q '^SENTRY_TUNNEL_PUBLIC_KEYS=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_TUNNEL_PUBLIC_KEYS"
+PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(grep -c '^SENTRY_ENVIRONMENT=' "$sentry_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated SENTRY_ENVIRONMENT"
+[[ $(stat -c '%a' "$sentry_dir/.env") == "$sentry_mode" ]] || fail "second append changed the .env mode"
+
+# An exported assignment is already present. Neither the empty-key helper nor
+# reconcile may append a second KEY= line, and neither may rewrite the value.
+export_dir=$(mktemp -d)
+printf '%s\n' 'export SENTRY_DSN=keep-export' > "$export_dir/.env"
+chmod 640 "$export_dir/.env"
+export_mode=$(stat -c '%a' "$export_dir/.env")
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "append_empty_env_keys changed the exported .env mode"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "append_empty_env_keys rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated export SENTRY_DSN"
+printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=' 'SENTRY_ENVIRONMENT=' > "$export_dir/.env.example"
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
+
+rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
 rm -f /tmp/pantry-chown-fail.out /tmp/pantry-chown-skip.out
 echo "setup_apply_test ok"

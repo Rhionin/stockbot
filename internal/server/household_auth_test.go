@@ -73,6 +73,7 @@ func TestHouseholdAuthPublicPathsAndLAN(t *testing.T) {
 		{http.MethodGet, "/terms"},
 		{http.MethodGet, "/privacy"},
 		{http.MethodPost, "/api/deploy-hook"},
+		{http.MethodPost, "/api/sentry-tunnel"},
 	}
 	for _, tc := range public {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
