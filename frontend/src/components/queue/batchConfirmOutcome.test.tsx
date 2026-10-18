@@ -150,6 +150,7 @@ interface OutcomeCase {
   instanceFetches?: number;
   dismiss?: boolean;
   quiet?: boolean;
+  unlinked?: 'suggestions' | 'empty';
   cards?: ScanEntry[];
   stillSelected?: boolean;
   fixed?: boolean;
@@ -274,12 +275,12 @@ const cases: OutcomeCase[] = [
     name: 'a 400 without a code still shows the server message',
     action: 'confirm-milk',
     pendingAfter: 'both',
-    commit: { status: 400, body: { error: 'That product is not in your pantry' } },
-    visible: ['That product is not in your pantry'],
+    commit: { status: 400, body: { error: 'Choose a different product.' } },
+    visible: ['Choose a different product.'],
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'That product is not in your pantry' },
+    cardReason: { barcode: '111', text: 'Choose a different product.' },
   },
   {
     name: 'a 500 with the picker open shows the message and does not reload',
@@ -294,16 +295,36 @@ const cases: OutcomeCase[] = [
     instanceFetches: 1,
   },
   {
-    name: 'no close match copy when nothing is suggested',
+    name: 'unlinked stock-out with no suggestions keeps search',
     action: 'confirm-milk',
     pendingAfter: 'both',
-    commit: { status: 409, body: { error: 'Not in your pantry', code: 'no_item', suggestions: [] } },
-    visible: ['No close match found.'],
-    absent: ['No close match. Search or add it as new.', 'No stocked item matches this barcode.'],
+    commit: { status: 409, body: { error: 'barcode is not linked', code: 'no_item', suggestions: [] } },
+    visible: ['Which item is this?', 'No close match found.'],
+    absent: ['No close match. Search or add it as new.', 'No stocked item matches this barcode.', 'barcode is not linked'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
     dismiss: true,
+    unlinked: 'empty',
+  },
+  {
+    name: 'unlinked stock-out with suggestions offers Link and search',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    commit: {
+      status: 409,
+      body: {
+        error: 'barcode is not linked',
+        code: 'no_item',
+        suggestions: [{ itemId: 'item-nearby', productId: 'prod-nearby', name: 'Rolled Oats Nearby', onHand: 1 }],
+      },
+    },
+    visible: ['Which item is this?', 'Rolled Oats Nearby'],
+    absent: ['barcode is not linked', 'No close match found.'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardWithoutAlert: '111',
+    unlinked: 'suggestions',
   },
   {
     name: 'removedCount alone, one unit, uses singular grammar',
@@ -594,6 +615,20 @@ describe('scan commit outcomes', () => {
     if (row.cardReason) {
       const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
       expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+    }
+    if (row.unlinked) {
+      const card = screen.getByRole('article', { name: 'Scan 111' });
+      expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
+      expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
+      expect(within(card).queryByText('Not in your pantry', { exact: false })).not.toBeInTheDocument();
+      expect(within(card).queryByText('Nothing on hand', { exact: false })).not.toBeInTheDocument();
+      if (row.unlinked === 'empty') {
+        expect(within(card).getByText('No close match found.')).toBeInTheDocument();
+        expect(within(card).queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
+      } else {
+        expect(within(card).getByRole('button', { name: 'Link Rolled Oats Nearby' })).toBeInTheDocument();
+        expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
+      }
     }
     if (row.dismiss) {
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
