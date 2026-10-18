@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "note": "One unit on hand, stock-out unitCount 3. Both counts are on every successful stock-out commit. Clients show the short-shelf note when removedCount is below requestedCount.",
+  "body": {
+    "id": "scan-partial",
+    "userId": "user-1",
+    "barcode": "scan-partial",
+    "direction": "stock_out",
+    "unitCount": 3,
+    "status": "committed",
+    "productId": "prod-partial",
+    "removedCount": 1,
+    "requestedCount": 3
+  }
+}

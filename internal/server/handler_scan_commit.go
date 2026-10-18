@@ -13,9 +13,18 @@ type ScanCommitHandler struct {
 	Queue interface {
 		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
 		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
-		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) error
-		CommitStockOutLink(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) error
+		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
+		CommitStockOutLink(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) (int, error)
 	}
+}
+
+// commitScanResponse is the committed scan. Every successful stock-out 200
+// also carries removedCount (units that left the shelf) and requestedCount
+// (the scan's unit count). Stock-in omits both.
+type commitScanResponse struct {
+	scan.ScanEntry
+	RemovedCount   *int `json:"removedCount,omitempty"`
+	RequestedCount *int `json:"requestedCount,omitempty"`
 }
 
 type commitScanRequest struct {
@@ -27,7 +36,7 @@ type commitScanPathParams struct {
 	ID string `json:"id"`
 }
 
-func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPathParams]) (*scan.ScanEntry, error) {
+func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPathParams]) (*commitScanResponse, error) {
 	if req.PathParams.ID == "" {
 		return nil, BadRequest("scan entry id is required")
 	}
@@ -59,6 +68,8 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 
 	// Commit based on direction. A link is an explicit choice: the server
 	// never attaches a barcode on its own when the household has no item.
+	var removed int
+	stockOut := *entry.Direction != scan.StockIn
 	if *entry.Direction == scan.StockIn {
 		if linkProductID != "" {
 			return nil, BadRequest("linking a barcode is only available when scanning out")
@@ -67,20 +78,34 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 			return nil, commitClientError(err)
 		}
 	} else if linkProductID != "" {
-		if err := h.Queue.CommitStockOutLink(req.Context, entry, req.Body.InstanceID, linkProductID); err != nil {
+		var err error
+		removed, err = h.Queue.CommitStockOutLink(req.Context, entry, req.Body.InstanceID, linkProductID)
+		if err != nil {
 			return nil, stockOutError(err)
 		}
-	} else if err := h.Queue.CommitStockOut(req.Context, entry, req.Body.InstanceID); err != nil {
-		return nil, stockOutError(err)
+	} else {
+		var err error
+		removed, err = h.Queue.CommitStockOut(req.Context, entry, req.Body.InstanceID)
+		if err != nil {
+			return nil, stockOutError(err)
+		}
 	}
 
-	// Return the committed entry
 	committed, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 	if err != nil {
 		return nil, commitClientError(err)
 	}
+	if committed == nil {
+		return nil, nil
+	}
 
-	return committed, nil
+	resp := &commitScanResponse{ScanEntry: *committed}
+	if stockOut {
+		requested := entry.UnitCount
+		resp.RemovedCount = &removed
+		resp.RequestedCount = &requested
+	}
+	return resp, nil
 }
 
 func stockOutError(err error) error {

@@ -12,7 +12,7 @@ type ScanBatchCommitHandler struct {
 		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
 		BatchUpdateScanEntries(ctx context.Context, ids []string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time) error
 		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
-		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) error
+		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
 	}
 }
 
@@ -99,7 +99,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			if *entry.Direction == scan.StockIn {
 				commitErr = h.Queue.CommitStockIn(req.Context, entry)
 			} else {
-				commitErr = h.Queue.CommitStockOut(req.Context, entry, nil)
+				_, commitErr = h.Queue.CommitStockOut(req.Context, entry, nil)
 			}
 
 			if commitErr != nil {

@@ -200,8 +200,25 @@ Files in `internal/routes/` (one per endpoint, named after the resource + action
 | GET | `/api/scans?status=flagged` | List flagged entries |
 | GET | `/api/scans/history` | Read-only scan history |
 | PATCH | `/api/scans/{id}` | Update direction, unit count, expiry, or resolution |
-| POST | `/api/scans/{id}/commit` | Commit a scan entry to inventory |
-| POST | `/api/scans/batch-commit` | Commit multiple entries with shared attributes |
+| POST | `/api/scans/{id}/commit` | Commit one scan entry. See stock-out counts below |
+| POST | `/api/scans/batch-commit` | Commit several entries. A stock-out uses each entry's unit count the same way a single commit does. The batch body does not add removal counts |
+
+`POST /api/scans/{id}/commit` with direction `stock_out` removes the entry's `unitCount` (N) units in one transaction. Nothing leaves the shelf before that commit. A repeat scan of an open stock-out card only raises `unitCount`, the same way a stock-in rescan does.
+
+When the body names `instanceId`, that unit is removed first and any further units come off oldest-first (earliest `expires_at`, undated last). When it does not, every unit comes off oldest-first.
+
+If the shelf has some units but fewer than N, the commit still returns 200 and removes everything on hand. If the shelf is empty, the response stays 409 `{ "error": "Nothing on hand to take out.", "code": "none_on_hand" }` and nothing is committed. A named unit that is already gone stays `instance_gone` when another unit of that item remains, and `none_on_hand` when the shelf is empty. Linking a barcode is unchanged.
+
+Every successful stock-out commit — including one that removes exactly N — returns the committed scan plus both counts:
+
+| Field | Meaning |
+|---|---|
+| `removedCount` | Units that left the shelf |
+| `requestedCount` | N, the scan's `unitCount` |
+
+Clients show the short-shelf note when `removedCount` is less than `requestedCount`. Stock-in responses omit both fields. A shared example of a partial 200 is `testdata/contract/scan-commit-partial.json`.
+
+`POST /api/scans/batch-commit` removes N the same way for each stock-out it commits, including a `unitCount` sent on the batch. It does not add `removedCount` or `requestedCount`. A stock-out that removes at least one unit is listed in `committedIds`. A stock-out with nothing on hand stays in `failedIds` with `failedCodes` `none_on_hand`.
 
 #### Products
 
@@ -455,16 +472,16 @@ suggestTargetQuantity(itemId):
 
 #### Use-Oldest-First Ordering
 
-When committing a stock-out, if the user has not selected a specific instance, the API selects:
+When committing a stock-out of N units, the API takes up to N on-hand rows. A named instance is included first. The rest, and every row when none is named, are:
 
 ```sql
-SELECT * FROM item_instances
+SELECT id FROM item_instances
 WHERE item_id = ? AND removed_at IS NULL
 ORDER BY expires_at ASC NULLS LAST
-LIMIT 1
+LIMIT ?
 ```
 
-Instances without an expiration date sort after those with one, so dated instances are consumed first.
+Instances without an expiration date sort after those with one, so dated instances are consumed first. When fewer than N are on hand, this returns the rows that are left and the commit reports that smaller `removedCount`.
 
 #### Shopping List Derivation
 
@@ -516,9 +533,9 @@ shoppingList(userId):
 
 **Validates: Requirements 1.11**
 
-### Property 6: Stock-out commit removes the use-oldest-first instance
+### Property 6: Stock-out commit removes N units, oldest first
 
-*For any* item with at least one instance and a stock-out commit where no specific instance is selected, the item instance with the earliest expiration date (use-oldest-first) SHALL be the one removed, and the item's total instance count SHALL decrease by exactly 1.
+*For any* stock-out whose unit count is N ≥ 1, the commit SHALL remove min(N, on hand) units in one transaction. When no instance is named, those units SHALL be the earliest expirations (undated last). When an instance is named and it is still on hand, that unit SHALL go first and the rest SHALL be the earliest of what remains. The item's on-hand count SHALL decrease by the number removed. The 200 body SHALL include `removedCount` and `requestedCount` (N). An empty shelf SHALL refuse with 409 `none_on_hand` and remove nothing.
 
 **Validates: Requirements 1.12, 1.9, 2.3**
 

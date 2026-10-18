@@ -343,6 +343,109 @@ func TestScanBatchCommit(t *testing.T) {
 				},
 			),
 		},
+		{
+			name: "a stock-out unit count is how many the batch takes off",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-batch-out", "Batch Oats")
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				mid := soon.Add(24 * time.Hour)
+				late := soon.Add(48 * time.Hour)
+				stockShelf(env, "item-batch-out", "user-1", "prod-batch-out", []shelfUnit{
+					{"inst-batch-old", &soon},
+					{"inst-batch-mid", &mid},
+					{"inst-batch-new", &late},
+				})
+				insertPendingScanUnits(env, "scan-batch-out", "prod-batch-out", scan.StockOut, 2)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-batch-out"],"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.committedIds[0]", value: "scan-batch-out"},
+					{path: "$.failedIds", absent: true},
+				},
+				bodyExcludes: []string{"removedCount", "requestedCount"},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-batch-out/instances",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "inst-batch-new"},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
+		},
+		{
+			name: "a unit count on the batch is what gets taken out",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-batch-set", "Batch Rice")
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				mid := soon.Add(24 * time.Hour)
+				late := soon.Add(48 * time.Hour)
+				stockShelf(env, "item-batch-set", "user-1", "prod-batch-set", []shelfUnit{
+					{"inst-set-old", &soon},
+					{"inst-set-mid", &mid},
+					{"inst-set-new", &late},
+				})
+				insertPendingScanUnits(env, "scan-batch-set", "prod-batch-set", scan.StockOut, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-batch-set"],"unitCount":2,"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.committedIds[0]", value: "scan-batch-set"},
+					{path: "$.failedIds", absent: true},
+				},
+				bodyExcludes: []string{"removedCount", "requestedCount"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory",
+				expectedStatus: http.StatusOK,
+				assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
+			}),
+		},
+		{
+			name: "a batch stock-out that exceeds the shelf still commits",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-batch-short", "Batch Short")
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				stockShelf(env, "item-batch-short", "user-1", "prod-batch-short", []shelfUnit{
+					{"inst-short", &soon},
+				})
+				insertPendingScanUnits(env, "scan-batch-short", "prod-batch-short", scan.StockOut, 3)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-batch-short"],"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.committedIds[0]", value: "scan-batch-short"},
+					{path: "$.failedIds", absent: true},
+				},
+				bodyExcludes: []string{"removedCount", "requestedCount"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory",
+				expectedStatus: http.StatusOK,
+				assertions:     []assertion{{path: "$[0].instanceCount", value: float64(0)}},
+			}),
+		},
 	})
 }
 

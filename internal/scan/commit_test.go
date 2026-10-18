@@ -170,11 +170,11 @@ func TestProperty_StockInCreatesExactlyNInstances(t *testing.T) {
 // --------------------------------------------------------------------------
 // Feature: pantry-management, Property 6: Stock-out commit removes use-oldest-first
 //
-// For any scan entry with direction `stock_out` and no instance specified,
-// committing that entry SHALL remove one existing item instance, and the
+// For any scan entry with direction `stock_out`, unit count 1, and no instance
+// specified, committing that entry SHALL remove one existing item instance, and the
 // instance with the nearest (soonest) non-NULL expiration date (use-oldest-first)
 // SHALL be the one removed, and the item's total instance count SHALL decrease
-// by exactly 1.
+// by exactly 1. A larger unit count removes that many units; the HTTP tests cover it.
 
 func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
 	queue, db := newTestQueue(t)
@@ -291,7 +291,7 @@ func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
 				t.Fatalf("CreateScanEntry: %v", err)
 			}
 
-			if err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
 				t.Fatalf("CommitStockOut: %v", err)
 			}
 
@@ -828,7 +828,7 @@ func TestCommitStockOut_PublishesScanEvent(t *testing.T) {
 	queue.Broadcaster = broadcaster
 	// queue.Pantry left nil: no Inventory_Event should be published.
 
-	if err := queue.CommitStockOut(ctx, entry, nil); err != nil {
+	if _, err := queue.CommitStockOut(ctx, entry, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 
@@ -857,7 +857,7 @@ func TestCommitStockOut_PublishesInventoryEvent_WithPantry(t *testing.T) {
 	queue.Broadcaster = broadcaster
 	queue.Pantry = pantry
 
-	if err := queue.CommitStockOut(ctx, entry, nil); err != nil {
+	if _, err := queue.CommitStockOut(ctx, entry, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 
@@ -969,7 +969,7 @@ func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 			queue.Broadcaster = broadcaster
 			queue.Pantry = inventory.NewPantry(db)
 
-			err := queue.CommitStockOut(ctx, entry, instanceID)
+			_, err := queue.CommitStockOut(ctx, entry, instanceID)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -1012,7 +1012,7 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 	}
 
 	stockOut := createStockOutEntry(t, queue, db, ctx)
-	if err := queue.CommitStockOut(ctx, stockOut, nil); err != nil {
+	if _, err := queue.CommitStockOut(ctx, stockOut, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 }
