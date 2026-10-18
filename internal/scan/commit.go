@@ -21,10 +21,6 @@ var (
 	ErrLinkNotStocked = errors.New("that product is not in your pantry")
 )
 
-// NoneOnHandMessage is the household-facing sentence for a scan-out that
-// would take the shelf below zero. Change this constant to change the wording.
-const NoneOnHandMessage = "There's none of this on hand to take out."
-
 // CommitStockIn commits a stock-in scan entry by creating one item instance
 // per unit and marking the scan entry as committed. A remembered pack count
 // greater than one splits the barcode into that many units, so a 6-pack scan

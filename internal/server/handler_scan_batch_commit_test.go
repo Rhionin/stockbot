@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -211,7 +212,7 @@ func TestScanBatchCommit(t *testing.T) {
 					{path: "$.failedIds[1]", value: "scan-noprod"},
 					{path: "$.failedReasons[1]", value: "product not resolved"},
 					{path: "$.failedIds[2]", value: "scan-none"},
-					{path: "$.failedReasons[2]", value: "There's none of this on hand to take out."},
+					{path: "$.failedReasons[2]", value: inventory.NoneOnHandMessage},
 				},
 				bodyExcludes: []string{"no available instances", "nothing on hand"},
 			},

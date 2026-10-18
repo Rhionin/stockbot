@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -432,7 +433,7 @@ func TestScanCommitStockOut(t *testing.T) {
 				path:           "/api/scans/scan-out-empty/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: "There's none of this on hand to take out."},
+					{path: "$.error", value: inventory.NoneOnHandMessage},
 				},
 			},
 			afterRequest: exchanges(httpExchange{
@@ -1046,7 +1047,7 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 				path:           "/api/scans/scan-out-2/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: "There's none of this on hand to take out."},
+					{path: "$.error", value: inventory.NoneOnHandMessage},
 					{path: "$.code", absent: true},
 					{path: "$.suggestions", absent: true},
 				},
@@ -1113,7 +1114,7 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 				body:           `{"linkProductId":"prod-empty"}`,
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: "There's none of this on hand to take out."},
+					{path: "$.error", value: inventory.NoneOnHandMessage},
 					{path: "$.code", absent: true},
 				},
 			},

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -122,7 +123,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 // commit. An empty shelf uses the same wording as a single scan-out.
 func commitFailureReason(err error) string {
 	if errors.Is(err, scan.ErrNoneOnHand) {
-		return scan.NoneOnHandMessage
+		return inventory.NoneOnHandMessage
 	}
 	return err.Error()
 }

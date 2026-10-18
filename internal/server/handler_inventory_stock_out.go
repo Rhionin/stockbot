@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -22,7 +23,7 @@ func (h *InventoryStockOutHandler) Handle(req Request[struct{}, inventoryStockOu
 	err := h.Queue.StockOut(req.Context, req.PathParams.ItemID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, scan.ErrNoneOnHand) {
-			return struct{}{}, Conflict("There is nothing on hand.")
+			return struct{}{}, Conflict(inventory.NoneOnHandMessage)
 		}
 		if errors.Is(err, scan.ErrItemNotFound) {
 			return struct{}{}, NotFound("item not found")

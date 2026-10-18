@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -95,7 +96,7 @@ func stockOutError(err error) error {
 		return BadRequest("That product is not in your pantry")
 	}
 	if errors.Is(err, scan.ErrNoneOnHand) {
-		return Conflict(scan.NoneOnHandMessage)
+		return Conflict(inventory.NoneOnHandMessage)
 	}
 	return InternalError(err)
 }
