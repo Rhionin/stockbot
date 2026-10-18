@@ -182,12 +182,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+	streams := server.NewStreamShutdown()
 	srv := &http.Server{
 		Handler:           gate,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 16,
 	}
+	// Shutdown does not cancel request contexts. This ends SSE handlers so a
+	// live /api/events tab does not hold the process for the whole budget.
+	streams.Register(srv)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- srv.Serve(ln)
@@ -273,6 +277,7 @@ func main() {
 	opts := []server.Option{
 		server.WithBroadcaster(broadcaster),
 		server.WithSentryTunnel(sentrySettings.TunnelConfig()),
+		server.WithStreamShutdown(streams),
 		server.WithScannerConfig(server.ScannerConfig{
 			StockInBarcode:  stockInBarcode,
 			StockOutBarcode: stockOutBarcode,
@@ -323,9 +328,20 @@ func main() {
 	}
 }
 
+// shutdownTimeout is how long Shutdown waits for handlers to return. SSE
+// streams are ended by RegisterOnShutdown; anything still open after this is
+// closed outright so the process can exit.
+var shutdownTimeout = 5 * time.Second
+
+// shutdownHTTP is srv.Shutdown. Tests replace it to observe when it returns.
+var shutdownHTTP = func(srv *http.Server, ctx context.Context) error {
+	return srv.Shutdown(ctx)
+}
+
 // runHTTPServer waits until stop is closed or the listener's Serve returns,
 // then flushes error reports. main has already bound the port and started
 // Serve, so this does not listen again. A closed stop shuts that listener down.
+// Flush runs only after Shutdown has returned.
 func runHTTPServer(srv *http.Server, serveErr <-chan error, stop <-chan struct{}, flush func()) error {
 	var err error
 	select {
@@ -334,10 +350,15 @@ func runHTTPServer(srv *http.Server, serveErr <-chan error, stop <-chan struct{}
 			err = nil
 		}
 	case <-stop:
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		err = srv.Shutdown(ctx)
+		err = shutdownHTTP(srv, ctx)
 		<-serveErr
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Print("warning: open connections did not finish during shutdown; closing them")
+			_ = srv.Close()
+			err = nil
+		}
 	}
 	if flush != nil {
 		flush()

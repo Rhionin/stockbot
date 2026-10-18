@@ -322,8 +322,12 @@ func TestSentryTunnelBlankLineEnvelopeIsLinear(t *testing.T) {
 func TestSentryTunnelBlankLineBeforeDisallowedItem(t *testing.T) {
 	var calls int
 	handler := allowedTunnel(t, &calls)
-	body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n\n" +
-		`{"type":"replay_recording"}` + "\n" + `{"message":"ok"}` + "\n"
+	// The blank line sits between a valid item and a disallowed one. Ending the
+	// walk at the first blank line would forward the envelope and hide the
+	// replay item; onlySpace must reject it.
+	body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n" +
+		`{"type":"event"}` + "\n" + "{}\n\n" +
+		`{"type":"replay_recording"}` + "\n" + "{}\n"
 	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())

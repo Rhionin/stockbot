@@ -57,6 +57,7 @@ type config struct {
 	syncToken        string
 	push             push.Config
 	sentryTunnel     SentryTunnelConfig
+	streamShutdown   *StreamShutdown
 }
 
 // Option is a functional option for NewHandler.
@@ -143,6 +144,14 @@ func WithDeployHook(secret, path string) Option {
 	return func(c *config) {
 		c.deployHookSecret = secret
 		c.deployHookPath = path
+	}
+}
+
+// WithStreamShutdown ends GET /api/events when the process stops. main
+// registers the same value with http.Server.RegisterOnShutdown.
+func WithStreamShutdown(s *StreamShutdown) Option {
+	return func(c *config) {
+		c.streamShutdown = s
 	}
 }
 
@@ -276,7 +285,11 @@ func newAPIMux(
 		fmt.Fprintln(w, response)
 	})
 
-	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg}
+	var streams *StreamShutdown
+	if cfg != nil {
+		streams = cfg.streamShutdown
+	}
+	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg, Shutdown: streams}
 	apiMux.HandleFunc("GET /api/events", eventsHandler.Handle)
 	// Caddy serves this exact path without the household password, beside
 	// telemetry, and isPublicPath leaves it open when X-Pantry-Entry is set.
