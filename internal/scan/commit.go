@@ -203,7 +203,7 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 			selected, itemID,
 		).Scan(&exists)
 		if err == sql.ErrNoRows {
-			return inventory.ErrInstanceNotFound
+			return r.namedInstanceUnavailable(ctx, tx, itemID)
 		}
 		if err != nil {
 			return fmt.Errorf("verify instance: %w", err)
@@ -266,6 +266,25 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 		return fmt.Errorf("record stock-out: %w", err)
 	}
 	return nil
+}
+
+// namedInstanceUnavailable distinguishes a stale pick from an empty shelf.
+// The chosen unit is gone. When nothing else is on hand, that is the same
+// refusal as a scan-out with no unit to take.
+func (r *Queue) namedInstanceUnavailable(ctx context.Context, tx *sql.Tx, itemID string) error {
+	var onHand int
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`,
+		itemID,
+	).Scan(&onHand)
+	if err != nil {
+		return fmt.Errorf("count on hand: %w", err)
+	}
+	if onHand == 0 {
+		return ErrNoneOnHand
+	}
+	return inventory.ErrInstanceNotFound
 }
 
 // StockIn adds one on-hand unit of an item the household already keeps.
@@ -513,16 +532,6 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 
 	scanID := scanEntry.ID
 	if err := r.recordStockOutTx(ctx, tx, itemID, instanceID, scanEntry.ScannedAt, &scanID); err != nil {
-		if errors.Is(err, ErrNoneOnHand) {
-			return ErrNoneOnHand
-		}
-		if errors.Is(err, inventory.ErrInstanceNotFound) {
-			missing := ""
-			if instanceID != nil {
-				missing = *instanceID
-			}
-			return fmt.Errorf("instance %q not found or already removed: %w", missing, err)
-		}
 		return err
 	}
 

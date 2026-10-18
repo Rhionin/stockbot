@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -194,7 +193,10 @@ func TestInventoryStockMatchesScanLedger(t *testing.T) {
 				path:           "/api/inventory/item-empty/stock-out",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: inventory.NoneOnHandMessage},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
 				},
 			},
 			afterRequest: func(env testEnv) {

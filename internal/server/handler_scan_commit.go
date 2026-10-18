@@ -96,7 +96,10 @@ func stockOutError(err error) error {
 		return BadRequest("That product is not in your pantry")
 	}
 	if errors.Is(err, scan.ErrNoneOnHand) {
-		return Conflict(inventory.NoneOnHandMessage)
+		return ConflictDetails(inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, nil)
+	}
+	if errors.Is(err, inventory.ErrInstanceNotFound) {
+		return ConflictDetails(inventory.InstanceGoneMessage, inventory.CodeInstanceGone, nil)
 	}
 	return InternalError(err)
 }

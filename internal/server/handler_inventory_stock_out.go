@@ -23,7 +23,7 @@ func (h *InventoryStockOutHandler) Handle(req Request[struct{}, inventoryStockOu
 	err := h.Queue.StockOut(req.Context, req.PathParams.ItemID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, scan.ErrNoneOnHand) {
-			return struct{}{}, Conflict(inventory.NoneOnHandMessage)
+			return struct{}{}, ConflictDetails(inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, nil)
 		}
 		if errors.Is(err, scan.ErrItemNotFound) {
 			return struct{}{}, NotFound("item not found")

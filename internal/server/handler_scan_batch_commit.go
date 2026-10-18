@@ -121,6 +121,8 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 
 // commitFailureReason is the sentence stored with a batch entry that did not
 // commit. An empty shelf uses the same wording as a single scan-out.
+// failedReasons is a list of sentences beside failedIds, so it does not carry
+// the none_on_hand or instance_gone code. Batch commit also never names an instance.
 func commitFailureReason(err error) string {
 	if errors.Is(err, scan.ErrNoneOnHand) {
 		return inventory.NoneOnHandMessage

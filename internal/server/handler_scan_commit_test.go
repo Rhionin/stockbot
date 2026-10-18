@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -433,7 +432,10 @@ func TestScanCommitStockOut(t *testing.T) {
 				path:           "/api/scans/scan-out-empty/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: inventory.NoneOnHandMessage},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
 				},
 			},
 			afterRequest: exchanges(httpExchange{
@@ -623,7 +625,13 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-bad-inst/commit",
 				body:           `{"instanceId":"inst-does-not-exist"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
 		},
 		{
@@ -663,8 +671,103 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-removed-inst/commit",
 				body:           `{"instanceId":"inst-removed"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-removed-inst", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-removed-inst"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-removed-inst/instances",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0]", absent: true}},
+				},
+			),
+		},
+		{
+			name: "removed instance with another unit still on hand asks for a different one",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-stale", Name: "Test Product", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id) VALUES ('item-stale', 'user-stale', 'prod-stale')`); err != nil {
+					env.T.Fatalf("create item: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(), `
+					INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason)
+					VALUES ('inst-stale', 'item-stale', ?, ?, 'consumed')`,
+					now.Add(-48*time.Hour), now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create removed instance: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-still', 'item-stale', ?)`,
+					now.Add(-24*time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				scanRepo := scan.NewQueue(env.DB)
+				productID := "prod-stale"
+				direction := scan.StockOut
+				entry := scan.ScanEntry{
+					ID: "scan-stale", UserID: "user-stale", Barcode: "666777888999",
+					ScannedAt: now, Direction: &direction, UnitCount: 1,
+					ProductID: &productID, Status: scan.Pending,
+				}
+				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+					env.T.Fatalf("CreateScanEntry: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-stale/commit",
+				body:           `{"instanceId":"inst-stale"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-stale", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-stale"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-stale/instances",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "inst-still"},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
 		},
 	}
 
@@ -1047,8 +1150,9 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 				path:           "/api/scans/scan-out-2/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: inventory.NoneOnHandMessage},
-					{path: "$.code", absent: true},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
 					{path: "$.suggestions", absent: true},
 				},
 				bodyExcludes: []string{"Something went wrong", "no available instances", "item-zero"},
@@ -1114,8 +1218,10 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 				body:           `{"linkProductId":"prod-empty"}`,
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: inventory.NoneOnHandMessage},
-					{path: "$.code", absent: true},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
 				},
 			},
 			afterRequest: exchanges(
