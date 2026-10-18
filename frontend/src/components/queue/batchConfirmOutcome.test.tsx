@@ -164,6 +164,8 @@ interface OutcomeCase {
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
+  // Barcodes whose stock-out action is Add it and take it out.
+  backfillOn?: string[];
   // The sentence is the toast's only copy of itself on the page.
   toastOnly?: boolean;
 }
@@ -269,7 +271,7 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+    backfillOn: ['111'],
     instanceFetches: 1,
   },
   {
@@ -282,6 +284,7 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     toast: 'Nothing on hand to take out.',
+    backfillOn: ['111'],
   },
   {
     name: 'a 400 without a code still shows the server message',
@@ -836,9 +839,16 @@ describe('scan commit outcomes', () => {
       }
     });
 
+    const backfillFor = new Set(row.backfillOn ?? []);
     for (const barcode of row.pendingBarcodes) {
       const card = screen.getByRole('article', { name: `Scan ${barcode}` });
-      expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      if (backfillFor.has(barcode)) {
+        expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
+        expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+      } else {
+        expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+        expect(within(card).queryByRole('button', { name: 'Add it and take it out' })).not.toBeInTheDocument();
+      }
     }
     if (row.cardReason) {
       const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });

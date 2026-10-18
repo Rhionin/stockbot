@@ -27,6 +27,8 @@ describe('history wording', () => {
   it('dates a move so a weekday is not ambiguous', () => {
     expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'scan')).toMatch(/^Today, .+scan$/);
     expect(formatMoveWhen(new Date(2026, 9, 9, 18, 42, 0), now, 'scan')).toMatch(/^Yesterday, .+scan$/);
+    expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'backfill')).toContain('Added when taking out');
+    expect(formatMoveClock(new Date(2026, 9, 10, 8, 14, 0), 'backfill')).toContain('Added when taking out');
     const older = formatMoveWhen(new Date(2026, 9, 8, 19, 20, 0), now, 'manual');
     expect(older).toContain('Oct');
     expect(older).toContain('8');

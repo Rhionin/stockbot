@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK } from './contract';
+import { readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, type BackfillCommitRequest, type BackfillCommitResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -61,6 +61,8 @@ export class ApiError extends Error {
   readonly code: string;
   readonly members: TargetConflictMember[];
   readonly suggestions: PantryLinkSuggestion[];
+  readonly itemId: string;
+  readonly onHand: number | undefined;
 
   constructor(
     status: number,
@@ -68,6 +70,8 @@ export class ApiError extends Error {
     code = '',
     members: TargetConflictMember[] = [],
     suggestions: PantryLinkSuggestion[] = [],
+    itemId = '',
+    onHand?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -75,6 +79,8 @@ export class ApiError extends Error {
     this.code = code;
     this.members = members;
     this.suggestions = suggestions;
+    this.itemId = itemId;
+    this.onHand = onHand;
   }
 }
 
@@ -105,12 +111,22 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
         code?: string;
         members?: TargetConflictMember[];
         suggestions?: PantryLinkSuggestion[];
+        itemId?: string;
+        onHand?: number;
       };
       if (body.error) {
         message = body.error;
       }
       reportApiResult(route, res.status, performance.now() - started, started);
-      throw new ApiError(res.status, message, body.code ?? '', body.members ?? [], body.suggestions ?? []);
+      throw new ApiError(
+        res.status,
+        message,
+        body.code ?? '',
+        body.members ?? [],
+        body.suggestions ?? [],
+        readItemId(body),
+        readOnHand(body),
+      );
     } catch (err) {
       if (err instanceof ApiError) throw err;
       // Not JSON. A 5xx already uses the shared sentence; other statuses keep statusText.
@@ -226,7 +242,16 @@ export function commitScanEntry(
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;
-  return apiFetch(`/api/scans/${id}/commit`, {
+  return apiFetch(scanCommitPath(id), {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+// Uses the scan's linked item. The body is only {backfill:true}.
+export function commitBackfill(id: string): Promise<BackfillCommitResponse> {
+  const body: BackfillCommitRequest = { backfill: true };
+  return apiFetch(scanCommitPath(id), {
     method: 'POST',
     body: JSON.stringify(body),
   });

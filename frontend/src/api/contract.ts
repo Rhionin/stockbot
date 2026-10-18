@@ -138,3 +138,77 @@ export function formatPartialRemoval(unitCount: number, body: object | null | un
 // A 5xx with no JSON error field: a migration 503, a proxy 502/504, or empty
 // HTTP/2 status text. Appended so the Expo client can show the same sentence.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
+
+// Backfill on a stock-out. Appended for the web queue; the phone shares this
+// file and does not have to send backfill until it grows the same card.
+// Batch commit has no backfill field. The server ignores it there.
+
+export const CODE_NONE_ON_HAND = 'none_on_hand';
+export const CODE_UNITS_ON_HAND = 'units_on_hand';
+export const CODE_NOT_STOCK_OUT = 'not_stock_out';
+export const CODE_NOT_PENDING = 'not_pending';
+export const CODE_DIRECTION_UNSET = 'direction_unset';
+export const CODE_SCAN_NOT_FOUND = 'scan_not_found';
+export const CODE_INTERNAL = 'internal';
+
+export const BACKFILL_SOURCE = 'backfill';
+
+export const NOTHING_ON_HAND_TO_TAKE_OUT = 'Nothing on hand to take out.';
+export const ADD_IT_AND_TAKE_IT_OUT = 'Add it and take it out';
+export const ADD_AS_A_NEW_ITEM = 'Add as a new item';
+export const ADDED_AND_TAKEN_OUT = 'Added and taken out.';
+export const ADDED_WHEN_TAKING_OUT = 'Added when taking out';
+
+export interface BackfillCommitRequest {
+  backfill: true;
+}
+
+export interface BackfillCommitResponse {
+  removed: number;
+  backfilled: number;
+  itemId: string;
+}
+
+// What the card does with a backfill commit's code. The sentence is always
+// the server's error field. units_on_hand returns to the normal stock-out.
+// product_unresolved returns to defining the barcode. A missing scan reloads.
+export type BackfillFailureKind = 'define' | 'stock-out' | 'reload' | 'sentence';
+
+export function backfillFailureKind(code: string | undefined): BackfillFailureKind {
+  switch (code) {
+    case CODE_PRODUCT_UNRESOLVED:
+      return 'define';
+    case CODE_UNITS_ON_HAND:
+      return 'stock-out';
+    case CODE_NOT_PENDING:
+    case CODE_SCAN_NOT_FOUND:
+      return 'reload';
+    case CODE_NOT_STOCK_OUT:
+    case CODE_DIRECTION_UNSET:
+    case CODE_NONE_ON_HAND:
+    case CODE_INTERNAL:
+      return 'sentence';
+    default:
+      return 'sentence';
+  }
+}
+
+export function readOnHand(body: object | null | undefined): number | undefined {
+  if (body === null || body === undefined) return undefined;
+  const onHand = (body as Record<string, unknown>).onHand;
+  if (typeof onHand !== 'number' || !Number.isInteger(onHand)) return undefined;
+  return onHand;
+}
+
+export function readItemId(body: object | null | undefined): string {
+  if (body === null || body === undefined) return '';
+  const itemId = (body as Record<string, unknown>).itemId;
+  return typeof itemId === 'string' ? itemId : '';
+}
+
+// The commit response has no move ids. Prefer the backfill stock-in; either
+// row removes both.
+export function backfillMoveId(moves: { id: string; source: string }[]): string {
+  const backfill = moves.find((move) => move.source === BACKFILL_SOURCE);
+  return (backfill ?? moves[0])?.id ?? '';
+}

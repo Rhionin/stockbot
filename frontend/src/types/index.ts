@@ -198,7 +198,7 @@ export interface HistoryMove {
   direction: 'in' | 'out';
   quantity: number;
   at: string;
-  source: 'scan' | 'manual';
+  source: 'scan' | 'manual' | 'backfill';
   productId: string;
   productName: string;
 }
@@ -218,7 +218,7 @@ export interface LedgerMove {
   direction: 'in' | 'out';
   quantity: number;
   at: string;
-  source: 'scan' | 'manual';
+  source: 'scan' | 'manual' | 'backfill';
   productId: string;
   productName: string;
   imageUrl?: string;

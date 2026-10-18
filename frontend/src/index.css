@@ -949,6 +949,18 @@ code {
   margin-top: 8px;
 }
 
+.scan-link-new {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.scan-link-new .mantine-TextInput-root {
+  align-self: stretch;
+}
+
 .processing-scan-card .mantine-Title-root {
   font-size: 0.92rem;
   line-height: 1.25;

@@ -1,9 +1,23 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
-import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { CODE_LINK_TARGET_GONE, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import { addGroupMembers, ApiError, commitBackfill, commitScanEntry, createProduct, createProductOverride, getInventoryList, getItemHistory, lookupProduct, noteGroupFromScan, undoMove, updateProduct, updateScanEntry } from '../../api/client';
+import {
+  ADD_AS_A_NEW_ITEM,
+  ADD_IT_AND_TAKE_IT_OUT,
+  ADDED_AND_TAKEN_OUT,
+  backfillFailureKind,
+  backfillMoveId,
+  CODE_LINK_TARGET_GONE,
+  CODE_NONE_ON_HAND,
+  commitConflictBehavior,
+  formatPartialRemoval,
+  NOTHING_ON_HAND_TO_TAKE_OUT,
+  NO_CLOSE_MATCH,
+  readOnHand,
+  SERVER_ERROR_FALLBACK,
+} from '../../api/contract';
 import { showUndo } from '../restock/undo';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
+import type { InventoryItem, PantryLinkSuggestion, ProductSummary, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -26,7 +40,7 @@ const LinkProductSearch = ({
   onPick,
 }: {
   busy: boolean;
-  onPick: (productId: string) => void;
+  onPick: (productId: string, name: string) => void;
 }) => {
   const searchId = useId();
   const combobox = useCombobox({
@@ -72,7 +86,8 @@ const LinkProductSearch = ({
         middlewares={{ flip: false, shift: true }}
         onOptionSubmit={(productId) => {
           combobox.closeDropdown();
-          onPick(productId);
+          const picked = items.find((row) => row.item.productId === productId);
+          onPick(productId, picked?.item.product.name ?? '');
         }}
       >
         <Combobox.Target>
@@ -162,6 +177,11 @@ export const ScanEntryCard = ({
   const [packDraft, setPackDraft] = useState('');
   const [packError, setPackError] = useState('');
   const [packBusy, setPackBusy] = useState(false);
+  const [offerBackfill, setOfferBackfill] = useState(false);
+  const [addedName, setAddedName] = useState('');
+  const [newItemName, setNewItemName] = useState('');
+  const nameEdited = useRef(false);
+  const lookedUp = useRef<ProductSummary | null>(entry.product);
 
   const prefersReducedMotion = () =>
     typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -217,7 +237,7 @@ export const ScanEntryCard = ({
         : 'scan-entry-card--changed-animated',
     justCaptured ? 'scan-entry-card--just-captured' : undefined,
   ].filter(Boolean).join(' ');
-  const productName = entry.product?.name ?? 'Unknown product';
+  const productName = entry.product?.name ?? (addedName !== '' ? addedName : 'Unknown product');
   const hint = entry.groupHint;
   const rememberedPack = entry.product?.packCount;
   const askPackCount = isStockIn
@@ -294,9 +314,44 @@ export const ScanEntryCard = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commitCode, entry.id]);
 
+  const defining = linkOffer !== null && isStockOut;
+  useEffect(() => {
+    if (!defining || nameEdited.current) return;
+    if (entry.product?.name) {
+      // The scan already carries the lookup name. Keep anything the person typed.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setNewItemName(entry.product.name);
+      return;
+    }
+    let active = true;
+    void lookupProduct(entry.barcode)
+      .then((result) => {
+        if (!active || nameEdited.current) return;
+        lookedUp.current = result.product;
+        const name = result.product?.name.trim() ?? '';
+        if (name !== '') setNewItemName(name);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [defining, entry.barcode, entry.product?.name]);
+
+  const showBackfillCard = (itemName = '') => {
+    if (itemName !== '') setAddedName(itemName);
+    setOfferBackfill(true);
+    rememberOffer(null, false);
+    setApproveError('');
+  };
+
   // Returns true when the failure was shown and the scan stays pending.
   const showCommitFailure = async (requestError: unknown): Promise<boolean> => {
     if (!(requestError instanceof ApiError)) return false;
+    if (requestError.code === CODE_NONE_ON_HAND && isStockOut) {
+      showBackfillCard();
+      showCommitSentence(requestError.message);
+      return true;
+    }
     const behavior = commitConflictBehavior(requestError.code);
     if (behavior.refreshSuggestions) {
       const message = requestError.message || 'Unable to confirm scan.';
@@ -349,7 +404,7 @@ export const ScanEntryCard = ({
     }
   };
 
-  const linkSuggestion = async (productId: string) => {
+  const linkSuggestion = async (productId: string, itemName = '') => {
     setApproving(true);
     setApproveError('');
     try {
@@ -358,11 +413,98 @@ export const ScanEntryCard = ({
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
+      const keptEmpty = requestError instanceof ApiError
+        && requestError.code === CODE_NONE_ON_HAND
+        && isStockOut;
       if (!await showCommitFailure(requestError)) {
         const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
         setApproveError(message);
         showCommitSentence(message);
+      } else if (keptEmpty) {
+        if (itemName !== '') setAddedName(itemName);
+        onChanged();
       }
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const addAsNewItem = async () => {
+    const name = newItemName.trim();
+    if (name === '') return;
+    setApproving(true);
+    setApproveError('');
+    try {
+      const summary = entry.product ?? lookedUp.current;
+      const created = await createProduct({
+        name,
+        category: summary?.category ?? '',
+        unitOfMeasure: summary?.unitOfMeasure ?? '',
+      });
+      if (created.id === '') throw new Error('Created product could not be loaded.');
+      await createProductOverride({ barcode: entry.barcode, productId: created.id });
+      const updated = await updateScanEntry(entry.id, { productId: created.id, status: 'pending' });
+      setAddedName(name);
+      if (readOnHand(updated) === 0) {
+        showBackfillCard(name);
+      } else {
+        rememberOffer(null, false);
+      }
+      onChanged();
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'Unable to create product.';
+      setApproveError(message);
+      showCommitSentence(message);
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const showBackfillFailure = async (requestError: unknown) => {
+    if (!(requestError instanceof ApiError)) {
+      const message = requestError instanceof Error ? requestError.message : SERVER_ERROR_FALLBACK;
+      setOfferBackfill(false);
+      setApproveError(message);
+      showCommitSentence(message);
+      return;
+    }
+    const message = requestError.message || SERVER_ERROR_FALLBACK;
+    const kind = backfillFailureKind(requestError.code);
+    if (kind === 'define') {
+      setOfferBackfill(false);
+      await showCommitFailure(requestError);
+      return;
+    }
+    setOfferBackfill(false);
+    setApproveError(message);
+    showCommitSentence(message);
+    if (kind === 'stock-out' || kind === 'reload') onChanged();
+  };
+
+  const handleBackfill = async () => {
+    setApproving(true);
+    setApproveError('');
+    try {
+      const result = await commitBackfill(entry.id);
+      let moveId = '';
+      if (typeof result.itemId === 'string' && result.itemId !== '') {
+        try {
+          const history = await getItemHistory(result.itemId);
+          moveId = backfillMoveId(history.moves);
+        } catch {
+          moveId = '';
+        }
+      }
+      showUndo({
+        detail: ADDED_AND_TAKEN_OUT,
+        onUndo: moveId === '' ? undefined : () => {
+          void undoMove(moveId);
+        },
+      });
+      setOfferBackfill(false);
+      onChanged();
+    } catch (requestError) {
+      await showBackfillFailure(requestError);
     } finally {
       setApproving(false);
     }
@@ -657,13 +799,15 @@ export const ScanEntryCard = ({
           </div>
           {entry.direction !== null && (
             <Group gap={4} wrap="nowrap">
-              <Button
-                size="compact-xs"
-                loading={approving}
-                onClick={() => void handleApprove()}
-              >
-                Confirm
-              </Button>
+              {!offerBackfill && (
+                <Button
+                  size="compact-xs"
+                  loading={approving}
+                  onClick={() => void handleApprove()}
+                >
+                  Confirm
+                </Button>
+              )}
               <Button
                 size="compact-xs"
                 variant="light"
@@ -808,7 +952,7 @@ export const ScanEntryCard = ({
                     size="compact-xs"
                     loading={approving}
                     aria-label={`Link ${suggestion.name}`}
-                    onClick={() => void linkSuggestion(suggestion.productId)}
+                    onClick={() => void linkSuggestion(suggestion.productId, suggestion.name)}
                   >
                     Link
                   </Button>
@@ -816,10 +960,47 @@ export const ScanEntryCard = ({
               ))}
             </ul>
           )}
-          <LinkProductSearch busy={approving} onPick={(productId) => void linkSuggestion(productId)} />
+          <LinkProductSearch busy={approving} onPick={(productId, name) => void linkSuggestion(productId, name)} />
+          {isStockOut && (
+            <div className="scan-link-new">
+              <TextInput
+                size="xs"
+                label="Product name"
+                value={newItemName}
+                disabled={approving}
+                onChange={(event) => {
+                  nameEdited.current = true;
+                  setNewItemName(event.currentTarget.value);
+                }}
+              />
+              <Button
+                size="compact-xs"
+                disabled={newItemName.trim() === ''}
+                loading={approving}
+                onClick={() => void addAsNewItem()}
+              >
+                {ADD_AS_A_NEW_ITEM}
+              </Button>
+            </div>
+          )}
           <div className="scan-link-offer-actions">
             <Button size="compact-xs" variant="default" onClick={() => rememberOffer(null, false)}>
               Dismiss
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {offerBackfill && isStockOut && (
+        <div className="scan-link-offer" role="region" aria-labelledby={`backfill-${entry.id}`}>
+          <p id={`backfill-${entry.id}`} className="scan-link-offer-title">{NOTHING_ON_HAND_TO_TAKE_OUT}</p>
+          <div className="scan-link-offer-actions">
+            <Button
+              size="compact-xs"
+              loading={approving}
+              onClick={() => void handleBackfill()}
+            >
+              {ADD_IT_AND_TAKE_IT_OUT}
             </Button>
           </div>
         </div>

@@ -27,6 +27,7 @@ export function moveTitle(direction: string, quantity: number): string {
 }
 
 export function sourceLabel(source: string): string {
+  if (source === 'backfill') return 'Added when taking out';
   return source === 'scan' ? 'scan' : 'by hand';
 }
 
