@@ -76,6 +76,8 @@ describe('QueueScreen', () => {
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
 
     await waitFor(() => expect(api.batchCommit).toHaveBeenCalledWith(['scan-1', 'scan-2']));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.queryByText('Only 1 was on hand, so 1 was taken out.')).toBeNull();
   });
 
   it.each([
@@ -202,6 +204,53 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(screen.queryByText('Which item is this?')).toBeNull());
     expect(screen.getByText('Oat milk')).toBeTruthy();
     expect(api.commitScan).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: 'partial stock-out',
+      direction: 'stock_out' as const,
+      counts: { removedCount: 1, requestedCount: 3 },
+      note: 'Only 1 was on hand, so 1 was taken out.',
+    },
+    {
+      label: 'equal counts',
+      direction: 'stock_out' as const,
+      counts: { removedCount: 3, requestedCount: 3 },
+      note: '',
+    },
+    {
+      label: 'stock-in',
+      direction: 'stock_in' as const,
+      counts: {},
+      note: '',
+    },
+  ])('$label shows the short-shelf note only when removedCount is below requestedCount', async ({ direction, counts, note }) => {
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction, unitCount: 3 })]),
+      commitScan: jest.fn(async () => ({
+        ...entry({
+          id: 'scan-partial',
+          barcode: 'scan-partial',
+          direction,
+          unitCount: 3,
+          status: 'committed',
+          productId: 'prod-partial',
+        }),
+        ...counts,
+      })),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+
+    await waitFor(() => expect(api.listPending).toHaveBeenCalledTimes(2));
+    if (note === '') {
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
+      expect(screen.queryByText('Only 1 was on hand, so 1 was taken out.')).toBeNull();
+    } else {
+      expect(within(screen.getByTestId('confirm-toast')).getByText(note)).toBeTruthy();
+    }
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {

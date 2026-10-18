@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { ScanDirection, ScanStatus } from '../types';
+import type { ScanDirection, ScanEntry, ScanStatus } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -71,8 +71,15 @@ export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 // A 5xx response with no JSON error field. A body that includes error still wins.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
-// The only stock-out count the server has to send. A rename is this one edit.
+// Stock-out commit counts. A rename is this one edit. Stock-in omits both.
 export const REMOVED_COUNT_FIELD = 'removedCount';
+export const REQUESTED_COUNT_FIELD = 'requestedCount';
+
+// Both fields are on every successful stock-out commit. Stock-in omits both.
+export interface CommitScanResult extends ScanEntry {
+  removedCount?: number;
+  requestedCount?: number;
+}
 
 // Appended beside the outcome helpers. A rename of either code or the batch
 // key is this one edit; older batch bodies that omit the key keep working.
@@ -133,13 +140,19 @@ export function batchFailureNotices(response: {
   });
 }
 
-// Requested count is the card's own unitCount. removedCount below 1, missing,
-// or already at that count says nothing.
-export function formatPartialRemoval(unitCount: number, body: object | null | undefined): string | null {
+// A short shelf is removedCount below requestedCount. An older body with no
+// requestedCount still uses the card's unitCount. Missing, zero, or equal
+// counts say nothing.
+export function formatPartialRemoval(unitCount: number, body: CommitScanResult | null | undefined): string | null {
   if (body === null || body === undefined) return null;
-  const removedCount = (body as Record<string, unknown>)[REMOVED_COUNT_FIELD];
+  const record = body as unknown as Record<string, unknown>;
+  const removedCount = record[REMOVED_COUNT_FIELD];
+  const requestedCount = record[REQUESTED_COUNT_FIELD];
+  const requested = typeof requestedCount === 'number' && Number.isInteger(requestedCount)
+    ? requestedCount
+    : unitCount;
   if (typeof removedCount !== 'number' || !Number.isInteger(removedCount)) return null;
-  if (removedCount < 1 || removedCount >= unitCount) return null;
+  if (removedCount < 1 || removedCount >= requested) return null;
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }
