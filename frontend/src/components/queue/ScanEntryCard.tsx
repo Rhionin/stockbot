@@ -19,6 +19,7 @@ const UNIT_COUNT_SAVE_DELAY_MS = 200;
 const multipackName = /\d+\s*x\s*\d/i;
 
 const LINK_OFFER_HEADING = 'Which item is this?';
+const NOTHING_ON_HAND = 'Nothing on hand to take out.';
 
 const LinkProductSearch = ({
   busy,
@@ -70,9 +71,10 @@ const LinkProductSearch = ({
       <Combobox
         store={combobox}
         withinPortal={false}
+        width="target"
         position="bottom"
         offset={4}
-        middlewares={{ flip: false, shift: true }}
+        middlewares={{ flip: true, shift: true, size: true }}
         onOptionSubmit={(productId) => {
           combobox.closeDropdown();
           onPick(productId);
@@ -718,8 +720,8 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && (
-        <Text c="dimmed" size="sm" mt={4}>Nothing on hand to take out.</Text>
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && (approveError || commitNotice) !== NOTHING_ON_HAND && (
+        <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
       )}
 
       {entry.status === 'flagged' && (

@@ -155,7 +155,7 @@ const pendingEntries = (which: PendingSet): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'confirm-milk-more';
   pendingAfter: PendingSet;
   commit?: { status: number; body: unknown; empty?: boolean };
   batch?: unknown;
@@ -163,6 +163,7 @@ interface OutcomeCase {
   visible: string[];
   absent: string[];
   once?: string[];
+  cardOnce?: { barcode: string; text: string };
   pendingBarcodes: string[];
   goneBarcodes: string[];
   cardReason?: { barcode: string; text: string };
@@ -635,6 +636,22 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
   },
   {
+    name: 'confirming a wiped product with More open says nothing is on hand once',
+    action: 'confirm-milk-more',
+    pendingAfter: 'both',
+    household: [householdItem('oats', 'Oats', 1)],
+    commit: {
+      status: 409,
+      body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' },
+    },
+    visible: ['Nothing on hand to take out.'],
+    absent: ['No inventory item is available'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardOnce: { barcode: '111', text: 'Nothing on hand to take out.' },
+    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+  },
+  {
     name: 'an empty search lists household items, including zero on hand',
     action: 'confirm-milk',
     pendingAfter: 'both',
@@ -800,6 +817,9 @@ describe('scan commit outcomes', () => {
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
     } else if (row.action === 'more-milk' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+    } else if (row.action === 'confirm-milk-more' && milkCard) {
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     } else if (milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     }
@@ -903,6 +923,10 @@ describe('scan commit outcomes', () => {
     if (row.cardReason) {
       const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
       expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+    }
+    if (row.cardOnce) {
+      const card = screen.getByRole('article', { name: `Scan ${row.cardOnce.barcode}` });
+      expect(within(card).getAllByText(row.cardOnce.text)).toHaveLength(1);
     }
     if (row.unlinked) {
       const card = screen.getByRole('article', { name: 'Scan 111' });
