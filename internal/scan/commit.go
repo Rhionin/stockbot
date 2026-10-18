@@ -73,7 +73,7 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 		UPDATE scan_entries 
 		SET status = ?, committed_at = ?
 		WHERE id = ?`,
-		string(Committed), time.Now().UTC(), scanEntry.ID,
+		string(Committed), r.now(), scanEntry.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update scan entry: %w", err)
@@ -104,6 +104,13 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 
 	return nil
+}
+
+func (r *Queue) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now().UTC()
 }
 
 // trackRestock reports whether a movement is past the opening snapshot.

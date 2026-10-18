@@ -9,21 +9,28 @@ import (
 // suffix. The repair reads the shelf instant back through the driver, which
 // drops that suffix, so a SQL equality check never sees the row.
 func TestRepairMatchesSuffixedScannedAt(t *testing.T) {
-	const suffixed = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
+	const (
+		suffixed   = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
+		manualAt   = "2026-10-17 12:00:00.1 +0000 UTC"
+		sameSecond = "2026-10-17 12:00:00.9 +0000 UTC"
+	)
 	db := openHistoryDB(t)
-	execHistory(t, db, `INSERT INTO products (id, name) VALUES ('prod', 'Oats')`)
+	execHistory(t, db, `INSERT INTO products (id, name) VALUES ('prod', 'Oats'), ('other', 'Rice')`)
 	execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod')`)
 	execHistory(t, db, `
 		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
 			('scan-decoy', 'user-1', 'oats', '2026-10-17 19:00:00 +0000 UTC', 'stock_in', 1, 'committed', 'prod'),
+			('scan-other-product', 'user-1', 'rice', ?, 'stock_in', 1, 'committed', 'other'),
+			('scan-cancelled', 'user-1', 'oats', ?, 'stock_in', 1, 'cancelled', 'prod'),
+			('scan-same-second', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
 			('scan-suffix', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
 			('scan-out-suffix', 'user-1', 'oats', ?, 'stock_out', 1, 'committed', 'prod')`,
-		suffixed, suffixed)
+		manualAt, manualAt, sameSecond, suffixed, suffixed)
 	execHistory(t, db, `
 		INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason) VALUES
 			('inst-in', 'item', ?, NULL, NULL),
-			('inst-out', 'item', '2026-10-17 12:00:00 +0000 UTC', ?, 'manual')`,
-		suffixed, suffixed)
+			('inst-out', 'item', ?, ?, 'manual')`,
+		suffixed, manualAt, suffixed)
 
 	view, err := NewJournal(db).Product(t.Context(), "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -36,9 +43,22 @@ func TestRepairMatchesSuffixedScannedAt(t *testing.T) {
 	if got := findMove(t, view, inAt, "out"); got.Source != "scan" {
 		t.Fatalf("suffixed stock-out source = %q", got.Source)
 	}
-	plain := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
-	if got := findMove(t, view, plain, "in"); got.Source != "manual" {
-		t.Fatalf("unmatched stock-in source = %q", got.Source)
+	plain := time.Date(2026, 10, 17, 12, 0, 0, 100000000, time.UTC)
+	manualMove := findMove(t, view, plain, "in")
+	if manualMove.Source != "manual" {
+		t.Fatalf("unmatched stock-in source = %q", manualMove.Source)
+	}
+	var linked string
+	if err := db.QueryRow(`SELECT COALESCE(scan_entry_id, '') FROM stock_moves WHERE id = ?`, manualMove.ID).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	for _, decoy := range []string{"scan-other-product", "scan-cancelled", "scan-same-second"} {
+		if linked == decoy {
+			t.Fatalf("manual move linked to %s", decoy)
+		}
+	}
+	if linked != "" {
+		t.Fatalf("manual move linked to %q", linked)
 	}
 
 	rows, err := db.Query(`SELECT direction, source, COALESCE(scan_entry_id, '') FROM stock_moves ORDER BY direction, at`)

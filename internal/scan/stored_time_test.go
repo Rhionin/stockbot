@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -32,6 +33,45 @@ func TestScanWritesStoreCleanUTC(t *testing.T) {
 		if !strings.Contains(raw, "+0000 UTC") || strings.Contains(raw, "m=") {
 			t.Fatalf("stored %q", raw)
 		}
+	}
+}
+
+func TestCommitStockInStoresTheInjectedClock(t *testing.T) {
+	queue, db := newTestQueue(t)
+	ctx := context.Background()
+	stamped := time.Date(2020, 1, 2, 3, 4, 5, 6, time.UTC)
+	queue.Now = func() time.Time { return stamped }
+
+	const productID = "prod-clock"
+	if err := product.NewCatalog(db).CreateProduct(ctx, product.Product{
+		ID: productID, Name: "Clock oats", Category: "Pantry",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	direction := scan.StockIn
+	pid := productID
+	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		UserID:    "user-1",
+		Barcode:   "clock",
+		ScannedAt: time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
+		Direction: &direction,
+		UnitCount: 1,
+		ProductID: &pid,
+		Status:    scan.Pending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.CommitStockIn(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT CAST(committed_at AS TEXT) FROM scan_entries WHERE id = ?`, created.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	const want = "2020-01-02 03:04:05.000000006 +0000 UTC"
+	if stored != want {
+		t.Fatalf("committed_at = %q, want %q", stored, want)
 	}
 }
 
