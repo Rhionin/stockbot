@@ -63,7 +63,7 @@ Every error body is JSON. Codes the client matches are on `code`. The sentence i
 { "error": "Choose which item this is first.", "code": "product_unresolved" }
 ```
 
-A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a normal stock-out commit returns. "Not linked" means the scan has no product, or the product is not a live item in this household. The client links the barcode or adds the item first, then commits the backfill.
+A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a normal stock-out commit returns. "Not linked" means the scan has no product, or this household has no item row for that product. A shelved item is `409` `none_on_hand`, not this error. The client links the barcode or adds the item first, then commits the backfill.
 
 | HTTP | `code` | `error` |
 |---|---|---|
@@ -311,4 +311,4 @@ A backfill, a link, and **Add as a new item** read and write only that household
 - the barcode override is stored for this household's `userId`
 - stock moves and the usage row hang off that item
 
-A scan whose `userId` is another household is `404` `scan_not_found` / `This scan is no longer in the queue.` The handler does not commit it and does not copy its barcode onto this household's item. Another household's item, even for the same product id, is not read or updated.
+A backfill, a link, and **Add as a new item** use the scan's own `userId`. They do not read or update another household's item, barcode, or stock moves, even when that household stocks the same product. A backfill whose household has no item for the product is `400` `product_unresolved`, including when only another household has that item.
