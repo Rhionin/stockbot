@@ -453,6 +453,9 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // A missing household item returns *NoItemError and changes nothing.
 // An item with nothing left on the shelf returns ErrNoneOnHand and changes
 // nothing, including a barcode link started in the same transaction.
+// A named instance that is not on that item returns ErrNoneOnHand when the
+// shelf is empty, and inventory.ErrInstanceNotFound when another unit remains.
+// Either way the transaction rolls back, so a barcode link is not kept.
 // CommitStockOutLink is the explicit choice that adds the scanned barcode
 // and decrements that product. Nothing is linked on its own.
 //

@@ -276,6 +276,15 @@ func TestScanBatchCommit(t *testing.T) {
 	})
 }
 
+func TestCommitFailureReasonUsesSharedSentences(t *testing.T) {
+	if got := commitFailureReason(inventory.ErrInstanceNotFound); got != "That one was already taken out. Pick another." {
+		t.Fatalf("instance gone reason = %q", got)
+	}
+	if got := commitFailureReason(scan.ErrNoneOnHand); got != "Nothing on hand to take out." {
+		t.Fatalf("empty shelf reason = %q", got)
+	}
+}
+
 func mustProduct(env testEnv, id, name string) {
 	env.T.Helper()
 	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{

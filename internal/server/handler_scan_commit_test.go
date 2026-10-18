@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1265,4 +1266,257 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 			),
 		},
 	})
+}
+
+// TestScanCommitRemovedInstance is the #285 regression. On master, naming an
+// instance that was already removed returned 500. The commit must refuse with
+// 409 and leave every stock move, instance, and scan row as it was.
+func TestScanCommitRemovedInstance(t *testing.T) {
+	now := time.Date(2026, 6, 3, 15, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(48 * time.Hour)
+	snaps := map[string]string{}
+
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "removed instance with nothing else on hand is an empty shelf",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "only")
+				snaps["only"] = pantrySnapshot(env, "item-only", "scan-only")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-only/commit",
+				body:           `{"instanceId":"inst-only"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["only"], "item-only", "scan-only")
+			},
+		},
+		{
+			name: "removed instance with another unit still on hand",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "stale")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-stale-left', 'item-stale', ?)`,
+					now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				snaps["stale"] = pantrySnapshot(env, "item-stale", "scan-stale")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-stale/commit",
+				body:           `{"instanceId":"inst-stale"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["stale"], "item-stale", "scan-stale")
+			},
+		},
+		{
+			name: "instance id that never existed still has another unit",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "missing")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE item_instances SET removed_at = NULL, removal_reason = NULL WHERE id = 'inst-missing'`); err != nil {
+					env.T.Fatalf("restore instance: %v", err)
+				}
+				snaps["missing"] = pantrySnapshot(env, "item-missing", "scan-missing")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-missing/commit",
+				body:           `{"instanceId":"inst-never"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["missing"], "item-missing", "scan-missing")
+			},
+		},
+		{
+			name: "instance id from a different item is not on this shelf",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "home")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE item_instances SET removed_at = NULL, removal_reason = NULL WHERE id = 'inst-home'`); err != nil {
+					env.T.Fatalf("restore instance: %v", err)
+				}
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-other-home", Name: "Other", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id) VALUES ('item-other-home', 'user-home', 'prod-other-home')`); err != nil {
+					env.T.Fatalf("create other item: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-foreign', 'item-other-home', ?)`,
+					now); err != nil {
+					env.T.Fatalf("create foreign instance: %v", err)
+				}
+				snaps["home"] = pantrySnapshot(env, "item-home", "scan-home")
+				snaps["foreign"] = pantrySnapshot(env, "item-other-home", "scan-home")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-home/commit",
+				body:           `{"instanceId":"inst-foreign"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["home"], "item-home", "scan-home")
+				assertPantryUnchanged(env, snaps["foreign"], "item-other-home", "scan-home")
+			},
+		},
+		{
+			name: "linking while the named instance is gone does not keep the link",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "link")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-link-left', 'item-link', ?)`,
+					now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-link-src", Name: "Scanned", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE scan_entries SET product_id = 'prod-link-src', barcode = '999000111222' WHERE id = 'scan-link'`); err != nil {
+					env.T.Fatalf("point scan at the other product: %v", err)
+				}
+				snaps["link"] = pantrySnapshot(env, "item-link", "scan-link") + barcodeSnapshot(env, "999000111222")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-link/commit",
+				body:           `{"instanceId":"inst-link","linkProductId":"prod-link"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				got := pantrySnapshot(env, "item-link", "scan-link") + barcodeSnapshot(env, "999000111222")
+				if got != snaps["link"] {
+					env.T.Fatalf("rows changed\nbefore:\n%s\nafter:\n%s", snaps["link"], got)
+				}
+			},
+		},
+	})
+}
+
+func seedRemovedInstanceScan(env testEnv, now, expiresAt time.Time, suffix string) {
+	env.T.Helper()
+	productID := "prod-" + suffix
+	itemID := "item-" + suffix
+	instanceID := "inst-" + suffix
+	scanID := "scan-" + suffix
+	userID := "user-" + suffix
+	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+		ID: productID, Name: "Removed " + suffix, Category: "Test", UnitOfMeasure: "unit",
+	}); err != nil {
+		env.T.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := env.DB.ExecContext(context.Background(),
+		`INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`, itemID, userID, productID); err != nil {
+		env.T.Fatalf("create item: %v", err)
+	}
+	if _, err := env.DB.ExecContext(context.Background(), `
+		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, removed_at, removal_reason)
+		VALUES (?, ?, ?, ?, ?, 'consumed')`,
+		instanceID, itemID, now.Add(-48*time.Hour), expiresAt, now.Add(-time.Hour)); err != nil {
+		env.T.Fatalf("create removed instance: %v", err)
+	}
+	direction := scan.StockOut
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		ID: scanID, UserID: userID, Barcode: "barcode-" + suffix,
+		ScannedAt: now, Direction: &direction, UnitCount: 1,
+		ProductID: &productID, Status: scan.Pending,
+	}); err != nil {
+		env.T.Fatalf("CreateScanEntry: %v", err)
+	}
+}
+
+func assertPantryUnchanged(env testEnv, before, itemID, scanID string) {
+	env.T.Helper()
+	after := pantrySnapshot(env, itemID, scanID)
+	if after != before {
+		env.T.Fatalf("rows changed\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func pantrySnapshot(env testEnv, itemID, scanID string) string {
+	env.T.Helper()
+	var b strings.Builder
+	dumpQuery(&b, env, "instances", `
+		SELECT id, item_id, IFNULL(CAST(removed_at AS TEXT), ''), IFNULL(removal_reason, ''),
+		       IFNULL(stock_move_id, ''), IFNULL(removed_by_move_id, '')
+		FROM item_instances WHERE item_id = ? ORDER BY id`, itemID)
+	dumpQuery(&b, env, "moves", `
+		SELECT id, direction, quantity, source, IFNULL(scan_entry_id, '')
+		FROM stock_moves WHERE item_id = ? ORDER BY id`, itemID)
+	dumpQuery(&b, env, "scan", `
+		SELECT id, status, IFNULL(product_id, ''), IFNULL(CAST(committed_at AS TEXT), '')
+		FROM scan_entries WHERE id = ?`, scanID)
+	return b.String()
+}
+
+func barcodeSnapshot(env testEnv, barcode string) string {
+	env.T.Helper()
+	var b strings.Builder
+	dumpQuery(&b, env, "barcodes", `
+		SELECT barcode, product_id, source, user_id FROM barcodes WHERE barcode = ? ORDER BY source, user_id`, barcode)
+	return b.String()
+}
+
+func dumpQuery(b *strings.Builder, env testEnv, title, query string, args ...any) {
+	env.T.Helper()
+	fmt.Fprintf(b, "[%s]\n", title)
+	rows, err := env.DB.Query(query, args...)
+	if err != nil {
+		env.T.Fatalf("%s: %v", title, err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		env.T.Fatal(err)
+	}
+	for rows.Next() {
+		vals := make([]sql.RawBytes, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			env.T.Fatal(err)
+		}
+		for i, col := range cols {
+			fmt.Fprintf(b, "%s=%s ", col, string(vals[i]))
+		}
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		env.T.Fatal(err)
+	}
 }
