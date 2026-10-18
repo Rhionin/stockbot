@@ -905,6 +905,8 @@ code {
   left: 0 !important;
   width: 100% !important;
   margin-top: 4px;
+  max-height: calc(100dvh - 8px);
+  overflow-y: auto;
 }
 
 .scan-session-card:has(.scan-link-search) {
