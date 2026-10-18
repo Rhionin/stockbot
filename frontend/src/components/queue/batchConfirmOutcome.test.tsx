@@ -150,8 +150,11 @@ interface OutcomeCase {
   instanceFetches?: number;
   dismiss?: boolean;
   quiet?: boolean;
-  unlinked?: 'suggestions' | 'empty';
+  unlinked?: 'suggestions' | 'empty' | 'search';
   cards?: ScanEntry[];
+  searchOn?: string[];
+  noSearchOn?: string[];
+  relink?: { name: string; remaining: string; status: number; body: unknown };
   stillSelected?: boolean;
   fixed?: boolean;
   toast?: string;
@@ -451,6 +454,108 @@ const cases: OutcomeCase[] = [
     cardReason: { barcode: '222', text: 'Nothing on hand to take out.' },
   },
   {
+    name: 'product_unresolved shows the server sentence and search',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    commit: {
+      status: 400,
+      body: { error: 'Pick a product for this scan first.', code: 'product_unresolved' },
+    },
+    visible: ['Pick a product for this scan first.', 'Which item is this?'],
+    absent: ['No close match found.'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: 'Pick a product for this scan first.' },
+    unlinked: 'search',
+  },
+  {
+    name: 'batch product_unresolved opens search only on that card',
+    action: 'batch',
+    pendingAfter: 'both',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ['Pick a product for this scan first.', 'Nothing on hand to take out.'],
+      failedCodes: ['product_unresolved', 'none_on_hand'],
+    },
+    visible: ['Pick a product for this scan first.', 'Nothing on hand to take out.', 'Which item is this?'],
+    absent: ['No close match found.'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: 'Pick a product for this scan first.' },
+    searchOn: ['111'],
+    noSearchOn: ['222'],
+  },
+  {
+    name: 'a batch without failedCodes still shows only the reason',
+    action: 'batch',
+    pendingAfter: 'oats',
+    batch: {
+      updatedCount: 2,
+      committedIds: ['scan-milk'],
+      failedIds: ['scan-oats'],
+      failedReasons: ['Nothing on hand to take out.'],
+    },
+    visible: ['Nothing on hand to take out.', fallback],
+    absent: ['Which item is this?', 'No close match found.'],
+    once: [fallback],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    cardReason: { barcode: '222', text: 'Nothing on hand to take out.' },
+    noSearchOn: ['222'],
+  },
+  {
+    name: 'link_target_gone shows the server sentence and drops the stale suggestion',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    commit: {
+      status: 409,
+      body: {
+        error: 'Which item is this?',
+        code: 'no_item',
+        suggestions: [
+          { itemId: 'item-stale', productId: 'prod-stale', name: 'Stale Oats', onHand: 1 },
+          { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
+        ],
+      },
+    },
+    relink: {
+      name: 'Stale Oats',
+      remaining: 'Kept Oats',
+      status: 409,
+      body: {
+        error: "That item isn't available anymore. Pick another.",
+        code: 'link_target_gone',
+        suggestions: [
+          { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
+        ],
+      },
+    },
+    visible: ["That item isn't available anymore. Pick another.", 'Kept Oats', 'Which item is this?'],
+    absent: ['Stale Oats', 'No close match found.'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: "That item isn't available anymore. Pick another." },
+  },
+  {
+    name: 'batch link_target_gone shows the reason and refreshes that card',
+    action: 'batch',
+    pendingAfter: 'both',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ["That item isn't available anymore. Pick another.", 'Nothing on hand to take out.'],
+      failedCodes: ['link_target_gone', 'none_on_hand'],
+    },
+    visible: ["That item isn't available anymore. Pick another.", 'Nothing on hand to take out.', 'Which item is this?'],
+    absent: ['No close match found.'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardReason: { barcode: '111', text: "That item isn't available anymore. Pick another." },
+    searchOn: ['111'],
+    noSearchOn: ['222'],
+  },
+  {
     name: 'an all-success batch with no failedIds shows no banner',
     action: 'batch',
     pendingAfter: 'none',
@@ -478,6 +583,7 @@ describe('scan commit outcomes', () => {
   it.each(cases)('$name', async (row) => {
     let pending: PendingSet = row.cards ? 'crowd' : 'both';
     let instanceFetches = 0;
+    let commitCount = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('batch-commit') && init?.method === 'POST') {
@@ -485,7 +591,11 @@ describe('scan commit outcomes', () => {
         return Promise.resolve(jsonResponse(row.batch ?? {}));
       }
       if (url.endsWith('/commit') && init?.method === 'POST') {
+        commitCount += 1;
         pending = row.pendingAfter;
+        if (row.relink && commitCount > 1) {
+          return Promise.resolve(jsonResponse(row.relink.body, row.relink.status));
+        }
         const commit = row.commit ?? { status: 200, body: committedMilk };
         return Promise.resolve(jsonResponse(commit.body, commit.status));
       }
@@ -545,6 +655,10 @@ describe('scan commit outcomes', () => {
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
     } else if (milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
+    }
+
+    if (row.relink && milkCard) {
+      fireEvent.click(await within(milkCard).findByRole('button', { name: `Link ${row.relink.name}` }));
     }
 
     await waitFor(() => {
@@ -625,10 +739,29 @@ describe('scan commit outcomes', () => {
       if (row.unlinked === 'empty') {
         expect(within(card).getByText('No close match found.')).toBeInTheDocument();
         expect(within(card).queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
+      } else if (row.unlinked === 'search') {
+        expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
+        expect(within(card).queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
       } else {
         expect(within(card).getByRole('button', { name: 'Link Rolled Oats Nearby' })).toBeInTheDocument();
         expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
       }
+    }
+    for (const barcode of row.searchOn ?? []) {
+      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
+      expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
+      expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
+    }
+    for (const barcode of row.noSearchOn ?? []) {
+      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      expect(within(card).queryByLabelText('Search products')).not.toBeInTheDocument();
+      expect(within(card).queryByRole('region', { name: 'Which item is this?' })).not.toBeInTheDocument();
+    }
+    if (row.relink) {
+      const card = screen.getByRole('article', { name: 'Scan 111' });
+      expect(within(card).getByRole('button', { name: `Link ${row.relink.remaining}` })).toBeInTheDocument();
+      expect(within(card).queryByRole('button', { name: `Link ${row.relink.name}` })).not.toBeInTheDocument();
     }
     if (row.dismiss) {
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();

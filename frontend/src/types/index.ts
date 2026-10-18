@@ -452,4 +452,5 @@ export interface BatchCommitResponse {
   committedIds?: string[];
   failedIds?: string[];
   failedReasons?: string[];
+  failedCodes?: string[];
 }

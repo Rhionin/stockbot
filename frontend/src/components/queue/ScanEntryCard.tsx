@@ -106,6 +106,7 @@ export interface ScanEntryCardProps {
   itemId?: string;
   justCaptured?: boolean;
   commitNotice?: string;
+  commitCode?: string;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
 }
@@ -116,6 +117,7 @@ export const ScanEntryCard = ({
   itemId,
   justCaptured = false,
   commitNotice = '',
+  commitCode = '',
   onSelectedChange,
   onChanged,
 }: ScanEntryCardProps) => {
@@ -123,7 +125,11 @@ export const ScanEntryCard = ({
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approveError, setApproveError] = useState('');
   const [approving, setApproving] = useState(false);
-  const [linkOffer, setLinkOffer] = useState<PantryLinkSuggestion[] | null>(null);
+  const [localOffer, setLocalOffer] = useState<{
+    code: string;
+    offer: PantryLinkSuggestion[] | null;
+    hideEmpty: boolean;
+  } | null>(null);
   const [removeError, setRemoveError] = useState('');
   const [removing, setRemoving] = useState(false);
   const [unitCountDraft, setUnitCountDraft] = useState(entry.unitCount);
@@ -227,14 +233,32 @@ export const ScanEntryCard = ({
     showUndo({ detail: message, color: 'red' });
   };
 
+  const rememberOffer = (offer: PantryLinkSuggestion[] | null, hideEmpty: boolean) => {
+    setLocalOffer({ code: commitCode, offer, hideEmpty });
+  };
+
+  // A batch code with no local answer yet opens search. A later confirm on
+  // this card replaces that with the response, keyed to the same code.
+  const batchBehavior = commitCode === '' ? null : commitConflictBehavior(commitCode);
+  const matchingOffer = localOffer !== null && localOffer.code === commitCode ? localOffer : null;
+  const batchOpensSearch = matchingOffer === null
+    && batchBehavior !== null
+    && (batchBehavior.refreshSuggestions || batchBehavior.hideEmptyMatch);
+  const linkOffer = matchingOffer !== null ? matchingOffer.offer : (batchOpensSearch ? [] : null);
+  const hideEmptyMatch = matchingOffer !== null ? matchingOffer.hideEmpty : batchOpensSearch;
+
   // Returns true when the failure was shown and the scan stays pending.
   const showCommitFailure = (requestError: unknown): boolean => {
     if (!(requestError instanceof ApiError)) return false;
     const behavior = commitConflictBehavior(requestError.code);
-    if (behavior.linkOffer) {
-      setLinkOffer(requestError.suggestions);
+    if (behavior.linkOffer || behavior.refreshSuggestions) {
+      rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
+      const message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
+      setApproveError(message);
+      showCommitSentence(message);
       return true;
     }
+    rememberOffer(null, false);
     if (behavior.refreshInstances) {
       setInstancePickerOpen(true);
       setInstanceId('');
@@ -251,7 +275,7 @@ export const ScanEntryCard = ({
     setApproveError('');
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
-      setLinkOffer(null);
+      rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
@@ -270,7 +294,7 @@ export const ScanEntryCard = ({
     setApproveError('');
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
-      setLinkOffer(null);
+      rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
@@ -710,9 +734,9 @@ export const ScanEntryCard = ({
       {linkOffer !== null && (
         <div className="scan-link-offer" role="region" aria-labelledby={`link-offer-${entry.id}`}>
           <p id={`link-offer-${entry.id}`} className="scan-link-offer-title">{LINK_OFFER_HEADING}</p>
-          {linkOffer.length === 0 ? (
+          {linkOffer.length === 0 && !hideEmptyMatch ? (
             <p className="scan-link-offer-copy">{NO_CLOSE_MATCH}</p>
-          ) : (
+          ) : linkOffer.length === 0 ? null : (
             <ul className="scan-link-offer-list">
               {linkOffer.map((suggestion) => (
                 <li key={suggestion.itemId} className="scan-link-offer-row">
@@ -734,7 +758,7 @@ export const ScanEntryCard = ({
           )}
           <LinkProductSearch busy={approving} onPick={(productId) => void linkSuggestion(productId)} />
           <div className="scan-link-offer-actions">
-            <Button size="compact-xs" variant="default" onClick={() => setLinkOffer(null)}>
+            <Button size="compact-xs" variant="default" onClick={() => rememberOffer(null, false)}>
               Dismiss
             </Button>
           </div>
