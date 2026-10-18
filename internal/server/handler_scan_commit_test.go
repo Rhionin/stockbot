@@ -1173,8 +1173,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 // TestScanOutOfEmptyShelf is the #277 repro: stock a product in, scan it out
 // until the shelf is empty, then commit another scan-out. The handler suite
-// opens a temporary SQLite database with sql.Open("sqlite", ":memory:") and
-// applies migrations before the request.
+// opens a temporary in-memory database and applies migrations before the request.
 func TestScanOutOfEmptyShelf(t *testing.T) {
 	runHandlerTests(t, []handlerTestCase{
 		{
