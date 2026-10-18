@@ -1,0 +1,54 @@
+# Manual mutation run for the React frontend. workflow_dispatch only, so it
+# never gates pull requests. ci.yml is left untouched on purpose.
+
+name: Frontend mutation tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      mutate:
+        description: >-
+          Comma-separated Stryker --mutate globs, relative to frontend/.
+          This replaces stryker.config.mjs, so keep a ! exclusion for tests.
+          Example: src/utils/**/*.ts,!src/utils/**/*.test.ts
+        required: false
+        default: "src/utils/**/*.ts,!src/utils/**/*.test.ts"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Stryker (Vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run mutation tests
+        env:
+          MUTATE: ${{ inputs.mutate }}
+        run: npm run test:mutation -- --mutate "$MUTATE"
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-mutation-report
+          path: frontend/reports/mutation/
+          retention-days: 14

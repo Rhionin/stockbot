@@ -37,6 +37,11 @@ frontend/pnpm-debug.log*
 frontend/playwright-report/
 frontend/test-results/
 
+# Stryker mutation testing (local and workflow reports)
+frontend/.stryker-tmp/
+frontend/reports/
+frontend/stryker.log
+
 # Frontend build copied into the Go embed directory
 internal/webui/assets/*
 !internal/webui/assets/index.html

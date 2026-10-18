@@ -64,6 +64,7 @@ This means that when the frontend makes same-origin requests to `/api/products`,
 ### Code Quality
 - `npm run lint` - Run ESLint on all source files
 - `npm test` - Run unit tests with Vitest in watch mode
+- `npm run test:mutation` - Run Stryker mutation tests (see below)
 - `npm run e2e` - Run end-to-end tests with Playwright
 
 ### Testing Approach
@@ -84,10 +85,71 @@ The frontend uses a multi-layered testing strategy:
    - TypeScript provides compile-time type safety
    - Run explicitly with `npx tsc -b` or as part of the build process
 
+4. **Mutation Testing** (Stryker + Vitest)
+   - Checks that the unit tests fail when production code is changed
+   - Run from this directory with `npm run test:mutation`
+   - Does not run in pull-request CI
+
 The test configuration includes:
 - **jsdom** environment for unit tests (configured in `vite.config.ts`)
 - **Setup file** at `./src/test-setup.ts` for test utilities and global configuration
 - **@testing-library/jest-dom** for additional DOM matchers
+
+## Mutation testing
+
+Stryker (`@stryker-mutator/core` and `@stryker-mutator/vitest-runner`) mutates `src/**/*.ts` and `src/**/*.tsx`, excluding tests and `src/test-setup.ts`, then re-runs the related Vitest tests. Use Node 24 from `.nvmrc`. `@stryker-mutator/vitest-runner` is pinned to exact `10.0.0` (no version range) because [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210) is still open. A newer runner without a matching workaround reports false survivors.
+
+```bash
+npm run test:mutation
+```
+
+The HTML report is `reports/mutation/index.html` and the JSON report is `reports/mutation/mutation-report.json`. Both directories are gitignored.
+
+### Scope a run
+
+`--mutate` accepts a comma-separated list of globs, relative to this directory. npm forwards arguments after `--`.
+
+```bash
+# One module
+npm run test:mutation -- --mutate src/utils/inventoryFilter.ts
+
+# The utils directory. --mutate replaces the list in stryker.config.mjs,
+# so repeat the test exclusion.
+npm run test:mutation -- --mutate 'src/utils/**/*.ts,!src/utils/**/*.test.ts'
+
+# Production sources changed on this branch (paths stay relative to frontend/)
+npm run test:mutation -- --mutate "$(git diff --name-only --relative --diff-filter=ACMRT origin/master -- 'src/**/*.ts' 'src/**/*.tsx' | grep -v -e '\.test\.' -e 'test-setup.ts' | paste -sd, -)"
+```
+
+If the changed-file command prints nothing, omit `--mutate`. An empty value is not a valid file list.
+
+Incremental mode reuses `reports/mutation/incremental.json` and only rechecks mutants whose code or covering tests changed:
+
+```bash
+npm run test:mutation -- --incremental --incrementalFile reports/mutation/incremental.json
+```
+
+Add `--force` to rebuild that file. Incremental results are only as honest as the run that wrote them, so use a full run when the Stryker or Vitest version changes.
+
+### Vitest 5 and the test-name patch
+
+`npm run test:mutation` applies `scripts/ensure-stryker-vitest5.mjs` before Stryker starts. The installed `@stryker-mutator/vitest-runner` must be exactly `10.0.0`. That release joins suite and test names with a space. Vitest 5 matches `testNamePattern` against the full name joined with ` > `, so the per-test filter matches nothing and covered mutants are reported as survivors after zero tests. The script patches both copies of `collectTestName` (test ids and dry-run coverage keys). Patching only one of them marks every mutant as having no coverage.
+
+The script exits before Stryker starts when the installed version is not `10.0.0`, when either `collectTestName` file is missing, or when the function body is not the `10.0.0` text it knows how to patch. It does not continue into a run that would print a false 0% score.
+
+The Vitest runner still returns that per-test coverage when `coverageAnalysis` is `off`, so the planner keeps filtering and the false survivors remain. The config therefore uses `perTest`.
+
+Remove the pin and `scripts/ensure-stryker-vitest5.mjs` when a published runner includes the fix for [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210).
+
+Do not invoke `npx stryker run` on its own. The score is only meaningful after the patch.
+
+### Canary
+
+`npm run test:mutation` runs `scripts/mutation-canary.mjs` before the requested mutate set. The canary mutation-tests only `src/utils/inventoryFilter.ts` and requires the line 13 `LogicalOperator` mutant (`||` replaced with `&&`) to be Killed with at least one test executed. Those unit tests already fail when that edit is applied by hand. The canary writes `reports/mutation/canary.json` and leaves the main report for the run that follows. A failure exits non-zero and skips the rest of the command.
+
+### Optional GitHub workflow
+
+`.github/workflows/frontend-mutation.yml` runs only when someone starts it from the Actions tab (`workflow_dispatch`). It does not run on pull requests. The default mutate glob is `src/utils/**/*.ts,!src/utils/**/*.test.ts`. The workflow input can widen it; include a `!` exclusion for tests, because the input replaces the list in `stryker.config.mjs`.
 
 ## Project Structure
 
@@ -106,5 +168,6 @@ The test configuration includes:
 - **Mantine** for UI components
 - **React Router** for client-side routing
 - **Vitest** for unit testing
+- **Stryker** for mutation testing
 - **Playwright** for end-to-end testing
 - **ESLint** for code linting

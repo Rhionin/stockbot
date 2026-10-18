@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
+    "test:mutation": "node ./scripts/ensure-stryker-vitest5.mjs && node ./scripts/mutation-canary.mjs && stryker run",
     "e2e": "playwright test"
   },
   "dependencies": {
@@ -26,6 +27,8 @@
     "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.0",
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/vitest-runner": "10.0.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",
