@@ -1154,17 +1154,94 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			),
 		},
 		{
-			name:  "linking a product the household does not stock stays a 4xx",
+			name:  "linking a product the household does not stock leaves the scan pending",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/scan-pears/commit",
 				body:           `{"linkProductId":"prod-off"}`,
-				expectedStatus: http.StatusBadRequest,
+				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: "That product is not in your pantry"},
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+					{path: "$.members", absent: true},
 				},
+				bodyExcludes: []string{"That product is not in your pantry"},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[0].productId", value: "prod-off"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
+		{
+			name: "linking a shelved product leaves the scan pending",
+			setup: func(env testEnv) {
+				seed(env)
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-wiped', 'user-1', 'prod-off', 1)`); err != nil {
+					env.T.Fatalf("shelve item: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-pears/commit",
+				body:           `{"linkProductId":"prod-off"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"That product is not in your pantry"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
+		{
+			name:  "linking an unknown product leaves the scan pending",
+			setup: seed,
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-pears/commit",
+				body:           `{"linkProductId":"prod-missing"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"That product is not in your pantry"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[0].productId", value: "prod-off"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 	}
 

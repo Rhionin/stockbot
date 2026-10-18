@@ -21,6 +21,8 @@ func knownCommitFailure(err error) (message, code string, ok bool) {
 		return inventory.ProductUnresolvedMessage, inventory.CodeProductUnresolved, true
 	case errors.Is(err, scan.ErrNoneOnHand):
 		return inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, true
+	case errors.Is(err, scan.ErrLinkNotStocked):
+		return inventory.LinkTargetGoneMessage, inventory.CodeLinkTargetGone, true
 	case errors.Is(err, inventory.ErrInstanceNotFound):
 		return inventory.InstanceGoneMessage, inventory.CodeInstanceGone, true
 	case errors.Is(err, scan.ErrNotPending):

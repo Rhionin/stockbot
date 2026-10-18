@@ -19,6 +19,10 @@ const ProductUnresolvedMessage = "Pick a product for this scan first."
 // not linked to a household product. The client matches the code, not this sentence.
 const WhichItemMessage = "Which item is this?"
 
+// LinkTargetGoneMessage is the sentence when linkProductId names a product
+// the household does not stock, including a wiped item and an unknown id.
+const LinkTargetGoneMessage = "That item isn't available anymore. Pick another."
+
 // ScanNotFoundMessage is the sentence when the scan is no longer in the queue.
 const ScanNotFoundMessage = "This scan is no longer in the queue."
 
@@ -36,6 +40,7 @@ const (
 	CodeNotPending        = "not_pending"
 	CodeProductUnresolved = "product_unresolved"
 	CodeNoItem            = "no_item"
+	CodeLinkTargetGone    = "link_target_gone"
 	CodeScanNotFound      = "scan_not_found"
 	CodeDirectionUnset    = "direction_unset"
 	CodeInternal          = "internal"

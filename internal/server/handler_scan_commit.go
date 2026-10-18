@@ -92,8 +92,5 @@ func stockOutError(err error) error {
 		}
 		return ConflictSuggestions(inventory.WhichItemMessage, inventory.CodeNoItem, suggestions)
 	}
-	if errors.Is(err, scan.ErrLinkNotStocked) {
-		return BadRequest("That product is not in your pantry")
-	}
 	return commitClientError(err)
 }

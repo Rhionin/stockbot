@@ -17,8 +17,8 @@ var (
 	ErrItemNotFound = errors.New("item not found")
 	// ErrNoneOnHand means a stock-out found no unit on the shelf.
 	ErrNoneOnHand = errors.New("nothing on hand")
-	// ErrLinkNotStocked means the chosen product has no household item to scan out.
-	ErrLinkNotStocked = errors.New("that product is not in your pantry")
+	// ErrLinkNotStocked means linkProductId names a product this household does not stock.
+	ErrLinkNotStocked = errors.New("link target is not stocked")
 	// ErrScanNotFound means the queue has no scan with that id.
 	ErrScanNotFound = errors.New("scan not found")
 	// ErrNotPending means the scan was already committed or cancelled.
