@@ -47,8 +47,9 @@ type linkQuery interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// suggestLinks ranks household items the scanned barcode might belong to.
-// A barcode that is a suffix of the scan outranks a name resemblance.
+// suggestLinks ranks unshelved household items that still have a unit on the shelf.
+// A barcode that is a suffix of the scan outranks a name resemblance. Wiped items
+// stay out of the list even when they still have instance rows.
 func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	excludeProductID := ""
@@ -75,7 +76,7 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 			), '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ?`,
+		WHERE i.user_id = ? AND i.shelved = 0`,
 		scanEntry.UserID,
 	)
 	if err != nil {

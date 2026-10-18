@@ -235,7 +235,7 @@ func TestScanCommitStockIn(t *testing.T) {
 				path:           "/api/scans/scan-no-product/commit",
 				expectedStatus: http.StatusBadRequest,
 				assertions: []assertion{
-					{path: "$.error", value: "Pick a product for this scan first."},
+					{path: "$.error", value: "Choose which item this is first."},
 					{path: "$.code", value: "product_unresolved"},
 				},
 			},
@@ -501,7 +501,7 @@ func TestScanCommitStockInErrors(t *testing.T) {
 					{path: "$.suggestions", absent: true},
 					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first."},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Choose which item this is first."},
 			},
 		},
 		{
@@ -558,7 +558,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name: "shelved item is not in the pantry",
+			name: "shelved item is nothing on hand",
 			setup: func(env testEnv) {
 				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
 					ID: "prod-shelved", Name: "Wiped Soup", Category: "Test", UnitOfMeasure: "unit",
@@ -586,12 +586,23 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-shelved/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Which item is this?"},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first."},
+				bodyExcludes: []string{"no_item", "Which item is this?", "Not in your pantry", "No close match found.", "Choose which item this is first."},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-shelved", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-shelved"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 		{
 			name: "error when no item exists for user+product",
@@ -622,7 +633,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Pick a product for this scan first.", `no item found for user`},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Choose which item this is first.", `no item found for user`},
 			},
 			afterRequest: exchanges(httpExchange{
 				method:         "GET",
@@ -989,6 +1000,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{ID: "prod-slices", Name: "Pear Slices", Category: "Fruit", UnitOfMeasure: "can"},
 			{ID: "prod-tuna", Name: "Canned Tuna", Category: "Canned", UnitOfMeasure: "can"},
 			{ID: "prod-beans", Name: "Black Beans", Category: "Canned", UnitOfMeasure: "can"},
+			{ID: "prod-empty-pear", Name: "Empty Pear", Category: "Fruit", UnitOfMeasure: "can"},
+			{ID: "prod-shelved-pear", Name: "Shelved Pear", Category: "Fruit", UnitOfMeasure: "can"},
 		}
 		for _, item := range products {
 			if err := env.ProductStore.CreateProduct(context.Background(), item); err != nil {
@@ -1002,6 +1015,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{"999000111222", "prod-slices", "global", ""},
 			{"491", "prod-tuna", "user_override", "user-1"},
 			{"1552", "prod-beans", "global", ""},
+			{"110828385", "prod-empty-pear", "user_override", "user-1"},
+			{"011110828385", "prod-shelved-pear", "user_override", "user-1"},
 		}
 		for _, barcode := range barcodes {
 			if _, err := env.DB.ExecContext(context.Background(),
@@ -1019,6 +1034,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{"item-slices", "prod-slices", 2},
 			{"item-tuna", "prod-tuna", 1},
 			{"item-beans", "prod-beans", 2},
+			{"item-empty-pear", "prod-empty-pear", 0},
+			{"item-shelved-pear", "prod-shelved-pear", 2},
 		}
 		for _, item := range items {
 			if _, err := env.DB.ExecContext(context.Background(),
@@ -1040,6 +1057,10 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					env.T.Fatalf("instance %s-%d: %v", item.id, n, err)
 				}
 			}
+		}
+		if _, err := env.DB.ExecContext(context.Background(),
+			`UPDATE items SET shelved = 1 WHERE id = 'item-shelved-pear'`); err != nil {
+			env.T.Fatalf("shelve pear: %v", err)
 		}
 		scanRepo := scan.NewQueue(env.DB)
 		productID := "prod-off"
@@ -1074,7 +1095,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					{path: "$.suggestions[3]", absent: true},
 					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"Not in your pantry", "No close match found.", "Nothing on hand to take out.", "Pick a product for this scan first.", "Canned Tuna", "Black Beans", "no item found"},
+				bodyExcludes: []string{"Not in your pantry", "No close match found.", "Nothing on hand to take out.", "Choose which item this is first.", "Canned Tuna", "Black Beans", "Empty Pear", "Shelved Pear", "no item found"},
 			},
 			afterRequest: exchanges(
 				httpExchange{
@@ -1344,6 +1365,7 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 					{path: "$.members", absent: true},
 					{path: "$.suggestions", absent: true},
 				},
+				bodyExcludes: []string{"link_target_gone", "That item isn't available anymore. Pick another."},
 			},
 			afterRequest: exchanges(
 				httpExchange{

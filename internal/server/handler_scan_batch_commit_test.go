@@ -211,7 +211,7 @@ func TestScanBatchCommit(t *testing.T) {
 					{path: "$.failedReasons[0]", value: "Choose stock in or stock out first."},
 					{path: "$.failedCodes[0]", value: "direction_unset"},
 					{path: "$.failedIds[1]", value: "scan-noprod"},
-					{path: "$.failedReasons[1]", value: "Pick a product for this scan first."},
+					{path: "$.failedReasons[1]", value: "Choose which item this is first."},
 					{path: "$.failedCodes[1]", value: "product_unresolved"},
 					{path: "$.failedIds[2]", value: "scan-none"},
 					{path: "$.failedReasons[2]", value: "Nothing on hand to take out."},
@@ -240,6 +240,41 @@ func TestScanBatchCommit(t *testing.T) {
 			),
 		},
 		{
+			name: "a shelved stock-out stays pending with nothing on hand",
+			setup: func(env testEnv) {
+				seedShelfItem(env, "prod-wiped", "Wiped Soup", "item-wiped")
+				if _, err := env.DB.ExecContext(context.Background(), `UPDATE items SET shelved = 1 WHERE id = 'item-wiped'`); err != nil {
+					env.T.Fatalf("shelve item: %v", err)
+				}
+				insertPendingScanUnits(env, "scan-wiped", "prod-wiped", scan.StockOut, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-wiped"],"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.committedIds", absent: true},
+					{path: "$.failedIds[0]", value: "scan-wiped"},
+					{path: "$.failedReasons[0]", value: "Nothing on hand to take out."},
+					{path: "$.failedCodes[0]", value: "none_on_hand"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"no_item", "Which item is this?", "Choose which item this is first.", "Something went wrong"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-wiped"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
+		{
 			name: "an unlinked stock-out stays pending without a link offer",
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-unlinked", "Unlinked Soup")
@@ -253,7 +288,7 @@ func TestScanBatchCommit(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.committedIds", absent: true},
 					{path: "$.failedIds[0]", value: "scan-unlinked"},
-					{path: "$.failedReasons[0]", value: "Pick a product for this scan first."},
+					{path: "$.failedReasons[0]", value: "Choose which item this is first."},
 					{path: "$.failedCodes[0]", value: "product_unresolved"},
 					{path: "$.suggestions", absent: true},
 				},

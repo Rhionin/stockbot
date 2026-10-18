@@ -13,14 +13,14 @@ const NotPendingMessage = "This scan was already handled."
 
 // ProductUnresolvedMessage is the sentence when a scan has no product yet,
 // and when a batch stock-out barcode is not linked to a household product.
-const ProductUnresolvedMessage = "Pick a product for this scan first."
+const ProductUnresolvedMessage = "Choose which item this is first."
 
 // WhichItemMessage is the sentence on a single stock-out whose barcode is
 // not linked to a household product. The client matches the code, not this sentence.
 const WhichItemMessage = "Which item is this?"
 
-// LinkTargetGoneMessage is the sentence when linkProductId names a product
-// the household does not stock, including a wiped item and an unknown id.
+// LinkTargetGoneMessage is the sentence when linkProductId names a missing,
+// unknown, or wiped product. A live item with nothing on hand is none_on_hand.
 const LinkTargetGoneMessage = "That item isn't available anymore. Pick another."
 
 // ScanNotFoundMessage is the sentence when the scan is no longer in the queue.

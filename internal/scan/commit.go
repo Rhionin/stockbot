@@ -465,6 +465,7 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // that specific instance is removed.
 //
 // A missing household item returns *NoItemError and changes nothing.
+// A shelved item is still linked and returns ErrNoneOnHand without ranking links.
 // An item with nothing left on the shelf returns ErrNoneOnHand and changes
 // nothing, including a barcode link started in the same transaction.
 // A named instance that is not on that item returns ErrNoneOnHand when the
@@ -516,14 +517,16 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		scanEntry.UserID, targetProductID,
 	).Scan(&itemID, &shelved)
 
-	// A wipe keeps the item row and hides it. Scanning that product out is
-	// the same as a barcode that is not linked to a household product.
-	// An item that is on the shelf with nothing left does not come through
-	// here: that is ErrNoneOnHand, and this function does not rank links for it.
-	if err == sql.ErrNoRows || (err == nil && shelved != 0) {
-		if linkProductID != "" {
-			return ErrLinkNotStocked
-		}
+	// linkProductId for a missing or wiped product is not a stock-out of this barcode.
+	if linkProductID != "" && (err == sql.ErrNoRows || (err == nil && shelved != 0)) {
+		return ErrLinkNotStocked
+	}
+	// A wipe keeps the item row, so the barcode is still linked. That stock-out
+	// is an empty shelf and does not rank other items.
+	if err == nil && shelved != 0 {
+		return ErrNoneOnHand
+	}
+	if err == sql.ErrNoRows {
 		// Same connection as the open transaction. A second query on r.db
 		// would deadlock the single-connection test database, or read an
 		// empty :memory: database from the pool.

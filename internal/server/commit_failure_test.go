@@ -25,10 +25,10 @@ func TestKnownCommitFailureMessages(t *testing.T) {
 	}{
 		{"none_on_hand", scan.ErrNoneOnHand, "Nothing on hand to take out.", "none_on_hand"},
 		{"link_target_gone", scan.ErrLinkNotStocked, "That item isn't available anymore. Pick another.", "link_target_gone"},
-		{"unlinked batch", &scan.NoItemError{}, "Pick a product for this scan first.", "product_unresolved"},
+		{"unlinked batch", &scan.NoItemError{}, "Choose which item this is first.", "product_unresolved"},
 		{"instance_gone", inventory.ErrInstanceNotFound, "That one was already taken out. Pick another.", "instance_gone"},
 		{"not_pending", scan.ErrNotPending, "This scan was already handled.", "not_pending"},
-		{"product_unresolved", scan.ErrProductUnresolved, "Pick a product for this scan first.", "product_unresolved"},
+		{"product_unresolved", scan.ErrProductUnresolved, "Choose which item this is first.", "product_unresolved"},
 		{"scan_not_found", scan.ErrScanNotFound, "This scan is no longer in the queue.", "scan_not_found"},
 		{"direction_unset", scan.ErrDirectionUnset, "Choose stock in or stock out first.", "direction_unset"},
 	}
@@ -151,7 +151,7 @@ func TestUnlinkedStockOutOffersALinkAndEmptyShelfDoesNot(t *testing.T) {
 	if !strings.Contains(outBody, `"error":"Which item is this?"`) || !strings.Contains(outBody, `"code":"no_item"`) {
 		t.Fatalf("stock-out body = %s", outBody)
 	}
-	if strings.Contains(outBody, "suggestions") || strings.Contains(outBody, "Not in your pantry") || strings.Contains(outBody, "Nothing on hand to take out.") || strings.Contains(outBody, "No close match found.") || strings.Contains(outBody, "Pick a product for this scan first.") {
+	if strings.Contains(outBody, "suggestions") || strings.Contains(outBody, "Not in your pantry") || strings.Contains(outBody, "Nothing on hand to take out.") || strings.Contains(outBody, "No close match found.") || strings.Contains(outBody, "Choose which item this is first.") {
 		t.Fatalf("stock-out body = %s", outBody)
 	}
 	if logged := logs.String(); strings.Contains(logged, "scan commit failed") || strings.Contains(logged, "request failed") {
@@ -167,7 +167,7 @@ func TestUnlinkedStockOutOffersALinkAndEmptyShelfDoesNot(t *testing.T) {
 	if batchRec.Code != http.StatusOK {
 		t.Fatalf("batch status %d body %s", batchRec.Code, batchBody)
 	}
-	if !strings.Contains(batchBody, `"failedReasons":["Pick a product for this scan first."]`) || !strings.Contains(batchBody, `"failedCodes":["product_unresolved"]`) {
+	if !strings.Contains(batchBody, `"failedReasons":["Choose which item this is first."]`) || !strings.Contains(batchBody, `"failedCodes":["product_unresolved"]`) {
 		t.Fatalf("batch body = %s", batchBody)
 	}
 	if strings.Contains(batchBody, "no_item") || strings.Contains(batchBody, "suggestions") || strings.Contains(batchBody, "Which item is this?") || strings.Contains(batchBody, "Something went wrong") || strings.Contains(batchBody, "Not in your pantry") {
@@ -227,6 +227,58 @@ func TestUnlinkedStockOutOffersALinkAndEmptyShelfDoesNot(t *testing.T) {
 		t.Fatalf("batch empty shelf ran the link query:\n%s", logged)
 	}
 	assertScanStillPending(t, handler, "scan-empty")
+}
+
+func TestShelvedStockOutSkipsLinkSuggestions(t *testing.T) {
+	handler, env := setupTestWithContributor(t, nil)
+	seedShelfItem(env, "prod-wiped", "Wiped Soup", "item-wiped")
+	if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-wiped'`); err != nil {
+		t.Fatalf("shelve item: %v", err)
+	}
+	insertPendingScanUnits(env, "scan-wiped", "prod-wiped", scan.StockOut, 1)
+	if _, err := env.DB.Exec(`ALTER TABLE barcodes RENAME TO barcodes_hidden`); err != nil {
+		t.Fatalf("hide barcodes: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scans/scan-wiped/commit", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d body %s", rec.Code, body)
+	}
+	if !strings.Contains(body, `"error":"Nothing on hand to take out."`) || !strings.Contains(body, `"code":"none_on_hand"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if strings.Contains(body, "suggestions") || strings.Contains(body, "no_item") || strings.Contains(body, "Which item is this?") || strings.Contains(body, "list link candidates") || strings.Contains(body, "no such table") {
+		t.Fatalf("body = %s", body)
+	}
+	if logged := logs.String(); strings.Contains(logged, "scan commit failed") || strings.Contains(logged, "request failed") || strings.Contains(logged, "list link candidates") {
+		t.Fatalf("shelved stock-out ran the link query:\n%s", logged)
+	}
+	assertScanStillPending(t, handler, "scan-wiped")
+
+	logs.Reset()
+	batchRec := httptest.NewRecorder()
+	handler.ServeHTTP(batchRec, httptest.NewRequest(http.MethodPost, "/api/scans/batch-commit", strings.NewReader(`{"scanEntryIds":["scan-wiped"],"commit":true}`)))
+	batchBody := batchRec.Body.String()
+	if batchRec.Code != http.StatusOK {
+		t.Fatalf("batch status %d body %s", batchRec.Code, batchBody)
+	}
+	if !strings.Contains(batchBody, `"failedReasons":["Nothing on hand to take out."]`) || !strings.Contains(batchBody, `"failedCodes":["none_on_hand"]`) {
+		t.Fatalf("batch body = %s", batchBody)
+	}
+	if strings.Contains(batchBody, "suggestions") || strings.Contains(batchBody, "no_item") || strings.Contains(batchBody, "Which item is this?") || strings.Contains(batchBody, "Something went wrong") {
+		t.Fatalf("batch body = %s", batchBody)
+	}
+	if logged := logs.String(); strings.Contains(logged, "scan commit failed") || strings.Contains(logged, "request failed") || strings.Contains(logged, "list link candidates") {
+		t.Fatalf("batch shelved stock-out ran the link query:\n%s", logged)
+	}
+	assertScanStillPending(t, handler, "scan-wiped")
 }
 
 func TestBatchLinkTargetGoneIsNotLogged(t *testing.T) {

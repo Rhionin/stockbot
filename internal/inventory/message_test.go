@@ -21,7 +21,7 @@ func TestCommitFailureCopy(t *testing.T) {
 		want string
 	}{
 		{"not pending", NotPendingMessage, "This scan was already handled."},
-		{"product unresolved", ProductUnresolvedMessage, "Pick a product for this scan first."},
+		{"product unresolved", ProductUnresolvedMessage, "Choose which item this is first."},
 		{"which item", WhichItemMessage, "Which item is this?"},
 		{"link target gone", LinkTargetGoneMessage, "That item isn't available anymore. Pick another."},
 		{"scan not found", ScanNotFoundMessage, "This scan is no longer in the queue."},
