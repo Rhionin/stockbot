@@ -112,7 +112,17 @@ const inventory = [
   },
 ];
 
-type PendingSet = 'both' | 'oats' | 'milk' | 'none';
+type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd';
+
+const crowd = Array.from({ length: 10 }, (_, index) => {
+  const at = new Date(Date.parse('2026-03-20T16:00:00Z') + index * 20_000).toISOString();
+  return scanEntry({
+    id: `scan-crowd-${index}`,
+    barcode: String(300 + index),
+    scannedAt: at,
+    createdAt: at,
+  });
+});
 
 const pendingEntries = (which: PendingSet): ScanEntry[] => {
   if (which === 'both') return [milk, oats];
@@ -138,6 +148,9 @@ interface OutcomeCase {
   instanceFetches?: number;
   dismiss?: boolean;
   quiet?: boolean;
+  cards?: ScanEntry[];
+  stillSelected?: boolean;
+  fixed?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -286,6 +299,7 @@ const cases: OutcomeCase[] = [
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    fixed: true,
   },
   {
     name: 'removedCount of several uses plural grammar',
@@ -341,6 +355,65 @@ const cases: OutcomeCase[] = [
     goneBarcodes: ['111'],
     quiet: true,
   },
+  {
+    name: 'the batch banner does not shrink under ten cards',
+    action: 'batch',
+    pendingAfter: 'crowd',
+    cards: crowd,
+    batch: {
+      updatedCount: 10,
+      failedIds: crowd.map((entry) => entry.id),
+      failedReasons: crowd.map(() => 'Nothing on hand to take out.'),
+    },
+    visible: [fallback, 'Nothing on hand to take out.'],
+    absent: [],
+    once: [fallback],
+    pendingBarcodes: crowd.map((entry) => entry.barcode),
+    goneBarcodes: [],
+    fixed: true,
+  },
+  {
+    name: 'failed cards stay selected for retry',
+    action: 'batch',
+    pendingAfter: 'oats',
+    batch: {
+      updatedCount: 2,
+      committedIds: ['scan-milk'],
+      failedIds: ['scan-oats'],
+      failedReasons: ['Nothing on hand to take out.'],
+    },
+    visible: [fallback],
+    absent: [],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    stillSelected: true,
+  },
+  {
+    name: 'a reason for a scan that is no longer pending is dropped',
+    action: 'batch',
+    pendingAfter: 'oats',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ['Already confirmed by someone else.', 'Nothing on hand to take out.'],
+    },
+    visible: ['Nothing on hand to take out.', fallback],
+    absent: ['Already confirmed by someone else.'],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    cardReason: { barcode: '222', text: 'Nothing on hand to take out.' },
+  },
+  {
+    name: 'an all-success batch with no failedIds shows no banner',
+    action: 'batch',
+    pendingAfter: 'none',
+    batch: { updatedCount: 2, committedIds: ['scan-milk', 'scan-oats'] },
+    visible: [],
+    absent: [fallback],
+    pendingBarcodes: [],
+    goneBarcodes: ['111', '222'],
+    quiet: true,
+  },
 ];
 
 describe('scan commit outcomes', () => {
@@ -354,7 +427,7 @@ describe('scan commit outcomes', () => {
   });
 
   it.each(cases)('$name', async (row) => {
-    let pending: PendingSet = 'both';
+    let pending: PendingSet = row.cards ? 'crowd' : 'both';
     let instanceFetches = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -373,7 +446,10 @@ describe('scan commit outcomes', () => {
         const body = instanceFetches === 1 ? first : (row.instancesAfter ?? first);
         return Promise.resolve(jsonResponse(body));
       }
-      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending)));
+      if (url.includes('status=pending')) {
+        const body = pending === 'crowd' ? (row.cards ?? []) : pendingEntries(pending);
+        return Promise.resolve(jsonResponse(body));
+      }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
       if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse(url === '/api/inventory' ? inventory : []));
       if (url.endsWith('/api/scanner/config')) {
@@ -390,18 +466,25 @@ describe('scan commit outcomes', () => {
 
     render(<MantineProvider><ScanQueuePage /></MantineProvider>);
 
-    const milkCard = await screen.findByRole('article', { name: 'Scan 111' });
-    expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
+    const milkCard = row.cards
+      ? null
+      : await screen.findByRole('article', { name: 'Scan 111' });
+    if (row.cards) {
+      expect(await screen.findAllByRole('article')).toHaveLength(row.cards.length);
+    } else {
+      expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
+    }
 
-    if (row.action === 'confirm-milk-instance') {
+    if (row.action === 'confirm-milk-instance' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
       fireEvent.click(await within(milkCard).findByRole('radio', { name: goneLabel }));
     }
 
     if (row.action === 'batch') {
+      const count = (row.cards ?? [milk, oats]).length;
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
-    } else {
+      fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
+    } else if (milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     }
 
@@ -431,6 +514,23 @@ describe('scan commit outcomes', () => {
       }
       if (row.instancesAfter?.length === 1) {
         expect(screen.getByRole('radio', { name: keptLabel })).toBeInTheDocument();
+      }
+      if (row.fixed) {
+        const pinned = screen.getAllByRole('alert').filter((alert) => {
+          const text = alert.textContent ?? '';
+          return text.includes(fallback) || text.startsWith('Only ');
+        });
+        expect(pinned.length).toBeGreaterThan(0);
+        for (const notice of pinned) {
+          expect(notice).toHaveStyle({ flexShrink: '0' });
+        }
+      }
+      if (row.stillSelected) {
+        expect(screen.getByRole('button', { name: `Confirm ${row.pendingBarcodes.length} selected scans` })).toBeInTheDocument();
+        for (const barcode of row.pendingBarcodes) {
+          const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+          expect(within(card).getByRole('checkbox')).toBeChecked();
+        }
       }
     });
 

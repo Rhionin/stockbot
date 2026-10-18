@@ -410,10 +410,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
         {failureById.size > 0 && (
-          <Alert color="red" py={4}>{BATCH_FAILURE_FALLBACK}</Alert>
+          <Alert color="red" py={4} style={{ flexShrink: 0 }}>{BATCH_FAILURE_FALLBACK}</Alert>
         )}
         {removalNotes.map((note) => (
-          <Alert key={note} py={4}>{note}</Alert>
+          <Alert key={note} py={4} style={{ flexShrink: 0 }}>{note}</Alert>
         ))}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (
