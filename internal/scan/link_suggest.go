@@ -44,6 +44,7 @@ type linkCandidate struct {
 	Name      string
 	Category  string
 	GroupID   string
+	Brand     string
 	OnHand    int
 	Barcodes  []string
 }
@@ -59,13 +60,15 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	scannedName := ""
 	scannedCategory := ""
 	scannedGroup := ""
+	scannedBrand := ""
 	excludeProductID := ""
 	if scanEntry.ProductID != nil {
 		excludeProductID = *scanEntry.ProductID
 		err := q.QueryRowContext(ctx, `
 			SELECT p.name, COALESCE(p.category, ''),
-				COALESCE((SELECT m.group_id FROM product_group_members m WHERE m.product_id = p.id), '')
-			FROM products p WHERE p.id = ?`, excludeProductID).Scan(&scannedName, &scannedCategory, &scannedGroup)
+				COALESCE((SELECT m.group_id FROM product_group_members m WHERE m.product_id = p.id), ''),
+				COALESCE(p.brand, '')
+			FROM products p WHERE p.id = ?`, excludeProductID).Scan(&scannedName, &scannedCategory, &scannedGroup, &scannedBrand)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("scanned product name: %w", err)
 		}
@@ -74,6 +77,7 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	rows, err := q.QueryContext(ctx, `
 		SELECT i.id, p.id, p.name, COALESCE(p.category, ''),
 			COALESCE((SELECT m.group_id FROM product_group_members m WHERE m.product_id = p.id), ''),
+			COALESCE(p.brand, ''),
 			(SELECT COUNT(*) FROM item_instances ii
 			 WHERE ii.item_id = i.id AND ii.removed_at IS NULL),
 			COALESCE((
@@ -99,7 +103,7 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	for rows.Next() {
 		var c linkCandidate
 		var codes string
-		if err := rows.Scan(&c.ItemID, &c.ProductID, &c.Name, &c.Category, &c.GroupID, &c.OnHand, &codes); err != nil {
+		if err := rows.Scan(&c.ItemID, &c.ProductID, &c.Name, &c.Category, &c.GroupID, &c.Brand, &c.OnHand, &codes); err != nil {
 			return nil, fmt.Errorf("list link candidates: %w", err)
 		}
 		if codes != "" {
@@ -111,15 +115,17 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 		return nil, fmt.Errorf("list link candidates: %w", err)
 	}
 
-	return rankLinkCandidates(scanEntry.Barcode, scannedName, scannedCategory, scannedGroup, excludeProductID, candidates), nil
+	return rankLinkCandidates(scanEntry.Barcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID, candidates), nil
 }
 
 // rankLinkCandidates puts the longest suffix barcode first, then closer food names.
 // A suffix of any length outranks a name-only resemblance, and a longer suffix
 // outranks a shorter one, so a truncated code beats an accidental last digit.
-func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGroup, excludeProductID string, candidates []linkCandidate) []LinkSuggestion {
+func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID string, candidates []linkCandidate) []LinkSuggestion {
 	scannedBarcode = strings.TrimSpace(scannedBarcode)
-	scanned := profileLink(scannedName, scannedCategory, scannedGroup)
+	generic := genericWordSet(candidates)
+	knownBrands := recordedBrandPhrases(candidates)
+	scanned := profileLink(scannedName, scannedCategory, scannedGroup, scannedBrand, generic, knownBrands)
 	type scored struct {
 		suggestion LinkSuggestion
 		suffix     int
@@ -131,7 +137,7 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 			continue
 		}
 		suffix := longestSuffix(scannedBarcode, c.Barcodes)
-		other := profileLink(c.Name, c.Category, c.GroupID)
+		other := profileLink(c.Name, c.Category, c.GroupID, c.Brand, generic, knownBrands)
 		score := foodDice(scanned, other)
 		if suffix == 0 && !plausibleLink(scanned, other) {
 			continue
@@ -251,13 +257,13 @@ func foodOverlap(a, b []string) (shared, extra int, contained bool) {
 	return n, longer - n, n == shorter
 }
 
-func profileLink(name, category, groupID string) linkProfile {
+func profileLink(name, category, groupID, brand string, generic map[string]struct{}, known [][]string) linkProfile {
 	content := contentTokens(name)
-	brand := brandToken(content)
-	seen := make(map[string]struct{}, len(content))
+	rest, applied := stripLeadingBrand(content, brandPhrases(brand), known)
+	seen := make(map[string]struct{}, len(rest))
 	var food []string
-	for _, tok := range content {
-		if tok == brand || genericFoodWord(tok) {
+	for _, tok := range rest {
+		if _, skip := generic[tok]; skip {
 			continue
 		}
 		if _, ok := seen[tok]; ok {
@@ -266,28 +272,142 @@ func profileLink(name, category, groupID string) linkProfile {
 		seen[tok] = struct{}{}
 		food = append(food, tok)
 	}
+	key := brandKey(brand)
+	if key == "" {
+		key = strings.Join(applied, " ")
+	}
 	return linkProfile{
 		food:     food,
-		brand:    brand,
+		brand:    key,
 		category: strings.ToLower(strings.TrimSpace(category)),
 		groupID:  strings.TrimSpace(groupID),
 	}
 }
 
-// brandToken is the leading word when a different distinctive word follows it.
-// "Daisy Sour Cream" is Daisy. "Sour Cream" has no brand: "cream" is generic,
-// so the leading word is the food itself. A repeated food word ("pear" in
-// "pear slices in pear juice") is the same word, not a brand.
-func brandToken(content []string) string {
-	if len(content) < 2 || genericFoodWord(content[0]) {
-		return ""
+// stripLeadingBrand drops a leading brand phrase. The product's own brand
+// wins when it is a prefix, even if a longer recorded brand also fits.
+// A leading word is never a brand just because another word follows it:
+// "Sour Cream" stays sour and cream when no brand was recorded, so it cannot
+// match "Condensed Cream Soup" on cream alone.
+func stripLeadingBrand(content []string, own, known [][]string) (rest, applied []string) {
+	if phrase, ok := longestLeadingPhrase(content, own); ok {
+		return content[len(phrase):], phrase
 	}
-	for _, tok := range content[1:] {
-		if tok != content[0] && !genericFoodWord(tok) {
-			return content[0]
+	if phrase, ok := longestLeadingPhrase(content, known); ok {
+		return content[len(phrase):], phrase
+	}
+	return content, nil
+}
+
+func longestLeadingPhrase(content []string, phrases [][]string) ([]string, bool) {
+	var best []string
+	for _, phrase := range phrases {
+		if len(phrase) == 0 || len(phrase) > len(content) || len(phrase) <= len(best) {
+			continue
+		}
+		if !hasPrefixTokens(content, phrase) {
+			continue
+		}
+		best = phrase
+	}
+	return best, len(best) > 0
+}
+
+func hasPrefixTokens(content, phrase []string) bool {
+	for i, tok := range phrase {
+		if content[i] != tok {
+			return false
 		}
 	}
-	return ""
+	return true
+}
+
+// brandPhrases splits a recorded brand on commas. Open Food Facts stores
+// several brands in one field ("Tillamook, Darigold").
+func brandPhrases(brand string) [][]string {
+	var phrases [][]string
+	for _, part := range strings.Split(brand, ",") {
+		toks := contentTokens(part)
+		if len(toks) == 0 {
+			continue
+		}
+		phrases = append(phrases, toks)
+	}
+	return phrases
+}
+
+func brandKey(brand string) string {
+	phrases := brandPhrases(brand)
+	if len(phrases) == 0 {
+		return ""
+	}
+	return strings.Join(phrases[0], " ")
+}
+
+func recordedBrandPhrases(candidates []linkCandidate) [][]string {
+	seen := map[string]struct{}{}
+	var phrases [][]string
+	for _, c := range candidates {
+		for _, phrase := range brandPhrases(c.Brand) {
+			key := strings.Join(phrase, "\x00")
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			phrases = append(phrases, phrase)
+		}
+	}
+	return phrases
+}
+
+// GenericWordMinCount is the fewest household names that can mark a word
+// generic. Below five names nothing is generic: 3% of a four-product pantry
+// is less than one name, and at 100 products 3% is only three, so the floor
+// is still what decides.
+const GenericWordMinCount = 5
+
+// GenericWordPercent is the share of household products, as an integer
+// percent, at which a word is generic. Compared as
+// count*100 >= GenericWordPercent*n so 166 products still threshold at 5
+// and 167 steps to 6, with no float multiply.
+const GenericWordPercent = 3
+
+func wordIsGeneric(count, n int) bool {
+	if n <= 0 || count <= 0 {
+		return false
+	}
+	return count >= GenericWordMinCount && count*100 >= GenericWordPercent*n
+}
+
+// householdWordCounts counts distinct household products whose cleaned name
+// contains each word. A name that repeats a word counts once. n is every
+// household product row, including zero stock. Pending and flagged scans
+// are not household rows, so they are not in this set.
+func householdWordCounts(candidates []linkCandidate) (n int, counts map[string]int) {
+	n = len(candidates)
+	counts = make(map[string]int)
+	for _, c := range candidates {
+		seen := make(map[string]struct{})
+		for _, tok := range contentTokens(c.Name) {
+			if _, ok := seen[tok]; ok {
+				continue
+			}
+			seen[tok] = struct{}{}
+			counts[tok]++
+		}
+	}
+	return n, counts
+}
+
+func genericWordSet(candidates []linkCandidate) map[string]struct{} {
+	n, counts := householdWordCounts(candidates)
+	generic := make(map[string]struct{})
+	for word, count := range counts {
+		if wordIsGeneric(count, n) {
+			generic[word] = struct{}{}
+		}
+	}
+	return generic
 }
 
 func contentTokens(name string) []string {
@@ -329,15 +449,14 @@ func linkSkip(token string) bool {
 	return ok
 }
 
-func genericFoodWord(token string) bool {
-	_, ok := genericFoodWords[token]
-	return ok
-}
-
 func stemFood(word string) string {
 	switch {
 	case len(word) > 4 && strings.HasSuffix(word, "ies"):
 		return strings.TrimSuffix(word, "ies") + "y"
+	case len(word) > 4 && strings.HasSuffix(word, "oes"):
+		return strings.TrimSuffix(word, "oes") + "o"
+	case len(word) > 4 && (strings.HasSuffix(word, "ches") || strings.HasSuffix(word, "shes") || strings.HasSuffix(word, "xes")):
+		return strings.TrimSuffix(word, "es")
 	case len(word) > 3 && strings.HasSuffix(word, "s") && !strings.HasSuffix(word, "ss") && !strings.HasSuffix(word, "us") && !strings.HasSuffix(word, "is"):
 		return strings.TrimSuffix(word, "s")
 	default:
@@ -362,22 +481,4 @@ var linkPackageWords = map[string]struct{}{
 	"pound": {}, "pint": {}, "quart": {},
 	"can": {}, "jar": {}, "box": {}, "bag": {}, "bottle": {}, "pack": {},
 	"ct": {}, "pk": {}, "count": {}, "tub": {}, "carton": {}, "pouch": {},
-}
-
-// genericFoodWords are too broad to link on. "Sour cream" and "condensed
-// cream soup" share only "cream", and that must not be a one-tap stock-out.
-// The same words are too broad to form a product group on their own.
-var genericFoodWords = map[string]struct{}{
-	"bar": {}, "bean": {}, "beef": {}, "bread": {}, "broth": {}, "bun": {},
-	"butter": {}, "cake": {}, "candy": {}, "cereal": {}, "cheese": {},
-	"chicken": {}, "chip": {}, "coffee": {}, "cookie": {}, "corn": {},
-	"cracker": {}, "cream": {}, "drink": {}, "egg": {}, "fish": {},
-	"flake": {}, "flour": {}, "fruit": {}, "grain": {}, "gum": {},
-	"juice": {}, "loaf": {}, "meat": {}, "milk": {}, "mint": {},
-	"mix": {}, "noodle": {}, "nut": {}, "oil": {}, "onion": {},
-	"pasta": {}, "pea": {}, "pepper": {}, "pork": {}, "powder": {},
-	"rice": {}, "roll": {}, "salt": {}, "sauce": {}, "seed": {},
-	"slice": {}, "snack": {}, "soda": {}, "soup": {}, "stock": {},
-	"sugar": {}, "tea": {}, "tomato": {}, "tortilla": {}, "tuna": {},
-	"water": {}, "wrap": {}, "yogurt": {},
 }

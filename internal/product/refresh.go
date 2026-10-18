@@ -117,6 +117,11 @@ func mergeRefresh(cached Product, upstream ProductSummary) Product {
 	if upstream.Category != "" {
 		merged.Category = upstream.Category
 	}
+	// An empty upstream brand means the database did not publish one. A brand
+	// already recorded on the row stays.
+	if upstream.Brand != "" {
+		merged.Brand = upstream.Brand
+	}
 	if upstream.UnitOfMeasure != "" {
 		merged.UnitOfMeasure = upstream.UnitOfMeasure
 	}
@@ -139,12 +144,13 @@ func mergeRefresh(cached Product, upstream ProductSummary) Product {
 	return merged
 }
 
-// classify compares the four merged field values against their pre-refresh
+// classify compares the merged field values against their pre-refresh
 // values and reports whether the refresh changed anything a client cares
 // about. refreshed_at moving never by itself counts as an update.
 func classify(before, after Product) RefreshOutcome {
 	if before.Name != after.Name ||
 		before.Category != after.Category ||
+		before.Brand != after.Brand ||
 		before.UnitOfMeasure != after.UnitOfMeasure ||
 		before.ImageURL != after.ImageURL ||
 		!sameOptionalFloat(before.NetBaseValue, after.NetBaseValue) ||

@@ -774,6 +774,26 @@ func TestLookupBarcodeKeepsBarcodeInOnePathSegment(t *testing.T) {
 	}
 }
 
+func TestLookupBarcodeReadsBrand(t *testing.T) {
+	client := NewProductOpenerClientWithHTTPClient(ExternalSourceOpenFoodFacts, "https://world.openfoodfacts.org/api/v2/product", &http.Client{
+		Transport: mockTransport{fn: func(req *http.Request) (*http.Response, error) {
+			body := `{"status":1,"product":{"product_name":"Sharp Cheddar","brands":"Tillamook"}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}},
+	})
+	ps, err := client.LookupBarcode(context.Background(), "012345678905")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if ps.Brand != "Tillamook" {
+		t.Fatalf("Brand = %q, want Tillamook", ps.Brand)
+	}
+}
+
 func TestLookupBarcodeDropsPrivateImageURL(t *testing.T) {
 	client := NewProductOpenerClientWithHTTPClient(ExternalSourceOpenFoodFacts, "https://world.openfoodfacts.org/api/v2/product", &http.Client{
 		Transport: mockTransport{fn: func(req *http.Request) (*http.Response, error) {

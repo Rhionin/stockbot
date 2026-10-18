@@ -248,6 +248,11 @@ func TestClassify(t *testing.T) {
 			expect: OutcomeUpdated,
 		},
 		{
+			name:   "brand differs",
+			after:  withField(base, "Brand", "Tillamook"),
+			expect: OutcomeUpdated,
+		},
+		{
 			name:   "all four equal",
 			after:  base,
 			expect: OutcomeUnchanged,
@@ -276,6 +281,8 @@ func withField(p Product, field, value string) Product {
 		p.UnitOfMeasure = value
 	case "ImageURL":
 		p.ImageURL = value
+	case "Brand":
+		p.Brand = value
 	}
 	return p
 }

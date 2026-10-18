@@ -346,6 +346,7 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 		ID:       "test-barcode",
 		Name:     "Test Product",
 		Category: "Food",
+		Brand:    "Tillamook",
 	}
 
 	err := service.persistExternalProduct(context.Background(), product, ExternalSourceOpenFoodFacts)
@@ -363,6 +364,9 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 	}
 	if created.ExternalSource != ExternalSourceOpenFoodFacts {
 		t.Errorf("ExternalSource = %q, expected %q", created.ExternalSource, ExternalSourceOpenFoodFacts)
+	}
+	if created.Brand != "Tillamook" {
+		t.Errorf("Brand = %q, expected Tillamook", created.Brand)
 	}
 
 	// Verify the barcode mapping was created
