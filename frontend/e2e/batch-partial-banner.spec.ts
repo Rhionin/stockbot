@@ -185,11 +185,13 @@ test.describe('batch banner screenshots', () => {
         serial += 1
         await page.emulateMedia({ colorScheme: scheme })
         await page.setViewportSize(viewport)
-        const tag = `${viewport.width}${scheme}${serial}`
+        // Digits only. A letter, or more than 14 digits, is stored as a QR card.
+        const prefix = `${viewport.width}${scheme === 'dark' ? 1 : 0}${serial}`
 
         const one = await seedStockOuts(page, request, [
-          { barcode: `311${tag}`, name: 'Tortilla chips' },
+          { barcode: `${prefix}01`, name: 'Tortilla chips' },
         ])
+        await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
         const oneScan = one[0]
         if (oneScan === undefined) throw new Error('missing one-partial scan')
         await confirmBatch(page, one, (ids) => ({
@@ -203,8 +205,8 @@ test.describe('batch banner screenshots', () => {
         await page.screenshot({ path: `${shotDir}/banner_one_partial_${viewport.width}_${scheme}.png` })
         await page.unroute('**/api/scans/batch-commit')
 
-        const manyA = `312${tag}a`
-        const manyB = `312${tag}b`
+        const manyA = `${prefix}11`
+        const manyB = `${prefix}12`
         const many = await seedStockOuts(page, request, [
           { barcode: manyA, name: 'Tortilla chips' },
           { barcode: manyB, name: 'Rolled oats' },
@@ -225,8 +227,8 @@ test.describe('batch banner screenshots', () => {
         await page.screenshot({ path: `${shotDir}/banner_multiple_partial_${viewport.width}_${scheme}.png` })
         await page.unroute('**/api/scans/batch-commit')
 
-        const fullBarcode = `313${tag}a`
-        const noneBarcode = `313${tag}b`
+        const fullBarcode = `${prefix}21`
+        const noneBarcode = `${prefix}22`
         const none = await seedStockOuts(page, request, [
           { barcode: fullBarcode, name: 'Batch Full' },
           { barcode: noneBarcode, name: 'Batch Empty' },
