@@ -260,9 +260,15 @@ export const ScanEntryCard = ({
     }
     rememberOffer(null, false);
     if (behavior.refreshInstances) {
+      // The card's own state is the reloaded picker. The server sentence
+      // belongs in the toast, once.
       setInstancePickerOpen(true);
       setInstanceId('');
       setLocalInstanceReload((current) => current + 1);
+      if (behavior.showMessage) {
+        showCommitSentence(requestError.message || 'Unable to confirm scan.');
+      }
+      return true;
     }
     const message = requestError.message || 'Unable to confirm scan.';
     setApproveError(message);

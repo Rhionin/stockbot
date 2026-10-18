@@ -159,6 +159,8 @@ interface OutcomeCase {
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
+  // The sentence is the toast's only copy of itself on the page.
+  toastOnly?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -233,7 +235,7 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '222',
   },
   {
-    name: 'instance_gone shows the server message and drops the removed unit',
+    name: 'instance_gone shows the server message once in the toast and drops the removed unit',
     action: 'confirm-milk-instance',
     pendingAfter: 'both',
     commit: {
@@ -241,12 +243,14 @@ const cases: OutcomeCase[] = [
       body: { error: 'That one was already taken out. Pick another.', code: 'instance_gone' },
     },
     instancesAfter: [keptInstance],
-    visible: ['That one was already taken out. Pick another.'],
-    absent: [goneLabel],
+    visible: ['That one was already taken out. Pick another.', keptLabel],
+    absent: [goneLabel, 'No inventory item is available for this product.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'That one was already taken out. Pick another.' },
+    cardWithoutAlert: '111',
     instanceFetches: 2,
+    toast: 'That one was already taken out. Pick another.',
+    toastOnly: true,
   },
   {
     name: 'none_on_hand shows the message and does not reload instances',
@@ -699,11 +703,11 @@ describe('scan commit outcomes', () => {
         }
       }
       if (row.toast !== undefined) {
-        const inToast = screen.getAllByText(row.toast).filter((node) =>
-          node.closest('.restock-toast') !== null && node.childElementCount === 0,
-        );
+        const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
+        const inToast = leaves.filter((node) => node.closest('.restock-toast') !== null);
         expect(inToast).toHaveLength(1);
         expect(inToast[0]?.textContent).toBe(row.toast);
+        if (row.toastOnly) expect(leaves).toHaveLength(1);
         const queue = document.querySelector('.scan-page-queue');
         expect(queue).not.toBeNull();
         for (const alert of queue!.querySelectorAll(':scope > [role="alert"]')) {
