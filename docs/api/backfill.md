@@ -68,17 +68,28 @@ A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a 
 | HTTP | `code` | `error` |
 |---|---|---|
 | 400 | `product_unresolved` | Choose which item this is first. |
-| 400 | `units_on_hand` | There's already some on the shelf. |
+| 400 | `units_on_hand` | You already have some on hand, so there's nothing to add. |
 | 400 | `not_pending` | This scan was already handled. |
 | 400 | `direction_unset` | Choose stock in or stock out first. |
-| 400 | `not_stock_out` | Add it and take it out only applies to a stock-out. |
+| 400 | `not_stock_out` | This only works when taking something out. |
 | 404 | `scan_not_found` | This scan is no longer in the queue. |
 | 409 | `none_on_hand` | Nothing on hand to take out. |
 | 500 | `internal` | Something went wrong. Try again. |
 
-`units_on_hand` is the backfill refusal when the linked item already has units on hand. Backfill must not add more. **PM: please confirm the code `units_on_hand` and the sentence `There's already some on the shelf.`**
+`units_on_hand` is the backfill refusal when the linked item already has units on hand. Backfill must not add more. The body also names the item and the current count, so the card can offer a normal stock-out instead:
 
-`not_stock_out` is a backfill sent for a scan whose direction is stock-in. **PM: please confirm the code `not_stock_out` and the sentence `Add it and take it out only applies to a stock-out.`**
+```json
+{
+  "error": "You already have some on hand, so there's nothing to add.",
+  "code": "units_on_hand",
+  "itemId": "item-sour-cream",
+  "onHand": 3
+}
+```
+
+`onHand` is a number, the same count as `LinkSuggestion.onHand`. `0` is sent as `0`, not omitted.
+
+`not_stock_out` is a backfill sent for a scan whose direction is stock-in. The body is `error` and `code` only.
 
 `none_on_hand` here is only a shelved (wiped) item. A live item with 0 on hand is the success path above. A wiped item is not brought back by a backfill.
 
@@ -215,9 +226,7 @@ The link call stays `POST /api/scans/{id}/commit` with the product the household
 { "linkProductId": "prod-pears" }
 ```
 
-The response is the scan entry, with `onHand` added.
-
-When the item has units on hand, the stock-out still commits, as it does today. `onHand` is the count left after that stock-out.
+When the item has units on hand, the stock-out still commits, as it does today. The response is that scan entry, with `onHand` added: the count left after the take-out.
 
 `200`:
 
@@ -233,23 +242,20 @@ When the item has units on hand, the stock-out still commits, as it does today. 
 }
 ```
 
-When the item has 0 on hand, the link is kept and the scan stays pending. `onHand` is `0`. This is a change from today: linking onto an empty shelf currently rolls the barcode link back and returns `409` `none_on_hand`. That body is not a scan, and the scan is still unlinked, so the client cannot follow it with a backfill. The empty-shelf link now succeeds as a link only.
+When the item is a live household item with 0 on hand, the response stays `409` `none_on_hand`. The barcode link is kept: the override is stored, the scan's `productId` becomes the linked product, and no stock move is written. The scan stays `pending`. This replaces the #281 rollback, which undid the link.
 
-`200`:
+`409`:
 
 ```json
 {
-  "id": "scan-pears",
-  "status": "pending",
-  "productId": "prod-pears",
-  "barcode": "011110828385",
-  "direction": "stock_out",
-  "unitCount": 1,
+  "error": "Nothing on hand to take out.",
+  "code": "none_on_hand",
+  "itemId": "item-pears",
   "onHand": 0
 }
 ```
 
-The barcode override is stored, and `productId` on the scan is the linked product. A later commit without `backfill` is still `409` `none_on_hand` / `Nothing on hand to take out.` A later commit with `backfill: true` is the success path above.
+`itemId` is the linked item. `onHand` is `0`. A later commit without `backfill` is still `409` `none_on_hand` / `Nothing on hand to take out.` A later commit with `backfill: true` is the success path above.
 
 `linkProductId` for a missing or wiped product stays `409` `link_target_gone` / `That item isn't available anymore. Pick another.` The scan stays pending and unlinked. That error body has no `onHand`.
 
