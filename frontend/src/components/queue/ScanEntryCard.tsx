@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
-import { addGroupMembers, ApiError, commitScanEntry, listProducts, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
-import type { PantryLinkSuggestion, Product, ScanEntry } from '../../types';
+import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
+import { CODE_LINK_TARGET_GONE, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -27,20 +27,21 @@ const LinkProductSearch = ({
   busy: boolean;
   onPick: (productId: string) => void;
 }) => {
+  const searchId = useId();
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
   });
-  const [products, setProducts] = useState<Product[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>([]);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     let active = true;
-    void listProducts()
+    void getInventoryList()
       .then((loaded) => {
-        if (active) setProducts(loaded);
+        if (active) setItems(loaded);
       })
       .catch(() => {
-        if (active) setProducts([]);
+        if (active) setItems([]);
       });
     return () => {
       active = false;
@@ -49,50 +50,60 @@ const LinkProductSearch = ({
 
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    if (normalized === '') return products;
-    return products.filter((product) =>
-      `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized),
-    );
-  }, [products, query]);
+    return items.filter((row) => {
+      if (row.shelved === true) return false;
+      if (normalized === '') return true;
+      const product = row.item.product;
+      return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
+    });
+  }, [items, query]);
 
   return (
-    <Combobox
-      store={combobox}
-      withinPortal={false}
-      onOptionSubmit={(productId) => {
-        combobox.closeDropdown();
-        onPick(productId);
-      }}
-    >
-      <Combobox.Target>
-        <TextInput
-          size="xs"
-          label="Search products"
-          placeholder="Type a product name or category"
-          value={query}
-          autoComplete="off"
-          disabled={busy}
-          onChange={(event) => {
-            setQuery(event.currentTarget.value);
-            combobox.openDropdown();
-            combobox.updateSelectedOptionIndex();
-          }}
-          onClick={() => combobox.openDropdown()}
-          onFocus={() => combobox.openDropdown()}
-          onBlur={() => combobox.closeDropdown()}
-        />
-      </Combobox.Target>
-      <Combobox.Dropdown>
-        <Combobox.Options>
-          {matches.length === 0 && <Combobox.Empty>No matching products.</Combobox.Empty>}
-          {matches.map((product) => (
-            <Combobox.Option key={product.id} value={product.id}>
-              {product.name}
-            </Combobox.Option>
-          ))}
-        </Combobox.Options>
-      </Combobox.Dropdown>
-    </Combobox>
+    <div className="scan-link-search">
+      <Text component="label" htmlFor={searchId} size="xs" fw={500} className="scan-link-search-label">
+        Search products
+      </Text>
+      <Combobox
+        store={combobox}
+        withinPortal={false}
+        position="bottom"
+        offset={4}
+        middlewares={{ flip: false, shift: true }}
+        onOptionSubmit={(productId) => {
+          combobox.closeDropdown();
+          onPick(productId);
+        }}
+      >
+        <Combobox.Target>
+          <TextInput
+            id={searchId}
+            size="xs"
+            placeholder="Type a product name or category"
+            value={query}
+            autoComplete="off"
+            disabled={busy}
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              combobox.openDropdown();
+              combobox.updateSelectedOptionIndex();
+            }}
+            onClick={() => combobox.openDropdown()}
+            onFocus={() => combobox.openDropdown()}
+            onBlur={() => combobox.closeDropdown()}
+          />
+        </Combobox.Target>
+        <Combobox.Dropdown>
+          <Combobox.Options>
+            {matches.length === 0 && <Combobox.Empty>No matching products.</Combobox.Empty>}
+            {matches.map((row) => (
+              <Combobox.Option key={row.item.id} value={row.item.productId}>
+                {row.item.product.name}
+              </Combobox.Option>
+            ))}
+          </Combobox.Options>
+        </Combobox.Dropdown>
+      </Combobox>
+    </div>
   );
 };
 
@@ -242,11 +253,52 @@ export const ScanEntryCard = ({
   const linkOffer = matchingOffer !== null ? matchingOffer.offer : (batchOpensSearch ? [] : null);
   const hideEmptyMatch = matchingOffer !== null ? matchingOffer.hideEmpty : batchOpensSearch;
 
+  // link_target_gone carries no suggestions. A plain recommit is the fresh
+  // no_item list; an empty one is the only time the no-match line is shown.
+  const refillSuggestions = async () => {
+    try {
+      const committed = await commitScanEntry(entry.id);
+      rememberOffer(null, false);
+      noteCommitted(committed);
+      onChanged();
+    } catch (refetchError) {
+      const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
+      rememberOffer(suggestions, false);
+    }
+  };
+
+  useEffect(() => {
+    if (commitCode !== CODE_LINK_TARGET_GONE) return;
+    let active = true;
+    void commitScanEntry(entry.id)
+      .then((committed) => {
+        if (!active) return;
+        setLocalOffer({ code: commitCode, offer: null, hideEmpty: false });
+        onCommitNote?.(formatPartialRemoval(entry.unitCount, committed) ?? '');
+        onChanged();
+      })
+      .catch((refetchError: unknown) => {
+        if (!active) return;
+        const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
+        setLocalOffer({ code: commitCode, offer: suggestions, hideEmpty: false });
+      });
+    return () => {
+      active = false;
+    };
+    // Once per failure code. onChanged is a new arrow on each parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitCode, entry.id]);
+
   // Returns true when the failure was shown and the scan stays pending.
-  const showCommitFailure = (requestError: unknown): boolean => {
+  const showCommitFailure = async (requestError: unknown): Promise<boolean> => {
     if (!(requestError instanceof ApiError)) return false;
     const behavior = commitConflictBehavior(requestError.code);
-    if (behavior.linkOffer || behavior.refreshSuggestions) {
+    if (behavior.refreshSuggestions) {
+      setApproveError(requestError.message || 'Unable to confirm scan.');
+      await refillSuggestions();
+      return true;
+    }
+    if (behavior.linkOffer) {
       rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
       setApproveError(behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '');
       return true;
@@ -270,7 +322,7 @@ export const ScanEntryCard = ({
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!showCommitFailure(requestError)) {
+      if (!await showCommitFailure(requestError)) {
         setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
       }
     } finally {
@@ -287,7 +339,7 @@ export const ScanEntryCard = ({
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!showCommitFailure(requestError)) {
+      if (!await showCommitFailure(requestError)) {
         setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
       }
     } finally {

@@ -134,3 +134,7 @@ export function formatPartialRemoval(unitCount: number, body: object | null | un
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }
+
+// A 5xx with no JSON error field: a migration 503, a proxy 502/504, or empty
+// HTTP/2 status text. Appended so the Expo client can show the same sentence.
+export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';

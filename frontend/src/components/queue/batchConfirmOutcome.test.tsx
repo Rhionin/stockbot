@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { SERVER_ERROR_FALLBACK } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
@@ -153,6 +154,10 @@ interface OutcomeCase {
   searchOn?: string[];
   noSearchOn?: string[];
   relink?: { name: string; remaining: string; status: number; body: unknown };
+  refetch?: { status: number; body: unknown };
+  searchPick?: { query: string; option: string; productId: string; absent: string[] };
+  household?: unknown;
+  catalog?: unknown;
   stillSelected?: boolean;
   fixed?: boolean;
 }
@@ -274,12 +279,12 @@ const cases: OutcomeCase[] = [
     name: 'a 500 with the picker open shows the message and does not reload',
     action: 'confirm-milk-instance',
     pendingAfter: 'both',
-    commit: { status: 500, body: { error: 'Something went wrong. Please try again.' } },
-    visible: ['Something went wrong. Please try again.', goneLabel],
+    commit: { status: 500, body: {} },
+    visible: [SERVER_ERROR_FALLBACK, goneLabel],
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Something went wrong. Please try again.' },
+    cardReason: { barcode: '111', text: SERVER_ERROR_FALLBACK },
     instanceFetches: 1,
   },
   {
@@ -433,13 +438,13 @@ const cases: OutcomeCase[] = [
     pendingAfter: 'both',
     commit: {
       status: 400,
-      body: { error: 'Pick a product for this scan first.', code: 'product_unresolved' },
+      body: { error: 'Choose which item this is first.', code: 'product_unresolved' },
     },
-    visible: ['Pick a product for this scan first.', 'Which item is this?'],
+    visible: ['Choose which item this is first.', 'Which item is this?'],
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Pick a product for this scan first.' },
+    cardReason: { barcode: '111', text: 'Choose which item this is first.' },
     unlinked: 'search',
   },
   {
@@ -449,14 +454,14 @@ const cases: OutcomeCase[] = [
     batch: {
       updatedCount: 2,
       failedIds: ['scan-milk', 'scan-oats'],
-      failedReasons: ['Pick a product for this scan first.', 'Nothing on hand to take out.'],
+      failedReasons: ['Choose which item this is first.', 'Nothing on hand to take out.'],
       failedCodes: ['product_unresolved', 'none_on_hand'],
     },
-    visible: ['Pick a product for this scan first.', 'Nothing on hand to take out.', 'Which item is this?'],
+    visible: ['Choose which item this is first.', 'Nothing on hand to take out.', 'Which item is this?'],
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Pick a product for this scan first.' },
+    cardReason: { barcode: '111', text: 'Choose which item this is first.' },
     searchOn: ['111'],
     noSearchOn: ['222'],
   },
@@ -500,6 +505,13 @@ const cases: OutcomeCase[] = [
       body: {
         error: "That item isn't available anymore. Pick another.",
         code: 'link_target_gone',
+      },
+    },
+    refetch: {
+      status: 409,
+      body: {
+        error: 'Which item is this?',
+        code: 'no_item',
         suggestions: [
           { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
         ],
@@ -521,13 +533,86 @@ const cases: OutcomeCase[] = [
       failedReasons: ["That item isn't available anymore. Pick another.", 'Nothing on hand to take out.'],
       failedCodes: ['link_target_gone', 'none_on_hand'],
     },
-    visible: ["That item isn't available anymore. Pick another.", 'Nothing on hand to take out.', 'Which item is this?'],
+    refetch: {
+      status: 409,
+      body: {
+        error: 'Which item is this?',
+        code: 'no_item',
+        suggestions: [
+          { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 1 },
+        ],
+      },
+    },
+    visible: ["That item isn't available anymore. Pick another.", 'Nothing on hand to take out.', 'Which item is this?', 'Kept Oats'],
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardReason: { barcode: '111', text: "That item isn't available anymore. Pick another." },
     searchOn: ['111'],
     noSearchOn: ['222'],
+  },
+  {
+    name: 'search offers a zero-stock household item, not a shelved or catalog one',
+    action: 'confirm-milk',
+    pendingAfter: 'oats',
+    commit: { status: 409, body: { error: 'barcode is not linked', code: 'no_item', suggestions: [] } },
+    household: [
+      {
+        item: {
+          id: 'item-empty',
+          userId: 'user-1',
+          productId: 'prod-empty',
+          product: product('prod-empty', 'Empty Oats'),
+          targetQuantity: null,
+          createdAt: '2026-03-20T10:00:00Z',
+        },
+        instanceCount: 0,
+        nearExpiryCount: 0,
+        expiredCount: 0,
+        needsAttention: false,
+      },
+      {
+        item: {
+          id: 'item-shelved',
+          userId: 'user-1',
+          productId: 'prod-shelved',
+          product: product('prod-shelved', 'Shelved Oats'),
+          targetQuantity: null,
+          createdAt: '2026-03-20T10:00:00Z',
+        },
+        instanceCount: 3,
+        nearExpiryCount: 0,
+        expiredCount: 0,
+        needsAttention: false,
+        shelved: true,
+      },
+      {
+        item: {
+          id: 'item-rice',
+          userId: 'user-1',
+          productId: 'prod-rice',
+          product: product('prod-rice', 'Plain Rice'),
+          targetQuantity: null,
+          createdAt: '2026-03-20T10:00:00Z',
+        },
+        instanceCount: 2,
+        nearExpiryCount: 0,
+        expiredCount: 0,
+        needsAttention: false,
+      },
+    ],
+    catalog: [product('prod-catalog', 'Catalog Oats')],
+    searchPick: {
+      query: 'Oats',
+      option: 'Empty Oats',
+      productId: 'prod-empty',
+      absent: ['Shelved Oats', 'Catalog Oats', 'Plain Rice'],
+    },
+    visible: [],
+    absent: ['Shelved Oats', 'Catalog Oats'],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    quiet: true,
   },
   {
     name: 'an all-success batch with no failedIds shows no banner',
@@ -556,6 +641,7 @@ describe('scan commit outcomes', () => {
     let pending: PendingSet = row.cards ? 'crowd' : 'both';
     let instanceFetches = 0;
     let commitCount = 0;
+    const commitBodies: { linkProductId?: string }[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('batch-commit') && init?.method === 'POST') {
@@ -565,8 +651,16 @@ describe('scan commit outcomes', () => {
       if (url.endsWith('/commit') && init?.method === 'POST') {
         commitCount += 1;
         pending = row.pendingAfter;
-        if (row.relink && commitCount > 1) {
+        const parsed = init.body ? JSON.parse(String(init.body)) as { linkProductId?: string } : {};
+        commitBodies.push(parsed);
+        if (parsed.linkProductId && row.relink) {
           return Promise.resolve(jsonResponse(row.relink.body, row.relink.status));
+        }
+        if (parsed.linkProductId && row.searchPick) {
+          return Promise.resolve(jsonResponse({ ...committedMilk, productId: parsed.linkProductId }));
+        }
+        if (!parsed.linkProductId && row.refetch && (commitCount > 1 || !row.commit)) {
+          return Promise.resolve(jsonResponse(row.refetch.body, row.refetch.status));
         }
         const commit = row.commit ?? { status: 200, body: committedMilk };
         return Promise.resolve(jsonResponse(commit.body, commit.status));
@@ -582,7 +676,12 @@ describe('scan commit outcomes', () => {
         return Promise.resolve(jsonResponse(body));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse(url === '/api/inventory' ? inventory : []));
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
+        return Promise.resolve(jsonResponse(row.household ?? inventory));
+      }
+      if (url === '/api/products' || url.startsWith('/api/products?')) {
+        return Promise.resolve(jsonResponse(row.catalog ?? []));
+      }
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({
           stockInBarcode: 'STOCK_IN',
@@ -621,6 +720,17 @@ describe('scan commit outcomes', () => {
 
     if (row.relink && milkCard) {
       fireEvent.click(await within(milkCard).findByRole('button', { name: `Link ${row.relink.name}` }));
+    }
+    if (row.searchPick && milkCard) {
+      const search = await within(milkCard).findByLabelText('Search products');
+      fireEvent.change(search, { target: { value: row.searchPick.query } });
+      fireEvent.focus(search);
+      fireEvent.click(search);
+      expect(await within(milkCard).findByRole('option', { name: row.searchPick.option, hidden: true })).toBeInTheDocument();
+      for (const name of row.searchPick.absent) {
+        expect(within(milkCard).queryByRole('option', { name, hidden: true })).not.toBeInTheDocument();
+      }
+      fireEvent.click(within(milkCard).getByRole('option', { name: row.searchPick.option, hidden: true }));
     }
 
     await waitFor(() => {
@@ -709,10 +819,83 @@ describe('scan commit outcomes', () => {
       const card = screen.getByRole('article', { name: 'Scan 111' });
       expect(within(card).getByRole('button', { name: `Link ${row.relink.remaining}` })).toBeInTheDocument();
       expect(within(card).queryByRole('button', { name: `Link ${row.relink.name}` })).not.toBeInTheDocument();
+      const refetch = commitBodies.filter((body) => body.linkProductId === undefined);
+      expect(refetch.length).toBeGreaterThan(1);
+      expect(commitBodies.some((body) => body.linkProductId === 'prod-stale')).toBe(true);
+    }
+    if (row.searchPick) {
+      expect(commitBodies).toContainEqual({ linkProductId: row.searchPick.productId });
     }
     if (row.dismiss) {
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
     }
+  });
+
+  it('keeps an open link search when a different card commits', async () => {
+    let pending: PendingSet = 'both';
+    const household = [{
+      item: {
+        id: 'item-empty',
+        userId: 'user-1',
+        productId: 'prod-empty',
+        product: product('prod-empty', 'Empty Oats'),
+        targetQuantity: null,
+        createdAt: '2026-03-20T10:00:00Z',
+      },
+      instanceCount: 0,
+      nearExpiryCount: 0,
+      expiredCount: 0,
+      needsAttention: false,
+    }];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/commit') && init?.method === 'POST') {
+        if (url.includes('scan-oats')) {
+          pending = 'milk';
+          return Promise.resolve(jsonResponse({ ...oats, status: 'committed' }));
+        }
+        return Promise.resolve(jsonResponse({
+          error: 'barcode is not linked',
+          code: 'no_item',
+          suggestions: [],
+        }, 409));
+      }
+      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending)));
+      if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(jsonResponse(household));
+      if (url === '/api/products' || url.startsWith('/api/products?')) return Promise.resolve(jsonResponse([product('prod-catalog', 'Catalog Oats')]));
+      if (url.endsWith('/api/scanner/config')) {
+        return Promise.resolve(jsonResponse({
+          stockInBarcode: 'STOCK_IN',
+          stockOutBarcode: 'STOCK_OUT',
+          currentMode: 'stock_out',
+          connected: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<MantineProvider><ScanQueuePage /></MantineProvider>);
+    const milkCard = await screen.findByRole('article', { name: 'Scan 111' });
+    const oatsCard = screen.getByRole('article', { name: 'Scan 222' });
+    fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
+    const search = await within(milkCard).findByLabelText('Search products');
+    fireEvent.change(search, { target: { value: 'Oats' } });
+    expect(await within(milkCard).findByRole('option', { name: 'Empty Oats', hidden: true })).toBeInTheDocument();
+
+    fireEvent.click(within(oatsCard).getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('article', { name: 'Scan 222' })).not.toBeInTheDocument();
+    });
+    const stillOpen = screen.getByRole('article', { name: 'Scan 111' });
+    expect(within(stillOpen).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
+    const stillSearch = within(stillOpen).getByLabelText('Search products');
+    expect(stillSearch).toHaveValue('Oats');
+    fireEvent.focus(stillSearch);
+    expect(await within(stillOpen).findByRole('option', { name: 'Empty Oats', hidden: true })).toBeInTheDocument();
+    expect(within(stillOpen).queryByRole('option', { name: 'Catalog Oats', hidden: true })).not.toBeInTheDocument();
   });
 });
