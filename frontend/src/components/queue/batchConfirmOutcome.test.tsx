@@ -429,6 +429,9 @@ describe('scan commit outcomes', () => {
       if (row.instanceFetches !== undefined) {
         expect(instanceFetches).toBe(row.instanceFetches);
       }
+      if (row.instancesAfter?.length === 1) {
+        expect(screen.getByRole('radio', { name: keptLabel })).toBeInTheDocument();
+      }
     });
 
     for (const barcode of row.pendingBarcodes) {
@@ -442,9 +445,6 @@ describe('scan commit outcomes', () => {
     if (row.dismiss) {
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Link / })).not.toBeInTheDocument();
-    }
-    if (row.instanceFetches !== undefined && row.instancesAfter?.length === 1) {
-      expect(screen.getByRole('radio', { name: keptLabel })).toBeInTheDocument();
     }
   });
 });
