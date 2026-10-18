@@ -281,6 +281,45 @@ When the item is a live household item with 0 on hand, the response stays `409` 
 
 `GET /api/scans` does not grow an `onHand` field. The link response is the one the card reads.
 
+## Link suggestions
+
+Both clients refetch the ranked links by committing the scan again. That commit is a write, and a scan that already has a unit on hand would be taken out. The read is separate.
+
+`GET /api/scans/{id}/link-suggestions`
+
+The scan must still be `pending`. The list is the same candidates a stock-out commit returns on `409` `no_item`: unshelved items in the scan's household that still have a unit on hand, in that same order. A longer barcode suffix outranks a shorter one, and a suffix outranks a name resemblance. Items with nothing on hand are left out. Shelved items are left out. Another household's items are left out.
+
+The call writes nothing. It does not change the scan, the barcode, the item, or any stock move.
+
+`200`:
+
+```json
+{
+  "suggestions": [
+    {
+      "itemId": "item-pears",
+      "productId": "prod-pears",
+      "name": "Sliced Pears",
+      "onHand": 3
+    }
+  ]
+}
+```
+
+Each element is a `LinkSuggestion`: `itemId` (string), `productId` (string), `name` (string), `onHand` (number, how many units are on the shelf). `suggestions` is always an array. No match is:
+
+```json
+{ "suggestions": [] }
+```
+
+| HTTP | `code` | `error` |
+|---|---|---|
+| 404 | `scan_not_found` | This scan is no longer in the queue. |
+| 400 | `not_pending` | This scan was already handled. |
+| 500 | `internal` | Something went wrong. Try again. |
+
+`not_pending` is any scan that is not `pending`, including `committed`, `cancelled`, and `flagged`. `500` uses the commit sentence and `code` `internal`. The real error stays in the server log.
+
 ## How the stock-in is tagged
 
 The backfill stock-in is stored as a history move with `source` `backfill`. The stock-out from the same commit is a normal usage move with `source` `scan`.

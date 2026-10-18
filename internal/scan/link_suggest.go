@@ -47,6 +47,31 @@ type linkQuery interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// LinkSuggestions is the ranked list a stock-out commit returns with no_item.
+// The scan must still be pending. Candidates are this scan's household only:
+// unshelved items that still have a unit on hand, in the same order as that
+// commit. The call does not write.
+func (r *Queue) LinkSuggestions(ctx context.Context, id string) ([]LinkSuggestion, error) {
+	entry, err := r.GetScanEntry(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, ErrScanNotFound
+	}
+	if entry.Status != Pending {
+		return nil, ErrNotPending
+	}
+	suggestions, err := r.suggestLinks(ctx, r.db, entry)
+	if err != nil {
+		return nil, err
+	}
+	if suggestions == nil {
+		return []LinkSuggestion{}, nil
+	}
+	return suggestions, nil
+}
+
 // suggestLinks ranks unshelved household items that still have a unit on the shelf.
 // A barcode that is a suffix of the scan outranks a name resemblance. Wiped items
 // stay out of the list even when they still have instance rows.
