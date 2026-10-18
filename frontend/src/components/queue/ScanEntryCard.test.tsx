@@ -54,11 +54,11 @@ describe('ScanEntryCard stock-out review', () => {
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add expiration' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Use oldest available automatically' })).not.toBeInTheDocument();
-    expect(screen.queryByText('No inventory item is available for this product.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing on hand to take out.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'More', expanded: false })).toBeInTheDocument();
   });
 
-  it('keeps the missing-inventory note behind More and still hides the expiration control', () => {
+  it('says nothing is on hand when this product is not in the household', () => {
     vi.stubGlobal('fetch', vi.fn());
     render(
       <MantineProvider>
@@ -71,10 +71,10 @@ describe('ScanEntryCard stock-out review', () => {
       </MantineProvider>,
     );
 
-    expect(screen.queryByText('No inventory item is available for this product.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing on hand to take out.')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    expect(screen.getByText('No inventory item is available for this product.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing on hand to take out.')).toBeInTheDocument();
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 

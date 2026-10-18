@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { CODE_LINK_TARGET_GONE, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
@@ -23,9 +23,13 @@ const LINK_OFFER_HEADING = 'Which item is this?';
 
 const LinkProductSearch = ({
   busy,
+  reloadKey,
+  excludeProductId,
   onPick,
 }: {
   busy: boolean;
+  reloadKey: number;
+  excludeProductId: string;
   onPick: (productId: string) => void;
 }) => {
   const searchId = useId();
@@ -47,17 +51,17 @@ const LinkProductSearch = ({
     return () => {
       active = false;
     };
-  }, []);
+  }, [reloadKey]);
 
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return items.filter((row) => {
-      if (row.shelved === true) return false;
+      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
       if (normalized === '') return true;
       const product = row.item.product;
       return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
     });
-  }, [items, query]);
+  }, [excludeProductId, items, query]);
 
   return (
     <div className="scan-link-search">
@@ -161,6 +165,8 @@ export const ScanEntryCard = ({
   const [packDraft, setPackDraft] = useState('');
   const [packError, setPackError] = useState('');
   const [packBusy, setPackBusy] = useState(false);
+  const [householdReload, setHouseholdReload] = useState(0);
+  const [excludedProductId, setExcludedProductId] = useState('');
 
   const prefersReducedMotion = () =>
     typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -257,51 +263,26 @@ export const ScanEntryCard = ({
   const linkOffer = matchingOffer !== null ? matchingOffer.offer : (batchOpensSearch ? [] : null);
   const hideEmptyMatch = matchingOffer !== null ? matchingOffer.hideEmpty : batchOpensSearch;
 
-  // link_target_gone carries no suggestions. A plain recommit is the fresh
-  // no_item list; an empty one is the only time the no-match line is shown.
-  const refillSuggestions = async () => {
-    try {
-      const committed = await commitScanEntry(entry.id);
-      rememberOffer(null, false);
-      noteCommitted(committed);
-      onChanged();
-    } catch (refetchError) {
-      const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
-      rememberOffer(suggestions, false);
-    }
+  // The gone target is already in the suggestion list. Drop it locally and
+  // reload the household list. Another commit could succeed and take stock out.
+  const dropGoneTarget = (productId: string) => {
+    const current = matchingOffer?.offer ?? [];
+    rememberOffer(current.filter((suggestion) => suggestion.productId !== productId), false);
+    setExcludedProductId(productId);
+    setHouseholdReload((reload) => reload + 1);
+    setInstancePickerOpen(false);
   };
-
-  useEffect(() => {
-    if (commitCode !== CODE_LINK_TARGET_GONE) return;
-    let active = true;
-    void commitScanEntry(entry.id)
-      .then((committed) => {
-        if (!active) return;
-        setLocalOffer({ code: commitCode, offer: null, hideEmpty: false });
-        noteCommitted(committed);
-        onChanged();
-      })
-      .catch((refetchError: unknown) => {
-        if (!active) return;
-        const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
-        setLocalOffer({ code: commitCode, offer: suggestions, hideEmpty: false });
-      });
-    return () => {
-      active = false;
-    };
-    // Once per failure code. onChanged is a new arrow on each parent render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commitCode, entry.id]);
 
   // Card state stays here (picker, link offer, search). The sentence itself
   // is published once, at the end, and only into the toast.
-  const showCommitFailure = async (requestError: unknown): Promise<void> => {
+  const showCommitFailure = async (requestError: unknown, linkedProductId?: string): Promise<void> => {
     let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
     if (requestError instanceof ApiError) {
       const behavior = commitConflictBehavior(requestError.code);
       if (behavior.refreshSuggestions) {
-        await refillSuggestions();
+        if (linkedProductId !== undefined) dropGoneTarget(linkedProductId);
       } else if (behavior.linkOffer) {
+        setInstancePickerOpen(false);
         rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
       } else {
         rememberOffer(null, false);
@@ -338,7 +319,7 @@ export const ScanEntryCard = ({
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      await showCommitFailure(requestError);
+      await showCommitFailure(requestError, productId);
     } finally {
       setApproving(false);
     }
@@ -696,7 +677,7 @@ export const ScanEntryCard = ({
               )}
             </div>
           )}
-          {isStockOut && (
+          {isStockOut && linkOffer === null && (
             <button
               type="button"
               className="scan-entry-more"
@@ -724,7 +705,7 @@ export const ScanEntryCard = ({
         </Stack>
       )}
 
-      {instancePickerOpen && isStockOut && itemId !== undefined && (
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId !== undefined && (
         <div className="scan-entry-extra">
           <StockOutInstanceSelector
             itemId={itemId}
@@ -734,8 +715,8 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && itemId === undefined && (
-        <Alert color="yellow" py={4} mt={4}>No inventory item is available for this product.</Alert>
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && (
+        <Text c="dimmed" size="sm" mt={4}>Nothing on hand to take out.</Text>
       )}
 
       {entry.status === 'flagged' && (
@@ -792,7 +773,12 @@ export const ScanEntryCard = ({
               ))}
             </ul>
           )}
-          <LinkProductSearch busy={approving} onPick={(productId) => void linkSuggestion(productId)} />
+          <LinkProductSearch
+            busy={approving}
+            reloadKey={householdReload}
+            excludeProductId={excludedProductId}
+            onPick={(productId) => void linkSuggestion(productId)}
+          />
           <div className="scan-link-offer-actions">
             <Button size="compact-xs" variant="default" onClick={() => rememberOffer(null, false)}>
               Dismiss
