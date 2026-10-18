@@ -267,10 +267,9 @@ func TestSentryTunnelBlankLineEnvelopeIsLinear(t *testing.T) {
 		t.Fatalf("body length = %d", len(body))
 	}
 
-	// The old walk re-trimmed the remaining body on every blank line, so this
-	// envelope took many seconds. A linear parse finishes immediately; the
-	// bound is only wide enough to stay quiet on a busy CI machine.
-	const bound = 250 * time.Millisecond
+	// The old walk re-trimmed the remaining body on every blank line and took
+	// about 14s. Two seconds still fails that loop and stays quiet on a busy CI machine.
+	const bound = 2 * time.Second
 
 	var calls int
 	handler := allowedTunnel(t, &calls)
@@ -317,6 +316,71 @@ func TestSentryTunnelBlankLineEnvelopeIsLinear(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("trailing space calls = %d", calls)
+	}
+}
+
+func TestSentryTunnelBlankLineBeforeDisallowedItem(t *testing.T) {
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n\n" +
+		`{"type":"replay_recording"}` + "\n" + `{"message":"ok"}` + "\n"
+	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 0 {
+		t.Fatal("disallowed item after a blank line was forwarded")
+	}
+}
+
+func TestSentryTunnelRejectsTwentyDigitItemLength(t *testing.T) {
+	var calls int
+	handler := allowedTunnel(t, &calls)
+	const length = "10000000000000000000"
+	if len(length) != 20 {
+		t.Fatalf("digits = %d", len(length))
+	}
+	body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n" +
+		`{"type":"attachment","length":` + length + `}` + "\n" + "hi"
+	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 0 {
+		t.Fatal("20-digit length was forwarded")
+	}
+}
+
+func TestSentryTunnelForwardsAttachmentEndingAtEOF(t *testing.T) {
+	var calls int
+	var got string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		got = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	handler := newSentryTunnel(SentryTunnelConfig{
+		IngestHost: "o1.ingest.example",
+		ProjectIDs: map[string]struct{}{"123": {}},
+		Client:     &http.Client{Transport: rewriteHost(upstream.URL)},
+		PerIP:      100,
+		Global:     100,
+	})
+	payload := "hello"
+	body := `{"dsn":"https://key@o1.ingest.example/123"}` + "\n" +
+		`{"type":"attachment","length":` + strconv.Itoa(len(payload)) + `}` + "\n" +
+		payload
+	if strings.HasSuffix(body, "\n") {
+		t.Fatal("payload has a trailing newline")
+	}
+	rec := postTunnel(handler, http.MethodPost, body, sentryEnvelopeMediaType)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 || !strings.HasSuffix(got, payload) || strings.HasSuffix(got, "\n") {
+		t.Fatalf("calls = %d forwarded = %q", calls, got)
 	}
 }
 
