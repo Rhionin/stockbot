@@ -13,6 +13,8 @@ import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './que
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 
+const NOTHING_ON_HAND = 'Nothing on hand to take out.';
+
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
@@ -124,6 +126,7 @@ export interface ScanEntryCardProps {
   commitCode?: string;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
+  onConfirmStart?: () => void;
 }
 
 export const ScanEntryCard = ({
@@ -135,10 +138,12 @@ export const ScanEntryCard = ({
   commitCode = '',
   onSelectedChange,
   onChanged,
+  onConfirmStart,
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approving, setApproving] = useState(false);
+  const [toastedSentence, setToastedSentence] = useState('');
   const [localOffer, setLocalOffer] = useState<{
     code: string;
     offer: PantryLinkSuggestion[] | null;
@@ -246,6 +251,7 @@ export const ScanEntryCard = ({
 
   const showCommitSentence = (message: string) => {
     if (message === '') return;
+    setToastedSentence(message);
     showUndo({ detail: message, color: 'red' });
   };
 
@@ -299,6 +305,7 @@ export const ScanEntryCard = ({
 
   const handleApprove = async () => {
     setApproving(true);
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       rememberOffer(null, false);
@@ -313,6 +320,7 @@ export const ScanEntryCard = ({
 
   const linkSuggestion = async (productId: string) => {
     setApproving(true);
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       rememberOffer(null, false);
@@ -715,8 +723,8 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && (
-        <Text c="dimmed" size="sm" mt={4}>Nothing on hand to take out.</Text>
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && toastedSentence !== NOTHING_ON_HAND && (
+        <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
       )}
 
       {entry.status === 'flagged' && (

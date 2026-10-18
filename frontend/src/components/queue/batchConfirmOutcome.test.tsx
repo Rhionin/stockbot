@@ -157,7 +157,7 @@ const pendingEntries = (which: PendingSet): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk';
   pendingAfter: PendingSet;
   commit?: { status: number; body: unknown; empty?: boolean };
   batch?: unknown;
@@ -186,6 +186,7 @@ interface OutcomeCase {
     toggle?: boolean;
   };
   hideMore?: string;
+  openMore?: boolean;
   household?: unknown;
   catalog?: unknown;
   stillSelected?: boolean;
@@ -663,6 +664,37 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
+    name: 'a wiped product confirms nothing on hand only in the toast',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    openMore: true,
+    household: [householdItem('oats', 'Oats', 1)],
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.'],
+    absent: ['No inventory item is available'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    toast: 'Nothing on hand to take out.',
+  },
+  {
+    name: 'a single confirm replaces the batch reason so the sentence shows once',
+    action: 'batch-then-milk',
+    pendingAfter: 'both',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ['Nothing on hand to take out.', 'Already confirmed by someone else.'],
+    },
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.', 'Already confirmed by someone else.', fallback],
+    absent: [],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardWithoutAlert: '111',
+    cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
+    toast: 'Nothing on hand to take out.',
+  },
+  {
     name: 'a stock-out with no household item says nothing is on hand',
     action: 'more-milk',
     pendingAfter: 'both',
@@ -844,13 +876,23 @@ describe('scan commit outcomes', () => {
       expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument();
     }
 
-    if (row.action === 'batch') {
+    if (row.action === 'batch' || row.action === 'batch-then-milk') {
       const count = (row.cards ?? [milk, oats]).length;
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
+    }
+    if (row.action === 'batch-then-milk' && milkCard) {
+      await waitFor(() => {
+        expect(within(milkCard).getByRole('alert')).toHaveTextContent('Nothing on hand to take out.');
+      });
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     } else if (row.action === 'more-milk' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
-    } else if (milkCard) {
+    } else if (row.action !== 'batch' && milkCard) {
+      if (row.openMore) {
+        fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+        expect(within(milkCard).getByText('Nothing on hand to take out.')).toBeInTheDocument();
+      }
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     }
 

@@ -56,16 +56,16 @@ const scrollLowCardIntoView = async (page: Page, barcode: string) => {
   throw new Error(`could not park ${barcode} in view with scroll slack`)
 }
 
-const expectToastInside = async (page: Page, text: string) => {
+const expectToastInside = async (page: Page, text: string, borderToken?: string) => {
   const toast = page.locator('.restock-toast').filter({ hasText: text })
   await expect(toast).toBeVisible()
-  await expect.poll(() => page.evaluate((sentence) => {
+  await expect.poll(() => page.evaluate(({ sentence, token }) => {
     const leaves = [...document.querySelectorAll('body *')].filter((node) =>
       node.childElementCount === 0 && node.textContent === sentence,
     )
     if (leaves.length !== 1) return false
     const root = leaves[0]?.closest('.restock-toast')
-    if (root === null || root === undefined) return false
+    if (!(root instanceof HTMLElement)) return false
     const box = root.getBoundingClientRect()
     const fits = box.left >= 0
       && box.right <= window.innerWidth
@@ -75,6 +75,14 @@ const expectToastInside = async (page: Page, text: string) => {
     if (!fits) return false
     // Side margins, and every control inside the toast (Undo, close) on screen.
     if (box.left < 8 || box.right > window.innerWidth - 8) return false
+    if (token !== undefined) {
+      const probe = document.createElement('span')
+      probe.style.borderLeftColor = `var(${token})`
+      document.body.appendChild(probe)
+      const expected = getComputedStyle(probe).borderLeftColor
+      probe.remove()
+      if (getComputedStyle(root).borderLeftColor !== expected) return false
+    }
     return [...root.querySelectorAll('button, .restock-toast-detail')].every((node) => {
       const rect = node.getBoundingClientRect()
       if (rect.width === 0 && rect.height === 0) return true
@@ -83,7 +91,7 @@ const expectToastInside = async (page: Page, text: string) => {
         && rect.bottom <= window.innerHeight
         && rect.top >= 0
     })
-  }, text)).toBe(true)
+  }, { sentence: text, token: borderToken })).toBe(true)
 }
 
 const expectQueueClearsToast = async (page: Page) => {
@@ -177,7 +185,7 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
   const beforeFailure = await readScroll(page)
   await failureCard.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(failureCard).toBeVisible()
-  await expectToastInside(page, failureNote)
+  await expectToastInside(page, failureNote, '--mantine-color-red-6')
   expect(await readScroll(page)).toEqual(beforeFailure)
 })
 }
