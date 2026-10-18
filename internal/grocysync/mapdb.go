@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/Rhionin/stockbot/internal/app"
 )
 
 const (
@@ -42,7 +42,7 @@ type Map struct {
 
 // OpenMap opens or creates the sqlite file at path.
 func OpenMap(path string) (*Map, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := app.OpenSQLite(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open the sync map")
 	}

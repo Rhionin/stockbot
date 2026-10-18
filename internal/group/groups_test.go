@@ -16,7 +16,7 @@ import (
 
 func newTestGroups(t *testing.T) (*Groups, *product.Catalog, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

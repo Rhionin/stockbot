@@ -747,7 +747,10 @@ cmd_apply() {
     [[ -n "$arg" ]] && compose+=("$arg")
   done < <(grocy_compose_suffix)
   # Pull is the update script's job. Here, drop a proxy container left over
-  # from the other mode before Compose tries to reuse the name pantry-caddy.
+  # from the other mode before Compose tries to reuse the proxy name.
+  local proxy_container cloud_container
+  proxy_container=$(publish_container caddy)
+  cloud_container=$(publish_container cloudflared)
   if [[ "$use_public" == true || "$publish_mode" != tunnel ]]; then
     drop_other_publish_containers "$publish_mode"
   fi
@@ -773,7 +776,7 @@ cmd_apply() {
     local proxy_deadline=$((SECONDS + 20))
     local running=false
     while [[ $SECONDS -lt $proxy_deadline ]]; do
-      if docker inspect -f '{{.State.Running}}' pantry-caddy 2>/dev/null | grep -qx true; then
+      if docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
         running=true
         break
       fi
@@ -785,7 +788,7 @@ cmd_apply() {
       fatal "Public proxy did not stay running"
     fi
     log_info "Restarting the public proxy so the current Caddyfile is loaded"
-    if ! docker restart pantry-caddy >/dev/null; then
+    if ! docker restart "$proxy_container" >/dev/null; then
       "${compose[@]}" logs --tail=80 "$proxy_service" || true
       fatal "Could not restart the public proxy"
     fi
@@ -793,7 +796,7 @@ cmd_apply() {
       local tunnel_deadline=$((SECONDS + 20))
       running=false
       while [[ $SECONDS -lt $tunnel_deadline ]]; do
-        if docker inspect -f '{{.State.Running}}' pantry-cloudflared 2>/dev/null | grep -qx true; then
+        if docker inspect -f '{{.State.Running}}' "$cloud_container" 2>/dev/null | grep -qx true; then
           running=true
           break
         fi
@@ -940,19 +943,50 @@ cmd_reconcile_env() {
     [[ "$key" =~ ^# ]] && continue
     [[ -z "$key" ]] && continue
 
-    # Check if key exists in .env
-    if ! grep -q "^${key}=" "${PANTRY_DIR}/.env"; then
+    # An `export KEY=` line is already set. Do not add a second KEY=.
+    if ! env_has_key "$key"; then
       echo "${key}=${value}" >> "${PANTRY_DIR}/.env"
       log_info "Added missing key: $key"
       added=$((added + 1))
     fi
   done < "${PANTRY_DIR}/.env.example"
 
+  append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS
+
   if [[ $added -gt 0 ]]; then
     log_success "Added $added missing keys to .env"
   else
     log_success ".env is up to date"
   fi
+}
+
+# env_has_key is true when KEY= or export KEY= is already in .env.
+env_has_key() {
+  grep -qE "^(export[[:space:]]+)?${1}=" "${PANTRY_DIR}/.env"
+}
+
+# append_empty_env_keys adds KEY= lines that are missing. An existing value,
+# including one written as `export KEY=`, is left as it is, and the file mode
+# is not changed.
+append_empty_env_keys() {
+  local key
+  # cmd_reconcile_env owns added. A direct call starts from zero.
+  if [[ -z ${added+x} ]]; then
+    added=0
+  fi
+  [[ -f ${PANTRY_DIR}/.env ]] || return 0
+  # wc -l counts the trailing newline. A file that already ends with one
+  # stays as it is; appending a key never rewrites earlier lines.
+  if [[ -s ${PANTRY_DIR}/.env ]] && [[ $(tail -c 1 "${PANTRY_DIR}/.env" | wc -l) -eq 0 ]]; then
+    printf '\n' >> "${PANTRY_DIR}/.env"
+  fi
+  for key in "$@"; do
+    if ! env_has_key "$key"; then
+      printf '%s=\n' "$key" >> "${PANTRY_DIR}/.env"
+      log_info "Added missing key: $key"
+      added=$((added + 1))
+    fi
+  done
 }
 
 # ============================================================================
@@ -1182,11 +1216,14 @@ cmd_status() {
     failed=$((failed + 1))
     publish_mode=none
   fi
+  local proxy_container cloud_container
+  proxy_container=$(publish_container caddy)
+  cloud_container=$(publish_container cloudflared)
   if [[ "$publish_mode" == tunnel ]]; then
     if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing, so the tunnel will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh publish --tunnel"
-    elif docker inspect -f '{{.State.Running}}' pantry-caddy 2>/dev/null | grep -qx true \
-      && docker inspect -f '{{.State.Running}}' pantry-cloudflared 2>/dev/null | grep -qx true; then
+    elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true \
+      && docker inspect -f '{{.State.Running}}' "$cloud_container" 2>/dev/null | grep -qx true; then
       log_success "Cloudflare Tunnel is running for https://$public_host (shared password required). Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
     else
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but the tunnel is not running. Start it with: sudo ./setup.sh publish --tunnel"
@@ -1194,7 +1231,7 @@ cmd_status() {
   elif [[ -n "$public_host" ]]; then
     if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
       log_warn "PUBLIC_HOST=$public_host but ${PANTRY_DIR}/auth.caddy is missing, so the proxy will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh"
-    elif docker inspect -f '{{.State.Running}}' pantry-caddy 2>/dev/null | grep -qx true; then
+    elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
       log_success "Public proxy is running for https://$public_host (shared password required)"
     else
       log_warn "PUBLIC_HOST=$public_host but the proxy container is not running. Start it with: sudo ./setup.sh"
@@ -1229,7 +1266,7 @@ cmd_unpublish() {
     docker compose --project-directory "${PANTRY_DIR}" -f "${PANTRY_DIR}/docker-compose.yml" -f "${PANTRY_DIR}/docker-compose.tunnel.yml" --profile tunnel stop caddy-tunnel cloudflared || true
     docker compose --project-directory "${PANTRY_DIR}" -f "${PANTRY_DIR}/docker-compose.yml" -f "${PANTRY_DIR}/docker-compose.tunnel.yml" --profile tunnel rm -f caddy-tunnel cloudflared || true
   fi
-  docker rm -f pantry-cloudflared >/dev/null 2>&1 || true
+  remove_project_container "$(publish_container cloudflared)" >/dev/null 2>&1 || true
   log_success "Public proxy stopped. The certificate volume was kept so a later setup can reuse it."
   log_info "Clear PUBLIC_HOST and CLOUDFLARE_TUNNEL_TOKEN in ${PANTRY_DIR}/.env if automatic updates should not start the proxy again."
 }
@@ -1444,4 +1481,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
