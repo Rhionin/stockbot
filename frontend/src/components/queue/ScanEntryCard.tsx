@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
 import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
@@ -33,11 +33,39 @@ const LinkProductSearch = ({
   onPick: (productId: string) => void;
 }) => {
   const searchId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
   });
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [query, setQuery] = useState('');
+
+  // The queue and the card both clip. Measure the open side of the queue and
+  // pin the list there; floating-ui's first pass can lock it into the gap.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    let clipTop = 0;
+    let clipBottom = window.innerHeight;
+    let node = root.parentElement;
+    while (node) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        const bounds = node.getBoundingClientRect();
+        clipTop = bounds.top;
+        clipBottom = bounds.bottom;
+        break;
+      }
+      node = node.parentElement;
+    }
+    const below = clipBottom - rect.bottom;
+    const above = rect.top - clipTop;
+    const up = above > below;
+    const room = Math.max(0, Math.floor((up ? above : below) - 8));
+    root.dataset.openUp = up ? 'true' : 'false';
+    root.style.setProperty('--scan-link-search-max-height', `${room}px`);
+  });
 
   useEffect(() => {
     let active = true;
@@ -64,17 +92,16 @@ const LinkProductSearch = ({
   }, [excludeProductId, items, query]);
 
   return (
-    <div className="scan-link-search">
+    <div className="scan-link-search" ref={rootRef}>
       <Text component="label" htmlFor={searchId} size="xs" fw={500} className="scan-link-search-label">
         Search products
       </Text>
       <Combobox
         store={combobox}
         withinPortal={false}
-        width="target"
         position="bottom"
         offset={4}
-        middlewares={{ flip: true, shift: true, size: true }}
+        middlewares={{ flip: false, shift: false }}
         onOptionSubmit={(productId) => {
           combobox.closeDropdown();
           onPick(productId);

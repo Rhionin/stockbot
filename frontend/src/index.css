@@ -897,13 +897,28 @@ code {
   margin: 8px 0 4px;
 }
 
-/* Height and side come from floating-ui, so a field at the bottom of the
-   queue opens upward instead of into the leftover gap. */
+/* The list is pinned to the side of the queue that has room. Floating-ui's
+   inline top would put it in the leftover gap under a field at the bottom. */
 .scan-link-search .mantine-Combobox-dropdown {
+  position: absolute !important;
+  left: 0 !important;
+  width: 100% !important;
+  max-height: var(--scan-link-search-max-height, 240px) !important;
   overflow-y: auto;
 }
 
-.scan-session-card:has(.scan-link-search) {
+.scan-link-search[data-open-up='true'] .mantine-Combobox-dropdown {
+  top: auto !important;
+  bottom: calc(100% + 4px) !important;
+}
+
+.scan-link-search[data-open-up='false'] .mantine-Combobox-dropdown {
+  bottom: auto !important;
+  top: calc(100% + 4px) !important;
+}
+
+.scan-session-card:has(.scan-link-search),
+.mantine-Card-root:has(.scan-link-search) {
   overflow: visible;
 }
 
