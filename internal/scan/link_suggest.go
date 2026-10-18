@@ -4,20 +4,31 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
 // linkSuggestLimit keeps the confirm row to a short list. Several real
-// matches (two sizes of the same food) stay visible; the gate below is what
-// drops a weak one.
+// matches (two sizes of the same food) stay visible; the score gate below is
+// what drops a weak one.
 const linkSuggestLimit = 8
 
-// linkExtraRoom is how many extra distinctive words the longer name may add
-// and still be the same food. One word ("lite") needs nothing else. Two words
-// need the same brand, category, or group. Three or more are not offered.
-const linkExtraRoom = 1
+// LinkScoreThreshold is the minimum weighted overlap that becomes a suggestion.
+// 0.65 sits just above the highest wrong pair measured on a real pantry
+// (0.6489). It is one named constant so a later retune does not rewrite the
+// comparison.
+//
+// Release note: Link suggestions are now much stricter: they're shown only
+// when the names closely match, so you'll see fewer wrong suggestions. If an
+// item isn't suggested, search for it.
+const LinkScoreThreshold = 0.65
+
+// LinkScoreEpsilon keeps a ratio that lands a hair under the threshold, the
+// way 2/5 does in float64, on the matching side of the comparison.
+const LinkScoreEpsilon = 1e-9
 
 // LinkSuggestion is a household item a scanned barcode might already be.
 type LinkSuggestion struct {
@@ -46,6 +57,7 @@ type linkCandidate struct {
 	GroupID   string
 	Brand     string
 	OnHand    int
+	StockedAt time.Time
 	Barcodes  []string
 }
 
@@ -55,7 +67,9 @@ type linkQuery interface {
 }
 
 // suggestLinks ranks household items the scanned barcode might belong to.
-// A barcode that is a suffix of the scan outranks a name resemblance.
+// A barcode suffix still qualifies when the names do not. Qualified rows are
+// ordered by name score, then a shared brand, category, or group, then how
+// recently the item was stocked.
 func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	scannedCategory := ""
@@ -80,6 +94,7 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 			COALESCE(p.brand, ''),
 			(SELECT COUNT(*) FROM item_instances ii
 			 WHERE ii.item_id = i.id AND ii.removed_at IS NULL),
+			COALESCE((SELECT MAX(ii.stock_in_at) FROM item_instances ii WHERE ii.item_id = i.id), i.created_at),
 			COALESCE((
 				SELECT group_concat(b.barcode, char(31))
 				FROM barcodes b
@@ -102,8 +117,12 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	var candidates []linkCandidate
 	for rows.Next() {
 		var c linkCandidate
-		var codes string
-		if err := rows.Scan(&c.ItemID, &c.ProductID, &c.Name, &c.Category, &c.GroupID, &c.Brand, &c.OnHand, &codes); err != nil {
+		var codes, stockedAt string
+		if err := rows.Scan(&c.ItemID, &c.ProductID, &c.Name, &c.Category, &c.GroupID, &c.Brand, &c.OnHand, &stockedAt, &codes); err != nil {
+			return nil, fmt.Errorf("list link candidates: %w", err)
+		}
+		c.StockedAt, err = parseStockedAt(stockedAt)
+		if err != nil {
 			return nil, fmt.Errorf("list link candidates: %w", err)
 		}
 		if codes != "" {
@@ -118,18 +137,21 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	return rankLinkCandidates(scanEntry.Barcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID, candidates), nil
 }
 
-// rankLinkCandidates puts the longest suffix barcode first, then closer food names.
-// A suffix of any length outranks a name-only resemblance, and a longer suffix
-// outranks a shorter one, so a truncated code beats an accidental last digit.
+// rankLinkCandidates keeps a household item when its name scores at least
+// LinkScoreThreshold, or when one of its barcodes is a suffix of the scan.
+// Rows are ordered by score descending, then a shared brand, category, or
+// group, then the most recently stocked item. A name that cleans to nothing
+// is never a name suggestion. At most linkSuggestLimit rows are returned.
 func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID string, candidates []linkCandidate) []LinkSuggestion {
 	scannedBarcode = strings.TrimSpace(scannedBarcode)
-	generic := genericWordSet(candidates)
+	weights := BuildWeights(candidateNames(candidates))
 	knownBrands := recordedBrandPhrases(candidates)
-	scanned := profileLink(scannedName, scannedCategory, scannedGroup, scannedBrand, generic, knownBrands)
+	scanned := profileLink(scannedName, scannedCategory, scannedGroup, scannedBrand, knownBrands)
 	type scored struct {
 		suggestion LinkSuggestion
-		suffix     int
 		nameScore  float64
+		supported  bool
+		stockedAt  time.Time
 	}
 	var ranked []scored
 	for _, c := range candidates {
@@ -137,9 +159,12 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 			continue
 		}
 		suffix := longestSuffix(scannedBarcode, c.Barcodes)
-		other := profileLink(c.Name, c.Category, c.GroupID, c.Brand, generic, knownBrands)
-		score := foodDice(scanned, other)
-		if suffix == 0 && !plausibleLink(scanned, other) {
+		other := profileLink(c.Name, c.Category, c.GroupID, c.Brand, knownBrands)
+		score := Score(scanned.food, other.food, weights)
+		// An empty cleaned name has nothing to weigh. A suffix still qualifies
+		// on its own, because a truncated code is the barcode, not the name.
+		nameOK := len(scanned.food) > 0 && len(other.food) > 0 && scoreMatches(score)
+		if suffix == 0 && !nameOK {
 			continue
 		}
 		ranked = append(ranked, scored{
@@ -149,17 +174,23 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 				Name:      c.Name,
 				OnHand:    c.OnHand,
 			},
-			suffix:    suffix,
 			nameScore: score,
+			supported: linkSupported(scanned, other),
+			stockedAt: c.StockedAt,
 		})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].suffix != ranked[j].suffix {
-			return ranked[i].suffix > ranked[j].suffix
-		}
 		if ranked[i].nameScore != ranked[j].nameScore {
 			return ranked[i].nameScore > ranked[j].nameScore
 		}
+		if ranked[i].supported != ranked[j].supported {
+			return ranked[i].supported
+		}
+		if !ranked[i].stockedAt.Equal(ranked[j].stockedAt) {
+			return ranked[i].stockedAt.After(ranked[j].stockedAt)
+		}
+		// Same score, support, and stock time: a stable name keeps the list
+		// from depending on query order.
 		return ranked[i].suggestion.Name < ranked[j].suggestion.Name
 	})
 	if len(ranked) > linkSuggestLimit {
@@ -170,6 +201,37 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 		out[i] = row.suggestion
 	}
 	return out
+}
+
+// parseStockedAt reads the text SQLite returns for a COALESCE(MAX(stock_in_at))
+// expression. A bare datetime column scans into time.Time; this expression does not.
+func parseStockedAt(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	// database/sql's time encoding keeps the monotonic clock in the text form.
+	if i := strings.Index(raw, " m="); i >= 0 {
+		raw = raw[:i]
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("stocked time %q", raw)
 }
 
 func longestSuffix(scanned string, barcodes []string) int {
@@ -187,7 +249,8 @@ func longestSuffix(scanned string, barcodes []string) int {
 }
 
 // linkProfile is the part of a product name that can justify a one-tap link.
-// Food words have the brand, generic foods, sizes, and qualifiers taken out.
+// Food words have a recorded brand and package sizes taken out. A word is
+// never dropped for being common.
 type linkProfile struct {
 	food     []string
 	brand    string
@@ -195,23 +258,8 @@ type linkProfile struct {
 	groupID  string
 }
 
-// plausibleLink is true when the shorter food name is contained in the longer
-// one. A single shared generic word such as "cream" never qualifies: those
-// words are not food tokens. The same brand, category, or group can confirm
-// a name that is two words longer. None of those signals is enough alone.
-func plausibleLink(a, b linkProfile) bool {
-	shared, extra, contained := foodOverlap(a.food, b.food)
-	if !contained {
-		return false
-	}
-	if extra <= linkExtraRoom || (shared >= 2 && extra <= linkExtraRoom+1) {
-		return true
-	}
-	return extra == linkExtraRoom+1 && linkSupported(a, b)
-}
-
-// linkSupported confirms a near name. It cannot create a suggestion when the
-// food words do not already overlap.
+// linkSupported only orders ties. A shared brand, category, or group never
+// puts a name over the score threshold by itself.
 func linkSupported(a, b linkProfile) bool {
 	if a.brand != "" && a.brand == b.brand {
 		return true
@@ -222,62 +270,185 @@ func linkSupported(a, b linkProfile) bool {
 	return a.groupID != "" && a.groupID == b.groupID
 }
 
-func foodDice(a, b linkProfile) float64 {
-	shared, _, contained := foodOverlap(a.food, b.food)
-	if !contained && shared == 0 {
+// Score is the weighted overlap of two cleaned token lists.
+//
+// Words are a set: a repeated word counts once, and order does not matter.
+// The same set scores 1, unless both sets are empty, which scores 0 so an
+// empty cleaned name never becomes a suggestion and the ratio is never 0/0.
+// Otherwise the score is the weight of the shared words divided by the weight
+// of the longer name. Longer means the larger total weight; when the weights
+// tie, it is the name with more words. Weights are added in sorted word order
+// so the sum does not depend on map or input order.
+//
+// A result is never NaN or Inf. A zero denominator scores 0.
+func Score(a, b []string, weights map[string]float64) float64 {
+	as := wordSet(a)
+	bs := wordSet(b)
+	if len(as) == 0 || len(bs) == 0 {
 		return 0
 	}
-	if len(a.food) == 0 || len(b.food) == 0 {
+	if sameSet(as, bs) {
+		return 1
+	}
+	wa := tokenWeight(as, weights)
+	wb := tokenWeight(bs, weights)
+	shared := tokenWeight(sharedSet(as, bs), weights)
+	denom := longerWeight(wa, wb, len(as), len(bs))
+	if denom == 0 || math.IsNaN(denom) || math.IsInf(denom, 0) {
 		return 0
 	}
-	return 2 * float64(shared) / float64(len(a.food)+len(b.food))
+	score := shared / denom
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	return score
 }
 
-// foodOverlap reports how many food words are shared and how many the longer
-// name adds. contained is true when every food word of the shorter name
-// appears in the longer one.
-func foodOverlap(a, b []string) (shared, extra int, contained bool) {
-	if len(a) == 0 || len(b) == 0 {
-		return 0, 0, false
+// scoreMatches is the suggestion gate. The epsilon keeps a float that is
+// mathematically the threshold, but prints a hair under it, on the match side.
+func scoreMatches(score float64) bool {
+	return scoreWithin(score, LinkScoreThreshold)
+}
+
+func scoreWithin(score, threshold float64) bool {
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return false
 	}
-	inB := make(map[string]struct{}, len(b))
-	for _, tok := range b {
-		inB[tok] = struct{}{}
-	}
-	n := 0
-	for _, tok := range a {
-		if _, ok := inB[tok]; ok {
-			n++
+	return score >= threshold-LinkScoreEpsilon
+}
+
+// BuildWeights assigns each cleaned word ln((N+1)/max(df, 1)). N is the
+// number of names, including ones that clean to nothing. df is how many of
+// those names contain the word; a repeated word in one name counts once.
+// A word in every name still gets ln((N+1)/N), and a single name gets ln(2).
+//
+// The empty-string entry is not a word. It holds ln(N+1), which is the weight
+// of a scanned word that no household name contains (df clamped up from 0 to
+// 1). Score uses that entry for any word missing from the map.
+func BuildWeights(names []string) map[string]float64 {
+	n := len(names)
+	df := make(map[string]int)
+	for _, name := range names {
+		for _, tok := range wordSet(contentTokens(name)) {
+			df[tok]++
 		}
 	}
-	shorter, longer := len(a), len(b)
-	if shorter > longer {
-		shorter, longer = longer, shorter
+	weights := make(map[string]float64, len(df)+1)
+	if n == 0 {
+		return weights
 	}
-	return n, longer - n, n == shorter
+	weights[""] = math.Log(float64(n) + 1)
+	for word, count := range df {
+		if count < 1 {
+			count = 1
+		}
+		weights[word] = math.Log((float64(n) + 1) / float64(count))
+	}
+	return weights
 }
 
-func profileLink(name, category, groupID, brand string, generic map[string]struct{}, known [][]string) linkProfile {
-	content := contentTokens(name)
-	rest, applied := stripLeadingBrand(content, brandPhrases(brand), known)
-	seen := make(map[string]struct{}, len(rest))
-	var food []string
-	for _, tok := range rest {
-		if _, skip := generic[tok]; skip {
+func candidateNames(candidates []linkCandidate) []string {
+	names := make([]string, len(candidates))
+	for i, c := range candidates {
+		names[i] = c.Name
+	}
+	return names
+}
+
+// wordSet is the cleaned words of one name: unique, sorted, and never empty
+// string. Sorted order is what makes weight sums deterministic.
+func wordSet(tokens []string) []string {
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok == "" {
 			continue
 		}
 		if _, ok := seen[tok]; ok {
 			continue
 		}
 		seen[tok] = struct{}{}
-		food = append(food, tok)
+		out = append(out, tok)
 	}
+	sort.Strings(out)
+	return out
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sharedSet(a, b []string) []string {
+	var out []string
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] == b[j]:
+			out = append(out, a[i])
+			i++
+			j++
+		case a[i] < b[j]:
+			i++
+		default:
+			j++
+		}
+	}
+	return out
+}
+
+func wordWeight(word string, weights map[string]float64) float64 {
+	if weights == nil {
+		return 0
+	}
+	w, ok := weights[word]
+	if !ok {
+		// Missing word: df clamped to 1, stored under the empty key by BuildWeights.
+		w = weights[""]
+	}
+	if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+		return 0
+	}
+	return w
+}
+
+func tokenWeight(tokens []string, weights map[string]float64) float64 {
+	var sum float64
+	for _, tok := range tokens {
+		sum += wordWeight(tok, weights)
+	}
+	return sum
+}
+
+func longerWeight(wa, wb float64, na, nb int) float64 {
+	if wa > wb {
+		return wa
+	}
+	if wb > wa {
+		return wb
+	}
+	if na >= nb {
+		return wa
+	}
+	return wb
+}
+
+func profileLink(name, category, groupID, brand string, known [][]string) linkProfile {
+	content := contentTokens(name)
+	rest, applied := stripLeadingBrand(content, brandPhrases(brand), known)
 	key := brandKey(brand)
 	if key == "" {
 		key = strings.Join(applied, " ")
 	}
 	return linkProfile{
-		food:     food,
+		food:     rest,
 		brand:    key,
 		category: strings.ToLower(strings.TrimSpace(category)),
 		groupID:  strings.TrimSpace(groupID),
@@ -360,58 +531,18 @@ func recordedBrandPhrases(candidates []linkCandidate) [][]string {
 	return phrases
 }
 
-// GenericWordMinCount is the fewest household names that can mark a word
-// generic. Below five names nothing is generic: 3% of a four-product pantry
-// is less than one name, and at 100 products 3% is only three, so the floor
-// is still what decides.
-const GenericWordMinCount = 5
-
-// GenericWordPercent is the share of household products, as an integer
-// percent, at which a word is generic. Compared as
-// count*100 >= GenericWordPercent*n so 166 products still threshold at 5
-// and 167 steps to 6, with no float multiply.
-const GenericWordPercent = 3
-
-func wordIsGeneric(count, n int) bool {
-	if n <= 0 || count <= 0 {
-		return false
-	}
-	return count >= GenericWordMinCount && count*100 >= GenericWordPercent*n
-}
-
-// householdWordCounts counts distinct household products whose cleaned name
-// contains each word. A name that repeats a word counts once. n is every
-// household product row, including zero stock. Pending and flagged scans
-// are not household rows, so they are not in this set.
-func householdWordCounts(candidates []linkCandidate) (n int, counts map[string]int) {
-	n = len(candidates)
-	counts = make(map[string]int)
-	for _, c := range candidates {
-		seen := make(map[string]struct{})
-		for _, tok := range contentTokens(c.Name) {
-			if _, ok := seen[tok]; ok {
-				continue
-			}
-			seen[tok] = struct{}{}
-			counts[tok]++
-		}
-	}
-	return n, counts
-}
-
-func genericWordSet(candidates []linkCandidate) map[string]struct{} {
-	n, counts := householdWordCounts(candidates)
-	generic := make(map[string]struct{})
-	for word, count := range counts {
-		if wordIsGeneric(count, n) {
-			generic[word] = struct{}{}
-		}
-	}
-	return generic
+// Tokens is the cleaned word list Score and BuildWeights share.
+func Tokens(name string) []string {
+	return contentTokens(name)
 }
 
 func contentTokens(name string) []string {
 	name = strings.ToLower(name)
+	name = stripDiacritics(name)
+	// Apostrophes fold possessives (Annie's == Annies). Hyphens stay as
+	// separators so "low-fat" is two words; "non" is joined to the next word
+	// below, which is what makes "non-fat", "nonfat", and "non fat" one token.
+	name = strings.NewReplacer("'", "", "’", "").Replace(name)
 	fields := strings.FieldsFunc(name, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
@@ -426,7 +557,51 @@ func contentTokens(name string) []string {
 		}
 		out = append(out, token)
 	}
+	return joinCompounds(out)
+}
+
+// joinCompounds folds the spaced and hyphenated spelling of "non" into the
+// closed form. "non-fat" has already been split into "non" and "fat".
+func joinCompounds(tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	var out []string
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] == "non" && i+1 < len(tokens) {
+			out = append(out, tokens[i]+tokens[i+1])
+			i++
+			continue
+		}
+		out = append(out, tokens[i])
+	}
 	return out
+}
+
+func stripDiacritics(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x0300 && r <= 0x036F {
+			continue
+		}
+		if base, ok := latinFold[r]; ok {
+			b.WriteRune(base)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+var latinFold = map[rune]rune{
+	'à': 'a', 'á': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
+	'è': 'e', 'é': 'e', 'ê': 'e', 'ë': 'e',
+	'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i',
+	'ò': 'o', 'ó': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
+	'ù': 'u', 'ú': 'u', 'û': 'u', 'ü': 'u',
+	'ý': 'y', 'ÿ': 'y',
+	'ñ': 'n', 'ç': 'c',
 }
 
 func hasDigit(token string) bool {
@@ -439,20 +614,21 @@ func hasDigit(token string) bool {
 }
 
 func linkSkip(token string) bool {
-	if _, ok := linkStopWords[token]; ok {
-		return true
-	}
-	if _, ok := linkQualifiers[token]; ok {
-		return true
-	}
 	_, ok := linkPackageWords[token]
 	return ok
 }
 
 func stemFood(word string) string {
+	if repl, ok := irregularStems[word]; ok {
+		return repl
+	}
 	switch {
 	case len(word) > 4 && strings.HasSuffix(word, "ies"):
-		return strings.TrimSuffix(word, "ies") + "y"
+		base := strings.TrimSuffix(word, "ies")
+		if iesKeepsE(base) {
+			return base + "ie"
+		}
+		return base + "y"
 	case len(word) > 4 && strings.HasSuffix(word, "oes"):
 		return strings.TrimSuffix(word, "oes") + "o"
 	case len(word) > 4 && (strings.HasSuffix(word, "ches") || strings.HasSuffix(word, "shes") || strings.HasSuffix(word, "xes")):
@@ -464,14 +640,35 @@ func stemFood(word string) string {
 	}
 }
 
-var linkStopWords = map[string]struct{}{
-	"a": {}, "an": {}, "and": {}, "for": {}, "from": {}, "in": {}, "of": {}, "the": {}, "to": {}, "with": {},
+// iesKeepsE is the English -ie plural: -ies after k, or after n when a
+// consonant precedes that n. cookies and brownies keep the e; berries and
+// ponies do not.
+func iesKeepsE(base string) bool {
+	if base == "" {
+		return false
+	}
+	last := base[len(base)-1]
+	if last == 'k' {
+		return true
+	}
+	if last != 'n' || len(base) < 2 {
+		return false
+	}
+	return isConsonant(base[len(base)-2])
 }
 
-// linkQualifiers are variety words, not the food. Dropping them lets
-// "organic" milk and "lite" pears compare on the food that remains.
-var linkQualifiers = map[string]struct{}{
-	"organic": {}, "lite": {}, "light": {},
+func isConsonant(b byte) bool {
+	switch b {
+	case 'a', 'e', 'i', 'o', 'u':
+		return false
+	default:
+		return true
+	}
+}
+
+var irregularStems = map[string]string{
+	"leaves": "leaf",
+	"loaves": "loaf",
 }
 
 var linkPackageWords = map[string]struct{}{
