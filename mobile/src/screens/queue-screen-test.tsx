@@ -1,4 +1,5 @@
 import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import type { BatchCommitResponse } from '../../../frontend/src/api/contract';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
@@ -253,6 +254,163 @@ describe('QueueScreen', () => {
     }
   });
 
+  // testdata/contract/scan-batch-commit-partial.json from PR #300 head b005813.
+  const scanBatchCommitPartialJson = `{
+  "status": 200,
+  "note": "One batch: a full stock-out (3 on hand, unitCount 2), a partial stock-out (1 on hand, unitCount 3), a stock-in of 2, and a stock-out with nothing on hand. stockOutCounts has one entry per committed stock-out, including the full removal. The stock-in and the failed card are absent. The partial card stays in committedIds. failedReasons and failedCodes stay parallel to failedIds.",
+  "request": {
+    "scanEntryIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in", "scan-batch-none"],
+    "commit": true
+  },
+  "body": {
+    "updatedCount": 4,
+    "committedIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in"],
+    "failedIds": ["scan-batch-none"],
+    "failedReasons": ["Nothing on hand to take out."],
+    "failedCodes": ["none_on_hand"],
+    "stockOutCounts": {
+      "scan-batch-full": { "removedCount": 2, "requestedCount": 2 },
+      "scan-batch-partial": { "removedCount": 1, "requestedCount": 3 }
+    }
+  }
+}
+`;
+  const batchContract = JSON.parse(scanBatchCommitPartialJson) as {
+    body: {
+      updatedCount: number;
+      committedIds: string[];
+      failedIds: string[];
+      failedReasons: string[];
+      failedCodes: string[];
+      stockOutCounts: Record<string, { removedCount: number; requestedCount: number }>;
+    };
+  };
+  const fullCount = batchContract.body.stockOutCounts['scan-batch-full'];
+  const partialCount = batchContract.body.stockOutCounts['scan-batch-partial'];
+  const batchResponse = (body: BatchCommitResponse): BatchCommitResponse => body;
+  const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
+  const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
+  const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
+  const batchCard = (id: string, name: string, direction: 'stock_in' | 'stock_out', unitCount: number) => entry({
+    id,
+    barcode: id,
+    direction,
+    unitCount,
+    productId: `prod-${id}`,
+    product: { id: `prod-${id}`, name, category: 'Pantry', unitOfMeasure: 'bag' },
+  });
+
+  it.each([
+    {
+      label: 'one partial card',
+      cards: [
+        batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
+        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      ],
+      kept: [] as ReturnType<typeof entry>[],
+      batch: batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-in'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      }),
+      lines: [wasLine],
+      absent: ['Some scans could not be confirmed.', wereLine, manyLine],
+    },
+    {
+      label: 'a removed count above one',
+      cards: [
+        batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', 5),
+        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      ],
+      kept: [] as ReturnType<typeof entry>[],
+      batch: batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-in'],
+        stockOutCounts: { 'scan-batch-partial': { removedCount: 2, requestedCount: 5 } },
+      }),
+      lines: [wereLine],
+      absent: ['Some scans could not be confirmed.', wasLine, manyLine],
+    },
+    {
+      label: 'two partial cards',
+      cards: [
+        batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
+        batchCard('scan-batch-second', 'Rolled oats', 'stock_out', 4),
+      ],
+      kept: [] as ReturnType<typeof entry>[],
+      batch: batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-second'],
+        stockOutCounts: {
+          'scan-batch-partial': partialCount,
+          'scan-batch-second': { removedCount: 2, requestedCount: 4 },
+        },
+      }),
+      lines: [manyLine],
+      absent: ['Some scans could not be confirmed.', wasLine, wereLine, 'Tortilla chips', 'Rolled oats'],
+    },
+    {
+      label: 'the partial batch fixture',
+      cards: [
+        batchCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount),
+        batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
+        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1),
+      ],
+      kept: [batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1)],
+      batch: batchResponse(batchContract.body),
+      lines: ['Some scans could not be confirmed.', wasLine, 'Nothing on hand to take out.'],
+      absent: [wereLine, manyLine],
+    },
+    {
+      label: 'no short card',
+      cards: [
+        batchCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount),
+        batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
+      ],
+      kept: [] as ReturnType<typeof entry>[],
+      batch: batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-full', 'scan-batch-partial'],
+        stockOutCounts: {
+          'scan-batch-full': fullCount,
+          'scan-batch-partial': { removedCount: partialCount.requestedCount, requestedCount: partialCount.requestedCount },
+        },
+      }),
+      lines: [] as string[],
+      absent: ['Some scans could not be confirmed.', wasLine, wereLine, manyLine],
+    },
+  ])('batch $label', async ({ cards, kept, batch, lines, absent }) => {
+    const listed = [
+      householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
+      householdItem('Batch Full', 'prod-scan-batch-full', 2),
+      householdItem('Batch Empty', 'prod-scan-batch-none', 1),
+      householdItem('Rolled oats', 'prod-scan-batch-second', 4),
+    ];
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue(kept),
+      batchCommit: jest.fn(async () => batch),
+      getInventoryList: jest.fn(async () => listed),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(api.listPending).toHaveBeenCalledTimes(2));
+
+    for (const line of lines) expect(screen.getByText(line)).toBeTruthy();
+    for (const line of absent) expect(screen.queryByText(line)).toBeNull();
+    if (lines.includes(wasLine)) expect(screen.getAllByText(wasLine)).toHaveLength(1);
+    const failed = cards.find((card) => card.id === 'scan-batch-none');
+    if (failed && kept.some((card) => card.id === failed.id)) {
+      const card = within(screen.getByTestId('scan-scan-batch-none'));
+      expect(card.getByText('Nothing on hand to take out.')).toBeTruthy();
+      expect(card.queryByText(wasLine)).toBeNull();
+      expect(card.queryByText('Some scans could not be confirmed.')).toBeNull();
+    }
+  });
+
   it('none on hand keeps the scan and shows the server sentence', async () => {
     const api = client({
       listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
@@ -305,6 +463,8 @@ describe('QueueScreen', () => {
     if (empty) {
       expect(screen.getByText('No close match found.')).toBeTruthy();
       expect(screen.queryByText('Sliced Pears')).toBeNull();
+      expect(screen.queryByText('Brown Rice')).toBeNull();
+      expect(screen.queryByLabelText('Link Brown Rice')).toBeNull();
     } else {
       expect(screen.getByText(remaining)).toBeTruthy();
       expect(screen.queryByText('No close match found.')).toBeNull();

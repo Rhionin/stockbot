@@ -84,6 +84,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [partialLine, setPartialLine] = useState('');
   const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
@@ -198,8 +199,8 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       const committed = await client.commitScan(id);
       clearOffer(id);
       clearNote(id);
-      const unitCount = entries.find((entry) => entry.id === id)?.unitCount ?? 1;
-      setToast(formatPartialRemoval(unitCount, committed) ?? '');
+      setPartialLine('');
+      setToast(formatPartialRemoval(committed) ?? '');
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -221,8 +222,8 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       const committed = await client.commitScan(id, productId);
       clearOffer(id);
       clearNote(id);
-      const unitCount = entries.find((entry) => entry.id === id)?.unitCount ?? 1;
-      setToast(formatPartialRemoval(unitCount, committed) ?? '');
+      setPartialLine('');
+      setToast(formatPartialRemoval(committed) ?? '');
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
@@ -246,8 +247,11 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   async function confirmAll() {
     setBusyId('all');
     setError('');
+    setPartialLine('');
     setToast('');
     try {
+      const names: Record<string, string> = {};
+      for (const entry of entries) names[entry.id] = entry.product?.name ?? 'Unknown product';
       const result = await client.batchCommit(entries.map((entry) => entry.id));
       const notices = batchFailureNotices(result);
       if (notices.some((notice) => commitConflictBehavior(notice.code || undefined).refreshSuggestions)) {
@@ -271,6 +275,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       setOffers(nextOffers);
       setExcluded({});
       setError(notices.length > 0 ? BATCH_FAILURE_FALLBACK : '');
+      setPartialLine(formatPartialRemoval(result, names) ?? '');
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
@@ -288,7 +293,12 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
-      {error !== '' && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
+      {(error !== '' || partialLine !== '') && (
+        <View accessibilityLiveRegion="polite">
+          {error !== '' && <Text style={styles.error}>{error}</Text>}
+          {partialLine !== '' && <Text style={styles.error}>{partialLine}</Text>}
+        </View>
+      )}
 
       {loading ? (
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
@@ -417,10 +427,6 @@ function LinkOffer({
       <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
       {showEmptyLine && needle === '' && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
       <LinkRows rows={suggestionRows(suggestions)} busy={busy} onLink={onLink} />
-      {showMatches && householdMatches !== null && householdMatches.length === 0 && (
-        <Text style={styles.offerCopy}>{NO_MATCHING_PRODUCTS}</Text>
-      )}
-      {showMatches && matches !== null && matches.length > 0 && <LinkRows rows={matches} busy={busy} onLink={onLink} />}
       <TextInput
         accessibilityLabel="Search"
         value={query}
@@ -434,6 +440,10 @@ function LinkOffer({
         autoCorrect={false}
         style={styles.search}
       />
+      {showMatches && householdMatches !== null && householdMatches.length === 0 && (
+        <Text style={styles.offerCopy}>{NO_MATCHING_PRODUCTS}</Text>
+      )}
+      {showMatches && matches !== null && matches.length > 0 && <LinkRows rows={matches} busy={busy} onLink={onLink} />}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Dismiss"

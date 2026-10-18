@@ -2,8 +2,9 @@
 // contract. Every request carries the household password as HTTP Basic auth.
 import {
   BATCH_COMMIT_PATH,
-  type CommitScanResult,
   type BatchCommitInput,
+  type BatchCommitResponse,
+  type CommitScanResponse,
   DEFAULT_SCAN_USER_ID,
   type HouseholdSession,
   SCANNER_CONFIG_PATH,
@@ -17,7 +18,6 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '../../../frontend/src/api/contract';
 import type {
-  BatchCommitResponse,
   InventoryItem,
   PantryLinkSuggestion,
   ScanDirection,
@@ -53,8 +53,8 @@ export interface StockbotClient {
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
   listPending: () => Promise<ScanEntry[]>;
-  commitScan: (id: string, linkProductId?: string) => Promise<CommitScanResult>;
-  batchCommit: (ids: string[]) => Promise<BatchCommitResponse & { failedCodes?: string[] }>;
+  commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
   // Household items, including zero stock. Same call as getInventoryList in
   // the web client (GET /api/inventory). Not the product catalog.
   getInventoryList: (query?: string) => Promise<InventoryItem[]>;
@@ -136,7 +136,7 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     commitScan(id, linkProductId) {
       const body: { linkProductId?: string } = {};
       if (linkProductId) body.linkProductId = linkProductId;
-      return request<CommitScanResult>(scanCommitPath(id), {
+      return request<ScanEntry & CommitScanResponse>(scanCommitPath(id), {
         method: 'POST',
         body: JSON.stringify(body),
       });
