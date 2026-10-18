@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, type BackfillCommitRequest, type BackfillCommitResponse } from './contract';
+import { linkSuggestionsPath, readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, type BackfillCommitRequest, type BackfillCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -230,15 +230,25 @@ interface UpdateScanEntryInput {
   status?: ScanStatus;
 }
 
-export function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanEntry> {
+export async function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanEntry> {
+  // productId and status cancelled together is conflicting_fields. Link first, then cancel.
+  if (input.productId !== undefined && input.status === 'cancelled') {
+    const { status, ...link } = input;
+    await apiFetch<ScanEntry>(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(link) });
+    return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+  }
   return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+}
+
+export function listLinkSuggestions(id: string): Promise<LinkSuggestionsResponse> {
+  return apiFetch(linkSuggestionsPath(id));
 }
 
 export function commitScanEntry(
   id: string,
   instanceId?: string,
   linkProductId?: string,
-): Promise<ScanEntry> {
+): Promise<ScanEntry & CommitScanResponse> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;

@@ -3,6 +3,7 @@ import {
   ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -193,9 +194,11 @@ export function LedgerPage() {
                           </ActionIcon>
                         </Menu.Target>
                         <Menu.Dropdown>
-                          <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
-                            Change quantity
-                          </Menu.Item>
+                          {!quantityLocked(move, moves ?? []) && (
+                            <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
+                              Change quantity
+                            </Menu.Item>
+                          )}
                           <Menu.Item onClick={() => { setError(''); setUndoing(move); }}>
                             {move.direction === 'in' ? 'Undo this stock in' : 'Undo this use'}
                           </Menu.Item>

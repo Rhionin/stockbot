@@ -4,6 +4,7 @@ import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
@@ -201,9 +202,11 @@ export function HistoryPage() {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
-                        <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
-                          Change quantity
-                        </Menu.Item>
+                        {!quantityLocked(move, view.moves) && (
+                          <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
+                            Change quantity
+                          </Menu.Item>
+                        )}
                         <Menu.Item onClick={() => { setError(''); setUndoing(move); }}>
                           {move.direction === 'in' ? 'Undo this stock in' : 'Undo this use'}
                         </Menu.Item>

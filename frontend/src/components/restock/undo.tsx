@@ -13,28 +13,32 @@ let toastSerial = 0;
 const CLEARANCE_VAR = '--scan-toast-clearance';
 let clearanceObserver: ResizeObserver | undefined;
 
-const toastContainer = (): HTMLElement | null => {
-  const toast = document.querySelector('.restock-toast');
-  if (toast === null) return null;
-  return toast.closest<HTMLElement>('[data-position]') ?? (toast as HTMLElement);
-};
+const visibleToasts = (): HTMLElement[] =>
+  [...document.querySelectorAll<HTMLElement>('.restock-toast')].filter((toast) => {
+    const box = toast.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  });
 
-// The queue pads by the fixed toast so the last card can scroll above it.
+// The queue pads by whichever toast reaches highest, so a second, taller
+// toast still leaves room to scroll the last card clear.
 const applyToastClearance = () => {
-  const container = toastContainer();
-  if (container === null) {
+  const toasts = visibleToasts();
+  if (toasts.length === 0) {
     document.documentElement.style.removeProperty(CLEARANCE_VAR);
     clearanceObserver?.disconnect();
     clearanceObserver = undefined;
     return;
   }
-  const top = container.getBoundingClientRect().top;
-  const clearance = Math.max(0, Math.ceil(window.innerHeight - top));
+  const clearance = toasts.reduce((tallest, toast) => {
+    const covered = Math.max(0, Math.ceil(window.innerHeight - toast.getBoundingClientRect().top));
+    return Math.max(tallest, covered);
+  }, 0);
   document.documentElement.style.setProperty(CLEARANCE_VAR, `${clearance}px`);
-  if (clearanceObserver === undefined && typeof ResizeObserver !== 'undefined') {
+  if (typeof ResizeObserver === 'undefined') return;
+  if (clearanceObserver === undefined) {
     clearanceObserver = new ResizeObserver(() => applyToastClearance());
-    clearanceObserver.observe(container);
   }
+  for (const toast of toasts) clearanceObserver.observe(toast);
 };
 
 export function showUndo(title: string, detail: string, onUndo: () => void): void;

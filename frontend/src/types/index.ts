@@ -179,9 +179,6 @@ export interface InventoryItem {
   expiredCount: number;
   needsAttention: boolean;
   group?: InventoryGroup;
-  // A wiped row. The household list is meant to omit these; the link search
-  // still drops one if it arrives.
-  shelved?: boolean;
 }
 
 export interface HistoryPace {

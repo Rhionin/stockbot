@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { quantityLocked } from '../../api/contract';
 import {
   dayHeading, daysLeftLabel, deltaName, deltaText, directionWord, formatMoveClock, formatMoveWhen, formatPaceNumber,
   groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
@@ -28,6 +29,14 @@ describe('history wording', () => {
     expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'scan')).toMatch(/^Today, .+scan$/);
     expect(formatMoveWhen(new Date(2026, 9, 9, 18, 42, 0), now, 'scan')).toMatch(/^Yesterday, .+scan$/);
     expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'backfill')).toContain('Added when taking out');
+    const pair = [
+      { source: 'backfill', direction: 'in', at: '2026-10-18T16:40:00.000Z', productId: 'prod-sour' },
+      { source: 'scan', direction: 'out', at: '2026-10-18T16:40:00.000Z', productId: 'prod-sour' },
+      { source: 'scan', direction: 'out', at: '2026-10-17T16:40:00.000Z', productId: 'prod-sour' },
+    ];
+    expect(quantityLocked(pair[0], pair)).toBe(true);
+    expect(quantityLocked(pair[1], pair)).toBe(true);
+    expect(quantityLocked(pair[2], pair)).toBe(false);
     expect(formatMoveClock(new Date(2026, 9, 10, 8, 14, 0), 'backfill')).toContain('Added when taking out');
     const older = formatMoveWhen(new Date(2026, 9, 8, 19, 20, 0), now, 'manual');
     expect(older).toContain('Oct');

@@ -31,7 +31,7 @@ interface Call {
   body?: unknown;
 }
 
-type Kind = 'define' | 'add' | 'link' | 'backfill' | 'batch';
+type Kind = 'define' | 'add' | 'link' | 'backfill' | 'batch' | 'suggest' | 'patch';
 
 interface Outcome {
   name: string;
@@ -48,6 +48,8 @@ interface Outcome {
   confirm?: boolean;
   refreshed?: boolean;
   nameDisabled?: boolean;
+  suggestions?: { itemId: string; productId: string; name: string; onHand: number }[];
+  readsSuggestions?: boolean;
 }
 
 const noneOnHand = {
@@ -200,10 +202,10 @@ const outcomes: Outcome[] = [
     name: 'not_pending shows the server sentence and reloads',
     kind: 'backfill',
     status: 400,
-    body: { error: 'not pending', code: 'not_pending' },
-    visible: ['not pending'],
+    body: { error: 'This scan was already handled.', code: 'not_pending' },
+    visible: ['This scan was already handled.'],
     absent: ['Add it and take it out'],
-    toast: 'not pending',
+    toast: 'This scan was already handled.',
     confirm: true,
     refreshed: true,
   },
@@ -211,20 +213,20 @@ const outcomes: Outcome[] = [
     name: 'direction_unset shows the server sentence',
     kind: 'backfill',
     status: 400,
-    body: { error: 'scan direction must be set before committing', code: 'direction_unset' },
-    visible: ['scan direction must be set before committing'],
+    body: { error: 'Choose stock in or stock out first.', code: 'direction_unset' },
+    visible: ['Choose stock in or stock out first.'],
     absent: ['Add it and take it out'],
-    toast: 'scan direction must be set before committing',
+    toast: 'Choose stock in or stock out first.',
     confirm: true,
   },
   {
     name: 'scan_not_found shows the server sentence and reloads',
     kind: 'backfill',
     status: 404,
-    body: { error: 'scan entry "scan-1" not found', code: 'scan_not_found' },
-    visible: ['scan entry "scan-1" not found'],
+    body: { error: 'This scan is no longer in the queue.', code: 'scan_not_found' },
+    visible: ['This scan is no longer in the queue.'],
     absent: ['Add it and take it out'],
-    toast: 'scan entry "scan-1" not found',
+    toast: 'This scan is no longer in the queue.',
     confirm: true,
     refreshed: true,
   },
@@ -265,6 +267,94 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out', 'Add as a new item'],
     confirm: true,
   },
+  {
+    name: 'a shelved item is on hand 0 and offers backfill',
+    kind: 'add',
+    typedName: 'Sour cream',
+    onHand: 0,
+    visible: ['Add it and take it out', 'Nothing on hand to take out.'],
+    absent: ['Which item is this?'],
+    refreshed: true,
+  },
+  {
+    name: 'patch link_target_gone drops the item and reloads suggestions',
+    kind: 'patch',
+    status: 409,
+    body: { error: "That item isn't available anymore. Pick another.", code: 'link_target_gone' },
+    suggestions: [{ itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 }],
+    typedName: 'Sour cream',
+    visible: ["That item isn't available anymore. Pick another.", 'Kept Oats', 'Which item is this?'],
+    absent: ['Add it and take it out'],
+    toast: "That item isn't available anymore. Pick another.",
+    readsSuggestions: true,
+  },
+  {
+    name: 'patch conflicting_fields shows the server sentence',
+    kind: 'patch',
+    status: 400,
+    body: { error: 'Choose one change at a time.', code: 'conflicting_fields' },
+    typedName: 'Sour cream',
+    visible: ['Choose one change at a time.', 'Which item is this?', 'Add as a new item'],
+    absent: ['Add it and take it out'],
+    toast: 'Choose one change at a time.',
+  },
+  {
+    name: 'link suggestions leave out the scan\'s own product',
+    kind: 'suggest',
+    status: 200,
+    body: {
+      suggestions: [
+        { itemId: 'item-own', productId: 'prod-sour', name: 'Own cream', onHand: 1 },
+        { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
+      ],
+    },
+    visible: ['Kept Oats', "That item isn't available anymore. Pick another."],
+    absent: ['Own cream', 'Add it and take it out'],
+    toast: "That item isn't available anymore. Pick another.",
+    readsSuggestions: true,
+  },
+  {
+    name: 'link suggestions 404 scan_not_found shows the server sentence',
+    kind: 'suggest',
+    status: 404,
+    body: { error: 'This scan is no longer in the queue.', code: 'scan_not_found' },
+    visible: ['This scan is no longer in the queue.'],
+    absent: ['Add it and take it out'],
+    toast: 'This scan is no longer in the queue.',
+    refreshed: true,
+    readsSuggestions: true,
+  },
+  {
+    name: 'link suggestions not_pending shows the server sentence',
+    kind: 'suggest',
+    status: 400,
+    body: { error: 'This scan was already handled.', code: 'not_pending' },
+    visible: ['This scan was already handled.'],
+    absent: ['Add it and take it out'],
+    toast: 'This scan was already handled.',
+    refreshed: true,
+    readsSuggestions: true,
+  },
+  {
+    name: 'link suggestions not_stock_out shows the server sentence',
+    kind: 'suggest',
+    status: 400,
+    body: { error: 'This only works when taking something out.', code: 'not_stock_out' },
+    visible: ['This only works when taking something out.'],
+    absent: ['Add it and take it out'],
+    toast: 'This only works when taking something out.',
+    readsSuggestions: true,
+  },
+  {
+    name: 'link suggestions direction_unset shows the server sentence',
+    kind: 'suggest',
+    status: 400,
+    body: { error: 'Choose stock in or stock out first.', code: 'direction_unset' },
+    visible: ['Choose stock in or stock out first.'],
+    absent: ['Add it and take it out'],
+    toast: 'Choose stock in or stock out first.',
+    readsSuggestions: true,
+  },
 ];
 
 const json = (body: unknown, status = 200) =>
@@ -294,11 +384,17 @@ describe('backfill card', () => {
         if (row.kind === 'backfill' && commits === 1) {
           return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand' }, 409));
         }
-        if ((row.kind === 'define' || row.kind === 'add' || row.kind === 'link') && commits === 1) {
+        if ((row.kind === 'define' || row.kind === 'add' || row.kind === 'link' || row.kind === 'patch' || row.kind === 'suggest') && commits === 1) {
           return Promise.resolve(json({
             error: 'barcode is not linked',
             code: 'no_item',
             suggestions: [{ itemId: 'item-linked', productId: 'prod-linked', name: 'Sour cream', onHand: 0 }],
+          }, 409));
+        }
+        if (row.kind === 'suggest') {
+          return Promise.resolve(json({
+            error: "That item isn't available anymore. Pick another.",
+            code: 'link_target_gone',
           }, 409));
         }
         return Promise.resolve(json(row.body ?? {}, row.status ?? 200));
@@ -323,6 +419,11 @@ describe('backfill card', () => {
         return Promise.resolve(json({ ...(body as object), source: 'user' }));
       }
       if (url === '/api/scans/scan-1' && method === 'PATCH') {
+        if (row.kind === 'patch') return Promise.resolve(json(row.body ?? {}, row.status ?? 400));
+        const written = body as { productId?: string; status?: string };
+        if (written.productId !== undefined && written.status === 'cancelled') {
+          return Promise.resolve(json({ error: 'Choose one change at a time.', code: 'conflicting_fields' }, 400));
+        }
         return Promise.resolve(json({
           ...entry(false),
           productId: 'prod-new',
@@ -330,6 +431,15 @@ describe('backfill card', () => {
           onHand: row.onHand ?? 0,
           product: { id: 'prod-new', name: 'Sour cream', category: 'Dairy', unitOfMeasure: 'tub' },
         }));
+      }
+      if (url === '/api/scans/scan-1/link-suggestions') {
+        if (row.kind === 'suggest' && row.status !== undefined && row.status !== 200) {
+          return Promise.resolve(json(row.body ?? {}, row.status));
+        }
+        const listed = row.suggestions
+          ?? (row.body as { suggestions?: unknown[] } | undefined)?.suggestions
+          ?? [];
+        return Promise.resolve(json({ suggestions: listed }));
       }
       if (url === '/api/items/item-sour/history') return Promise.resolve(json(history));
       if (url === '/api/moves/move-backfill' && method === 'DELETE') {
@@ -339,7 +449,7 @@ describe('backfill card', () => {
       return Promise.resolve(json([]));
     }));
 
-    const named = row.kind === 'backfill' || row.kind === 'batch';
+    const named = row.kind === 'backfill' || row.kind === 'batch' || row.name.includes('own product');
     render(
       <MantineProvider>
         <Notifications />
@@ -360,7 +470,7 @@ describe('backfill card', () => {
       await screen.findByRole('button', { name: 'Add it and take it out' });
       notifications.clean();
       fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
-    } else if (row.kind === 'define' || row.kind === 'add' || row.kind === 'link') {
+    } else if (row.kind === 'define' || row.kind === 'add' || row.kind === 'link' || row.kind === 'patch' || row.kind === 'suggest') {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
       const offer = await screen.findByRole('region', { name: 'Which item is this?' });
       expect(offer).toBeInTheDocument();
@@ -375,10 +485,10 @@ describe('backfill card', () => {
           target: { value: row.typedName },
         });
       }
-      if (row.kind === 'add') {
+      if (row.kind === 'add' || row.kind === 'patch') {
         fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
       }
-      if (row.kind === 'link') {
+      if (row.kind === 'link' || row.kind === 'suggest') {
         fireEvent.click(screen.getByRole('button', { name: 'Link Sour cream' }));
       }
     }
@@ -406,9 +516,20 @@ describe('backfill card', () => {
         expect(calls.indexOf(override!)).toBeLessThan(calls.indexOf(patch!));
         expect(calls.some((call) => call.method === 'POST' && call.url === '/api/scans')).toBe(false);
       }
-      if (row.kind === 'link') {
+      if (row.kind === 'link' || row.kind === 'suggest') {
         const link = calls.filter((call) => call.url.endsWith('/commit') && call.method === 'POST').at(-1);
         expect(link?.body).toEqual({ linkProductId: 'prod-linked' });
+      }
+      if (row.kind === 'patch' || row.kind === 'add') {
+        const patches = calls.filter((call) => call.url === '/api/scans/scan-1' && call.method === 'PATCH');
+        for (const patch of patches) {
+          const written = patch.body as { productId?: string; status?: string };
+          expect(written.productId !== undefined && written.status === 'cancelled').toBe(false);
+        }
+      }
+      if (row.readsSuggestions) {
+        expect(calls.some((call) => call.url === '/api/scans/scan-1/link-suggestions' && call.method === 'GET')).toBe(true);
+        expect(calls.filter((call) => call.url.endsWith('/commit') && call.method === 'POST')).toHaveLength(row.kind === 'suggest' ? 2 : 1);
       }
       if (row.kind === 'backfill') {
         const posted = calls.filter((call) => call.url.endsWith('/commit') && call.method === 'POST');

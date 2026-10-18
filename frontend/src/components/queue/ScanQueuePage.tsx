@@ -337,6 +337,15 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     void loadQueue();
   };
 
+  const clearFailure = (entryId: string) => {
+    setFailureById((current) => {
+      if (!current.has(entryId)) return current;
+      const next = new Map(current);
+      next.delete(entryId);
+      return next;
+    });
+  };
+
   const setEntrySelected = (entryId: string, selected: boolean) => {
     setSelectedIds((current) =>
       selected ? [...new Set([...current, entryId])] : current.filter((id) => id !== entryId),
@@ -487,6 +496,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   commitCode={failureById.get(entry.id)?.code ?? ''}
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
+                  onConfirmStart={() => clearFailure(entry.id)}
                   onChanged={() => void loadQueue()}
                 />
               ))}

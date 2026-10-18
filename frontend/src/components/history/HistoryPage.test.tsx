@@ -135,6 +135,39 @@ describe('HistoryPage', () => {
     await vi.waitFor(() => expect(undoMove).toHaveBeenCalledWith('move-out'));
   });
 
+  it('keeps undo on a backfill pair and does not offer a new count', async () => {
+    const at = '2026-10-18T16:40:00.000Z';
+    getItemHistory.mockResolvedValue({
+      ...view,
+      onHand: 0,
+      moves: [
+        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
+        { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
+      ],
+    });
+    renderHistory();
+    expect(await screen.findByText(/Added when taking out/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Actions for Stocked in 1/ }));
+    expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Undo this stock in' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));
+    expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Undo this use' })).toBeInTheDocument();
+  });
+
+  it('shows the locked-count sentence when a save is refused', async () => {
+    const sentence = "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead.";
+    setMoveQuantity.mockRejectedValue(Object.assign(new Error(sentence), { code: 'backfill_locked', status: 400 }));
+    renderHistory();
+    await screen.findByText('Used 1');
+    fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Change quantity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save quantity' }));
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+  });
+
   it('says when the pace is not known yet', async () => {
     getItemHistory.mockResolvedValue({
       ...view,

@@ -1,6 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
-import { addGroupMembers, ApiError, commitBackfill, commitScanEntry, createProduct, createProductOverride, getInventoryList, getItemHistory, lookupProduct, noteGroupFromScan, undoMove, updateProduct, updateScanEntry } from '../../api/client';
+import { addGroupMembers, ApiError, commitBackfill, commitScanEntry, createProduct, createProductOverride, getInventoryList, getItemHistory, listLinkSuggestions, lookupProduct, noteGroupFromScan, undoMove, updateProduct, updateScanEntry } from '../../api/client';
 import {
   ADD_AS_A_NEW_ITEM,
   ADD_IT_AND_TAKE_IT_OUT,
@@ -9,12 +9,14 @@ import {
   backfillMoveId,
   CODE_LINK_TARGET_GONE,
   CODE_NONE_ON_HAND,
+  CODE_NOT_PENDING,
+  CODE_SCAN_NOT_FOUND,
   commitConflictBehavior,
   formatPartialRemoval,
-  NOTHING_ON_HAND_TO_TAKE_OUT,
   NO_CLOSE_MATCH,
   readOnHand,
   SERVER_ERROR_FALLBACK,
+  type CommitScanResponse,
 } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary, ScanEntry } from '../../types';
@@ -27,6 +29,8 @@ import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './que
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 
+const NOTHING_ON_HAND = 'Nothing on hand to take out.';
+
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
@@ -37,17 +41,49 @@ const LINK_OFFER_HEADING = 'Which item is this?';
 
 const LinkProductSearch = ({
   busy,
+  reloadKey,
+  excludeProductId,
   onPick,
 }: {
   busy: boolean;
+  reloadKey: number;
+  excludeProductId: string;
   onPick: (productId: string, name: string) => void;
 }) => {
   const searchId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
   });
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [query, setQuery] = useState('');
+
+  // The queue and the card both clip. Measure the open side of the queue and
+  // pin the list there; floating-ui's first pass can lock it into the gap.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    let clipTop = 0;
+    let clipBottom = window.innerHeight;
+    let node = root.parentElement;
+    while (node) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        const bounds = node.getBoundingClientRect();
+        clipTop = bounds.top;
+        clipBottom = bounds.bottom;
+        break;
+      }
+      node = node.parentElement;
+    }
+    const below = clipBottom - rect.bottom;
+    const above = rect.top - clipTop;
+    const up = above > below;
+    const room = Math.max(0, Math.floor((up ? above : below) - 8));
+    root.dataset.openUp = up ? 'true' : 'false';
+    root.style.setProperty('--scan-link-search-max-height', `${room}px`);
+  });
 
   useEffect(() => {
     let active = true;
@@ -61,20 +97,20 @@ const LinkProductSearch = ({
     return () => {
       active = false;
     };
-  }, []);
+  }, [reloadKey]);
 
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return items.filter((row) => {
-      if (row.shelved === true) return false;
+      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
       if (normalized === '') return true;
       const product = row.item.product;
       return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
     });
-  }, [items, query]);
+  }, [excludeProductId, items, query]);
 
   return (
-    <div className="scan-link-search">
+    <div className="scan-link-search" ref={rootRef}>
       <Text component="label" htmlFor={searchId} size="xs" fw={500} className="scan-link-search-label">
         Search products
       </Text>
@@ -83,11 +119,11 @@ const LinkProductSearch = ({
         withinPortal={false}
         position="bottom"
         offset={4}
-        middlewares={{ flip: false, shift: true }}
+        middlewares={{ flip: false, shift: false }}
         onOptionSubmit={(productId) => {
+          const name = matches.find((row) => row.item.productId === productId)?.item.product.name ?? '';
           combobox.closeDropdown();
-          const picked = items.find((row) => row.item.productId === productId);
-          onPick(productId, picked?.item.product.name ?? '');
+          onPick(productId, name);
         }}
       >
         <Combobox.Target>
@@ -135,6 +171,7 @@ export interface ScanEntryCardProps {
   commitCode?: string;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
+  onConfirmStart?: () => void;
 }
 
 export const ScanEntryCard = ({
@@ -146,11 +183,12 @@ export const ScanEntryCard = ({
   commitCode = '',
   onSelectedChange,
   onChanged,
+  onConfirmStart,
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
-  const [approveError, setApproveError] = useState('');
   const [approving, setApproving] = useState(false);
+  const [toastedSentence, setToastedSentence] = useState('');
   const [localOffer, setLocalOffer] = useState<{
     code: string;
     offer: PantryLinkSuggestion[] | null;
@@ -177,6 +215,8 @@ export const ScanEntryCard = ({
   const [packDraft, setPackDraft] = useState('');
   const [packError, setPackError] = useState('');
   const [packBusy, setPackBusy] = useState(false);
+  const [householdReload, setHouseholdReload] = useState(0);
+  const [excludedProductId, setExcludedProductId] = useState('');
   const [offerBackfill, setOfferBackfill] = useState(false);
   const [addedName, setAddedName] = useState('');
   const [newItemName, setNewItemName] = useState('');
@@ -254,13 +294,14 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
-  const noteCommitted = (committed: ScanEntry) => {
-    const note = formatPartialRemoval(entry.unitCount, committed);
+  const noteCommitted = (committed: ScanEntry & CommitScanResponse) => {
+    const note = formatPartialRemoval(committed);
     if (note !== null) showUndo({ detail: note });
   };
 
   const showCommitSentence = (message: string) => {
     if (message === '') return;
+    setToastedSentence(message);
     showUndo({ detail: message, color: 'red' });
   };
 
@@ -278,41 +319,15 @@ export const ScanEntryCard = ({
   const linkOffer = matchingOffer !== null ? matchingOffer.offer : (batchOpensSearch ? [] : null);
   const hideEmptyMatch = matchingOffer !== null ? matchingOffer.hideEmpty : batchOpensSearch;
 
-  // link_target_gone carries no suggestions. A plain recommit is the fresh
-  // no_item list; an empty one is the only time the no-match line is shown.
-  const refillSuggestions = async () => {
-    try {
-      const committed = await commitScanEntry(entry.id);
-      rememberOffer(null, false);
-      noteCommitted(committed);
-      onChanged();
-    } catch (refetchError) {
-      const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
-      rememberOffer(suggestions, false);
-    }
+  // The gone target is already in the suggestion list. Drop it locally and
+  // reload the household list. The ranked list is a separate read.
+  const dropGoneTarget = (productId: string) => {
+    const current = matchingOffer?.offer ?? [];
+    rememberOffer(current.filter((suggestion) => suggestion.productId !== productId), false);
+    setExcludedProductId(productId);
+    setHouseholdReload((reload) => reload + 1);
+    setInstancePickerOpen(false);
   };
-
-  useEffect(() => {
-    if (commitCode !== CODE_LINK_TARGET_GONE) return;
-    let active = true;
-    void commitScanEntry(entry.id)
-      .then((committed) => {
-        if (!active) return;
-        setLocalOffer({ code: commitCode, offer: null, hideEmpty: false });
-        noteCommitted(committed);
-        onChanged();
-      })
-      .catch((refetchError: unknown) => {
-        if (!active) return;
-        const suggestions = refetchError instanceof ApiError ? refetchError.suggestions : [];
-        setLocalOffer({ code: commitCode, offer: suggestions, hideEmpty: false });
-      });
-    return () => {
-      active = false;
-    };
-    // Once per failure code. onChanged is a new arrow on each parent render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commitCode, entry.id]);
 
   const defining = linkOffer !== null && isStockOut;
   useEffect(() => {
@@ -341,64 +356,69 @@ export const ScanEntryCard = ({
     if (itemName !== '') setAddedName(itemName);
     setOfferBackfill(true);
     rememberOffer(null, false);
-    setApproveError('');
+    setInstancePickerOpen(false);
   };
 
-  // Returns true when the failure was shown and the scan stays pending.
-  const showCommitFailure = async (requestError: unknown): Promise<boolean> => {
-    if (!(requestError instanceof ApiError)) return false;
-    if (requestError.code === CODE_NONE_ON_HAND && isStockOut) {
-      showBackfillCard();
-      showCommitSentence(requestError.message);
-      return true;
+  // Replaces the ranked list. Returns a sentence when the read itself failed.
+  const reloadLinkSuggestions = async (excludeId = ''): Promise<string> => {
+    try {
+      const listed = await listLinkSuggestions(entry.id);
+      const own = entry.productId ?? '';
+      const suggestions = (listed.suggestions ?? []).filter((row) =>
+        (own === '' || row.productId !== own) && (excludeId === '' || row.productId !== excludeId));
+      rememberOffer(suggestions, false);
+      return '';
+    } catch (requestError) {
+      if (!(requestError instanceof ApiError)) return '';
+      const message = requestError.message || SERVER_ERROR_FALLBACK;
+      if (requestError.code === CODE_SCAN_NOT_FOUND || requestError.code === CODE_NOT_PENDING) onChanged();
+      return message;
     }
-    const behavior = commitConflictBehavior(requestError.code);
-    if (behavior.refreshSuggestions) {
-      const message = requestError.message || 'Unable to confirm scan.';
-      setApproveError(message);
-      if (behavior.showMessage) showCommitSentence(message);
-      await refillSuggestions();
-      return true;
-    }
-    if (behavior.linkOffer) {
-      rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
-      const message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
-      setApproveError(message);
-      showCommitSentence(message);
-      return true;
-    }
-    rememberOffer(null, false);
-    if (behavior.refreshInstances) {
-      // The card's own state is the reloaded picker. The server sentence
-      // belongs in the toast, once.
-      setInstancePickerOpen(true);
-      setInstanceId('');
-      setLocalInstanceReload((current) => current + 1);
-      if (behavior.showMessage) {
-        showCommitSentence(requestError.message || 'Unable to confirm scan.');
+  };
+
+  // Card state stays here (picker, link offer, search). The sentence itself
+  // is published once, at the end, and only into the toast.
+  const showCommitFailure = async (requestError: unknown, linkedProductId?: string, linkedName = ''): Promise<void> => {
+    let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+    if (requestError instanceof ApiError) {
+      if (requestError.code === CODE_NONE_ON_HAND && isStockOut) {
+        showBackfillCard(linkedName);
+        showCommitSentence(requestError.message);
+        onChanged();
+        return;
       }
-      return true;
+      const behavior = commitConflictBehavior(requestError.code);
+      if (behavior.refreshSuggestions) {
+        if (linkedProductId !== undefined) dropGoneTarget(linkedProductId);
+        const suggestionError = await reloadLinkSuggestions(linkedProductId ?? '');
+        if (suggestionError !== '') message = suggestionError;
+      } else if (behavior.linkOffer) {
+        setInstancePickerOpen(false);
+        rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
+      } else {
+        rememberOffer(null, false);
+        if (behavior.refreshInstances) {
+          setInstancePickerOpen(true);
+          setInstanceId('');
+          setLocalInstanceReload((current) => current + 1);
+        }
+      }
+      message = behavior.showMessage ? (message || 'Unable to confirm scan.') : '';
+      if (requestError.code === CODE_NOT_PENDING || requestError.code === CODE_SCAN_NOT_FOUND) onChanged();
     }
-    const message = requestError.message || 'Unable to confirm scan.';
-    setApproveError(message);
     showCommitSentence(message);
-    return true;
   };
 
   const handleApprove = async () => {
     setApproving(true);
-    setApproveError('');
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!await showCommitFailure(requestError)) {
-        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
-        setApproveError(message);
-        showCommitSentence(message);
-      }
+      await showCommitFailure(requestError, undefined, entry.product?.name ?? addedName);
     } finally {
       setApproving(false);
     }
@@ -406,24 +426,14 @@ export const ScanEntryCard = ({
 
   const linkSuggestion = async (productId: string, itemName = '') => {
     setApproving(true);
-    setApproveError('');
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      const keptEmpty = requestError instanceof ApiError
-        && requestError.code === CODE_NONE_ON_HAND
-        && isStockOut;
-      if (!await showCommitFailure(requestError)) {
-        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
-        setApproveError(message);
-        showCommitSentence(message);
-      } else if (keptEmpty) {
-        if (itemName !== '') setAddedName(itemName);
-        onChanged();
-      }
+      await showCommitFailure(requestError, productId, itemName);
     } finally {
       setApproving(false);
     }
@@ -433,7 +443,7 @@ export const ScanEntryCard = ({
     const name = newItemName.trim();
     if (name === '') return;
     setApproving(true);
-    setApproveError('');
+    let createdId = '';
     try {
       const summary = entry.product ?? lookedUp.current;
       const created = await createProduct({
@@ -442,18 +452,27 @@ export const ScanEntryCard = ({
         unitOfMeasure: summary?.unitOfMeasure ?? '',
       });
       if (created.id === '') throw new Error('Created product could not be loaded.');
+      createdId = created.id;
       await createProductOverride({ barcode: entry.barcode, productId: created.id });
       const updated = await updateScanEntry(entry.id, { productId: created.id, status: 'pending' });
       setAddedName(name);
       if (readOnHand(updated) === 0) {
         showBackfillCard(name);
+        showCommitSentence(NOTHING_ON_HAND);
       } else {
         rememberOffer(null, false);
       }
       onChanged();
     } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : 'Unable to create product.';
-      setApproveError(message);
+      if (requestError instanceof ApiError && requestError.code === CODE_LINK_TARGET_GONE) {
+        if (createdId !== '') dropGoneTarget(createdId);
+        const suggestionError = await reloadLinkSuggestions(createdId);
+        showCommitSentence(suggestionError || requestError.message);
+        return;
+      }
+      const message = requestError instanceof ApiError
+        ? (requestError.message || SERVER_ERROR_FALLBACK)
+        : (requestError instanceof Error ? requestError.message : 'Unable to create product.');
       showCommitSentence(message);
     } finally {
       setApproving(false);
@@ -464,7 +483,6 @@ export const ScanEntryCard = ({
     if (!(requestError instanceof ApiError)) {
       const message = requestError instanceof Error ? requestError.message : SERVER_ERROR_FALLBACK;
       setOfferBackfill(false);
-      setApproveError(message);
       showCommitSentence(message);
       return;
     }
@@ -476,14 +494,12 @@ export const ScanEntryCard = ({
       return;
     }
     setOfferBackfill(false);
-    setApproveError(message);
     showCommitSentence(message);
     if (kind === 'stock-out' || kind === 'reload') onChanged();
   };
 
   const handleBackfill = async () => {
     setApproving(true);
-    setApproveError('');
     try {
       const result = await commitBackfill(entry.id);
       let moveId = '';
@@ -864,7 +880,7 @@ export const ScanEntryCard = ({
               )}
             </div>
           )}
-          {isStockOut && (
+          {isStockOut && linkOffer === null && (
             <button
               type="button"
               className="scan-entry-more"
@@ -892,7 +908,7 @@ export const ScanEntryCard = ({
         </Stack>
       )}
 
-      {instancePickerOpen && isStockOut && itemId !== undefined && (
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId !== undefined && (
         <div className="scan-entry-extra">
           <StockOutInstanceSelector
             itemId={itemId}
@@ -902,8 +918,8 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && itemId === undefined && (
-        <Alert color="yellow" py={4} mt={4}>No inventory item is available for this product.</Alert>
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && toastedSentence !== NOTHING_ON_HAND && (
+        <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
       )}
 
       {entry.status === 'flagged' && (
@@ -960,7 +976,12 @@ export const ScanEntryCard = ({
               ))}
             </ul>
           )}
-          <LinkProductSearch busy={approving} onPick={(productId, name) => void linkSuggestion(productId, name)} />
+          <LinkProductSearch
+            busy={approving}
+            reloadKey={householdReload}
+            excludeProductId={excludedProductId}
+            onPick={(productId, name) => void linkSuggestion(productId, name)}
+          />
           {isStockOut && (
             <div className="scan-link-new">
               <TextInput
@@ -992,8 +1013,7 @@ export const ScanEntryCard = ({
       )}
 
       {offerBackfill && isStockOut && (
-        <div className="scan-link-offer" role="region" aria-labelledby={`backfill-${entry.id}`}>
-          <p id={`backfill-${entry.id}`} className="scan-link-offer-title">{NOTHING_ON_HAND_TO_TAKE_OUT}</p>
+        <div className="scan-link-offer">
           <div className="scan-link-offer-actions">
             <Button
               size="compact-xs"
@@ -1006,8 +1026,8 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {(approveError || commitNotice) !== '' && (
-        <Alert color="red" py={4} mt={4}>{approveError || commitNotice}</Alert>
+      {commitNotice !== '' && (
+        <Alert color="red" py={4} mt={4}>{commitNotice}</Alert>
       )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
       {hintError !== '' && <Alert color="red" py={4} mt={4}>{hintError}</Alert>}
