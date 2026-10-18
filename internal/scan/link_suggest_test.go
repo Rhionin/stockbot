@@ -4,7 +4,7 @@ import "testing"
 
 func TestRankLinkCandidatesSuffixBeforeName(t *testing.T) {
 	const scanned = "011110828385"
-	got := rankLinkCandidates(scanned, "Lite Pear Slices In Pear Juice", "prod-off", []linkCandidate{
+	got := rankLinkCandidates(scanned, "Lite Pear Slices In Pear Juice", "", "", "prod-off", []linkCandidate{
 		{ItemID: "item-tuna", ProductID: "prod-tuna", Name: "Canned Tuna", OnHand: 1, Barcodes: []string{"491"}},
 		{ItemID: "item-beans", ProductID: "prod-beans", Name: "Black Beans", OnHand: 2, Barcodes: []string{"1552"}},
 		{ItemID: "item-slices", ProductID: "prod-slices", Name: "Pear Slices", OnHand: 2, Barcodes: []string{"999000111222"}},

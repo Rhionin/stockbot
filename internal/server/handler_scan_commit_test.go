@@ -1007,3 +1007,279 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 	runHandlerTests(t, tests)
 }
+
+// linkPantryProduct is one product in a stock-out link scenario.
+// onHand 0 is the scanned product, which the household does not stock.
+type linkPantryProduct struct {
+	id       string
+	name     string
+	category string
+	barcode  string
+	groupID  string
+	onHand   int
+}
+
+func seedLinkConflict(env testEnv, scanID string, scanned linkPantryProduct, stocked []linkPantryProduct) {
+	env.T.Helper()
+	now := time.Now()
+	all := append([]linkPantryProduct{scanned}, stocked...)
+	groups := map[string]struct{}{}
+	for _, item := range all {
+		if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+			ID: item.id, Name: item.name, Category: item.category, UnitOfMeasure: "unit",
+		}); err != nil {
+			env.T.Fatalf("CreateProduct %s: %v", item.id, err)
+		}
+		if _, err := env.DB.ExecContext(context.Background(),
+			`INSERT INTO barcodes (barcode, product_id, source, user_id) VALUES (?, ?, 'global', '')`,
+			item.barcode, item.id); err != nil {
+			env.T.Fatalf("barcode %s: %v", item.barcode, err)
+		}
+		if item.groupID != "" {
+			groups[item.groupID] = struct{}{}
+		}
+	}
+	for groupID := range groups {
+		if _, err := env.DB.ExecContext(context.Background(),
+			`INSERT INTO product_groups (id, user_id, name, name_key, rule) VALUES (?, 'user-1', ?, ?, 'same_as_ran_out')`,
+			groupID, groupID, groupID); err != nil {
+			env.T.Fatalf("group %s: %v", groupID, err)
+		}
+	}
+	for _, item := range all {
+		if item.groupID == "" {
+			continue
+		}
+		if _, err := env.DB.ExecContext(context.Background(),
+			`INSERT INTO product_group_members (product_id, group_id) VALUES (?, ?)`,
+			item.id, item.groupID); err != nil {
+			env.T.Fatalf("member %s: %v", item.id, err)
+		}
+	}
+	for _, item := range stocked {
+		itemID := "item-" + item.id
+		if _, err := env.DB.ExecContext(context.Background(),
+			`INSERT INTO items (id, user_id, product_id) VALUES (?, 'user-1', ?)`,
+			itemID, item.id); err != nil {
+			env.T.Fatalf("item %s: %v", item.id, err)
+		}
+		for n := 0; n < item.onHand; n++ {
+			if _, err := env.DB.ExecContext(context.Background(),
+				`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES (?, ?, ?)`,
+				fmt.Sprintf("inst-%s-%d", item.id, n), itemID, now); err != nil {
+				env.T.Fatalf("instance %s: %v", item.id, err)
+			}
+		}
+	}
+	scanRepo := scan.NewQueue(env.DB)
+	productID := scanned.id
+	direction := scan.StockOut
+	entry := scan.ScanEntry{
+		ID: scanID, UserID: "user-1", Barcode: scanned.barcode,
+		ScannedAt: now, Direction: &direction, UnitCount: 1,
+		ProductID: &productID, Status: scan.Pending,
+	}
+	if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+		env.T.Fatalf("CreateScanEntry: %v", err)
+	}
+}
+
+func pendingScanStill(scanID, productID string) func(testEnv) {
+	return exchanges(httpExchange{
+		method:         "GET",
+		path:           "/api/scans",
+		query:          map[string]string{"userId": "user-1", "status": "pending"},
+		expectedStatus: http.StatusOK,
+		assertions: []assertion{
+			{path: "$[0].id", value: scanID},
+			{path: "$[0].status", value: "pending"},
+			{path: "$[0].productId", value: productID},
+			{path: "$[1]", absent: true},
+		},
+	})
+}
+
+func TestScanCommitLinkCandidates(t *testing.T) {
+	noMatch := func(name, scanID string, scanned linkPantryProduct, stocked []linkPantryProduct, absentName string) handlerTestCase {
+		return handlerTestCase{
+			name: name,
+			setup: func(env testEnv) {
+				seedLinkConflict(env, scanID, scanned, stocked)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/" + scanID + "/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{absentName},
+			},
+			afterRequest: pendingScanStill(scanID, scanned.id),
+		}
+	}
+
+	tests := []handlerTestCase{
+		noMatch(
+			"sour cream does not suggest condensed cream soup",
+			"scan-sour",
+			linkPantryProduct{id: "prod-sour", name: "Sour Cream", category: "Dairy", barcode: "111111111111"},
+			[]linkPantryProduct{
+				{id: "prod-soup", name: "Condensed Cream Soup", category: "Dairy", barcode: "222222222222", onHand: 1},
+			},
+			"Condensed Cream Soup",
+		),
+		{
+			name: "same name and brand with a different size is a candidate",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-daisy",
+					linkPantryProduct{id: "prod-daisy-16", name: "Daisy Sour Cream, 16 oz", category: "Dairy", barcode: "333333333333"},
+					[]linkPantryProduct{
+						{id: "prod-daisy-8", name: "Daisy Sour Cream, 8 oz", category: "Dairy", barcode: "444444444444", onHand: 2},
+						{id: "prod-soup", name: "Condensed Cream Soup", category: "Dairy", barcode: "555555555555", onHand: 4},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-daisy/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.suggestions[0].name", value: "Daisy Sour Cream, 8 oz"},
+					{path: "$.suggestions[0].productId", value: "prod-daisy-8"},
+					{path: "$.suggestions[0].itemId", value: "item-prod-daisy-8"},
+					{path: "$.suggestions[0].onHand", value: float64(2)},
+					{path: "$.suggestions[1]", absent: true},
+				},
+				bodyExcludes: []string{"Condensed Cream Soup"},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-daisy"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[0].productId", value: "prod-daisy-16"},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-prod-daisy-8/instances",
+					expectedStatus: http.StatusOK,
+					bodyContains:   []string{"inst-prod-daisy-8-0", "inst-prod-daisy-8-1"},
+					assertions: []assertion{
+						{path: "$[2]", absent: true},
+					},
+				},
+			),
+		},
+		noMatch(
+			"no other products returns no candidate",
+			"scan-empty",
+			linkPantryProduct{id: "prod-only", name: "Sour Cream", category: "Dairy", barcode: "666666666666"},
+			nil,
+			"Sour Cream",
+		),
+		noMatch(
+			"black beans do not suggest green beans",
+			"scan-beans",
+			linkPantryProduct{id: "prod-black", name: "Black Beans", category: "Canned", barcode: "777777777777"},
+			[]linkPantryProduct{
+				{id: "prod-green", name: "Green Beans", category: "Canned", barcode: "888888888888", onHand: 1},
+			},
+			"Green Beans",
+		),
+		{
+			name: "same category confirms a longer brand prefix",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-valley",
+					linkPantryProduct{id: "prod-valley", name: "Valley Reserve Select Sour Cream", category: "Dairy", barcode: "121212121212"},
+					[]linkPantryProduct{
+						{id: "prod-plain", name: "Sour Cream", category: "Dairy", barcode: "131313131313", onHand: 1},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-valley/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.suggestions[0].name", value: "Sour Cream"},
+					{path: "$.suggestions[0].productId", value: "prod-plain"},
+					{path: "$.suggestions[0].itemId", value: "item-prod-plain"},
+					{path: "$.suggestions[0].onHand", value: float64(1)},
+					{path: "$.suggestions[1]", absent: true},
+				},
+			},
+		},
+		noMatch(
+			"a longer prefix without a shared category brand or group is not a candidate",
+			"scan-valley-miss",
+			linkPantryProduct{id: "prod-valley", name: "Valley Reserve Select Sour Cream", category: "Soup", barcode: "141414141414"},
+			[]linkPantryProduct{
+				{id: "prod-plain", name: "Sour Cream", category: "Dairy", barcode: "151515151515", onHand: 1},
+			},
+			"Sour Cream",
+		),
+		{
+			name: "the same group confirms a longer prefix the category does not",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-group",
+					linkPantryProduct{id: "prod-valley", name: "Valley Reserve Select Sour Cream", category: "Soup", barcode: "161616161616", groupID: "grp-cream"},
+					[]linkPantryProduct{
+						{id: "prod-plain", name: "Sour Cream", category: "Dairy", barcode: "171717171717", groupID: "grp-cream", onHand: 1},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-group/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.suggestions[0].name", value: "Sour Cream"},
+					{path: "$.suggestions[0].productId", value: "prod-plain"},
+					{path: "$.suggestions[1]", absent: true},
+				},
+			},
+		},
+		{
+			name: "the same brand confirms a longer prefix",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-brand",
+					linkPantryProduct{id: "prod-daisy-long", name: "Daisy Reserve Select Sour Cream", category: "Dips", barcode: "181818181818"},
+					[]linkPantryProduct{
+						{id: "prod-daisy", name: "Daisy Sour Cream", category: "Dairy", barcode: "191919191919", onHand: 1},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-brand/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.suggestions[0].name", value: "Daisy Sour Cream"},
+					{path: "$.suggestions[0].productId", value: "prod-daisy"},
+					{path: "$.suggestions[1]", absent: true},
+				},
+			},
+		},
+		noMatch(
+			"three extra words are not a candidate even in the same category",
+			"scan-long",
+			linkPantryProduct{id: "prod-long", name: "Alpha Beta Gamma Delta Sour Cream", category: "Dairy", barcode: "202020202020"},
+			[]linkPantryProduct{
+				{id: "prod-plain", name: "Sour Cream", category: "Dairy", barcode: "212121212121", onHand: 1},
+			},
+			"Sour Cream",
+		),
+	}
+
+	runHandlerTests(t, tests)
+}
