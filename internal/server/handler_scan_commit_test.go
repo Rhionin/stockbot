@@ -1132,6 +1132,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					{path: "$.status", value: "committed"},
 					{path: "$.productId", value: "prod-pears"},
 					{path: "$.barcode", value: "011110828385"},
+					{path: "$.onHand", value: float64(2)},
 				},
 			},
 			afterRequest: exchanges(
@@ -1347,7 +1348,7 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 			),
 		},
 		{
-			name: "linking a barcode onto an empty shelf does not keep the link",
+			name: "linking a barcode onto an empty shelf keeps the link",
 			setup: func(env testEnv) {
 				finishOpening(env)
 				seedShelfItem(env, "prod-empty", "Empty Oats", "item-empty")
@@ -1362,12 +1363,23 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.error", value: "Nothing on hand to take out."},
 					{path: "$.code", value: "none_on_hand"},
+					{path: "$.itemId", value: "item-empty"},
+					{path: "$.onHand", value: float64(0)},
 					{path: "$.members", absent: true},
 					{path: "$.suggestions", absent: true},
 				},
 				bodyExcludes: []string{"link_target_gone", "That item isn't available anymore. Pick another."},
 			},
 			afterRequest: exchanges(
+				httpExchange{
+					method:         "POST",
+					path:           "/api/scans/scan-link/commit",
+					expectedStatus: http.StatusConflict,
+					assertions: []assertion{
+						{path: "$.error", value: "Nothing on hand to take out."},
+						{path: "$.code", value: "none_on_hand"},
+					},
+				},
 				httpExchange{
 					method:         "GET",
 					path:           "/api/scans",
@@ -1376,15 +1388,18 @@ func TestScanOutOfEmptyShelf(t *testing.T) {
 					assertions: []assertion{
 						{path: "$[0].id", value: "scan-link"},
 						{path: "$[0].status", value: "pending"},
-						{path: "$[0].productId", value: "prod-other"},
+						{path: "$[0].productId", value: "prod-empty"},
+						{path: "$[0].onHand", absent: true},
 					},
 				},
 				httpExchange{
 					method:         "GET",
 					path:           "/api/products/prod-empty",
 					expectedStatus: http.StatusOK,
-					assertions:     []assertion{{path: "$.barcodes[0]", absent: true}},
-					bodyExcludes:   []string{"scan-link"},
+					assertions: []assertion{
+						{path: "$.barcodes[0]", value: "scan-link"},
+						{path: "$.barcodes[1]", absent: true},
+					},
 				},
 				httpExchange{
 					method:         "GET",

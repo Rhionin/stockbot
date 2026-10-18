@@ -51,6 +51,8 @@ type ScanEntry struct {
 	GroupHint   *GroupHint `json:"groupHint,omitempty"`
 	CommittedAt *time.Time `json:"committedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// OnHand is set on a link response. It is not stored on the scan row.
+	OnHand *int `json:"onHand,omitempty"`
 }
 
 // GroupHint is the one line on a scan row that offers to add the product to a group.

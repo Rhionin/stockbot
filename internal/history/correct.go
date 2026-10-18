@@ -61,7 +61,20 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	if err != nil {
 		return View{}, err
 	}
-	if move.Direction == "in" {
+	partner, paired, err := backfillPartner(ctx, tx, move)
+	if err != nil {
+		return View{}, err
+	}
+	if paired {
+		incoming, outgoing := move, partner
+		if incoming.Direction != "in" {
+			incoming, outgoing = partner, move
+		}
+		if err = undoStockOut(ctx, tx, outgoing); err != nil {
+			return View{}, err
+		}
+		err = undoStockIn(ctx, tx, incoming)
+	} else if move.Direction == "in" {
 		err = undoStockIn(ctx, tx, move)
 	} else {
 		err = undoStockOut(ctx, tx, move)
@@ -73,6 +86,47 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 		return View{}, err
 	}
 	return j.Product(ctx, move.ItemID, now)
+}
+
+// backfillPartner is the other move from the same backfill commit.
+// A backfill stock-in and its stock-out share a scan id, and one of them
+// has source backfill. Undoing either one removes both.
+func backfillPartner(ctx context.Context, tx *sql.Tx, move moveRow) (moveRow, bool, error) {
+	if !move.ScanEntryID.Valid || move.ScanEntryID.String == "" {
+		return moveRow{}, false, nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, source FROM stock_moves
+		WHERE scan_entry_id = ? AND id != ?`, move.ScanEntryID.String, move.ID)
+	if err != nil {
+		return moveRow{}, false, err
+	}
+	var partnerID string
+	paired := false
+	for rows.Next() {
+		var id, source string
+		if err := rows.Scan(&id, &source); err != nil {
+			rows.Close()
+			return moveRow{}, false, err
+		}
+		if move.Source == "backfill" || source == "backfill" {
+			partnerID = id
+			paired = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return moveRow{}, false, err
+	}
+	rows.Close()
+	if !paired {
+		return moveRow{}, false, nil
+	}
+	other, err := loadMove(ctx, tx, partnerID)
+	if err != nil {
+		return moveRow{}, false, err
+	}
+	return other, true, nil
 }
 
 func resizeStockIn(ctx context.Context, tx *sql.Tx, move moveRow, quantity int) error {

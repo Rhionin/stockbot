@@ -17,8 +17,9 @@ var (
 	ErrItemNotFound = errors.New("item not found")
 	// ErrNoneOnHand means a stock-out found no unit on the shelf.
 	ErrNoneOnHand = errors.New("nothing on hand")
-	// ErrLinkNotStocked means linkProductId names a product this household does not stock.
-	ErrLinkNotStocked = errors.New("link target is not stocked")
+	// ErrLinkTargetGone means linkProductId names a product this household does not stock,
+	// including one whose item was wiped.
+	ErrLinkTargetGone = errors.New("link target is gone")
 	// ErrScanNotFound means the queue has no scan with that id.
 	ErrScanNotFound = errors.New("scan not found")
 	// ErrNotPending means the scan was already committed or cancelled.
@@ -27,7 +28,26 @@ var (
 	ErrDirectionUnset = errors.New("scan direction is unset")
 	// ErrProductUnresolved means the scan has no product yet.
 	ErrProductUnresolved = errors.New("product is unresolved")
+	// ErrNotStockOut means a backfill was asked for on a scan that is not a stock-out.
+	ErrNotStockOut = errors.New("not a stock-out")
 )
+
+// EmptyShelfLink is a link onto a live item that has nothing on hand.
+// The barcode override and the scan's product are already stored, and the scan
+// is still pending. ItemID is that household item.
+type EmptyShelfLink struct {
+	ItemID string
+}
+
+func (e *EmptyShelfLink) Error() string { return "nothing on hand" }
+
+// UnitsOnHandError refuses a backfill because the item already has units.
+type UnitsOnHandError struct {
+	ItemID string
+	OnHand int
+}
+
+func (e *UnitsOnHandError) Error() string { return "units on hand" }
 
 // CommitStockIn commits a stock-in scan entry by creating one item instance
 // per unit and marking the scan entry as committed. A remembered pack count
@@ -466,13 +486,14 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 //
 // A missing household item returns *NoItemError and changes nothing.
 // A shelved item is still linked and returns ErrNoneOnHand without ranking links.
-// An item with nothing left on the shelf returns ErrNoneOnHand and changes
-// nothing, including a barcode link started in the same transaction.
+// An item with nothing left on the shelf, and no linkProductID, returns
+// ErrNoneOnHand and changes nothing.
+// Linking onto a live item with nothing on hand stores the barcode and points
+// the scan at that product, leaves the scan pending, and returns *EmptyShelfLink.
 // A named instance that is not on that item returns ErrNoneOnHand when the
 // shelf is empty, and inventory.ErrInstanceNotFound when another unit remains.
-// Either way the transaction rolls back, so a barcode link is not kept.
 // CommitStockOutLink is the explicit choice that adds the scanned barcode
-// and decrements that product. Nothing is linked on its own.
+// and decrements that product when a unit is on hand. Nothing is linked on its own.
 //
 // All operations are performed within a transaction to ensure atomicity.
 func (r *Queue) CommitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string) error {
@@ -519,7 +540,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 
 	// linkProductId for a missing or wiped product is not a stock-out of this barcode.
 	if linkProductID != "" && (err == sql.ErrNoRows || (err == nil && shelved != 0)) {
-		return ErrLinkNotStocked
+		return ErrLinkTargetGone
 	}
 	// A wipe keeps the item row, so the barcode is still linked. That stock-out
 	// is an empty shelf and does not rank other items.
@@ -541,14 +562,35 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	}
 
 	if linkProductID != "" {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO barcodes (barcode, product_id, source, user_id)
-			VALUES (?, ?, 'user_override', ?)
-			ON CONFLICT(barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
-			scanEntry.Barcode, linkProductID, scanEntry.UserID,
-		)
-		if err != nil {
-			return fmt.Errorf("link barcode: %w", err)
+		var onHand int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
+			return fmt.Errorf("count on hand: %w", err)
+		}
+		if onHand == 0 {
+			// Nothing can be taken out, so the stock-out must not run in this
+			// transaction. The barcode and the scan's product commit together
+			// first; a later stock-out failure cannot roll that link back, and
+			// a failure here rolls both writes back.
+			if err := linkBarcode(ctx, tx, scanEntry.Barcode, linkProductID, scanEntry.UserID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE scan_entries SET product_id = ? WHERE id = ?`,
+				linkProductID, scanEntry.ID); err != nil {
+				return fmt.Errorf("link scan: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit transaction: %w", err)
+			}
+			return r.publishLinkedScan(ctx, scanEntry.ID, &EmptyShelfLink{ItemID: itemID})
+		}
+	}
+
+	if linkProductID != "" {
+		if err := linkBarcode(ctx, tx, scanEntry.Barcode, linkProductID, scanEntry.UserID); err != nil {
+			return err
 		}
 	}
 
@@ -600,6 +642,254 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		}
 	}
 
+	return nil
+}
+
+// CommitBackfill stocks in unitCount and takes the same number back out at the
+// scan's scannedAt. The item must already belong to the scan's household and
+// have nothing on hand. The stock-in is recorded as source backfill and is not
+// a stock-in event. The stock-out is ordinary usage.
+func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (string, int, error) {
+	if scanEntry.Direction == nil {
+		return "", 0, ErrDirectionUnset
+	}
+	if *scanEntry.Direction != StockOut {
+		return "", 0, ErrNotStockOut
+	}
+	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
+		return "", 0, ErrProductUnresolved
+	}
+	if scanEntry.UnitCount < 1 {
+		return "", 0, fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var itemID string
+	var shelved int
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, shelved FROM items
+		WHERE user_id = ? AND product_id = ?`,
+		scanEntry.UserID, *scanEntry.ProductID,
+	).Scan(&itemID, &shelved)
+	if err == sql.ErrNoRows {
+		return "", 0, ErrProductUnresolved
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("find item: %w", err)
+	}
+	if shelved != 0 {
+		return "", 0, ErrNoneOnHand
+	}
+
+	var onHand int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
+		return "", 0, fmt.Errorf("count on hand: %w", err)
+	}
+	if onHand > 0 {
+		return "", 0, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
+	}
+
+	at := scanEntry.ScannedAt
+	units := scanEntry.UnitCount
+	ids := make([]string, 0, units)
+	for i := 0; i < units; i++ {
+		instanceID := uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO item_instances (id, item_id, stock_in_at)
+			VALUES (?, ?, ?)`,
+			instanceID, itemID, at,
+		); err != nil {
+			return "", 0, fmt.Errorf("create instance %d: %w", i+1, err)
+		}
+		ids = append(ids, instanceID)
+	}
+
+	scanID := scanEntry.ID
+	if err := history.AttachStockIn(ctx, tx, history.InNote{
+		ItemID: itemID, ProductID: *scanEntry.ProductID, At: at, Source: "backfill",
+		ScanEntryID: &scanID, Tracked: false, InstanceIDs: ids,
+	}); err != nil {
+		return "", 0, fmt.Errorf("record stock-in: %w", err)
+	}
+
+	usage, err := r.trackRestock(ctx, tx)
+	if err != nil {
+		return "", 0, err
+	}
+	consumptionIDs := make([]string, 0, units)
+	for _, instanceID := range ids {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE item_instances
+			SET removed_at = ?, removal_reason = 'consumed'
+			WHERE id = ?`, at, instanceID); err != nil {
+			return "", 0, fmt.Errorf("remove instance: %w", err)
+		}
+		if !usage {
+			continue
+		}
+		consumptionID := uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO consumption_events (id, item_id, consumed_at, scan_entry_id)
+			VALUES (?, ?, ?, ?)`,
+			consumptionID, itemID, at, scanID,
+		); err != nil {
+			return "", 0, fmt.Errorf("create consumption event: %w", err)
+		}
+		consumptionIDs = append(consumptionIDs, consumptionID)
+	}
+	if err := history.AttachStockOut(ctx, tx, history.OutNote{
+		ItemID: itemID, ProductID: *scanEntry.ProductID, At: at, Source: "scan",
+		ScanEntryID: &scanID, Tracked: usage, Quantity: units, InstanceIDs: ids,
+		ConsumptionIDs: consumptionIDs,
+	}); err != nil {
+		return "", 0, fmt.Errorf("record stock-out: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries
+		SET status = ?, committed_at = ?
+		WHERE id = ?`,
+		string(Committed), r.now(), scanEntry.ID,
+	); err != nil {
+		return "", 0, fmt.Errorf("update scan entry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", 0, fmt.Errorf("commit transaction: %w", err)
+	}
+	if err := r.publishCommitted(ctx, scanEntry.ID, itemID); err != nil {
+		return "", 0, err
+	}
+	return itemID, units, nil
+}
+
+// LinkStockOutProduct points a pending or flagged stock-out at a product,
+// stores the household barcode override, and creates the household item when
+// it does not exist yet. It does not stock anything in or out. The scan stays
+// pending. The returned count is how many units of that item are on hand.
+func (r *Queue) LinkStockOutProduct(ctx context.Context, scanID, productID string) (int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var userID, barcode, status, direction string
+	err = tx.QueryRowContext(ctx, `
+		SELECT user_id, barcode, status, COALESCE(direction, '')
+		FROM scan_entries WHERE id = ?`, scanID).Scan(&userID, &barcode, &status, &direction)
+	if err == sql.ErrNoRows {
+		return 0, ErrScanNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("query scan entry: %w", err)
+	}
+	if direction != string(StockOut) {
+		return 0, ErrNotStockOut
+	}
+	if status != string(Pending) && status != string(Flagged) {
+		return 0, ErrNotPending
+	}
+
+	var productExists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM products WHERE id = ?`, productID).Scan(&productExists)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("product %q not found", productID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("verify product: %w", err)
+	}
+	if err := linkBarcode(ctx, tx, barcode, productID, userID); err != nil {
+		return 0, err
+	}
+	itemID, err := r.findOrCreateItem(ctx, tx, userID, productID)
+	if err != nil {
+		return 0, err
+	}
+	var onHand int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
+		return 0, fmt.Errorf("count on hand: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries SET product_id = ?, status = ? WHERE id = ?`,
+		productID, string(Pending), scanID); err != nil {
+		return 0, fmt.Errorf("update scan entry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit transaction: %w", err)
+	}
+	if err := r.publishLinkedScan(ctx, scanID, nil); err != nil {
+		return 0, err
+	}
+	return onHand, nil
+}
+
+// CountOnHand is how many units of this household's item for the product are
+// still on the shelf. A missing item counts as 0.
+func (r *Queue) CountOnHand(ctx context.Context, userID, productID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM item_instances ii
+		JOIN items i ON i.id = ii.item_id
+		WHERE i.user_id = ? AND i.product_id = ? AND ii.removed_at IS NULL AND i.shelved = 0`,
+		userID, productID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count on hand: %w", err)
+	}
+	return n, nil
+}
+
+func linkBarcode(ctx context.Context, tx *sql.Tx, barcode, productID, userID string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO barcodes (barcode, product_id, source, user_id)
+		VALUES (?, ?, 'user_override', ?)
+		ON CONFLICT(barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
+		barcode, productID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("link barcode: %w", err)
+	}
+	return nil
+}
+
+func (r *Queue) publishLinkedScan(ctx context.Context, id string, linkErr error) error {
+	if r.Broadcaster != nil {
+		if entry, err := r.GetScanEntry(ctx, id); err == nil && entry != nil {
+			r.Broadcaster.PublishScanEvent(*entry)
+		}
+	}
+	return linkErr
+}
+
+func (r *Queue) publishCommitted(ctx context.Context, scanID, itemID string) error {
+	if r.Broadcaster == nil {
+		return nil
+	}
+	committed, err := r.GetScanEntry(ctx, scanID)
+	if err != nil {
+		return err
+	}
+	if committed != nil {
+		r.Broadcaster.PublishScanEvent(*committed)
+	}
+	if r.Pantry == nil {
+		return nil
+	}
+	invItem, err := r.Pantry.GetInventoryItem(ctx, itemID, time.Now(), inventory.DefaultWarningDays)
+	if err != nil {
+		return err
+	}
+	if invItem != nil {
+		r.Broadcaster.PublishInventoryEvent(*invItem)
+	}
 	return nil
 }
 

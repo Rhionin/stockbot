@@ -26,6 +26,11 @@ const targetsChangeMigration = "019_restock_targets.sql"
 // would fail with "duplicate column name: shelved".
 const shelveChangeMigration = "020_shelve_wiped_items.sql"
 
+// backfillSourceMigration lets a history row record source backfill.
+// SQLite cannot change a CHECK with ALTER TABLE, so the stock_moves table
+// is rebuilt. The copy and the schema_migrations row commit together.
+const backfillSourceMigration = "021_backfill_move_source.sql"
+
 // snapshotShoppingDB runs once, immediately before shoppingChangeMigration.
 // Tests replace it to simulate a backup that cannot be written.
 var snapshotShoppingDB = writePreGroupsBackup

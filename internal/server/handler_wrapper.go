@@ -44,6 +44,8 @@ type errorPayload struct {
 	Code        string `json:"code,omitempty"`
 	Members     any    `json:"members,omitempty"`
 	Suggestions any    `json:"suggestions,omitempty"`
+	ItemID      string `json:"itemId,omitempty"`
+	OnHand      *int   `json:"onHand,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -176,16 +178,20 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var code string
 	var members any
 	var suggestions any
+	var itemID string
+	var onHand *int
 	extra := false
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
 		}
-		if httpErr.ErrorCode != "" || httpErr.Members != nil || httpErr.Suggestions != nil {
+		if httpErr.ErrorCode != "" || httpErr.Members != nil || httpErr.Suggestions != nil || httpErr.ItemID != "" || httpErr.OnHand != nil {
 			extra = true
 			code = httpErr.ErrorCode
 			members = httpErr.Members
 			suggestions = httpErr.Suggestions
+			itemID = httpErr.ItemID
+			onHand = httpErr.OnHand
 		}
 	}
 	if status >= 500 {
@@ -204,6 +210,8 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			code = httpErr.ErrorCode
 			members = nil
 			suggestions = nil
+			itemID = ""
+			onHand = nil
 			extra = true
 		} else {
 			message = "Something went wrong. Please try again."
@@ -211,7 +219,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if extra {
-		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})
+		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions, ItemID: itemID, OnHand: onHand})
 		return
 	}
 	writeJSON(w, status, map[string]string{"error": message})

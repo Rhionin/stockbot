@@ -29,6 +29,12 @@ const ScanNotFoundMessage = "This scan is no longer in the queue."
 // DirectionUnsetMessage is the sentence when a scan has no stock direction.
 const DirectionUnsetMessage = "Choose stock in or stock out first."
 
+// UnitsOnHandMessage is the sentence when a backfill finds units already on the shelf.
+const UnitsOnHandMessage = "You already have some on hand, so there's nothing to add."
+
+// NotStockOutMessage is the sentence when a backfill is asked for on a stock-in.
+const NotStockOutMessage = "This only works when taking something out."
+
 // InternalMessage is the sentence for an unexpected failure. The server logs
 // the real error and does not send it to the household.
 const InternalMessage = "Something went wrong. Try again."
@@ -43,5 +49,7 @@ const (
 	CodeLinkTargetGone    = "link_target_gone"
 	CodeScanNotFound      = "scan_not_found"
 	CodeDirectionUnset    = "direction_unset"
+	CodeUnitsOnHand       = "units_on_hand"
+	CodeNotStockOut       = "not_stock_out"
 	CodeInternal          = "internal"
 )

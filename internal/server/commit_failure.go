@@ -21,7 +21,7 @@ func knownCommitFailure(err error) (message, code string, ok bool) {
 		return inventory.ProductUnresolvedMessage, inventory.CodeProductUnresolved, true
 	case errors.Is(err, scan.ErrNoneOnHand):
 		return inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, true
-	case errors.Is(err, scan.ErrLinkNotStocked):
+	case errors.Is(err, scan.ErrLinkTargetGone):
 		return inventory.LinkTargetGoneMessage, inventory.CodeLinkTargetGone, true
 	case errors.Is(err, inventory.ErrInstanceNotFound):
 		return inventory.InstanceGoneMessage, inventory.CodeInstanceGone, true
@@ -33,6 +33,8 @@ func knownCommitFailure(err error) (message, code string, ok bool) {
 		return inventory.ScanNotFoundMessage, inventory.CodeScanNotFound, true
 	case errors.Is(err, scan.ErrDirectionUnset):
 		return inventory.DirectionUnsetMessage, inventory.CodeDirectionUnset, true
+	case errors.Is(err, scan.ErrNotStockOut):
+		return inventory.NotStockOutMessage, inventory.CodeNotStockOut, true
 	default:
 		return "", "", false
 	}
@@ -52,7 +54,7 @@ func commitStatus(err error) int {
 	switch {
 	case errors.Is(err, scan.ErrScanNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, scan.ErrNotPending), errors.Is(err, scan.ErrDirectionUnset), errors.Is(err, scan.ErrProductUnresolved):
+	case errors.Is(err, scan.ErrNotPending), errors.Is(err, scan.ErrDirectionUnset), errors.Is(err, scan.ErrProductUnresolved), errors.Is(err, scan.ErrNotStockOut):
 		return http.StatusBadRequest
 	default:
 		return http.StatusConflict

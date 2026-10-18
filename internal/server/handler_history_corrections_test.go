@@ -214,6 +214,8 @@ type historyMove struct {
 	ID        string  `json:"id"`
 	Direction string  `json:"direction"`
 	Quantity  float64 `json:"quantity"`
+	At        string  `json:"at"`
+	Source    string  `json:"source"`
 }
 
 func productHistory(env testEnv, h http.Handler, itemID string) historyView {
