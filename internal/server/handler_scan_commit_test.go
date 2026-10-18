@@ -45,7 +45,9 @@ func TestScanCommitStockIn(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.status", value: "committed"},
 					{path: "$.id", value: "scan-1"},
+					{path: "$.code", absent: true},
 				},
+				bodyExcludes: []string{"no_item", "Not in your pantry", "Nothing on hand to take out."},
 			},
 			afterRequest: func(env testEnv) {
 				// Verify one instance was created and its expiry is set.
@@ -494,8 +496,23 @@ func TestScanCommitStockInErrors(t *testing.T) {
 				path:           "/api/scans/scan-wrong-dir/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.suggestions", absent: true},
+					{path: "$.members", absent: true},
+				},
+				bodyExcludes: []string{"no_item", "Not in your pantry"},
+			},
+		},
+		{
+			name: "a missing scan is not found",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-not-in-queue/commit",
+				expectedStatus: http.StatusNotFound,
+				assertions: []assertion{
+					{path: "$.error", value: "This scan is no longer in the queue."},
+					{path: "$.code", value: "scan_not_found"},
 				},
 			},
 		},
@@ -569,9 +586,11 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-shelved/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.suggestions", absent: true},
 				},
+				bodyExcludes: []string{"no_item", "Not in your pantry"},
 			},
 		},
 		{
@@ -599,11 +618,11 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-no-item/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{`no item found for user`},
+				bodyExcludes: []string{"no_item", "Not in your pantry", `no item found for user`},
 			},
 		},
 		{
@@ -1026,24 +1045,19 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name:  "stock-out with no item returns suggestions ranked by suffix",
+			name:  "stock-out of an unstocked product is nothing on hand and writes nothing",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/scan-pears/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
-					{path: "$.suggestions[0].name", value: "Sliced Pears"},
-					{path: "$.suggestions[0].productId", value: "prod-pears"},
-					{path: "$.suggestions[0].itemId", value: "item-pears"},
-					{path: "$.suggestions[0].onHand", value: float64(3)},
-					{path: "$.suggestions[1].name", value: "Unrelated Crackers"},
-					{path: "$.suggestions[2].name", value: "Pear Slices"},
-					{path: "$.suggestions[3]", absent: true},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.suggestions", absent: true},
+					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"Canned Tuna", "Black Beans", "no item found"},
+				bodyExcludes: []string{"no_item", "Not in your pantry", "Canned Tuna", "Black Beans", "no item found"},
 			},
 			afterRequest: exchanges(
 				httpExchange{

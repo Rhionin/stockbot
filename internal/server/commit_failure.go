@@ -13,8 +13,9 @@ import (
 // household sees. ok is false for an unexpected error, including a database
 // failure; those must be logged and not copied into the response.
 func knownCommitFailure(err error) (message, code string, ok bool) {
+	var unstocked *scan.NoItemError
 	switch {
-	case errors.Is(err, scan.ErrNoneOnHand):
+	case errors.As(err, &unstocked), errors.Is(err, scan.ErrNoneOnHand):
 		return inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, true
 	case errors.Is(err, inventory.ErrInstanceNotFound):
 		return inventory.InstanceGoneMessage, inventory.CodeInstanceGone, true

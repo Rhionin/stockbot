@@ -25,14 +25,13 @@ type LinkSuggestion struct {
 }
 
 // NoItemError is a stock-out of a product this household does not stock.
-// Suggestions are ranked for the caller to choose. The scan is not linked
-// or committed until that choice arrives.
+// The scan is left pending. Suggestions are ranked in case a caller offers a link.
 type NoItemError struct {
 	Suggestions []LinkSuggestion
 }
 
 func (e *NoItemError) Error() string {
-	return "Not in your pantry"
+	return "household does not stock this product"
 }
 
 type linkCandidate struct {

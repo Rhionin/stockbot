@@ -83,14 +83,6 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 }
 
 func stockOutError(err error) error {
-	var missing *scan.NoItemError
-	if errors.As(err, &missing) {
-		var suggestions any
-		if len(missing.Suggestions) > 0 {
-			suggestions = missing.Suggestions
-		}
-		return ConflictSuggestions("Not in your pantry", "no_item", suggestions)
-	}
 	if errors.Is(err, scan.ErrLinkNotStocked) {
 		return BadRequest("That product is not in your pantry")
 	}
