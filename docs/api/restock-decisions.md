@@ -222,7 +222,7 @@ CREATE TABLE new_item_decision_undos (
 
 The undo payload records, for each row the answer changed, the prior `state`, the prior `decided_at`, and the prior target at that level (item kind and value, or null; group window, quantity, and dimension, or null). Clients never read this table. They send the token back.
 
-There is no time limit. A token lasts until it is used, or until a later write makes it stale. A token is single-use.
+There is no time limit. A token lasts until it is used, or until a later write makes it stale. A token is single-use. The screen offers Undo only while its notification is up. The server does not expire the token when that notification goes away.
 
 ## Shared types
 
@@ -605,32 +605,31 @@ Same request body as `POST /api/restock/decisions`. Read-only. Does not answer, 
 
 The response is the #240 `Preview` plus one field on each line, `answers` (boolean). `answers` is true when this decision would clear that item's waiting state. A group subject is expanded to its member items, the same way `POST /api/restock/groups/{id}/preview` expands a group. `stop` and `keep` still compare the resolved shopping target before and after. A held item whose target is already 0 stays in `keep` for Don't restock, and `answers` is still true.
 
-`confirm` counts request subjects that are still waiting. A group counts as one, not as its members. The button can say 6 when only some of those 6 change the shopping target.
+The screen asks for a preview only for the bulk actions (Restock all, Don't restock all) and for Don't restock on one group. Answering one item does not show a preview. The route still accepts any subject list.
 
 ### Copy
 
-A single group and `dont_restock` uses the #240 group preview of `{ "kind": "months", "value": 0 }` for `title`, `body`, `stop`, `keep`, and the per-line strings. `confirm` is still the waiting-subject count: `Stop restocking 1` when the group is waiting, even if `stop` is empty. `answers` is added on each line.
+One group and `dont_restock` uses the #240 group preview of `{ "kind": "months", "value": 0 }` for `title`, `body`, `stop`, `keep`, the per-line strings, and `confirm`. That confirm stays `Stop restocking` plus the number of lines in `stop`, which is the #240 button. `answers` is added on each line. This is the only preview whose confirm says `Stop restocking`.
 
-Everything else:
+Every other request uses the sentences below. N is how many subjects in the body are still waiting. A group counts as one, not as its members. A body with one subject uses the singular sentences. A body with more than one uses the plural sentences, and the title includes N.
 
 | Request | Title | Body | Confirm |
 |---|---|---|---|
-| One item, `restock` | Restock Tortilla chips? | Tortilla chips keeps its usual target. Nothing is saved on it, so a later change to that target still reaches it. | Restock N |
-| One item, `dont_restock` | Stop restocking Tortilla chips? | Tortilla chips leaves the shopping plan. It stays in inventory, and you can still add it to the list by hand. | Stop restocking N |
-| One group, `restock` | Restock Salad kits? | Salad kits keeps its usual target. Nothing is saved on the group, so a later change to that target still reaches it. | Restock N |
-| Several subjects, `restock` | Restock these? | They keep their usual target. Nothing is saved on them, so a later change to that target still reaches them. | Restock N |
-| Several subjects, `dont_restock` | Stop restocking these? | These items leave the shopping plan. They stay in inventory, and you can still add them to the list by hand. | Stop restocking N |
-
-N is the number of subjects in the body that are still waiting. The name in a one-subject title is the item or group name.
+| One subject, `restock` | Restock this? | It'll use its usual target and go on the shopping list when it runs low. | Restock N |
+| One subject, `dont_restock` | Stop restocking this? | It won't go on the shopping list. It stays in your inventory, and you can still add it to the list by hand. | Don't restock N |
+| Several subjects, `restock` | Restock these N? | They'll use their usual targets and go on the shopping list when they run low. | Restock N |
+| Several subjects, `dont_restock` | Stop restocking these N? | They won't go on the shopping list. They stay in your inventory, and you can still add them to the list by hand. | Don't restock N |
 
 A line for a subject that is not waiting is in `keep` when the target would not change, with `answers: false`. Its `reason` is today's won't-change reason when one applies, otherwise `Already decided.`
 
 ### Response `200`
 
+Two waiting subjects, `restock`:
+
 ```json
 {
-  "title": "Restock these?",
-  "body": "They keep their usual target. Nothing is saved on them, so a later change to that target still reaches them.",
+  "title": "Restock these 2?",
+  "body": "They'll use their usual targets and go on the shopping list when they run low.",
   "stop": [
     {
       "itemId": "item-tc",
@@ -706,7 +705,7 @@ The same `updated` array as `POST /api/restock/decisions`, listing the restored 
 | 400 | `invalid_undo` | `undoToken` is missing or empty | That undo isn't available. |
 | 404 | `unknown_undo` | The token is unknown, or it belongs to another household | That undo isn't available. |
 | 409 | `stale_undo` | The token was already used | That undo was already used. |
-| 409 | `stale_undo` | A recorded row was deleted, or its state or target is no longer what this answer wrote | That change is already out of date. |
+| 409 | `stale_undo` | A recorded row was deleted, or its state or target is no longer what this answer wrote | Can't undo. Something changed since then. |
 | 500 | *(none)* | Unexpected failure | Something went wrong. Try again. |
 
 A 409 does not consume the token when the reason is a mismatch, so a retry still returns 409 rather than 404. An already-used token stays used.
@@ -715,7 +714,7 @@ A 409 does not consume the token when the reason is a mismatch, so a retry still
 
 Not idempotent. The second use of a token that succeeded is 409 `That undo was already used.`
 
-The check and the restore are one transaction. Undo applies only when every recorded row still has the state and the target this answer wrote. A target write or a second answer that landed after the token was minted makes the token stale, the transaction writes nothing, and the client gets 409. Two concurrent undos of the same token: one commits and marks it used, the other gets 409.
+The check and the restore are one transaction. Undo applies only when every recorded row still has the state and the target this answer wrote. A target write or a second answer that landed after the token was minted makes the token stale, the transaction writes nothing, and the client gets 409 `Can't undo. Something changed since then.` Two concurrent undos of the same token: one commits and marks it used, the other gets 409 `That undo was already used.`
 
 ## Existing routes that answer
 
@@ -798,7 +797,4 @@ Clients cannot pass a household id. When #224 lands, the same columns take the a
 
 ## Open questions
 
-None of the behavior above is blocked on these. The sentences are the contract until they change. They are called out because the issue does not say the words.
-
-1. **Preview sentences other than the single-group Don't restock case.** That one case reuses the #240 preview strings. The Restock titles and bodies, and the bulk Don't restock title and body, are written in the preview section. They are not in the issue.
-2. **Undo tokens do not expire by time.** The issue does not say how long Undo stays available. The contract keeps a token until it is used or until the subject changes.
+None. Preview copy and undo lifetime were resolved by PM in [issue #296 comment 6245834401](https://github.com/Rhionin/stockbot/issues/296#issuecomment-6245834401). The preview section and the undo errors are that ruling.
