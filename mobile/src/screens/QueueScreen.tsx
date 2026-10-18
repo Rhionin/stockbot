@@ -201,7 +201,7 @@ function LinkOffer({
       <Text style={styles.offerTitle}>Not in your pantry</Text>
       <Text style={styles.offerCopy}>
         {suggestions.length === 0
-          ? 'No close match. Search or add it as new.'
+          ? 'No close match found.'
           : 'Link the barcode to an item you stock. That scan out uses the item you pick.'}
       </Text>
       {suggestions.map((suggestion) => (

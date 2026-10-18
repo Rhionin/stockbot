@@ -144,7 +144,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
 
-    expect(await screen.findByText('No close match. Search or add it as new.')).toBeTruthy();
+    expect(await screen.findByText('No close match found.')).toBeTruthy();
     expect(screen.queryByLabelText(/Link /)).toBeNull();
   });
 
