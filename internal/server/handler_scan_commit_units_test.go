@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -14,13 +16,11 @@ import (
 )
 
 // commitContract is a shared example frontend tests can read.
-// body is the stable part of the response. A single commit also returns
-// timestamps and the product summary; the test checks that every fixture
-// field matches those bytes. request, when set, is the body the test posts.
+// body is the response with timestamps left out. The test builds its own
+// request from the seeded shelf and compares the handler output to body.
 type commitContract struct {
-	Status  int             `json:"status"`
-	Request json.RawMessage `json:"request,omitempty"`
-	Body    map[string]any  `json:"body"`
+	Status int            `json:"status"`
+	Body   map[string]any `json:"body"`
 }
 
 func loadCommitContract(t *testing.T, name string) commitContract {
@@ -43,30 +43,29 @@ func loadCommitContract(t *testing.T, name string) commitContract {
 	return contract
 }
 
-func (c commitContract) assertions() []assertion {
-	out := make([]assertion, 0, len(c.Body))
-	for key, value := range c.Body {
-		out = append(out, assertion{path: "$." + key, value: value})
-	}
-	return out
-}
-
-func contractString(t *testing.T, body map[string]any, key string) string {
+// assertContractBody compares the handler JSON to the fixture body.
+// scannedAt, committedAt, and createdAt are the only fields dropped.
+func assertContractBody(t *testing.T, raw []byte, contract commitContract) {
 	t.Helper()
-	value, ok := body[key].(string)
-	if !ok || value == "" {
-		t.Fatalf("contract %s = %#v", key, body[key])
+	var actual map[string]any
+	if err := json.Unmarshal(raw, &actual); err != nil {
+		t.Fatalf("response JSON: %v\n%s", err, raw)
 	}
-	return value
-}
-
-func contractCount(t *testing.T, body map[string]any, key string) int {
-	t.Helper()
-	value, ok := body[key].(float64)
-	if !ok || value < 1 {
-		t.Fatalf("contract %s = %#v", key, body[key])
+	for _, key := range []string{"scannedAt", "committedAt", "createdAt"} {
+		delete(actual, key)
 	}
-	return int(value)
+	if reflect.DeepEqual(actual, contract.Body) {
+		return
+	}
+	got, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatalf("encode actual: %v", err)
+	}
+	want, err := json.Marshal(contract.Body)
+	if err != nil {
+		t.Fatalf("encode contract: %v", err)
+	}
+	t.Fatalf("contract body\n got %s\nwant %s", got, want)
 }
 
 type shelfUnit struct {
@@ -145,38 +144,33 @@ func TestStockOutRemovesUnitCount(t *testing.T) {
 		{
 			name: "one on hand and unit count 3 reports how many left",
 			setup: func(env testEnv) {
-				productID := contractString(env.T, partial.Body, "productId")
-				mustProduct(env, productID, "Partial Oats")
-				stockShelf(env, "item-partial", contractString(env.T, partial.Body, "userId"), productID, []shelfUnit{
+				mustProduct(env, "prod-partial", "Partial Oats")
+				stockShelf(env, "item-partial", "user-1", "prod-partial", []shelfUnit{
 					{"inst-partial", &soon},
 				})
-				direction := scan.StockOut
-				product := productID
-				if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
-					ID:        contractString(env.T, partial.Body, "id"),
-					UserID:    contractString(env.T, partial.Body, "userId"),
-					Barcode:   contractString(env.T, partial.Body, "barcode"),
-					ScannedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
-					Direction: &direction,
-					UnitCount: contractCount(env.T, partial.Body, "unitCount"),
-					ProductID: &product,
-					Status:    scan.Pending,
-				}); err != nil {
-					env.T.Fatalf("CreateScanEntry: %v", err)
-				}
+				insertPendingScanUnits(env, "scan-partial", "prod-partial", scan.StockOut, 3)
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
-				path:           "/api/scans/" + contractString(t, partial.Body, "id") + "/commit",
-				expectedStatus: partial.Status,
-				assertions:     partial.assertions(),
-			},
-			afterRequest: exchanges(httpExchange{
-				method:         "GET",
-				path:           "/api/inventory",
+				path:           "/api/scans/scan-partial/commit",
 				expectedStatus: http.StatusOK,
-				assertions:     []assertion{{path: "$[0].instanceCount", value: float64(0)}},
-			}),
+			},
+			afterRequest: func(env testEnv) {
+				raw, err := io.ReadAll(env.Res.Body)
+				if err != nil {
+					env.T.Fatalf("read commit: %v", err)
+				}
+				if env.Res.StatusCode != partial.Status {
+					env.T.Fatalf("status %d, contract %d", env.Res.StatusCode, partial.Status)
+				}
+				assertContractBody(env.T, raw, partial)
+				exchanges(httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(0)}},
+				})(env)
+			},
 		},
 		{
 			name: "nothing on hand stays a conflict",
@@ -353,7 +347,186 @@ func TestStockOutRemovesUnitCount(t *testing.T) {
 				})(env)
 			},
 		},
+		{
+			name: "a named unit that is also the earliest is taken once",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-named-old", "Named Oldest")
+				stockShelf(env, "item-named-old", "user-1", "prod-named-old", []shelfUnit{
+					{"inst-named-oldest", &soon},
+					{"inst-named-next", &mid},
+					{"inst-named-rest", &late},
+				})
+				insertPendingScanUnits(env, "scan-named-old", "prod-named-old", scan.StockOut, 2)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-named-old/commit",
+				body:           `{"instanceId":"inst-named-oldest"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.removedCount", value: float64(2)},
+					{path: "$.requestedCount", value: float64(2)},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-named-old/instances",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "inst-named-rest"},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
+		},
+		{
+			name: "each removed unit has its own consumption row",
+			setup: func(env testEnv) {
+				finishOpening(env)
+				mustProduct(env, "prod-usage", "Usage Oats")
+				stockShelf(env, "item-usage", "user-1", "prod-usage", []shelfUnit{
+					{"inst-usage-old", &soon},
+					{"inst-usage-new", &late},
+				})
+				insertPendingScanUnits(env, "scan-usage", "prod-usage", scan.StockOut, 2)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-usage/commit",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.removedCount", value: float64(2)},
+					{path: "$.requestedCount", value: float64(2)},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				rows, err := env.DB.QueryContext(context.Background(), `
+					SELECT COALESCE(scan_entry_id, ''), COALESCE(stock_move_id, '')
+					FROM consumption_events
+					WHERE item_id = 'item-usage'
+					ORDER BY id`)
+				if err != nil {
+					env.T.Fatalf("consumption rows: %v", err)
+				}
+				defer rows.Close()
+				var moveID string
+				count := 0
+				for rows.Next() {
+					var scanID, linked string
+					if err := rows.Scan(&scanID, &linked); err != nil {
+						env.T.Fatalf("scan consumption: %v", err)
+					}
+					if scanID != "scan-usage" || linked == "" {
+						env.T.Fatalf("consumption row scan=%q move=%q", scanID, linked)
+					}
+					if moveID == "" {
+						moveID = linked
+					} else if linked != moveID {
+						env.T.Fatalf("consumption rows point at %s and %s", moveID, linked)
+					}
+					count++
+				}
+				if err := rows.Err(); err != nil {
+					env.T.Fatalf("consumption rows: %v", err)
+				}
+				if count != 2 {
+					env.T.Fatalf("consumption rows = %d, want 2", count)
+				}
+				var quantity, moves int
+				if err := env.DB.QueryRowContext(context.Background(), `
+					SELECT quantity FROM stock_moves WHERE id = ?`, moveID).Scan(&quantity); err != nil {
+					env.T.Fatalf("stock move: %v", err)
+				}
+				if err := env.DB.QueryRowContext(context.Background(), `
+					SELECT COUNT(*) FROM stock_moves WHERE item_id = 'item-usage'`).Scan(&moves); err != nil {
+					env.T.Fatalf("count moves: %v", err)
+				}
+				if quantity != 2 || moves != 1 {
+					env.T.Fatalf("move quantity %d, moves %d", quantity, moves)
+				}
+			},
+		},
+		{
+			name: "the same expiry takes the oldest stocked unit and leaves an undated one",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-tie-stock", "Tie Stock")
+				when := soon
+				stockShelf(env, "item-tie-stock", "user-1", "prod-tie-stock", []shelfUnit{
+					{"inst-undated-early", nil},
+					{"inst-dated-late", &when},
+					{"inst-dated-early", &when},
+				})
+				setStockedAt(env, "inst-undated-early", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-dated-late", time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-dated-early", time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))
+				insertPendingScanUnits(env, "scan-tie-stock", "prod-tie-stock", scan.StockOut, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-tie-stock/commit",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.removedCount", value: float64(1)},
+					{path: "$.requestedCount", value: float64(1)},
+				},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory/item-tie-stock/instances",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "inst-dated-late"},
+					{path: "$[1].id", value: "inst-undated-early"},
+					{path: "$[2]", absent: true},
+				},
+			}),
+		},
+		{
+			name: "the same stock-in time breaks by id",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-tie-id", "Tie Id")
+				when := soon
+				stockShelf(env, "item-tie-id", "user-1", "prod-tie-id", []shelfUnit{
+					{"inst-z-later", &when},
+					{"inst-a-first", &when},
+				})
+				insertPendingScanUnits(env, "scan-tie-id", "prod-tie-id", scan.StockOut, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-tie-id/commit",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.removedCount", value: float64(1)},
+					{path: "$.requestedCount", value: float64(1)},
+				},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory/item-tie-id/instances",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "inst-z-later"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
 	})
+}
+
+func setStockedAt(env testEnv, id string, at time.Time) {
+	env.T.Helper()
+	if _, err := env.DB.ExecContext(context.Background(),
+		`UPDATE item_instances SET stock_in_at = ? WHERE id = ?`, at, id); err != nil {
+		env.T.Fatalf("stock_in_at %s: %v", id, err)
+	}
 }
 
 func jsonContainsCounts(body []byte, removed, requested int) bool {

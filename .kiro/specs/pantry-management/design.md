@@ -205,7 +205,7 @@ Files in `internal/routes/` (one per endpoint, named after the resource + action
 
 `POST /api/scans/{id}/commit` with direction `stock_out` removes the entry's `unitCount` (N) units in one transaction. Nothing leaves the shelf before that commit. A repeat scan of an open stock-out card only raises `unitCount`, the same way a stock-in rescan does.
 
-When the body names `instanceId`, that unit is removed first and any further units come off oldest-first (earliest `expires_at`, undated last). When it does not, every unit comes off oldest-first.
+When the body names `instanceId`, that unit is removed first and any further units come off earliest expiry first; undated last; then oldest stocked. When it does not, every unit comes off that same order. The named unit is excluded from the rest, so a named unit that is also the earliest is taken once and the next unit follows. Equal stock-in times break by id.
 
 If the shelf has some units but fewer than N, the commit still returns 200 and removes everything on hand. If the shelf is empty, the response stays 409 `{ "error": "Nothing on hand to take out.", "code": "none_on_hand" }` and nothing is committed. A named unit that is already gone stays `instance_gone` when another unit of that item remains, and `none_on_hand` when the shelf is empty. Linking a barcode is unchanged.
 
@@ -218,7 +218,7 @@ Every successful stock-out commit — including one that removes exactly N — r
 
 Clients show the short-shelf note when `removedCount` is less than `requestedCount`. Stock-in responses omit both fields. A shared example of a partial 200 is `testdata/contract/scan-commit-partial.json`.
 
-`POST /api/scans/batch-commit` removes N the same way for each stock-out it commits, including a `unitCount` sent on the batch. The rest of the body is unchanged: `updatedCount`, `committedIds`, `failedIds`, `failedReasons`, and `failedCodes`. `failedReasons` and `failedCodes` stay parallel arrays aligned with `failedIds`.
+`POST /api/scans/batch-commit` removes N the same way for each stock-out it commits, including a `unitCount` sent on the batch. A scan id listed more than once is handled once. The rest of the body is unchanged: `updatedCount`, `committedIds`, `failedIds`, `failedReasons`, and `failedCodes`. `failedReasons` and `failedCodes` stay parallel arrays aligned with `failedIds`.
 
 Each committed stock-out is also an entry in `stockOutCounts`, keyed by scan id. The value is the same two fields as a single stock-out commit: `removedCount` (units that left the shelf) and `requestedCount` (that card's `unitCount`, N). A full removal is included, so `removedCount` may equal `requestedCount`. A stock-in has no entry. A failed card has no entry. A partial stock-out still counts as committed and stays in `committedIds`. A stock-out with nothing on hand stays in `failedIds` with `failedCodes` `none_on_hand`. When the batch commits no stock-out, `stockOutCounts` is omitted.
 
@@ -476,16 +476,16 @@ suggestTargetQuantity(itemId):
 
 #### Use-Oldest-First Ordering
 
-When committing a stock-out of N units, the API takes up to N on-hand rows. A named instance is included first. The rest, and every row when none is named, are:
+When committing a stock-out of N units, the API takes up to N on-hand rows. A named instance is included first and left out of the query below. The rest, and every row when none is named, are earliest expiry first; undated last; then oldest stocked:
 
 ```sql
 SELECT id FROM item_instances
 WHERE item_id = ? AND removed_at IS NULL
-ORDER BY expires_at ASC NULLS LAST
+ORDER BY expires_at ASC NULLS LAST, stock_in_at ASC, id ASC
 LIMIT ?
 ```
 
-Instances without an expiration date sort after those with one, so dated instances are consumed first. When fewer than N are on hand, this returns the rows that are left and the commit reports that smaller `removedCount`.
+Instances without an expiration date sort after those with one, so dated instances are consumed first even when an undated unit was stocked earlier. Units with the same expiry then go oldest stocked first. The same stock-in time breaks by id. When fewer than N are on hand, this returns the rows that are left and the commit reports that smaller `removedCount`.
 
 #### Shopping List Derivation
 
@@ -539,7 +539,7 @@ shoppingList(userId):
 
 ### Property 6: Stock-out commit removes N units, oldest first
 
-*For any* stock-out whose unit count is N ≥ 1, the commit SHALL remove min(N, on hand) units in one transaction. When no instance is named, those units SHALL be the earliest expirations (undated last). When an instance is named and it is still on hand, that unit SHALL go first and the rest SHALL be the earliest of what remains. The item's on-hand count SHALL decrease by the number removed. The 200 body SHALL include `removedCount` and `requestedCount` (N). An empty shelf SHALL refuse with 409 `none_on_hand` and remove nothing.
+*For any* stock-out whose unit count is N ≥ 1, the commit SHALL remove min(N, on hand) units in one transaction. When no instance is named, those units SHALL be earliest expiry first; undated last; then oldest stocked (equal stock-in times break by id). When an instance is named and it is still on hand, that unit SHALL go first and the rest SHALL be that same order among the other units. The item's on-hand count SHALL decrease by the number removed. The 200 body SHALL include `removedCount` and `requestedCount` (N). An empty shelf SHALL refuse with 409 `none_on_hand` and remove nothing.
 
 **Validates: Requirements 1.12, 1.9, 2.3**
 

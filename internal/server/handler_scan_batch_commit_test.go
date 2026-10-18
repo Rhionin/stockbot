@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,9 +14,6 @@ import (
 
 func TestScanBatchCommit(t *testing.T) {
 	mixed := loadCommitContract(t, "scan-batch-commit-partial.json")
-	if len(mixed.Request) == 0 {
-		t.Fatal("batch contract is missing its request")
-	}
 	runHandlerTests(t, []handlerTestCase{
 		{
 			name: "committing pending scans changes inventory and takes them off the queue",
@@ -487,48 +485,83 @@ func TestScanBatchCommit(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/batch-commit",
-				body:           string(mixed.Request),
-				expectedStatus: mixed.Status,
-				assertions:     mixed.assertions(),
+				body:           `{"scanEntryIds":["scan-batch-full","scan-batch-partial","scan-batch-in","scan-batch-none"],"commit":true}`,
+				expectedStatus: http.StatusOK,
 			},
-			afterRequest: exchanges(
-				httpExchange{
-					method:         "GET",
-					path:           "/api/inventory",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$[0].item.productId", value: "prod-batch-none"},
-						{path: "$[0].instanceCount", value: float64(0)},
-						{path: "$[1].item.productId", value: "prod-batch-full"},
-						{path: "$[1].instanceCount", value: float64(1)},
-						{path: "$[2].item.productId", value: "prod-batch-in"},
-						{path: "$[2].instanceCount", value: float64(2)},
-						{path: "$[3].item.productId", value: "prod-batch-partial"},
-						{path: "$[3].instanceCount", value: float64(0)},
-						{path: "$[4]", absent: true},
+			afterRequest: func(env testEnv) {
+				raw, err := io.ReadAll(env.Res.Body)
+				if err != nil {
+					env.T.Fatalf("read batch: %v", err)
+				}
+				if env.Res.StatusCode != mixed.Status {
+					env.T.Fatalf("status %d, contract %d", env.Res.StatusCode, mixed.Status)
+				}
+				assertContractBody(env.T, raw, mixed)
+				exchanges(
+					httpExchange{
+						method:         "GET",
+						path:           "/api/inventory",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].item.productId", value: "prod-batch-none"},
+							{path: "$[0].instanceCount", value: float64(0)},
+							{path: "$[1].item.productId", value: "prod-batch-full"},
+							{path: "$[1].instanceCount", value: float64(1)},
+							{path: "$[2].item.productId", value: "prod-batch-in"},
+							{path: "$[2].instanceCount", value: float64(2)},
+							{path: "$[3].item.productId", value: "prod-batch-partial"},
+							{path: "$[3].instanceCount", value: float64(0)},
+							{path: "$[4]", absent: true},
+						},
 					},
-				},
-				httpExchange{
-					method:         "GET",
-					path:           "/api/inventory/item-batch-full/instances",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$[0].id", value: "inst-full-new"},
-						{path: "$[1]", absent: true},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/inventory/item-batch-full/instances",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].id", value: "inst-full-new"},
+							{path: "$[1]", absent: true},
+						},
 					},
-				},
-				httpExchange{
-					method:         "GET",
-					path:           "/api/scans",
-					query:          map[string]string{"userId": "user-1", "status": "pending"},
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$[0].id", value: "scan-batch-none"},
-						{path: "$[0].status", value: "pending"},
-						{path: "$[1]", absent: true},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/scans",
+						query:          map[string]string{"userId": "user-1", "status": "pending"},
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].id", value: "scan-batch-none"},
+							{path: "$[0].status", value: "pending"},
+							{path: "$[1]", absent: true},
+						},
 					},
+				)(env)
+			},
+		},
+		{
+			name: "a repeated scan id is committed once",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-dup", "Dup Oats")
+				insertPendingScanUnits(env, "scan-dup", "prod-dup", scan.StockIn, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-dup","scan-dup"],"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.updatedCount", value: float64(1)},
+					{path: "$.committedIds[0]", value: "scan-dup"},
+					{path: "$.committedIds[1]", absent: true},
+					{path: "$.failedIds", absent: true},
 				},
-			),
+				bodyExcludes: []string{"not_pending", "already handled"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory",
+				expectedStatus: http.StatusOK,
+				assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
+			}),
 		},
 	})
 }

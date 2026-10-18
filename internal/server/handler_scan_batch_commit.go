@@ -50,6 +50,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	if len(req.Body.ScanEntryIDs) == 0 {
 		return batchCommitResponse{}, BadRequest("scanEntryIds is required")
 	}
+	req.Body.ScanEntryIDs = uniqueInOrder(req.Body.ScanEntryIDs)
 
 	// Validate direction if provided
 	if req.Body.Direction != nil {
@@ -141,6 +142,19 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	}
 
 	return response, nil
+}
+
+func uniqueInOrder(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func recordCommitFailure(ids, reasons, codes *[]string, id string, err error) {

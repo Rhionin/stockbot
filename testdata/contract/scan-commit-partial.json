@@ -1,14 +1,21 @@
 {
   "status": 200,
-  "note": "One unit on hand, stock-out unitCount 3. Both counts are on every successful stock-out commit. Clients show the short-shelf note when removedCount is below requestedCount.",
+  "note": "One unit on hand, stock-out unitCount 3. Both counts are on every successful stock-out commit. Clients show the short-shelf note when removedCount is below requestedCount. scannedAt, committedAt, and createdAt are left out; they change on every commit.",
   "body": {
     "id": "scan-partial",
     "userId": "user-1",
     "barcode": "scan-partial",
     "direction": "stock_out",
     "unitCount": 3,
+    "expiresAt": null,
     "status": "committed",
     "productId": "prod-partial",
+    "product": {
+      "id": "prod-partial",
+      "name": "Partial Oats",
+      "category": "Pantry",
+      "unitOfMeasure": "unit"
+    },
     "removedCount": 1,
     "requestedCount": 3
   }
