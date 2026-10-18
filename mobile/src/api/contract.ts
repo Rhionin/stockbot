@@ -62,6 +62,8 @@ export const LINK_OFFER_HEADING = 'Which item is this?';
 
 export const NO_CLOSE_MATCH = 'No close match found.';
 
+export const LINK_TARGET_GONE = 'link_target_gone';
+
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
 // The only stock-out count the server has to send. A rename is this one edit.
@@ -69,38 +71,99 @@ export const REMOVED_COUNT_FIELD = 'removedCount';
 
 export interface CommitConflictBehavior {
   linkOffer: boolean;
+  // True only for no_item, and only the empty suggestion list uses the sentence.
+  showEmptyLine: boolean;
+  showMessage: boolean;
+  useSuggestions: boolean;
+  refreshSuggestions: boolean;
   refreshInstances: boolean;
 }
 
-// Branch on the server's code. An absent or unknown code shows the server
-// text and leaves the pick list alone.
+// Branch on the server's code, whatever the HTTP status. An absent or unknown
+// code shows the server text and leaves the pick list alone.
 export function commitConflictBehavior(code: string | undefined): CommitConflictBehavior {
   switch (code) {
-    case 'instance_gone':
-      return { linkOffer: false, refreshInstances: true };
     case 'no_item':
-      return { linkOffer: true, refreshInstances: false };
+      return {
+        linkOffer: true,
+        showEmptyLine: true,
+        showMessage: false,
+        useSuggestions: true,
+        refreshSuggestions: false,
+        refreshInstances: false,
+      };
+    case 'product_unresolved':
+      return {
+        linkOffer: true,
+        showEmptyLine: false,
+        showMessage: true,
+        useSuggestions: false,
+        refreshSuggestions: false,
+        refreshInstances: false,
+      };
+    case 'instance_gone':
+      return {
+        linkOffer: false,
+        showEmptyLine: false,
+        showMessage: true,
+        useSuggestions: false,
+        refreshSuggestions: false,
+        refreshInstances: true,
+      };
+    case 'none_on_hand':
+      return {
+        linkOffer: false,
+        showEmptyLine: false,
+        showMessage: true,
+        useSuggestions: false,
+        refreshSuggestions: false,
+        refreshInstances: false,
+      };
+    case LINK_TARGET_GONE:
+      return {
+        linkOffer: true,
+        showEmptyLine: false,
+        showMessage: true,
+        useSuggestions: true,
+        refreshSuggestions: true,
+        refreshInstances: false,
+      };
     default:
-      return { linkOffer: false, refreshInstances: false };
+      return {
+        linkOffer: false,
+        showEmptyLine: false,
+        showMessage: true,
+        useSuggestions: false,
+        refreshSuggestions: false,
+        refreshInstances: false,
+      };
   }
 }
 
 export interface BatchFailureNotice {
   id: string;
   message: string;
+  code: string;
 }
 
-// Pair each failed id with the server's reason string. A missing or non-string
-// reason stays blank; the queue banner is the one fallback sentence.
+// Pair each failed id with the server's reason and, when present, the code at
+// the same index. failedCodes is additive and may be missing.
 export function batchFailureNotices(response: {
   failedIds?: string[];
   failedReasons?: string[];
+  failedCodes?: string[];
 }): BatchFailureNotice[] {
   const ids = response.failedIds ?? [];
   const reasons = response.failedReasons ?? [];
+  const codes = response.failedCodes ?? [];
   return ids.map((id, index) => {
     const reason = reasons[index];
-    return { id, message: typeof reason === 'string' ? reason : '' };
+    const code = codes[index];
+    return {
+      id,
+      message: typeof reason === 'string' ? reason : '',
+      code: typeof code === 'string' ? code : '',
+    };
   });
 }
 

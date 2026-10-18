@@ -13,13 +13,29 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
-import { BATCH_FAILURE_FALLBACK, commitConflictBehavior, LINK_OFFER_HEADING, NO_CLOSE_MATCH } from '../api/contract';
+import {
+  BATCH_FAILURE_FALLBACK,
+  batchFailureNotices,
+  commitConflictBehavior,
+  LINK_OFFER_HEADING,
+  NO_CLOSE_MATCH,
+} from '../api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
 export interface QueueScreenProps {
   client: StockbotClient;
   warning: string;
+}
+
+interface LinkOfferState {
+  suggestions: PantryLinkSuggestion[];
+  showEmptyLine: boolean;
+}
+
+function keepIds<T>(current: Record<string, T>, entries: ScanEntry[]): Record<string, T> {
+  const ids = new Set(entries.map((entry) => entry.id));
+  return Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
 }
 
 export function QueueScreen({ client, warning }: QueueScreenProps) {
@@ -29,12 +45,14 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
-  const [offer, setOffer] = useState<{ scanId: string; suggestions: PantryLinkSuggestion[] } | null>(null);
+  const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
     setEntries(next);
     setError(nextError);
-    setOffer((current) => (current && next.some((entry) => entry.id === current.scanId) ? current : null));
+    setOffers((current) => keepIds(current, next));
+    setNotes((current) => keepIds(current, next));
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -67,19 +85,80 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     };
   }, [client]);
 
+  function showOffer(id: string, suggestions: PantryLinkSuggestion[], showEmptyLine: boolean) {
+    setOffers((current) => ({
+      ...current,
+      [id]: { suggestions, showEmptyLine: showEmptyLine && suggestions.length === 0 },
+    }));
+  }
+
+  function clearOffer(id: string) {
+    setOffers((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function showNote(id: string, message: string) {
+    setNotes((current) => ({ ...current, [id]: message }));
+  }
+
+  function clearNote(id: string) {
+    setNotes((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
+  // Suggestions on the error body are the fresh list. A batch failure has no
+  // list, so a plain commit asks the server for one.
+  async function refetchSuggestions(id: string, carried?: PantryLinkSuggestion[]): Promise<PantryLinkSuggestion[]> {
+    if (carried) return carried;
+    try {
+      await client.commitScan(id);
+      return [];
+    } catch (requestError) {
+      return requestError instanceof ApiError ? requestError.suggestions : [];
+    }
+  }
+
+  function applyCommitFailure(id: string, requestError: ApiError, suggestions: PantryLinkSuggestion[]) {
+    const behavior = commitConflictBehavior(requestError.code);
+    // refreshInstances would reload a per-unit picker. This queue does not have one.
+    if (behavior.showMessage) showNote(id, requestError.message);
+    else clearNote(id);
+    if (behavior.linkOffer) {
+      showOffer(id, suggestions, behavior.showEmptyLine);
+      return;
+    }
+    clearOffer(id);
+    if (!behavior.showMessage) {
+      setError(requestError.message);
+    }
+  }
+
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
     try {
       await client.commitScan(id);
-      setOffer((current) => (current?.scanId === id ? null : current));
+      clearOffer(id);
+      clearNote(id);
       await refresh();
     } catch (requestError) {
-      if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).linkOffer) {
-        setOffer({ scanId: id, suggestions: requestError.suggestions });
-        return;
+      if (requestError instanceof ApiError) {
+        const behavior = commitConflictBehavior(requestError.code);
+        const suggestions = behavior.refreshSuggestions
+          ? await refetchSuggestions(id, requestError.suggestions)
+          : (behavior.useSuggestions ? requestError.suggestions : []);
+        applyCommitFailure(id, requestError, suggestions);
+      } else {
+        setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
       }
-      setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
     } finally {
       setBusyId('');
     }
@@ -90,10 +169,19 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     setError('');
     try {
       await client.commitScan(id, productId);
-      setOffer((current) => (current?.scanId === id ? null : current));
+      clearOffer(id);
+      clearNote(id);
       await refresh();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+      if (requestError instanceof ApiError) {
+        const behavior = commitConflictBehavior(requestError.code);
+        const suggestions = behavior.refreshSuggestions
+          ? await refetchSuggestions(id, requestError.suggestions)
+          : (behavior.useSuggestions ? requestError.suggestions : []);
+        applyCommitFailure(id, requestError, suggestions);
+      } else {
+        setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+      }
     } finally {
       setBusyId('');
     }
@@ -104,12 +192,32 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     setError('');
     try {
       const result = await client.batchCommit(entries.map((entry) => entry.id));
-      let keepError = '';
-      if (result.failedIds && result.failedIds.length > 0) {
-        const reasons = result.failedReasons?.filter((reason) => reason !== '') ?? [];
-        keepError = reasons.length > 0 ? reasons.join('\n') : BATCH_FAILURE_FALLBACK;
+      const notices = batchFailureNotices(result);
+      const resolved = await Promise.all(notices.map(async (notice) => {
+        const behavior = commitConflictBehavior(notice.code || undefined);
+        const suggestions = behavior.refreshSuggestions ? await refetchSuggestions(notice.id) : [];
+        return { notice, behavior, suggestions };
+      }));
+      const pending = await client.listPending();
+      const nextNotes: Record<string, string> = {};
+      const nextOffers: Record<string, LinkOfferState> = {};
+      for (const { notice, behavior, suggestions } of resolved) {
+        if (!pending.some((entry) => entry.id === notice.id)) continue;
+        if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
+        if (!behavior.linkOffer) continue;
+        const list = behavior.useSuggestions || behavior.refreshSuggestions ? suggestions : [];
+        nextOffers[notice.id] = {
+          suggestions: list,
+          showEmptyLine: behavior.showEmptyLine && list.length === 0,
+        };
       }
-      await refresh(keepError);
+      const unexplained = resolved.filter(({ notice }) => pending.some((entry) => entry.id === notice.id) && notice.message === '');
+      setEntries(pending);
+      setNotes(nextNotes);
+      setOffers(nextOffers);
+      setError(unexplained.length > 0 ? BATCH_FAILURE_FALLBACK : '');
+      setLoading(false);
+      setRefreshing(false);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Those scans could not be confirmed.');
     } finally {
@@ -159,12 +267,14 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
                   <Text style={styles.confirmText}>{busyId === item.id ? 'Confirming' : 'Confirm'}</Text>
                 </Pressable>
               </View>
-              {offer?.scanId === item.id && (
+              {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
+              {offers[item.id] && (
                 <LinkOffer
-                  suggestions={offer.suggestions}
+                  suggestions={offers[item.id].suggestions}
+                  showEmptyLine={offers[item.id].showEmptyLine}
                   busy={busyId === item.id}
                   onLink={(productId) => { void linkOne(item.id, productId); }}
-                  onDismiss={() => setOffer(null)}
+                  onDismiss={() => clearOffer(item.id)}
                 />
               )}
             </View>
@@ -189,11 +299,13 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
 
 function LinkOffer({
   suggestions,
+  showEmptyLine,
   busy,
   onLink,
   onDismiss,
 }: {
   suggestions: PantryLinkSuggestion[];
+  showEmptyLine: boolean;
   busy: boolean;
   onLink: (productId: string) => void;
   onDismiss: () => void;
@@ -207,7 +319,7 @@ function LinkOffer({
   return (
     <View style={styles.offer}>
       <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
-      {suggestions.length === 0 && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
+      {showEmptyLine && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
       {visible.map((suggestion) => (
         <View key={suggestion.itemId} style={styles.offerRow}>
           <View style={styles.rowCopy}>
@@ -354,6 +466,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: colors.ink,
+  },
+  note: {
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.ink,
+    marginTop: 10,
   },
   offerRow: {
     flexDirection: 'row',

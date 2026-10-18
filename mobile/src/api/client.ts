@@ -50,7 +50,7 @@ export interface StockbotClient {
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry>;
-  batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
+  batchCommit: (ids: string[]) => Promise<BatchCommitResponse & { failedCodes?: string[] }>;
 }
 
 export interface ClientOptions {
