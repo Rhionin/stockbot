@@ -39,7 +39,7 @@ Wipe (PR #240, migration `020_shelve_wiped_items.sql`) does not delete the item 
 
 The planner reads the same resolution. A resolved value of 0 is not bought. A member with its own item target leaves the group's pooled line. A purchased shopping row stays until it is stocked in. Changing a target does not reopen it, and undoing that change does not put it back. Manual shopping rows are kept even when the target is 0. There is no restock SSE event today. `GET /api/events` already fans out `scan`, `inventory`, `scanner_mode`, `scan_processing`, and `scan_processing_failed`.
 
-Errors are JSON. A handler error with a code is `{ "error": "...", "code": "..." }`. A 5xx is always `{ "error": "Something went wrong. Please try again." }` with no code. The server log keeps the detail. Malformed JSON stays the existing wrapper sentence, `invalid request body: …`, with no code. A body over 1 MiB stays `request body is too large`, with no code.
+Errors are JSON. A handler error with a code is `{ "error": "...", "code": "..." }`. A 5xx is always `{ "error": "Something went wrong. Try again." }` with no code. The server log keeps the detail. Malformed JSON stays the existing wrapper sentence, `invalid request body: …`, with no code. A body over 1 MiB stays `request body is too large`, with no code.
 
 Sentences in this contract are the whole `error` string: short, plain, and ending with a period. Unknown values are rejected. They are never coerced to `auto` or to Restock.
 
@@ -307,7 +307,7 @@ The same item under `ask_restock` keeps today's `target`, `level`, and `sourceLa
 
 | Status | Code | Sentence |
 |---|---|---|
-| 500 | *(none)* | Something went wrong. Please try again. |
+| 500 | *(none)* | Something went wrong. Try again. |
 
 ### Idempotency and concurrency
 
@@ -345,7 +345,7 @@ Switching to `auto` with `answerWaiting: "restock"` answers every current decisi
 | 400 | `invalid_answer` | `answerWaiting` is present and is not `restock` | The waiting items can only be answered as restock. |
 | 400 | `invalid_answer` | `answerWaiting` is present and `policy` is not `auto` | That answer is only used when switching back to restocking automatically. |
 | 409 | `answer_waiting` | Current policy is an Ask mode, `policy` is `auto`, at least one subject is waiting, and `answerWaiting` is absent | See below. |
-| 500 | *(none)* | Unexpected failure | Something went wrong. Please try again. |
+| 500 | *(none)* | Unexpected failure | Something went wrong. Try again. |
 
 Malformed JSON and an oversized body use the shared sentences above, with no code.
 
@@ -463,7 +463,7 @@ The other group fields (`rule`, `members`, `onHand`, and the rest) are unchanged
 | Status | Code | Sentence |
 |---|---|---|
 | 400 | `invalid_needs_decision` | needsDecision has to be true. |
-| 500 | *(none)* | Something went wrong. Please try again. |
+| 500 | *(none)* | Something went wrong. Try again. |
 
 ### Idempotency and concurrency
 
@@ -587,7 +587,7 @@ After the decision transaction commits, the shopping list is refreshed the same 
 | 404 | `not_in_household` | An item id is not this household's item | That item isn't in the household. |
 | 404 | `not_in_household` | A group id is not this household's group | That group isn't in the household. |
 | 404 | `not_in_household` | More than one id is missing | One of those isn't in the household. |
-| 500 | *(none)* | Unexpected failure | Something went wrong. Please try again. |
+| 500 | *(none)* | Unexpected failure | Something went wrong. Try again. |
 
 A 400 or 404 writes nothing and does not refresh the shopping list. Not-waiting is not a 404.
 
@@ -707,7 +707,7 @@ The same `updated` array as `POST /api/restock/decisions`, listing the restored 
 | 404 | `unknown_undo` | The token is unknown, or it belongs to another household | That undo isn't available. |
 | 409 | `stale_undo` | The token was already used | That undo was already used. |
 | 409 | `stale_undo` | A recorded row was deleted, or its state or target is no longer what this answer wrote | That change is already out of date. |
-| 500 | *(none)* | Unexpected failure | Something went wrong. Please try again. |
+| 500 | *(none)* | Unexpected failure | Something went wrong. Try again. |
 
 A 409 does not consume the token when the reason is a mismatch, so a retry still returns 409 rather than 404. An already-used token stays used.
 
