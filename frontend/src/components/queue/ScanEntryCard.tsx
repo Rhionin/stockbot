@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title } from '@mantine/core';
-import { addGroupMembers, ApiError, commitScanEntry, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
+import { addGroupMembers, ApiError, commitScanEntry, listProducts, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
 import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
-import type { PantryLinkSuggestion, ScanEntry } from '../../types';
+import type { PantryLinkSuggestion, Product, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -17,6 +17,84 @@ const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
 
 const multipackName = /\d+\s*x\s*\d/i;
+
+const LINK_OFFER_HEADING = 'Which item is this?';
+
+const LinkProductSearch = ({
+  busy,
+  onPick,
+}: {
+  busy: boolean;
+  onPick: (productId: string) => void;
+}) => {
+  const combobox = useCombobox({
+    onDropdownClose: () => combobox.resetSelectedOption(),
+  });
+  const [products, setProducts] = useState<Product[]>([]);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    void listProducts()
+      .then((loaded) => {
+        if (active) setProducts(loaded);
+      })
+      .catch(() => {
+        if (active) setProducts([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const matches = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (normalized === '') return products;
+    return products.filter((product) =>
+      `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized),
+    );
+  }, [products, query]);
+
+  return (
+    <Combobox
+      store={combobox}
+      withinPortal={false}
+      onOptionSubmit={(productId) => {
+        combobox.closeDropdown();
+        onPick(productId);
+      }}
+    >
+      <Combobox.Target>
+        <TextInput
+          size="xs"
+          label="Search products"
+          placeholder="Type a product name or category"
+          value={query}
+          autoComplete="off"
+          disabled={busy}
+          onChange={(event) => {
+            setQuery(event.currentTarget.value);
+            combobox.openDropdown();
+            combobox.updateSelectedOptionIndex();
+          }}
+          onClick={() => combobox.openDropdown()}
+          onFocus={() => combobox.openDropdown()}
+          onBlur={() => combobox.closeDropdown()}
+        />
+      </Combobox.Target>
+      <Combobox.Dropdown>
+        <Combobox.Options>
+          {matches.length === 0 && <Combobox.Empty>No matching products.</Combobox.Empty>}
+          {matches.map((product) => (
+            <Combobox.Option key={product.id} value={product.id}>
+              {product.name}
+            </Combobox.Option>
+          ))}
+        </Combobox.Options>
+      </Combobox.Dropdown>
+    </Combobox>
+  );
+};
 
 const expiryDatePart = (expiresAt: string | null): string =>
   expiresAt === null ? '' : expiresAt.substring(0, 10);
@@ -620,13 +698,10 @@ export const ScanEntryCard = ({
 
       {linkOffer !== null && (
         <div className="scan-link-offer" role="region" aria-labelledby={`link-offer-${entry.id}`}>
-          <p id={`link-offer-${entry.id}`} className="scan-link-offer-title">Not in your pantry</p>
-          <p className="scan-link-offer-copy">
-            {linkOffer.length === 0
-              ? NO_CLOSE_MATCH
-              : 'Link the barcode to an item you stock. That scan out uses the item you pick.'}
-          </p>
-          {linkOffer.length > 0 && (
+          <p id={`link-offer-${entry.id}`} className="scan-link-offer-title">{LINK_OFFER_HEADING}</p>
+          {linkOffer.length === 0 ? (
+            <p className="scan-link-offer-copy">{NO_CLOSE_MATCH}</p>
+          ) : (
             <ul className="scan-link-offer-list">
               {linkOffer.map((suggestion) => (
                 <li key={suggestion.itemId} className="scan-link-offer-row">
@@ -637,7 +712,7 @@ export const ScanEntryCard = ({
                   <Button
                     size="compact-xs"
                     loading={approving}
-                    aria-label={`Link ${suggestion.name} and scan it out`}
+                    aria-label={`Link ${suggestion.name}`}
                     onClick={() => void linkSuggestion(suggestion.productId)}
                   >
                     Link
@@ -646,6 +721,7 @@ export const ScanEntryCard = ({
               ))}
             </ul>
           )}
+          <LinkProductSearch busy={approving} onPick={(productId) => void linkSuggestion(productId)} />
           <div className="scan-link-offer-actions">
             <Button size="compact-xs" variant="default" onClick={() => setLinkOffer(null)}>
               Dismiss

@@ -1493,7 +1493,7 @@ describe('ScanEntryCard group hint', () => {
 });
 
 const noItemBody = {
-  error: 'Not in your pantry',
+  error: 'barcode is not linked',
   code: 'no_item',
   suggestions: [
     { itemId: 'item-pears', productId: 'prod-pears', name: 'Sliced Pears', onHand: 3 },
@@ -1521,6 +1521,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
   it('shows pantry suggestions in rank order and does not commit until one is picked', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url === '/api/scans/scan-1/commit' && request?.method === 'POST') {
         const body = JSON.parse(String(request.body)) as { linkProductId?: string };
         if (body.linkProductId === 'prod-pears') {
@@ -1536,8 +1537,11 @@ describe('ScanEntryCard unmatched stock-out', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
-    const offer = await screen.findByRole('region', { name: 'Not in your pantry' });
-    expect(offer).toHaveTextContent('Link the barcode to an item you stock. That scan out uses the item you pick.');
+    const offer = await screen.findByRole('region', { name: 'Which item is this?' });
+    expect(offer).toHaveTextContent('Which item is this?');
+    expect(within(offer).getByLabelText('Search products')).toBeInTheDocument();
+    expect(within(offer).queryByText('barcode is not linked', { exact: false })).not.toBeInTheDocument();
+    expect(within(offer).queryByText('Not in your pantry', { exact: false })).not.toBeInTheDocument();
     const rows = within(offer).getAllByRole('listitem');
     expect(rows.map((row) => row.textContent)).toEqual([
       'Sliced Pears3 in stockLink',
@@ -1546,7 +1550,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
     expect(within(rows[0]).getByText('3 in stock')).toHaveClass('stock-note--full');
     expect(onChanged).not.toHaveBeenCalled();
 
-    fireEvent.click(within(offer).getByRole('button', { name: 'Link Sliced Pears and scan it out' }));
+    fireEvent.click(within(offer).getByRole('button', { name: 'Link Sliced Pears' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     const linkCall = fetchMock.mock.calls.find(([, request]) => {
       const body = request?.body ? JSON.parse(String(request.body)) as { linkProductId?: string } : {};
@@ -1558,6 +1562,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
   it('dismisses the suggestions without linking', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url === '/api/scans/scan-1/commit') return Promise.resolve(errorResponse(noItemBody, 409));
       throw new Error(`Unexpected ${request?.method ?? 'GET'} request: ${url}`);
     });
@@ -1566,12 +1571,12 @@ describe('ScanEntryCard unmatched stock-out', () => {
     renderStockOut(onChanged);
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    const offer = await screen.findByRole('region', { name: 'Not in your pantry' });
+    const offer = await screen.findByRole('region', { name: 'Which item is this?' });
     fireEvent.click(within(offer).getByRole('button', { name: 'Dismiss' }));
 
-    await waitFor(() => expect(screen.queryByRole('region', { name: 'Not in your pantry' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Which item is this?' })).not.toBeInTheDocument());
     expect(onChanged).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/commit'))).toHaveLength(1);
     expect(screen.getByRole('article', { name: 'Scan 123' })).toBeInTheDocument();
   });
 });
