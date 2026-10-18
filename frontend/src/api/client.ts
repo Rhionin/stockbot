@@ -41,6 +41,7 @@ import type {
   HistoryView,
   HistoryLedger,
   PantryLinkSuggestion,
+  RemovalCounts,
   TargetConflictMember,
 } from '../types';
 
@@ -217,7 +218,11 @@ export function updateScanEntry(id: string, input: UpdateScanEntryInput): Promis
   return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
 }
 
-export function commitScanEntry(id: string, instanceId?: string, linkProductId?: string): Promise<ScanEntry> {
+export function commitScanEntry(
+  id: string,
+  instanceId?: string,
+  linkProductId?: string,
+): Promise<ScanEntry & RemovalCounts> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;

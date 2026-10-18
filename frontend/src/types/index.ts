@@ -447,9 +447,27 @@ export interface TargetConflictMember {
   dimension?: NetDimension;
 }
 
-export interface BatchCommitResponse {
+// Provisional stock-out counts. The names stay optional until the backend confirms them.
+export interface RemovalCounts {
+  requestedCount?: number;
+  removedCount?: number;
+}
+
+// One scan inside a batch commit, if the server starts returning per-scan entries.
+export interface BatchCommitResultEntry extends RemovalCounts {
+  id?: string;
+  scanEntryId?: string;
+  code?: string;
+  reason?: string;
+  message?: string;
+  error?: string;
+}
+
+export interface BatchCommitResponse extends RemovalCounts {
   updatedCount: number;
   committedIds?: string[];
   failedIds?: string[];
-  failedReasons?: string[];
+  failedReasons?: Array<string | BatchCommitResultEntry>;
+  results?: BatchCommitResultEntry[];
+  entries?: BatchCommitResultEntry[];
 }

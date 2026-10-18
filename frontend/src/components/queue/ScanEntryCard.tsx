@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import type { PantryLinkSuggestion, ScanEntry } from '../../types';
+import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import type { PantryLinkSuggestion, RemovalCounts, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -25,8 +26,11 @@ export interface ScanEntryCardProps {
   selected: boolean;
   itemId?: string;
   justCaptured?: boolean;
+  commitNotice?: string;
+  instanceReloadKey?: number;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
+  onCommitNote?: (note: string) => void;
 }
 
 export const ScanEntryCard = ({
@@ -34,10 +38,14 @@ export const ScanEntryCard = ({
   selected,
   itemId,
   justCaptured = false,
+  commitNotice = '',
+  instanceReloadKey = 0,
   onSelectedChange,
   onChanged,
+  onCommitNote,
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
+  const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approveError, setApproveError] = useState('');
   const [approving, setApproving] = useState(false);
   const [linkOffer, setLinkOffer] = useState<PantryLinkSuggestion[] | null>(null);
@@ -79,6 +87,15 @@ export const ScanEntryCard = ({
   }, [entry.unitCount]);
 
   useEffect(() => () => window.clearTimeout(saveTimer.current), []);
+
+  // A batch or single confirm learned the picked unit is already gone.
+  useEffect(() => {
+    if (instanceReloadKey === 0) return;
+    // Open the pick list on the refreshed instances so the missing unit is gone.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInstancePickerOpen(true);
+    setInstanceId('');
+  }, [instanceReloadKey]);
 
   useEffect(() => {
     // Deliberate prop->draft sync: reset the controlled draft when the server value changes.
@@ -134,19 +151,42 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
+  const noteCommitted = (committed: ScanEntry & RemovalCounts) => {
+    onCommitNote?.(formatPartialRemoval(committed) ?? '');
+  };
+
+  // Returns true when the failure was shown and the scan stays pending.
+  const showCommitFailure = (requestError: unknown): boolean => {
+    if (!(requestError instanceof ApiError)) return false;
+    const behavior = commitConflictBehavior(requestError.code);
+    if (behavior.linkOffer) {
+      setLinkOffer(requestError.suggestions);
+      return true;
+    }
+    if (behavior.refreshInstances) {
+      setInstancePickerOpen(true);
+      setInstanceId('');
+      setLocalInstanceReload((current) => current + 1);
+    }
+    if (behavior.showMessage) {
+      setApproveError(requestError.message || 'Unable to confirm scan.');
+      return true;
+    }
+    return false;
+  };
+
   const handleApprove = async () => {
     setApproving(true);
     setApproveError('');
     try {
-      await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
+      const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       setLinkOffer(null);
+      noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (requestError instanceof ApiError && requestError.code === 'no_item') {
-        setLinkOffer(requestError.suggestions);
-        return;
+      if (!showCommitFailure(requestError)) {
+        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
       }
-      setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
     } finally {
       setApproving(false);
     }
@@ -156,11 +196,14 @@ export const ScanEntryCard = ({
     setApproving(true);
     setApproveError('');
     try {
-      await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
+      const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       setLinkOffer(null);
+      noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
+      if (!showCommitFailure(requestError)) {
+        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
+      }
     } finally {
       setApproving(false);
     }
@@ -548,7 +591,12 @@ export const ScanEntryCard = ({
 
       {instancePickerOpen && isStockOut && itemId !== undefined && (
         <div className="scan-entry-extra">
-          <StockOutInstanceSelector itemId={itemId} value={instanceId} onChange={setInstanceId} />
+          <StockOutInstanceSelector
+            itemId={itemId}
+            value={instanceId}
+            onChange={setInstanceId}
+            reloadKey={instanceReloadKey + localInstanceReload}
+          />
         </div>
       )}
       {instancePickerOpen && isStockOut && itemId === undefined && (
@@ -589,7 +637,7 @@ export const ScanEntryCard = ({
           <p id={`link-offer-${entry.id}`} className="scan-link-offer-title">Not in your pantry</p>
           <p className="scan-link-offer-copy">
             {linkOffer.length === 0
-              ? 'No stocked item matches this barcode.'
+              ? NO_CLOSE_MATCH
               : 'Link the barcode to an item you stock. That scan out uses the item you pick.'}
           </p>
           {linkOffer.length > 0 && (
@@ -620,7 +668,9 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {approveError !== '' && <Alert color="red" py={4} mt={4}>{approveError}</Alert>}
+      {(approveError || commitNotice) !== '' && (
+        <Alert color="red" py={4} mt={4}>{approveError || commitNotice}</Alert>
+      )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
       {hintError !== '' && <Alert color="red" py={4} mt={4}>{hintError}</Alert>}
       {packError !== '' && <Alert color="red" py={4} mt={4}>{packError}</Alert>}
