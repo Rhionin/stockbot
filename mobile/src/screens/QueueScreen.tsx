@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -12,13 +12,11 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
-import { filterInventoryItems } from '../../../frontend/src/utils/inventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   BATCH_FAILURE_FALLBACK,
   batchFailureNotices,
   commitConflictBehavior,
-  type CommitConflictBehavior,
   formatPartialRemoval,
   NO_CLOSE_MATCH,
 } from '../../../frontend/src/api/contract';
@@ -26,6 +24,8 @@ import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
 const LINK_OFFER_HEADING = 'Which item is this?';
+const NOTHING_ON_HAND = 'Nothing on hand to take out.';
+const NO_MATCHING_PRODUCTS = 'No matching products.';
 
 export interface QueueScreenProps {
   client: StockbotClient;
@@ -49,11 +49,6 @@ function keepIds<T>(current: Record<string, T>, entries: ScanEntry[]): Record<st
   return Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
 }
 
-function isShelved(row: InventoryItem): boolean {
-  const shelved = (row.item as { shelved?: boolean | number }).shelved;
-  return shelved === true || shelved === 1;
-}
-
 function suggestionRows(suggestions: PantryLinkSuggestion[]): LinkRow[] {
   return suggestions.map((suggestion) => ({
     key: suggestion.itemId,
@@ -63,11 +58,18 @@ function suggestionRows(suggestions: PantryLinkSuggestion[]): LinkRow[] {
   }));
 }
 
-// Same name and category match as the inventory page. Shelved rows are dropped
-// here until the list itself omits them. Zero on hand stays.
-function householdRows(rows: InventoryItem[], query: string): LinkRow[] {
-  return filterInventoryItems(rows, query)
-    .filter((row) => !isShelved(row))
+// Same fields as the web link search: an empty query matches every row, and a
+// typed query matches the name and category as one string. The list already
+// omits shelved rows. Zero on hand stays.
+function householdRows(rows: InventoryItem[], query: string, excludeProductId: string): LinkRow[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  return rows
+    .filter((row) => {
+      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
+      if (normalized === '') return true;
+      const product = row.item.product;
+      return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
+    })
     .map((row) => ({
       key: row.item.id,
       name: row.item.product.name,
@@ -86,31 +88,46 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   const [busyId, setBusyId] = useState('');
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [household, setHousehold] = useState<InventoryItem[] | null>(null);
+  const [excluded, setExcluded] = useState<Record<string, string>>({});
 
   const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
     setEntries(next);
     setError(nextError);
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
+    setExcluded((current) => keepIds(current, next));
     setLoading(false);
     setRefreshing(false);
   }, []);
 
+  const loadHousehold = useCallback(async () => {
+    try {
+      const rows = await client.getInventoryList();
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }, [client]);
+
   const refresh = useCallback(async (keepError = '') => {
     setRefreshing(true);
     try {
-      applyEntries(await client.listPending(), keepError);
+      const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
+      setHousehold(rows);
+      applyEntries(next, keepError);
     } catch (requestError) {
       setRefreshing(false);
       setLoading(false);
       setError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
     }
-  }, [applyEntries, client]);
+  }, [applyEntries, client, loadHousehold]);
 
   useEffect(() => {
     let active = true;
-    client.listPending().then((next) => {
+    Promise.all([client.listPending(), loadHousehold()]).then(([next, rows]) => {
       if (!active) return;
+      setHousehold(rows);
       setEntries(next);
       setError('');
       setLoading(false);
@@ -122,7 +139,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     return () => {
       active = false;
     };
-  }, [client]);
+  }, [client, loadHousehold]);
 
   function showOffer(id: string, suggestions: PantryLinkSuggestion[], showEmptyLine: boolean) {
     setOffers((current) => ({
@@ -133,6 +150,12 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
 
   function clearOffer(id: string) {
     setOffers((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setExcluded((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
       delete next[id];
@@ -149,38 +172,22 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     });
   }
 
-  // A link recommit with an empty list asks again so the stale row can drop off.
-  // One extra commit; its suggestions are the new list.
-  async function refetchSuggestions(id: string): Promise<PantryLinkSuggestion[]> {
-    try {
-      await client.commitScan(id);
-      return [];
-    } catch (requestError) {
-      return requestError instanceof ApiError ? requestError.suggestions : [];
-    }
-  }
-
-  async function offerSuggestions(
-    id: string,
-    behavior: CommitConflictBehavior,
-    carried: PantryLinkSuggestion[],
-  ): Promise<PantryLinkSuggestion[]> {
-    if (behavior.hideEmptyMatch) return [];
-    if (behavior.refreshSuggestions && carried.length === 0) return refetchSuggestions(id);
-    return carried;
-  }
-
   async function showCommitFailure(id: string, requestError: ApiError) {
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? requestError.message : '');
     clearNote(id);
-    if (!(behavior.linkOffer || behavior.refreshSuggestions)) {
+    if (behavior.refreshSuggestions) {
+      setHousehold(await loadHousehold());
+      showOffer(id, offers[id]?.suggestions ?? [], true);
+      return;
+    }
+    if (!behavior.linkOffer) {
       clearOffer(id);
       return;
     }
-    const suggestions = await offerSuggestions(id, behavior, requestError.suggestions);
-    showOffer(id, suggestions, behavior.linkOffer && !behavior.hideEmptyMatch);
+    const suggestions = behavior.hideEmptyMatch ? [] : requestError.suggestions;
+    showOffer(id, suggestions, !behavior.hideEmptyMatch);
   }
 
   async function confirmOne(id: string) {
@@ -206,6 +213,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   }
 
   async function linkOne(id: string, productId: string) {
+    const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
     setToast('');
@@ -217,7 +225,15 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       setToast(formatPartialRemoval(unitCount, committed) ?? '');
       await refresh();
     } catch (requestError) {
-      if (requestError instanceof ApiError) {
+      if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
+        setToast(requestError.message);
+        clearNote(id);
+        setExcluded((current) => ({ ...current, [id]: productId }));
+        setHousehold(await loadHousehold());
+        showOffer(id, previous.filter((row) => row.productId !== productId), true);
+      } else if (requestError instanceof ApiError && requestError.code === 'none_on_hand' && offers[id]) {
+        setToast(requestError.message);
+      } else if (requestError instanceof ApiError) {
         await showCommitFailure(id, requestError);
       } else {
         setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
@@ -234,27 +250,26 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     try {
       const result = await client.batchCommit(entries.map((entry) => entry.id));
       const notices = batchFailureNotices(result);
-      const resolved = await Promise.all(notices.map(async (notice) => {
-        const behavior = commitConflictBehavior(notice.code || undefined);
-        const suggestions = behavior.refreshSuggestions ? await refetchSuggestions(notice.id) : [];
-        return { notice, behavior, suggestions };
-      }));
+      if (notices.some((notice) => commitConflictBehavior(notice.code || undefined).refreshSuggestions)) {
+        setHousehold(await loadHousehold());
+      }
       const pending = await client.listPending();
       const nextNotes: Record<string, string> = {};
       const nextOffers: Record<string, LinkOfferState> = {};
-      for (const { notice, behavior, suggestions } of resolved) {
+      for (const notice of notices) {
         if (!pending.some((entry) => entry.id === notice.id)) continue;
+        const behavior = commitConflictBehavior(notice.code || undefined);
         if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
         if (!(behavior.linkOffer || behavior.refreshSuggestions)) continue;
-        const list = behavior.hideEmptyMatch ? [] : suggestions;
         nextOffers[notice.id] = {
-          suggestions: list,
-          showEmptyLine: behavior.linkOffer && !behavior.hideEmptyMatch && list.length === 0,
+          suggestions: [],
+          showEmptyLine: !behavior.hideEmptyMatch,
         };
       }
       setEntries(pending);
       setNotes(nextNotes);
       setOffers(nextOffers);
+      setExcluded({});
       setError(notices.length > 0 ? BATCH_FAILURE_FALLBACK : '');
       setLoading(false);
       setRefreshing(false);
@@ -308,12 +323,19 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
                 </Pressable>
               </View>
               {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
+              {household !== null
+                && item.direction === 'stock_out'
+                && item.productId !== null
+                && !household.some((row) => row.item.productId === item.productId)
+                && notes[item.id] !== NOTHING_ON_HAND
+                && <Text style={styles.note}>{NOTHING_ON_HAND}</Text>}
               {offers[item.id] && (
                 <LinkOffer
                   suggestions={offers[item.id].suggestions}
                   showEmptyLine={offers[item.id].showEmptyLine}
                   busy={busyId === item.id}
-                  loadHousehold={() => client.getInventoryList()}
+                  household={household}
+                  excludeProductId={excluded[item.id] ?? ''}
                   onLink={(productId) => { void linkOne(item.id, productId); }}
                   onDismiss={() => clearOffer(item.id)}
                 />
@@ -344,61 +366,66 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   );
 }
 
+function LinkRows({ rows, busy, onLink }: { rows: LinkRow[]; busy: boolean; onLink: (productId: string) => void }) {
+  return rows.map((row) => (
+    <View key={row.key} style={styles.offerRow}>
+      <View style={styles.rowCopy}>
+        <Text style={styles.name}>{row.name}</Text>
+        <Text style={styles.meta}>{row.onHand} in stock</Text>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Link ${row.name}`}
+        disabled={busy}
+        onPress={() => onLink(row.productId)}
+        style={styles.confirm}
+      >
+        <Text style={styles.confirmText}>{busy ? 'Linking' : 'Link'}</Text>
+      </Pressable>
+    </View>
+  ));
+}
+
 function LinkOffer({
   suggestions,
   showEmptyLine,
   busy,
-  loadHousehold,
+  household,
+  excludeProductId,
   onLink,
   onDismiss,
 }: {
   suggestions: PantryLinkSuggestion[];
   showEmptyLine: boolean;
   busy: boolean;
-  loadHousehold: () => Promise<InventoryItem[]>;
+  household: InventoryItem[] | null;
+  excludeProductId: string;
   onLink: (productId: string) => void;
   onDismiss: () => void;
 }) {
   const [query, setQuery] = useState('');
-  const [household, setHousehold] = useState<InventoryItem[] | null>(null);
-  const requested = useRef(false);
+  const [open, setOpen] = useState(false);
   const needle = query.trim();
-  const visible = needle === '' ? suggestionRows(suggestions) : householdRows(household ?? [], needle);
-
-  function onQuery(next: string) {
-    setQuery(next);
-    if (next.trim() === '' || requested.current) return;
-    requested.current = true;
-    void loadHousehold()
-      .then((rows) => setHousehold(Array.isArray(rows) ? rows : []))
-      .catch(() => setHousehold([]));
-  }
+  const matches = household === null ? null : householdRows(household, needle, excludeProductId);
+  const showMatches = open || needle !== '';
 
   return (
     <View style={styles.offer}>
       <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
       {showEmptyLine && needle === '' && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
-      {visible.map((row) => (
-        <View key={row.key} style={styles.offerRow}>
-          <View style={styles.rowCopy}>
-            <Text style={styles.name}>{row.name}</Text>
-            <Text style={styles.meta}>{row.onHand} in stock</Text>
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Link ${row.name}`}
-            disabled={busy}
-            onPress={() => onLink(row.productId)}
-            style={styles.confirm}
-          >
-            <Text style={styles.confirmText}>{busy ? 'Linking' : 'Link'}</Text>
-          </Pressable>
-        </View>
-      ))}
+      <LinkRows rows={suggestionRows(suggestions)} busy={busy} onLink={onLink} />
+      {showMatches && matches !== null && matches.length === 0 && (
+        <Text style={styles.offerCopy}>{NO_MATCHING_PRODUCTS}</Text>
+      )}
+      {showMatches && matches !== null && <LinkRows rows={matches} busy={busy} onLink={onLink} />}
       <TextInput
         accessibilityLabel="Search"
         value={query}
-        onChangeText={onQuery}
+        onChangeText={(next) => {
+          setQuery(next);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
         placeholder="Search"
         placeholderTextColor={colors.inkMuted}
         autoCorrect={false}
