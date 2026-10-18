@@ -136,7 +136,7 @@ const inventory = [
   },
 ];
 
-type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd';
+type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd' | 'kept';
 
 const crowd = Array.from({ length: 10 }, (_, index) => {
   const at = new Date(Date.parse('2026-03-20T16:00:00Z') + index * 20_000).toISOString();
@@ -148,10 +148,11 @@ const crowd = Array.from({ length: 10 }, (_, index) => {
   });
 });
 
-const pendingEntries = (which: PendingSet): ScanEntry[] => {
+const pendingEntries = (which: PendingSet, kept: ScanEntry[]): ScanEntry[] => {
   if (which === 'both') return [milk, oats];
   if (which === 'oats') return [oats];
   if (which === 'milk') return [milk];
+  if (which === 'kept') return kept;
   return [];
 };
 
@@ -194,6 +195,11 @@ interface OutcomeCase {
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
+  kept?: ScanEntry[];
+  visibleCards?: number;
+  confirmCount?: number;
+  bannerLines?: string[];
+  bannerExact?: string;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -840,6 +846,191 @@ const cases: OutcomeCase[] = [
   },
 ];
 
+// testdata/contract/scan-batch-commit-partial.json from PR #300 head b005813.
+// Inlined because that file is not on this branch.
+const scanBatchCommitPartialJson = `{
+  "status": 200,
+  "note": "One batch: a full stock-out (3 on hand, unitCount 2), a partial stock-out (1 on hand, unitCount 3), a stock-in of 2, and a stock-out with nothing on hand. stockOutCounts has one entry per committed stock-out, including the full removal. The stock-in and the failed card are absent. The partial card stays in committedIds. failedReasons and failedCodes stay parallel to failedIds.",
+  "request": {
+    "scanEntryIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in", "scan-batch-none"],
+    "commit": true
+  },
+  "body": {
+    "updatedCount": 4,
+    "committedIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in"],
+    "failedIds": ["scan-batch-none"],
+    "failedReasons": ["Nothing on hand to take out."],
+    "failedCodes": ["none_on_hand"],
+    "stockOutCounts": {
+      "scan-batch-full": { "removedCount": 2, "requestedCount": 2 },
+      "scan-batch-partial": { "removedCount": 1, "requestedCount": 3 }
+    }
+  }
+}
+`;
+
+interface BatchContract {
+  body: {
+    updatedCount: number;
+    committedIds: string[];
+    failedIds: string[];
+    failedReasons: string[];
+    failedCodes: string[];
+    stockOutCounts: Record<string, { removedCount: number; requestedCount: number }>;
+  };
+}
+
+const batchContract = JSON.parse(scanBatchCommitPartialJson) as BatchContract;
+const fullCount = batchContract.body.stockOutCounts['scan-batch-full'];
+const partialCount = batchContract.body.stockOutCounts['scan-batch-partial'];
+
+const fixtureCard = (
+  id: string,
+  name: string,
+  direction: 'stock_in' | 'stock_out',
+  unitCount: number,
+): ScanEntry => scanEntry({
+  id,
+  barcode: id,
+  direction,
+  unitCount,
+  productId: `prod-${id}`,
+  product: product(`prod-${id}`, name),
+});
+
+const chips = fixtureCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+const fullCard = fixtureCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount);
+const stockInCard = fixtureCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+const emptyCard = fixtureCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+const wereChips = fixtureCard('scan-batch-partial', 'Tortilla chips', 'stock_out', 5);
+const secondPartial = fixtureCard('scan-batch-second', 'Rolled oats', 'stock_out', 4);
+
+const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
+const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
+const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
+
+const partialBatchRows = (): OutcomeCase[] => {
+  const omitted = { ...batchContract.body } as Record<string, unknown>;
+  delete omitted.stockOutCounts;
+  return [
+    {
+      name: 'one partial card names the item in the batch banner',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [chips],
+      batch: {
+        updatedCount: 1,
+        committedIds: ['scan-batch-partial'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      },
+      visible: [wasLine],
+      absent: [fallback, wereLine, manyLine, 'were on hand', 'were taken out'],
+      once: [wasLine],
+      bannerLines: [wasLine],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      fixed: true,
+    },
+    {
+      name: 'one partial card with more than one on hand uses were',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [wereChips],
+      batch: {
+        updatedCount: 1,
+        committedIds: ['scan-batch-partial'],
+        stockOutCounts: {
+          'scan-batch-partial': { removedCount: 2, requestedCount: 5 },
+        },
+      },
+      visible: [wereLine],
+      absent: [fallback, wasLine, manyLine, 'was on hand', 'was taken out'],
+      once: [wereLine],
+      bannerLines: [wereLine],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      fixed: true,
+    },
+    {
+      name: 'two partial cards share one count line',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [chips, secondPartial],
+      batch: {
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-second'],
+        stockOutCounts: {
+          'scan-batch-partial': partialCount,
+          'scan-batch-second': { removedCount: 2, requestedCount: 4 },
+        },
+      },
+      visible: [manyLine],
+      absent: [fallback, wasLine, wereLine, 'Tortilla chips', 'Rolled oats'],
+      once: [manyLine],
+      bannerLines: [manyLine],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-second'],
+      fixed: true,
+    },
+    {
+      name: 'a batch of full stock-outs adds no partial line',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [fullCard, chips],
+      batch: {
+        updatedCount: 2,
+        committedIds: ['scan-batch-full', 'scan-batch-partial'],
+        stockOutCounts: {
+          'scan-batch-full': fullCount,
+          'scan-batch-partial': { removedCount: partialCount.requestedCount, requestedCount: partialCount.requestedCount },
+        },
+      },
+      visible: [],
+      absent: [fallback, wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer'],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial'],
+      quiet: true,
+    },
+    {
+      name: 'a batch that omits stockOutCounts adds no partial line',
+      action: 'batch',
+      pendingAfter: 'kept',
+      cards: [fullCard, chips, stockInCard, emptyCard],
+      kept: [emptyCard],
+      visibleCards: 3,
+      confirmCount: 3,
+      batch: omitted,
+      visible: ['Nothing on hand to take out.', fallback],
+      absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer'],
+      once: [fallback, 'Nothing on hand to take out.'],
+      bannerExact: fallback,
+      pendingBarcodes: ['scan-batch-none'],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
+      cardReason: { barcode: 'scan-batch-none', text: 'Nothing on hand to take out.' },
+    },
+    {
+      name: 'a mixed batch keeps the failure reason and adds the partial line once',
+      action: 'batch',
+      pendingAfter: 'kept',
+      cards: [fullCard, chips, stockInCard, emptyCard],
+      kept: [emptyCard],
+      visibleCards: 3,
+      confirmCount: 3,
+      batch: batchContract.body,
+      visible: ['Nothing on hand to take out.', fallback, wasLine],
+      absent: [wereLine, manyLine, 'were taken out', 'cards had fewer'],
+      once: [fallback, wasLine, 'Nothing on hand to take out.'],
+      bannerLines: [fallback, wasLine],
+      pendingBarcodes: ['scan-batch-none'],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
+      cardReason: { barcode: 'scan-batch-none', text: 'Nothing on hand to take out.' },
+      fixed: true,
+    },
+  ];
+};
+
+const outcomeCases: OutcomeCase[] = [...cases, ...partialBatchRows()];
+
 describe('scan commit outcomes', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
@@ -852,7 +1043,7 @@ describe('scan commit outcomes', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(cases)('$name', async (row) => {
+  it.each(outcomeCases)('$name', async (row) => {
     let pending: PendingSet = row.cards ? 'crowd' : 'both';
     let instanceFetches = 0;
     let inventoryFetches = 0;
@@ -884,7 +1075,7 @@ describe('scan commit outcomes', () => {
         return Promise.resolve(jsonResponse(body));
       }
       if (url.includes('status=pending')) {
-        const body = pending === 'crowd' ? (row.cards ?? []) : pendingEntries(pending);
+        const body = pending === 'crowd' ? (row.cards ?? []) : pendingEntries(pending, row.kept ?? []);
         return Promise.resolve(jsonResponse(body));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
@@ -918,7 +1109,14 @@ describe('scan commit outcomes', () => {
       ? null
       : await screen.findByRole('article', { name: 'Scan 111' });
     if (row.cards) {
-      expect(await screen.findAllByRole('article')).toHaveLength(row.cards.length);
+      const expectedCards = row.visibleCards ?? row.cards.length;
+      if (row.visibleCards !== undefined) {
+        await waitFor(() => {
+          expect(screen.getAllByRole('article')).toHaveLength(expectedCards);
+        });
+      } else {
+        expect(await screen.findAllByRole('article')).toHaveLength(expectedCards);
+      }
     } else {
       expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
     }
@@ -934,7 +1132,7 @@ describe('scan commit outcomes', () => {
     }
 
     if (row.action === 'batch' || row.action === 'batch-then-milk') {
-      const count = (row.cards ?? [milk, oats]).length;
+      const count = row.confirmCount ?? (row.cards ?? [milk, oats]).length;
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
     }
@@ -1032,12 +1230,24 @@ describe('scan commit outcomes', () => {
       if (row.fixed) {
         const pinned = screen.getAllByRole('alert').filter((alert) => {
           const text = alert.textContent ?? '';
-          return text.includes(fallback) || text.startsWith('Only ');
+          return text.includes(fallback) || text.startsWith('Only ') || text.includes('cards had fewer');
         });
         expect(pinned.length).toBeGreaterThan(0);
         for (const notice of pinned) {
           expect(notice).toHaveStyle({ flexShrink: '0' });
         }
+      }
+      if (row.bannerLines !== undefined) {
+        const [first, ...rest] = row.bannerLines;
+        const alerts = screen.getAllByRole('alert').filter((alert) => (alert.textContent ?? '').includes(first ?? ''));
+        expect(alerts).toHaveLength(1);
+        for (const line of rest) expect(alerts[0]?.textContent).toContain(line);
+        expect(alerts[0]?.closest('.restock-toast')).toBeNull();
+      }
+      if (row.bannerExact !== undefined) {
+        const alerts = screen.getAllByRole('alert').filter((alert) => alert.classList.contains('scan-batch-banner'));
+        expect(alerts).toHaveLength(1);
+        expect(alerts[0]?.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.bannerExact);
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
@@ -1158,7 +1368,7 @@ describe('scan commit outcomes', () => {
           suggestions: [],
         }, 409));
       }
-      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending)));
+      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending, [])));
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(jsonResponse(household));
       if (url === '/api/products' || url.startsWith('/api/products?')) return Promise.resolve(jsonResponse([product('prod-catalog', 'Catalog Oats')]));

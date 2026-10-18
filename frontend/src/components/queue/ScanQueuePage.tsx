@@ -3,8 +3,8 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices, type BatchFailureNotice } from '../../api/contract';
-import type { BatchCommitResponse, InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices, formatPartialRemoval, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
 import { CameraScanner } from '../scanner/CameraScanner';
@@ -36,6 +36,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
+  const [partialLine, setPartialLine] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
@@ -334,6 +335,11 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     const notices = batchFailureNotices(response);
     setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
     setSelectedIds(notices.map((notice) => notice.id));
+    const names: Record<string, string> = {};
+    for (const entry of entries) {
+      names[entry.id] = entry.product?.name ?? 'Unknown product';
+    }
+    setPartialLine(formatPartialRemoval(response, names));
     void loadQueue();
   };
 
@@ -439,8 +445,11 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {failureById.size > 0 && (
-          <Alert color="red" py={4} style={{ flexShrink: 0 }}>{BATCH_FAILURE_FALLBACK}</Alert>
+        {(failureById.size > 0 || partialLine !== null) && (
+          <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
+            {failureById.size > 0 && <div>{BATCH_FAILURE_FALLBACK}</div>}
+            {partialLine !== null && <div>{partialLine}</div>}
+          </Alert>
         )}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (

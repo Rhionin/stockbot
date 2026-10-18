@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK, type CommitScanResponse } from './contract';
+import { SERVER_ERROR_FALLBACK, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -15,7 +15,6 @@ import {
   type SuggestionCard,
 } from '../restock/types';
 import type {
-  BatchCommitResponse,
   BuildInfo,
   InventoryItem,
   ItemInstance,

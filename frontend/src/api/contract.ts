@@ -25,6 +25,22 @@ export interface BatchCommitInput {
   commit: boolean;
 }
 
+export interface StockOutCount {
+  removedCount: number;
+  requestedCount: number;
+}
+
+export interface BatchCommitResponse {
+  updatedCount: number;
+  committedIds?: string[];
+  failedIds?: string[];
+  failedReasons?: string[];
+  failedCodes?: string[];
+  // One entry per committed stock-out, including a full removal. Omitted when
+  // the batch commits no stock-out. Stock-ins and failed cards are absent.
+  stockOutCounts?: Record<string, StockOutCount>;
+}
+
 export interface SetScannerModeResponse {
   mode: ScanDirection;
 }
@@ -130,15 +146,56 @@ export function batchFailureNotices(response: {
   });
 }
 
-// The short-shelf note only when fewer units left than the card asked for.
-// Equal counts, a stock-in body, and a batch body (no counts) say nothing.
-export function formatPartialRemoval(body: CommitScanResponse | null | undefined): string | null {
+function countField(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  return value;
+}
+
+// A batch names the one short card, or counts them when several came up short.
+// Equal counts and a missing map say nothing.
+function batchPartialLine(
+  counts: Record<string, StockOutCount>,
+  names: Readonly<Record<string, string>> | undefined,
+): string | null {
+  const partials: { removed: number; requested: number; name: string }[] = [];
+  for (const [id, value] of Object.entries(counts)) {
+    if (value === null || typeof value !== 'object') continue;
+    const entry = value as unknown as Record<string, unknown>;
+    const removed = countField(entry[REMOVED_COUNT_FIELD]);
+    const requested = countField(entry[REQUESTED_COUNT_FIELD]);
+    if (removed === null || requested === null) continue;
+    if (removed < 1 || removed >= requested) continue;
+    const rawName = names?.[id];
+    partials.push({
+      removed,
+      requested,
+      name: rawName !== undefined && rawName !== '' ? rawName : 'Unknown product',
+    });
+  }
+  if (partials.length === 0) return null;
+  if (partials.length >= 2) {
+    return `${partials.length} cards had fewer on hand than scanned, so only what was on hand was taken out.`;
+  }
+  const only = partials[0];
+  if (only === undefined) return null;
+  const verb = only.removed === 1 ? 'was' : 'were';
+  return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
+}
+
+// Fewer units left than the card asked for. A single confirm keeps the short
+// sentence. A batch with stockOutCounts adds the item, or a count of cards.
+export function formatPartialRemoval(
+  body: CommitScanResponse | BatchCommitResponse | null | undefined,
+  names?: Readonly<Record<string, string>>,
+): string | null {
   if (body === null || body === undefined) return null;
+  if ('stockOutCounts' in body && body.stockOutCounts !== undefined) {
+    return batchPartialLine(body.stockOutCounts, names);
+  }
   const record = body as Record<string, unknown>;
-  const removedCount = record[REMOVED_COUNT_FIELD];
-  const requestedCount = record[REQUESTED_COUNT_FIELD];
-  if (typeof removedCount !== 'number' || !Number.isInteger(removedCount)) return null;
-  if (typeof requestedCount !== 'number' || !Number.isInteger(requestedCount)) return null;
+  const removedCount = countField(record[REMOVED_COUNT_FIELD]);
+  const requestedCount = countField(record[REQUESTED_COUNT_FIELD]);
+  if (removedCount === null || requestedCount === null) return null;
   if (removedCount < 1 || removedCount >= requestedCount) return null;
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;

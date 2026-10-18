@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import type { BatchCommitResponse } from '../../types';
+import type { BatchCommitResponse } from '../../api/contract';
 
 export interface BatchReviewPanelProps {
   selectedIds: string[];
