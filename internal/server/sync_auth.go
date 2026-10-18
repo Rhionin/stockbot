@@ -23,6 +23,12 @@ const syncSnapshotPath = "/api/sync/snapshot"
 // a household password. When the token is unset the snapshot is a 404.
 func syncGate(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The browser tunnel is not a sync call. A sync token must not
+		// block it, and this exemption does not apply to any other path.
+		if r.URL.Path == sentryTunnelPath {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if token == "" {
 			if isSyncSnapshot(r) {
 				writeError(w, http.StatusNotFound, "Not found.")

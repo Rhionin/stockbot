@@ -20,6 +20,9 @@ const eventKeepalive = 25 * time.Second
 type EventsHandler struct {
 	Broadcaster *events.Broadcaster
 	Telemetry   *telemetry.Registry
+	// Shutdown, when set, ends this stream during process shutdown so the
+	// listener does not wait out an open tab.
+	Shutdown *StreamShutdown
 	// Keepalive is how often to write an SSE comment. Zero uses eventKeepalive.
 	Keepalive time.Duration
 }
@@ -50,6 +53,11 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// registered.
 	messages, unsubscribe := h.Broadcaster.Subscribe()
 	defer unsubscribe()
+
+	ctx := r.Context()
+	if h.Shutdown != nil {
+		ctx = h.Shutdown.Context(ctx)
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -85,8 +93,8 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				h.recordDelivery(msg)
 			}
 			flusher.Flush()
-		case <-r.Context().Done():
-			return // client disconnected (Requirement 1.3)
+		case <-ctx.Done():
+			return // client disconnected, or the process is stopping
 		}
 	}
 }
