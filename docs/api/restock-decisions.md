@@ -59,7 +59,7 @@ Sentences in this contract are the whole `error` string: short, plain, and endin
 
 Switching modes:
 
-- `auto` to either Ask mode does not flag products or groups the household already has. Only something created after the change can wait.
+- `auto` to either Ask mode leaves products and groups the household already has as they are. Only something created after the change can wait.
 - `ask_restock` and `ask_hold` keep the same waiting rows. Only the plan changes (usual target, or 0).
 - Either Ask mode back to `auto` answers every waiting subject as Restock. The request has to say so. See `PUT /api/restock/new-item-policy`.
 
@@ -311,7 +311,7 @@ The same item under `ask_restock` keeps today's `target`, `level`, and `sourceLa
 
 ### Idempotency and concurrency
 
-Read-only. A repeated call returns the current snapshot. It does not lock the policy. A decision committed before the read is visible. One committed during the read is either fully in or fully out. The count and the item flags come from the same read.
+Read-only. A repeated call returns the current snapshot. It does not lock the policy. A decision committed before the read is visible. One committed during the read is either fully in or fully out. The count and the item fields come from the same read.
 
 ## PUT /api/restock/new-item-policy
 
