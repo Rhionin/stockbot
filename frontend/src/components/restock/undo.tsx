@@ -10,6 +10,33 @@ export interface UndoToast {
 
 let toastSerial = 0;
 
+const CLEARANCE_VAR = '--scan-toast-clearance';
+let clearanceObserver: ResizeObserver | undefined;
+
+const toastContainer = (): HTMLElement | null => {
+  const toast = document.querySelector('.restock-toast');
+  if (toast === null) return null;
+  return toast.closest<HTMLElement>('[data-position]') ?? (toast as HTMLElement);
+};
+
+// The queue pads by the fixed toast so the last card can scroll above it.
+const applyToastClearance = () => {
+  const container = toastContainer();
+  if (container === null) {
+    document.documentElement.style.removeProperty(CLEARANCE_VAR);
+    clearanceObserver?.disconnect();
+    clearanceObserver = undefined;
+    return;
+  }
+  const top = container.getBoundingClientRect().top;
+  const clearance = Math.max(0, Math.ceil(window.innerHeight - top));
+  document.documentElement.style.setProperty(CLEARANCE_VAR, `${clearance}px`);
+  if (clearanceObserver === undefined && typeof ResizeObserver !== 'undefined') {
+    clearanceObserver = new ResizeObserver(() => applyToastClearance());
+    clearanceObserver.observe(container);
+  }
+};
+
 export function showUndo(title: string, detail: string, onUndo: () => void): void;
 export function showUndo(toast: UndoToast): void;
 export function showUndo(
@@ -27,24 +54,31 @@ export function showUndo(
     title: toast.title,
     autoClose: 5000,
     color: toast.color ?? 'teal',
-    classNames: { root: 'restock-toast' },
+    classNames: {
+      root: 'restock-toast',
+      body: 'restock-toast-body',
+      title: 'restock-toast-title',
+      description: 'restock-toast-description',
+      closeButton: 'restock-toast-close',
+    },
+    onOpen: () => applyToastClearance(),
+    onClose: () => {
+      window.setTimeout(applyToastClearance, 300);
+    },
     message: (
-      <span>
-        <span>{toast.detail}</span>
+      <span className="restock-toast-message">
+        <span className="restock-toast-detail">{toast.detail}</span>
         {toast.onUndo ? (
-          <>
-            {' '}
-            <Button
-              variant="subtle"
-              size="compact-sm"
-              onClick={() => {
-                notifications.hide(id);
-                toast.onUndo?.();
-              }}
-            >
-              Undo
-            </Button>
-          </>
+          <Button
+            variant="subtle"
+            size="compact-sm"
+            onClick={() => {
+              notifications.hide(id);
+              toast.onUndo?.();
+            }}
+          >
+            Undo
+          </Button>
         ) : null}
       </span>
     ),

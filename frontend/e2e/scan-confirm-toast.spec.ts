@@ -48,20 +48,51 @@ const scrollLowCardIntoView = async (page: Page, barcode: string) => {
   throw new Error(`could not park ${barcode} in view with scroll slack`)
 }
 
-const expectTextInsideViewport = async (page: Page, text: string) => {
-  const note = page.locator('.restock-toast').getByText(text, { exact: true })
-  await expect(note).toBeVisible()
-  await expect.poll(async () => {
-    const box = await note.boundingBox()
-    const viewport = page.viewportSize()
-    if (box === null || viewport === null) return false
-    return box.x >= 0
-      && box.y >= 0
-      && box.x + box.width <= viewport.width + 1
-      && box.y + box.height <= viewport.height + 1
-  }).toBe(true)
+const expectToastInside = async (page: Page, text: string) => {
+  const toast = page.locator('.restock-toast').filter({ hasText: text })
+  await expect(toast).toBeVisible()
+  await expect.poll(() => page.evaluate((sentence) => {
+    const root = [...document.querySelectorAll('.restock-toast')].find((node) =>
+      node.textContent?.includes(sentence),
+    )
+    if (root === undefined) return false
+    const box = root.getBoundingClientRect()
+    const fits = box.left >= 0
+      && box.right <= window.innerWidth
+      && box.bottom <= window.innerHeight
+      && box.top >= 0
+      && box.width > 0
+    if (!fits) return false
+    // Side margins, and every control inside the toast (Undo, close) on screen.
+    if (box.left < 8 || box.right > window.innerWidth - 8) return false
+    return [...root.querySelectorAll('button, .restock-toast-detail')].every((node) => {
+      const rect = node.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) return true
+      return rect.left >= 0
+        && rect.right <= window.innerWidth
+        && rect.bottom <= window.innerHeight
+        && rect.top >= 0
+    })
+  }, text)).toBe(true)
   const topAlerts = page.locator('.scan-page-queue > [role="alert"]').filter({ hasText: text })
   await expect(topAlerts).toHaveCount(0)
+}
+
+const expectQueueClearsToast = async (page: Page) => {
+  const queue = page.locator('.scan-page-queue')
+  await queue.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await expect.poll(() => page.evaluate(() => {
+    const list = document.querySelector('.scan-page-queue')
+    const toast = document.querySelector('.restock-toast')
+    const cards = list?.querySelectorAll('article')
+    const card = cards === undefined || cards.length === 0 ? undefined : cards[cards.length - 1]
+    if (list === null || list === undefined || toast === null || card === undefined) return false
+    const cardBox = card.getBoundingClientRect()
+    const toastBox = toast.getBoundingClientRect()
+    return cardBox.bottom <= toastBox.top + 1
+  })).toBe(true)
 }
 
 test('a low single confirm keeps its result in the toast and leaves the scroll alone', async ({ page, request }) => {
@@ -125,8 +156,9 @@ test('a low single confirm keeps its result in the toast and leaves the scroll a
   const beforePartial = await readScroll(page)
   await partialCard.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(partialCard).toHaveCount(0)
-  await expectTextInsideViewport(page, partialNote)
+  await expectToastInside(page, partialNote)
   expect(await readScroll(page)).toEqual(beforePartial)
+  await expectQueueClearsToast(page)
 
   mode = 'fail'
   const failureBarcode = items[6].barcode
@@ -134,6 +166,6 @@ test('a low single confirm keeps its result in the toast and leaves the scroll a
   const beforeFailure = await readScroll(page)
   await failureCard.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(failureCard).toBeVisible()
-  await expectTextInsideViewport(page, failureNote)
+  await expectToastInside(page, failureNote)
   expect(await readScroll(page)).toEqual(beforeFailure)
 })
