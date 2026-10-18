@@ -4,12 +4,15 @@ import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from 
 const partialNote = 'Only 1 was on hand, so 1 was taken out.'
 const failureNote = 'Nothing on hand to take out.'
 
-const items = Array.from({ length: 10 }, (_, index) => ({
-  barcode: `2922000000${String(index).padStart(2, '0')}`,
-  name: `Toast Item ${index}`,
-}))
+const viewports = [
+  { width: 390, height: 844 },
+  { width: 1280, height: 800 },
+] as const
 
-const partialBarcode = items[2].barcode
+const itemsFor = (width: number) => Array.from({ length: 12 }, (_, index) => ({
+  barcode: `293${width}${String(index).padStart(4, '0')}`,
+  name: `Toast ${width} ${index}`,
+}))
 
 const readScroll = (page: Page) => page.evaluate(() => ({
   windowY: window.scrollY,
@@ -33,7 +36,8 @@ const scrollLowCardIntoView = async (page: Page, barcode: string) => {
   const max = await queue.evaluate((element) => element.scrollHeight - element.clientHeight)
   expect(max).toBeGreaterThan(80)
   const card = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
-  for (const hidden of [240, 160, 80, 40]) {
+  const offsets = Array.from({ length: 25 }, (_, step) => Math.round((max * step) / 24))
+  for (const hidden of offsets) {
     await queue.evaluate((element, slack) => {
       const limit = element.scrollHeight - element.clientHeight
       element.scrollTop = Math.max(0, limit - slack)
@@ -43,7 +47,11 @@ const scrollLowCardIntoView = async (page: Page, barcode: string) => {
     if (box === null || viewport === null) continue
     const scroll = await readScroll(page)
     const inView = box.y >= 70 && box.y + box.height <= viewport.height - 8
-    if (inView && (scroll.queue ?? 0) > 40 && (scroll.queue ?? 0) < max - 30) return card
+    const slack = max - (scroll.queue ?? 0)
+    // Keep the card in the lower half, with enough list below it that removing
+    // the row does not clamp scrollTop or make the browser anchor upward.
+    const inLowerHalf = box.y + box.height >= viewport.height * 0.55
+    if (inView && inLowerHalf && (scroll.queue ?? 0) > 40 && slack >= box.height) return card
   }
   throw new Error(`could not park ${barcode} in view with scroll slack`)
 }
@@ -52,10 +60,12 @@ const expectToastInside = async (page: Page, text: string) => {
   const toast = page.locator('.restock-toast').filter({ hasText: text })
   await expect(toast).toBeVisible()
   await expect.poll(() => page.evaluate((sentence) => {
-    const root = [...document.querySelectorAll('.restock-toast')].find((node) =>
-      node.textContent?.includes(sentence),
+    const leaves = [...document.querySelectorAll('body *')].filter((node) =>
+      node.childElementCount === 0 && node.textContent === sentence,
     )
-    if (root === undefined) return false
+    if (leaves.length !== 1) return false
+    const root = leaves[0]?.closest('.restock-toast')
+    if (root === null || root === undefined) return false
     const box = root.getBoundingClientRect()
     const fits = box.left >= 0
       && box.right <= window.innerWidth
@@ -74,8 +84,6 @@ const expectToastInside = async (page: Page, text: string) => {
         && rect.top >= 0
     })
   }, text)).toBe(true)
-  const topAlerts = page.locator('.scan-page-queue > [role="alert"]').filter({ hasText: text })
-  await expect(topAlerts).toHaveCount(0)
 }
 
 const expectQueueClearsToast = async (page: Page) => {
@@ -95,9 +103,12 @@ const expectQueueClearsToast = async (page: Page) => {
   })).toBe(true)
 }
 
-test('a low single confirm keeps its result in the toast and leaves the scroll alone', async ({ page, request }) => {
+for (const viewport of viewports) {
+test(`a low single confirm at ${viewport.width}px keeps its result in the toast and leaves the scroll alone`, async ({ page, request }) => {
   test.setTimeout(120_000)
-  await page.setViewportSize({ width: 390, height: 844 })
+  const items = itemsFor(viewport.width)
+  const partialBarcode = items[2].barcode
+  await page.setViewportSize(viewport)
   for (const item of items) {
     await createKnownProduct(request, {
       barcode: item.barcode,
@@ -169,3 +180,4 @@ test('a low single confirm keeps its result in the toast and leaves the scroll a
   await expectToastInside(page, failureNote)
   expect(await readScroll(page)).toEqual(beforeFailure)
 })
+}

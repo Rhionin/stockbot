@@ -268,7 +268,7 @@
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  border-left: 4px solid var(--mantine-color-teal-6);
+  border-left: 4px solid var(--notification-color, var(--mantine-color-teal-6));
 }
 
 .restock-toast-body {

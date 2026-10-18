@@ -164,8 +164,6 @@ interface OutcomeCase {
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
-  // The sentence is the toast's only copy of itself on the page.
-  toastOnly?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -255,7 +253,6 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
     instanceFetches: 2,
     toast: 'That one was already taken out. Pick another.',
-    toastOnly: true,
   },
   {
     name: 'none_on_hand shows the message and does not reload instances',
@@ -269,8 +266,9 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+    cardWithoutAlert: '111',
     instanceFetches: 1,
+    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'a failed single commit shows the server sentence in the toast',
@@ -281,6 +279,7 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
+    cardWithoutAlert: '111',
     toast: 'Nothing on hand to take out.',
   },
   {
@@ -292,7 +291,8 @@ const cases: OutcomeCase[] = [
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Choose a different product.' },
+    cardWithoutAlert: '111',
+    toast: 'Choose a different product.',
   },
   {
     name: 'a 500 with the picker open shows the message and does not reload',
@@ -303,8 +303,9 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: SERVER_ERROR_FALLBACK },
+    cardWithoutAlert: '111',
     instanceFetches: 1,
+    toast: SERVER_ERROR_FALLBACK,
   },
   {
     name: 'unlinked stock-out with no suggestions keeps search',
@@ -347,6 +348,7 @@ const cases: OutcomeCase[] = [
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    toast: 'Only 1 was on hand, so 1 was taken out.',
   },
   {
     name: 'a partial removal shows the only-one sentence in the toast',
@@ -369,6 +371,7 @@ const cases: OutcomeCase[] = [
     absent: ['Only 2 was on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    toast: 'Only 2 were on hand, so 2 were taken out.',
   },
   {
     name: 'removedCount equal to the card count adds no notice',
@@ -474,8 +477,9 @@ const cases: OutcomeCase[] = [
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Choose which item this is first.' },
+    cardWithoutAlert: '111',
     unlinked: 'search',
+    toast: 'Choose which item this is first.',
   },
   {
     name: 'batch product_unresolved opens search only on that card',
@@ -551,7 +555,8 @@ const cases: OutcomeCase[] = [
     absent: ['Stale Oats', 'No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: "That item isn't available anymore. Pick another." },
+    cardWithoutAlert: '111',
+    toast: "That item isn't available anymore. Pick another.",
   },
   {
     name: 'batch link_target_gone shows the reason and refreshes that card',
@@ -814,14 +819,11 @@ describe('scan commit outcomes', () => {
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
-        const inToast = leaves.filter((node) => node.closest('.restock-toast') !== null);
-        expect(inToast).toHaveLength(1);
-        expect(inToast[0]?.textContent).toBe(row.toast);
-        if (row.toastOnly) expect(leaves).toHaveLength(1);
-        const queue = document.querySelector('.scan-page-queue');
-        expect(queue).not.toBeNull();
-        for (const alert of queue!.querySelectorAll(':scope > [role="alert"]')) {
-          expect(alert.textContent ?? '').not.toContain(row.toast);
+        expect(leaves).toHaveLength(1);
+        expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
+        expect(leaves[0]?.textContent).toBe(row.toast);
+        for (const article of screen.queryAllByRole('article')) {
+          expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
         }
       }
       if (row.keepsUndo) {

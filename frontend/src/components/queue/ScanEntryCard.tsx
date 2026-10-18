@@ -134,7 +134,6 @@ export const ScanEntryCard = ({
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
-  const [approveError, setApproveError] = useState('');
   const [approving, setApproving] = useState(false);
   const [localOffer, setLocalOffer] = useState<{
     code: string;
@@ -294,56 +293,38 @@ export const ScanEntryCard = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commitCode, entry.id]);
 
-  // Returns true when the failure was shown and the scan stays pending.
-  const showCommitFailure = async (requestError: unknown): Promise<boolean> => {
-    if (!(requestError instanceof ApiError)) return false;
-    const behavior = commitConflictBehavior(requestError.code);
-    if (behavior.refreshSuggestions) {
-      const message = requestError.message || 'Unable to confirm scan.';
-      setApproveError(message);
-      if (behavior.showMessage) showCommitSentence(message);
-      await refillSuggestions();
-      return true;
-    }
-    if (behavior.linkOffer) {
-      rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
-      const message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
-      setApproveError(message);
-      showCommitSentence(message);
-      return true;
-    }
-    rememberOffer(null, false);
-    if (behavior.refreshInstances) {
-      // The card's own state is the reloaded picker. The server sentence
-      // belongs in the toast, once.
-      setInstancePickerOpen(true);
-      setInstanceId('');
-      setLocalInstanceReload((current) => current + 1);
-      if (behavior.showMessage) {
-        showCommitSentence(requestError.message || 'Unable to confirm scan.');
+  // Card state stays here (picker, link offer, search). The sentence itself
+  // is published once, at the end, and only into the toast.
+  const showCommitFailure = async (requestError: unknown): Promise<void> => {
+    let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+    if (requestError instanceof ApiError) {
+      const behavior = commitConflictBehavior(requestError.code);
+      if (behavior.refreshSuggestions) {
+        await refillSuggestions();
+      } else if (behavior.linkOffer) {
+        rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
+      } else {
+        rememberOffer(null, false);
+        if (behavior.refreshInstances) {
+          setInstancePickerOpen(true);
+          setInstanceId('');
+          setLocalInstanceReload((current) => current + 1);
+        }
       }
-      return true;
+      message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
     }
-    const message = requestError.message || 'Unable to confirm scan.';
-    setApproveError(message);
     showCommitSentence(message);
-    return true;
   };
 
   const handleApprove = async () => {
     setApproving(true);
-    setApproveError('');
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!await showCommitFailure(requestError)) {
-        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
-        setApproveError(message);
-        showCommitSentence(message);
-      }
+      await showCommitFailure(requestError);
     } finally {
       setApproving(false);
     }
@@ -351,18 +332,13 @@ export const ScanEntryCard = ({
 
   const linkSuggestion = async (productId: string) => {
     setApproving(true);
-    setApproveError('');
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!await showCommitFailure(requestError)) {
-        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
-        setApproveError(message);
-        showCommitSentence(message);
-      }
+      await showCommitFailure(requestError);
     } finally {
       setApproving(false);
     }
@@ -825,8 +801,8 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {(approveError || commitNotice) !== '' && (
-        <Alert color="red" py={4} mt={4}>{approveError || commitNotice}</Alert>
+      {commitNotice !== '' && (
+        <Alert color="red" py={4} mt={4}>{commitNotice}</Alert>
       )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
       {hintError !== '' && <Alert color="red" py={4} mt={4}>{hintError}</Alert>}
