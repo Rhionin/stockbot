@@ -281,6 +281,12 @@ func TestBadFilesystem(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected status 500 when index.html is missing, got %d", w.Code)
 	}
+	if w.Body.String() != "Something went wrong. Try again.\n" {
+		t.Errorf("body = %q", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "index.html") {
+		t.Errorf("body leaked the filesystem error: %s", w.Body.String())
+	}
 }
 
 func TestHashedAssetRevalidatesWithoutAFullDownload(t *testing.T) {
