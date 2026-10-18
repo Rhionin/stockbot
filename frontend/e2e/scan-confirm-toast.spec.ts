@@ -104,10 +104,21 @@ test('a low single confirm keeps its result in the toast and leaves the scroll a
       })
       return
     }
-    const response = await route.fetch()
-    const body = await response.json() as { removedCount?: number }
-    body.removedCount = 1
-    await route.fulfill({ response, json: body })
+    // Fulfill the note without committing. A real stock-out would leave a
+    // derived shopping row for the shared e2e database.
+    const scanId = new URL(route.request().url()).pathname.split('/').at(-2)
+    const cancelled = await route.fetch({
+      url: new URL(`/api/scans/${scanId}`, route.request().url()).toString(),
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      postData: JSON.stringify({ status: 'cancelled' }),
+    })
+    if (!cancelled.ok()) throw new Error(`could not clear scan ${scanId}`)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ removedCount: 1 }),
+    })
   })
 
   const partialCard = await scrollLowCardIntoView(page, partialBarcode)
