@@ -825,6 +825,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{ID: "prod-pears", Name: "Sliced Pears", Category: "Fruit", UnitOfMeasure: "can"},
 			{ID: "prod-crackers", Name: "Unrelated Crackers", Category: "Snacks", UnitOfMeasure: "box"},
 			{ID: "prod-slices", Name: "Pear Slices", Category: "Fruit", UnitOfMeasure: "can"},
+			{ID: "prod-twin", Name: "Lite Pear Slices In Pear Juice", Category: "Fruit", UnitOfMeasure: "can"},
 			{ID: "prod-tuna", Name: "Canned Tuna", Category: "Canned", UnitOfMeasure: "can"},
 			{ID: "prod-beans", Name: "Black Beans", Category: "Canned", UnitOfMeasure: "can"},
 		}
@@ -835,9 +836,10 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 		}
 		barcodes := []struct{ code, productID, source, userID string }{
 			{"011110828385", "prod-off", "global", ""},
-			{"828385", "prod-pears", "user_override", "user-1"},
-			{"8385", "prod-crackers", "global", ""},
+			{"10828385", "prod-pears", "user_override", "user-1"},
+			{"0828385", "prod-crackers", "global", ""},
 			{"999000111222", "prod-slices", "global", ""},
+			{"555000111222", "prod-twin", "global", ""},
 			{"491", "prod-tuna", "user_override", "user-1"},
 			{"1552", "prod-beans", "global", ""},
 		}
@@ -855,6 +857,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{"item-pears", "prod-pears", 3},
 			{"item-crackers", "prod-crackers", 4},
 			{"item-slices", "prod-slices", 2},
+			{"item-twin", "prod-twin", 1},
 			{"item-tuna", "prod-tuna", 1},
 			{"item-beans", "prod-beans", 2},
 		}
@@ -894,7 +897,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name:  "stock-out with no item suggests suffix hits ordered by name score",
+			name:  "stock-out with no item ranks an 8-digit suffix ahead of a name match",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -907,10 +910,11 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					{path: "$.suggestions[0].productId", value: "prod-pears"},
 					{path: "$.suggestions[0].itemId", value: "item-pears"},
 					{path: "$.suggestions[0].onHand", value: float64(3)},
-					{path: "$.suggestions[1].name", value: "Unrelated Crackers"},
+					{path: "$.suggestions[1].name", value: "Lite Pear Slices In Pear Juice"},
+					{path: "$.suggestions[1].productId", value: "prod-twin"},
 					{path: "$.suggestions[2]", absent: true},
 				},
-				bodyExcludes: []string{"Canned Tuna", "Black Beans", "Pear Slices", "no item found"},
+				bodyExcludes: []string{"Canned Tuna", "Black Beans", "Unrelated Crackers", "no item found"},
 			},
 			afterRequest: exchanges(
 				httpExchange{
@@ -929,7 +933,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					path:           "/api/products/prod-pears",
 					expectedStatus: http.StatusOK,
 					assertions: []assertion{
-						{path: "$.barcodes[0]", value: "828385"},
+						{path: "$.barcodes[0]", value: "10828385"},
 						{path: "$.barcodes[1]", absent: true},
 					},
 				},
@@ -966,7 +970,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					expectedStatus: http.StatusOK,
 					assertions: []assertion{
 						{path: "$.barcodes[0]", value: "011110828385"},
-						{path: "$.barcodes[1]", value: "828385"},
+						{path: "$.barcodes[1]", value: "10828385"},
 					},
 				},
 				httpExchange{
@@ -1239,13 +1243,13 @@ func TestScanCommitLinkCandidates(t *testing.T) {
 			"Pears",
 		),
 		noMatch(
-			"a shared group does not suggest a different food",
+			"a shared group does not lift a name that scores under the threshold",
 			"scan-group",
-			linkPantryProduct{id: "prod-valley", name: "Kale", category: "Soup", barcode: "161616161616", groupID: "grp-pears"},
+			linkPantryProduct{id: "prod-turkey", name: "Turkey Stock", category: "Soup", barcode: "161616161616", groupID: "grp-stock"},
 			[]linkPantryProduct{
-				{id: "prod-plain", name: "Ginger Ale", category: "Fruit", barcode: "171717171717", groupID: "grp-pears", onHand: 1},
+				{id: "prod-veg", name: "Vegetable Stock", category: "Soup", barcode: "171717171717", groupID: "grp-stock", onHand: 1},
 			},
-			"Ginger Ale",
+			"Vegetable Stock",
 		),
 		{
 			name: "a recorded brand on the stocked name strips down to the food",
@@ -1268,6 +1272,36 @@ func TestScanCommitLinkCandidates(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "recorded brands on both names strip down to the same food",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-both-brands",
+					linkPantryProduct{id: "prod-daisy-scan", name: "Daisy Pears", category: "Fruit", barcode: "181818181830", brand: "Daisy"},
+					[]linkPantryProduct{
+						{id: "prod-valley-pears", name: "Valley Pears", category: "Canned", barcode: "191919191930", brand: "Valley", onHand: 1},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-both-brands/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.suggestions[0].name", value: "Valley Pears"},
+					{path: "$.suggestions[0].productId", value: "prod-valley-pears"},
+					{path: "$.suggestions[1]", absent: true},
+				},
+			},
+		},
+		noMatch(
+			"a shared brand does not suggest a different food",
+			"scan-brand-alone",
+			linkPantryProduct{id: "prod-daisy-pears", name: "Daisy Pears", category: "Snacks", barcode: "181818181831", brand: "Daisy"},
+			[]linkPantryProduct{
+				{id: "prod-daisy-chips", name: "Daisy Chips", category: "Snacks", barcode: "191919191931", brand: "Daisy", onHand: 1},
+			},
+			"Daisy Chips",
+		),
 		noMatch(
 			"daisy pears do not match pears when daisy is not a recorded brand",
 			"scan-brand-plain",
@@ -1343,9 +1377,9 @@ func TestScanCommitLinkCandidates(t *testing.T) {
 			name: "tillamook matches sharp cheddar when the brand is already recorded",
 			setup: func(env testEnv) {
 				seedLinkConflict(env, "scan-tillamook",
-					linkPantryProduct{id: "prod-tillamook-scan", name: "Tillamook Sharp Cheddar", category: "Dairy", barcode: "350000000000"},
+					linkPantryProduct{id: "prod-tillamook-scan", name: "Tillamook Sharp Cheddar", category: "Dairy", barcode: "350000000000", brand: "Tillamook, Darigold"},
 					[]linkPantryProduct{
-						{id: "prod-cheddar", name: "Sharp Cheddar Cheese", category: "Dairy", barcode: "350000000001", brand: "Tillamook", onHand: 1},
+						{id: "prod-cheddar", name: "Sharp Cheddar", category: "Dairy", barcode: "350000000001", brand: "Tillamook", onHand: 1},
 					},
 				)
 			},
@@ -1354,7 +1388,7 @@ func TestScanCommitLinkCandidates(t *testing.T) {
 				path:           "/api/scans/scan-tillamook/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.suggestions[0].name", value: "Sharp Cheddar Cheese"},
+					{path: "$.suggestions[0].name", value: "Sharp Cheddar"},
 					{path: "$.suggestions[0].productId", value: "prod-cheddar"},
 					{path: "$.suggestions[1]", absent: true},
 				},

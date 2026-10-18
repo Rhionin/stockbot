@@ -2,6 +2,7 @@ package scan
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -19,27 +20,24 @@ func TestParseStockedAt(t *testing.T) {
 	}
 }
 
-func TestRankLinkCandidatesSuffixStillQualifies(t *testing.T) {
-	const scanned = "011110828385"
-	got := rankLinkCandidates(scanned, "Lite Pear Slices In Pear Juice", "", "", "", "prod-off", []linkCandidate{
-		{ItemID: "item-tuna", ProductID: "prod-tuna", Name: "Canned Tuna", OnHand: 1, Barcodes: []string{"491"}},
-		{ItemID: "item-beans", ProductID: "prod-beans", Name: "Black Beans", OnHand: 2, Barcodes: []string{"1552"}},
-		{ItemID: "item-slices", ProductID: "prod-slices", Name: "Pear Slices", OnHand: 2, Barcodes: []string{"999000111222"}},
-		{ItemID: "item-crackers", ProductID: "prod-crackers", Name: "Unrelated Crackers", OnHand: 4, Barcodes: []string{"8385"}},
-		{ItemID: "item-pears", ProductID: "prod-pears", Name: "Sliced Pears", OnHand: 3, Barcodes: []string{"828385"}},
-		{ItemID: "item-middle", ProductID: "prod-middle", Name: "Middle Match", OnHand: 1, Barcodes: []string{"110828"}},
-		{ItemID: "item-empty", ProductID: "prod-empty", Name: "Sliced Pears Empty", OnHand: 0, Barcodes: []string{"828385"}},
-		{ItemID: "item-self", ProductID: "prod-off", Name: "Lite Pear Slices In Pear Juice", OnHand: 1, Barcodes: []string{scanned}},
+func TestBarcodeSuffixNeedsEightDigitsAndRanksFirst(t *testing.T) {
+	const scanned = "011110828385" // last 8: 10828385, last 7: 0828385
+	got := rankLinkCandidates(scanned, "Nothing Alike", "", "", "", "prod-off", []linkCandidate{
+		{ItemID: "item-name", ProductID: "prod-name", Name: "Nothing Alike", OnHand: 2, Barcodes: []string{"999000111222"}},
+		{ItemID: "item-seven", ProductID: "prod-seven", Name: "Also Wrong", OnHand: 3, Barcodes: []string{"0828385"}},
+		{ItemID: "item-short", ProductID: "prod-short", Name: "Short Code", OnHand: 1, Barcodes: []string{"828385"}},
+		{ItemID: "item-eight", ProductID: "prod-eight", Name: "Wrong Food", OnHand: 4, Barcodes: []string{"10828385"}},
+		{ItemID: "item-empty", ProductID: "prod-empty", Name: "Wrong Food Empty", OnHand: 0, Barcodes: []string{"10828385"}},
+		{ItemID: "item-self", ProductID: "prod-off", Name: "Nothing Alike", OnHand: 1, Barcodes: []string{scanned}},
 	})
-
 	if len(got) != 2 {
-		t.Fatalf("suggestions = %#v, want the two suffix hits", got)
+		t.Fatalf("suggestions = %#v, want the 8-digit suffix and the name match", got)
 	}
-	if got[0].ProductID != "prod-pears" || got[0].OnHand != 3 {
-		t.Fatalf("first = %#v, want Sliced Pears (higher name score)", got[0])
+	if got[0].ProductID != "prod-eight" || got[0].OnHand != 4 {
+		t.Fatalf("first = %#v, want the 8-digit suffix ahead of the name", got[0])
 	}
-	if got[1].ProductID != "prod-crackers" {
-		t.Fatalf("second = %#v, want the suffix with no shared words", got[1])
+	if got[1].ProductID != "prod-name" {
+		t.Fatalf("second = %#v, want the perfect name match", got[1])
 	}
 }
 
@@ -86,14 +84,46 @@ func TestKnownBrandStrippedFromStockedName(t *testing.T) {
 
 func TestTillamookCheddarClearsTheThreshold(t *testing.T) {
 	scanned := "Tillamook Sharp Cheddar"
-	stocked := linkCandidate{ItemID: "item-cheese", ProductID: "prod-cheese", Name: "Sharp Cheddar Cheese", OnHand: 1}
+	stocked := linkCandidate{ItemID: "item-cheese", ProductID: "prod-cheese", Name: "Sharp Cheddar", OnHand: 1}
 	got := rankLinkCandidates("223", scanned, "", "", "", "prod-scan", []linkCandidate{stocked})
-	if len(got) != 1 || got[0].ProductID != "prod-cheese" {
-		t.Fatalf("suggestions = %#v, want Sharp Cheddar Cheese", got)
+	if len(got) != 0 {
+		t.Fatalf("without a recorded brand = %#v, want none", got)
 	}
+	stocked.Brand = "Tillamook"
 	own := rankLinkCandidates("223", scanned, "", "", "Tillamook, Darigold", "prod-scan", []linkCandidate{stocked})
-	if len(own) != 1 || own[0].ProductID != "prod-cheese" {
-		t.Fatalf("own brand suggestions = %#v, want Sharp Cheddar Cheese", own)
+	if len(own) != 1 || own[0].Name != "Sharp Cheddar" {
+		t.Fatalf("own brand suggestions = %#v, want Sharp Cheddar", own)
+	}
+}
+
+func TestBrandStrippedFromBothNames(t *testing.T) {
+	stocked := linkCandidate{ItemID: "item-valley", ProductID: "prod-valley", Name: "Valley Pears", OnHand: 1}
+	plain := rankLinkCandidates("224", "Daisy Pears", "", "", "", "scan", []linkCandidate{stocked})
+	if len(plain) != 0 {
+		t.Fatalf("without brands = %#v, want none", plain)
+	}
+	stocked.Brand = "Valley"
+	got := rankLinkCandidates("224", "Daisy Pears", "", "", "Daisy", "scan", []linkCandidate{stocked})
+	if len(got) != 1 || got[0].ProductID != "prod-valley" {
+		t.Fatalf("both brands stripped = %#v, want Valley Pears", got)
+	}
+}
+
+func TestBrandAloneDoesNotQualify(t *testing.T) {
+	got := rankLinkCandidates("225", "Daisy Pears", "Snacks", "grp-snack", "Daisy", "scan", []linkCandidate{
+		{ItemID: "item-chips", ProductID: "prod-chips", Name: "Daisy Chips", Brand: "Daisy", Category: "Snacks", GroupID: "grp-snack", OnHand: 1},
+	})
+	if len(got) != 0 {
+		t.Fatalf("brand-only suggestions = %#v, want none", got)
+	}
+}
+
+func TestSharedGroupDoesNotLiftABelowThresholdPair(t *testing.T) {
+	got := rankLinkCandidates("226", "Turkey Stock", "Soup", "grp-stock", "", "scan", []linkCandidate{
+		{ItemID: "item-veg", ProductID: "prod-veg", Name: "Vegetable Stock", Category: "Soup", GroupID: "grp-stock", OnHand: 1},
+	})
+	if len(got) != 0 {
+		t.Fatalf("shared group suggestions = %#v, want none", got)
 	}
 }
 
@@ -122,30 +152,25 @@ func TestLongestBrandPhraseWins(t *testing.T) {
 }
 
 func TestLinkSuggestCapAndRecency(t *testing.T) {
-	const scanned = "123456789"
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var cands []linkCandidate
 	for i := 1; i <= 9; i++ {
-		// i=1 is oldest and has the longest suffix. Recency, not suffix length, decides.
-		suffixLen := 10 - i
+		// Equal name scores. A 7-digit code is not a suffix qualifier.
 		cands = append(cands, linkCandidate{
-			ItemID:    "item",
-			ProductID: "prod",
-			Name:      "Filler Snack",
+			ItemID:    "item-" + string(rune('0'+i)),
+			ProductID: "prod-" + string(rune('0'+i)),
+			Name:      "Pea Soup",
 			OnHand:    1,
 			StockedAt: base.Add(time.Duration(i) * time.Hour),
-			Barcodes:  []string{scanned[len(scanned)-suffixLen:]},
+			Barcodes:  []string{"1234567"},
 		})
-		cands[i-1].ItemID = "item-" + string(rune('0'+i))
-		cands[i-1].ProductID = "prod-" + string(rune('0'+i))
-		cands[i-1].Name = "Filler Snack " + string(rune('0'+i))
 	}
-	got := rankLinkCandidates(scanned, "Nothing Alike", "", "", "", "prod-scan", cands)
+	got := rankLinkCandidates("000000000000", "Soup Pea", "", "", "", "prod-scan", cands)
 	if len(got) != linkSuggestLimit {
 		t.Fatalf("len = %d, want %d; suggestions = %#v", len(got), linkSuggestLimit, got)
 	}
 	if got[0].ProductID != "prod-9" {
-		t.Fatalf("first = %#v, want the newest stock, not the longest suffix", got[0])
+		t.Fatalf("first = %#v, want the newest stock", got[0])
 	}
 	for _, row := range got {
 		if row.ProductID == "prod-1" {
@@ -201,23 +226,40 @@ func TestLinkTieBreakOrder(t *testing.T) {
 	if len(higher) < 2 || higher[0].ProductID != "prod-exact" {
 		t.Fatalf("score order = %#v, want Mint ahead of the newer supported Mint Za", higher)
 	}
+
+	// Later name is listed first. A dropped name key would keep that order.
+	when := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	named := rankLinkCandidates("903", "Pea Soup", "", "", "", "scan", []linkCandidate{
+		{ItemID: "later", ProductID: "prod-later", Name: "Soup Pea", OnHand: 1, StockedAt: when},
+		{ItemID: "earlier", ProductID: "prod-earlier", Name: "Pea Soup", OnHand: 1, StockedAt: when},
+	})
+	if len(named) != 2 || named[0].Name != "Pea Soup" {
+		t.Fatalf("name tie-break = %#v, want Pea Soup first", named)
+	}
 }
 
-func TestEmptyCleanedNameMakesNoSuggestion(t *testing.T) {
-	got := rankLinkCandidates("12", "16 oz", "", "", "", "scan", []linkCandidate{
+func TestIdenticalSurfaceNamesMatchWhenTokensAreEmpty(t *testing.T) {
+	if Score(Tokens("16 oz"), Tokens("16 oz"), nil) != 0 {
+		t.Fatal("empty token sets still score 0")
+	}
+	if Score(Tokens("16 oz"), Tokens("12 oz"), nil) != 0 {
+		t.Fatal("different empty token sets still score 0")
+	}
+	different := rankLinkCandidates("12", "16 oz", "", "", "", "scan", []linkCandidate{
 		{ItemID: "ale", ProductID: "prod-ale", Name: "Ginger Ale 12 oz", OnHand: 1},
 		{ItemID: "oz", ProductID: "prod-oz", Name: "12 oz", OnHand: 1},
 		{ItemID: "kale", ProductID: "prod-kale", Name: "Kale", OnHand: 1},
 	})
-	if len(got) != 0 {
-		t.Fatalf("empty scanned name suggestions = %#v, want none", got)
+	if len(different) != 0 {
+		t.Fatalf("different empty names = %#v, want none", different)
 	}
 	same := rankLinkCandidates("16", "16 oz", "", "", "", "scan", []linkCandidate{
-		{ItemID: "oz", ProductID: "prod-oz", Name: "16 oz", OnHand: 1},
+		{ItemID: "space", ProductID: "prod-space", Name: "16  OZ", OnHand: 1},
+		{ItemID: "pad", ProductID: "prod-pad", Name: "  16 oz  ", OnHand: 1},
 		{ItemID: "kale", ProductID: "prod-kale", Name: "Kale", OnHand: 1},
 	})
-	if len(same) != 0 {
-		t.Fatalf("identical empty names suggestions = %#v, want none", same)
+	if len(same) != 2 || same[0].ProductID != "prod-pad" || same[1].ProductID != "prod-space" {
+		t.Fatalf("identical surface names = %#v, want both size labels", same)
 	}
 }
 
@@ -271,22 +313,31 @@ func TestBuildWeightsSmoothingAndUnseenWords(t *testing.T) {
 }
 
 func TestScoreThresholdBoundaries(t *testing.T) {
-	under := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.6489, "extra": 0.3511})
-	if under >= LinkScoreThreshold-LinkScoreEpsilon {
-		t.Fatalf("score %v should sit under the threshold", under)
-	}
-	if scoreMatches(under) {
-		t.Fatal("0.6489 must not match")
+	under := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.6999, "extra": 1 - 0.6999})
+	if !(under < LinkScoreThreshold && under > 0.699 && !scoreMatches(under) && scoreWithin(under, 0.699)) {
+		t.Fatalf("0.6999 score = %v, want a miss that a 0.699 gate would accept", under)
 	}
 
-	over := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.6501, "extra": 0.3499})
-	if !scoreMatches(over) {
-		t.Fatalf("score %v should match", over)
-	}
-
-	exact := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": LinkScoreThreshold, "extra": 1 - LinkScoreThreshold})
+	exact := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.70, "extra": 1 - 0.70})
 	if !scoreMatches(exact) {
-		t.Fatalf("exact threshold score %v should match", exact)
+		t.Fatalf("0.70 score %v should match", exact)
+	}
+
+	over := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.7001, "extra": 1 - 0.7001})
+	if !scoreMatches(over) {
+		t.Fatalf("0.7001 score %v should match", over)
+	}
+
+	hair := LinkScoreThreshold - 5e-10
+	close := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": hair, "extra": 1 - hair})
+	if !scoreMatches(close) {
+		t.Fatalf("T-5e-10 score %v should match", close)
+	}
+	if !scoreWithin(LinkScoreThreshold-5e-10, LinkScoreThreshold) {
+		t.Fatal("T-5e-10 should pass the epsilon")
+	}
+	if scoreWithin(LinkScoreThreshold-2e-9, LinkScoreThreshold) {
+		t.Fatal("two billionths under the threshold should fail")
 	}
 
 	// Equal log-weights make a 2/5 overlap print as 0.3999…, which a bare >= 0.4 rejects.
@@ -298,11 +349,14 @@ func TestScoreThresholdBoundaries(t *testing.T) {
 	if !scoreWithin(ratio, 0.4) {
 		t.Fatalf("2/5 float = %v should pass a 0.4 gate that uses the epsilon", ratio)
 	}
-	if !scoreWithin(LinkScoreThreshold-1e-12, LinkScoreThreshold) {
-		t.Fatal("a hair under the threshold should pass")
-	}
-	if scoreWithin(LinkScoreThreshold-2e-9, LinkScoreThreshold) {
-		t.Fatal("two billionths under the threshold should fail")
+}
+
+func TestLongerNameIsTheDenominator(t *testing.T) {
+	// shared/longer = 0.75/2 = 0.375, under 0.70.
+	// shared/shorter = 0.75/0.75 = 1, which would match.
+	score := Score([]string{"shared"}, []string{"shared", "extra"}, map[string]float64{"shared": 0.75, "extra": 1.25})
+	if scoreMatches(score) || math.Abs(score-0.375) > 1e-12 {
+		t.Fatalf("longer denominator score = %v, want 0.375 and no match", score)
 	}
 }
 
@@ -358,9 +412,25 @@ func TestTokensFoldCompoundsPluralsAndDiacritics(t *testing.T) {
 	if sameSet(wordSet(low), wordSet(closed)) {
 		t.Fatalf("low-fat should stay two words, got %#v and %#v", low, closed)
 	}
+	if !sameSet(wordSet(Tokens("Cafe\u0301")), wordSet(Tokens("Cafe"))) {
+		t.Fatalf("Cafe combining mark = %#v, Cafe = %#v", Tokens("Cafe\u0301"), Tokens("Cafe"))
+	}
+	if !sameSet(wordSet(Tokens("foo'bar")), wordSet([]string{"foobar"})) {
+		t.Fatalf("foo'bar = %#v", Tokens("foo'bar"))
+	}
+	nonTail := Tokens("Milk Non")
+	if !sameSet(wordSet(nonTail), wordSet([]string{"milk", "non"})) {
+		t.Fatalf("trailing non = %#v", nonTail)
+	}
 
 	stems := []struct{ in, want string }{
 		{"tomatoes", "tomato"},
+		{"pies", "pies"},
+		{"gas", "gas"},
+		{"as", "as"},
+		{"cats", "cat"},
+		{"bass", "bass"},
+		{"loaves", "loaf"},
 		{"tomato", "tomato"},
 		{"potatoes", "potato"},
 		{"potato", "potato"},
@@ -475,10 +545,10 @@ func TestSyntheticPantryAtThreshold(t *testing.T) {
 			if math.IsNaN(got) || math.IsInf(got, 0) {
 				t.Fatalf("%s %q vs %q score = %v", group, row.A, row.B, got)
 			}
-			if math.Abs(got-row.Score) > 1e-4 {
+			if math.Abs(got-row.Score) > 1e-9 {
 				t.Fatalf("%s %q vs %q score = %v, fixture %v", group, row.A, row.B, got, row.Score)
 			}
-			want := row.MatchesAtT["0.65"]
+			want := row.MatchesAtT["0.70"]
 			if scoreMatches(got) != want {
 				t.Fatalf("%s %q vs %q match = %v, want %v (score %v)", group, row.A, row.B, scoreMatches(got), want, got)
 			}
@@ -511,17 +581,21 @@ func TestSyntheticPantryAtThreshold(t *testing.T) {
 		check("edge", rows)
 	}
 
-	if mustNot != mustNotN || mustNotN != 9 {
-		t.Fatalf("must_not rejected %d/%d, want 9/9", mustNot, mustNotN)
+	column := doc.ByThreshold["0.70"]
+	if column.MustNot != "9/9" || column.MustMatch != "4/4" || column.Border != "0/2" || column.Likely != "0/6" || column.Total != 4 {
+		t.Fatalf("0.70 column = %+v", column)
 	}
-	if mustMatch != mustN || mustN != 4 {
-		t.Fatalf("must_match %d/%d, want 4/4", mustMatch, mustN)
+	if mustNot != mustNotN || column.MustNot != fmtCount(mustNot, mustNotN) {
+		t.Fatalf("must_not rejected %d/%d, fixture %s", mustNot, mustNotN, column.MustNot)
 	}
-	if borderMatch != 0 || borderN != 2 {
-		t.Fatalf("borderline matched %d/%d, want 0/2", borderMatch, borderN)
+	if mustMatch != mustN || column.MustMatch != fmtCount(mustMatch, mustN) {
+		t.Fatalf("must_match %d/%d, fixture %s", mustMatch, mustN, column.MustMatch)
 	}
-	if likelyMatch != 1 || likelyN != 6 {
-		t.Fatalf("likely matched %d/%d, want 1/6", likelyMatch, likelyN)
+	if column.Border != fmtCount(borderMatch, borderN) {
+		t.Fatalf("borderline matched %d/%d, fixture %s", borderMatch, borderN, column.Border)
+	}
+	if column.Likely != fmtCount(likelyMatch, likelyN) {
+		t.Fatalf("likely matched %d/%d, fixture %s", likelyMatch, likelyN, column.Likely)
 	}
 
 	total := 0
@@ -532,12 +606,8 @@ func TestSyntheticPantryAtThreshold(t *testing.T) {
 			}
 		}
 	}
-	if total != 5 {
-		t.Fatalf("matching pairs = %d, want 5", total)
-	}
-	got := doc.ByThreshold["0.65"]
-	if got.MustNot != "9/9" || got.MustMatch != "4/4" || got.Border != "0/2" || got.Likely != "1/6" || got.Total != 5 {
-		t.Fatalf("fixture 0.65 column = %+v", got)
+	if total != column.Total {
+		t.Fatalf("matching pairs = %d, fixture %d", total, column.Total)
 	}
 }
 
@@ -574,17 +644,26 @@ func TestSpecEdgeCases(t *testing.T) {
 					t.Fatalf("2/5-style score = %v", got)
 				}
 			}
-			if c.Expect == "no suggestion" || c.ID == "E3c-empty-raw-identical" {
+			if c.ID == "E3c-empty-raw-identical" {
+				if got != 0 {
+					t.Fatalf("empty token score = %v", got)
+				}
+				ranked := rankSpec(c.Household, c.Scanned)
+				found := false
+				for _, row := range ranked {
+					if row.Name == c.Candidate {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("identical surface name %q was not suggested", c.Candidate)
+				}
+			}
+			if c.Expect == "no suggestion" {
 				if got != 0 {
 					t.Fatalf("empty score = %v", got)
 				}
-				var cands []linkCandidate
-				for i, name := range c.Household {
-					cands = append(cands, linkCandidate{
-						ItemID: "item", ProductID: "prod-" + string(rune('a'+i)), Name: name, OnHand: 1,
-					})
-				}
-				ranked := rankLinkCandidates("100", c.Scanned, "", "", "", "scan", cands)
+				ranked := rankSpec(c.Household, c.Scanned)
 				for _, row := range ranked {
 					if row.Name == c.Candidate {
 						t.Fatalf("suggested %q", row.Name)
@@ -593,6 +672,20 @@ func TestSpecEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func fmtCount(matched, total int) string {
+	return fmt.Sprintf("%d/%d", matched, total)
+}
+
+func rankSpec(household []string, scanned string) []LinkSuggestion {
+	var cands []linkCandidate
+	for i, name := range household {
+		cands = append(cands, linkCandidate{
+			ItemID: "item", ProductID: "prod-" + string(rune('a'+i)), Name: name, OnHand: 1,
+		})
+	}
+	return rankLinkCandidates("100", scanned, "", "", "", "scan", cands)
 }
 
 type pantryRow struct {

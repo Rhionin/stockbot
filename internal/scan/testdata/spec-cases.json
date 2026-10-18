@@ -107,8 +107,8 @@
   "scanned": "16 oz",
   "candidate": "16 oz",
   "expected_score": 0.0,
-  "expect": "PM question",
-  "note": "raw strings identical, empty after cleanup: bypass says match, safety net says none",
+  "expect": "suggestion",
+  "note": "Score of two empty token lists stays 0. The ranker still suggests the pair because the names match after case and whitespace cleanup.",
   "reference_score": 0.0,
   "reference_kind": "zero-weight"
  },

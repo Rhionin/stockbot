@@ -17,14 +17,18 @@ import (
 const linkSuggestLimit = 8
 
 // LinkScoreThreshold is the minimum weighted overlap that becomes a suggestion.
-// 0.65 sits just above the highest wrong pair measured on a real pantry
-// (0.6489). It is one named constant so a later retune does not rewrite the
-// comparison.
+// 0.70 sits above the closest wrong pair on the synthetic pantry (mango chunks
+// versus mango slices, about 0.697). It is one named constant so a later
+// retune does not rewrite the comparison.
 //
 // Release note: Link suggestions are now much stricter: they're shown only
 // when the names closely match, so you'll see fewer wrong suggestions. If an
 // item isn't suggested, search for it.
-const LinkScoreThreshold = 0.65
+const LinkScoreThreshold = 0.70
+
+// linkSuffixDigits is the shortest exact trailing digit run that counts as
+// the same barcode. Anything shorter is ignored, even when it is a suffix.
+const linkSuffixDigits = 8
 
 // LinkScoreEpsilon keeps a ratio that lands a hair under the threshold, the
 // way 2/5 does in float64, on the matching side of the comparison.
@@ -67,9 +71,9 @@ type linkQuery interface {
 }
 
 // suggestLinks ranks household items the scanned barcode might belong to.
-// A barcode suffix still qualifies when the names do not. Qualified rows are
-// ordered by name score, then a shared brand, category, or group, then how
-// recently the item was stocked.
+// An 8-digit barcode suffix qualifies without a name score and ranks first.
+// Other rows are ordered by name score, then a shared brand, category, or
+// group, then how recently the item was stocked.
 func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	scannedCategory := ""
@@ -138,10 +142,14 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 }
 
 // rankLinkCandidates keeps a household item when its name scores at least
-// LinkScoreThreshold, or when one of its barcodes is a suffix of the scan.
-// Rows are ordered by score descending, then a shared brand, category, or
-// group, then the most recently stocked item. A name that cleans to nothing
-// is never a name suggestion. At most linkSuggestLimit rows are returned.
+// LinkScoreThreshold, when the two names are the same after case and
+// whitespace cleanup (even if no food words remain), or when one of its
+// barcodes is an exact suffix of at least linkSuffixDigits digits. A shorter
+// suffix is ignored. A qualifying suffix needs no name score and ranks ahead
+// of every name match; a longer suffix ranks ahead of a shorter one. Rows
+// then order by score, then a shared brand, category, or group, then the
+// most recently stocked item, then name. At most linkSuggestLimit rows are
+// returned. A shared brand, category, or group never creates a suggestion.
 func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID string, candidates []linkCandidate) []LinkSuggestion {
 	scannedBarcode = strings.TrimSpace(scannedBarcode)
 	weights := BuildWeights(candidateNames(candidates))
@@ -149,6 +157,7 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 	scanned := profileLink(scannedName, scannedCategory, scannedGroup, scannedBrand, knownBrands)
 	type scored struct {
 		suggestion LinkSuggestion
+		suffix     int
 		nameScore  float64
 		supported  bool
 		stockedAt  time.Time
@@ -161,9 +170,14 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 		suffix := longestSuffix(scannedBarcode, c.Barcodes)
 		other := profileLink(c.Name, c.Category, c.GroupID, c.Brand, knownBrands)
 		score := Score(scanned.food, other.food, weights)
-		// An empty cleaned name has nothing to weigh. A suffix still qualifies
-		// on its own, because a truncated code is the barcode, not the name.
-		nameOK := len(scanned.food) > 0 && len(other.food) > 0 && scoreMatches(score)
+		// Score only sees tokens, so two names that both clean to nothing stay
+		// at 0. The same letters after case and whitespace cleanup are still
+		// the same item, including "16 oz" and "16 OZ".
+		plainMatch := plainName(scannedName) == plainName(c.Name)
+		if plainMatch {
+			score = 1
+		}
+		nameOK := plainMatch || (len(scanned.food) > 0 && len(other.food) > 0 && scoreMatches(score))
 		if suffix == 0 && !nameOK {
 			continue
 		}
@@ -174,12 +188,16 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 				Name:      c.Name,
 				OnHand:    c.OnHand,
 			},
+			suffix:    suffix,
 			nameScore: score,
 			supported: linkSupported(scanned, other),
 			stockedAt: c.StockedAt,
 		})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].suffix != ranked[j].suffix {
+			return ranked[i].suffix > ranked[j].suffix
+		}
 		if ranked[i].nameScore != ranked[j].nameScore {
 			return ranked[i].nameScore > ranked[j].nameScore
 		}
@@ -189,8 +207,8 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 		if !ranked[i].stockedAt.Equal(ranked[j].stockedAt) {
 			return ranked[i].stockedAt.After(ranked[j].stockedAt)
 		}
-		// Same score, support, and stock time: a stable name keeps the list
-		// from depending on query order.
+		// Same suffix, score, support, and stock time: a stable name keeps
+		// the list from depending on query order.
 		return ranked[i].suggestion.Name < ranked[j].suggestion.Name
 	})
 	if len(ranked) > linkSuggestLimit {
@@ -238,7 +256,7 @@ func longestSuffix(scanned string, barcodes []string) int {
 	best := 0
 	for _, code := range barcodes {
 		code = strings.TrimSpace(code)
-		if code == "" || len(code) > len(scanned) {
+		if len(code) < linkSuffixDigits || len(code) > len(scanned) || !allDigits(code) {
 			continue
 		}
 		if strings.HasSuffix(scanned, code) && len(code) > best {
@@ -246,6 +264,21 @@ func longestSuffix(scanned string, barcodes []string) int {
 		}
 	}
 	return best
+}
+
+func allDigits(code string) bool {
+	for _, r := range code {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return code != ""
+}
+
+// plainName is the identity used when food tokens are empty. Case and runs of
+// whitespace do not make two copies of the same label into different items.
+func plainName(name string) string {
+	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
 }
 
 // linkProfile is the part of a product name that can justify a one-tap link.
@@ -273,12 +306,13 @@ func linkSupported(a, b linkProfile) bool {
 // Score is the weighted overlap of two cleaned token lists.
 //
 // Words are a set: a repeated word counts once, and order does not matter.
-// The same set scores 1, unless both sets are empty, which scores 0 so an
-// empty cleaned name never becomes a suggestion and the ratio is never 0/0.
-// Otherwise the score is the weight of the shared words divided by the weight
-// of the longer name. Longer means the larger total weight; when the weights
-// tie, it is the name with more words. Weights are added in sorted word order
-// so the sum does not depend on map or input order.
+// The same non-empty set scores 1. Both empty sets score 0, so two different
+// names that clean to nothing stay apart and the ratio is never 0/0. Names
+// that are identical after case and whitespace cleanup are matched by the
+// ranker, not here. Otherwise the score is the weight of the shared words
+// divided by the weight of the longer name. Longer means the larger total
+// weight. Weights are added in sorted word order so the sum does not depend
+// on map or input order.
 //
 // A result is never NaN or Inf. A zero denominator scores 0.
 func Score(a, b []string, weights map[string]float64) float64 {
@@ -293,7 +327,7 @@ func Score(a, b []string, weights map[string]float64) float64 {
 	wa := tokenWeight(as, weights)
 	wb := tokenWeight(bs, weights)
 	shared := tokenWeight(sharedSet(as, bs), weights)
-	denom := longerWeight(wa, wb, len(as), len(bs))
+	denom := longerWeight(wa, wb)
 	if denom == 0 || math.IsNaN(denom) || math.IsInf(denom, 0) {
 		return 0
 	}
@@ -339,9 +373,6 @@ func BuildWeights(names []string) map[string]float64 {
 	}
 	weights[""] = math.Log(float64(n) + 1)
 	for word, count := range df {
-		if count < 1 {
-			count = 1
-		}
 		weights[word] = math.Log((float64(n) + 1) / float64(count))
 	}
 	return weights
@@ -427,14 +458,10 @@ func tokenWeight(tokens []string, weights map[string]float64) float64 {
 	return sum
 }
 
-func longerWeight(wa, wb float64, na, nb int) float64 {
-	if wa > wb {
-		return wa
-	}
-	if wb > wa {
-		return wb
-	}
-	if na >= nb {
+// longerWeight is the larger total. Equal totals are the same denominator, so
+// a word-count comparison cannot change the score.
+func longerWeight(wa, wb float64) float64 {
+	if wa >= wb {
 		return wa
 	}
 	return wb
@@ -633,11 +660,20 @@ func stemFood(word string) string {
 		return strings.TrimSuffix(word, "oes") + "o"
 	case len(word) > 4 && (strings.HasSuffix(word, "ches") || strings.HasSuffix(word, "shes") || strings.HasSuffix(word, "xes")):
 		return strings.TrimSuffix(word, "es")
-	case len(word) > 3 && strings.HasSuffix(word, "s") && !strings.HasSuffix(word, "ss") && !strings.HasSuffix(word, "us") && !strings.HasSuffix(word, "is"):
+	case len(word) > 3 && strings.HasSuffix(word, "s") &&
+		!strings.HasSuffix(word, "ss") && !strings.HasSuffix(word, "us") && !strings.HasSuffix(word, "is") &&
+		!esPlural(word):
 		return strings.TrimSuffix(word, "s")
 	default:
 		return word
 	}
+}
+
+// esPlural is an -es plural the longer rules own. A word too short for those
+// rules stays whole, so "pies" does not become "pie".
+func esPlural(word string) bool {
+	return strings.HasSuffix(word, "ies") || strings.HasSuffix(word, "oes") ||
+		strings.HasSuffix(word, "ches") || strings.HasSuffix(word, "shes") || strings.HasSuffix(word, "xes")
 }
 
 // iesKeepsE is the English -ie plural: -ies after k, or after n when a

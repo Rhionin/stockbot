@@ -1,77 +1,13 @@
 {
  "N": 95,
- "formula": "log((N+1)/df), score = shared weight / larger total weight",
+ "formula": "ln((N+1)/max(df,1)), score = shared weight / larger total weight",
  "groups": {
   "must_not_match": {
-   "issue_282": [
-    {
-     "a": "Sour Cream",
-     "b": "Condensed Cream Soup",
-     "score": 0.30224,
-     "kind": "score",
-     "unsmoothed": 0.302147,
-     "matches_at_T": {
-      "0.4": false,
-      "0.5": false,
-      "0.6": false,
-      "0.65": false,
-      "0.7": false
-     }
-    }
-   ],
-   "stock_types (broth-types pattern)": [
-    {
-     "a": "Turkey Stock",
-     "b": "Vegetable Stock",
-     "score": 0.609052,
-     "kind": "score",
-     "unsmoothed": 0.609413,
-     "matches_at_T": {
-      "0.4": true,
-      "0.5": true,
-      "0.6": true,
-      "0.65": false,
-      "0.7": false
-     }
-    }
-   ],
-   "same_ingredient_different_product (coconut-products pattern)": [
-    {
-     "a": "Almond Milk",
-     "b": "Organic Almond Slivers",
-     "score": 0.273649,
-     "kind": "score",
-     "unsmoothed": 0.273487,
-     "matches_at_T": {
-      "0.4": false,
-      "0.5": false,
-      "0.6": false,
-      "0.65": false,
-      "0.7": false
-     }
-    }
-   ],
-   "same_prep_different_food (crushed-fruit-vs-tomatoes pattern)": [
-    {
-     "a": "Chopped Spinach",
-     "b": "Chopped Dates",
-     "score": 0.458915,
-     "kind": "score",
-     "unsmoothed": 0.458813,
-     "matches_at_T": {
-      "0.4": true,
-      "0.5": false,
-      "0.6": false,
-      "0.65": false,
-      "0.7": false
-     }
-    }
-   ],
    "fruit_forms (pineapple-forms pattern)": [
     {
      "a": "Frozen Mango",
      "b": "Mango Nectar",
-     "score": 0.47835,
+     "score": 0.4783495501809414,
      "kind": "score",
      "unsmoothed": 0.478281,
      "matches_at_T": {
@@ -79,13 +15,14 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     },
     {
      "a": "Mango Nectar",
      "b": "Mango Chunks In Mango Nectar",
-     "score": 0.440589,
+     "score": 0.4405889251216747,
      "kind": "score",
      "unsmoothed": 0.440423,
      "matches_at_T": {
@@ -93,13 +30,14 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     },
     {
      "a": "Mango Nectar",
      "b": "Mango Slices In Mango Nectar",
-     "score": 0.461817,
+     "score": 0.4618171261936269,
      "kind": "score",
      "unsmoothed": 0.461706,
      "matches_at_T": {
@@ -107,7 +45,8 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     }
    ],
@@ -115,7 +54,7 @@
     {
      "a": "Sliced Jalapeno Peppers",
      "b": "Jalapeno Hot Sauce",
-     "score": 0.373638,
+     "score": 0.3736377539764895,
      "kind": "score",
      "unsmoothed": 0.37376,
      "matches_at_T": {
@@ -123,7 +62,25 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
+     }
+    }
+   ],
+   "issue_282": [
+    {
+     "a": "Sour Cream",
+     "b": "Condensed Cream Soup",
+     "score": 0.3022402879569432,
+     "kind": "score",
+     "unsmoothed": 0.302147,
+     "matches_at_T": {
+      "0.4": false,
+      "0.5": false,
+      "0.6": false,
+      "0.65": false,
+      "0.7": false,
+      "0.70": false
      }
     }
    ],
@@ -131,7 +88,7 @@
     {
      "a": "Turkey Gravy Mix",
      "b": "Mushroom Gravy Mix",
-     "score": 0.63184,
+     "score": 0.6318398080287045,
      "kind": "score",
      "unsmoothed": 0.631735,
      "matches_at_T": {
@@ -139,7 +96,59 @@
       "0.5": true,
       "0.6": true,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
+     }
+    }
+   ],
+   "same_ingredient_different_product (coconut-products pattern)": [
+    {
+     "a": "Almond Milk",
+     "b": "Organic Almond Slivers",
+     "score": 0.27364925608298624,
+     "kind": "score",
+     "unsmoothed": 0.273487,
+     "matches_at_T": {
+      "0.4": false,
+      "0.5": false,
+      "0.6": false,
+      "0.65": false,
+      "0.7": false,
+      "0.70": false
+     }
+    }
+   ],
+   "same_prep_different_food (crushed-fruit-vs-tomatoes pattern)": [
+    {
+     "a": "Chopped Spinach",
+     "b": "Chopped Dates",
+     "score": 0.4589151124644776,
+     "kind": "score",
+     "unsmoothed": 0.458813,
+     "matches_at_T": {
+      "0.4": true,
+      "0.5": false,
+      "0.6": false,
+      "0.65": false,
+      "0.7": false,
+      "0.70": false
+     }
+    }
+   ],
+   "stock_types (broth-types pattern)": [
+    {
+     "a": "Turkey Stock",
+     "b": "Vegetable Stock",
+     "score": 0.6090521459927658,
+     "kind": "score",
+     "unsmoothed": 0.609413,
+     "matches_at_T": {
+      "0.4": true,
+      "0.5": true,
+      "0.6": true,
+      "0.65": false,
+      "0.7": false,
+      "0.70": false
      }
     }
    ]
@@ -149,7 +158,7 @@
     {
      "a": "Vegetable Soup",
      "b": "Hearty Vegetable Soup",
-     "score": 0.535286,
+     "score": 0.5352860018630379,
      "kind": "score",
      "unsmoothed": 0.534864,
      "matches_at_T": {
@@ -157,13 +166,14 @@
       "0.5": true,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     },
     {
      "a": "Soup, Vegetable",
      "b": "Hearty Vegetable Soup",
-     "score": 0.535286,
+     "score": 0.5352860018630379,
      "kind": "score",
      "unsmoothed": 0.534864,
      "matches_at_T": {
@@ -171,37 +181,8 @@
       "0.5": true,
       "0.6": false,
       "0.65": false,
-      "0.7": false
-     }
-    }
-   ],
-   "extra_words": [
-    {
-     "a": "Steel Cut Oats",
-     "b": "Organic Irish Steel Cut Oats Quick Cooking",
-     "score": 0.398028,
-     "kind": "score",
-     "unsmoothed": 0.397951,
-     "matches_at_T": {
-      "0.4": false,
-      "0.5": false,
-      "0.6": false,
-      "0.65": false,
-      "0.7": false
-     }
-    },
-    {
-     "a": "Mango Chunks In Mango Nectar",
-     "b": "Mango Slices In Mango Nectar",
-     "score": 0.697311,
-     "kind": "score",
-     "unsmoothed": 0.697164,
-     "matches_at_T": {
-      "0.4": true,
-      "0.5": true,
-      "0.6": true,
-      "0.65": true,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     }
    ],
@@ -209,7 +190,7 @@
     {
      "a": "Maple Syrup",
      "b": "Hillcrest Farms Maple Syrup",
-     "score": 0.435732,
+     "score": 0.4357322347909428,
      "kind": "score",
      "unsmoothed": 0.435565,
      "matches_at_T": {
@@ -217,7 +198,40 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
+     }
+    }
+   ],
+   "extra_words": [
+    {
+     "a": "Steel Cut Oats",
+     "b": "Organic Irish Steel Cut Oats Quick Cooking",
+     "score": 0.3980280789292055,
+     "kind": "score",
+     "unsmoothed": 0.397951,
+     "matches_at_T": {
+      "0.4": false,
+      "0.5": false,
+      "0.6": false,
+      "0.65": false,
+      "0.7": false,
+      "0.70": false
+     }
+    },
+    {
+     "a": "Mango Chunks In Mango Nectar",
+     "b": "Mango Slices In Mango Nectar",
+     "score": 0.6973111214633356,
+     "kind": "score",
+     "unsmoothed": 0.697164,
+     "matches_at_T": {
+      "0.4": true,
+      "0.5": true,
+      "0.6": true,
+      "0.65": true,
+      "0.7": false,
+      "0.70": false
      }
     }
    ],
@@ -225,7 +239,7 @@
     {
      "a": "Low-Fat Yogurt",
      "b": "Lowfat Yogurt",
-     "score": 0.297787,
+     "score": 0.29778704351475865,
      "kind": "score",
      "unsmoothed": 0.297701,
      "matches_at_T": {
@@ -233,7 +247,8 @@
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     }
    ]
@@ -243,15 +258,16 @@
     {
      "a": "16 oz",
      "b": "Ginger Ale 12 oz",
-     "score": 0.0,
+     "score": 0,
      "kind": "zero-weight",
-     "unsmoothed": 0.0,
+     "unsmoothed": 0,
      "matches_at_T": {
       "0.4": false,
       "0.5": false,
       "0.6": false,
       "0.65": false,
-      "0.7": false
+      "0.7": false,
+      "0.70": false
      }
     }
    ]
@@ -260,57 +276,61 @@
    {
     "a": "Vegetable Soup",
     "b": "Soup, Vegetable",
-    "score": 1.0,
+    "score": 1,
     "kind": "identical",
-    "unsmoothed": 1.0,
+    "unsmoothed": 1,
     "matches_at_T": {
      "0.4": true,
      "0.5": true,
      "0.6": true,
      "0.65": true,
-     "0.7": true
+     "0.7": true,
+     "0.70": true
     }
    },
    {
     "a": "Turkey Chili",
     "b": "Chili, Turkey",
-    "score": 1.0,
+    "score": 1,
     "kind": "identical",
-    "unsmoothed": 1.0,
+    "unsmoothed": 1,
     "matches_at_T": {
      "0.4": true,
      "0.5": true,
      "0.6": true,
      "0.65": true,
-     "0.7": true
+     "0.7": true,
+     "0.70": true
     }
    },
    {
     "a": "Butter Beans",
     "b": "BUTTER BEANS",
-    "score": 1.0,
+    "score": 1,
     "kind": "identical",
-    "unsmoothed": 1.0,
+    "unsmoothed": 1,
     "matches_at_T": {
      "0.4": true,
      "0.5": true,
      "0.6": true,
      "0.65": true,
-     "0.7": true
+     "0.7": true,
+     "0.70": true
     }
    },
    {
     "a": "Ginger Ale 12 oz",
     "b": "Ginger Ale 2 L",
-    "score": 1.0,
+    "score": 1,
     "kind": "identical",
-    "unsmoothed": 1.0,
+    "unsmoothed": 1,
     "matches_at_T": {
      "0.4": true,
      "0.5": true,
      "0.6": true,
      "0.65": true,
-     "0.7": true
+     "0.7": true,
+     "0.70": true
     }
    }
   ],
@@ -318,7 +338,7 @@
    {
     "a": "Turkey Noodle Soup",
     "b": "Egg Noodle Soup",
-    "score": 0.592765,
+    "score": 0.5927648087338813,
     "kind": "score",
     "unsmoothed": 0.592557,
     "matches_at_T": {
@@ -326,13 +346,14 @@
      "0.5": true,
      "0.6": false,
      "0.65": false,
-     "0.7": false
+     "0.7": false,
+     "0.70": false
     }
    },
    {
     "a": "Light Corn Syrup",
     "b": "Dark Corn Syrup",
-    "score": 0.606983,
+    "score": 0.6069825894163196,
     "kind": "score",
     "unsmoothed": 0.606821,
     "matches_at_T": {
@@ -340,13 +361,14 @@
      "0.5": true,
      "0.6": true,
      "0.65": false,
-     "0.7": false
+     "0.7": false,
+     "0.70": false
     }
    }
   ]
  },
- "max_must_not": 0.63184,
- "min_likely": 0.297787,
+ "max_must_not": 0.6318398080287045,
+ "min_likely": 0.29778704351475865,
  "by_threshold": {
   "0.4": {
    "must_not_correctly_rejected": "3/9",
@@ -377,6 +399,13 @@
    "total_pairs": 5
   },
   "0.7": {
+   "must_not_correctly_rejected": "9/9",
+   "must_match": "4/4",
+   "borderline_matched": "0/2",
+   "likely_matched": "0/6",
+   "total_pairs": 4
+  },
+  "0.70": {
    "must_not_correctly_rejected": "9/9",
    "must_match": "4/4",
    "borderline_matched": "0/2",
