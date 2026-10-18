@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH } from '../../../frontend/src/api/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH } from './contract';
 import { ApiError, basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -104,7 +104,7 @@ describe('createStockbotClient', () => {
       const body = JSON.parse(String(init?.body)) as { linkProductId?: string };
       if (body.linkProductId === 'prod-pears') return jsonResponse(200, { id: 'scan-1', status: 'committed' });
       return jsonResponse(409, {
-        error: 'Not in your pantry',
+        error: 'unlinked barcode',
         code: 'no_item',
         suggestions,
       });
@@ -114,7 +114,7 @@ describe('createStockbotClient', () => {
     await expect(client.commitScan('scan-1')).rejects.toMatchObject({
       status: 409,
       code: 'no_item',
-      message: 'Not in your pantry',
+      message: 'unlinked barcode',
       suggestions,
     });
     await expect(client.commitScan('scan-1', 'prod-pears')).resolves.toMatchObject({ status: 'committed' });

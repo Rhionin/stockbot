@@ -6,12 +6,14 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
+import { BATCH_FAILURE_FALLBACK, commitConflictBehavior, LINK_OFFER_HEADING, NO_CLOSE_MATCH } from '../api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
@@ -73,7 +75,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       setOffer((current) => (current?.scanId === id ? null : current));
       await refresh();
     } catch (requestError) {
-      if (requestError instanceof ApiError && requestError.code === 'no_item') {
+      if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).linkOffer) {
         setOffer({ scanId: id, suggestions: requestError.suggestions });
         return;
       }
@@ -105,7 +107,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       let keepError = '';
       if (result.failedIds && result.failedIds.length > 0) {
         const reasons = result.failedReasons?.filter((reason) => reason !== '') ?? [];
-        keepError = reasons.length > 0 ? reasons.join('\n') : 'Some scans could not be confirmed.';
+        keepError = reasons.length > 0 ? reasons.join('\n') : BATCH_FAILURE_FALLBACK;
       }
       await refresh(keepError);
     } catch (requestError) {
@@ -196,15 +198,17 @@ function LinkOffer({
   onLink: (productId: string) => void;
   onDismiss: () => void;
 }) {
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLowerCase();
+  const visible = needle === ''
+    ? suggestions
+    : suggestions.filter((suggestion) => suggestion.name.toLowerCase().includes(needle));
+
   return (
     <View style={styles.offer}>
-      <Text style={styles.offerTitle}>Not in your pantry</Text>
-      <Text style={styles.offerCopy}>
-        {suggestions.length === 0
-          ? 'No close match found.'
-          : 'Link the barcode to an item you stock. That scan out uses the item you pick.'}
-      </Text>
-      {suggestions.map((suggestion) => (
+      <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
+      {suggestions.length === 0 && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
+      {visible.map((suggestion) => (
         <View key={suggestion.itemId} style={styles.offerRow}>
           <View style={styles.rowCopy}>
             <Text style={styles.name}>{suggestion.name}</Text>
@@ -221,6 +225,15 @@ function LinkOffer({
           </Pressable>
         </View>
       ))}
+      <TextInput
+        accessibilityLabel="Search"
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search"
+        placeholderTextColor={colors.inkMuted}
+        autoCorrect={false}
+        style={styles.search}
+      />
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Dismiss"
@@ -346,6 +359,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  search: {
+    minHeight: 44,
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    color: colors.ink,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.rule,
+    paddingVertical: 8,
   },
   dismiss: {
     alignSelf: 'flex-start',

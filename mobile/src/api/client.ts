@@ -12,7 +12,7 @@ import {
   type SetScannerModeResponse,
   scanCommitPath,
   scansQuery,
-} from '../../../frontend/src/api/contract';
+} from './contract';
 import type {
   BatchCommitResponse,
   PantryLinkSuggestion,
