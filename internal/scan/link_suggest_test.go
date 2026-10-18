@@ -20,6 +20,69 @@ func TestParseStockedAt(t *testing.T) {
 	}
 }
 
+func TestBarcodeEndingMatchesEitherSide(t *testing.T) {
+	const longCode = "011110828385" // last 8 are 10828385; last 7 are 0828385
+	const shortCode = "10828385"
+	const seven = "0828385"
+	const name = "Nothing Alike"
+
+	longScan := rankLinkCandidates(longCode, name, "", "", "", "scan", []linkCandidate{
+		{ItemID: "name", ProductID: "prod-name", Name: name, OnHand: 1},
+		{ItemID: "seven", ProductID: "prod-seven", Name: "Also Wrong", OnHand: 1, Barcodes: []string{seven}},
+		{ItemID: "short", ProductID: "prod-short", Name: "Wrong Food", OnHand: 1, Barcodes: []string{shortCode}},
+	})
+	if len(longScan) != 2 || longScan[0].ProductID != "prod-short" || longScan[1].ProductID != "prod-name" {
+		t.Fatalf("long scan = %#v, want the 8-digit stored code ahead of the name", longScan)
+	}
+
+	shortScan := rankLinkCandidates(shortCode, name, "", "", "", "scan", []linkCandidate{
+		{ItemID: "name", ProductID: "prod-name", Name: name, OnHand: 1},
+		{ItemID: "long", ProductID: "prod-long", Name: "Wrong Food", OnHand: 1, Barcodes: []string{longCode}},
+		{ItemID: "seven-scan", ProductID: "prod-seven-scan", Name: "Seven Stored", OnHand: 1, Barcodes: []string{"0000000" + seven}},
+	})
+	if len(shortScan) != 2 || shortScan[0].ProductID != "prod-long" || shortScan[1].ProductID != "prod-name" {
+		t.Fatalf("short scan = %#v, want the longer stored code ahead of the name", shortScan)
+	}
+
+	// A 7-digit scan is not an ending match against a longer stored code.
+	sevenScan := rankLinkCandidates(seven, name, "", "", "", "scan", []linkCandidate{
+		{ItemID: "long", ProductID: "prod-long", Name: "Wrong Food", OnHand: 1, Barcodes: []string{longCode}},
+	})
+	if len(sevenScan) != 0 {
+		t.Fatalf("7-digit scan = %#v, want none", sevenScan)
+	}
+
+	shared := rankLinkCandidates("111108283855", "Other Name", "", "", "", "scan", []linkCandidate{
+		{ItemID: "full", ProductID: "prod-full", Name: "Wrong Food", OnHand: 1, Barcodes: []string{"222208283855"}},
+	})
+	if len(shared) != 0 {
+		t.Fatalf("shared last 8 of two full codes = %#v, want none", shared)
+	}
+
+	const exact = "123456789012"
+	full := rankLinkCandidates(exact, "Other Name", "", "", "", "scan", []linkCandidate{
+		{ItemID: "name", ProductID: "prod-name", Name: "Other Name", OnHand: 1},
+		{ItemID: "exact", ProductID: "prod-exact", Name: "Wrong Food", OnHand: 1, Barcodes: []string{exact}},
+	})
+	if len(full) != 2 || full[0].ProductID != "prod-exact" || full[1].ProductID != "prod-name" {
+		t.Fatalf("full-length code = %#v, want the exact code ahead of the name", full)
+	}
+
+	nines := rankLinkCandidates("0000000099999999", "Other Name", "", "", "", "scan", []linkCandidate{
+		{ItemID: "nine", ProductID: "prod-nine", Name: "Wrong Food", OnHand: 1, Barcodes: []string{"99999999"}},
+	})
+	if len(nines) != 1 || nines[0].ProductID != "prod-nine" {
+		t.Fatalf("digit 9 code = %#v, want the 8 nines", nines)
+	}
+
+	nonDigit := rankLinkCandidates("01111082838X", "Other Name", "", "", "", "scan", []linkCandidate{
+		{ItemID: "bad", ProductID: "prod-bad", Name: "Wrong Food", OnHand: 1, Barcodes: []string{"1082838X", "not-a-code", "", "   ", "１０８２８３８５"}},
+	})
+	if len(nonDigit) != 0 {
+		t.Fatalf("non-digit stored codes = %#v, want none", nonDigit)
+	}
+}
+
 func TestBarcodeSuffixNeedsEightDigitsAndRanksFirst(t *testing.T) {
 	const scanned = "011110828385" // last 8: 10828385, last 7: 0828385
 	got := rankLinkCandidates(scanned, "Nothing Alike", "", "", "", "prod-off", []linkCandidate{
@@ -106,6 +169,15 @@ func TestBrandStrippedFromBothNames(t *testing.T) {
 	got := rankLinkCandidates("224", "Daisy Pears", "", "", "Daisy", "scan", []linkCandidate{stocked})
 	if len(got) != 1 || got[0].ProductID != "prod-valley" {
 		t.Fatalf("both brands stripped = %#v, want Valley Pears", got)
+	}
+}
+
+func TestScannedBrandStrippedFromUnbrandedStock(t *testing.T) {
+	got := rankLinkCandidates("227", "Pears", "", "", "Daisy", "scan", []linkCandidate{
+		{ItemID: "item-daisy", ProductID: "prod-daisy", Name: "Daisy Pears", OnHand: 1},
+	})
+	if len(got) != 1 || got[0].Name != "Daisy Pears" {
+		t.Fatalf("scanned brand suggestions = %#v, want Daisy Pears", got)
 	}
 }
 
@@ -236,6 +308,35 @@ func TestLinkTieBreakOrder(t *testing.T) {
 	if len(named) != 2 || named[0].Name != "Pea Soup" {
 		t.Fatalf("name tie-break = %#v, want Pea Soup first", named)
 	}
+
+	// Shared brand only. The supported row is older and listed second.
+	branded := rankLinkCandidates("904", "Pea Soup", "", "", "Daisy", "scan", []linkCandidate{
+		{ItemID: "new", ProductID: "prod-new", Name: "Soup Pea", OnHand: 1, StockedAt: newer},
+		{ItemID: "old", ProductID: "prod-old", Name: "Pea Soup", Brand: "Daisy", OnHand: 1, StockedAt: older},
+	})
+	if len(branded) != 2 || branded[0].ProductID != "prod-old" {
+		t.Fatalf("brand tie-break = %#v, want the shared brand first", branded)
+	}
+
+	// Shared group only. Categories and brands differ, so only the group key orders them.
+	grouped := rankLinkCandidates("905", "Pea Soup", "Canned", "grp-soup", "", "scan", []linkCandidate{
+		{ItemID: "new", ProductID: "prod-new", Name: "Soup Pea", Category: "Soup", OnHand: 1, StockedAt: newer},
+		{ItemID: "old", ProductID: "prod-old", Name: "Pea Soup", Category: "Fruit", GroupID: "grp-soup", OnHand: 1, StockedAt: older},
+	})
+	if len(grouped) != 2 || grouped[0].ProductID != "prod-old" {
+		t.Fatalf("group tie-break = %#v, want the shared group first", grouped)
+	}
+
+	// The scanned name has no brand field. Daisy is known from another product,
+	// so the stripped phrase is what makes the older row the supported tie.
+	applied := rankLinkCandidates("906", "Daisy Pea Soup", "", "", "", "scan", []linkCandidate{
+		{ItemID: "known", ProductID: "prod-known", Name: "Snack Cakes", Brand: "Daisy", OnHand: 0},
+		{ItemID: "new", ProductID: "prod-new", Name: "Soup Pea", OnHand: 1, StockedAt: newer},
+		{ItemID: "old", ProductID: "prod-old", Name: "Pea Soup", Brand: "Daisy", OnHand: 1, StockedAt: older},
+	})
+	if len(applied) != 2 || applied[0].ProductID != "prod-old" {
+		t.Fatalf("stripped-brand tie-break = %#v, want the Daisy row first", applied)
+	}
 }
 
 func TestIdenticalSurfaceNamesMatchWhenTokensAreEmpty(t *testing.T) {
@@ -254,16 +355,21 @@ func TestIdenticalSurfaceNamesMatchWhenTokensAreEmpty(t *testing.T) {
 		t.Fatalf("different empty names = %#v, want none", different)
 	}
 	same := rankLinkCandidates("16", "16 oz", "", "", "", "scan", []linkCandidate{
+		{ItemID: "glued", ProductID: "prod-glued", Name: "16oz", OnHand: 1},
 		{ItemID: "space", ProductID: "prod-space", Name: "16  OZ", OnHand: 1},
 		{ItemID: "pad", ProductID: "prod-pad", Name: "  16 oz  ", OnHand: 1},
 		{ItemID: "kale", ProductID: "prod-kale", Name: "Kale", OnHand: 1},
 	})
-	if len(same) != 2 || same[0].ProductID != "prod-pad" || same[1].ProductID != "prod-space" {
-		t.Fatalf("identical surface names = %#v, want both size labels", same)
+	if len(same) != 3 || same[0].ProductID != "prod-pad" || same[1].ProductID != "prod-space" || same[2].ProductID != "prod-glued" {
+		t.Fatalf("identical surface names = %#v, want the spaced and glued size labels", same)
 	}
 }
 
 func TestIdenticalNamesMatchInAOneProductHousehold(t *testing.T) {
+	weights := BuildWeights([]string{"Kale"})
+	if Score(Tokens("Kale"), Tokens("Kale"), weights) != 1 {
+		t.Fatalf("identical row score = %v, want 1", Score(Tokens("Kale"), Tokens("Kale"), weights))
+	}
 	got := rankLinkCandidates("444", "Kale", "", "", "", "scan", []linkCandidate{
 		{ItemID: "kale", ProductID: "prod-kale", Name: "Kale", OnHand: 1},
 	})

@@ -1252,6 +1252,27 @@ func TestScanCommitLinkCandidates(t *testing.T) {
 			"Vegetable Stock",
 		),
 		{
+			name: "a recorded brand on the scanned name strips the stored name",
+			setup: func(env testEnv) {
+				seedLinkConflict(env, "scan-brand-scanned",
+					linkPantryProduct{id: "prod-pears-brand", name: "Pears", category: "Fruit", barcode: "181818181822", brand: "Daisy"},
+					[]linkPantryProduct{
+						{id: "prod-daisy-plain", name: "Daisy Pears", category: "Fruit", barcode: "191919191922", onHand: 1},
+					},
+				)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-brand-scanned/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.suggestions[0].name", value: "Daisy Pears"},
+					{path: "$.suggestions[0].productId", value: "prod-daisy-plain"},
+					{path: "$.suggestions[1]", absent: true},
+				},
+			},
+		},
+		{
 			name: "a recorded brand on the stocked name strips down to the food",
 			setup: func(env testEnv) {
 				seedLinkConflict(env, "scan-brand",

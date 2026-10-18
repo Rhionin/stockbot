@@ -21,13 +21,15 @@ const linkSuggestLimit = 8
 // versus mango slices, about 0.697). It is one named constant so a later
 // retune does not rewrite the comparison.
 //
-// Release note: Link suggestions are now much stricter: they're shown only
-// when the names closely match, so you'll see fewer wrong suggestions. If an
+// Release note: Link suggestions are now much stricter. They only show up
+// when the names closely match, or when one barcode matches the end of the
+// other (at least 8 digits), so you'll see far fewer wrong suggestions. If an
 // item isn't suggested, search for it.
 const LinkScoreThreshold = 0.70
 
-// linkSuffixDigits is the shortest exact trailing digit run that counts as
-// the same barcode. Anything shorter is ignored, even when it is a suffix.
+// linkSuffixDigits is the shortest code that can match the end of the other
+// code. The shorter of the two must be at least this many digits, and that
+// whole shorter code must be the ending of the longer one.
 const linkSuffixDigits = 8
 
 // LinkScoreEpsilon keeps a ratio that lands a hair under the threshold, the
@@ -71,9 +73,10 @@ type linkQuery interface {
 }
 
 // suggestLinks ranks household items the scanned barcode might belong to.
-// An 8-digit barcode suffix qualifies without a name score and ranks first.
-// Other rows are ordered by name score, then a shared brand, category, or
-// group, then how recently the item was stocked.
+// A barcode match qualifies without a name score when the shorter code is at
+// least 8 digits and is the ending of the longer code, and that match ranks
+// first. Other rows are ordered by name score, then a shared brand, category,
+// or group, then how recently the item was stocked.
 func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	scannedCategory := ""
@@ -142,18 +145,22 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 }
 
 // rankLinkCandidates keeps a household item when its name scores at least
-// LinkScoreThreshold, when the two names are the same after case and
-// whitespace cleanup (even if no food words remain), or when one of its
-// barcodes is an exact suffix of at least linkSuffixDigits digits. A shorter
-// suffix is ignored. A qualifying suffix needs no name score and ranks ahead
-// of every name match; a longer suffix ranks ahead of a shorter one. Rows
-// then order by score, then a shared brand, category, or group, then the
-// most recently stocked item, then name. At most linkSuggestLimit rows are
-// returned. A shared brand, category, or group never creates a suggestion.
+// LinkScoreThreshold, when the two names are the same after case, whitespace,
+// and size cleanup (even if no food words remain), or when the shorter
+// barcode is at least linkSuffixDigits digits and is the ending of the longer
+// one. A 7-digit ending is ignored, and two longer codes that only share
+// those last digits do not qualify. A qualifying barcode needs no name score
+// and ranks ahead of every name match; a longer shared ending ranks ahead of
+// a shorter one. Rows then order by score, then a shared brand, category, or
+// group, then the most recently stocked item, then name. At most
+// linkSuggestLimit rows are returned. A shared brand, category, or group
+// never creates a suggestion.
 func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGroup, scannedBrand, excludeProductID string, candidates []linkCandidate) []LinkSuggestion {
 	scannedBarcode = strings.TrimSpace(scannedBarcode)
 	weights := BuildWeights(candidateNames(candidates))
-	knownBrands := recordedBrandPhrases(candidates)
+	// A brand recorded on either product is stripped from both names. Household
+	// brands already recorded on other products stay in the list too.
+	knownBrands := append(recordedBrandPhrases(candidates), brandPhrases(scannedBrand)...)
 	scanned := profileLink(scannedName, scannedCategory, scannedGroup, scannedBrand, knownBrands)
 	type scored struct {
 		suggestion LinkSuggestion
@@ -171,8 +178,8 @@ func rankLinkCandidates(scannedBarcode, scannedName, scannedCategory, scannedGro
 		other := profileLink(c.Name, c.Category, c.GroupID, c.Brand, knownBrands)
 		score := Score(scanned.food, other.food, weights)
 		// Score only sees tokens, so two names that both clean to nothing stay
-		// at 0. The same letters after case and whitespace cleanup are still
-		// the same item, including "16 oz" and "16 OZ".
+		// at 0. The same letters after case, whitespace, and size cleanup are
+		// still the same item, including "16 oz", "16 OZ", and "16oz".
 		plainMatch := plainName(scannedName) == plainName(c.Name)
 		if plainMatch {
 			score = 1
@@ -255,15 +262,29 @@ func parseStockedAt(raw string) (time.Time, error) {
 func longestSuffix(scanned string, barcodes []string) int {
 	best := 0
 	for _, code := range barcodes {
-		code = strings.TrimSpace(code)
-		if len(code) < linkSuffixDigits || len(code) > len(scanned) || !allDigits(code) {
-			continue
-		}
-		if strings.HasSuffix(scanned, code) && len(code) > best {
-			best = len(code)
+		if n := suffixMatchLen(scanned, strings.TrimSpace(code)); n > best {
+			best = n
 		}
 	}
 	return best
+}
+
+// suffixMatchLen is the length of the shorter code when that code is at least
+// linkSuffixDigits digits and is the exact ending of the longer code. The
+// scanned code and the stored code are interchangeable. Equal-length codes
+// match only when they are the same code.
+func suffixMatchLen(a, b string) int {
+	if a == "" || b == "" {
+		return 0
+	}
+	short, long := a, b
+	if len(a) > len(b) {
+		short, long = b, a
+	}
+	if len(short) < linkSuffixDigits || !allDigits(short) || !strings.HasSuffix(long, short) {
+		return 0
+	}
+	return len(short)
 }
 
 func allDigits(code string) bool {
@@ -275,10 +296,51 @@ func allDigits(code string) bool {
 	return code != ""
 }
 
-// plainName is the identity used when food tokens are empty. Case and runs of
-// whitespace do not make two copies of the same label into different items.
+// plainName is the identity used when food tokens are empty. Case, runs of
+// whitespace, and a size glued to its number ("16oz") do not make two copies
+// of the same label into different items. The space comes from the same
+// package-word list the tokenizer already drops.
 func plainName(name string) string {
-	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
+	return strings.Join(strings.Fields(separateGluedSize(strings.ToLower(name))), " ")
+}
+
+func separateGluedSize(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		if name[i] >= '0' && name[i] <= '9' {
+			j := i
+			for j < len(name) && name[j] >= '0' && name[j] <= '9' {
+				j++
+			}
+			if unit := gluedPackageWord(name[j:]); unit != "" {
+				b.WriteString(name[i:j])
+				b.WriteByte(' ')
+				b.WriteString(unit)
+				i = j + len(unit)
+				continue
+			}
+		}
+		b.WriteByte(name[i])
+		i++
+	}
+	return b.String()
+}
+
+func gluedPackageWord(rest string) string {
+	best := ""
+	for word := range linkPackageWords {
+		if len(word) <= len(best) || len(word) > len(rest) || !strings.HasPrefix(rest, word) {
+			continue
+		}
+		if len(rest) > len(word) {
+			next := rest[len(word)]
+			if (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') {
+				continue
+			}
+		}
+		best = word
+	}
+	return best
 }
 
 // linkProfile is the part of a product name that can justify a one-tap link.
