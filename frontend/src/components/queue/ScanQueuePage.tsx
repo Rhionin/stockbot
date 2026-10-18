@@ -41,6 +41,9 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [capturedBarcode, setCapturedBarcode] = useState('');
   const [sessionExpansion, setSessionExpansion] = useState<Record<string, boolean>>({});
   const captureHighlightTimer = useRef(0);
+  // The id-set key changes when one scan commits and would remount the cards
+  // that are still open. Each scan keeps the key it first joined.
+  const [sessionTokens, setSessionTokens] = useState<Map<string, string>>(() => new Map());
   const scannerModeRef = useRef<QueueView>('stock_in');
   // Bumped when this page or an event stream sets the mode, so a config
   // response that started earlier cannot put the previous direction back.
@@ -69,6 +72,26 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const qrEntries = useMemo(() => viewEntries.filter((entry) => entry.status === 'qr'), [viewEntries]);
   const sessionEntries = useMemo(() => viewEntries.filter((entry) => entry.status !== 'qr'), [viewEntries]);
   const batches = useMemo(() => groupScansIntoBatches(sessionEntries), [sessionEntries]);
+  const sessionKeys = batches.map((batch) => {
+    const joined = batch.map((entry) => entry.id).sort().join('|');
+    const known = batch
+      .map((entry) => sessionTokens.get(entry.id))
+      .find((token) => token !== undefined);
+    return known ?? joined;
+  });
+  const missingTokens = batches.flatMap((batch, index) => {
+    const key = sessionKeys[index] ?? '';
+    return batch
+      .filter((entry) => sessionTokens.get(entry.id) !== key)
+      .map((entry) => [entry.id, key] as const);
+  });
+  if (missingTokens.length > 0) {
+    setSessionTokens((current) => {
+      const next = new Map(current);
+      for (const [id, key] of missingTokens) next.set(id, key);
+      return next;
+    });
+  }
   const processingForView = useMemo(
     () => processing.filter((notice) => notice.userId === userId && entryMatchesView(notice.direction, scannerMode)),
     [processing, userId, scannerMode],
@@ -436,7 +459,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
           />
         ))}
         {batches.map((batch, index) => {
-          const key = batch.map((entry) => entry.id).sort().join('|');
+          const key = sessionKeys[index] ?? '';
           const expanded = sessionExpansion[key] ?? index === 0;
           return (
             <ScanSessionCard
