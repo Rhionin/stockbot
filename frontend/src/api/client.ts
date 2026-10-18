@@ -42,6 +42,7 @@ import {
   SCANS_PATH,
   SESSION_PATH,
   type SetScannerModeResponse,
+  inventoryListPath,
   scanCommitPath,
   scansQuery,
   toQueryString,
@@ -238,7 +239,7 @@ export function getScannerConfig(): Promise<ScannerConfig> {
 // --- Inventory ---
 
 export function getInventoryList(query?: string): Promise<InventoryItem[]> {
-  return apiFetch(`/api/inventory${toQueryString({ q: query })}`);
+  return apiFetch(inventoryListPath(query));
 }
 
 export function listItemInstances(itemId: string): Promise<ItemInstanceWithStatus[]> {

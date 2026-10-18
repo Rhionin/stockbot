@@ -1,5 +1,5 @@
-import { fireEvent, waitFor } from '@testing-library/react-native';
-import type { PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
+import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { QueueScreen } from './QueueScreen';
@@ -25,6 +25,24 @@ const entry = (overrides: Partial<ScanEntry> = {}): ScanEntry => ({
   ...overrides,
 });
 
+function householdItem(name: string, productId: string, instanceCount: number, shelved = false): InventoryItem {
+  return {
+    item: {
+      id: `item-${productId}`,
+      userId: 'user-1',
+      productId,
+      product: { id: productId, name, category: 'Pantry', unitOfMeasure: 'bag' },
+      targetQuantity: null,
+      createdAt: '2026-10-16T12:00:00Z',
+      ...(shelved ? { shelved: true } : {}),
+    } as InventoryItem['item'],
+    instanceCount,
+    nearExpiryCount: 0,
+    expiredCount: 0,
+    needsAttention: false,
+  };
+}
+
 function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
   return {
     getSession: jest.fn(),
@@ -34,6 +52,7 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' })]),
     commitScan: jest.fn(async () => entry({ status: 'committed' })),
     batchCommit: jest.fn(async () => ({ updatedCount: 2, committedIds: ['scan-1', 'scan-2'] })),
+    getInventoryList: jest.fn(async () => []),
     ...overrides,
   };
 }
@@ -60,20 +79,54 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(api.batchCommit).toHaveBeenCalledWith(['scan-1', 'scan-2']));
   });
 
-  it('keeps the reason when a batch leaves a scan unconfirmed', async () => {
+  it.each([
+    {
+      label: 'one failure',
+      failures: [{ id: 'scan-2', reason: 'direction not set', code: '' }],
+    },
+    {
+      label: 'several failures',
+      failures: [
+        { id: 'scan-1', reason: 'Nothing on hand to take out.', code: 'none_on_hand' },
+        { id: 'scan-2', reason: 'Choose which item this is first.', code: 'product_unresolved' },
+      ],
+    },
+  ])('batch $label puts each reason on its card', async ({ failures }) => {
     const api = client({
+      listPending: jest.fn(async () => [
+        entry({ direction: 'stock_out' }),
+        entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' }),
+      ]),
       batchCommit: jest.fn(async () => ({
-        updatedCount: 2,
-        committedIds: ['scan-1'],
-        failedIds: ['scan-2'],
-        failedReasons: ['direction not set'],
+        updatedCount: 0,
+        failedIds: failures.map((failure) => failure.id),
+        failedReasons: failures.map((failure) => failure.reason),
+        failedCodes: failures.map((failure) => failure.code ?? ''),
       })),
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
 
-    expect(await screen.findByText('direction not set')).toBeTruthy();
+    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    for (const failure of failures) {
+      const card = within(screen.getByTestId(`scan-${failure.id}`));
+      expect(card.getByText(failure.reason)).toBeTruthy();
+      expect(card.queryByText('Some scans could not be confirmed.')).toBeNull();
+    }
+    const unresolved = failures.find((failure) => failure.code === 'product_unresolved');
+    if (unresolved) {
+      const card = within(screen.getByTestId(`scan-${unresolved.id}`));
+      expect(card.getByText('Which item is this?')).toBeTruthy();
+      expect(card.getByLabelText('Search')).toBeTruthy();
+      expect(card.queryByText('No close match found.')).toBeNull();
+    }
+    const stockedOut = failures.find((failure) => failure.code === 'none_on_hand');
+    if (stockedOut) {
+      expect(within(screen.getByTestId(`scan-${stockedOut.id}`)).queryByLabelText('Search')).toBeNull();
+    }
   });
 
   const pears: PantryLinkSuggestion[] = [
@@ -81,13 +134,11 @@ describe('QueueScreen', () => {
   ];
 
   it.each([
-    { direction: 'stock_out' as const, suggestions: pears },
-    { direction: 'stock_out' as const, suggestions: [] as PantryLinkSuggestion[] },
-    { direction: 'stock_in' as const, suggestions: pears },
-    { direction: 'stock_in' as const, suggestions: [] as PantryLinkSuggestion[] },
-  ])('$direction no_item with $suggestions.length suggestions uses the same card', async ({ direction, suggestions }) => {
+    { suggestions: pears },
+    { suggestions: [] as PantryLinkSuggestion[] },
+  ])('stock-out no_item with $suggestions.length suggestions offers a link', async ({ suggestions }) => {
     const api = client({
-      listPending: jest.fn(async () => [entry({ direction })]),
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
       commitScan: jest.fn(async () => {
         throw new ApiError(409, 'unlinked barcode', 'no_item', suggestions);
       }),
@@ -105,7 +156,8 @@ describe('QueueScreen', () => {
       expect(screen.queryByLabelText(/Link /)).toBeNull();
     } else {
       expect(screen.getByText('Sliced Pears')).toBeTruthy();
-      expect(screen.getByLabelText('Link Sliced Pears and scan it out')).toBeTruthy();
+      expect(screen.getByLabelText('Link Sliced Pears')).toBeTruthy();
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
       expect(screen.queryByText('No close match found.')).toBeNull();
     }
   });
@@ -122,7 +174,7 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    await fireEvent.press(await screen.findByLabelText('Link Sliced Pears and scan it out'));
+    await fireEvent.press(await screen.findByLabelText('Link Sliced Pears'));
 
     await waitFor(() => expect(commitScan).toHaveBeenLastCalledWith('scan-1', 'prod-pears'));
     await waitFor(() => expect(screen.queryByText('Which item is this?')).toBeNull());
@@ -150,7 +202,7 @@ describe('QueueScreen', () => {
       label: 'product unresolved',
       status: 400,
       code: 'product_unresolved',
-      message: 'Pick a product for this scan first.',
+      message: 'Choose which item this is first.',
       heading: true,
     },
     {
@@ -178,7 +230,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
 
-    expect(await screen.findByText(message)).toBeTruthy();
+    expect(within(await screen.findByTestId('confirm-toast')).getByText(message)).toBeTruthy();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     if (heading) {
       expect(screen.getByText('Which item is this?')).toBeTruthy();
@@ -192,13 +244,21 @@ describe('QueueScreen', () => {
     }
   });
 
-  it('link_target_gone shows the server sentence and drops the stale suggestion', async () => {
-    const slices: PantryLinkSuggestion = { itemId: 'item-slices', productId: 'prod-slices', name: 'Pear Slices', onHand: 1 };
+  const slices: PantryLinkSuggestion = { itemId: 'item-slices', productId: 'prod-slices', name: 'Pear Slices', onHand: 1 };
+  const riceSuggestion: PantryLinkSuggestion = { itemId: 'item-rice', productId: 'prod-brown', name: 'Brown Rice', onHand: 2 };
+
+  it.each([
+    { label: 'uses the list on the response', gone: [slices], again: null as PantryLinkSuggestion[] | null, shown: 'Pear Slices' },
+    { label: 'refetches when the response lists nothing', gone: [] as PantryLinkSuggestion[], again: [riceSuggestion], shown: 'Brown Rice' },
+  ])('link_target_gone $label', async ({ gone, again, shown }) => {
     const commitScan = jest.fn(async (_id: string, linkProductId?: string) => {
       if (linkProductId === 'prod-pears') {
-        throw new ApiError(409, "That item isn't available anymore. Pick another.", 'link_target_gone', [slices]);
+        throw new ApiError(409, "That item isn't available anymore. Pick another.", 'link_target_gone', gone);
       }
-      throw new ApiError(409, 'unlinked barcode', 'no_item', [pears[0], slices]);
+      if (again && linkProductId === undefined && commitScan.mock.calls.length > 1) {
+        throw new ApiError(409, 'unlinked barcode', 'no_item', again);
+      }
+      throw new ApiError(409, 'unlinked barcode', 'no_item', [pears[0]]);
     });
     const api = client({
       listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
@@ -207,21 +267,60 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    await fireEvent.press(await screen.findByLabelText('Link Sliced Pears and scan it out'));
+    await fireEvent.press(await screen.findByLabelText('Link Sliced Pears'));
 
-    expect(await screen.findByText("That item isn't available anymore. Pick another.")).toBeTruthy();
-    expect(screen.getByText('Pear Slices')).toBeTruthy();
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(within(screen.getByTestId('confirm-toast')).getByText("That item isn't available anymore. Pick another.")).toBeTruthy();
     expect(screen.queryByText('Sliced Pears')).toBeNull();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     expect(screen.getByLabelText('Search')).toBeTruthy();
     expect(screen.queryByText('No close match found.')).toBeNull();
+    expect(commitScan).toHaveBeenCalledTimes(again ? 3 : 2);
+  });
+
+  it('finds a zero-stock household item and leaves a shelved item out', async () => {
+    const rice = householdItem('Rice', 'prod-rice', 0);
+    const cakes = householdItem('Rice cakes', 'prod-cakes', 2, true);
+    const getInventoryList = jest.fn(async () => [rice, cakes]);
+    const commitScan = jest.fn(async (_id: string, linkProductId?: string) => {
+      if (linkProductId === 'prod-rice') return entry({ status: 'committed' });
+      throw new ApiError(409, 'unlinked barcode', 'no_item', []);
+    });
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
+      commitScan,
+      getInventoryList,
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+    await fireEvent.changeText(await screen.findByLabelText('Search'), 'rice');
+
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    expect(screen.getByText('0 in stock')).toBeTruthy();
+    expect(screen.queryByText('Rice cakes')).toBeNull();
+    expect(getInventoryList).toHaveBeenCalledWith();
+    await fireEvent.press(screen.getByLabelText('Link Rice'));
+    await waitFor(() => expect(commitScan).toHaveBeenLastCalledWith('scan-1', 'prod-rice'));
+  });
+
+  it('shows a short confirm result in the toast', async () => {
+    const api = client({
+      listPending: jest.fn(async () => [entry({ unitCount: 3 })]),
+      commitScan: jest.fn(async () => Object.assign(entry({ unitCount: 3, status: 'committed' }), { removedCount: 1 })),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+
+    expect(within(await screen.findByTestId('confirm-toast')).getByText('Only 1 was on hand, so 1 was taken out.')).toBeTruthy();
   });
 
   it.each([
     {
       label: 'product unresolved',
       code: 'product_unresolved',
-      message: 'Pick a product for this scan first.',
+      message: 'Choose which item this is first.',
       refetch: false,
     },
     {

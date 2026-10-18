@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -11,17 +11,21 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
+import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
+import { filterInventoryItems } from '../../../frontend/src/utils/inventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   BATCH_FAILURE_FALLBACK,
   batchFailureNotices,
   commitConflictBehavior,
-  LINK_OFFER_HEADING,
+  type CommitConflictBehavior,
+  formatPartialRemoval,
   NO_CLOSE_MATCH,
-} from '../api/contract';
+} from '../../../frontend/src/api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
+
+const LINK_OFFER_HEADING = 'Which item is this?';
 
 export interface QueueScreenProps {
   client: StockbotClient;
@@ -33,9 +37,43 @@ interface LinkOfferState {
   showEmptyLine: boolean;
 }
 
+interface LinkRow {
+  key: string;
+  name: string;
+  onHand: number;
+  productId: string;
+}
+
 function keepIds<T>(current: Record<string, T>, entries: ScanEntry[]): Record<string, T> {
   const ids = new Set(entries.map((entry) => entry.id));
   return Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
+}
+
+function isShelved(row: InventoryItem): boolean {
+  const shelved = (row.item as { shelved?: boolean | number }).shelved;
+  return shelved === true || shelved === 1;
+}
+
+function suggestionRows(suggestions: PantryLinkSuggestion[]): LinkRow[] {
+  return suggestions.map((suggestion) => ({
+    key: suggestion.itemId,
+    name: suggestion.name,
+    onHand: suggestion.onHand,
+    productId: suggestion.productId,
+  }));
+}
+
+// Same name and category match as the inventory page. Shelved rows are dropped
+// here until the list itself omits them. Zero on hand stays.
+function householdRows(rows: InventoryItem[], query: string): LinkRow[] {
+  return filterInventoryItems(rows, query)
+    .filter((row) => !isShelved(row))
+    .map((row) => ({
+      key: row.item.id,
+      name: row.item.product.name,
+      onHand: row.instanceCount,
+      productId: row.item.productId,
+    }));
 }
 
 export function QueueScreen({ client, warning }: QueueScreenProps) {
@@ -44,6 +82,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -101,10 +140,6 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     });
   }
 
-  function showNote(id: string, message: string) {
-    setNotes((current) => ({ ...current, [id]: message }));
-  }
-
   function clearNote(id: string) {
     setNotes((current) => {
       if (!(id in current)) return current;
@@ -114,10 +149,9 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     });
   }
 
-  // Suggestions on the error body are the fresh list. A batch failure has no
-  // list, so a plain commit asks the server for one.
-  async function refetchSuggestions(id: string, carried?: PantryLinkSuggestion[]): Promise<PantryLinkSuggestion[]> {
-    if (carried) return carried;
+  // A link recommit with an empty list asks again so the stale row can drop off.
+  // One extra commit; its suggestions are the new list.
+  async function refetchSuggestions(id: string): Promise<PantryLinkSuggestion[]> {
     try {
       await client.commitScan(id);
       return [];
@@ -126,38 +160,45 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     }
   }
 
-  function applyCommitFailure(id: string, requestError: ApiError, suggestions: PantryLinkSuggestion[]) {
+  async function offerSuggestions(
+    id: string,
+    behavior: CommitConflictBehavior,
+    carried: PantryLinkSuggestion[],
+  ): Promise<PantryLinkSuggestion[]> {
+    if (behavior.hideEmptyMatch) return [];
+    if (behavior.refreshSuggestions && carried.length === 0) return refetchSuggestions(id);
+    return carried;
+  }
+
+  async function showCommitFailure(id: string, requestError: ApiError) {
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
-    if (behavior.showMessage) showNote(id, requestError.message);
-    else clearNote(id);
-    if (behavior.linkOffer) {
-      showOffer(id, suggestions, behavior.showEmptyLine);
+    setToast(behavior.showMessage ? requestError.message : '');
+    clearNote(id);
+    if (!(behavior.linkOffer || behavior.refreshSuggestions)) {
+      clearOffer(id);
       return;
     }
-    clearOffer(id);
-    if (!behavior.showMessage) {
-      setError(requestError.message);
-    }
+    const suggestions = await offerSuggestions(id, behavior, requestError.suggestions);
+    showOffer(id, suggestions, behavior.linkOffer && !behavior.hideEmptyMatch);
   }
 
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
+    setToast('');
     try {
-      await client.commitScan(id);
+      const committed = await client.commitScan(id);
       clearOffer(id);
       clearNote(id);
+      const unitCount = entries.find((entry) => entry.id === id)?.unitCount ?? 1;
+      setToast(formatPartialRemoval(unitCount, committed) ?? '');
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
-        const behavior = commitConflictBehavior(requestError.code);
-        const suggestions = behavior.refreshSuggestions
-          ? await refetchSuggestions(id, requestError.suggestions)
-          : (behavior.useSuggestions ? requestError.suggestions : []);
-        applyCommitFailure(id, requestError, suggestions);
+        await showCommitFailure(id, requestError);
       } else {
-        setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+        setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
       }
     } finally {
       setBusyId('');
@@ -167,20 +208,19 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   async function linkOne(id: string, productId: string) {
     setBusyId(id);
     setError('');
+    setToast('');
     try {
-      await client.commitScan(id, productId);
+      const committed = await client.commitScan(id, productId);
       clearOffer(id);
       clearNote(id);
+      const unitCount = entries.find((entry) => entry.id === id)?.unitCount ?? 1;
+      setToast(formatPartialRemoval(unitCount, committed) ?? '');
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
-        const behavior = commitConflictBehavior(requestError.code);
-        const suggestions = behavior.refreshSuggestions
-          ? await refetchSuggestions(id, requestError.suggestions)
-          : (behavior.useSuggestions ? requestError.suggestions : []);
-        applyCommitFailure(id, requestError, suggestions);
+        await showCommitFailure(id, requestError);
       } else {
-        setError(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+        setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
       }
     } finally {
       setBusyId('');
@@ -190,6 +230,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   async function confirmAll() {
     setBusyId('all');
     setError('');
+    setToast('');
     try {
       const result = await client.batchCommit(entries.map((entry) => entry.id));
       const notices = batchFailureNotices(result);
@@ -204,18 +245,17 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       for (const { notice, behavior, suggestions } of resolved) {
         if (!pending.some((entry) => entry.id === notice.id)) continue;
         if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
-        if (!behavior.linkOffer) continue;
-        const list = behavior.useSuggestions || behavior.refreshSuggestions ? suggestions : [];
+        if (!(behavior.linkOffer || behavior.refreshSuggestions)) continue;
+        const list = behavior.hideEmptyMatch ? [] : suggestions;
         nextOffers[notice.id] = {
           suggestions: list,
-          showEmptyLine: behavior.showEmptyLine && list.length === 0,
+          showEmptyLine: behavior.linkOffer && !behavior.hideEmptyMatch && list.length === 0,
         };
       }
-      const unexplained = resolved.filter(({ notice }) => pending.some((entry) => entry.id === notice.id) && notice.message === '');
       setEntries(pending);
       setNotes(nextNotes);
       setOffers(nextOffers);
-      setError(unexplained.length > 0 ? BATCH_FAILURE_FALLBACK : '');
+      setError(notices.length > 0 ? BATCH_FAILURE_FALLBACK : '');
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
@@ -247,7 +287,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={<Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item }) => (
-            <View style={[styles.row, { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf }]}>
+            <View testID={`scan-${item.id}`} style={[styles.row, { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf }]}>
               <View style={styles.rowMain}>
                 <View style={styles.rowCopy}>
                   <Text style={styles.name}>{item.product?.name || item.barcode}</Text>
@@ -273,6 +313,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
                   suggestions={offers[item.id].suggestions}
                   showEmptyLine={offers[item.id].showEmptyLine}
                   busy={busyId === item.id}
+                  loadHousehold={() => client.getInventoryList()}
                   onLink={(productId) => { void linkOne(item.id, productId); }}
                   onDismiss={() => clearOffer(item.id)}
                 />
@@ -293,6 +334,12 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
           <Text style={styles.confirmAllText}>{busyId === 'all' ? 'Confirming' : 'Confirm all'}</Text>
         </Pressable>
       )}
+
+      {toast !== '' && (
+        <View testID="confirm-toast" accessibilityLiveRegion="polite" style={[styles.toast, { bottom: insets.bottom + 16 }]}>
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -301,36 +348,47 @@ function LinkOffer({
   suggestions,
   showEmptyLine,
   busy,
+  loadHousehold,
   onLink,
   onDismiss,
 }: {
   suggestions: PantryLinkSuggestion[];
   showEmptyLine: boolean;
   busy: boolean;
+  loadHousehold: () => Promise<InventoryItem[]>;
   onLink: (productId: string) => void;
   onDismiss: () => void;
 }) {
   const [query, setQuery] = useState('');
-  const needle = query.trim().toLowerCase();
-  const visible = needle === ''
-    ? suggestions
-    : suggestions.filter((suggestion) => suggestion.name.toLowerCase().includes(needle));
+  const [household, setHousehold] = useState<InventoryItem[] | null>(null);
+  const requested = useRef(false);
+  const needle = query.trim();
+  const visible = needle === '' ? suggestionRows(suggestions) : householdRows(household ?? [], needle);
+
+  function onQuery(next: string) {
+    setQuery(next);
+    if (next.trim() === '' || requested.current) return;
+    requested.current = true;
+    void loadHousehold()
+      .then((rows) => setHousehold(Array.isArray(rows) ? rows : []))
+      .catch(() => setHousehold([]));
+  }
 
   return (
     <View style={styles.offer}>
       <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
-      {showEmptyLine && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
-      {visible.map((suggestion) => (
-        <View key={suggestion.itemId} style={styles.offerRow}>
+      {showEmptyLine && needle === '' && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
+      {visible.map((row) => (
+        <View key={row.key} style={styles.offerRow}>
           <View style={styles.rowCopy}>
-            <Text style={styles.name}>{suggestion.name}</Text>
-            <Text style={styles.meta}>{suggestion.onHand} in stock</Text>
+            <Text style={styles.name}>{row.name}</Text>
+            <Text style={styles.meta}>{row.onHand} in stock</Text>
           </View>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Link ${suggestion.name} and scan it out`}
+            accessibilityLabel={`Link ${row.name}`}
             disabled={busy}
-            onPress={() => onLink(suggestion.productId)}
+            onPress={() => onLink(row.productId)}
             style={styles.confirm}
           >
             <Text style={styles.confirmText}>{busy ? 'Linking' : 'Link'}</Text>
@@ -340,7 +398,7 @@ function LinkOffer({
       <TextInput
         accessibilityLabel="Search"
         value={query}
-        onChangeText={setQuery}
+        onChangeText={onQuery}
         placeholder="Search"
         placeholderTextColor={colors.inkMuted}
         autoCorrect={false}
@@ -454,6 +512,11 @@ const styles = StyleSheet.create({
   offer: {
     marginTop: 14,
     gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: colors.paper,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.rule,
   },
   offerTitle: {
     fontFamily: fonts.bold,
@@ -465,7 +528,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
-    color: colors.ink,
+    color: colors.inkMuted,
   },
   note: {
     fontFamily: fonts.regular,
@@ -508,6 +571,20 @@ const styles = StyleSheet.create({
   confirmAllText: {
     fontFamily: fonts.bold,
     fontSize: 18,
+    color: colors.white,
+  },
+  toast: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    backgroundColor: colors.ink,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  toastText: {
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
     color: colors.white,
   },
 });

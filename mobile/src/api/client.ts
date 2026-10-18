@@ -10,11 +10,14 @@ import {
   SCANS_PATH,
   SESSION_PATH,
   type SetScannerModeResponse,
+  inventoryListPath,
   scanCommitPath,
   scansQuery,
-} from './contract';
+  SERVER_ERROR_FALLBACK,
+} from '../../../frontend/src/api/contract';
 import type {
   BatchCommitResponse,
+  InventoryItem,
   PantryLinkSuggestion,
   ScanDirection,
   ScanEntry,
@@ -51,6 +54,9 @@ export interface StockbotClient {
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry>;
   batchCommit: (ids: string[]) => Promise<BatchCommitResponse & { failedCodes?: string[] }>;
+  // Household items, including zero stock. Same call as getInventoryList in
+  // the web client (GET /api/inventory). Not the product catalog.
+  getInventoryList: (query?: string) => Promise<InventoryItem[]>;
 }
 
 export interface ClientOptions {
@@ -141,18 +147,28 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
         body: JSON.stringify(body),
       });
     },
+    async getInventoryList(query) {
+      const rows = await request<InventoryItem[]>(inventoryListPath(query));
+      return Array.isArray(rows) ? rows : [];
+    },
   };
+}
+
+function failureMessage(status: number, errorField: unknown, statusText: string): string {
+  if (typeof errorField === 'string' && errorField !== '') return errorField;
+  if (status >= 500) return SERVER_ERROR_FALLBACK;
+  return statusText || 'The request failed.';
 }
 
 async function readError(res: Response): Promise<{ message: string; code: string; suggestions: PantryLinkSuggestion[] }> {
   try {
-    const body = (await res.json()) as { error?: string; code?: string; suggestions?: PantryLinkSuggestion[] };
+    const body = (await res.json()) as { error?: unknown; code?: string; suggestions?: PantryLinkSuggestion[] };
     return {
-      message: body.error || res.statusText || 'The request failed.',
+      message: failureMessage(res.status, body.error, res.statusText),
       code: body.code ?? '',
       suggestions: body.suggestions ?? [],
     };
   } catch {
-    return { message: res.statusText || 'The request failed.', code: '', suggestions: [] };
+    return { message: failureMessage(res.status, undefined, res.statusText), code: '', suggestions: [] };
   }
 }

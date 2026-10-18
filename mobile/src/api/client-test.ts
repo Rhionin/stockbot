@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH } from './contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH } from '../../../frontend/src/api/contract';
 import { ApiError, basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -122,6 +122,35 @@ describe('createStockbotClient', () => {
     expect(String(linkCall?.[0])).toBe(`${serverUrl}${scanCommitPath('scan-1')}`);
     expect(JSON.parse(String(linkCall?.[1]?.body))).toEqual({ linkProductId: 'prod-pears' });
     expect(new Headers(linkCall?.[1]?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, password));
+  });
+
+  it.each([
+    { status: 502, body: '', message: 'Something went wrong. Try again.' },
+    { status: 503, body: '<html>unavailable</html>', message: 'Something went wrong. Try again.' },
+    { status: 500, body: JSON.stringify({ error: 'The shelf did not save.' }), message: 'The shelf did not save.' },
+  ])('status $status uses the server error when present', async ({ status, body, message }) => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: false,
+      status,
+      statusText: 'Bad Gateway',
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    } as Response));
+    const { client } = clientWith(fetchImpl);
+
+    await expect(client.getSession()).rejects.toMatchObject({ status, message });
+  });
+
+  it('reads household items from the inventory list, not the product catalog', async () => {
+    const urls: string[] = [];
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return jsonResponse(200, []);
+    });
+    const { client } = clientWith(fetchImpl);
+
+    await expect(client.getInventoryList()).resolves.toEqual([]);
+    expect(urls).toEqual([`${serverUrl}/api/inventory`]);
   });
 
   it('reads and sets the shared scanner mode', async () => {
