@@ -1,12 +1,17 @@
 package webui
 
 import (
+	"bytes"
+	"errors"
 	"io"
+	"io/fs"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func TestNewHandler_ServesPlaceholderAssets(t *testing.T) {
@@ -271,6 +276,7 @@ func TestBadFilesystem(t *testing.T) {
 		// No index.html file
 	}
 
+	logs := captureLog(t)
 	handler := NewHandlerFS(testFS)
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -287,7 +293,100 @@ func TestBadFilesystem(t *testing.T) {
 	if strings.Contains(w.Body.String(), "index.html") {
 		t.Errorf("body leaked the filesystem error: %s", w.Body.String())
 	}
+	if !strings.Contains(logs.String(), "web ui: open index.html: file does not exist") {
+		t.Errorf("log = %q", logs.String())
+	}
 }
+
+func TestUnreadableAssetUsesSharedServerError(t *testing.T) {
+	logs := captureLog(t)
+	handler := NewHandlerFS(assetTree{
+		"index.html":       &sliceFile{name: "index.html", data: []byte("<html>shell</html>")},
+		"assets/broken.js": &readFailFile{name: "broken.js", err: errors.New("disk read failed")},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/broken.js", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "Something went wrong. Try again.\n" {
+		t.Fatalf("body = %q", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "disk read failed") {
+		t.Fatalf("body leaked the read error: %s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "web ui: disk read failed") {
+		t.Fatalf("log = %q", logs.String())
+	}
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return &logs
+}
+
+type assetTree map[string]fs.File
+
+func (t assetTree) Open(name string) (fs.File, error) {
+	file, ok := t[name]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return file, nil
+}
+
+type sliceFile struct {
+	name string
+	data []byte
+	off  int
+}
+
+func (f *sliceFile) Stat() (fs.FileInfo, error) {
+	return fileInfo{name: f.name, size: int64(len(f.data))}, nil
+}
+
+func (f *sliceFile) Read(p []byte) (int, error) {
+	if f.off >= len(f.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[f.off:])
+	f.off += n
+	return n, nil
+}
+
+func (f *sliceFile) Close() error { return nil }
+
+type readFailFile struct {
+	name string
+	err  error
+}
+
+func (f *readFailFile) Stat() (fs.FileInfo, error) {
+	return fileInfo{name: f.name, size: 1}, nil
+}
+
+func (f *readFailFile) Read([]byte) (int, error) { return 0, f.err }
+
+func (f *readFailFile) Close() error { return nil }
+
+type fileInfo struct {
+	name string
+	size int64
+}
+
+func (i fileInfo) Name() string       { return i.name }
+func (i fileInfo) Size() int64        { return i.size }
+func (i fileInfo) Mode() fs.FileMode  { return 0o644 }
+func (i fileInfo) ModTime() time.Time { return time.Time{} }
+func (i fileInfo) IsDir() bool        { return false }
+func (i fileInfo) Sys() any           { return nil }
 
 func TestHashedAssetRevalidatesWithoutAFullDownload(t *testing.T) {
 	body := []byte("console.log('hashed');")

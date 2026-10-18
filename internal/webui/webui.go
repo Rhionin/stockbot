@@ -129,7 +129,8 @@ func (h *handler) serveOpened(w http.ResponseWriter, r *http.Request, name strin
 	if !ok {
 		data, err := io.ReadAll(f)
 		if err != nil {
-			http.Error(w, "The file could not be read.", http.StatusInternalServerError)
+			log.Printf("web ui: %s", err)
+			http.Error(w, clientmsg.ServerError, http.StatusInternalServerError)
 			return
 		}
 		rs = bytes.NewReader(data)

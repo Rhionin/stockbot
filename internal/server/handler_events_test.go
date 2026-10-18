@@ -2,9 +2,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +240,53 @@ func TestEventsStream_KeepaliveCommentThenRealEvent(t *testing.T) {
 		t.Fatalf("data line: got %q", dataLine)
 	}
 }
+
+func TestEventsStreamingUnsupported(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	handler := &EventsHandler{}
+	rec := &plainResponse{}
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	handler.Handle(rec, req)
+
+	if rec.code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", rec.code, rec.body.String())
+	}
+	if rec.body.String() != "Something went wrong. Try again.\n" {
+		t.Fatalf("body = %q", rec.body.String())
+	}
+	if strings.Contains(rec.body.String(), "streaming") {
+		t.Fatalf("body leaked the reason: %s", rec.body.String())
+	}
+	if !strings.Contains(logs.String(), "events: streaming unsupported") {
+		t.Fatalf("log = %q", logs.String())
+	}
+}
+
+type plainResponse struct {
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func (p *plainResponse) Header() http.Header {
+	if p.header == nil {
+		p.header = make(http.Header)
+	}
+	return p.header
+}
+
+func (p *plainResponse) Write(b []byte) (int, error) {
+	if p.code == 0 {
+		p.code = http.StatusOK
+	}
+	return p.body.Write(b)
+}
+
+func (p *plainResponse) WriteHeader(status int) { p.code = status }
 
 func waitSSEFrame(t *testing.T, frames <-chan sseFrame) sseFrame {
 	t.Helper()
