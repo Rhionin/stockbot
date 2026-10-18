@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "note": "One batch: a full stock-out (3 on hand, unitCount 2), a partial stock-out (1 on hand, unitCount 3), a stock-in of 2, and a stock-out with nothing on hand. stockOutCounts has one entry per committed stock-out, including the full removal. The stock-in and the failed card are absent. The partial card stays in committedIds. failedReasons and failedCodes stay parallel to failedIds.",
+  "request": {
+    "scanEntryIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in", "scan-batch-none"],
+    "commit": true
+  },
+  "body": {
+    "updatedCount": 4,
+    "committedIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in"],
+    "failedIds": ["scan-batch-none"],
+    "failedReasons": ["Nothing on hand to take out."],
+    "failedCodes": ["none_on_hand"],
+    "stockOutCounts": {
+      "scan-batch-full": { "removedCount": 2, "requestedCount": 2 },
+      "scan-batch-partial": { "removedCount": 1, "requestedCount": 3 }
+    }
+  }
+}

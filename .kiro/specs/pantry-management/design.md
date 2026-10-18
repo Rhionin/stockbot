@@ -201,7 +201,7 @@ Files in `internal/routes/` (one per endpoint, named after the resource + action
 | GET | `/api/scans/history` | Read-only scan history |
 | PATCH | `/api/scans/{id}` | Update direction, unit count, expiry, or resolution |
 | POST | `/api/scans/{id}/commit` | Commit one scan entry. See stock-out counts below |
-| POST | `/api/scans/batch-commit` | Commit several entries. A stock-out uses each entry's unit count the same way a single commit does. The batch body does not add removal counts |
+| POST | `/api/scans/batch-commit` | Commit several entries. Each committed stock-out is reported in `stockOutCounts`. See below |
 
 `POST /api/scans/{id}/commit` with direction `stock_out` removes the entry's `unitCount` (N) units in one transaction. Nothing leaves the shelf before that commit. A repeat scan of an open stock-out card only raises `unitCount`, the same way a stock-in rescan does.
 
@@ -218,7 +218,11 @@ Every successful stock-out commit — including one that removes exactly N — r
 
 Clients show the short-shelf note when `removedCount` is less than `requestedCount`. Stock-in responses omit both fields. A shared example of a partial 200 is `testdata/contract/scan-commit-partial.json`.
 
-`POST /api/scans/batch-commit` removes N the same way for each stock-out it commits, including a `unitCount` sent on the batch. It does not add `removedCount` or `requestedCount`. A stock-out that removes at least one unit is listed in `committedIds`. A stock-out with nothing on hand stays in `failedIds` with `failedCodes` `none_on_hand`.
+`POST /api/scans/batch-commit` removes N the same way for each stock-out it commits, including a `unitCount` sent on the batch. The rest of the body is unchanged: `updatedCount`, `committedIds`, `failedIds`, `failedReasons`, and `failedCodes`. `failedReasons` and `failedCodes` stay parallel arrays aligned with `failedIds`.
+
+Each committed stock-out is also an entry in `stockOutCounts`, keyed by scan id. The value is the same two fields as a single stock-out commit: `removedCount` (units that left the shelf) and `requestedCount` (that card's `unitCount`, N). A full removal is included, so `removedCount` may equal `requestedCount`. A stock-in has no entry. A failed card has no entry. A partial stock-out still counts as committed and stays in `committedIds`. A stock-out with nothing on hand stays in `failedIds` with `failedCodes` `none_on_hand`. When the batch commits no stock-out, `stockOutCounts` is omitted.
+
+A shared example of that mixed 200 is `testdata/contract/scan-batch-commit-partial.json`.
 
 #### Products
 

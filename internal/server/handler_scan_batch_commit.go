@@ -24,6 +24,13 @@ type batchCommitRequest struct {
 	Commit       bool                `json:"commit"`
 }
 
+// stockOutCount is one committed stock-out. removedCount is how many units
+// left the shelf. requestedCount is that card's unit count.
+type stockOutCount struct {
+	RemovedCount   int `json:"removedCount"`
+	RequestedCount int `json:"requestedCount"`
+}
+
 type batchCommitResponse struct {
 	UpdatedCount  int      `json:"updatedCount"`
 	CommittedIDs  []string `json:"committedIds,omitempty"`
@@ -32,6 +39,11 @@ type batchCommitResponse struct {
 	// FailedCodes is parallel to FailedIDs and FailedReasons. Older clients
 	// that only read the sentences keep working.
 	FailedCodes []string `json:"failedCodes,omitempty"`
+	// StockOutCounts is keyed by scan id, one entry per committed stock-out
+	// (a full removal included). Stock-ins and failed cards are left out.
+	// Failures stay parallel arrays; this is a map because it is only the
+	// stock-out subset of committedIds.
+	StockOutCounts map[string]stockOutCount `json:"stockOutCounts,omitempty"`
 }
 
 func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}]) (batchCommitResponse, error) {
@@ -71,6 +83,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		failedIDs := []string{}
 		failedReasons := []string{}
 		failedCodes := []string{}
+		var stockOutCounts map[string]stockOutCount
 
 		for _, id := range req.Body.ScanEntryIDs {
 			entry, err := h.Queue.GetScanEntry(req.Context, id)
@@ -95,17 +108,28 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				continue
 			}
 
+			var removed int
 			var commitErr error
 			if *entry.Direction == scan.StockIn {
 				commitErr = h.Queue.CommitStockIn(req.Context, entry)
 			} else {
-				_, commitErr = h.Queue.CommitStockOut(req.Context, entry, nil)
+				removed, commitErr = h.Queue.CommitStockOut(req.Context, entry, nil)
 			}
 
 			if commitErr != nil {
 				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, commitErr)
-			} else {
-				committedIDs = append(committedIDs, id)
+				continue
+			}
+			committedIDs = append(committedIDs, id)
+			if *entry.Direction != scan.StockOut {
+				continue
+			}
+			if stockOutCounts == nil {
+				stockOutCounts = map[string]stockOutCount{}
+			}
+			stockOutCounts[id] = stockOutCount{
+				RemovedCount:   removed,
+				RequestedCount: entry.UnitCount,
 			}
 		}
 
@@ -113,6 +137,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		response.FailedIDs = failedIDs
 		response.FailedReasons = failedReasons
 		response.FailedCodes = failedCodes
+		response.StockOutCounts = stockOutCounts
 	}
 
 	return response, nil

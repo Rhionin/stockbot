@@ -13,12 +13,14 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
-// commitContract is the shared stock-out commit example frontend tests can read.
-// body is the stable part of a 200. The handler also returns timestamps and the
-// product summary; the test checks that every fixture field matches those bytes.
+// commitContract is a shared example frontend tests can read.
+// body is the stable part of the response. A single commit also returns
+// timestamps and the product summary; the test checks that every fixture
+// field matches those bytes. request, when set, is the body the test posts.
 type commitContract struct {
-	Status int            `json:"status"`
-	Body   map[string]any `json:"body"`
+	Status  int             `json:"status"`
+	Request json.RawMessage `json:"request,omitempty"`
+	Body    map[string]any  `json:"body"`
 }
 
 func loadCommitContract(t *testing.T, name string) commitContract {
