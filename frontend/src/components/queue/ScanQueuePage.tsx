@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices, type BatchFailureNotice } from '../../api/contract';
 import type { BatchCommitResponse, InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
@@ -35,7 +35,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [failureById, setFailureById] = useState<Map<string, string>>(new Map());
+  const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
   const [removalNotes, setRemovalNotes] = useState<string[]>([]);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -94,9 +94,9 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         if (current.size === 0) return current;
         const pendingIds = new Set(pending.map((entry) => entry.id));
         let changed = false;
-        const next = new Map<string, string>();
-        for (const [id, message] of current) {
-          if (pendingIds.has(id)) next.set(id, message);
+        const next = new Map<string, BatchFailureNotice>();
+        for (const [id, notice] of current) {
+          if (pendingIds.has(id)) next.set(id, notice);
           else changed = true;
         }
         return changed ? next : current;
@@ -310,7 +310,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
 
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
-    setFailureById(new Map(notices.map((notice) => [notice.id, notice.message])));
+    setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
     setRemovalNotes([]);
     setSelectedIds(notices.map((notice) => notice.id));
     void loadQueue();
@@ -465,7 +465,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
-                  commitNotice={failureById.get(entry.id) ?? ''}
+                  commitNotice={failureById.get(entry.id)?.message ?? ''}
+                  commitCode={failureById.get(entry.id)?.code ?? ''}
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
                   onChanged={() => void loadQueue()}
