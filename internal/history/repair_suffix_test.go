@@ -6,8 +6,8 @@ import (
 )
 
 // A committed scan written by time.Now().String() keeps the monotonic " m="
-// suffix. The repair reads the shelf instant back through the driver, which
-// drops that suffix, so a SQL equality check never sees the row.
+// suffix. The repair parses that text and drops the suffix, so the shelf
+// instant still matches. A SQL equality check never sees the row.
 func TestRepairMatchesSuffixedScannedAt(t *testing.T) {
 	const (
 		suffixed   = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"

@@ -3,7 +3,9 @@ package history
 import (
 	"context"
 	"database/sql"
+	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -291,17 +293,18 @@ func ensureRemoved(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	return nil
 }
 
-// scanKey groups committed scans so a repair matches instants in memory.
+// scanKey groups one user's committed scans so a repair matches instants in memory.
+// "Exactly one" is one scan for that user, product, and direction.
 // Move rows say "in" and "out"; scan rows say "stock_in" and "stock_out".
 type scanKey struct {
+	userID    string
 	productID string
 	direction string
 }
 
 type storedScan struct {
-	id     string
-	userID string
-	at     time.Time
+	id string
+	at time.Time
 }
 
 type scanIndex struct {
@@ -310,7 +313,7 @@ type scanIndex struct {
 
 func loadCommittedScans(ctx context.Context, tx *sql.Tx) (scanIndex, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, user_id, product_id, direction, scanned_at
+		SELECT id, user_id, product_id, direction, CAST(scanned_at AS TEXT)
 		FROM scan_entries
 		WHERE status = 'committed' AND product_id IS NOT NULL AND direction IS NOT NULL
 		ORDER BY id`)
@@ -320,16 +323,20 @@ func loadCommittedScans(ctx context.Context, tx *sql.Tx) (scanIndex, error) {
 	defer rows.Close()
 	idx := scanIndex{byKey: map[scanKey][]storedScan{}}
 	for rows.Next() {
-		var scan storedScan
-		var productID, direction string
-		if err := rows.Scan(&scan.id, &scan.userID, &productID, &direction, &scan.at); err != nil {
+		var id, userID, productID, direction, scannedAt string
+		if err := rows.Scan(&id, &userID, &productID, &direction, &scannedAt); err != nil {
 			return scanIndex{}, err
 		}
-		if scan.id == "" {
+		at, err := parseStoredTime(scannedAt)
+		if err != nil {
+			log.Printf("history repair: skipped a committed scan whose scanned_at could not be parsed")
 			continue
 		}
-		key := scanKey{productID: productID, direction: direction}
-		idx.byKey[key] = append(idx.byKey[key], scan)
+		if id == "" {
+			continue
+		}
+		key := scanKey{userID: userID, productID: productID, direction: direction}
+		idx.byKey[key] = append(idx.byKey[key], storedScan{id: id, at: at})
 	}
 	if err := rows.Err(); err != nil {
 		return scanIndex{}, err
@@ -337,12 +344,41 @@ func loadCommittedScans(ctx context.Context, tx *sql.Tx) (scanIndex, error) {
 	return idx, nil
 }
 
-// first is the earliest committed scan for this product, direction, and instant.
-// scanned_at is parsed by the driver, which drops a legacy " m=" suffix, so
-// Equal matches the shelf instant the suffix was written from.
+// parseStoredTime reads a scanned_at value stored as text, including a legacy
+// monotonic " m=" suffix. Unreadable text is not a match.
+func parseStoredTime(raw string) (time.Time, error) {
+	raw = stripMonotonic(raw)
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05",
+	}
+	var last error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+		last = err
+	}
+	return time.Time{}, last
+}
+
+func stripMonotonic(raw string) string {
+	if i := strings.Index(raw, " m="); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
+// first is the earliest committed scan this user recorded for the product,
+// direction, and instant. Another user's scan at the same instant is not a match.
 func (idx scanIndex) first(userID, productID, direction string, at time.Time) (*string, string) {
-	for _, scan := range idx.byKey[scanKey{productID: productID, direction: direction}] {
-		if scan.userID == userID && scan.at.Equal(at) {
+	for _, scan := range idx.byKey[scanKey{userID: userID, productID: productID, direction: direction}] {
+		if scan.at.Equal(at) {
 			id := scan.id
 			return &id, "scan"
 		}
@@ -362,8 +398,11 @@ func moveScanDirection(direction string) (string, bool) {
 }
 
 // relabelManualMoves points an existing manual move at a committed scan when
-// that instant has exactly one match and no other move already uses it.
-// Only source and scan_entry_id change. A later pass finds nothing to update.
+// that user has exactly one match for the product, direction, and instant,
+// and no other move already uses it. Two moves that share one scan are
+// taken in id order: the first is updated, then the scan is marked linked,
+// so the rest of the pass leaves it alone. Only source and scan_entry_id
+// change. A later pass finds nothing to update.
 func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	linked, err := linkedScanIDs(ctx, tx)
 	if err != nil {
@@ -404,7 +443,8 @@ func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error 
 		}
 		var matched *storedScan
 		ambiguous := false
-		for _, scan := range scans.byKey[scanKey{productID: move.productID, direction: direction}] {
+		key := scanKey{userID: move.userID, productID: move.productID, direction: direction}
+		for _, scan := range scans.byKey[key] {
 			if !scan.at.Equal(move.at) {
 				continue
 			}
@@ -415,7 +455,7 @@ func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error 
 			copy := scan
 			matched = &copy
 		}
-		if ambiguous || matched == nil || matched.userID != move.userID {
+		if ambiguous || matched == nil {
 			continue
 		}
 		if _, taken := linked[matched.id]; taken {

@@ -1,8 +1,10 @@
 package history
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +187,246 @@ func TestRelabelThreeThousandScans(t *testing.T) {
 	miss := moveColumns(t, db, "move-miss-0")
 	if miss.source != "manual" || miss.scanID != "" {
 		t.Fatalf("miss = %s %s", miss.source, miss.scanID)
+	}
+}
+
+func TestRelabelThreeMovesAcrossTwoProducts(t *testing.T) {
+	const (
+		oatsIn  = "2026-10-17 18:00:00 +0000 UTC"
+		oatsOut = "2026-10-17 18:05:00 +0000 UTC"
+		riceIn  = "2026-10-17 18:10:00 +0000 UTC"
+	)
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
+			('scan-oats-in', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
+			('scan-oats-out', 'user-1', 'oats', ?, 'stock_out', 1, 'committed', 'prod'),
+			('scan-rice-in', 'user-1', 'rice', ?, 'stock_in', 1, 'committed', 'other')`,
+		oatsIn, oatsOut, riceIn)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked) VALUES
+			('move-oats-in', 'item', 'prod', 'in', 1, ?, 'manual', 0),
+			('move-oats-out', 'item', 'prod', 'out', 2, ?, 'manual', 0),
+			('move-rice-in', 'item-other', 'other', 'in', 4, ?, 'manual', 0)`,
+		oatsIn, oatsOut, riceIn)
+
+	repairHistory(t, db)
+	want := map[string]string{
+		"move-oats-in":  "scan-oats-in",
+		"move-oats-out": "scan-oats-out",
+		"move-rice-in":  "scan-rice-in",
+	}
+	for id, scanID := range want {
+		got := moveColumns(t, db, id)
+		if got.source != "scan" || got.scanID != scanID {
+			t.Fatalf("%s = %s %s", id, got.source, got.scanID)
+		}
+	}
+
+	snapshot := dumpMoves(t, db)
+	repairHistory(t, db)
+	if again := dumpMoves(t, db); again != snapshot {
+		t.Fatalf("rerun changed rows\n%s\n%s", snapshot, again)
+	}
+}
+
+func TestRelabelIgnoresAnotherUsersScanAtTheSameInstant(t *testing.T) {
+	const at = "2026-10-17 18:55:19 +0000 UTC"
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
+			('scan-mine', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
+			('scan-theirs', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
+		at, at)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
+		VALUES ('move-mine', 'item', 'prod', 'in', 1, ?, 'manual', 0)`, at)
+
+	repairHistory(t, db)
+	got := moveColumns(t, db, "move-mine")
+	if got.source != "scan" || got.scanID != "scan-mine" {
+		t.Fatalf("own scan = %s %s", got.source, got.scanID)
+	}
+	var linked int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_moves WHERE scan_entry_id = 'scan-theirs'`).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if linked != 0 {
+		t.Fatalf("other user's scan linked %d times", linked)
+	}
+}
+
+func TestRelabelDoesNotLinkAnotherUsersOnlyScan(t *testing.T) {
+	const (
+		shelfAt = "2026-10-17 08:00:00 +0000 UTC"
+		moveAt  = "2026-10-17 09:00:00 +0000 UTC"
+	)
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
+			('scan-shelf', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
+			('scan-move', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
+		shelfAt, moveAt)
+	execHistory(t, db, `
+		INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-shelf', 'item', ?)`, shelfAt)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
+		VALUES ('move-lone', 'item', 'prod', 'in', 1, ?, 'manual', 0)`, moveAt)
+
+	repairHistory(t, db)
+	lone := moveColumns(t, db, "move-lone")
+	if lone.source != "manual" || lone.scanID != "" {
+		t.Fatalf("manual move linked to the other user: %s %s", lone.source, lone.scanID)
+	}
+	var created int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM stock_moves
+		WHERE source = 'manual' AND scan_entry_id IS NULL AND id != 'move-lone'`).Scan(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 {
+		t.Fatalf("shelf row attributed %d moves", created)
+	}
+	var stolen int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM stock_moves
+		WHERE scan_entry_id IN ('scan-shelf', 'scan-move')`).Scan(&stolen); err != nil {
+		t.Fatal(err)
+	}
+	if stolen != 0 {
+		t.Fatalf("other user's scans linked %d times", stolen)
+	}
+}
+
+func TestRelabelGivesOneScanToTheEarliestMove(t *testing.T) {
+	// Two manual moves share one committed scan. The pass reads moves in id
+	// order, updates the first, and marks that scan linked, so the later
+	// move stays manual. Leaving both manual would drop the only match.
+	// The lower id wins, and a second pass changes nothing.
+	const at = "2026-10-17 18:55:19 +0000 UTC"
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
+		VALUES ('scan-one', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`, at)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked) VALUES
+			('move-b', 'item', 'prod', 'in', 2, ?, 'manual', 0),
+			('move-a', 'item', 'prod', 'in', 1, ?, 'manual', 0)`,
+		at, at)
+
+	repairHistory(t, db)
+	winner := moveColumns(t, db, "move-a")
+	if winner.source != "scan" || winner.scanID != "scan-one" {
+		t.Fatalf("earliest move = %s %s", winner.source, winner.scanID)
+	}
+	loser := moveColumns(t, db, "move-b")
+	if loser.source != "manual" || loser.scanID != "" {
+		t.Fatalf("later move = %s %s", loser.source, loser.scanID)
+	}
+
+	snapshot := dumpMoves(t, db)
+	repairHistory(t, db)
+	if again := dumpMoves(t, db); again != snapshot {
+		t.Fatalf("rerun changed rows\n%s\n%s", snapshot, again)
+	}
+}
+
+func TestRelabelLeavesMoveThatAlreadyHasAScan(t *testing.T) {
+	// move-a sorts first and already points at a scan. The pass must not
+	// select it. If it did, it would claim scan-match and move-b would stay
+	// manual. The update also refuses a row whose scan_entry_id is set, so
+	// move-a's columns stay as they were inserted.
+	const (
+		at    = "2026-10-17 18:55:19 +0000 UTC"
+		older = "2026-10-16 12:00:00 +0000 UTC"
+	)
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
+			('scan-kept', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
+			('scan-match', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
+		older, at)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked) VALUES
+			('move-a', 'item', 'prod', 'in', 5, ?, 'manual', 'scan-kept', 1),
+			('move-b', 'item', 'prod', 'in', 1, ?, 'manual', NULL, 0)`,
+		at, at)
+
+	before := moveColumns(t, db, "move-a")
+	repairHistory(t, db)
+	after := moveColumns(t, db, "move-a")
+	if after != before {
+		t.Fatalf("already linked move changed\nbefore %+v\nafter  %+v", before, after)
+	}
+	open := moveColumns(t, db, "move-b")
+	if open.source != "scan" || open.scanID != "scan-match" {
+		t.Fatalf("open move = %s %s", open.source, open.scanID)
+	}
+}
+
+func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
+	const (
+		goodAt  = "2026-10-17 18:00:00 +0000 UTC"
+		garbage = "not-a-time"
+	)
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	db := openHistoryDB(t)
+	seedRelabelHousehold(t, db)
+	execHistory(t, db, `
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
+			('scan-garbage', 'user-1', 'barcode-secret', ?, 'stock_in', 1, 'committed', 'prod'),
+			('scan-good', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
+		garbage, goodAt)
+	execHistory(t, db, `
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
+		VALUES ('move-good', 'item', 'prod', 'in', 1, ?, 'manual', 0)`, goodAt)
+
+	now := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	journal := NewJournal(db)
+	view, err := journal.Product(t.Context(), "item", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Moves) != 1 || view.Moves[0].ID != "move-good" || view.Moves[0].Source != "scan" {
+		t.Fatalf("history = %+v", view.Moves)
+	}
+	got := moveColumns(t, db, "move-good")
+	if got.source != "scan" || got.scanID != "scan-good" {
+		t.Fatalf("good move = %s %s", got.source, got.scanID)
+	}
+	var stolen int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_moves WHERE scan_entry_id = 'scan-garbage'`).Scan(&stolen); err != nil {
+		t.Fatal(err)
+	}
+	if stolen != 0 {
+		t.Fatalf("garbage scan linked %d times", stolen)
+	}
+
+	corrected, err := journal.SetQuantity(t.Context(), "move-good", 2, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(corrected.Moves) != 1 || corrected.Moves[0].Quantity != 2 {
+		t.Fatalf("correction = %+v", corrected.Moves)
+	}
+
+	logged := logs.String()
+	if !strings.Contains(logged, "skipped a committed scan whose scanned_at could not be parsed") {
+		t.Fatalf("log = %q", logged)
+	}
+	for _, secret := range []string{garbage, "scan-garbage", "barcode-secret"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("log contains %q: %s", secret, logged)
+		}
 	}
 }
 
