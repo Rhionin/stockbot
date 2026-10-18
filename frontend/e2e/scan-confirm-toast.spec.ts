@@ -167,7 +167,7 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ removedCount: 1 }),
+      body: JSON.stringify({ removedCount: 1, requestedCount: 4 }),
     })
   })
 

@@ -62,8 +62,14 @@ export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
-// The only stock-out count the server has to send. A rename is this one edit.
+// Both counts ride on every successful stock-out commit. Stock-in omits them.
 export const REMOVED_COUNT_FIELD = 'removedCount';
+export const REQUESTED_COUNT_FIELD = 'requestedCount';
+
+export interface CommitScanResponse {
+  removedCount?: number;
+  requestedCount?: number;
+}
 
 // Appended beside the outcome helpers. A rename of either code or the batch
 // key is this one edit; older batch bodies that omit the key keep working.
@@ -124,13 +130,16 @@ export function batchFailureNotices(response: {
   });
 }
 
-// Requested count is the card's own unitCount. removedCount below 1, missing,
-// or already at that count says nothing.
-export function formatPartialRemoval(unitCount: number, body: object | null | undefined): string | null {
+// The short-shelf note only when fewer units left than the card asked for.
+// Equal counts, a stock-in body, and a batch body (no counts) say nothing.
+export function formatPartialRemoval(body: CommitScanResponse | null | undefined): string | null {
   if (body === null || body === undefined) return null;
-  const removedCount = (body as Record<string, unknown>)[REMOVED_COUNT_FIELD];
+  const record = body as Record<string, unknown>;
+  const removedCount = record[REMOVED_COUNT_FIELD];
+  const requestedCount = record[REQUESTED_COUNT_FIELD];
   if (typeof removedCount !== 'number' || !Number.isInteger(removedCount)) return null;
-  if (removedCount < 1 || removedCount >= unitCount) return null;
+  if (typeof requestedCount !== 'number' || !Number.isInteger(requestedCount)) return null;
+  if (removedCount < 1 || removedCount >= requestedCount) return null;
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }

@@ -157,7 +157,7 @@ const pendingEntries = (which: PendingSet): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more';
   pendingAfter: PendingSet;
   commit?: { status: number; body: unknown; empty?: boolean };
   batch?: unknown;
@@ -165,6 +165,7 @@ interface OutcomeCase {
   visible: string[];
   absent: string[];
   once?: string[];
+  cardOnce?: { barcode: string; text: string };
   pendingBarcodes: string[];
   goneBarcodes: string[];
   cardReason?: { barcode: string; text: string };
@@ -375,21 +376,24 @@ const cases: OutcomeCase[] = [
     unlinked: 'suggestions',
   },
   {
-    name: 'removedCount alone, one unit, uses singular grammar',
+    name: 'a short shelf shows the partial note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 1 } },
-    visible: ['Only 1 was on hand, so 1 was taken out.'],
-    absent: ['Only 1 were on hand'],
-    pendingBarcodes: ['222'],
-    goneBarcodes: ['111'],
-    toast: 'Only 1 was on hand, so 1 was taken out.',
-  },
-  {
-    name: 'a partial removal shows the only-one sentence in the toast',
-    action: 'confirm-milk',
-    pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 1 } },
+    // testdata/contract/scan-commit-partial.json body from 3afbe09.
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 1,
+        requestedCount: 3,
+      },
+    },
     visible: ['Only 1 was on hand, so 1 was taken out.'],
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
@@ -398,10 +402,23 @@ const cases: OutcomeCase[] = [
     keepsUndo: true,
   },
   {
-    name: 'removedCount of several uses plural grammar',
+    name: 'several units short uses the plural sentence',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 2 } },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 2,
+        requestedCount: 3,
+      },
+    },
     visible: ['Only 2 were on hand, so 2 were taken out.'],
     absent: ['Only 2 was on hand'],
     pendingBarcodes: ['222'],
@@ -409,10 +426,23 @@ const cases: OutcomeCase[] = [
     toast: 'Only 2 were on hand, so 2 were taken out.',
   },
   {
-    name: 'removedCount equal to the card count adds no notice',
+    name: 'equal removed and requested counts show no note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 4 } },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 3,
+        requestedCount: 3,
+      },
+    },
     visible: [],
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
@@ -420,10 +450,21 @@ const cases: OutcomeCase[] = [
     quiet: true,
   },
   {
-    name: 'a missing removedCount behaves as a normal confirm',
+    name: 'a stock-in commit without the count fields shows no note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: committedMilk },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_in',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+      },
+    },
     visible: [],
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
@@ -705,6 +746,22 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
   },
   {
+    name: 'confirming a wiped product with More open says nothing is on hand once',
+    action: 'confirm-milk-more',
+    pendingAfter: 'both',
+    household: [householdItem('oats', 'Oats', 1)],
+    commit: {
+      status: 409,
+      body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' },
+    },
+    visible: ['Nothing on hand to take out.'],
+    absent: ['No inventory item is available'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardWithoutAlert: '111',
+    toast: 'Nothing on hand to take out.',
+  },
+  {
     name: 'an empty search lists household items, including zero on hand',
     action: 'confirm-milk',
     pendingAfter: 'both',
@@ -776,7 +833,7 @@ const cases: OutcomeCase[] = [
     pendingAfter: 'none',
     batch: { updatedCount: 2, committedIds: ['scan-milk', 'scan-oats'] },
     visible: [],
-    absent: [fallback],
+    absent: [fallback, 'was taken out', 'were taken out'],
     pendingBarcodes: [],
     goneBarcodes: ['111', '222'],
     quiet: true,
@@ -888,6 +945,9 @@ describe('scan commit outcomes', () => {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     } else if (row.action === 'more-milk' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+    } else if (row.action === 'confirm-milk-more' && milkCard) {
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     } else if (row.action !== 'batch' && milkCard) {
       if (row.openMore) {
         fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
@@ -1007,6 +1067,10 @@ describe('scan commit outcomes', () => {
     if (row.cardReason) {
       const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
       expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+    }
+    if (row.cardOnce) {
+      const card = screen.getByRole('article', { name: `Scan ${row.cardOnce.barcode}` });
+      expect(within(card).getAllByText(row.cardOnce.text)).toHaveLength(1);
     }
     if (row.unlinked) {
       const card = screen.getByRole('article', { name: 'Scan 111' });

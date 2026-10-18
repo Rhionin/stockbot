@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
@@ -73,9 +73,10 @@ const LinkProductSearch = ({
       <Combobox
         store={combobox}
         withinPortal={false}
+        width="target"
         position="bottom"
         offset={4}
-        middlewares={{ flip: false, shift: true }}
+        middlewares={{ flip: true, shift: true, size: true }}
         onOptionSubmit={(productId) => {
           combobox.closeDropdown();
           onPick(productId);
@@ -244,8 +245,8 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
-  const noteCommitted = (committed: ScanEntry) => {
-    const note = formatPartialRemoval(entry.unitCount, committed);
+  const noteCommitted = (committed: ScanEntry & CommitScanResponse) => {
+    const note = formatPartialRemoval(committed);
     if (note !== null) showUndo({ detail: note });
   };
 

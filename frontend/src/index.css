@@ -900,15 +900,9 @@ code {
   margin: 8px 0 4px;
 }
 
-/* Floating UI's inline top sits over the label at a phone width. Pin the list
-   under the label and the field. */
+/* Height and side come from floating-ui, so a field at the bottom of the
+   queue opens upward instead of into the leftover gap. */
 .scan-link-search .mantine-Combobox-dropdown {
-  position: absolute;
-  top: 100% !important;
-  left: 0 !important;
-  width: 100% !important;
-  margin-top: 4px;
-  max-height: calc(100dvh - 8px);
   overflow-y: auto;
 }
 
