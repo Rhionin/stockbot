@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
 
@@ -61,7 +62,7 @@ func ApplyHistory(ctx context.Context, opts HistoryOptions) (HistoryResult, erro
 	if opts.Loc == nil {
 		opts.Loc = time.UTC
 	}
-	db, err := sql.Open("sqlite", opts.DBPath)
+	db, err := app.OpenSQLite(opts.DBPath)
 	if err != nil {
 		return HistoryResult{}, fmt.Errorf("could not open grocy.db")
 	}

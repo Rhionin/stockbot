@@ -451,7 +451,7 @@ SELECT * FROM shelve_migration_should_not_exist;
 
 func openFileDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite", path)
+	conn, err := OpenSQLite(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}

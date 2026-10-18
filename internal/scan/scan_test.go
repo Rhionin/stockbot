@@ -18,7 +18,7 @@ import (
 // newTestQueue opens an in-memory SQLite database, applies all migrations, and returns a scan Queue.
 func newTestQueue(t *testing.T) (*scan.Queue, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

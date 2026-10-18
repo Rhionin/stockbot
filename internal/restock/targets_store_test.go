@@ -11,7 +11,7 @@ import (
 
 func newTestTargets(t *testing.T) (*Targets, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

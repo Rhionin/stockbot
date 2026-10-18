@@ -14,7 +14,7 @@ import (
 
 func newTestDirectory(t *testing.T) (*connection.Directory, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

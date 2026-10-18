@@ -26,7 +26,7 @@ type testDeps struct {
 // and returns stores for shopping, inventory, and product.
 func newTestStore(t *testing.T) testDeps {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
