@@ -21,8 +21,8 @@ const linkSuggestLimit = 8
 // versus mango slices, about 0.697). It is one named constant so a later
 // retune does not rewrite the comparison.
 //
-// Release note: Link suggestions are now much stricter. They only show up
-// when the names closely match, or when one barcode matches the end of the
+// Release note: Link suggestions are now much stricter: they're shown only
+// when the names closely match or when one barcode matches the end of the
 // other (at least 8 digits), so you'll see far fewer wrong suggestions. If an
 // item isn't suggested, search for it.
 const LinkScoreThreshold = 0.70

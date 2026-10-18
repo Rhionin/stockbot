@@ -81,6 +81,36 @@ func TestBarcodeEndingMatchesEitherSide(t *testing.T) {
 	if len(nonDigit) != 0 {
 		t.Fatalf("non-digit stored codes = %#v, want none", nonDigit)
 	}
+
+	// Only the shorter code has to be digits. The longer stored code may
+	// carry letters in front of an 8-digit ending.
+	prefixed := rankLinkCandidates(shortCode, "Other Name", "", "", "", "scan", []linkCandidate{
+		{ItemID: "name", ProductID: "prod-name", Name: "Other Name", OnHand: 1},
+		{ItemID: "prefixed", ProductID: "prod-prefixed", Name: "Wrong Food", OnHand: 1, Barcodes: []string{"AB011110828385"}},
+	})
+	if len(prefixed) != 2 || prefixed[0].ProductID != "prod-prefixed" || prefixed[1].ProductID != "prod-name" {
+		t.Fatalf("letter-prefixed stored code = %#v, want it ahead of the name", prefixed)
+	}
+}
+
+func TestBarcodeRowsOrderByEndingLength(t *testing.T) {
+	const scanned = "011110828385" // endings: 12 full, 9 = 110828385, 8 = 10828385
+	// Shortest first. A sort that drops the ending length keeps that order.
+	got := rankLinkCandidates(scanned, "Nothing Alike", "", "", "", "scan", []linkCandidate{
+		{ItemID: "eight", ProductID: "prod-eight", Name: "Wrong Eight", OnHand: 1, Barcodes: []string{"10828385"}},
+		{ItemID: "nine", ProductID: "prod-nine", Name: "Wrong Nine", OnHand: 1, Barcodes: []string{"110828385"}},
+		{ItemID: "full", ProductID: "prod-full", Name: "Wrong Full", OnHand: 1, Barcodes: []string{scanned}},
+		{ItemID: "name", ProductID: "prod-name", Name: "Nothing Alike", OnHand: 1},
+	})
+	if len(got) != 4 {
+		t.Fatalf("suggestions = %#v, want three endings and the name", got)
+	}
+	want := []string{"prod-full", "prod-nine", "prod-eight", "prod-name"}
+	for i, id := range want {
+		if got[i].ProductID != id {
+			t.Fatalf("order = %s %s %s %s, want %v", got[0].ProductID, got[1].ProductID, got[2].ProductID, got[3].ProductID, want)
+		}
+	}
 }
 
 func TestBarcodeSuffixNeedsEightDigitsAndRanksFirst(t *testing.T) {
@@ -362,6 +392,38 @@ func TestIdenticalSurfaceNamesMatchWhenTokensAreEmpty(t *testing.T) {
 	})
 	if len(same) != 3 || same[0].ProductID != "prod-pad" || same[1].ProductID != "prod-space" || same[2].ProductID != "prod-glued" {
 		t.Fatalf("identical surface names = %#v, want the spaced and glued size labels", same)
+	}
+
+	upper := rankLinkCandidates("16", "16 oz", "", "", "", "scan", []linkCandidate{
+		{ItemID: "upper", ProductID: "prod-upper", Name: "16OZ", OnHand: 1},
+		{ItemID: "kale", ProductID: "prod-kale", Name: "Kale", OnHand: 1},
+	})
+	if len(upper) != 1 || upper[0].ProductID != "prod-upper" {
+		t.Fatalf("16OZ = %#v, want it to match 16 oz", upper)
+	}
+
+	floz := rankLinkCandidates("16", "16 floz", "", "", "", "scan", []linkCandidate{
+		{ItemID: "glued", ProductID: "prod-floz", Name: "16floz", OnHand: 1},
+		{ItemID: "oz", ProductID: "prod-oz", Name: "16 oz", OnHand: 1},
+	})
+	if len(floz) != 1 || floz[0].ProductID != "prod-floz" {
+		t.Fatalf("16floz = %#v, want 16 floz and not 16 oz", floz)
+	}
+
+	ounces := rankLinkCandidates("16", "16 ounces", "", "", "", "scan", []linkCandidate{
+		{ItemID: "glued", ProductID: "prod-ounces", Name: "16ounces", OnHand: 1},
+		{ItemID: "oz", ProductID: "prod-oz", Name: "16 oz", OnHand: 1},
+	})
+	if len(ounces) != 0 {
+		t.Fatalf("16ounces = %#v, want no match for 16 ounces or 16 oz", ounces)
+	}
+}
+
+func TestIdenticalRowScoresExactlyOne(t *testing.T) {
+	// Zero weights would make the overlap ratio 0. An identical row still scores 1.
+	got := Score([]string{"soup", "kale"}, []string{"kale", "soup"}, map[string]float64{"kale": 0, "soup": 0})
+	if got != 1 {
+		t.Fatalf("identical row score = %v, want 1", got)
 	}
 }
 
