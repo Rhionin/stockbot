@@ -17,6 +17,9 @@ type InNote struct {
 	ScanEntryID *string
 	Tracked     bool
 	InstanceIDs []string
+	// Unshelved is set when this stock-in put a wiped item back on the shelf.
+	// Undoing the pair hides the item again.
+	Unshelved bool
 }
 
 // OutNote is one stock-out that just took a unit off the shelf.
@@ -45,10 +48,14 @@ func AttachStockIn(ctx context.Context, tx *sql.Tx, note InNote) error {
 	if note.Tracked {
 		tracked = 1
 	}
+	unshelved := 0
+	if note.Unshelved {
+		unshelved = 1
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked)
-		VALUES (?, ?, ?, 'in', ?, ?, ?, ?, ?)`,
-		id, note.ItemID, note.ProductID, len(note.InstanceIDs), note.At, note.Source, nullableString(note.ScanEntryID), tracked,
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved)
+		VALUES (?, ?, ?, 'in', ?, ?, ?, ?, ?, ?)`,
+		id, note.ItemID, note.ProductID, len(note.InstanceIDs), note.At, note.Source, nullableString(note.ScanEntryID), tracked, unshelved,
 	); err != nil {
 		return err
 	}

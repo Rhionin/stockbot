@@ -22,6 +22,7 @@ type moveRow struct {
 	Source      string
 	ScanEntryID sql.NullString
 	Tracked     bool
+	Unshelved   bool
 }
 
 // ensure groups older shelf rows that were written before moves existed.

@@ -3,11 +3,16 @@ package history
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrBackfillLocked is a quantity edit on either move of a backfill pair.
+// The server answers with the shared backfill_locked sentence.
+var ErrBackfillLocked = errors.New("backfill quantity locked")
 
 // SetQuantity changes how many units a move put on or took off the shelf.
 // The returned view is that product's history after the change.
@@ -31,6 +36,13 @@ func (j *Journal) SetQuantity(ctx context.Context, id string, quantity int, now 
 		return View{}, err
 	}
 	if quantity != move.Quantity {
+		_, paired, pairErr := backfillPartner(ctx, tx, move)
+		if pairErr != nil {
+			return View{}, pairErr
+		}
+		if paired {
+			return View{}, ErrBackfillLocked
+		}
 		if move.Direction == "in" {
 			err = resizeStockIn(ctx, tx, move, quantity)
 		} else {
@@ -65,10 +77,14 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	if err != nil {
 		return View{}, err
 	}
+	var reshelve string
 	if paired {
 		incoming, outgoing := move, partner
 		if incoming.Direction != "in" {
 			incoming, outgoing = partner, move
+		}
+		if incoming.Unshelved {
+			reshelve = incoming.ItemID
 		}
 		if err = undoStockOut(ctx, tx, outgoing); err != nil {
 			return View{}, err
@@ -81,6 +97,11 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	}
 	if err != nil {
 		return View{}, err
+	}
+	if reshelve != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, reshelve); err != nil {
+			return View{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, err
@@ -95,32 +116,25 @@ func backfillPartner(ctx context.Context, tx *sql.Tx, move moveRow) (moveRow, bo
 	if !move.ScanEntryID.Valid || move.ScanEntryID.String == "" {
 		return moveRow{}, false, nil
 	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, source FROM stock_moves
-		WHERE scan_entry_id = ? AND id != ?`, move.ScanEntryID.String, move.ID)
-	if err != nil {
-		return moveRow{}, false, err
+	want := ""
+	switch move.Source {
+	case "backfill":
+		want = "scan"
+	case "scan":
+		want = "backfill"
+	default:
+		return moveRow{}, false, nil
 	}
 	var partnerID string
-	paired := false
-	for rows.Next() {
-		var id, source string
-		if err := rows.Scan(&id, &source); err != nil {
-			rows.Close()
-			return moveRow{}, false, err
-		}
-		if move.Source == "backfill" || source == "backfill" {
-			partnerID = id
-			paired = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return moveRow{}, false, err
-	}
-	rows.Close()
-	if !paired {
+	err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE scan_entry_id = ? AND id != ? AND source = ?`,
+		move.ScanEntryID.String, move.ID, want).Scan(&partnerID)
+	if err == sql.ErrNoRows {
 		return moveRow{}, false, nil
+	}
+	if err != nil {
+		return moveRow{}, false, err
 	}
 	other, err := loadMove(ctx, tx, partnerID)
 	if err != nil {

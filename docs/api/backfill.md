@@ -63,7 +63,7 @@ Every error body is JSON. Codes the client matches are on `code`. The sentence i
 { "error": "Choose which item this is first.", "code": "product_unresolved" }
 ```
 
-A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a normal stock-out commit returns. "Not linked" means the scan has no product, or this household has no item row for that product. A shelved item is `409` `none_on_hand`, not this error. The client links the barcode or adds the item first, then commits the backfill.
+A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a normal stock-out commit returns. "Not linked" means the scan has no product, or this household has no item row for that product. A shelved item still has that row. A backfill brings it back, described below. The client links the barcode or adds the item first, then commits the backfill.
 
 | HTTP | `code` | `error` |
 |---|---|---|
@@ -73,7 +73,6 @@ A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a 
 | 400 | `direction_unset` | Choose stock in or stock out first. |
 | 400 | `not_stock_out` | This only works when taking something out. |
 | 404 | `scan_not_found` | This scan is no longer in the queue. |
-| 409 | `none_on_hand` | Nothing on hand to take out. |
 | 500 | `internal` | Something went wrong. Try again. |
 
 `units_on_hand` is the backfill refusal when the linked item already has units on hand. Backfill must not add more. The body also names the item and the current count, so the card can offer a normal stock-out instead:
@@ -91,7 +90,7 @@ A backfill on a scan that is not linked yet is `400`, not the `409` `no_item` a 
 
 `not_stock_out` is a backfill sent for a scan whose direction is stock-in. The body is `error` and `code` only.
 
-`none_on_hand` here is only a shelved (wiped) item. A live item with 0 on hand is the success path above. A wiped item is not brought back by a backfill.
+A live item with 0 on hand is the success path above. A shelved (wiped) item is that path too. Leftover rows on a shelved item are not on the shelf, so the backfill does not return `units_on_hand` or `none_on_hand`. It clears `shelved`, records the pair, and leaves the item visible at on hand 0. A stock-out commit without `backfill` on that same barcode stays `409` `none_on_hand` / `Nothing on hand to take out.` and leaves the item shelved.
 
 `500` uses the commit sentence `Something went wrong. Try again.` and `code` `internal`. That is the commit contract. Other 500s from the generic handler use a different sentence and omit `code`; a backfill failure does not.
 
@@ -125,7 +124,7 @@ Both means:
 - the units those two moves created and consumed
 - the usage row for the stock-out
 
-The item stays. The product stays. The barcode link stays. On hand stays 0, because the pair had put the units on the shelf and taken them off. Undo does not delete an item that was created earlier with **Add as a new item**. That was a separate step. The household deletes that item from the item's menu.
+The product stays. The barcode link stays. On hand stays 0, because the pair had put the units on the shelf and taken them off. An item that was already on the shelf stays visible. A pair that brought a wiped item back hides that item again: undo sets `shelved`, and the item drops off the inventory list until the next stock-in. Undo does not delete an item that was created earlier with **Add as a new item**. That was a separate step. The household deletes that item from the item's menu.
 
 The pair is the exception to the usual stock-in undo rule. A normal stock-in whose units were already used returns `409` and the sentence `1 of these was already used. Undo that use first.` A backfill's units are used by its own stock-out, so that conflict does not apply to this pair. The server removes the stock-out and the stock-in together.
 
@@ -259,6 +258,20 @@ When the item is a live household item with 0 on hand, the response stays `409` 
 
 `linkProductId` for a missing or wiped product stays `409` `link_target_gone` / `That item isn't available anymore. Pick another.` The scan stays pending and unlinked. That error body has no `onHand`.
 
+`PATCH /api/scans/{id}` that points a stock-out at a shelved item, or at a product id that does not exist, is the same `409` `link_target_gone` / `That item isn't available anymore. Pick another.` Nothing is written: no barcode override, no item, and the scan is unchanged. The body has no `onHand`.
+
+A body that sets `productId` and `status` `cancelled` together is `400`:
+
+```json
+{ "error": "Choose one change at a time.", "code": "conflicting_fields" }
+```
+
+Nothing is written. A missing scan is still `404`. `productId` together with `status` `pending` is the link body and still links. `unitCount` may be sent with `productId`; the link stores that count.
+
+While an item is shelved, `onHand` is 0 everywhere it is reported, including `GET /api/items/{itemId}/history`, even when old instance rows remain.
+
+The web **What is it?** picker reads `GET /api/products`. That list omits a product whose household item (the `user-1` row) is shelved. A product shelved only for another household stays in the list. `GET /api/products/{id}` still returns the shelved product. `GET /api/inventory` already omitted shelved items. Link suggestions already omit them. The Expo client is not in this repo; it should read the same `GET /api/products` list.
+
 ### Add as a new item
 
 `onHand` is on the `PATCH /api/scans/{id}` response from the stock-out sequence above. A new item has nothing on hand, so it is always `0`.
@@ -287,7 +300,7 @@ Both clients refetch the ranked links by committing the scan again. That commit 
 
 `GET /api/scans/{id}/link-suggestions`
 
-The scan must still be `pending`. The list is the same candidates a stock-out commit returns on `409` `no_item`: unshelved items in the scan's household that still have a unit on hand, in that same order. A longer barcode suffix outranks a shorter one, and a suffix outranks a name resemblance. Items with nothing on hand are left out. Shelved items are left out. Another household's items are left out.
+The scan must still be `pending`, and its direction must be stock-out. The list is the same candidates a stock-out commit returns on `409` `no_item`: unshelved items in the scan's household that still have a unit on hand, in that same order. A longer barcode suffix outranks a shorter one, and a suffix outranks a name resemblance. Items with nothing on hand are left out. Shelved items are left out. Another household's items are left out. A pending stock-out that is already linked still returns the list, and that list does not include the scan's own product.
 
 The call writes nothing. It does not change the scan, the barcode, the item, or any stock move.
 
@@ -316,9 +329,32 @@ Each element is a `LinkSuggestion`: `itemId` (string), `productId` (string), `na
 |---|---|---|
 | 404 | `scan_not_found` | This scan is no longer in the queue. |
 | 400 | `not_pending` | This scan was already handled. |
+| 400 | `direction_unset` | Choose stock in or stock out first. |
+| 400 | `not_stock_out` | This only works when taking something out. |
 | 500 | `internal` | Something went wrong. Try again. |
 
-`not_pending` is any scan that is not `pending`, including `committed`, `cancelled`, and `flagged`. `500` uses the commit sentence and `code` `internal`. The real error stays in the server log.
+`not_pending` is any scan that is not `pending`, including `committed`, `cancelled`, and `flagged`. `direction_unset` is a pending scan with no direction. `not_stock_out` is a pending stock-in. `500` uses the commit sentence and `code` `internal`. The real error stays in the server log.
+
+## Editing the count
+
+`PATCH /api/moves/{id}`
+
+```json
+{ "quantity": 2 }
+```
+
+Changing `quantity` on either move of a backfill pair — the stock-in whose `source` is `backfill`, or the stock-out recorded with it — is `400`:
+
+```json
+{
+  "error": "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead.",
+  "code": "backfill_locked"
+}
+```
+
+Nothing is written. Sending the count the move already has is not a change: `200` is the history view, and the shelf stays as it was.
+
+A move that is not half of a backfill pair still edits as before. Two moves that share a scan id are a pair only when one `source` is `backfill` and the other is `scan`.
 
 ## How the stock-in is tagged
 

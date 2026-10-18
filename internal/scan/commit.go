@@ -81,6 +81,13 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	defer tx.Rollback()
 
+	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
+	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
+
 	itemID, err := r.findOrCreateItem(ctx, tx, scanEntry.UserID, *scanEntry.ProductID)
 	if err != nil {
 		return fmt.Errorf("find/create item: %w", err)
@@ -97,14 +104,8 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `
-		UPDATE scan_entries 
-		SET status = ?, committed_at = ?
-		WHERE id = ?`,
-		string(Committed), r.now(), scanEntry.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
+	if err := markScanCommitted(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -139,6 +140,66 @@ func (r *Queue) now() time.Time {
 		return r.Now()
 	}
 	return time.Now().UTC()
+}
+
+// claimScan takes the write lock before the status is read. A deferred
+// transaction that selects first keeps that snapshot, and a second commit
+// then fails the later update instead of seeing the row already committed.
+func claimScan(ctx context.Context, tx *sql.Tx, id string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE scan_entries SET status = status WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("lock scan: %w", err)
+	}
+	return nil
+}
+
+// requireOpenScan rejects a scan that was committed or cancelled after the
+// caller read it. Two commits can both pass the handler's check; the
+// transaction has to look again before it writes.
+func requireOpenScan(ctx context.Context, tx *sql.Tx, id string) error {
+	var status string
+	err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
+	if err == sql.ErrNoRows {
+		return ErrScanNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read scan: %w", err)
+	}
+	if status != string(Pending) && status != string(Flagged) {
+		return ErrNotPending
+	}
+	return nil
+}
+
+// markScanCommitted moves a pending or flagged scan to committed.
+// A second commit updates zero rows and leaves the first commit's writes
+// to roll back.
+func markScanCommitted(ctx context.Context, tx *sql.Tx, id string, at time.Time, productID string) error {
+	var res sql.Result
+	var err error
+	if productID != "" {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET product_id = ?, status = ?, committed_at = ?
+			WHERE id = ? AND status IN ('pending', 'flagged')`,
+			productID, string(Committed), at, id)
+	} else {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET status = ?, committed_at = ?
+			WHERE id = ? AND status IN ('pending', 'flagged')`,
+			string(Committed), at, id)
+	}
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	if n != 1 {
+		return ErrNotPending
+	}
+	return nil
 }
 
 // trackRestock reports whether a movement is past the opening snapshot.
@@ -525,6 +586,13 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	}
 	defer tx.Rollback()
 
+	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
+	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
+
 	targetProductID := *scanEntry.ProductID
 	if linkProductID != "" {
 		targetProductID = linkProductID
@@ -599,23 +667,12 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		return err
 	}
 
+	productID := ""
 	if linkProductID != "" {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET product_id = ?, status = ?, committed_at = ?
-			WHERE id = ?`,
-			linkProductID, string(Committed), time.Now().UTC(), scanEntry.ID,
-		)
-	} else {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET status = ?, committed_at = ?
-			WHERE id = ?`,
-			string(Committed), time.Now().UTC(), scanEntry.ID,
-		)
+		productID = linkProductID
 	}
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
+	if err := markScanCommitted(ctx, tx, scanEntry.ID, time.Now().UTC(), productID); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -669,6 +726,13 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 	}
 	defer tx.Rollback()
 
+	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
+		return "", 0, err
+	}
+	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+		return "", 0, err
+	}
+
 	var itemID string
 	var shelved int
 	err = tx.QueryRowContext(ctx, `
@@ -682,15 +746,17 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 	if err != nil {
 		return "", 0, fmt.Errorf("find item: %w", err)
 	}
-	if shelved != 0 {
-		return "", 0, ErrNoneOnHand
-	}
+	// A wipe hides the item. Those leftover rows are not on the shelf, so
+	// backfill brings the item back instead of refusing units_on_hand.
+	wasShelved := shelved != 0
 
 	var onHand int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM item_instances
-		WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
-		return "", 0, fmt.Errorf("count on hand: %w", err)
+	if !wasShelved {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
+			return "", 0, fmt.Errorf("count on hand: %w", err)
+		}
 	}
 	if onHand > 0 {
 		return "", 0, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
@@ -714,7 +780,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 	scanID := scanEntry.ID
 	if err := history.AttachStockIn(ctx, tx, history.InNote{
 		ItemID: itemID, ProductID: *scanEntry.ProductID, At: at, Source: "backfill",
-		ScanEntryID: &scanID, Tracked: false, InstanceIDs: ids,
+		ScanEntryID: &scanID, Tracked: false, InstanceIDs: ids, Unshelved: wasShelved,
 	}); err != nil {
 		return "", 0, fmt.Errorf("record stock-in: %w", err)
 	}
@@ -752,13 +818,8 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 		return "", 0, fmt.Errorf("record stock-out: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE scan_entries
-		SET status = ?, committed_at = ?
-		WHERE id = ?`,
-		string(Committed), r.now(), scanEntry.ID,
-	); err != nil {
-		return "", 0, fmt.Errorf("update scan entry: %w", err)
+	if err := markScanCommitted(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
+		return "", 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return "", 0, fmt.Errorf("commit transaction: %w", err)
@@ -800,10 +861,20 @@ func (r *Queue) LinkStockOutProduct(ctx context.Context, scanID, productID strin
 	var productExists int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM products WHERE id = ?`, productID).Scan(&productExists)
 	if err == sql.ErrNoRows {
-		return 0, fmt.Errorf("product %q not found", productID)
+		return 0, ErrLinkTargetGone
 	}
 	if err != nil {
 		return 0, fmt.Errorf("verify product: %w", err)
+	}
+	var shelved int
+	err = tx.QueryRowContext(ctx, `
+		SELECT shelved FROM items WHERE user_id = ? AND product_id = ?`,
+		userID, productID).Scan(&shelved)
+	if err == nil && shelved != 0 {
+		return 0, ErrLinkTargetGone
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("find item: %w", err)
 	}
 	if err := linkBarcode(ctx, tx, barcode, productID, userID); err != nil {
 		return 0, err
@@ -814,8 +885,9 @@ func (r *Queue) LinkStockOutProduct(ctx context.Context, scanID, productID strin
 	}
 	var onHand int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM item_instances
-		WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
+		SELECT COUNT(*) FROM item_instances ii
+		JOIN items i ON i.id = ii.item_id
+		WHERE ii.item_id = ? AND ii.removed_at IS NULL AND i.shelved = 0`, itemID).Scan(&onHand); err != nil {
 		return 0, fmt.Errorf("count on hand: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `

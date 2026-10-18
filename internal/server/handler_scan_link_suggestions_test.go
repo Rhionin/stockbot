@@ -19,7 +19,7 @@ import (
 func TestLinkSuggestionsMatchTheNoItemCommitAndWriteNothing(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	seedLinkCard(env)
-	before := domainCounts(t, env.DB)
+	before := domainSnapshot(t, env.DB)
 	beforeScan := scanRow(t, env.DB, "scan-pears")
 
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/scans/scan-pears/link-suggestions", "", http.StatusOK)
@@ -40,8 +40,8 @@ func TestLinkSuggestionsMatchTheNoItemCommitAndWriteNothing(t *testing.T) {
 			t.Fatalf("excluded item was suggested: %+v", listed.Suggestions)
 		}
 	}
-	if !reflect.DeepEqual(domainCounts(t, env.DB), before) {
-		t.Fatalf("GET wrote rows: before %v after %v", before, domainCounts(t, env.DB))
+	if got := domainSnapshot(t, env.DB); got != before {
+		t.Fatalf("GET changed stored rows:\n%s", got)
 	}
 	if got := scanRow(t, env.DB, "scan-pears"); got != beforeScan {
 		t.Fatalf("scan changed from %s to %s", beforeScan, got)
@@ -151,7 +151,95 @@ func (q linkSuggestQueue) LinkSuggestions(context.Context, string) ([]scan.LinkS
 	if q.err != nil {
 		return nil, q.err
 	}
-	return nil, nil
+	return []scan.LinkSuggestion{}, nil
+}
+
+func TestLinkSuggestionsDirectionAndAlreadyLinked(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	seedLinkCard(env)
+	at := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
+	productID := "prod-pears"
+	seedLooseScan(env, "scan-in", "scan-in", scan.StockIn, 1, &productID, scan.Pending, at)
+	inBody := exchangeJSON(t, handler, http.MethodGet, "/api/scans/scan-in/link-suggestions", "", http.StatusBadRequest)
+	assertCode(t, inBody, "not_stock_out", "This only works when taking something out.")
+
+	seedLooseScan(env, "scan-unset", "scan-unset", scan.StockOut, 1, &productID, scan.Pending, at)
+	if _, err := env.DB.Exec(`UPDATE scan_entries SET direction = NULL WHERE id = 'scan-unset'`); err != nil {
+		t.Fatal(err)
+	}
+	unset := exchangeJSON(t, handler, http.MethodGet, "/api/scans/scan-unset/link-suggestions", "", http.StatusBadRequest)
+	assertCode(t, unset, "direction_unset", "Choose stock in or stock out first.")
+
+	seedLooseScan(env, "scan-linked", "999000111222", scan.StockOut, 1, &productID, scan.Pending, at)
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/scans/scan-linked/link-suggestions", "", http.StatusOK)
+	var listed struct {
+		Suggestions []scan.LinkSuggestion `json:"suggestions"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Suggestions) == 0 {
+		t.Fatal("already-linked stock-out returned no suggestions")
+	}
+	for _, suggestion := range listed.Suggestions {
+		if suggestion.ProductID == "prod-pears" {
+			t.Fatalf("linked product was suggested: %+v", listed.Suggestions)
+		}
+	}
+}
+
+func TestLinkSuggestionsAreTheScansHousehold(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+		ID: "prod-home", Name: "Home Pears", Category: "Fruit", UnitOfMeasure: "can",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+		ID: "prod-away", Name: "Away Pears", Category: "Fruit", UnitOfMeasure: "can",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`
+		INSERT INTO items (id, user_id, product_id) VALUES
+			('item-home', 'user-1', 'prod-home'),
+			('item-away', 'user-2', 'prod-away')`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := env.DB.Exec(`
+		INSERT INTO item_instances (id, item_id, stock_in_at) VALUES
+			('home-1', 'item-home', ?),
+			('away-1', 'item-away', ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`
+		INSERT INTO barcodes (barcode, product_id, source, user_id) VALUES
+			('1110828385', 'prod-home', 'user_override', 'user-1'),
+			('828385', 'prod-away', 'user_override', 'user-2')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		ID: "scan-away", UserID: "user-2", Barcode: "011110828385", ScannedAt: now,
+		Direction: directionPtr(scan.StockOut), UnitCount: 1, Status: scan.Pending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/scans/scan-away/link-suggestions", "", http.StatusOK)
+	var listed struct {
+		Suggestions []scan.LinkSuggestion `json:"suggestions"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Suggestions) != 1 || listed.Suggestions[0].ItemID != "item-away" {
+		t.Fatalf("suggestions = %+v", listed.Suggestions)
+	}
+}
+
+func directionPtr(direction scan.ScanDirection) *scan.ScanDirection {
+	return &direction
 }
 
 func seedLinkCard(env testEnv) {
@@ -219,16 +307,56 @@ func seedLinkCard(env testEnv) {
 	seedLooseScan(env, "scan-pears", "011110828385", scan.StockOut, 1, &productID, scan.Pending, now)
 }
 
-func domainCounts(t *testing.T, db *sql.DB) map[string]int {
+func domainSnapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
-	counts := map[string]int{}
-	for _, table := range []string{
-		"products", "items", "item_instances", "barcodes", "scan_entries",
-		"stock_moves", "stock_in_events", "consumption_events",
-	} {
-		counts[table] = mustCount(t, db, `SELECT COUNT(*) FROM `+table)
+	queries := []struct{ title, query string }{
+		{"scans", `SELECT id || '|' || user_id || '|' || barcode || '|' || status || '|' ||
+			COALESCE(direction, '') || '|' || CAST(unit_count AS TEXT) || '|' ||
+			COALESCE(product_id, '') || '|' || COALESCE(CAST(committed_at AS TEXT), '') || '|' ||
+			COALESCE(CAST(expires_at AS TEXT), '')
+			FROM scan_entries ORDER BY id`},
+		{"products", `SELECT id || '|' || name || '|' || COALESCE(category, '') || '|' ||
+			COALESCE(unit_of_measure, '') FROM products ORDER BY id`},
+		{"overrides", `SELECT barcode || '|' || product_id || '|' || source || '|' || user_id
+			FROM barcodes ORDER BY barcode, source, user_id`},
+		{"items", `SELECT id || '|' || user_id || '|' || product_id || '|' || CAST(shelved AS TEXT)
+			FROM items ORDER BY id`},
+		{"instances", `SELECT id || '|' || item_id || '|' || COALESCE(CAST(removed_at AS TEXT), '') || '|' ||
+			COALESCE(removal_reason, '') FROM item_instances ORDER BY id`},
+		{"moves", `SELECT id || '|' || item_id || '|' || product_id || '|' || direction || '|' ||
+			CAST(quantity AS TEXT) || '|' || source || '|' || COALESCE(scan_entry_id, '') || '|' ||
+			CAST(unshelved AS TEXT)
+			FROM stock_moves ORDER BY id`},
+		{"consumption", `SELECT id || '|' || item_id || '|' || COALESCE(scan_entry_id, '') || '|' ||
+			COALESCE(stock_move_id, '')
+			FROM consumption_events ORDER BY id`},
+		{"stockins", `SELECT CAST(id AS TEXT) || '|' || product_id || '|' || COALESCE(stock_move_id, '')
+			FROM stock_in_events ORDER BY id`},
 	}
-	return counts
+	var b strings.Builder
+	for _, q := range queries {
+		b.WriteString(q.title)
+		b.WriteByte('\n')
+		rows, err := db.Query(q.query)
+		if err != nil {
+			t.Fatalf("%s: %v", q.title, err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		rows.Close()
+	}
+	return b.String()
 }
 
 func scanRow(t *testing.T, db *sql.DB, id string) string {

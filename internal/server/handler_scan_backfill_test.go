@@ -109,18 +109,21 @@ func TestBackfillLeavesPaceReplenishAndBuyFrequency(t *testing.T) {
 	rateUses := mustCount(t, env.DB, `SELECT COUNT(*) FROM consumption_events WHERE item_id = 'item-rate'`)
 	replUses := mustCount(t, env.DB, `SELECT COUNT(*) FROM consumption_events WHERE item_id = 'item-repl'`)
 
-	seedScanAt(env, "scan-rate", "prod-rate", scan.StockOut, 1, started)
-	seedScanAt(env, "scan-repl", "prod-repl", scan.StockOut, 1, now.Add(-80*24*time.Hour))
+	// Inside the pace window and after the latest stock-in. A real stock-in
+	// here would move the replenish boundary and drop the earlier use. The
+	// backfill stock-in does not, so the extra use is what changes the note.
+	seedScanAt(env, "scan-rate", "prod-rate", scan.StockOut, 1, now.Add(-10*24*time.Hour))
+	seedScanAt(env, "scan-repl", "prod-repl", scan.StockOut, 1, now.Add(-5*24*time.Hour))
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-rate/commit", `{"backfill":true}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-repl/commit", `{"backfill":true}`, http.StatusOK)
 
 	afterPace := paceOf(t, handler, "item-repl")
-	if afterPace != beforePace {
-		t.Fatalf("pace changed from %+v to %+v", beforePace, afterPace)
+	if !afterPace.Known || afterPace.DaysBetweenUses != 6.7 {
+		t.Fatalf("pace after the in-window use = %+v, want known with 6.7 days between uses", afterPace)
 	}
 	again := fillShopping(t, handler)
-	if got := shopLineByItem(again, "item-repl"); got == nil || got.Quantity != repl.Quantity || got.Note != repl.Note {
-		t.Fatalf("replenish after backfill = %+v, want %+v", got, repl)
+	if got := shopLineByItem(again, "item-repl"); got == nil || got.Quantity != 2 || got.Note != "replacing 2 you used" {
+		t.Fatalf("replenish after the in-window use = %+v, want replacing 2", got)
 	}
 	if got := shopLineByItem(again, "item-rate"); got == nil || got.Quantity != rate.Quantity || got.Note != rate.Note {
 		t.Fatalf("buy-frequency after backfill = %+v, want %+v", got, rate)
@@ -258,27 +261,81 @@ func TestBackfillRejectsUnlinkedAndUnitsOnHand(t *testing.T) {
 		}
 	})
 
-	t.Run("shelved item", func(t *testing.T) {
+	t.Run("shelved item comes back at zero and undo hides it again", func(t *testing.T) {
 		seedShelfItem(env, "prod-wiped", "Wiped", "item-wiped")
 		if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-wiped'`); err != nil {
 			t.Fatal(err)
 		}
 		seedScanAt(env, "scan-wiped", "prod-wiped", scan.StockOut, 1, at)
-		body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-wiped/commit", `{"backfill":true}`, http.StatusConflict)
-		assertCode(t, body, "none_on_hand", "Nothing on hand to take out.")
-		if strings.Contains(string(body), "item-wiped") {
-			t.Fatalf("shelved backfill named the item: %s", body)
-		}
+		plain := exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-wiped/commit", "", http.StatusConflict)
+		assertCode(t, plain, "none_on_hand", "Nothing on hand to take out.")
 		var shelved int
 		if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-wiped'`).Scan(&shelved); err != nil {
 			t.Fatal(err)
 		}
 		if shelved != 1 {
-			t.Fatal("backfill unshelved the item")
+			t.Fatal("stock-out unshelved the item")
 		}
-		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-wiped'`); n != 0 {
-			t.Fatalf("instances = %d", n)
+
+		body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-wiped/commit", `{"backfill":true}`, http.StatusOK)
+		var got struct {
+			Removed int    `json:"removed"`
+			ItemID  string `json:"itemId"`
 		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Removed != 1 || got.ItemID != "item-wiped" {
+			t.Fatalf("backfill = %+v", got)
+		}
+		if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-wiped'`).Scan(&shelved); err != nil {
+			t.Fatal(err)
+		}
+		if shelved != 0 {
+			t.Fatal("backfill left the item hidden")
+		}
+		view := productHistory(env, handler, "item-wiped")
+		if view.OnHand != 0 || len(view.Moves) != 2 {
+			t.Fatalf("history = %+v", view)
+		}
+		inventory := exchangeJSON(t, handler, http.MethodGet, "/api/inventory", "", http.StatusOK)
+		if !strings.Contains(string(inventory), "item-wiped") {
+			t.Fatalf("unshelved item is missing from inventory: %s", inventory)
+		}
+		var moveID string
+		for _, move := range view.Moves {
+			if move.Source == "backfill" && move.Direction == "in" {
+				moveID = move.ID
+			}
+		}
+		if moveID == "" {
+			t.Fatalf("moves = %+v", view.Moves)
+		}
+		undone := exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+moveID, "", http.StatusOK)
+		var after struct {
+			OnHand float64       `json:"onHand"`
+			Moves  []historyMove `json:"moves"`
+		}
+		if err := json.Unmarshal(undone, &after); err != nil {
+			t.Fatal(err)
+		}
+		if after.OnHand != 0 || len(after.Moves) != 0 {
+			t.Fatalf("history after undo = %+v", after)
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM stock_moves WHERE item_id = 'item-wiped'`); n != 0 {
+			t.Fatalf("moves left = %d", n)
+		}
+		if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-wiped'`).Scan(&shelved); err != nil {
+			t.Fatal(err)
+		}
+		if shelved != 1 {
+			t.Fatal("undo left the wiped item visible")
+		}
+		hidden := exchangeJSON(t, handler, http.MethodGet, "/api/inventory", "", http.StatusOK)
+		if strings.Contains(string(hidden), "item-wiped") {
+			t.Fatalf("re-shelved item is on the inventory list: %s", hidden)
+		}
+		exchangeJSON(t, handler, http.MethodGet, "/api/products/prod-wiped", "", http.StatusOK)
 	})
 }
 
@@ -296,9 +353,6 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 	if err := json.Unmarshal(created, &product); err != nil || product.ID == "" {
 		t.Fatalf("product = %s (%v)", created, err)
 	}
-	exchangeJSON(t, handler, http.MethodPost, "/api/products/overrides",
-		`{"barcode":"011110000000","productId":"`+product.ID+`"}`, http.StatusCreated)
-
 	linked := exchangeJSON(t, handler, http.MethodPatch, "/api/scans/scan-new",
 		`{"productId":"`+product.ID+`","status":"pending"}`, http.StatusOK)
 	var scanBody struct {
@@ -361,16 +415,26 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 	t.Run("flagged stock-out also creates the item", func(t *testing.T) {
 		seedLooseScan(env, "scan-flagged-out", "033330000000", scan.StockOut, 1, nil, scan.Flagged, at)
 		body := exchangeJSON(t, handler, http.MethodPatch, "/api/scans/scan-flagged-out",
-			`{"productId":"`+product.ID+`","status":"pending"}`, http.StatusOK)
+			`{"productId":"`+product.ID+`","unitCount":3,"status":"pending"}`, http.StatusOK)
 		var got struct {
-			Status string  `json:"status"`
-			OnHand float64 `json:"onHand"`
+			Status    string  `json:"status"`
+			UnitCount int     `json:"unitCount"`
+			OnHand    float64 `json:"onHand"`
 		}
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Status != "pending" || got.OnHand != 0 {
+		if got.Status != "pending" || got.OnHand != 0 || got.UnitCount != 3 {
 			t.Fatalf("flagged stock-out link = %+v", got)
+		}
+		var overrideUser string
+		if err := env.DB.QueryRow(`
+			SELECT user_id FROM barcodes
+			WHERE barcode = '033330000000' AND source = 'user_override' AND product_id = ?`, product.ID).Scan(&overrideUser); err != nil {
+			t.Fatal(err)
+		}
+		if overrideUser != "user-1" {
+			t.Fatalf("override user = %s", overrideUser)
 		}
 	})
 

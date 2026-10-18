@@ -39,6 +39,13 @@ const NotStockOutMessage = "This only works when taking something out."
 // the real error and does not send it to the household.
 const InternalMessage = "Something went wrong. Try again."
 
+// ConflictingFieldsMessage is the sentence when one scan update asks for two
+// changes that cannot happen together.
+const ConflictingFieldsMessage = "Choose one change at a time."
+
+// BackfillLockedMessage is the sentence when a backfill pair's count is edited.
+const BackfillLockedMessage = "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead."
+
 // Codes on a commit failure. The frontend matches these, not the sentences.
 const (
 	CodeNoneOnHand        = "none_on_hand"
@@ -52,4 +59,6 @@ const (
 	CodeUnitsOnHand       = "units_on_hand"
 	CodeNotStockOut       = "not_stock_out"
 	CodeInternal          = "internal"
+	CodeConflictingFields = "conflicting_fields"
+	CodeBackfillLocked    = "backfill_locked"
 )

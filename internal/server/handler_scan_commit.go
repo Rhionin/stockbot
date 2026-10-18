@@ -105,9 +105,6 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 }
 
 func (h *ScanCommitHandler) commitBackfill(ctx context.Context, entry *scan.ScanEntry) (any, error) {
-	if *entry.Direction != scan.StockOut {
-		return nil, commitClientError(scan.ErrNotStockOut)
-	}
 	if entry.ProductID == nil || *entry.ProductID == "" {
 		return nil, commitClientError(scan.ErrProductUnresolved)
 	}

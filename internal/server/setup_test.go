@@ -51,8 +51,11 @@ func setupTestWithDB(t *testing.T) (http.Handler, testEnv) {
 
 func setupTestWithContributor(t *testing.T, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {
 	t.Helper()
-	db := setupTestDB(t)
+	return setupOnDB(t, setupTestDB(t), contributor, extra...)
+}
 
+func setupOnDB(t *testing.T, db *sql.DB, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {
+	t.Helper()
 	productRepo := product.NewCatalog(db)
 	clock := newFakeClock(time.Now())
 

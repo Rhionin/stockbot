@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -58,6 +60,13 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		}
 		if entry == nil {
 			return nil, NotFound("scan entry not found")
+		}
+		if req.Body.Status != nil && *req.Body.Status == scan.Cancelled {
+			return nil, &HTTPError{
+				Code:      http.StatusBadRequest,
+				Message:   inventory.ConflictingFieldsMessage,
+				ErrorCode: inventory.CodeConflictingFields,
+			}
 		}
 
 		// A stock-out link writes the barcode override and the household item

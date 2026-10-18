@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/events"
@@ -93,6 +94,14 @@ func (h *HistoryHandler) publish(ctx context.Context, itemID string) {
 }
 
 func historyHTTP(err error) error {
+	if errors.Is(err, history.ErrBackfillLocked) {
+		return &HTTPError{
+			Code:      http.StatusBadRequest,
+			Message:   inventory.BackfillLockedMessage,
+			ErrorCode: inventory.CodeBackfillLocked,
+			Err:       err,
+		}
+	}
 	var missing *history.NotFoundError
 	if errors.As(err, &missing) {
 		return NotFound(missing.Error())

@@ -62,14 +62,13 @@ func (r *Queue) LinkSuggestions(ctx context.Context, id string) ([]LinkSuggestio
 	if entry.Status != Pending {
 		return nil, ErrNotPending
 	}
-	suggestions, err := r.suggestLinks(ctx, r.db, entry)
-	if err != nil {
-		return nil, err
+	if entry.Direction == nil {
+		return nil, ErrDirectionUnset
 	}
-	if suggestions == nil {
-		return []LinkSuggestion{}, nil
+	if *entry.Direction != StockOut {
+		return nil, ErrNotStockOut
 	}
-	return suggestions, nil
+	return r.suggestLinks(ctx, r.db, entry)
 }
 
 // suggestLinks ranks unshelved household items that still have a unit on the shelf.

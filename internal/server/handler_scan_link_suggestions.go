@@ -28,8 +28,5 @@ func (h *ScanLinkSuggestionsHandler) Handle(req Request[struct{}, linkSuggestion
 	if err != nil {
 		return linkSuggestionsResponse{}, commitClientError(err)
 	}
-	if suggestions == nil {
-		suggestions = []scan.LinkSuggestion{}
-	}
 	return linkSuggestionsResponse{Suggestions: suggestions}, nil
 }

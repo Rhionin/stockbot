@@ -167,7 +167,9 @@ func countOnHand(ctx context.Context, tx *sql.Tx, itemIDs []string) (int, error)
 	if len(itemIDs) == 0 {
 		return 0, nil
 	}
-	query := `SELECT COUNT(*) FROM item_instances WHERE removed_at IS NULL AND item_id IN (` + placeholders(len(itemIDs)) + `)`
+	query := `SELECT COUNT(*) FROM item_instances ii
+		JOIN items i ON i.id = ii.item_id
+		WHERE ii.removed_at IS NULL AND i.shelved = 0 AND ii.item_id IN (` + placeholders(len(itemIDs)) + `)`
 	var n int
 	err := tx.QueryRowContext(ctx, query, idsAsArgs(itemIDs)...).Scan(&n)
 	return n, err
@@ -230,12 +232,12 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 
 func loadMove(ctx context.Context, tx *sql.Tx, id string) (moveRow, error) {
 	var move moveRow
-	var tracked int
+	var tracked, unshelved int
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked
+		SELECT id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved
 		FROM stock_moves WHERE id = ?`, id).Scan(
 		&move.ID, &move.ItemID, &move.ProductID, &move.Direction, &move.Quantity, &move.At,
-		&move.Source, &move.ScanEntryID, &tracked,
+		&move.Source, &move.ScanEntryID, &tracked, &unshelved,
 	)
 	if err == sql.ErrNoRows {
 		return moveRow{}, &NotFoundError{Message: "That move is no longer in the history."}
@@ -244,6 +246,7 @@ func loadMove(ctx context.Context, tx *sql.Tx, id string) (moveRow, error) {
 		return moveRow{}, err
 	}
 	move.Tracked = tracked == 1
+	move.Unshelved = unshelved == 1
 	return move, nil
 }
 

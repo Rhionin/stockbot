@@ -84,8 +84,16 @@ func TestInventoryWipeHandler(t *testing.T) {
 					path:           "/api/products",
 					expectedStatus: http.StatusOK,
 					assertions: []assertion{
-						{path: "$[0].id", value: "prod-wipe"},
-						{path: "$[0].name", value: "Milk"},
+						{path: "$", value: []interface{}{}},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/products/prod-wipe",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$.id", value: "prod-wipe"},
+						{path: "$.name", value: "Milk"},
 					},
 				},
 				httpExchange{
