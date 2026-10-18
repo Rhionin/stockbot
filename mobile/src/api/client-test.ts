@@ -104,7 +104,7 @@ describe('createStockbotClient', () => {
       const body = JSON.parse(String(init?.body)) as { linkProductId?: string };
       if (body.linkProductId === 'prod-pears') return jsonResponse(200, { id: 'scan-1', status: 'committed' });
       return jsonResponse(409, {
-        error: 'unlinked barcode',
+        error: 'Which item is this?',
         code: 'no_item',
         suggestions,
       });
@@ -114,7 +114,7 @@ describe('createStockbotClient', () => {
     await expect(client.commitScan('scan-1')).rejects.toMatchObject({
       status: 409,
       code: 'no_item',
-      message: 'unlinked barcode',
+      message: 'Which item is this?',
       suggestions,
     });
     await expect(client.commitScan('scan-1', 'prod-pears')).resolves.toMatchObject({ status: 'committed' });

@@ -324,6 +324,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
               </View>
               {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
               {household !== null
+                && !offers[item.id]
                 && item.direction === 'stock_out'
                 && item.productId !== null
                 && !household.some((row) => row.item.productId === item.productId)
@@ -406,7 +407,9 @@ function LinkOffer({
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const needle = query.trim();
-  const matches = household === null ? null : householdRows(household, needle, excludeProductId);
+  const suggestedIds = new Set(suggestions.map((suggestion) => suggestion.productId));
+  const householdMatches = household === null ? null : householdRows(household, needle, excludeProductId);
+  const matches = householdMatches?.filter((row) => !suggestedIds.has(row.productId)) ?? null;
   const showMatches = open || needle !== '';
 
   return (
@@ -414,10 +417,10 @@ function LinkOffer({
       <Text style={styles.offerTitle}>{LINK_OFFER_HEADING}</Text>
       {showEmptyLine && needle === '' && <Text style={styles.offerCopy}>{NO_CLOSE_MATCH}</Text>}
       <LinkRows rows={suggestionRows(suggestions)} busy={busy} onLink={onLink} />
-      {showMatches && matches !== null && matches.length === 0 && (
+      {showMatches && householdMatches !== null && householdMatches.length === 0 && (
         <Text style={styles.offerCopy}>{NO_MATCHING_PRODUCTS}</Text>
       )}
-      {showMatches && matches !== null && <LinkRows rows={matches} busy={busy} onLink={onLink} />}
+      {showMatches && matches !== null && matches.length > 0 && <LinkRows rows={matches} busy={busy} onLink={onLink} />}
       <TextInput
         accessibilityLabel="Search"
         value={query}
