@@ -19,6 +19,14 @@ var (
 	ErrNoneOnHand = errors.New("nothing on hand")
 	// ErrLinkNotStocked means the chosen product has no household item to scan out.
 	ErrLinkNotStocked = errors.New("that product is not in your pantry")
+	// ErrScanNotFound means the queue has no scan with that id.
+	ErrScanNotFound = errors.New("scan not found")
+	// ErrNotPending means the scan was already committed or cancelled.
+	ErrNotPending = errors.New("scan is not pending")
+	// ErrDirectionUnset means the scan has no stock-in or stock-out direction.
+	ErrDirectionUnset = errors.New("scan direction is unset")
+	// ErrProductUnresolved means the scan has no product yet.
+	ErrProductUnresolved = errors.New("product is unresolved")
 )
 
 // CommitStockIn commits a stock-in scan entry by creating one item instance

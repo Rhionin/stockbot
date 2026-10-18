@@ -14,6 +14,32 @@ func TestInstanceGoneMessage(t *testing.T) {
 	}
 }
 
+func TestCommitFailureCopy(t *testing.T) {
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"not pending", NotPendingMessage, "This scan was already handled."},
+		{"product unresolved", ProductUnresolvedMessage, "Pick a product for this scan first."},
+		{"scan not found", ScanNotFoundMessage, "This scan is no longer in the queue."},
+		{"direction unset", DirectionUnsetMessage, "Choose stock in or stock out first."},
+		{"internal", InternalMessage, "Something went wrong. Try again."},
+	}
+	for _, tt := range checks {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+	if CodeNotPending != "not_pending" || CodeProductUnresolved != "product_unresolved" ||
+		CodeScanNotFound != "scan_not_found" || CodeDirectionUnset != "direction_unset" ||
+		CodeInternal != "internal" {
+		t.Fatalf("codes drifted: %s %s %s %s %s", CodeNotPending, CodeProductUnresolved, CodeScanNotFound, CodeDirectionUnset, CodeInternal)
+	}
+}
+
 func TestStockOutConflictCodes(t *testing.T) {
 	if CodeNoneOnHand != "none_on_hand" {
 		t.Fatalf("CodeNoneOnHand = %q", CodeNoneOnHand)

@@ -2,10 +2,8 @@ package server
 
 import (
 	"context"
-	"errors"
 	"time"
 
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -31,6 +29,9 @@ type batchCommitResponse struct {
 	CommittedIDs  []string `json:"committedIds,omitempty"`
 	FailedIDs     []string `json:"failedIds,omitempty"`
 	FailedReasons []string `json:"failedReasons,omitempty"`
+	// FailedCodes is parallel to FailedIDs and FailedReasons. Older clients
+	// that only read the sentences keep working.
+	FailedCodes []string `json:"failedCodes,omitempty"`
 }
 
 func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}]) (batchCommitResponse, error) {
@@ -56,7 +57,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			req.Body.ExpiresAt,
 		)
 		if err != nil {
-			return batchCommitResponse{}, InternalError(err)
+			return batchCommitResponse{}, commitClientError(err)
 		}
 	}
 
@@ -69,30 +70,28 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		committedIDs := []string{}
 		failedIDs := []string{}
 		failedReasons := []string{}
+		failedCodes := []string{}
 
 		for _, id := range req.Body.ScanEntryIDs {
 			entry, err := h.Queue.GetScanEntry(req.Context, id)
-			if err != nil || entry == nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "scan entry not found")
+			if err != nil {
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, err)
 				continue
 			}
-
+			if entry == nil {
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrScanNotFound)
+				continue
+			}
 			if entry.Status != scan.Pending {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "not pending")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrNotPending)
 				continue
 			}
-
 			if entry.Direction == nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "direction not set")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrDirectionUnset)
 				continue
 			}
-
 			if entry.ProductID == nil || *entry.ProductID == "" {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "product not resolved")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrProductUnresolved)
 				continue
 			}
 
@@ -104,8 +103,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			}
 
 			if commitErr != nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, commitFailureReason(commitErr))
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, commitErr)
 			} else {
 				committedIDs = append(committedIDs, id)
 			}
@@ -114,23 +112,15 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		response.CommittedIDs = committedIDs
 		response.FailedIDs = failedIDs
 		response.FailedReasons = failedReasons
+		response.FailedCodes = failedCodes
 	}
 
 	return response, nil
 }
 
-// commitFailureReason is the sentence stored with a batch entry that did not
-// commit. An empty shelf and a named unit that is already gone use the same
-// wording as a single scan-out. failedReasons is a list of sentences beside
-// failedIds, so it does not carry the none_on_hand or instance_gone code.
-// A batch request does not name an instance, so instance_gone is only reached
-// if CommitStockOut returns that sentinel.
-func commitFailureReason(err error) string {
-	if errors.Is(err, scan.ErrNoneOnHand) {
-		return inventory.NoneOnHandMessage
-	}
-	if errors.Is(err, inventory.ErrInstanceNotFound) {
-		return inventory.InstanceGoneMessage
-	}
-	return err.Error()
+func recordCommitFailure(ids, reasons, codes *[]string, id string, err error) {
+	message, code := explainCommitFailure(err)
+	*ids = append(*ids, id)
+	*reasons = append(*reasons, message)
+	*codes = append(*codes, code)
 }

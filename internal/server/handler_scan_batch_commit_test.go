@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -68,7 +67,7 @@ func TestScanBatchCommit(t *testing.T) {
 				// Committing the same scan again does not move inventory.
 				again := exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit",
 					`{"scanEntryIds":["scan-a"],"commit":true}`, http.StatusOK)
-				if !strings.Contains(string(again), "scan-a") || !strings.Contains(string(again), "not pending") {
+				if !strings.Contains(string(again), "scan-a") || !strings.Contains(string(again), "This scan was already handled.") || !strings.Contains(string(again), "not_pending") {
 					env.T.Fatalf("second commit = %s", again)
 				}
 				exchanges(httpExchange{
@@ -157,7 +156,8 @@ func TestScanBatchCommit(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.committedIds[0]", value: "scan-part"},
 					{path: "$.failedIds[0]", value: "missing"},
-					{path: "$.failedReasons[0]", value: "scan entry not found"},
+					{path: "$.failedReasons[0]", value: "This scan is no longer in the queue."},
+					{path: "$.failedCodes[0]", value: "scan_not_found"},
 				},
 			},
 			afterRequest: exchanges(
@@ -208,11 +208,14 @@ func TestScanBatchCommit(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.committedIds", absent: true},
 					{path: "$.failedIds[0]", value: "scan-nodir"},
-					{path: "$.failedReasons[0]", value: "direction not set"},
+					{path: "$.failedReasons[0]", value: "Choose stock in or stock out first."},
+					{path: "$.failedCodes[0]", value: "direction_unset"},
 					{path: "$.failedIds[1]", value: "scan-noprod"},
-					{path: "$.failedReasons[1]", value: "product not resolved"},
+					{path: "$.failedReasons[1]", value: "Pick a product for this scan first."},
+					{path: "$.failedCodes[1]", value: "product_unresolved"},
 					{path: "$.failedIds[2]", value: "scan-none"},
-					{path: "$.failedReasons[2]", value: inventory.NoneOnHandMessage},
+					{path: "$.failedReasons[2]", value: "Nothing on hand to take out."},
+					{path: "$.failedCodes[2]", value: "none_on_hand"},
 				},
 				bodyExcludes: []string{"no available instances", "nothing on hand"},
 			},
@@ -274,15 +277,6 @@ func TestScanBatchCommit(t *testing.T) {
 			),
 		},
 	})
-}
-
-func TestCommitFailureReasonUsesSharedSentences(t *testing.T) {
-	if got := commitFailureReason(inventory.ErrInstanceNotFound); got != "That one was already taken out. Pick another." {
-		t.Fatalf("instance gone reason = %q", got)
-	}
-	if got := commitFailureReason(scan.ErrNoneOnHand); got != "Nothing on hand to take out." {
-		t.Fatalf("empty shelf reason = %q", got)
-	}
 }
 
 func mustProduct(env testEnv, id, name string) {

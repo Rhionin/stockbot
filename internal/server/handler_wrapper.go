@@ -180,11 +180,26 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 		}
 	}
 	if status >= 500 {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("request failed: %s", message)
+		logged := message
+		if httpErr != nil && httpErr.Err != nil {
+			logged = httpErr.Err.Error()
 		}
-		message = "Something went wrong. Please try again."
-		extra = false
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("request failed: %s", logged)
+		}
+		// code internal is a deliberate client contract: the sentence is safe
+		// and the underlying error was logged above. Other 500s stay generic
+		// and omit the code.
+		if httpErr != nil && httpErr.ErrorCode == "internal" && httpErr.Message != "" {
+			message = httpErr.Message
+			code = httpErr.ErrorCode
+			members = nil
+			suggestions = nil
+			extra = true
+		} else {
+			message = "Something went wrong. Please try again."
+			extra = false
+		}
 	}
 	if extra {
 		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})

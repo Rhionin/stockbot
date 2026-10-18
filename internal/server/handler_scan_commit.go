@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -35,21 +34,21 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 	// Get the scan entry
 	entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, commitClientError(err)
 	}
 	if entry == nil {
-		return nil, NotFound("scan entry not found")
+		return nil, commitClientError(scan.ErrScanNotFound)
 	}
 
 	// Validate the entry can be committed
 	if entry.Status != scan.Pending {
-		return nil, BadRequest("only pending scan entries can be committed")
+		return nil, commitClientError(scan.ErrNotPending)
 	}
 	if entry.Direction == nil {
-		return nil, BadRequest("scan direction must be set before committing")
+		return nil, commitClientError(scan.ErrDirectionUnset)
 	}
 	if entry.ProductID == nil || *entry.ProductID == "" {
-		return nil, BadRequest("product must be resolved before committing")
+		return nil, commitClientError(scan.ErrProductUnresolved)
 	}
 
 	linkProductID := ""
@@ -64,7 +63,7 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 			return nil, BadRequest("linking a barcode is only available when scanning out")
 		}
 		if err := h.Queue.CommitStockIn(req.Context, entry); err != nil {
-			return nil, InternalError(err)
+			return nil, commitClientError(err)
 		}
 	} else if linkProductID != "" {
 		if err := h.Queue.CommitStockOutLink(req.Context, entry, req.Body.InstanceID, linkProductID); err != nil {
@@ -77,7 +76,7 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 	// Return the committed entry
 	committed, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, commitClientError(err)
 	}
 
 	return committed, nil
@@ -95,11 +94,5 @@ func stockOutError(err error) error {
 	if errors.Is(err, scan.ErrLinkNotStocked) {
 		return BadRequest("That product is not in your pantry")
 	}
-	if errors.Is(err, scan.ErrNoneOnHand) {
-		return ConflictDetails(inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, nil)
-	}
-	if errors.Is(err, inventory.ErrInstanceNotFound) {
-		return ConflictDetails(inventory.InstanceGoneMessage, inventory.CodeInstanceGone, nil)
-	}
-	return InternalError(err)
+	return commitClientError(err)
 }

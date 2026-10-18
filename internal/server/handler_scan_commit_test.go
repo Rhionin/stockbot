@@ -208,6 +208,10 @@ func TestScanCommitStockIn(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-committed/commit",
 				expectedStatus: http.StatusBadRequest,
+				assertions: []assertion{
+					{path: "$.error", value: "This scan was already handled."},
+					{path: "$.code", value: "not_pending"},
+				},
 			},
 		},
 		{
@@ -228,6 +232,10 @@ func TestScanCommitStockIn(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-no-product/commit",
 				expectedStatus: http.StatusBadRequest,
+				assertions: []assertion{
+					{path: "$.error", value: "Pick a product for this scan first."},
+					{path: "$.code", value: "product_unresolved"},
+				},
 			},
 		},
 	}
@@ -515,6 +523,11 @@ func TestScanCommitStockInErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-zero-count/commit",
 				expectedStatus: http.StatusInternalServerError,
+				assertions: []assertion{
+					{path: "$.error", value: "Something went wrong. Try again."},
+					{path: "$.code", value: "internal"},
+				},
+				bodyExcludes: []string{"unit count must be at least 1"},
 			},
 		},
 	}
