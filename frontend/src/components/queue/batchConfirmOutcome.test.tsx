@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { notifications, Notifications } from '@mantine/notifications';
+import { showUndo } from '../restock/undo';
 import { ScanQueuePage } from './ScanQueuePage';
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
@@ -151,6 +153,8 @@ interface OutcomeCase {
   cards?: ScanEntry[];
   stillSelected?: boolean;
   fixed?: boolean;
+  toast?: string;
+  keepsUndo?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -256,6 +260,17 @@ const cases: OutcomeCase[] = [
     instanceFetches: 1,
   },
   {
+    name: 'a failed single commit shows the server sentence in the toast',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.'],
+    absent: [],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    toast: 'Nothing on hand to take out.',
+  },
+  {
     name: 'a 400 without a code still shows the server message',
     action: 'confirm-milk',
     pendingAfter: 'both',
@@ -299,7 +314,18 @@ const cases: OutcomeCase[] = [
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
-    fixed: true,
+  },
+  {
+    name: 'a partial removal shows the only-one sentence in the toast',
+    action: 'confirm-milk',
+    pendingAfter: 'oats',
+    commit: { status: 200, body: { ...committedMilk, removedCount: 1 } },
+    visible: ['Only 1 was on hand, so 1 was taken out.'],
+    absent: ['Only 1 were on hand'],
+    pendingBarcodes: ['222'],
+    goneBarcodes: ['111'],
+    toast: 'Only 1 was on hand, so 1 was taken out.',
+    keepsUndo: true,
   },
   {
     name: 'removedCount of several uses plural grammar',
@@ -419,10 +445,12 @@ const cases: OutcomeCase[] = [
 describe('scan commit outcomes', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
+    notifications.clean();
     vi.stubGlobal('EventSource', FakeEventSource);
   });
 
   afterEach(() => {
+    notifications.clean();
     vi.unstubAllGlobals();
   });
 
@@ -464,7 +492,12 @@ describe('scan commit outcomes', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<MantineProvider><ScanQueuePage /></MantineProvider>);
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanQueuePage />
+      </MantineProvider>,
+    );
 
     const milkCard = row.cards
       ? null
@@ -478,6 +511,11 @@ describe('scan commit outcomes', () => {
     if (row.action === 'confirm-milk-instance' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
       fireEvent.click(await within(milkCard).findByRole('radio', { name: goneLabel }));
+    }
+
+    if (row.keepsUndo) {
+      showUndo('Stopped restocking', 'Oats stay on the list.', () => {});
+      expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument();
     }
 
     if (row.action === 'batch') {
@@ -524,6 +562,21 @@ describe('scan commit outcomes', () => {
         for (const notice of pinned) {
           expect(notice).toHaveStyle({ flexShrink: '0' });
         }
+      }
+      if (row.toast !== undefined) {
+        const inToast = screen.getAllByText(row.toast).filter((node) =>
+          node.closest('.restock-toast') !== null && node.childElementCount === 0,
+        );
+        expect(inToast).toHaveLength(1);
+        expect(inToast[0]?.textContent).toBe(row.toast);
+        const queue = document.querySelector('.scan-page-queue');
+        expect(queue).not.toBeNull();
+        for (const alert of queue!.querySelectorAll(':scope > [role="alert"]')) {
+          expect(alert.textContent ?? '').not.toContain(row.toast);
+        }
+      }
+      if (row.keepsUndo) {
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
       }
       if (row.stillSelected) {
         expect(screen.getByRole('button', { name: `Confirm ${row.pendingBarcodes.length} selected scans` })).toBeInTheDocument();

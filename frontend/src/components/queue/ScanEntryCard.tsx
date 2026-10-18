@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
 import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import { showUndo } from '../restock/undo';
 import type { PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -29,7 +30,6 @@ export interface ScanEntryCardProps {
   commitNotice?: string;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
-  onCommitNote?: (note: string) => void;
 }
 
 export const ScanEntryCard = ({
@@ -40,7 +40,6 @@ export const ScanEntryCard = ({
   commitNotice = '',
   onSelectedChange,
   onChanged,
-  onCommitNote,
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
@@ -141,7 +140,13 @@ export const ScanEntryCard = ({
   });
 
   const noteCommitted = (committed: ScanEntry) => {
-    onCommitNote?.(formatPartialRemoval(entry.unitCount, committed) ?? '');
+    const note = formatPartialRemoval(entry.unitCount, committed);
+    if (note !== null) showUndo({ detail: note });
+  };
+
+  const showCommitSentence = (message: string) => {
+    if (message === '') return;
+    showUndo({ detail: message, color: 'red' });
   };
 
   // Returns true when the failure was shown and the scan stays pending.
@@ -149,6 +154,7 @@ export const ScanEntryCard = ({
     if (!(requestError instanceof ApiError)) return false;
     const behavior = commitConflictBehavior(requestError.code);
     if (behavior.linkOffer) {
+      showCommitSentence(requestError.message);
       setLinkOffer(requestError.suggestions);
       return true;
     }
@@ -157,7 +163,9 @@ export const ScanEntryCard = ({
       setInstanceId('');
       setLocalInstanceReload((current) => current + 1);
     }
-    setApproveError(requestError.message || 'Unable to confirm scan.');
+    const message = requestError.message || 'Unable to confirm scan.';
+    setApproveError(message);
+    showCommitSentence(message);
     return true;
   };
 
@@ -171,7 +179,9 @@ export const ScanEntryCard = ({
       onChanged();
     } catch (requestError) {
       if (!showCommitFailure(requestError)) {
-        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
+        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+        setApproveError(message);
+        showCommitSentence(message);
       }
     } finally {
       setApproving(false);
@@ -188,7 +198,9 @@ export const ScanEntryCard = ({
       onChanged();
     } catch (requestError) {
       if (!showCommitFailure(requestError)) {
-        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
+        const message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+        setApproveError(message);
+        showCommitSentence(message);
       }
     } finally {
       setApproving(false);

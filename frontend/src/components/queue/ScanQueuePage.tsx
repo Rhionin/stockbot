@@ -36,7 +36,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [failureById, setFailureById] = useState<Map<string, string>>(new Map());
-  const [removalNotes, setRemovalNotes] = useState<string[]>([]);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
@@ -311,7 +310,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
     setFailureById(new Map(notices.map((notice) => [notice.id, notice.message])));
-    setRemovalNotes([]);
     setSelectedIds(notices.map((notice) => notice.id));
     void loadQueue();
   };
@@ -412,9 +410,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         {failureById.size > 0 && (
           <Alert color="red" py={4} style={{ flexShrink: 0 }}>{BATCH_FAILURE_FALLBACK}</Alert>
         )}
-        {removalNotes.map((note) => (
-          <Alert key={note} py={4} style={{ flexShrink: 0 }}>{note}</Alert>
-        ))}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (
           <Alert color="red" py={4}>
@@ -469,7 +464,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
                   onChanged={() => void loadQueue()}
-                  onCommitNote={(note) => setRemovalNotes(note === '' ? [] : [note])}
                 />
               ))}
             </ScanSessionCard>
