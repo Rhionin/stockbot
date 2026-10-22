@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Rhionin/stockbot/internal/app"
 )
 
 // ErrBackfillLocked is a quantity edit on either move of a backfill pair.
@@ -55,7 +57,7 @@ func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity i
 	if err := tx.Commit(); err != nil {
 		return View{}, err
 	}
-	return j.Product(ctx, move.ItemID, now)
+	return j.Product(ctx, userID, move.ItemID, now)
 }
 
 // UndoEffect is one product an undo would change.
@@ -91,7 +93,7 @@ func (j *Journal) Undo(ctx context.Context, userID, id string, now time.Time) (V
 	if err := tx.Commit(); err != nil {
 		return View{}, err
 	}
-	return j.Product(ctx, effect.ItemID, now)
+	return j.Product(ctx, userID, effect.ItemID, now)
 }
 
 // PreviewUndo reports what Undo would change. It runs that same undo on a
@@ -100,19 +102,30 @@ func (j *Journal) Undo(ctx context.Context, userID, id string, now time.Time) (V
 // the history_repair update. Repair still runs on the copy when older rows
 // would change the result.
 func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPreview, error) {
+	release, err := acquirePreview(ctx)
+	if err != nil {
+		return UndoPreview{}, err
+	}
+	defer release()
 	clone, cleanup, err := j.snapshot(ctx)
 	if err != nil {
 		return UndoPreview{}, err
 	}
 	defer cleanup()
-	tx, err := clone.BeginTx(ctx, nil)
+	// The copy's journal is created while the undo writes. Keep that file
+	// owner-readable only, the same way the backup creates preview.db.
+	var effect UndoEffect
+	err = app.WithPrivateFiles(func() error {
+		tx, err := clone.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		effect, err = applyUndo(ctx, tx, userID, id, false)
+		return err
+	})
 	if err != nil {
-		return UndoPreview{}, err
-	}
-	defer tx.Rollback()
-	effect, err := applyUndo(ctx, tx, userID, id, false)
-	if err != nil {
-		return UndoPreview{}, err
+		return UndoPreview{}, previewErr(ctx, err)
 	}
 	return UndoPreview{Effects: []UndoEffect{effect}}, nil
 }

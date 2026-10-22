@@ -167,6 +167,10 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
 // request when one is available. The client still receives a fixed sentence.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		log.Printf("request canceled")
+		return
+	}
 	if status >= 500 {
 		reportServerError(r, err)
 	}
@@ -199,13 +203,14 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		if httpErr != nil && httpErr.Err != nil {
 			logged = httpErr.Err.Error()
 		}
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("request failed: %s", logged)
-		}
+		log.Printf("request failed: %s", logged)
 		// code internal is a deliberate client contract: the sentence is safe
-		// and the underlying error was logged above. Other 500s stay generic
-		// and omit the code.
-		if httpErr != nil && httpErr.ErrorCode == "internal" && httpErr.Message != "" {
+		// and the underlying error was logged above. A 503 with its own
+		// sentence is retryable. Other 500s stay generic and omit the code.
+		if status == http.StatusServiceUnavailable && httpErr != nil && httpErr.Message != "" {
+			message = httpErr.Message
+			extra = false
+		} else if httpErr != nil && httpErr.ErrorCode == "internal" && httpErr.Message != "" {
 			message = httpErr.Message
 			code = httpErr.ErrorCode
 			members = nil

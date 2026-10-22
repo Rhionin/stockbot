@@ -239,6 +239,40 @@ func TestStartupRemovesLeftoverSnapshotTemps(t *testing.T) {
 	}
 }
 
+func TestStartupRemovesLeftoverPreviewDirs(t *testing.T) {
+	dir := t.TempDir()
+	conn := openFileDB(t, filepath.Join(dir, "pantry.db"))
+	if err := RunMigrations(conn); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	leftover := filepath.Join(dir, PreviewDirPrefix+"crash")
+	if err := os.Mkdir(leftover, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, "preview.db"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, "preview.db-journal"), []byte("journal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(dir, "notes")
+	if err := os.Mkdir(kept, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(conn); err != nil {
+		t.Fatalf("startup: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("startup left %s: %v", leftover, err)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pantry.db")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSnapshotWriteRemovesLeftoverTemps(t *testing.T) {
 	dir := t.TempDir()
 	conn := openFileDB(t, filepath.Join(dir, "pantry.db"))

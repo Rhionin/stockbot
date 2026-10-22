@@ -19,8 +19,8 @@ func NewJournal(db *sql.DB) *Journal {
 	return &Journal{db: db}
 }
 
-// Product is the history of one inventory item.
-func (j *Journal) Product(ctx context.Context, itemID string, now time.Time) (View, error) {
+// Product is the history of one inventory item in this household.
+func (j *Journal) Product(ctx context.Context, userID, itemID string, now time.Time) (View, error) {
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
@@ -29,7 +29,7 @@ func (j *Journal) Product(ctx context.Context, itemID string, now time.Time) (Vi
 	if err := ensure(ctx, tx); err != nil {
 		return View{}, err
 	}
-	view, err := productView(ctx, tx, itemID, now)
+	view, err := productView(ctx, tx, userID, itemID, now)
 	if err != nil {
 		return View{}, err
 	}
@@ -59,7 +59,7 @@ func (j *Journal) Group(ctx context.Context, groupID string, now time.Time) (Vie
 	return view, nil
 }
 
-func productView(ctx context.Context, tx *sql.Tx, itemID string, now time.Time) (View, error) {
+func productView(ctx context.Context, tx *sql.Tx, userID, itemID string, now time.Time) (View, error) {
 	var name, unit, dimension string
 	var base sql.NullFloat64
 	var pack sql.NullInt64
@@ -67,7 +67,7 @@ func productView(ctx context.Context, tx *sql.Tx, itemID string, now time.Time) 
 		SELECT p.name, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.id = ? AND i.user_id = ?`, itemID, householdUser).Scan(&name, &unit, &base, &dimension, &pack)
+		WHERE i.id = ? AND i.user_id = ?`, itemID, userID).Scan(&name, &unit, &base, &dimension, &pack)
 	if err == sql.ErrNoRows {
 		return View{}, &NotFoundError{Message: "That product was not found."}
 	}

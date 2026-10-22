@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -38,7 +39,7 @@ type historyQuantityBody struct {
 // Product is the trail for one item id. A wiped item is hidden from
 // inventory and restock lists, and this direct read still returns 200.
 func (h *HistoryHandler) Product(req Request[struct{}, historyItemParams]) (history.View, error) {
-	view, err := h.Journal.Product(req.Context, req.PathParams.ItemID, time.Now())
+	view, err := h.Journal.Product(req.Context, history.DefaultHousehold(), req.PathParams.ItemID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -66,7 +67,11 @@ func (h *HistoryHandler) Household(req Request[struct{}, struct{}]) (history.Led
 }
 
 func (h *HistoryHandler) SetQuantity(req Request[historyQuantityBody, historyMoveParams]) (history.View, error) {
-	view, err := h.Journal.SetQuantity(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID, req.Body.Quantity, time.Now())
+	household, err := moveHousehold(req.RawRequest)
+	if err != nil {
+		return history.View{}, err
+	}
+	view, err := h.Journal.SetQuantity(req.Context, household, req.PathParams.ID, req.Body.Quantity, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -75,7 +80,11 @@ func (h *HistoryHandler) SetQuantity(req Request[historyQuantityBody, historyMov
 }
 
 func (h *HistoryHandler) Undo(req Request[struct{}, historyMoveParams]) (history.View, error) {
-	view, err := h.Journal.Undo(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID, time.Now())
+	household, err := moveHousehold(req.RawRequest)
+	if err != nil {
+		return history.View{}, err
+	}
+	view, err := h.Journal.Undo(req.Context, household, req.PathParams.ID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -99,7 +108,11 @@ type undoEffectJSON struct {
 
 // PreviewUndo reports what DELETE /api/moves/{id} would change. It changes nothing.
 func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (undoPreviewResponse, error) {
-	preview, err := h.Journal.PreviewUndo(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID)
+	household, err := moveHousehold(req.RawRequest)
+	if err != nil {
+		return undoPreviewResponse{}, err
+	}
+	preview, err := h.Journal.PreviewUndo(req.Context, household, req.PathParams.ID)
 	if err != nil {
 		return undoPreviewResponse{}, historyHTTP(err)
 	}
@@ -114,13 +127,18 @@ func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (
 	return undoPreviewResponse{Effects: effects}, nil
 }
 
-func moveHousehold(r *http.Request) string {
+// moveHousehold is the household a move correction uses. Until signed-in
+// households exist, the only household is the default. A client userId that
+// names another household is the same 404 as a missing move, and the handler
+// returns it before any read or write.
+func moveHousehold(r *http.Request) (string, error) {
+	household := history.DefaultHousehold()
 	if r != nil {
-		if id := strings.TrimSpace(r.URL.Query().Get("userId")); id != "" {
-			return id
+		if id := strings.TrimSpace(r.URL.Query().Get("userId")); id != "" && id != household {
+			return "", NotFound("That move is no longer in the history.")
 		}
 	}
-	return history.DefaultHousehold()
+	return household, nil
 }
 
 func (h *HistoryHandler) publish(ctx context.Context, itemID string) {
@@ -154,6 +172,14 @@ func historyHTTP(err error) error {
 	var conflict *history.ConflictError
 	if errors.As(err, &conflict) {
 		return Conflict(conflict.Error())
+	}
+	var full *history.PreviewFullError
+	if errors.As(err, &full) {
+		return &HTTPError{
+			Code:    http.StatusServiceUnavailable,
+			Message: clientmsg.PreviewNoSpace,
+			Err:     err,
+		}
 	}
 	return InternalError(err)
 }

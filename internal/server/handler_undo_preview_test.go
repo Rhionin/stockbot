@@ -1,15 +1,22 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -362,22 +369,111 @@ func TestOtherHouseholdMoveLooksMissing(t *testing.T) {
 	if got := domainSnapshot(t, env.DB); got != before {
 		t.Fatalf("edit changed the other household:\n%s", got)
 	}
-	owned := exchangeJSON(t, handler, http.MethodGet, "/api/moves/move-other/preview?userId=user-2", "", http.StatusOK)
-	if !strings.Contains(string(owned), "item-other") || !strings.Contains(string(owned), "Other oats") {
-		t.Fatalf("owner preview = %s", owned)
+	for _, path := range []string{
+		"/api/moves/move-other/preview?userId=user-2",
+		"/api/moves/move-other?userId=user-2",
+	} {
+		method := http.MethodGet
+		body := ""
+		if !strings.HasSuffix(path, "/preview?userId=user-2") {
+			method = http.MethodDelete
+		}
+		got := exchangeJSON(t, handler, method, path, body, http.StatusNotFound)
+		if string(got) != string(missing) {
+			t.Fatalf("%s %s\nmissing %s", method, got, missing)
+		}
+	}
+	edited = exchangeJSON(t, handler, http.MethodPatch, "/api/moves/move-other?userId=user-2", `{"quantity":2}`, http.StatusNotFound)
+	if string(edited) != string(missing) {
+		t.Fatalf("edit %s\nmissing %s", edited, missing)
 	}
 	if got := domainSnapshot(t, env.DB); got != before {
-		t.Fatalf("owner preview changed the shelf:\n%s", got)
+		t.Fatalf("foreign userId changed the other household:\n%s", got)
+	}
+}
+
+func TestForeignUserIDChangesNothing(t *testing.T) {
+	at := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	seedShelfItem(env, "prod-own", "Own oats", "item-own")
+	seedScanAt(env, "scan-own", "prod-own", scan.StockIn, 2, at)
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-own/commit", "", http.StatusOK)
+	id := moveID(productHistory(env, handler, "item-own").Moves, "in")
+	if id == "" {
+		t.Fatal("missing stock-in")
+	}
+	missing := exchangeJSON(t, handler, http.MethodGet, "/api/moves/missing/preview", "", http.StatusNotFound)
+	before := domainSnapshot(t, env.DB)
+	for _, path := range []string{
+		"/api/moves/" + id + "/preview?userId=user-2",
+		"/api/moves/" + id + "/preview?userId=%20user-2%20",
+		"/api/moves/" + id + "?userId=user-2",
+	} {
+		method := http.MethodGet
+		body := ""
+		if !strings.Contains(path, "/preview") {
+			method = http.MethodDelete
+		}
+		got := exchangeJSON(t, handler, method, path, body, http.StatusNotFound)
+		if string(got) != string(missing) {
+			t.Fatalf("%s %s %s", method, path, got)
+		}
+		if strings.Contains(string(got), "item-own") || strings.Contains(string(got), "Own oats") || strings.Contains(string(got), "onHand") {
+			t.Fatalf("leaked %s", got)
+		}
+	}
+	edited := exchangeJSON(t, handler, http.MethodPatch, "/api/moves/"+id+"?userId=user-2", `{"quantity":4}`, http.StatusNotFound)
+	if string(edited) != string(missing) {
+		t.Fatalf("edit %s", edited)
+	}
+	if got := domainSnapshot(t, env.DB); got != before {
+		t.Fatalf("foreign userId changed the shelf:\n%s", got)
+	}
+
+	patched := exchangeJSON(t, handler, http.MethodPatch, "/api/moves/"+id+"?userId=user-1", `{"quantity":4}`, http.StatusOK)
+	var raised struct {
+		OnHand float64 `json:"onHand"`
+	}
+	if err := json.Unmarshal(patched, &raised); err != nil {
+		t.Fatal(err)
+	}
+	if raised.OnHand != 4 {
+		t.Fatalf("owner patch on hand = %v", raised.OnHand)
+	}
+	deleted := exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+id, "", http.StatusOK)
+	var after struct {
+		OnHand float64 `json:"onHand"`
+	}
+	if err := json.Unmarshal(deleted, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.OnHand != 0 {
+		t.Fatalf("owner delete on hand = %v", after.OnHand)
 	}
 }
 
 func TestPreviewHoldsNoWriteLock(t *testing.T) {
-	dsn := "file:" + filepath.Join(t.TempDir(), "pantry.db") + "?_pragma=busy_timeout(500)&_pragma=journal_mode(WAL)"
-	db, err := app.OpenSQLite(dsn)
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	db, err := app.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(4)
+	db.SetMaxOpenConns(1)
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "delete" {
+		t.Fatalf("journal_mode = %s", mode)
+	}
+	var busy int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+		t.Fatal(err)
+	}
+	if busy != 0 || db.Stats().MaxOpenConnections != 1 {
+		t.Fatalf("busy_timeout %d pool %d", busy, db.Stats().MaxOpenConnections)
+	}
 	if err := app.RunMigrations(db); err != nil {
 		db.Close()
 		t.Fatal(err)
@@ -390,10 +486,11 @@ func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	inID, _ := commitBackfillPair(t, handler, env, "prod-lock", "scan-lock", at)
 	before := domainSnapshot(t, db)
 
-	holder, err := db.Conn(context.Background())
+	holder, err := app.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	holder.SetMaxOpenConns(1)
 	defer holder.Close()
 	if _, err := holder.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 		t.Fatal(err)
@@ -423,6 +520,102 @@ func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	}
 	if len(preview.Effects) != 1 || float64(preview.Effects[0].OnHand) != after.OnHand {
 		t.Fatalf("preview %+v undo on hand %v", preview.Effects, after.OnHand)
+	}
+}
+
+func TestPreviewDiskFullIsUnavailable(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	before := domainSnapshot(t, env.DB)
+	restore := history.SetPreviewBackupForTest(func(context.Context, *sql.DB, string) error {
+		return errors.New("database or disk is full")
+	})
+	t.Cleanup(restore)
+	var buf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/moves/anything/preview", "", http.StatusServiceUnavailable)
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != clientmsg.PreviewNoSpace {
+		t.Fatalf("body = %s", body)
+	}
+	if strings.Contains(string(body), "disk is full") || strings.Contains(string(body), "SQLITE") {
+		t.Fatalf("body leaked the disk error: %s", body)
+	}
+	if !strings.Contains(buf.String(), "request failed") || !strings.Contains(buf.String(), "disk is full") {
+		t.Fatalf("log = %s", buf.String())
+	}
+	if got := domainSnapshot(t, env.DB); got != before {
+		t.Fatalf("full disk changed the shelf:\n%s", got)
+	}
+}
+
+func TestCanceledPreviewIsLoggedAsACancel(t *testing.T) {
+	handler, _ := setupTestWithDB(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	restore := history.SetPreviewBackupForTest(func(ctx context.Context, src *sql.DB, dest string) error {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		restore()
+	})
+
+	firstDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/moves/anything/preview", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		close(firstDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("preview did not start")
+	}
+
+	var buf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(previous)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/moves/anything/preview", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusInternalServerError {
+		t.Fatalf("canceled preview status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(buf.String(), "request failed") || !strings.Contains(buf.String(), "request canceled") {
+		t.Fatalf("log = %q", buf.String())
+	}
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first preview did not finish")
 	}
 }
 

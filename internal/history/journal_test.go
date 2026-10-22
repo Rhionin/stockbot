@@ -93,7 +93,7 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 		t.Fatalf("outs %+v err %v", outs, err)
 	}
 
-	view, err := journal.Product(ctx, "item-oats", now)
+	view, err := journal.Product(ctx, householdUser, "item-oats", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 	if err != nil || empty.OnHand != 0 {
 		t.Fatalf("empty %+v err %v", empty, err)
 	}
-	if _, err := journal.Product(ctx, "missing", now); !errors.As(err, new(*NotFoundError)) {
+	if _, err := journal.Product(ctx, householdUser, "missing", now); !errors.As(err, new(*NotFoundError)) {
 		t.Fatalf("missing product: %v", err)
 	}
 	if _, err := journal.Group(ctx, "missing", now); !errors.As(err, new(*NotFoundError)) {

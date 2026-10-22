@@ -392,7 +392,7 @@ func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
 
 	now := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 	journal := NewJournal(db)
-	view, err := journal.Product(t.Context(), "item", now)
+	view, err := journal.Product(t.Context(), householdUser, "item", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func seedRelabelHousehold(t *testing.T, db *sql.DB) {
 
 func repairHistory(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := NewJournal(db).Product(t.Context(), "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := NewJournal(db).Product(t.Context(), householdUser, "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 }

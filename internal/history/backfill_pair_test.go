@@ -28,7 +28,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	journal := NewJournal(db)
 	recordBackfillPair(t, db, "item-pair", "prod-pair", "scan-pair", "inst-pair", at, false)
 
-	view, err := journal.Product(ctx, "item-pair", now)
+	view, err := journal.Product(ctx, householdUser, "item-pair", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		recordConsumed(t, db, "item-scans", "prod-scans", "scan-shared", "inst-scans-out-2", at, "scan")
 		recordHeld(t, db, "item-scans", "prod-scans", "inst-scans-left", at)
 
-		view, err := journal.Product(ctx, "item-scans", now)
+		view, err := journal.Product(ctx, householdUser, "item-scans", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	t.Run("two backfill moves that share a scan are not a pair", func(t *testing.T) {
 		recordHeldMove(t, db, "item-fills", "prod-fills", "scan-fills", "inst-fill-1", at, "backfill", false)
 		recordHeldMove(t, db, "item-fills", "prod-fills", "scan-fills", "inst-fill-2", at, "backfill", false)
-		view, err := journal.Product(ctx, "item-fills", now)
+		view, err := journal.Product(ctx, householdUser, "item-fills", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 
 	t.Run("undo of a pair that unshelved hides the item again", func(t *testing.T) {
 		recordBackfillPair(t, db, "item-hide", "prod-hide", "scan-hide", "inst-hide", at, true)
-		view, err := journal.Product(ctx, "item-hide", now)
+		view, err := journal.Product(ctx, householdUser, "item-hide", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item-keep', 'user-1', 'prod-keep')`)
 		recordBackfillPair(t, db, "item-keep", "prod-keep", "scan-keep", "inst-keep", at, true)
 		recordHeld(t, db, "item-keep", "prod-keep", "inst-keep-live", at.Add(time.Hour))
-		view, err := journal.Product(ctx, "item-keep", now)
+		view, err := journal.Product(ctx, householdUser, "item-keep", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if shelved := itemShelved(t, db, "item-used"); shelved != 0 {
 			t.Fatal("the item was still shelved before the undo")
 		}
-		view, err := journal.Product(ctx, "item-used", now)
+		view, err := journal.Product(ctx, householdUser, "item-used", now)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -39,6 +39,9 @@ func ensure(ctx context.Context, tx *sql.Tx) error {
 // repair is the grouping work inside ensure, without the history_repair update.
 // On a shelf that is already grouped it only reads. When older rows still need
 // a move, it writes those moves. Preview runs it on a copy that is thrown away.
+//
+// TODO(#224): repair is not scoped to one household. It still groups every
+// household's older rows. That stays until history follows the signed-in household.
 func repair(ctx context.Context, tx *sql.Tx) error {
 	scans, err := loadCommittedScans(ctx, tx)
 	if err != nil {
