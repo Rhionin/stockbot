@@ -264,8 +264,8 @@ export function getScannerConfig(): Promise<ScannerConfig> {
 
 // --- Inventory ---
 
-export function getInventoryList(query?: string): Promise<InventoryItem[]> {
-  return apiFetch(`/api/inventory${toQueryString({ q: query })}`);
+export function getInventoryList(query?: string, userId?: string): Promise<InventoryItem[]> {
+  return apiFetch(`/api/inventory${toQueryString({ q: query, userId })}`);
 }
 
 export function listItemInstances(itemId: string): Promise<ItemInstanceWithStatus[]> {

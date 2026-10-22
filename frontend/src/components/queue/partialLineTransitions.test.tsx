@@ -110,7 +110,7 @@ const json = (body: unknown) => new Response(JSON.stringify(body), {
   headers: { 'Content-Type': 'application/json' },
 });
 
-type Trigger = 'keep' | 'pending' | 'confirm' | 'batch' | 'remove' | 'typed' | 'arrived' | 'remote' | 'leave';
+type Trigger = 'keep' | 'pending' | 'blocking' | 'confirm' | 'batch' | 'remove' | 'typed' | 'arrived' | 'remote' | 'leave';
 
 const QueueOrLeft = ({ leaveRef }: { leaveRef: { current: () => void } }) => {
   const [here, setHere] = useState(true);
@@ -123,7 +123,8 @@ const QueueOrLeft = ({ leaveRef }: { leaveRef: { current: () => void } }) => {
 
 const rows: { name: string; trigger: Trigger }[] = [
   { name: 'the same cards keep the partial line', trigger: 'keep' },
-  { name: 'a failed card still pending is never a teal banner', trigger: 'pending' },
+  { name: 'amber cards left after a batch show the teal banner and the partial line', trigger: 'pending' },
+  { name: 'a non-amber failure stays red until that card is resolved', trigger: 'blocking' },
   { name: 'a confirm start clears the partial line', trigger: 'confirm' },
   { name: 'a new batch clears the partial line when it starts', trigger: 'batch' },
   { name: 'removing a card clears the partial line', trigger: 'remove' },
@@ -144,7 +145,7 @@ describe('partial line transitions', () => {
   });
 
   it.each(rows)('$name', async ({ trigger }) => {
-    const mixed = trigger === 'pending' || trigger === 'confirm' || trigger === 'remove';
+    const mixed = trigger === 'pending' || trigger === 'blocking' || trigger === 'confirm' || trigger === 'remove';
     const secondBatch = trigger === 'batch';
     let pending = secondBatch ? [chips, later] : mixed ? [chips, kept] : [chips];
     let mode = 'stock_out';
@@ -171,11 +172,13 @@ describe('partial line transitions', () => {
         }
         if (mixed) {
           pending = [kept];
+          const amberOnly = trigger === 'pending' || trigger === 'remove';
           return Promise.resolve(json({
             updatedCount: 2,
             committedIds: [chips.id],
             failedIds: [kept.id],
-            failedReasons: ['Nothing on hand to take out.'],
+            failedReasons: [amberOnly ? 'Nothing on hand to take out.' : 'Choose which item this is first.'],
+            failedCodes: [amberOnly ? 'none_on_hand' : 'product_unresolved'],
             stockOutCounts: { [chips.id]: partialCount },
           }));
         }
@@ -253,12 +256,25 @@ describe('partial line transitions', () => {
     }
 
     if (trigger === 'pending') {
-      expect(screen.getByText(fallback)).toBeInTheDocument();
+      expect(screen.queryByText(fallback)).not.toBeInTheDocument();
       expect(screen.getByText('Kept oil')).toBeInTheDocument();
+      expect(screen.getByText('Nothing on hand to take out.')).toBeInTheDocument();
+      const line = screen.getByText(wasLine);
+      expect(line).toHaveClass('scan-batch-banner--success');
+      expect(line).toHaveAttribute('role', 'status');
+      expect(line.closest('[role="alert"]')).toBeNull();
+      return;
+    }
+
+    if (trigger === 'blocking') {
+      expect(screen.getByText(fallback)).toBeInTheDocument();
+      expect(screen.getByText('Choose which item this is first.')).toBeInTheDocument();
       const line = screen.getByText(wasLine);
       expect(line.closest('[role="alert"]')).not.toBeNull();
-      expect(line).not.toHaveAttribute('role', 'alert');
       expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+      await waitFor(() => expect(screen.queryByText(fallback)).not.toBeInTheDocument());
+      expect(screen.queryByText(wasLine)).not.toBeInTheDocument();
       return;
     }
 

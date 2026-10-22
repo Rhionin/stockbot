@@ -1,8 +1,10 @@
 import { mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
-const shotDir = '/opt/cursor/artifacts/nothing-on-hand'
+const shotDir = process.env.NOTHING_ON_HAND_SHOTS ?? join(tmpdir(), 'nothing-on-hand')
 mkdirSync(shotDir, { recursive: true })
 
 const title = 'Nothing on hand to take out.'
@@ -18,9 +20,9 @@ const settle = async (page: Page) => {
   })
 }
 
-const stockIn = async (page: Page, barcode: string) => {
+const commitScan = async (page: Page, barcode: string, direction: 'stock_in' | 'stock_out') => {
   const created = await page.request.post('/api/scans', {
-    data: { barcode, direction: 'stock_in', userId: 'user-1' },
+    data: { barcode, direction, userId: 'user-1' },
   })
   expect(created.ok(), await created.text()).toBe(true)
   const body = await created.json() as { id: string }
@@ -57,7 +59,11 @@ for (const shot of shots) {
       const cancelled = await request.patch(`/api/scans/${row.id}`, { data: { status: 'cancelled' } })
       expect(cancelled.ok()).toBe(true)
     }
-    await stockIn(page, stocked.barcode)
+    await commitScan(page, stocked.barcode, 'stock_in')
+    for (const item of [missing, empty]) {
+      await commitScan(page, item.barcode, 'stock_in')
+      await commitScan(page, item.barcode, 'stock_out')
+    }
 
     await page.emulateMedia({ colorScheme: shot.scheme })
     await page.setViewportSize({ width: shot.width, height: shot.height })

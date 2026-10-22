@@ -236,6 +236,8 @@ interface OutcomeCase {
   bannerExact?: string;
   bannerKind?: 'success' | 'failure';
   bannerLine?: string;
+  amberBarcodes?: string[];
+  tealBanner?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -340,6 +342,7 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
+    amberBarcodes: ['111'],
     instanceFetches: 1,
     noSearchOn: ['111'],
   },
@@ -353,6 +356,7 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
+    amberBarcodes: ['111'],
     noSearchOn: ['111'],
   },
   {
@@ -647,6 +651,7 @@ const cases: OutcomeCase[] = [
     cardReason: { barcode: '111', text: 'Choose which item this is first.' },
     searchOn: ['111'],
     noSearchOn: ['222'],
+    amberBarcodes: ['222'],
   },
   {
     name: 'a batch without failedCodes still shows only the reason',
@@ -745,13 +750,13 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
-    name: 'a wiped product shows the amber card without More',
+    name: 'an absent product keeps Confirm',
     action: 'view',
     pendingAfter: 'both',
     wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    visible: ['Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
-    absent: ['No inventory item is available'],
+    visible: ['Milk'],
+    absent: ['No inventory item is available', 'Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
@@ -770,27 +775,29 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
+    amberBarcodes: ['111'],
     cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
   },
   {
-    name: 'a stock-out with no household item says nothing is on hand',
+    name: 'an absent product is not an amber card',
     action: 'view',
     pendingAfter: 'both',
     wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    visible: ['Nothing on hand to take out.'],
-    absent: ['No inventory item is available'],
+    visible: ['Milk'],
+    absent: ['No inventory item is available', 'Nothing on hand to take out.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
   {
-    name: 'a wiped product is amber before anyone confirms it',
+    name: 'a listed zero is amber before anyone confirms it',
     action: 'view',
     pendingAfter: 'both',
     wiped: true,
-    household: [householdItem('oats', 'Oats', 1)],
+    household: [householdItem('milk', 'Milk', 0), householdItem('oats', 'Oats', 1)],
     visible: ['Nothing on hand to take out.'],
     absent: ['No inventory item is available'],
+    amberBarcodes: ['111'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
@@ -1056,10 +1063,11 @@ const partialBatchRows = (): OutcomeCase[] => {
       visibleCards: 3,
       confirmCount: 3,
       batch: omitted,
-      visible: ['Nothing on hand to take out.', fallback],
-      absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer'],
-      once: [fallback, 'Nothing on hand to take out.'],
-      bannerExact: fallback,
+      visible: ['Nothing on hand to take out.'],
+      absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer', fallback],
+      once: ['Nothing on hand to take out.'],
+      tealBanner: true,
+      amberBarcodes: ['scan-batch-none'],
       pendingBarcodes: ['scan-batch-none'],
       goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
       cardReason: { barcode: 'scan-batch-none', text: 'Nothing on hand to take out.' },
@@ -1073,10 +1081,11 @@ const partialBatchRows = (): OutcomeCase[] => {
       visibleCards: 3,
       confirmCount: 3,
       batch: batchContract.body,
-      visible: ['Nothing on hand to take out.', fallback, wasLine],
-      absent: [wereLine, manyLine, 'were taken out', 'cards had fewer'],
-      once: [fallback, wasLine, 'Nothing on hand to take out.'],
-      bannerKind: 'failure',
+      visible: ['Nothing on hand to take out.', wasLine],
+      absent: [wereLine, manyLine, 'were taken out', 'cards had fewer', fallback],
+      once: [wasLine, 'Nothing on hand to take out.'],
+      bannerKind: 'success',
+      amberBarcodes: ['scan-batch-none'],
       bannerLine: wasLine,
       pendingBarcodes: ['scan-batch-none'],
       goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
@@ -1169,7 +1178,7 @@ const partialBatchRows = (): OutcomeCase[] => {
       kept: [emptyCard],
       confirmCount: 2,
       followBarcode: 'scan-batch-none',
-      thenSee: [wasLine, fallback],
+      thenSee: [wasLine],
       thenGone: ['scan-batch-partial'],
       batch: {
         updatedCount: 2,
@@ -1570,23 +1579,30 @@ describe('scan commit outcomes', () => {
       }
     });
 
+    const amberBarcodes = new Set(row.amberBarcodes ?? []);
     for (const barcode of row.pendingBarcodes) {
       const card = screen.getByRole('article', { name: scanName(barcode) });
-      if (card.classList.contains('scan-entry-card--nothing')) {
+      if (amberBarcodes.has(barcode)) {
+        expect(card).toHaveClass('scan-entry-card--nothing');
         expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
         expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
       } else {
+        expect(card).not.toHaveClass('scan-entry-card--nothing');
         expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
       }
     }
     if (row.cardReason) {
       const card = screen.getByRole('article', { name: scanName(row.cardReason.barcode) });
-      if (card.classList.contains('scan-entry-card--nothing')) {
+      if (amberBarcodes.has(row.cardReason.barcode)) {
         expect(within(card).getByText(row.cardReason.text)).toBeInTheDocument();
         expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
       } else {
         expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
       }
+    }
+    if (row.tealBanner) {
+      expect(document.querySelector('.scan-batch-banner--success')).not.toBeNull();
+      expect(screen.queryByText(fallback)).not.toBeInTheDocument();
     }
     if (row.cardOnce) {
       const card = screen.getByRole('article', { name: scanName(row.cardOnce.barcode) });

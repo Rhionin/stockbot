@@ -25,11 +25,13 @@ const LinkProductSearch = ({
   busy,
   reloadKey,
   excludeProductId,
+  userId,
   onPick,
 }: {
   busy: boolean;
   reloadKey: number;
   excludeProductId: string;
+  userId?: string;
   onPick: (productId: string) => void;
 }) => {
   const searchId = useId();
@@ -69,7 +71,7 @@ const LinkProductSearch = ({
 
   useEffect(() => {
     let active = true;
-    void getInventoryList()
+    void getInventoryList(undefined, userId)
       .then((loaded) => {
         if (active) setItems(loaded);
       })
@@ -79,7 +81,7 @@ const LinkProductSearch = ({
     return () => {
       active = false;
     };
-  }, [reloadKey]);
+  }, [reloadKey, userId]);
 
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -151,11 +153,13 @@ export interface ScanEntryCardProps {
   commitNotice?: string;
   commitCode?: string;
   nothingOnHand?: boolean;
+  cueNothingOnHand?: boolean;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onConfirmStart?: () => void;
   onBlocked?: () => void;
   onStocked?: (productId: string) => void;
+  userId?: string;
 }
 
 export const ScanEntryCard = ({
@@ -166,13 +170,16 @@ export const ScanEntryCard = ({
   commitNotice = '',
   commitCode = '',
   nothingOnHand = false,
+  cueNothingOnHand = false,
   onSelectedChange,
   onChanged,
   onConfirmStart,
   onBlocked,
   onStocked,
+  userId,
 }: ScanEntryCardProps) => {
   const blockedBodyId = useId();
+  const articleRef = useRef<HTMLElement>(null);
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approving, setApproving] = useState(false);
@@ -249,6 +256,10 @@ export const ScanEntryCard = ({
   // Pending confirmation is a list row. Flagged review stays a card.
   const flatRow = entry.status === 'pending';
   const blocked = nothingOnHand;
+  useLayoutEffect(() => {
+    if (!cueNothingOnHand) return;
+    articleRef.current?.focus();
+  }, [cueNothingOnHand]);
   const articleLabel = blocked
     ? `Scan ${entry.barcode}, ${NOTHING_ON_HAND_TITLE}`
     : `Scan ${entry.barcode}`;
@@ -628,7 +639,7 @@ export const ScanEntryCard = ({
         <div className="scan-nothing">
           <span className="scan-nothing-mark" aria-hidden="true">!</span>
           <div className="scan-nothing-copy">
-            <p className="scan-nothing-title">{NOTHING_ON_HAND_TITLE}</p>
+            <p className="scan-nothing-title" role={cueNothingOnHand ? 'status' : undefined}>{NOTHING_ON_HAND_TITLE}</p>
             <p className="scan-nothing-body" id={blockedBodyId}>{NOTHING_ON_HAND_BODY}</p>
           </div>
         </div>
@@ -647,7 +658,7 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Decrease unit count"
-              disabled={!isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
+              disabled={blocked || !isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
               onClick={() => adjustUnitCount(-1)}
             >
               <span aria-hidden="true">−</span>
@@ -660,6 +671,7 @@ export const ScanEntryCard = ({
               step={1}
               allowDecimal={false}
               value={unitCountDraft}
+              disabled={blocked}
               onChange={handleUnitCountChange}
               onBlur={handleUnitCountBlur}
               onKeyDown={handleUnitCountKeyDown}
@@ -669,6 +681,7 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Increase unit count"
+              disabled={blocked}
               onClick={() => adjustUnitCount(1)}
             >
               <span aria-hidden="true">+</span>
@@ -850,6 +863,7 @@ export const ScanEntryCard = ({
             busy={approving}
             reloadKey={householdReload}
             excludeProductId={excludedProductId}
+            userId={userId}
             onPick={(productId) => void linkSuggestion(productId)}
           />
           <div className="scan-link-offer-actions">
@@ -871,7 +885,7 @@ export const ScanEntryCard = ({
 
   if (flatRow) {
     return (
-      <article className={changeIndicatorClass} aria-label={articleLabel}>
+      <article ref={articleRef} tabIndex={-1} className={changeIndicatorClass} aria-label={articleLabel}>
         {queueItem}
       </article>
     );

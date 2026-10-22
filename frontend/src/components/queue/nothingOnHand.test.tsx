@@ -78,6 +78,7 @@ const cardName = (barcode: string) => new RegExp(`^Scan ${barcode}(,|$)`);
 interface QueueHarness {
   scans: ScanEntry[];
   inventory?: unknown;
+  nextInventory?: unknown;
   mode?: 'stock_in' | 'stock_out';
   failInventory?: boolean;
   holdInventory?: boolean;
@@ -85,6 +86,7 @@ interface QueueHarness {
 
 const renderQueue = (harness: QueueHarness) => {
   let inventory = harness.inventory ?? [];
+  let inventoryLoads = 0;
   let pending = harness.scans;
   let releaseInventory: (items: unknown) => void = () => {};
   const heldInventory = harness.holdInventory
@@ -109,6 +111,9 @@ const renderQueue = (harness: QueueHarness) => {
       if (id === 'scan-stale' || id === 'scan-pin') {
         return Promise.resolve(json({ error: NOTHING_ON_HAND_TITLE, code: 'none_on_hand' }, 409));
       }
+      if (id === 'scan-missing') {
+        return Promise.resolve(json({ error: 'Which item is this?', code: 'no_item', suggestions: [] }, 409));
+      }
       if (id === 'scan-in') {
         inventory = [shelf('milk', 'Milk', 1)];
         pending = pending.filter((entry) => entry.id !== id);
@@ -127,8 +132,11 @@ const renderQueue = (harness: QueueHarness) => {
     if (url.includes('status=pending')) return Promise.resolve(json(pending));
     if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(json([]));
     if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
+      inventoryLoads += 1;
+      if (!url.includes('userId=user-1')) return Promise.reject(new Error(`inventory request omitted the household: ${url}`));
       if (harness.failInventory) return Promise.reject(new Error('inventory down'));
-      if (heldInventory !== null) return heldInventory.then((items) => json(items));
+      if (heldInventory !== null && inventoryLoads === 1) return heldInventory.then((items) => json(items));
+      if (inventoryLoads > 1 && harness.nextInventory !== undefined) return Promise.resolve(json(harness.nextInventory));
       return Promise.resolve(json(inventory));
     }
     if (url === '/api/products' || url.startsWith('/api/products?')) return Promise.resolve(json([]));
@@ -186,22 +194,22 @@ describe('nothing on hand queue', () => {
     skip: string | null;
   }[] = [
     {
-      name: 'a missing product and a zero count are amber, a stocked card is not',
+      name: 'an absent product stays confirmable and a listed zero is amber',
       scans: [milk, missing, zero, unresolved],
       inventory: [shelf('milk', 'Milk', 2), shelf('zero', 'Empty oats', 0)],
-      amber: ['222', '333'],
-      normal: ['111', '444'],
-      pill: '2 with nothing on hand',
-      skip: 'Confirm skips the 2 with nothing on hand.',
+      amber: ['333'],
+      normal: ['111', '222', '444'],
+      pill: '1 with nothing on hand',
+      skip: 'Confirm skips the 1 with nothing on hand.',
     },
     {
-      name: 'one empty card uses the singular skip line',
-      scans: [milk, missing],
-      inventory: [shelf('milk', 'Milk', 2)],
-      amber: ['222'],
+      name: 'one empty card uses the digit in the skip line',
+      scans: [milk, zero],
+      inventory: [shelf('milk', 'Milk', 2), shelf('zero', 'Empty oats', 0)],
+      amber: ['333'],
       normal: ['111'],
       pill: '1 with nothing on hand',
-      skip: 'Confirm skips the one with nothing on hand.',
+      skip: 'Confirm skips the 1 with nothing on hand.',
     },
     {
       name: 'a stocked queue has no pill and no skip line',
@@ -240,33 +248,68 @@ describe('nothing on hand queue', () => {
     }
     if (row.pill === null) expect(screen.queryByText(/\d+ with nothing on hand/)).not.toBeInTheDocument();
     else expect(screen.getByText(row.pill)).toBeInTheDocument();
-    if (row.skip === null) expect(screen.queryByText(/Confirm skips the /)).not.toBeInTheDocument();
-    else expect(screen.getByText(row.skip)).toBeInTheDocument();
+    expect(screen.queryByText(/Confirm skips the /)).not.toBeInTheDocument();
+    if (row.skip !== null && row.normal.length > 0) {
+      const chosen = screen.getByRole('article', { name: `Scan ${row.normal[0]}` });
+      fireEvent.click(within(chosen).getByRole('checkbox'));
+      expect(screen.getByText(row.skip)).toBeInTheDocument();
+    }
   });
 
-  it('select all and confirm skip the empty cards', async () => {
+  it('select all checks only the eligible cards and can confirm them', async () => {
     const { batches } = renderQueue({
       scans: [milk, missing, zero],
       inventory: [shelf('milk', 'Milk', 2), shelf('zero', 'Empty oats', 0)],
     });
-    await screen.findByRole('article', { name: `Scan 222, ${NOTHING_ON_HAND_TITLE}` });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` });
+    const selectAll = screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' });
+    expect(selectAll).not.toBeChecked();
+    expect(selectAll).toBeEnabled();
+    fireEvent.click(selectAll);
+    expect(selectAll).toBeChecked();
     expect(within(screen.getByRole('article', { name: 'Scan 111' })).getByRole('checkbox')).toBeChecked();
-    expect(within(screen.getByRole('article', { name: cardName('222') })).getByRole('checkbox')).not.toBeChecked();
+    expect(within(screen.getByRole('article', { name: 'Scan 222' })).getByRole('checkbox')).toBeChecked();
     expect(within(screen.getByRole('article', { name: cardName('333') })).getByRole('checkbox')).not.toBeChecked();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm 1 selected scans' }));
-    await waitFor(() => expect(batches).toEqual([['scan-milk']]));
+    expect(within(screen.getByRole('article', { name: cardName('333') })).getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    await waitFor(() => expect(batches).toEqual([['scan-milk', 'scan-missing']]));
+  });
+
+  it('disables confirm all when every card has nothing on hand', async () => {
+    const second = scan({
+      id: 'scan-zero-2',
+      barcode: '334',
+      productId: 'prod-zero-2',
+      product: product('prod-zero-2', 'Empty rice'),
+    });
+    renderQueue({
+      scans: [zero, second],
+      inventory: [shelf('zero', 'Empty oats', 0), shelf('zero-2', 'Empty rice', 0)],
+    });
+    await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` });
+    expect(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Confirm 0 selected scans' })).toBeDisabled();
+  });
+
+  it('an absent product shows the link offer, not an amber card', async () => {
+    renderQueue({ scans: [missing], inventory: [] });
+    const card = await screen.findByRole('article', { name: 'Scan 222' });
+    expect(within(card).queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
+    expect(await within(card).findByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
+    expect(within(card).queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
   });
 
   it('removes an empty card', async () => {
     const { patches } = renderQueue({
-      scans: [missing],
-      inventory: [],
+      scans: [zero],
+      inventory: [shelf('zero', 'Empty oats', 0)],
     });
-    const card = await screen.findByRole('article', { name: `Scan 222, ${NOTHING_ON_HAND_TITLE}` });
+    const card = await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` });
     fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
-    await waitFor(() => expect(patches).toEqual([{ id: 'scan-missing', body: { status: 'cancelled' } }]));
-    await waitFor(() => expect(screen.queryByRole('article', { name: cardName('222') })).not.toBeInTheDocument());
+    await waitFor(() => expect(patches).toEqual([{ id: 'scan-zero', body: { status: 'cancelled' } }]));
+    await waitFor(() => expect(screen.queryByRole('article', { name: cardName('333') })).not.toBeInTheDocument());
   });
 
   it('waits for the inventory list before turning a card amber', async () => {
@@ -294,10 +337,13 @@ describe('nothing on hand queue', () => {
     const card = await screen.findByRole('article', { name: 'Scan 555' });
     fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
     const amber = await screen.findByRole('article', { name: `Scan 555, ${NOTHING_ON_HAND_TITLE}` });
+    expect(amber).toHaveFocus();
+    expect(within(amber).getByText(NOTHING_ON_HAND_TITLE)).toHaveAttribute('role', 'status');
     expect(within(amber).queryByRole('alert')).not.toBeInTheDocument();
     expect(document.querySelector('.restock-toast')).toBeNull();
-    fireEvent.click(within(amber).getByRole('button', { name: 'Increase unit count' }));
-    await waitFor(() => expect(screen.getByRole('article', { name: `Scan 555, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument());
+    expect(within(amber).getByRole('button', { name: 'Increase unit count' })).toBeDisabled();
+    expect(within(amber).getByRole('button', { name: 'Decrease unit count' })).toBeDisabled();
+    expect(within(amber).getByRole('textbox', { name: 'Unit count' })).toBeDisabled();
     FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
@@ -345,6 +391,42 @@ describe('nothing on hand queue', () => {
     const stockIn = await screen.findByRole('article', { name: 'Scan 777' });
     fireEvent.click(within(stockIn).getByRole('button', { name: 'Confirm' }));
     fireEvent.click(await screen.findByRole('tab', { name: /Stock out/ }));
+    await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 333' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('drops a pin when a later list reports a different count', async () => {
+    const stale = scan({ id: 'scan-stale', barcode: '555' });
+    const beans = scan({
+      id: 'scan-beans',
+      barcode: '888',
+      productId: 'prod-beans',
+      product: product('prod-beans', 'Beans'),
+    });
+    renderQueue({
+      scans: [stale, beans],
+      inventory: [shelf('milk', 'Milk', 2), shelf('beans', 'Beans', 3)],
+      nextInventory: [shelf('milk', 'Milk', 5), shelf('beans', 'Beans', 3)],
+    });
+    fireEvent.click(within(await screen.findByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    await screen.findByRole('article', { name: `Scan 555, ${NOTHING_ON_HAND_TITLE}` });
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 888' })).getByRole('button', { name: 'Increase unit count' }));
+    await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('keeps a live inventory update when an older list arrives later', async () => {
+    const empty = scan({
+      id: 'scan-zero',
+      barcode: '333',
+      productId: 'prod-milk',
+      product: product('prod-milk', 'Milk'),
+    });
+    const { releaseInventory } = renderQueue({ scans: [empty], holdInventory: true });
+    const card = await screen.findByRole('article', { name: 'Scan 333' });
+    expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
+    releaseInventory([shelf('milk', 'Milk', 0)]);
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 333' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
   });

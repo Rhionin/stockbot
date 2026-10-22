@@ -58,7 +58,6 @@ test('link search shows at least five rows at 390px when the field is at the bot
     category: 'Dry goods',
     unitOfMeasure: 'box',
   })
-  await stockIn(request, mystery.barcode)
   for (const item of fillers) {
     await createKnownProduct(request, {
       barcode: item.barcode,
@@ -72,18 +71,6 @@ test('link search shows at least five rows at 390px when the field is at the bot
   for (const item of fillers) {
     await createScan(request, item.barcode, 'stock_out')
   }
-
-  await page.route('**/api/scans/*/commit', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.continue()
-      return
-    }
-    await route.fulfill({
-      status: 409,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'barcode is not linked', code: 'no_item', suggestions: [] }),
-    })
-  })
 
   await page.goto('/')
   await resetToStockIn(page)

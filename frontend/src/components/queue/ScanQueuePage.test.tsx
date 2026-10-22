@@ -103,7 +103,7 @@ describe('ScanQueuePage', () => {
           scanEntry({ id: 'older', barcode: '111', scannedAt: '2026-03-20T09:00:00Z', status: 'flagged' }),
         ]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -161,7 +161,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -209,7 +209,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -257,7 +257,7 @@ describe('ScanQueuePage', () => {
           scanEntry({ id: `created-${index}`, barcode: post.barcode }))));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -300,7 +300,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -342,7 +342,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -388,7 +388,7 @@ describe('ScanQueuePage', () => {
         if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
           return Promise.resolve(jsonResponse([]));
         }
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         throw new Error(`Unexpected request: ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -437,7 +437,7 @@ describe('ScanQueuePage', () => {
         if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
           return Promise.resolve(jsonResponse([]));
         }
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         throw new Error(`Unexpected request: ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -497,7 +497,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -523,7 +523,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -554,7 +554,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out', connected: false }));
       }
@@ -604,7 +604,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out', connected: false }));
       }
@@ -640,7 +640,7 @@ describe('ScanQueuePage', () => {
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
         return Promise.resolve(jsonResponse([]));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in', connected: true }));
       }
@@ -658,7 +658,7 @@ describe('ScanQueuePage', () => {
         return Promise.resolve(jsonResponse([scanEntry({ id: 'existing', barcode: '111' })]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -701,7 +701,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       // The seeded scanner mode drives the default visible tab; stock_out here.
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
@@ -758,7 +758,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode }));
       }
@@ -810,7 +810,7 @@ describe('ScanQueuePage', () => {
       }
       if (url.includes('status=pending')) return Promise.resolve(jsonResponse(createdEntries));
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -843,7 +843,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -877,7 +877,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -906,7 +906,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -938,7 +938,7 @@ describe('ScanQueuePage', () => {
         ]));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -979,7 +979,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1024,7 +1024,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1084,7 +1084,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1141,7 +1141,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1203,7 +1203,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1264,7 +1264,7 @@ describe('ScanQueuePage', () => {
             scanEntry({ id: 'flagged-2', barcode: '222', status: 'flagged', direction: null }),
           ]));
         }
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1288,7 +1288,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1312,7 +1312,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1352,7 +1352,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1389,7 +1389,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1443,7 +1443,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1489,7 +1489,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1528,7 +1528,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
       }
@@ -1615,7 +1615,7 @@ describe('ScanQueuePage', () => {
         const url = String(input);
         if (url.includes('status=pending')) return Promise.resolve(jsonResponse(entries));
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
           return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_out' }));
         }
@@ -1767,7 +1767,7 @@ describe('ScanQueuePage', () => {
             }),
           ]));
         }
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
           return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
         }
@@ -1860,7 +1860,7 @@ describe('ScanQueuePage', () => {
           ]));
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
           return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
         }
@@ -1902,7 +1902,7 @@ describe('ScanQueuePage', () => {
       const url = String(input);
       if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pending));
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
       }
@@ -2048,7 +2048,7 @@ describe('ScanQueuePage', () => {
         }
         if (url.includes('status=pending')) return Promise.resolve(jsonResponse(created));
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         throw new Error(`Unexpected request: ${url}`);
       });
     }
@@ -2238,7 +2238,7 @@ describe('ScanQueuePage', () => {
         if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
           return Promise.resolve(jsonResponse([]));
         }
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         throw new Error(`Unexpected request: ${url}`);
       }));
 
@@ -2279,7 +2279,7 @@ describe('ScanQueuePage', () => {
         const url = String(input);
         if (url.includes('status=pending')) return pending;
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
         if (url.endsWith('/api/scanner/config')) {
           return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
         }
@@ -2317,7 +2317,7 @@ describe('ScanQueuePage', () => {
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
         if (url === '/api/products') return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory') {
+        if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
           if (entry.productId === null || entry.product === null || entry.product === undefined) {
             return Promise.resolve(jsonResponse([]));
           }
@@ -2429,7 +2429,7 @@ describe('QR misread', () => {
           direction: 'stock_in',
         })));
       }
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({
           stockInBarcode: 'STOCK_IN',

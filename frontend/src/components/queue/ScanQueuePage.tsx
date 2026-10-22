@@ -93,6 +93,9 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   // Bumped when this page or an event stream sets the mode, so a config
   // response that started earlier cannot put the previous direction back.
   const modeEpoch = useRef(0);
+  // A slow inventory list must not paint over a newer live update.
+  const inventoryEpoch = useRef(0);
+  const [cuedNothing, setCuedNothing] = useState<ReadonlySet<string>>(() => new Set());
 
   // The selected tab is the scan direction. A refresh that reports the same
   // direction leaves the queue the user is reviewing in place.
@@ -171,8 +174,11 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       });
       if (!keepPartialLine) setPartialLine(null);
       setError('');
-      void getInventoryList()
+      const epoch = inventoryEpoch.current + 1;
+      inventoryEpoch.current = epoch;
+      void getInventoryList(undefined, userId)
         .then((items) => {
+          if (inventoryEpoch.current !== epoch) return;
           setInventory(items);
           setInventoryReady(true);
           setPinnedNone((current) => reconcilePins(current, items, entriesRef.current));
@@ -284,9 +290,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       acceptRemoteMode(mode);
     });
     eventSource.addEventListener('inventory', (message) => {
-      if (!inventoryReadyRef.current) return;
+      inventoryEpoch.current += 1;
       const inventoryItem = JSON.parse((message as MessageEvent).data) as InventoryItem;
       setInventory((current) => mergeInventoryEvent(current, inventoryItem));
+      setInventoryReady(true);
       if (inventoryItem.instanceCount > 0) {
         releasePinsRef.current(new Set([inventoryItem.item.productId]));
       }
@@ -322,11 +329,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   );
   const allEligibleSelected = eligibleEntries.length > 0
     && eligibleEntries.every((entry) => selectedIds.includes(entry.id));
-  const blockedInView = viewEntries.filter((entry) => nothingOnHandIds.has(entry.id)).length;
-  const skipLine = confirmSkipsNothingOnHand(blockedInView);
+  const selectedInView = viewEntries.filter((entry) => selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id));
+  const skippedBlocked = viewEntries.filter((entry) => nothingOnHandIds.has(entry.id) && !selectedIds.includes(entry.id)).length;
+  const skipLine = selectedInView.length > 0 && skippedBlocked > 0
+    ? confirmSkipsNothingOnHand(skippedBlocked)
+    : null;
+  const blockingFailures = [...failureById.values()].filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+  const amberFailures = [...failureById.values()].filter((notice) => notice.code === CODE_NONE_ON_HAND);
 
   const rememberPin = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
+    setCuedNothing(new Set(ids));
     setPinnedNone((current) => {
       const next = new Map(current);
       const ready = inventoryReadyRef.current;
@@ -593,14 +606,14 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {failureById.size > 0 && (
+        {blockingFailures.length > 0 && (
           <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
             <div>{BATCH_FAILURE_FALLBACK}</div>
             {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
           </Alert>
         )}
-        {/* An all-success batch has no summary sentence, so this line is the banner. */}
-        {failureById.size === 0 && partialLine !== null && (
+        {/* Amber cards carry their own message. The batch is the teal banner, and the partial line sits in it when one applies. */}
+        {blockingFailures.length === 0 && (partialLine !== null || amberFailures.length > 0) && (
           <Text
             role="status"
             className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
@@ -666,6 +679,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   commitNotice={blockedNotice ? '' : (notice?.message ?? '')}
                   commitCode={notice?.code ?? ''}
                   nothingOnHand={nothingOnHandIds.has(entry.id)}
+                  cueNothingOnHand={cuedNothing.has(entry.id)}
                   selected={selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
                   onConfirmStart={() => {
@@ -675,6 +689,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   onBlocked={() => rememberPin([entry.id])}
                   onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}
+                  userId={userId}
                 />
                 );
               })}
