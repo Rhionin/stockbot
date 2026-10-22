@@ -3,6 +3,22 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
+
+	"modernc.org/sqlite"
+)
+
+// sqlitePrimaryBusy is SQLite's SQLITE_BUSY primary result code. Extended
+// codes such as SQLITE_BUSY_TIMEOUT keep this low byte.
+const sqlitePrimaryBusy = 5
+
+const (
+	// internalClientMessage is the sentence every other 5xx returns. The
+	// server log keeps the underlying error.
+	internalClientMessage = "Something went wrong. Please try again."
+	// busyClientMessage is the sentence after the busy timeout. The client
+	// can retry; the raw driver text stays in the log.
+	busyClientMessage = "The pantry is busy right now. Please try again."
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -64,15 +80,43 @@ func BadGateway(message string) error {
 }
 
 // httpStatusFromError determines the HTTP status code from an error.
+// A lock that outlasts the busy timeout is a 503. Other server errors stay 500.
 func httpStatusFromError(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
 
+	status := http.StatusInternalServerError
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		return httpErr.Code
+		status = httpErr.Code
 	}
+	if status >= 500 && sqliteBusy(err) {
+		return http.StatusServiceUnavailable
+	}
+	return status
+}
 
-	return http.StatusInternalServerError
+// clientMessage is the fixed sentence a browser sees for a 5xx. Database text
+// is not included. A busy lock names the retry; every other 5xx stays generic.
+func clientMessage(err error) string {
+	if sqliteBusy(err) {
+		return busyClientMessage
+	}
+	return internalClientMessage
+}
+
+func sqliteBusy(err error) bool {
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) && driverErr.Code()&0xff == sqlitePrimaryBusy {
+		return true
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }

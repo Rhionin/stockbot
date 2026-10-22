@@ -163,7 +163,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 }
 
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
-// request when one is available. The client still receives a fixed sentence.
+// request when one is available. The client receives a fixed sentence: a
+// busy lock says to retry, and every other 5xx stays generic so driver text
+// is not part of the body.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
 	if status >= 500 {
 		reportServerError(r, err)
@@ -192,7 +194,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Printf("request failed: %s", message)
 		}
-		message = "Something went wrong. Please try again."
+		message = clientMessage(err)
 		extra = false
 	}
 	if extra {
