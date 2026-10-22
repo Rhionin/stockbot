@@ -16,16 +16,72 @@ import { ApiError, type StockbotClient } from '../api/client';
 import {
   BATCH_FAILURE_FALLBACK,
   batchFailureNotices,
+  CODE_NONE_ON_HAND,
+  confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
+  NOTHING_ON_HAND_BODY,
+  NOTHING_ON_HAND_TITLE,
+  nothingOnHandPill,
   NO_CLOSE_MATCH,
+  shelfHasNothingOnHand,
 } from '../../../frontend/src/api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
 const LINK_OFFER_HEADING = 'Which item is this?';
-const NOTHING_ON_HAND = 'Nothing on hand to take out.';
 const NO_MATCHING_PRODUCTS = 'No matching products.';
+
+interface NothingPin {
+  onHand: number | null;
+  observed: boolean;
+}
+
+function shelfCount(rows: InventoryItem[], productId: string | null): number | undefined {
+  if (productId === null) return undefined;
+  return rows.find((row) => row.item.productId === productId)?.instanceCount;
+}
+
+function pinFromShelf(entry: ScanEntry, rows: InventoryItem[] | null): NothingPin {
+  if (rows === null) return { onHand: null, observed: false };
+  const count = shelfCount(rows, entry.productId);
+  return { onHand: count === undefined ? null : count, observed: true };
+}
+
+// A pin records the count seen when a commit came back none_on_hand. The first
+// household load after an unobserved pin records that count and stays. A later
+// count that differs drops the pin, and a stock-in drops it directly.
+function reconcilePins(
+  current: Map<string, NothingPin>,
+  listed: ScanEntry[],
+  rows: InventoryItem[],
+): Map<string, NothingPin> {
+  const next = new Map<string, NothingPin>();
+  for (const entry of listed) {
+    const pin = current.get(entry.id);
+    if (pin === undefined) continue;
+    const count = shelfCount(rows, entry.productId);
+    const onHand = count === undefined ? null : count;
+    if (!pin.observed) {
+      next.set(entry.id, { onHand, observed: true });
+      continue;
+    }
+    if (pin.onHand !== onHand) continue;
+    next.set(entry.id, pin);
+  }
+  return next;
+}
+
+function isNothingOnHand(
+  entry: ScanEntry,
+  rows: InventoryItem[] | null,
+  pins: Map<string, NothingPin>,
+): boolean {
+  if (entry.direction !== 'stock_out' || entry.productId === null) return false;
+  if (pins.has(entry.id)) return true;
+  if (rows === null) return false;
+  return shelfHasNothingOnHand(shelfCount(rows, entry.productId));
+}
 
 export interface QueueScreenProps {
   client: StockbotClient;
@@ -100,7 +156,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
+  const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+
+  const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
+    if (rows === null) return;
+    setHousehold(rows);
+    setPins((current) => reconcilePins(current, listed, rows));
+  }, []);
 
   const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
     const changed = !sameQueue(shownIds.current, next);
@@ -130,7 +193,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       const rows = await client.getInventoryList();
       return Array.isArray(rows) ? rows : [];
     } catch {
-      return [];
+      return null;
     }
   }, [client]);
 
@@ -141,7 +204,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     try {
       const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
       if (refreshGeneration.current !== generation) return;
-      setHousehold(rows);
+      storeHousehold(rows, next);
       applyEntries(next, keepError);
     } catch (requestError) {
       if (refreshGeneration.current !== generation) return;
@@ -149,13 +212,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setLoading(false);
       setLoadError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
     }
-  }, [applyEntries, client, loadHousehold]);
+  }, [applyEntries, client, loadHousehold, storeHousehold]);
 
   useEffect(() => {
     let active = true;
     Promise.all([client.listPending(), loadHousehold()]).then(([next, rows]) => {
       if (!active) return;
-      setHousehold(rows);
+      storeHousehold(rows, next);
       shownIds.current = new Set(next.map((entry) => entry.id));
       setEntries(next);
       setError('');
@@ -169,7 +232,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     return () => {
       active = false;
     };
-  }, [client, loadHousehold]);
+  }, [client, loadHousehold, storeHousehold]);
 
   const [focusSeen, setFocusSeen] = useState(focused);
   if (focusSeen !== focused) {
@@ -217,13 +280,43 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
+  function rememberPin(id: string) {
+    const entry = entries.find((item) => item.id === id);
+    if (entry === undefined || entry.direction !== 'stock_out' || entry.productId === null) return;
+    const pin = pinFromShelf(entry, household);
+    setPins((current) => {
+      const next = new Map(current);
+      next.set(id, pin);
+      return next;
+    });
+  }
+
+  function releasePins(productId: string) {
+    setPins((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [id] of current) {
+        const entry = entries.find((item) => item.id === id);
+        if (entry?.productId !== productId) continue;
+        next.delete(id);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }
+
   async function showCommitFailure(id: string, requestError: ApiError) {
+    if (requestError.code === CODE_NONE_ON_HAND) {
+      rememberPin(id);
+      clearNote(id);
+      return;
+    }
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? requestError.message : '');
     clearNote(id);
     if (behavior.refreshSuggestions) {
-      setHousehold(await loadHousehold());
+      storeHousehold(await loadHousehold(), entries);
       showOffer(id, offers[id]?.suggestions ?? [], true);
       return;
     }
@@ -247,6 +340,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       setPartialLine('');
       setToast(formatPartialRemoval(committed) ?? '');
+      if (committed.direction === 'stock_in' && committed.productId) releasePins(committed.productId);
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -254,6 +348,20 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       } else {
         setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
       }
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function removeOne(id: string) {
+    setBusyId(id);
+    setError('');
+    setToast('');
+    try {
+      await client.cancelScan(id);
+      await refresh();
+    } catch (requestError) {
+      setToast(requestError instanceof Error ? requestError.message : 'That scan could not be removed.');
     } finally {
       setBusyId('');
     }
@@ -272,16 +380,17 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       setPartialLine('');
       setToast(formatPartialRemoval(committed) ?? '');
+      if (committed.direction === 'stock_in' && committed.productId) releasePins(committed.productId);
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
         setToast(requestError.message);
         clearNote(id);
         setExcluded((current) => ({ ...current, [id]: productId }));
-        setHousehold(await loadHousehold());
+        storeHousehold(await loadHousehold(), entries);
         showOffer(id, previous.filter((row) => row.productId !== productId), true);
-      } else if (requestError instanceof ApiError && requestError.code === 'none_on_hand' && offers[id]) {
-        setToast(requestError.message);
+      } else if (requestError instanceof ApiError && requestError.code === CODE_NONE_ON_HAND) {
+        rememberPin(id);
       } else if (requestError instanceof ApiError) {
         await showCommitFailure(id, requestError);
       } else {
@@ -293,6 +402,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }
 
   async function confirmAll() {
+    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, household, pins));
+    if (confirmable.length === 0) return;
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
@@ -302,20 +413,23 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setToast('');
     try {
       const names: Record<string, string> = {};
-      for (const entry of entries) {
+      for (const entry of confirmable) {
         const name = entry.product?.name;
         if (name !== undefined && name !== '') names[entry.id] = name;
       }
-      const result = await client.batchCommit(entries.map((entry) => entry.id));
+      const result = await client.batchCommit(confirmable.map((entry) => entry.id));
       const notices = batchFailureNotices(result);
-      if (notices.some((notice) => commitConflictBehavior(notice.code || undefined).refreshSuggestions)) {
-        setHousehold(await loadHousehold());
-      }
+      const loaded = notices.some((notice) => commitConflictBehavior(notice.code || undefined).refreshSuggestions)
+        ? await loadHousehold()
+        : null;
+      const shelf = loaded ?? household;
       const pending = await client.listPending();
+      const committed = new Set(result.committedIds ?? []);
       const nextNotes: Record<string, string> = {};
       const nextOffers: Record<string, LinkOfferState> = {};
       for (const notice of notices) {
         if (!pending.some((entry) => entry.id === notice.id)) continue;
+        if (notice.code === CODE_NONE_ON_HAND) continue;
         const behavior = commitConflictBehavior(notice.code || undefined);
         if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
         if (!(behavior.linkOffer || behavior.refreshSuggestions)) continue;
@@ -324,6 +438,31 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           showEmptyLine: !behavior.hideEmptyMatch,
         };
       }
+      if (loaded !== null) setHousehold(loaded);
+      setPins((current) => {
+        const next = new Map(loaded !== null ? reconcilePins(current, pending, loaded) : current);
+        for (const notice of notices) {
+          if (notice.code !== CODE_NONE_ON_HAND) continue;
+          const entry = pending.find((item) => item.id === notice.id);
+          if (entry === undefined || entry.direction !== 'stock_out' || entry.productId === null) continue;
+          const count = shelf === null ? undefined : shelfCount(shelf, entry.productId);
+          next.set(entry.id, {
+            onHand: shelf === null || count === undefined ? null : count,
+            observed: shelf !== null,
+          });
+        }
+        for (const entry of confirmable) {
+          if (entry.direction !== 'stock_in' || entry.productId === null || !committed.has(entry.id)) continue;
+          for (const id of next.keys()) {
+            const card = entries.find((item) => item.id === id) ?? pending.find((item) => item.id === id);
+            if (card?.productId === entry.productId) next.delete(id);
+          }
+        }
+        for (const id of next.keys()) {
+          if (!pending.some((item) => item.id === id)) next.delete(id);
+        }
+        return next;
+      });
       shownIds.current = new Set(pending.map((entry) => entry.id));
       setEntries(pending);
       setNotes(nextNotes);
@@ -351,12 +490,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
   const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
   const successBanner = batchHead === '' && partialLine !== '' && !failedPending;
+  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
+  const pill = nothingOnHandPill(blockedCount);
+  const skipLine = confirmSkipsNothingOnHand(blockedCount);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 18 }]}>
       <StatusBar style="dark" />
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
+      {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(batchHead !== '' || partialLine !== '') && (
         <View
@@ -388,35 +531,71 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           )}
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={<Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
-          renderItem={({ item }) => (
-            <View testID={`scan-${item.id}`} style={[styles.row, { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf }]}>
+          renderItem={({ item }) => {
+            const blocked = isNothingOnHand(item, household, pins);
+            const label = item.product?.name || item.barcode;
+            return (
+            <View
+              testID={`scan-${item.id}`}
+              style={[
+                styles.row,
+                blocked
+                  ? styles.rowBlocked
+                  : { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf },
+              ]}
+            >
               <View style={styles.rowMain}>
                 <View style={styles.rowCopy}>
-                  <Text style={styles.name}>{item.product?.name || item.barcode}</Text>
+                  <Text style={styles.name}>{label}</Text>
                   <Text style={styles.meta}>
                     {item.product?.name ? item.barcode : 'No name yet'}
                     {'  '}
                     {item.direction === null ? 'No direction' : modeLabel(item.direction)}
                   </Text>
                 </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Confirm ${item.product?.name || item.barcode}`}
-                  disabled={busyId !== ''}
-                  onPress={() => { void confirmOne(item.id); }}
-                  style={styles.confirm}
-                >
-                  <Text style={styles.confirmText}>{busyId === item.id ? 'Confirming' : 'Confirm'}</Text>
-                </Pressable>
+                {blocked ? (
+                  // #294 replaces this Remove with "Add it and take it out".
+                  <View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove ${label}`}
+                      disabled={busyId !== ''}
+                      onPress={() => { void removeOne(item.id); }}
+                      style={styles.remove}
+                    >
+                      <Text style={styles.removeText}>{busyId === item.id ? 'Removing' : 'Remove'}</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Confirm ${label}`}
+                    disabled={busyId !== ''}
+                    onPress={() => { void confirmOne(item.id); }}
+                    style={styles.confirm}
+                  >
+                    <Text style={styles.confirmText}>{busyId === item.id ? 'Confirming' : 'Confirm'}</Text>
+                  </Pressable>
+                )}
               </View>
+              {blocked && (
+                <View style={styles.nothing}>
+                  <View style={styles.nothingHead}>
+                    <View style={styles.nothingMark}>
+                      <Text style={styles.nothingMarkText}>!</Text>
+                    </View>
+                    <Text
+                      style={styles.nothingTitle}
+                      accessibilityLabel={`Scan ${item.barcode}, ${NOTHING_ON_HAND_TITLE}`}
+                      accessibilityHint={NOTHING_ON_HAND_BODY}
+                    >
+                      {NOTHING_ON_HAND_TITLE}
+                    </Text>
+                  </View>
+                  <Text style={styles.nothingBody}>{NOTHING_ON_HAND_BODY}</Text>
+                </View>
+              )}
               {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
-              {household !== null
-                && !offers[item.id]
-                && item.direction === 'stock_out'
-                && item.productId !== null
-                && !household.some((row) => row.item.productId === item.productId)
-                && notes[item.id] !== NOTHING_ON_HAND
-                && <Text style={styles.note}>{NOTHING_ON_HAND}</Text>}
               {offers[item.id] && (
                 <LinkOffer
                   key={offers[item.id].showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
@@ -430,15 +609,17 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                 />
               )}
             </View>
-          )}
+            );
+          }}
         />
       )}
 
+      {entries.length > 1 && skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
       {entries.length > 1 && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"
-          disabled={busyId !== ''}
+          disabled={busyId !== '' || blockedCount === entries.length}
           onPress={() => { void confirmAll(); }}
           style={styles.confirmAll}
         >
@@ -555,6 +736,29 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 16,
   },
+  pill: {
+    alignSelf: 'flex-start',
+    marginTop: -8,
+    marginBottom: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    overflow: 'hidden',
+    backgroundColor: colors.nothingWash,
+    borderWidth: 1,
+    borderColor: colors.nothingBorder,
+    color: colors.nothingInk,
+    fontFamily: fonts.bold,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  skip: {
+    fontFamily: fonts.regular,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.nothingInk,
+    marginBottom: 8,
+  },
   warning: {
     fontFamily: fonts.regular,
     fontSize: 16,
@@ -615,6 +819,52 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.rule,
   },
+  rowBlocked: {
+    backgroundColor: colors.nothingWash,
+    borderWidth: 1,
+    borderColor: colors.nothingBorder,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.nothingBorder,
+    paddingRight: 12,
+    marginBottom: 10,
+  },
+  nothing: {
+    marginTop: 10,
+  },
+  nothingHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  nothingMark: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.nothingInk,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  nothingMarkText: {
+    color: colors.nothingWash,
+    fontFamily: fonts.bold,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  nothingTitle: {
+    flex: 1,
+    fontFamily: fonts.bold,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.nothingInk,
+  },
+  nothingBody: {
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.nothingInk,
+    marginTop: 4,
+  },
   rowMain: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -648,6 +898,19 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 15,
     color: colors.white,
+  },
+  remove: {
+    minHeight: 44,
+    minWidth: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: colors.removeWash,
+  },
+  removeText: {
+    fontFamily: fonts.bold,
+    fontSize: 15,
+    color: colors.danger,
   },
   offer: {
     marginTop: 14,

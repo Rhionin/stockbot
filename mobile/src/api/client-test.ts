@@ -75,6 +75,7 @@ describe('createStockbotClient', () => {
       if (init?.method === 'POST' && url.endsWith('/api/scans')) {
         return jsonResponse(201, { id: 'scan-1', barcode: '111' });
       }
+      if (init?.method === 'PATCH') return jsonResponse(200, { id: 'scan-1', status: 'cancelled' });
       return jsonResponse(500, { error: 'unexpected' });
     });
     const { client } = clientWith(fetchImpl);
@@ -82,6 +83,7 @@ describe('createStockbotClient', () => {
     await client.createScan('111', 'stock_in');
     await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }]);
     await client.commitScan('scan-1');
+    await client.cancelScan('scan-1');
     await client.batchCommit(['scan-1', 'scan-2']);
 
     const post = calls.find((call) => call.init?.method === 'POST' && call.url.endsWith('/api/scans'));
@@ -90,6 +92,9 @@ describe('createStockbotClient', () => {
     expect(calls.some((call) => call.url === `${serverUrl}${scansQuery('user-1', 'pending')}`)).toBe(true);
     const commit = calls.find((call) => call.url.endsWith(scanCommitPath('scan-1')));
     expect(commit?.init?.method).toBe('POST');
+    const cancel = calls.find((call) => call.init?.method === 'PATCH');
+    expect(cancel?.url).toBe(`${serverUrl}/api/scans/scan-1`);
+    expect(JSON.parse(String(cancel?.init?.body))).toEqual({ status: 'cancelled' });
     expect(JSON.parse(String(commit?.init?.body))).toEqual({});
     const batch = calls.find((call) => call.url.endsWith(BATCH_COMMIT_PATH));
     expect(JSON.parse(String(batch?.init?.body))).toEqual({ scanEntryIds: ['scan-1', 'scan-2'], commit: true });
