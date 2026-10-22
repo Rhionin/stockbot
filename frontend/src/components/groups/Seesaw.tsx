@@ -15,6 +15,13 @@ function PinIcon() {
   );
 }
 
+function DefaultMark() {
+  // The pill is a flex row, so "3 mo" and "default" have no space character
+  // between them and read as one word. This zero-width space splits those
+  // words. The flex gap is the space you see, and this adds none of its own.
+  return <span className="seesaw-default">{'\u200B'}default</span>;
+}
+
 function Pill({
   end,
   onOpen,
@@ -35,7 +42,7 @@ function Pill({
     >
       {end.pinned && <PinIcon />}
       <span>{end.label}</span>
-      {end.isDefault && <span className="seesaw-default">default</span>}
+      {end.isDefault && <DefaultMark />}
     </button>
   );
 }

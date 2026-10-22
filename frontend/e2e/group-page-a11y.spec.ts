@@ -144,7 +144,7 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'Contrast powder' })).toBeVisible()
   await expectClean(page)
 
-  const amount = await tabTo(page, 'Keep on hand amount, pinned, 48 ounces')
+  const amount = await tabTo(page, '48 oz, Keep on hand amount, pinned, 48 ounces')
   const ring = await amount.evaluate((el) => {
     const style = getComputedStyle(el)
     return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth }
@@ -154,9 +154,9 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await page.keyboard.press('Enter')
   await expect(page.getByLabel('Ounces')).toBeFocused()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('button', { name: 'Keep on hand amount, pinned, 48 ounces' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '48 oz, Keep on hand amount, pinned, 48 ounces' })).toBeVisible()
 
-  const time = await tabTo(page, 'Keep on hand time, not set')
+  const time = await tabTo(page, 'Set time, Keep on hand time, not set')
   await time.press('Space')
   await expect(page.getByLabel('Months')).toBeFocused()
   await page.getByRole('button', { name: 'Cancel' }).click()
@@ -167,8 +167,8 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
 
   await page.goto(`/groups/${emptyGroup.id}`)
   await expect(page.getByRole('heading', { name: 'Loose contrast powder' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Keep on hand time, pinned, 3 months, household default' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Keep on hand amount, not set' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '3 mo default, Keep on hand time, pinned, 3 months, household default' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Set amount, Keep on hand amount, not set' })).toBeVisible()
   await expect(page.getByText('Set an amount or time')).toBeVisible()
   await expect(page.getByRole('meter', { name: 'Stock on hand' })).toHaveAttribute('aria-valuetext', 'No sizes listed')
   await expectClean(page)
@@ -177,11 +177,11 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'Loose contrast powder' })).toBeVisible()
   await expectClean(page)
 
-  const unsetAmount = await tabTo(page, 'Keep on hand amount, not set')
+  const unsetAmount = await tabTo(page, 'Set amount, Keep on hand amount, not set')
   await unsetAmount.press('Enter')
   await expect(page.getByLabel('Ounces')).toBeVisible()
   await page.getByRole('button', { name: 'Cancel' }).click()
-  const unsetTime = await tabTo(page, 'Keep on hand time, pinned, 3 months, household default')
+  const unsetTime = await tabTo(page, '3 mo default, Keep on hand time, pinned, 3 months, household default')
   await unsetTime.press('Enter')
   await expect(page.getByLabel('Months')).toBeVisible()
 

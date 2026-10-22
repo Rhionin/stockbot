@@ -87,8 +87,8 @@ describe('GroupDetailPage', () => {
       throw new Error(`Unexpected ${method} ${url}`);
     });
 
-    expect(await screen.findByRole('button', { name: 'Keep on hand time, not set' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, not set' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Set time, Keep on hand time, not set' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set amount, Keep on hand amount, not set' })).toBeInTheDocument();
     expect(screen.getByText('Set an amount or time')).toBeInTheDocument();
     const emptyMeter = screen.getByRole('meter', { name: 'Stock on hand' });
     expect(within(emptyMeter).getByText('No sizes listed')).toBeInTheDocument();
@@ -99,7 +99,7 @@ describe('GroupDetailPage', () => {
     expect(screen.queryByText('Still using Same product until you pick a rule.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change target' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Ounces')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep on hand time, not set' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set time, Keep on hand time, not set' }));
     expect(screen.getByLabelText('Months')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use the household default' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use the account window' })).not.toBeInTheDocument();
@@ -387,8 +387,8 @@ describe('GroupDetailPage', () => {
     const stock = await screen.findByRole('meter', { name: 'Stock on hand' });
     expect(within(stock).getByText('18.3 oz on hand')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Change rule, Same product' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, pinned, 48 ounces' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand time, not set' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '48 oz, Keep on hand amount, pinned, 48 ounces' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set time, Keep on hand time, not set' })).toBeInTheDocument();
     expect(stock).toHaveAttribute('aria-valuenow', '18.3');
     expect(stock).toHaveAttribute('aria-valuemax', '48');
     expect(stock).toHaveAttribute('aria-valuetext', '18.3 oz on hand');
@@ -398,13 +398,13 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText('Barcode: 052000338881')).toBeInTheDocument();
     expect(screen.getByText('50.9 oz canister, none on hand')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Keep on hand time, not set' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set time, Keep on hand time, not set' }));
     expect(screen.getByRole('button', { name: 'Use the household default' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(await screen.findByRole('button', { name: 'Keep on hand time, pinned, 3 months' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, not set' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '3 mo, Keep on hand time, pinned, 3 months' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set amount, Keep on hand amount, not set' })).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).toBeNull();
   });
 
@@ -445,18 +445,18 @@ describe('GroupDetailPage', () => {
     const stock = await screen.findByRole('meter', { name: 'Stock on hand' });
     expect(within(stock).getByText('18.3 oz on hand · ≈ 5 wks')).toBeInTheDocument();
     expect(screen.getByText('at 16 oz / mo')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, pinned, 48 ounces' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand time, about 3 months' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '48 oz, Keep on hand amount, pinned, 48 ounces' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '≈ 3 mo, Keep on hand time, about 3 months' })).toBeInTheDocument();
     expect(screen.getByText('Tap either end to set it; the other follows')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Keep on hand time, about 3 months' }));
+    fireEvent.click(screen.getByRole('button', { name: '≈ 3 mo, Keep on hand time, about 3 months' }));
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '6' } });
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, about 96 ounces' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '≈ 96 oz, Keep on hand amount, about 96 ounces' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(saved).toEqual([{ windowMonths: 6 }]));
-    expect(screen.getByRole('button', { name: 'Keep on hand time, pinned, 6 months' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keep on hand amount, about 96 ounces' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '6 mo, Keep on hand time, pinned, 6 months' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '≈ 96 oz, Keep on hand amount, about 96 ounces' })).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).not.toBeNull();
   });
 
