@@ -2,10 +2,12 @@ package server
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"modernc.org/sqlite"
 )
 
@@ -135,6 +137,45 @@ func sqliteBusy(err error) bool {
 		err = errors.Unwrap(err)
 	}
 	return false
+}
+
+// logNoSpace is the one server line for a no-space 503. Operator alerts
+// match msg and event. The driver text and any SQL stay out of the line.
+func logNoSpace(r *http.Request, err error) {
+	method, route, household := "", "", ""
+	if r != nil {
+		method = r.Method
+		route = requestRoute(r)
+		// One household serves every request until logins name another.
+		// The id is not read from the query or body.
+		household = restock.HouseholdID
+	}
+	attrs := []any{"event", "db_no_space", "method", method, "route", route}
+	if household != "" {
+		attrs = append(attrs, "household_id", household)
+	}
+	if code := sqliteDriverCode(err); code != 0 {
+		attrs = append(attrs, "sqlite_code", code)
+	}
+	slog.Warn("db_no_space", attrs...)
+}
+
+func requestRoute(r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	if r.URL == nil {
+		return ""
+	}
+	return r.URL.Path
+}
+
+func sqliteDriverCode(err error) int {
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) {
+		return 0
+	}
+	return driverErr.Code()
 }
 
 func sqliteNoSpace(err error) bool {

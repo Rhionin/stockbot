@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -20,6 +23,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/getsentry/sentry-go"
 	"modernc.org/sqlite"
 )
@@ -339,6 +343,107 @@ func TestNoSpaceReportIsAWarning(t *testing.T) {
 	}
 	if strings.Contains(event.Message, "Oat Milk") || strings.Contains(event.Message, "disk is full") {
 		t.Fatalf("message = %q", event.Message)
+	}
+}
+
+func TestNoSpaceLogsTheOperatorLine(t *testing.T) {
+	var slogBuf, logBuf bytes.Buffer
+	oldSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(oldSlog) })
+	oldLog := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(oldLog) })
+
+	full := realDriverFull(t)
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, InternalError(fmt.Errorf("stock item Oat Milk: %w", full))
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/scans?token=secret", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Pattern = "POST /api/scans"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != noSpaceBody() {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+	}
+	line := noSpaceLogLine(t, slogBuf.String())
+	for _, part := range []string{
+		"level=WARN",
+		"msg=db_no_space",
+		"event=db_no_space",
+		"method=POST",
+		`route="POST /api/scans"`,
+		"household_id=" + restock.HouseholdID,
+		"sqlite_code=13",
+	} {
+		if !strings.Contains(line, part) {
+			t.Fatalf("log line missing %s: %s", part, line)
+		}
+	}
+	if strings.Count(slogBuf.String(), "msg=db_no_space") != 1 {
+		t.Fatalf("lines = %q", slogBuf.String())
+	}
+	assertNoSpaceLogIsSafe(t, line+"\n"+logBuf.String())
+
+	slogBuf.Reset()
+	logBuf.Reset()
+	plain := httptest.NewRequest(http.MethodPost, "/api/inventory/item-1?name=Oat+Milk", strings.NewReader(`{}`))
+	plain.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, plain)
+	line = noSpaceLogLine(t, slogBuf.String())
+	if !strings.Contains(line, "route=/api/inventory/item-1") || strings.Contains(line, "Oat") || strings.Contains(line, "name=") {
+		t.Fatalf("route = %s", line)
+	}
+	assertNoSpaceLogIsSafe(t, line+"\n"+logBuf.String())
+
+	slogBuf.Reset()
+	logBuf.Reset()
+	rec = httptest.NewRecorder()
+	writeHTTPError(rec, http.StatusServiceUnavailable, InternalError(errors.New("disk is full")))
+	line = noSpaceLogLine(t, slogBuf.String())
+	if strings.Contains(line, "household_id=") || strings.Contains(line, "sqlite_code=") || strings.Contains(strings.ToLower(line), "disk is full") {
+		t.Fatalf("line = %s", line)
+	}
+	if !strings.Contains(line, "msg=db_no_space") || !strings.Contains(line, "event=db_no_space") {
+		t.Fatalf("line = %s", line)
+	}
+
+	slogBuf.Reset()
+	busyHandler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, InternalError(realDriverBusy(t))
+	})
+	res := serveJSON(busyHandler, http.MethodPost, "/api/scans", `{}`)
+	if res.code != http.StatusServiceUnavailable || strings.Contains(slogBuf.String(), "db_no_space") {
+		t.Fatalf("busy = %d log %q", res.code, slogBuf.String())
+	}
+}
+
+func noSpaceLogLine(t *testing.T, logged string) string {
+	t.Helper()
+	var line string
+	for _, candidate := range strings.Split(logged, "\n") {
+		if strings.Contains(candidate, "msg=db_no_space") {
+			if line != "" {
+				t.Fatalf("more than one no-space line: %s", logged)
+			}
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("no no-space line: %s", logged)
+	}
+	return line
+}
+
+func assertNoSpaceLogIsSafe(t *testing.T, logged string) {
+	t.Helper()
+	lower := strings.ToLower(logged)
+	for _, leak := range []string{"oat milk", "database or disk is full", "insert ", "token=secret", "sqlite_full"} {
+		if strings.Contains(lower, leak) {
+			t.Fatalf("log leaked %s: %s", leak, logged)
+		}
 	}
 }
 

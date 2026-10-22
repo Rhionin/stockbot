@@ -18,13 +18,19 @@ That sentence is the only busy sentence. The response does not include a
 
 When SQLite cannot save a change because the disk is full, the status is also
 503. The code is `no_space` and the message is
-`Stockbot is out of space to save changes.`
+`Stockbot is out of storage space, so this wasn't saved.`
 
 ```json
-{"error":"Stockbot is out of space to save changes.","code":"no_space"}
+{"error":"Stockbot is out of storage space, so this wasn't saved.","code":"no_space"}
 ```
 
-This response does not include a `Retry-After` header either.
+This response does not include a `Retry-After` header.
+
+Each of these responses also writes one warning log line. The message is
+`db_no_space`. The attributes are `event=db_no_space`, `method`, `route`,
+`sqlite_code` (the driver result code, not the driver text), and
+`household_id` when the server knows the household. The line has no SQL and
+no names. Operator alerts for #224 match that line. This does not add an alert.
 
 ## Other 5xx
 

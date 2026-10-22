@@ -191,7 +191,10 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if status >= 500 {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case sqliteNoSpace(err):
+			logNoSpace(r, err)
+		case !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded):
 			log.Printf("request failed: %s", message)
 		}
 		message, code, extra = serverClientPayload(err, code)
