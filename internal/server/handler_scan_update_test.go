@@ -814,24 +814,34 @@ func TestScanUpdateUnexpectedDatabaseError(t *testing.T) {
 	h := &ScanUpdateHandler{Queue: scanUpdateFailure{err: errors.New("disk I/O error")}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/scans/{id}", HandleJSON(h.Handle))
-	req := httptest.NewRequest(http.MethodPatch, "/api/scans/scan-1", strings.NewReader(`{"unitCount":4}`))
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("json: %v", err)
-	}
-	if payload["error"] != "Something went wrong. Please try again." {
-		t.Fatalf("body %#v", payload)
-	}
-	if _, ok := payload["code"]; ok {
-		t.Fatalf("code leaked: %#v", payload)
-	}
-	if strings.Contains(rec.Body.String(), "disk I/O") {
-		t.Fatalf("detail leaked: %s", rec.Body.String())
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "update", body: `{"unitCount":4}`},
+		{name: "resolve", body: `{"productId":"prod-1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPatch, "/api/scans/scan-1", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json: %v", err)
+			}
+			if payload["error"] != "Something went wrong. Please try again." {
+				t.Fatalf("body %#v", payload)
+			}
+			if _, ok := payload["code"]; ok {
+				t.Fatalf("code leaked: %#v", payload)
+			}
+			if strings.Contains(rec.Body.String(), "disk I/O") {
+				t.Fatalf("detail leaked: %s", rec.Body.String())
+			}
+		})
 	}
 }
 

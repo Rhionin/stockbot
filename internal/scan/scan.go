@@ -276,9 +276,10 @@ func (r *Queue) readScanEntry(ctx context.Context, q queryRower, id string) (*Sc
 }
 
 // ensureHouseholdProduct reports ErrProductNotResolved when productID is
-// blank or not in the household catalog. The catalog is this database's
-// products table; householdID is the scan's user, so the detail names whose
-// scan was refused. The check runs on the same transaction as the write.
+// blank or not a row in products. The lookup is SELECT id FROM products
+// WHERE id = ?. householdID is the scan's user, named in the error so the
+// log says which scan was refused. The check runs on the same transaction
+// as the write.
 func ensureHouseholdProduct(ctx context.Context, q queryRower, householdID, productID string) error {
 	if productID == "" {
 		return fmt.Errorf("household %s: empty product id: %w", householdID, ErrProductNotResolved)
