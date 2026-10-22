@@ -123,8 +123,22 @@ test('cart control stays beside a long store name and Remove keeps an edge', asy
     expect(nameBox, `name box at ${width}`).not.toBeNull()
     expect(Math.round(cartBox!.y), `shared top at ${width}`).toBe(Math.round(nameBox!.y))
     expect(cartBox!.x + cartBox!.width, `cart right edge at ${width}`).toBeLessThanOrEqual(width)
+    if (width === 320) {
+      const minWidth = await page.locator('.provider-identity').evaluate((element) => getComputedStyle(element).minWidth)
+      expect(minWidth, 'identity min-width at 320').toBe('0px')
+    }
   }
 
-  const border = await remove.evaluate((element) => getComputedStyle(element).borderTopColor)
-  expect(border).not.toBe('rgba(0, 0, 0, 0)')
+  const borderColor = (element: HTMLElement) => getComputedStyle(element).borderTopColor
+  expect(await remove.evaluate(borderColor)).not.toBe('rgba(0, 0, 0, 0)')
+
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.evaluate(() => {
+    window.localStorage.setItem('mantine-color-scheme-value', 'dark')
+  })
+  await page.reload()
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe('dark')
+  const darkRemove = page.getByRole('button', { name: 'Remove Cut green beans' })
+  await expect(darkRemove).toBeVisible()
+  expect(await darkRemove.evaluate(borderColor)).not.toBe('rgba(0, 0, 0, 0)')
 })

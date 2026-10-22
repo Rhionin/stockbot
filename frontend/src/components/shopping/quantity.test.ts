@@ -13,6 +13,7 @@ describe('formatShoppingQuantity', () => {
       { count: 1, label: '1 lb', expected: '1 × 1 lb' },
       { count: 1, label: '16oz', expected: '1 × 16oz' },
       { count: 1, label: '  14.5 oz  ', expected: '1 × 14.5 oz' },
+      { count: 1, label: 'pack of 12', expected: '1 pack of 12' },
       { count: 2, label: 'boxes', expected: '2 boxes' },
       { count: 1, label: 'bag', expected: '1 bag' },
       { count: 1, label: 'can', expected: '1 can' },
