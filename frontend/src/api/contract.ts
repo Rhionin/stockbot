@@ -152,7 +152,8 @@ function countField(value: unknown): number | null {
 }
 
 // A batch names the one short card. Several short cards, or one short card
-// with no name, use the count sentence. Equal counts and a missing map say nothing.
+// with no name, use the count sentence, singular when only one card is short.
+// Equal counts and a missing map say nothing.
 function batchPartialLine(
   counts: Record<string, StockOutCount>,
   names: Readonly<Record<string, string>> | undefined,
@@ -178,7 +179,8 @@ function batchPartialLine(
     const verb = only.removed === 1 ? 'was' : 'were';
     return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
   }
-  return `${partials.length} cards had fewer on hand than scanned, so only what was on hand was taken out.`;
+  const cards = partials.length === 1 ? 'card' : 'cards';
+  return `${partials.length} ${cards} had fewer on hand than scanned, so only what was on hand was taken out.`;
 }
 
 // Fewer units left than the card asked for. A single confirm keeps the short

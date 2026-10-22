@@ -916,7 +916,7 @@ const secondPartial = fixtureCard('scan-batch-second', 'Rolled oats', 'stock_out
 const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
 const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
 const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
-const unnamedLine = '1 cards had fewer on hand than scanned, so only what was on hand was taken out.';
+const unnamedLine = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
 const laterChips = fixtureCard('scan-batch-later', 'Tortilla chips', 'stock_out', 5);
 const nameless = scanEntry({
   id: 'scan-batch-partial',
