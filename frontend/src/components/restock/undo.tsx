@@ -22,6 +22,8 @@ const visibleToasts = (): HTMLElement[] =>
 // The queue pads by whichever toast reaches highest, so a second, taller
 // toast still leaves room to scroll the last card clear.
 const applyToastClearance = () => {
+  // A close timer can fire after the document is gone, such as a test teardown.
+  if (typeof document === 'undefined') return;
   const toasts = visibleToasts();
   if (toasts.length === 0) {
     document.documentElement.style.removeProperty(CLEARANCE_VAR);
