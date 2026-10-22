@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
@@ -87,6 +88,9 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		req.Body.Status,
 	)
 	if err != nil {
+		if errors.Is(err, scan.ErrNotOpen) {
+			return nil, ConflictDetails(scan.NotOpenMessage, "not_open", nil)
+		}
 		return nil, InternalError(err)
 	}
 
