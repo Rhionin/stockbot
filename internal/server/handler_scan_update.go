@@ -89,7 +89,10 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	)
 	if err != nil {
 		if errors.Is(err, scan.ErrNotOpen) {
-			return nil, ConflictDetails(scan.NotOpenMessage, "not_open", nil)
+			return nil, ConflictDetails(scan.ErrNotOpen.Error(), "not_open", nil)
+		}
+		if errors.Is(err, scan.ErrNotFound) {
+			return nil, NotFound(scan.ErrNotFound.Error())
 		}
 		return nil, InternalError(err)
 	}

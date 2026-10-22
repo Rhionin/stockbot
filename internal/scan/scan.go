@@ -332,14 +332,13 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 	return entries, nil
 }
 
-// NotOpenMessage is the sentence when a status change targets a scan that
-// was already handled. The HTTP code is not_open.
-const NotOpenMessage = "This scan was already handled."
+// ErrNotOpen means a patch wrote nothing because the scan is no longer
+// pending, flagged, or a QR misread. The text is the sentence the household
+// sees. Undoing a committed scan is a move undo, not a patch.
+var ErrNotOpen = errors.New("This scan was already handled.")
 
-// ErrNotOpen means a status change wrote nothing because the scan is no
-// longer pending, flagged, or a QR misread. Undoing a committed scan is a
-// move undo, not a status edit.
-var ErrNotOpen = errors.New(NotOpenMessage)
+// ErrNotFound means the scan id is not in the queue.
+var ErrNotFound = errors.New("scan entry not found")
 
 // UpdateScanEntry updates direction, unit_count, expires_at, product_id, and
 // status for the given scan entry ID. Field edits go through here. A repeat
@@ -349,7 +348,7 @@ var ErrNotOpen = errors.New(NotOpenMessage)
 // Pass nil for fields that should not be updated. To clear a nullable field,
 // pass a pointer to a zero value (e.g., &time.Time{} for expires_at).
 //
-// A status change matches only an open scan (pending, flagged, or qr) in the
+// Every change matches only an open scan (pending, flagged, or qr) in the
 // same statement as the write. A commit that lands first leaves the row and
 // its stock move alone, and the call returns ErrNotOpen.
 func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
@@ -389,12 +388,11 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		}
 	}
 
-	query += " WHERE id = ?"
-	args = append(args, id)
-	if status != nil {
-		query += " AND status IN (?, ?, ?)"
-		args = append(args, string(Pending), string(Flagged), string(QR))
-	}
+	// The status predicate is part of the write, including when the body does
+	// not mention status. A read of the status before this statement would
+	// let a commit land in between and leave the move out of step with the row.
+	query += " WHERE id = ? AND status IN (?, ?, ?)"
+	args = append(args, id, string(Pending), string(Flagged), string(QR))
 
 	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -406,16 +404,14 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		return fmt.Errorf("UpdateScanEntry rows affected: %w", err)
 	}
 	if n == 0 {
-		if status != nil {
-			existing, getErr := r.GetScanEntry(ctx, id)
-			if getErr != nil {
-				return getErr
-			}
-			if existing != nil {
-				return fmt.Errorf("UpdateScanEntry: %w", ErrNotOpen)
-			}
+		existing, getErr := r.GetScanEntry(ctx, id)
+		if getErr != nil {
+			return getErr
 		}
-		return fmt.Errorf("UpdateScanEntry: scan entry %q not found", id)
+		if existing != nil {
+			return fmt.Errorf("UpdateScanEntry: %w", ErrNotOpen)
+		}
+		return fmt.Errorf("UpdateScanEntry: %w", ErrNotFound)
 	}
 
 	updated, err := r.GetScanEntry(ctx, id)

@@ -18,9 +18,9 @@ A scan is open when its status is `pending`, `flagged`, or `qr`. Cancelling one 
 
 ## A scan that was already handled
 
-A status change is one conditional update: the row is written only when its current status is still open. A commit that wins the race is not overwritten, and neither is the stock move that commit recorded.
+Every change is one conditional update: the row is written only when its current status is still open (`pending`, `flagged`, or `qr`). That includes a body that changes `direction`, `unitCount`, `expiresAt`, or `productId` and does not mention `status`. A commit that wins the race is not overwritten, and neither is the stock move that commit recorded.
 
-Sending any status (`cancelled`, `pending`, `flagged`, or `committed`) for a scan that is already `committed` is `409`:
+`committed` and `cancelled` are not open. Changing any of those fields on either one is `409`:
 
 ```json
 {
@@ -29,8 +29,8 @@ Sending any status (`cancelled`, `pending`, `flagged`, or `committed`) for a sca
 }
 ```
 
-Nothing is written. The scan stays `committed`, `GET /api/scans/history` still lists it, and the stock move from the commit is unchanged. Other fields sent in the same body, such as `unitCount`, are not applied either.
+Nothing is written. A committed scan stays on `GET /api/scans/history` with its stock move unchanged. A cancelled scan stays cancelled.
 
-`not_open` is the same code batch remove uses for a scan that is not open. Issue #314 does not set a sentence for it; this endpoint uses "This scan was already handled."
+A scan id that does not exist is `404` with `"error": "scan entry not found"`.
 
 Undoing a committed scan is `DELETE /api/moves/{id}` on that stock move. This PATCH does not undo a move.
