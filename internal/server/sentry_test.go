@@ -31,7 +31,15 @@ func (t *recordTransport) Flush(timeout time.Duration) bool {
 	return true
 }
 
-func (t *recordTransport) FlushWithContext(context.Context) bool { return true }
+func (t *recordTransport) FlushWithContext(ctx context.Context) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if deadline, ok := ctx.Deadline(); ok {
+		// WithTimeout's deadline is a few microseconds before the caller's timeout.
+		t.flush = time.Until(deadline).Round(time.Millisecond)
+	}
+	return true
+}
 
 func (t *recordTransport) Configure(sentry.ClientOptions) {}
 
@@ -89,9 +97,6 @@ func assertNoHouseholdText(t *testing.T, event *sentry.Event) {
 		for key, value := range crumb.Data {
 			parts = append(parts, key, fmt.Sprint(value))
 		}
-	}
-	for key, value := range event.Extra {
-		parts = append(parts, key, fmt.Sprint(value))
 	}
 	body := strings.Join(parts, "\n")
 	for _, secret := range []string{"Oat Milk", "query-secret", "cookie-secret", "auth-secret", "header-token", "header-secret", "ada@example.com"} {
@@ -160,10 +165,6 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 				"note":        "weekly",
 			},
 		}},
-		Extra: map[string]interface{}{
-			"name": "Oat Milk",
-			"note": "a note",
-		},
 	}
 
 	got := scrubSentryEvent(event)
@@ -218,8 +219,8 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	if _, ok := got.Breadcrumbs[0].Data["body"]; ok {
 		t.Fatal("breadcrumb body kept")
 	}
-	if !got.User.IsEmpty() || len(got.Extra) != 0 {
-		t.Fatalf("user or extra kept: %+v %+v", got.User, got.Extra)
+	if !got.User.IsEmpty() {
+		t.Fatalf("user kept: %+v", got.User)
 	}
 }
 
@@ -531,7 +532,7 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 		t.Fatalf("unauthorized status = %d body %s", deniedRec.Code, deniedRec.Body.String())
 	}
 
-	var unmatched, buildName, deniedName string
+	var buildName, deniedName string
 	for _, event := range tr.snapshot() {
 		if event.Type != "transaction" {
 			continue
@@ -541,7 +542,7 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 		}
 		switch event.Transaction {
 		case "GET <unmatched>":
-			unmatched = event.Transaction
+			t.Fatalf("unmatched 404 was traced: %q", event.Transaction)
 		case "GET /api/build":
 			buildName = event.Transaction
 		case "POST <unmatched>":
@@ -550,8 +551,8 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 			t.Fatal("health was traced")
 		}
 	}
-	if unmatched == "" || buildName == "" || deniedName == "" {
-		t.Fatalf("names unmatched=%q build=%q denied=%q", unmatched, buildName, deniedName)
+	if buildName == "" || deniedName == "" {
+		t.Fatalf("names build=%q denied=%q", buildName, deniedName)
 	}
 }
 
