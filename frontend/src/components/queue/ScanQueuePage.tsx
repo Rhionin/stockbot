@@ -93,8 +93,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   // Bumped when this page or an event stream sets the mode, so a config
   // response that started earlier cannot put the previous direction back.
   const modeEpoch = useRef(0);
-  // A slow inventory list must not paint over a newer live update.
+  // A newer list wins. A live update that arrives while a list is in flight
+  // is folded into that list, so the other rows are not thrown away.
   const inventoryEpoch = useRef(0);
+  const inventoryLive = useRef<InventoryItem[]>([]);
   const [cuedNothing, setCuedNothing] = useState<ReadonlySet<string>>(() => new Set());
 
   // The selected tab is the scan direction. A refresh that reports the same
@@ -176,12 +178,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       setError('');
       const epoch = inventoryEpoch.current + 1;
       inventoryEpoch.current = epoch;
+      inventoryLive.current = [];
       void getInventoryList(undefined, userId)
         .then((items) => {
           if (inventoryEpoch.current !== epoch) return;
-          setInventory(items);
+          const merged = inventoryLive.current.reduce(
+            (list, event) => mergeInventoryEvent(list, event),
+            items,
+          );
+          setInventory(merged);
           setInventoryReady(true);
-          setPinnedNone((current) => reconcilePins(current, items, entriesRef.current));
+          setPinnedNone((current) => reconcilePins(current, merged, entriesRef.current));
         })
         .catch(() => {
           // Keep the last list. An empty stand-in would mark every stock-out as nothing on hand.
@@ -290,8 +297,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       acceptRemoteMode(mode);
     });
     eventSource.addEventListener('inventory', (message) => {
-      inventoryEpoch.current += 1;
       const inventoryItem = JSON.parse((message as MessageEvent).data) as InventoryItem;
+      inventoryLive.current = mergeInventoryEvent(inventoryLive.current, inventoryItem);
       setInventory((current) => mergeInventoryEvent(current, inventoryItem));
       setInventoryReady(true);
       if (inventoryItem.instanceCount > 0) {

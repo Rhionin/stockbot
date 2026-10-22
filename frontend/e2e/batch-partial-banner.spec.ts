@@ -6,6 +6,8 @@ const fallback = 'Some scans could not be confirmed.'
 const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.'
 const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.'
 const failureNote = 'Nothing on hand to take out.'
+// commit.go wraps a missing unit as this sentence.
+const instanceGone = 'instance "inst-1" not found or already removed: item instance not found'
 
 const viewports = [
   { width: 390, height: 844 },
@@ -153,6 +155,34 @@ const expectSuccessBanner = async (page: Page, line: string) => {
   await fitsInViewport(banner)
 }
 
+const expectFailureWithPartial = async (page: Page, line: string) => {
+  const failure = failureBanner(page)
+  const partial = failure.locator('.scan-batch-partial')
+  await expect(failure).toHaveCount(1)
+  await expect(failure).toContainText(fallback)
+  await expect(partial).toHaveCount(1)
+  await expect(partial).toHaveText(line)
+  await expect(partial).not.toHaveAttribute('role', 'alert')
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
+  await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
+  await expect.poll(() => page.evaluate((sentence) => {
+    const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
+    const note = alert?.querySelector('.scan-batch-partial')
+    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === 'Some scans could not be confirmed.')
+    if (alert === null || alert === undefined || note === null || note === undefined || head === undefined) return false
+    const follows = (head.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const oneAlert = document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
+    return alert.contains(note)
+      && note.textContent === sentence
+      && follows
+      && note.getAttribute('role') !== 'alert'
+      && oneAlert
+      && document.querySelectorAll('.scan-batch-banner--success').length === 0
+  }, line)).toBe(true)
+  await fitsInViewport(failure)
+  await fitsInViewport(partial)
+}
+
 // Amber cards are not batch failures. When they are all that remains, the teal
 // banner stays up, and the partial line is its text when one applies.
 const expectAmberLeftoverBanner = async (page: Page, line: string) => {
@@ -203,8 +233,8 @@ for (const viewport of viewports) {
             updatedCount: 2,
             committedIds: [chips.id],
             failedIds: [miss.id],
-            failedReasons: [failureNote],
-            failedCodes: ['none_on_hand'],
+            failedReasons: [instanceGone],
+            failedCodes: ['instance_gone'],
             stockOutCounts: {
               [chips.id]: { removedCount: 1, requestedCount: 3 },
             },
@@ -216,8 +246,10 @@ for (const viewport of viewports) {
         await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
-      await expectAmberLeftoverBanner(page, wasLine)
-      await expect(page.getByRole('article', { name: new RegExp(`^Scan ${missBarcode}(,|$)`) })).toContainText(failureNote)
+      await expectFailureWithPartial(page, wasLine)
+      const missed = page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })
+      await expect(missed).toContainText(instanceGone)
+      await expect(missed.getByText(failureNote)).toHaveCount(0)
       if (shotDir !== undefined) {
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_light.png`)
       }

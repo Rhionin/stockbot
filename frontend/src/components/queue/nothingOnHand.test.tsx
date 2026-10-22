@@ -415,6 +415,24 @@ describe('nothing on hand queue', () => {
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
   });
 
+  it('merges a live inventory update into the list that was already loading', async () => {
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const { releaseInventory } = renderQueue({ scans: [milk, rice], holdInventory: true });
+    expect(within(await screen.findByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Scan 666' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
+    releaseInventory([shelf('milk', 'Milk', 0), shelf('rice', 'Rice', 0)]);
+    const riceCard = await screen.findByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` });
+    expect(within(riceCard).getByText(NOTHING_ON_HAND_TITLE)).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: `Scan 111, ${NOTHING_ON_HAND_TITLE}` })).not.toBeInTheDocument();
+  });
+
   it('keeps a live inventory update when an older list arrives later', async () => {
     const empty = scan({
       id: 'scan-zero',
