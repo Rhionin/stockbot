@@ -55,6 +55,7 @@ function client(): StockbotClient {
     createScan: jest.fn(async () => created),
     listPending: jest.fn(async () => []),
     commitScan: jest.fn(),
+    cancelScan: jest.fn(),
     batchCommit: jest.fn(),
     getInventoryList: jest.fn(async () => []),
   };

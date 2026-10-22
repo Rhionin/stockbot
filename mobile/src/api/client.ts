@@ -54,6 +54,7 @@ export interface StockbotClient {
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  cancelScan: (id: string) => Promise<ScanEntry>;
   batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
   // Household items, including zero stock. Same call as getInventoryList in
   // the web client (GET /api/inventory). Not the product catalog.
@@ -139,6 +140,12 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       return request<ScanEntry & CommitScanResponse>(scanCommitPath(id), {
         method: 'POST',
         body: JSON.stringify(body),
+      });
+    },
+    cancelScan(id) {
+      return request<ScanEntry>(`${SCANS_PATH}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'cancelled' }),
       });
     },
     batchCommit(ids) {
