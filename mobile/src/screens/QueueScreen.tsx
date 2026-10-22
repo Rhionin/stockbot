@@ -522,10 +522,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       }
       setFailureBannerIds(pendingFailures);
       setAmberBatch(!blocking && amberLeft);
-      // A failed card that left the queue still explains the red sentence.
-      // A none_on_hand card that is still here is amber, not that sentence.
-      const departed = notices.some((notice) => !stillThere(notice.id));
-      setError(!blocking && departed ? BATCH_FAILURE_FALLBACK : '');
+      // Red only while a non-amber failure is still open. A card that already
+      // left, including one beside an amber card, does not keep the sentence.
+      setError(blocking ? BATCH_FAILURE_FALLBACK : '');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
       setLoadError('');
       if (amberLeft) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);

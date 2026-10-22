@@ -1049,7 +1049,7 @@ describe('QueueScreen', () => {
   it.each([
     { label: 'the queue is empty', stayed: false },
     { label: 'another card is still pending', stayed: true },
-  ])('keeps the red sentence when a failed card is no longer pending and $label', async ({ stayed }) => {
+  ])('a not_pending failure stays off the red sentence when the card has left and $label', async ({ stayed }) => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
     const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
@@ -1063,8 +1063,8 @@ describe('QueueScreen', () => {
         updatedCount: 1,
         committedIds: ['scan-batch-partial'],
         failedIds: ['scan-batch-none'],
-        failedReasons: ['Nothing on hand to take out.'],
-        failedCodes: ['none_on_hand'],
+        failedReasons: ['That scan is no longer pending.'],
+        failedCodes: ['not_pending'],
         stockOutCounts: { 'scan-batch-partial': partialCount },
       })),
       getInventoryList: jest.fn(async () => [
@@ -1080,14 +1080,57 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('Batch Empty')).toBeNull();
     expect(screen.queryByText('Tortilla chips')).toBeNull();
     if (stayed) expect(screen.getByText('Batch In')).toBeTruthy();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'success', [wasLine]);
     if (stayed) {
       await reloadQueue(screen);
-      await waitFor(() => expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull());
+      await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       expectBanner(screen, 'success', [wasLine]);
     }
+  });
+
+  it('a departed failure beside an open amber card stays teal', async () => {
+    const amber = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+    const left = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
+    const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([chips, amber, left])
+      .mockResolvedValue([amber]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial'],
+        failedIds: ['scan-keep', 'scan-batch-none'],
+        failedReasons: ['That scan is no longer pending.', 'Nothing on hand to take out.'],
+        failedCodes: ['not_pending', 'none_on_hand'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
+        householdItem('Batch Empty', 'prod-scan-batch-none', 1),
+        householdItem('Kept oil', 'prod-scan-keep', 1),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Kept oil')).toBeNull();
+    expect(screen.getByText('Batch Empty')).toBeTruthy();
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.queryByLabelText('Confirm Batch Empty')).toBeNull();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'success', [wasLine]);
+
+    await reloadQueue(screen);
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
+    expect(screen.getByText('Batch Empty')).toBeTruthy();
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'success', [wasLine]);
   });
 
   it.each([
