@@ -759,8 +759,8 @@ describe('QueueScreen', () => {
         updatedCount: 2,
         committedIds: ['scan-batch-partial'],
         failedIds: ['scan-batch-none'],
-        failedReasons: ['Nothing on hand to take out.'],
-        failedCodes: ['none_on_hand'],
+        failedReasons: ['That scan conflicts with the shelf.'],
+        failedCodes: ['instance_gone'],
         stockOutCounts: { 'scan-batch-partial': partialCount },
       })),
       getInventoryList: jest.fn(async () => [
@@ -773,9 +773,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
-    expectBanner(screen, 'success', [wasLine]);
-    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-    expect(screen.getByText('Nothing on hand to take out.')).toBeTruthy();
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
 
     await reloadQueue(screen);
     if (refresh === 'fetch-error') {
@@ -785,14 +783,14 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(loadError.props.style);
       const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
       expect(color).toBe(colors.danger);
-      expectBanner(screen, 'success', [wasLine]);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
       await reloadQueue(screen);
       await waitFor(() => expect(listPending).toHaveBeenCalledTimes(4));
       expect(screen.queryByText('The queue did not load.')).toBeNull();
       expect(screen.queryByTestId('queue-load-error')).toBeNull();
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-      expectBanner(screen, 'success', [wasLine]);
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
       expect(screen.getByText('Batch Empty')).toBeTruthy();
       return;
     }
@@ -802,14 +800,14 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     if (refresh === 'same') {
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-      expectBanner(screen, 'success', [wasLine]);
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
       return;
     }
     expect(screen.getByText('New rice')).toBeTruthy();
     expect(screen.queryByText(wasLine)).toBeNull();
-    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-    expectBanner(screen, 'gone', []);
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
   });
 
   it('a successful confirm-all clears a queue load error', async () => {
@@ -912,8 +910,8 @@ describe('QueueScreen', () => {
           updatedCount: 2,
           committedIds: ['scan-batch-partial'],
           failedIds: ['scan-batch-none'],
-          failedReasons: ['Nothing on hand to take out.'],
-          failedCodes: ['none_on_hand'],
+          failedReasons: ['That scan conflicts with the shelf.'],
+          failedCodes: ['instance_gone'],
           stockOutCounts: { 'scan-batch-partial': partialCount },
         })
         : batchResponse({
@@ -924,15 +922,15 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(screen.queryByText('Tortilla chips')).toBeNull());
     if (kind === 'stale') {
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'success', [wasLine]);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
       await act(async () => { releaseRefresh([chips, failed]); });
       expect(screen.queryByText('Tortilla chips')).toBeNull();
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'success', [wasLine]);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
       return;
     }
     expect(screen.queryByText('Batch In')).toBeNull();
@@ -981,8 +979,8 @@ describe('QueueScreen', () => {
         updatedCount: 2,
         committedIds: ['scan-batch-partial'],
         failedIds: ['scan-batch-none'],
-        failedReasons: ['Nothing on hand to take out.'],
-        failedCodes: ['none_on_hand'],
+        failedReasons: ['That scan conflicts with the shelf.'],
+        failedCodes: ['instance_gone'],
         stockOutCounts: { 'scan-batch-partial': partialCount },
       })),
       getInventoryList: jest.fn(async () => [
@@ -997,17 +995,16 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
     await fireEvent.press(screen.getByLabelText('Confirm all'));
     await waitFor(() => expect(screen.getByText(wasLine)).toBeTruthy());
-    expectBanner(screen, 'success', [wasLine]);
-    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
 
     await act(async () => { rejectRefresh('offline'); });
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByTestId('queue-load-error')).toBeNull();
     expect(screen.queryByText('Tortilla chips')).toBeNull();
     expect(screen.getByText('Batch Empty')).toBeTruthy();
-    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
-    expectBanner(screen, 'success', [wasLine]);
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
   });
 
   it('a failed retry of the only failed card clears the red sentence', async () => {
@@ -1096,7 +1093,7 @@ describe('QueueScreen', () => {
   it.each([
     { label: 'a failed link', fail: true },
     { label: 'a successful link', fail: false },
-  ])('retrying one failed card with $label leaves the amber card off the red sentence', async ({ fail }) => {
+  ])('retrying one failed card with $label keeps the other card on the red sentence', async ({ fail }) => {
     const unresolved = entry({
       id: 'scan-open',
       barcode: 'scan-open',
@@ -1123,8 +1120,8 @@ describe('QueueScreen', () => {
         updatedCount: cards.length,
         committedIds: ['scan-batch-partial'],
         failedIds: ['scan-open', 'scan-keep'],
-        failedReasons: ['Choose which item this is first.', 'Nothing on hand to take out.'],
-        failedCodes: ['product_unresolved', 'none_on_hand'],
+        failedReasons: ['Choose which item this is first.', 'That scan conflicts with the shelf.'],
+        failedCodes: ['product_unresolved', 'instance_gone'],
         stockOutCounts: { 'scan-batch-partial': partialCount },
       })),
       getInventoryList: jest.fn(async () => [
@@ -1145,7 +1142,77 @@ describe('QueueScreen', () => {
 
     expect(screen.queryByText(wasLine)).toBeNull();
     expect(screen.getByText('Kept oil')).toBeTruthy();
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+  });
+
+  it('a none_on_hand failure alone leaves the partial line teal', async () => {
+    const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+    const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce([chips, failed])
+        .mockResolvedValue([failed]),
+      batchCommit: jest.fn(async () => batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial'],
+        failedIds: ['scan-batch-none'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
+        householdItem('Batch Empty', 'prod-scan-batch-none', 1),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(screen.getByText(wasLine)).toBeTruthy());
     expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'success', [wasLine]);
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+  });
+
+  it('a mix of amber and non-amber failures stays red until the non-amber card is resolved', async () => {
+    const amber = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+    const blocked = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
+    const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([chips, amber, blocked])
+      .mockResolvedValueOnce([amber, blocked])
+      .mockResolvedValue([amber]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => batchResponse({
+        updatedCount: 3,
+        committedIds: ['scan-batch-partial'],
+        failedIds: ['scan-batch-none', 'scan-keep'],
+        failedReasons: ['Nothing on hand to take out.', 'That scan conflicts with the shelf.'],
+        failedCodes: ['none_on_hand', 'instance_gone'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      })),
+      commitScan: jest.fn(async () => entry({ id: 'scan-keep', status: 'committed' })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
+        householdItem('Batch Empty', 'prod-scan-batch-none', 1),
+        householdItem('Kept oil', 'prod-scan-keep', 1),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText('Confirm Kept oil'));
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expect(screen.queryByText(wasLine)).toBeNull();
+    expect(screen.getByText('Batch Empty')).toBeTruthy();
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
     expectBanner(screen, 'gone', []);
   });
 
