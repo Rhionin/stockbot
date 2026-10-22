@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { backfillMoveId, quantityLocked } from '../../api/contract';
+import { quantityLocked } from '../../api/contract';
 import {
   dayHeading, daysLeftLabel, deltaName, deltaText, directionWord, formatMoveClock, formatMoveWhen, formatPaceNumber,
   groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
@@ -122,26 +122,5 @@ describe('history wording', () => {
     expect(orderBackfillPairs([used, between, added, other]).map((move) => move.id)).toEqual(['in', 'oats', 'out', 'milk']);
     expect(orderBackfillPairs([added, used, other]).map((move) => move.id)).toEqual(['in', 'out', 'milk']);
     expect(orderBackfillPairs([other, between]).map((move) => move.id)).toEqual(['milk', 'oats']);
-  });
-});
-
-describe('backfill move id', () => {
-  it.each([
-    { name: 'an empty history has no move', moves: [], id: '' },
-    { name: 'a history with no backfill uses the first move', moves: [{ id: 'only', source: 'scan' }], id: 'only' },
-    {
-      name: 'a leading use is skipped for the backfill row',
-      moves: [{ id: 'scan-out', source: 'scan' }, { id: 'bf', source: 'backfill' }],
-      id: 'bf',
-    },
-    {
-      // The commit response still has no move ids, so this is the first backfill
-      // row until that response names the pair from this commit.
-      name: 'two backfill rows keep the first one',
-      moves: [{ id: 'bf-old', source: 'backfill' }, { id: 'bf-new', source: 'backfill' }],
-      id: 'bf-old',
-    },
-  ])('$name', (row) => {
-    expect(backfillMoveId(row.moves)).toBe(row.id);
   });
 });

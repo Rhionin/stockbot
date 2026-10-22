@@ -1,12 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
-import { addGroupMembers, ApiError, commitBackfill, commitScanEntry, createProduct, createProductOverride, getInventoryList, getItemHistory, listLinkSuggestions, lookupProduct, noteGroupFromScan, undoMove, updateProduct, updateScanEntry } from '../../api/client';
+import { addGroupMembers, ApiError, commitBackfill, commitScanEntry, createProduct, createProductOverride, getInventoryList, listLinkSuggestions, lookupProduct, noteGroupFromScan, undoMove, updateProduct, updateScanEntry } from '../../api/client';
 import {
   ADD_AS_A_NEW_ITEM,
   ADD_IT_AND_TAKE_IT_OUT,
   ADDED_AND_TAKEN_OUT,
   backfillFailureKind,
-  backfillMoveId,
   CODE_LINK_TARGET_GONE,
   CODE_NONE_ON_HAND,
   CODE_NOT_PENDING,
@@ -502,24 +501,24 @@ export const ScanEntryCard = ({
     setApproving(true);
     try {
       const result = await commitBackfill(entry.id);
-      let moveId = '';
-      if (typeof result.itemId === 'string' && result.itemId !== '') {
-        try {
-          const history = await getItemHistory(result.itemId);
-          moveId = backfillMoveId(history.moves);
-        } catch {
-          moveId = '';
-        }
-      }
+      const moveId = result.backfill?.stockInMoveId ?? '';
       showUndo({
         detail: ADDED_AND_TAKEN_OUT,
         onUndo: moveId === '' ? undefined : () => {
-          void undoMove(moveId).catch((requestError: unknown) => {
-            const message = requestError instanceof ApiError && requestError.message !== ''
-              ? requestError.message
-              : SERVER_ERROR_FALLBACK;
-            showCommitSentence(message);
-          });
+          void undoMove(moveId)
+            .then(async () => {
+              // Inventory is whatever the server still lists. Undo re-shelves
+              // only when no live unit remains, and this client does not hide
+              // an item the list still includes.
+              await getInventoryList().catch(() => undefined);
+              onChanged();
+            })
+            .catch((requestError: unknown) => {
+              const message = requestError instanceof ApiError && requestError.message !== ''
+                ? requestError.message
+                : SERVER_ERROR_FALLBACK;
+              showCommitSentence(message);
+            });
         },
       });
       setOfferBackfill(false);

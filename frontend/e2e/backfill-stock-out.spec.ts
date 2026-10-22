@@ -61,7 +61,12 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ removed: 1, backfilled: 1, itemId: 'item-sour' }),
+        body: JSON.stringify({
+          removed: 1,
+          backfilled: 1,
+          itemId: 'item-sour',
+          backfill: { stockInMoveId: 'move-backfill', stockOutMoveId: 'move-out' },
+        }),
       })
       return
     }

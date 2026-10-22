@@ -60,7 +60,8 @@ const expectToastInside = async (page: Page, text: string, borderToken?: string)
   const toast = page.locator('.restock-toast').filter({ hasText: text })
   await expect(toast).toBeVisible()
   await expect.poll(() => page.evaluate(({ sentence, token }) => {
-    const leaves = [...document.querySelectorAll('body *')].filter((node) =>
+    // The same sentence can also sit on a backfill card. Measure the toast copy.
+    const leaves = [...document.querySelectorAll('.restock-toast *')].filter((node) =>
       node.childElementCount === 0 && node.textContent === sentence,
     )
     if (leaves.length !== 1) return false

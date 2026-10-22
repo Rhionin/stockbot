@@ -172,10 +172,17 @@ export interface BackfillCommitRequest {
   backfill: true;
 }
 
+// The pair created by this commit. DELETE /api/moves/{id} accepts either id.
+export interface BackfillPairMoves {
+  stockInMoveId: string;
+  stockOutMoveId: string;
+}
+
 export interface BackfillCommitResponse {
   removed: number;
   backfilled: number;
   itemId: string;
+  backfill: BackfillPairMoves;
 }
 
 // What the card does with a backfill commit's code. The sentence is always
@@ -213,13 +220,6 @@ export function readItemId(body: object | null | undefined): string {
   if (body === null || body === undefined) return '';
   const itemId = (body as Record<string, unknown>).itemId;
   return typeof itemId === 'string' ? itemId : '';
-}
-
-// The commit response has no move ids. Prefer the backfill stock-in; either
-// row removes both.
-export function backfillMoveId(moves: { id: string; source: string }[]): string {
-  const backfill = moves.find((move) => move.source === BACKFILL_SOURCE);
-  return (backfill ?? moves[0])?.id ?? '';
 }
 
 export const CODE_CONFLICTING_FIELDS = 'conflicting_fields';
