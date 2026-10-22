@@ -427,6 +427,53 @@ func TestSentryRejectsUnusableDSN(t *testing.T) {
 	}
 }
 
+func TestSentryRejectsFTPDSN(t *testing.T) {
+	settings := LoadSentrySettings(func(key string) string {
+		if key == "SENTRY_DSN" {
+			return "ftp://key@o1.ingest.example/123"
+		}
+		return ""
+	})
+	if !settings.Rejected || settings.DSN != "" || settings.IngestHost != "" {
+		t.Fatalf("ftp DSN rejected=%v host set=%v dsn set=%v", settings.Rejected, settings.IngestHost != "", settings.DSN != "")
+	}
+}
+
+func TestScrubSentryStripsQueryPrefix(t *testing.T) {
+	const prefixed = "?token=query-secret"
+	event := &sentry.Event{
+		Transaction: prefixed,
+		Request:     &sentry.Request{URL: prefixed},
+		Spans: []*sentry.Span{{
+			Name:        prefixed,
+			Description: prefixed,
+			Data:        map[string]interface{}{"url": prefixed},
+		}},
+		Breadcrumbs: []*sentry.Breadcrumb{{
+			Data: map[string]interface{}{"url": prefixed, "method": "GET"},
+		}},
+	}
+	got := scrubSentryEvent(event)
+	if got.Transaction != "" {
+		t.Fatalf("transaction = %q", got.Transaction)
+	}
+	if got.Request == nil || got.Request.URL != "" {
+		t.Fatalf("request url = %#v", got.Request)
+	}
+	if got.Spans[0].Name != "" || got.Spans[0].Description != "" {
+		t.Fatalf("span name = %q description = %q", got.Spans[0].Name, got.Spans[0].Description)
+	}
+	if url, _ := got.Spans[0].Data["url"].(string); url != "" || strings.Contains(fmt.Sprint(got.Spans[0].Data["url"]), "?") {
+		t.Fatalf("span url = %#v", got.Spans[0].Data)
+	}
+	if got.Breadcrumbs[0].Data["url"] != "" {
+		t.Fatalf("breadcrumb url = %#v", got.Breadcrumbs[0].Data)
+	}
+	if strings.Contains(fmt.Sprint(got.Transaction, got.Request.URL, got.Spans[0].Name, got.Spans[0].Description), "query-secret") {
+		t.Fatal("query prefix kept a secret")
+	}
+}
+
 func TestSentryTraceSamplerSkipsHealthAndEvents(t *testing.T) {
 	cases := []struct {
 		name string
