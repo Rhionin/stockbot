@@ -16,12 +16,40 @@ const historyMove = {
   productName: 'Sour cream',
 }
 
+// The pair-undo dialog fades in. A shot on the first visible frame is still see-through.
+const settleUndoModal = async (page: Page) => {
+  const content = page.locator('.mantine-Modal-content')
+  const overlay = page.locator('.mantine-Modal-overlay')
+  await expect(content).toBeVisible()
+  await expect(overlay).toBeVisible()
+  await page.clock.runFor(400)
+  await page.waitForFunction(() => {
+    const node = document.querySelector('.mantine-Modal-content')
+    const scrim = document.querySelector('.mantine-Modal-overlay')
+    if (!(node instanceof HTMLElement) || !(scrim instanceof HTMLElement)) return false
+    const running = [
+      ...node.getAnimations({ subtree: true }),
+      ...scrim.getAnimations({ subtree: true }),
+    ].some((animation) => animation.playState === 'running')
+    const background = getComputedStyle(node).backgroundColor
+    const channels = background.match(/[\d.]+/g) ?? []
+    const backgroundOpaque = channels.length === 3 || (channels.length === 4 && Number(channels[3]) === 1)
+    return getComputedStyle(node).opacity === '1'
+      && getComputedStyle(scrim).opacity === '1'
+      && backgroundOpaque
+      && !running
+  })
+  await expect(content).toHaveCSS('opacity', '1')
+  await expect(overlay).toHaveCSS('opacity', '1')
+}
+
 const shoot = async (page: Page, testInfo: TestInfo, slug: string) => {
   for (const width of [390, 1280] as const) {
     for (const scheme of ['light', 'dark'] as const) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
       await page.emulateMedia({ colorScheme: scheme })
       await expect(page.locator('html')).toHaveAttribute('data-mantine-color-scheme', scheme)
+      if (slug.startsWith('undo-confirm')) await settleUndoModal(page)
       const card = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
       if (await card.count()) await card.scrollIntoViewIfNeeded()
       await page.screenshot({
