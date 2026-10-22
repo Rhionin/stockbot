@@ -539,7 +539,7 @@ describe('QueueScreen', () => {
     { label: 'a successful link', trigger: 'link-ok', banner: 'gone' as const },
     { label: 'a new batch', trigger: 'batch', banner: 'failure' as const },
     { label: 'a removed card', trigger: 'removed', banner: 'gone' as const },
-    { label: 'a new scan', trigger: 'arrived', banner: 'gone' as const },
+    { label: 'a new scan', trigger: 'arrived', banner: 'failure' as const },
     { label: 'leaving the queue', trigger: 'leave', banner: 'failure' as const },
   ])('clears the partial line on $label', async ({ trigger, banner }) => {
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
@@ -680,6 +680,7 @@ describe('QueueScreen', () => {
   it.each([
     { label: 'the same failed card', refresh: 'same' },
     { label: 'different cards', refresh: 'different' },
+    { label: 'a fetch error then a refresh', refresh: 'fetch-error' },
   ])('pull to refresh with $label', async ({ refresh }) => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     const arrived = entry({
@@ -694,8 +695,13 @@ describe('QueueScreen', () => {
     ];
     const listPending = jest.fn()
       .mockResolvedValueOnce(cards)
-      .mockResolvedValueOnce([failed])
-      .mockResolvedValue(refresh === 'same' ? [failed] : [failed, arrived]);
+      .mockResolvedValueOnce([failed]);
+    if (refresh === 'fetch-error') {
+      listPending.mockRejectedValueOnce('offline');
+      listPending.mockResolvedValue([failed]);
+    } else {
+      listPending.mockResolvedValue(refresh === 'same' ? [failed] : [failed, arrived]);
+    }
     const api = client({
       listPending,
       batchCommit: jest.fn(async () => batchResponse({
@@ -714,8 +720,28 @@ describe('QueueScreen', () => {
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
 
     await reloadQueue(screen);
+    if (refresh === 'fetch-error') {
+      expect(await screen.findByText('The queue did not load.')).toBeTruthy();
+      expect(screen.getAllByText('The queue did not load.')).toHaveLength(1);
+      const loadError = screen.getByTestId('queue-load-error');
+      const flat = StyleSheet.flatten(loadError.props.style);
+      const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
+      expect(color).toBe(colors.danger);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      await reloadQueue(screen);
+      await waitFor(() => expect(listPending).toHaveBeenCalledTimes(4));
+      expect(screen.queryByText('The queue did not load.')).toBeNull();
+      expect(screen.queryByTestId('queue-load-error')).toBeNull();
+      expect(screen.getAllByText(wasLine)).toHaveLength(1);
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expect(screen.getByText('Batch Empty')).toBeTruthy();
+      return;
+    }
+
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
     expect(screen.getByText('Batch Empty')).toBeTruthy();
+    expect(screen.queryByText('The queue did not load.')).toBeNull();
     if (refresh === 'same') {
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
       expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
@@ -724,8 +750,69 @@ describe('QueueScreen', () => {
     }
     expect(screen.getByText('New rice')).toBeTruthy();
     expect(screen.queryByText(wasLine)).toBeNull();
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+  });
+
+  function refreshProps(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const lists = screen.root?.queryAll((node) => node.props.refreshControl != null) ?? [];
+    const props = lists[0]?.props.refreshControl?.props as undefined | {
+      enabled?: boolean;
+      onRefresh?: () => void;
+    };
+    if (props?.onRefresh === undefined) throw new Error('The queue list has no refresh.');
+    return props;
+  }
+
+  it.each([
+    { label: 'a stale refresh', kind: 'stale' },
+    { label: 'pull to refresh while it runs', kind: 'disabled' },
+  ])('confirm-all ignores $label', async ({ kind }) => {
+    const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    let releaseRefresh: (rows: ScanEntry[]) => void = () => {};
+    let releaseBatch: (body: BatchCommitResponse) => void = () => {};
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([chips, other]);
+    if (kind === 'stale') {
+      listPending.mockImplementationOnce(() => new Promise((resolve) => { releaseRefresh = resolve; }));
+    }
+    listPending.mockResolvedValue([]);
+    const batchCommit = jest.fn(() => new Promise<BatchCommitResponse>((resolve) => {
+      releaseBatch = resolve;
+    }));
+    const api = client({ listPending, batchCommit });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    expect(await screen.findByText('Tortilla chips')).toBeTruthy();
+
+    if (kind === 'stale') {
+      await act(async () => { refreshProps(screen).onRefresh?.(); });
+      await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
+    }
+
+    await fireEvent.press(screen.getByLabelText('Confirm all'));
+    await waitFor(() => expect(batchCommit).toHaveBeenCalled());
+    const control = refreshProps(screen);
+    expect(control.enabled).toBe(false);
+    const calls = listPending.mock.calls.length;
+    await act(async () => { control.onRefresh?.(); });
+    expect(listPending).toHaveBeenCalledTimes(calls);
+
+    await act(async () => {
+      releaseBatch(batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-in'],
+      }));
+    });
+    await waitFor(() => expect(screen.queryByText('Tortilla chips')).toBeNull());
+    expect(screen.queryByText('Batch In')).toBeNull();
     expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-    expectBanner(screen, 'gone', []);
+
+    if (kind === 'stale') {
+      await act(async () => { releaseRefresh([chips, other]); });
+      expect(screen.queryByText('Tortilla chips')).toBeNull();
+      expect(screen.queryByText('Batch In')).toBeNull();
+    }
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {
