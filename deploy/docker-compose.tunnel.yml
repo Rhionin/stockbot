@@ -48,7 +48,7 @@ services:
     # entrypoint is `cloudflared --no-autoupdate`, so this is `tunnel run`
     # and the binary does not try to replace itself. The token is the
     # TUNNEL_TOKEN env var, not a command argument.
-    image: cloudflare/cloudflared:2026.10.0
+    image: cloudflare/cloudflared:2026.10.1
     container_name: pantry-cloudflared
     restart: unless-stopped
     command: ["tunnel", "run"]

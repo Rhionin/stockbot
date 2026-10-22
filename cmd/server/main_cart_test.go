@@ -13,7 +13,7 @@ import (
 
 func newCartDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 
 	_ "time/tzdata"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
 
@@ -737,7 +738,7 @@ func historyStamps(t *testing.T, dbPath string) map[string]string {
 }
 
 func openLiveDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := app.OpenSQLite(path)
 	if err != nil {
 		return nil, err
 	}

@@ -2,7 +2,6 @@ package supply
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 // A stock-out used to store time.Now().String(), monotonic clock and all.
 // Group detail and the shopping plan both read that text back.
 func TestGroupUsageAndPlanReadMonotonicConsumption(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
