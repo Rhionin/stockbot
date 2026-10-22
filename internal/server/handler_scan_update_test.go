@@ -811,37 +811,42 @@ func TestFlaggedResolveRejectsExtraFields(t *testing.T) {
 }
 
 func TestScanUpdateUnexpectedDatabaseError(t *testing.T) {
-	h := &ScanUpdateHandler{Queue: scanUpdateFailure{err: errors.New("disk I/O error")}}
+	t.Run("update", func(t *testing.T) {
+		h := &ScanUpdateHandler{Queue: scanUpdateFailure{err: errors.New("disk I/O error")}}
+		assertGenericScanFailure(t, h, `{"unitCount":4}`)
+	})
+	t.Run("resolve", func(t *testing.T) {
+		queue := &resolveFailure{err: errors.New("disk I/O error")}
+		h := &ScanUpdateHandler{Queue: queue}
+		assertGenericScanFailure(t, h, `{"productId":"prod-1"}`)
+		if queue.updates != 0 {
+			t.Fatalf("UpdateScanEntry called %d times", queue.updates)
+		}
+	})
+}
+
+func assertGenericScanFailure(t *testing.T, h *ScanUpdateHandler, body string) {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /api/scans/{id}", HandleJSON(h.Handle))
-	for _, tc := range []struct {
-		name string
-		body string
-	}{
-		{name: "update", body: `{"unitCount":4}`},
-		{name: "resolve", body: `{"productId":"prod-1"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPatch, "/api/scans/scan-1", strings.NewReader(tc.body))
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
-			if rec.Code != http.StatusInternalServerError {
-				t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
-			}
-			var payload map[string]any
-			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-				t.Fatalf("json: %v", err)
-			}
-			if payload["error"] != "Something went wrong. Please try again." {
-				t.Fatalf("body %#v", payload)
-			}
-			if _, ok := payload["code"]; ok {
-				t.Fatalf("code leaked: %#v", payload)
-			}
-			if strings.Contains(rec.Body.String(), "disk I/O") {
-				t.Fatalf("detail leaked: %s", rec.Body.String())
-			}
-		})
+	req := httptest.NewRequest(http.MethodPatch, "/api/scans/scan-1", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if payload["error"] != "Something went wrong. Please try again." {
+		t.Fatalf("body %#v", payload)
+	}
+	if _, ok := payload["code"]; ok {
+		t.Fatalf("code leaked: %#v", payload)
+	}
+	if strings.Contains(rec.Body.String(), "disk I/O") {
+		t.Fatalf("detail leaked: %s", rec.Body.String())
 	}
 }
 
@@ -1130,6 +1135,26 @@ func (q scanUpdateFailure) GetScanEntry(context.Context, string) (*scan.ScanEntr
 }
 
 func (q scanUpdateFailure) ResolveFlaggedEntry(context.Context, string, string, ...scan.ResolveFields) (*scan.ScanEntry, error) {
+	return nil, q.err
+}
+
+// resolveFailure returns a plain error from ResolveFlaggedEntry. UpdateScanEntry
+// succeeds and counts calls, so a fallthrough after that error would write.
+type resolveFailure struct {
+	err     error
+	updates int
+}
+
+func (q *resolveFailure) UpdateScanEntry(context.Context, string, *scan.ScanDirection, *int, *time.Time, *string, *scan.ScanStatus) error {
+	q.updates++
+	return nil
+}
+
+func (q *resolveFailure) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+	return &scan.ScanEntry{ID: id}, nil
+}
+
+func (q *resolveFailure) ResolveFlaggedEntry(context.Context, string, string, ...scan.ResolveFields) (*scan.ScanEntry, error) {
 	return nil, q.err
 }
 
