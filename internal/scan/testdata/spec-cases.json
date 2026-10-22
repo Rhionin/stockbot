@@ -1,0 +1,389 @@
+[
+ {
+  "id": "E1a-N1-identical",
+  "household": [
+   "Kale"
+  ],
+  "scanned": "Kale",
+  "candidate": "Kale",
+  "expected_score": 1.0,
+  "expect": "match",
+  "note": "N=1: weight log(2); identical always matches",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E1b-N1-one-extra-novel-word",
+  "household": [
+   "Kale"
+  ],
+  "scanned": "Kale Chips",
+  "candidate": "Kale",
+  "expected_score": 0.5,
+  "expect": "match iff T<=0.5",
+  "note": "N=1: kale log2; 'chips' df=0 -> see E10; with df floored to 1 score is exactly 0.5 (float tie)",
+  "reference_score": 0.5,
+  "reference_kind": "score",
+  "naive_float_score": 0.5
+ },
+ {
+  "id": "E1c-N1-unsmoothed-would-be-0/0",
+  "household": [
+   "Kale"
+  ],
+  "scanned": "Kale Leaves",
+  "candidate": "Kale",
+  "expected_score": null,
+  "expect": "documented",
+  "note": "unsmoothed log(1/1)=0 -> 0/0; smoothing removes it",
+  "reference_score": 0.5,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E2a-word-in-every-name",
+  "household": [
+   "Green Apple",
+   "Green Pear",
+   "Green Kale"
+  ],
+  "scanned": "Green Apple",
+  "candidate": "Green Pear",
+  "expected_score": 0.17185550924272538,
+  "expect": "no match for T>=0.2",
+  "note": "green df=N: weight log((N+1)/N)=log(4/3)>0",
+  "reference_score": 0.17185550924272538,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E2b-only-the-everywhere-word",
+  "household": [
+   "Green Apple",
+   "Green Pear",
+   "Green Kale",
+   "Green"
+  ],
+  "scanned": "Green",
+  "candidate": "Green Apple",
+  "expected_score": 0.121764601316985,
+  "expect": "no match for T>=0.2",
+  "note": "a name made only of an everywhere word has small but non-zero weight",
+  "reference_score": 0.121764601316985,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E3a-empty-scanned",
+  "household": [
+   "Kale",
+   "Ginger Ale 12 oz"
+  ],
+  "scanned": "16 oz",
+  "candidate": "Ginger Ale 12 oz",
+  "expected_score": 0.0,
+  "expect": "no suggestion",
+  "note": "safety net",
+  "reference_score": 0.0,
+  "reference_kind": "zero-weight"
+ },
+ {
+  "id": "E3b-empty-vs-empty-different",
+  "household": [
+   "12 oz",
+   "Kale"
+  ],
+  "scanned": "16 oz",
+  "candidate": "12 oz",
+  "expected_score": 0.0,
+  "expect": "no suggestion",
+  "note": "both empty; sets equal but empty -> safety net (PM question: identical-bypass vs safety net)",
+  "reference_score": 0.0,
+  "reference_kind": "zero-weight"
+ },
+ {
+  "id": "E3c-empty-raw-identical",
+  "household": [
+   "16 oz",
+   "Kale"
+  ],
+  "scanned": "16 oz",
+  "candidate": "16 oz",
+  "expected_score": 0.0,
+  "expect": "suggestion",
+  "note": "Score of two empty token lists stays 0. The ranker still suggests the pair because the names match after case and whitespace cleanup.",
+  "reference_score": 0.0,
+  "reference_kind": "zero-weight"
+ },
+ {
+  "id": "E4a-N2-282",
+  "household": [
+   "Sour Cream",
+   "Condensed Cream Soup"
+  ],
+  "scanned": "Sour Cream",
+  "candidate": "Condensed Cream Soup",
+  "expected_score": 0.155786957767474,
+  "expect": "no match for T>=0.2",
+  "note": "#282 in a 2-product pantry",
+  "reference_score": 0.155786957767474,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E4b-N2-qualifier",
+  "household": [
+   "Pear Slices",
+   "Lite Pear Slices"
+  ],
+  "scanned": "Lite Pear Slices",
+  "candidate": "Pear Slices",
+  "expected_score": 0.42467251404042694,
+  "expect": "match iff T<=0.4247",
+  "note": "cff948d server test 'two-product pantry still matches pear slices' FAILS for T>0.4247",
+  "reference_score": 0.42467251404042694,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E5a-N3-beans",
+  "household": [
+   "Navy Beans",
+   "Lima Beans",
+   "Pink Beans"
+  ],
+  "scanned": "Navy Beans",
+  "candidate": "Lima Beans",
+  "expected_score": 0.17185550924272538,
+  "expect": "no match for T>=0.2",
+  "note": "",
+  "reference_score": 0.17185550924272538,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E5b-N3-qualifier-exact-half",
+  "household": [
+   "Pear Slices",
+   "Lite Pear Slices",
+   "Kale"
+  ],
+  "scanned": "Lite Pear Slices",
+  "candidate": "Pear Slices",
+  "expected_score": 0.5,
+  "expect": "match iff T<=0.5 (exact tie in math)",
+  "note": "pear,slice log2 each; lite log4=2*log2 -> exactly 0.5; float may give 0.4999..",
+  "reference_score": 0.5,
+  "reference_kind": "score",
+  "naive_float_score": 0.5
+ },
+ {
+  "id": "E6a-N5-282",
+  "household": [
+   "Sour Cream",
+   "Condensed Cream Soup",
+   "Tomato Soup",
+   "Chicken Soup",
+   "Heavy Cream"
+  ],
+  "scanned": "Sour Cream",
+  "candidate": "Condensed Cream Soup",
+  "expected_score": 0.21810429198553158,
+  "expect": "no match for T>=0.25",
+  "note": "",
+  "reference_score": 0.21810429198553158,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E6b-N5-soups",
+  "household": [
+   "Sour Cream",
+   "Condensed Cream Soup",
+   "Tomato Soup",
+   "Chicken Soup",
+   "Heavy Cream"
+  ],
+  "scanned": "Tomato Soup",
+  "candidate": "Chicken Soup",
+  "expected_score": 0.2789429456511298,
+  "expect": "no match for T>=0.3",
+  "note": "",
+  "reference_score": 0.2789429456511298,
+  "reference_kind": "score"
+ },
+ {
+  "id": "E7a-float-0.4",
+  "household": [
+   "Lime Mint Sage Dill Basil",
+   "Lime Mint",
+   "Sage Dill Basil"
+  ],
+  "scanned": "Lime Mint",
+  "candidate": "Lime Mint Sage Dill Basil",
+  "expected_score": 0.4,
+  "expect": "match at T=0.4",
+  "note": "all five words df=2 -> equal weights; 2/5 exactly",
+  "reference_score": 0.39999999999999997,
+  "reference_kind": "score",
+  "naive_float_score": 0.39999999999999997,
+  "strict_float_ge": false,
+  "with_eps": true
+ },
+ {
+  "id": "E7b-float-0.6",
+  "household": [
+   "Lime Mint Sage Dill Basil",
+   "Lime Mint Sage",
+   "Dill Basil"
+  ],
+  "scanned": "Lime Mint Sage",
+  "candidate": "Lime Mint Sage Dill Basil",
+  "expected_score": 0.6,
+  "expect": "match at T=0.6",
+  "note": "3/5 exactly",
+  "reference_score": 0.6,
+  "reference_kind": "score",
+  "naive_float_score": 0.6,
+  "strict_float_ge": true,
+  "with_eps": true
+ },
+ {
+  "id": "E7c-float-0.5",
+  "household": [
+   "Lime Mint Sage Dill",
+   "Lime Mint",
+   "Sage Dill"
+  ],
+  "scanned": "Lime Mint",
+  "candidate": "Lime Mint Sage Dill",
+  "expected_score": 0.5,
+  "expect": "match at T=0.5",
+  "note": "2/4 exactly",
+  "reference_score": 0.5,
+  "reference_kind": "score",
+  "naive_float_score": 0.5,
+  "strict_float_ge": true,
+  "with_eps": true
+ },
+ {
+  "id": "E7d-float-0.7",
+  "household": [
+   "Lime Mint Sage Dill Basil Fig Plum Kiwi Pear Date",
+   "Lime Mint Sage Dill Basil Fig Plum",
+   "Kiwi Pear Date"
+  ],
+  "scanned": "Lime Mint Sage Dill Basil Fig Plum",
+  "candidate": "Lime Mint Sage Dill Basil Fig Plum Kiwi Pear Date",
+  "expected_score": 0.7,
+  "expect": "match at T=0.7",
+  "note": "7/10 exactly",
+  "reference_score": 0.7,
+  "reference_kind": "score",
+  "naive_float_score": 0.7,
+  "strict_float_ge": true,
+  "with_eps": true
+ },
+ {
+  "id": "E8-order",
+  "household": [
+   "Basil Fig Plum",
+   "Plum Fig Basil Kiwi",
+   "Kiwi Lime",
+   "Lime Date"
+  ],
+  "scanned": "Basil Fig Plum",
+  "candidate": "Plum Fig Basil Kiwi",
+  "expected_score": null,
+  "expect": "same score for any word/candidate order; 1000 shuffled runs identical",
+  "note": "Go map iteration order must not change sums",
+  "reference_score": 0.75,
+  "reference_kind": "score",
+  "distinct_scores_over_1000_shuffles": 1
+ },
+ {
+  "id": "E9a-reordered",
+  "household": [
+   "Cream of Celery Soup",
+   "Soup, Cream of Celery",
+   "Kale"
+  ],
+  "scanned": "Cream of Celery Soup",
+  "candidate": "Soup, Cream of Celery",
+  "expected_score": 1.0,
+  "expect": "match even at T=1.0",
+  "note": "",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E9b-size-variant",
+  "household": [
+   "Ginger Ale 12 oz",
+   "Ginger Ale 2 L",
+   "Kale"
+  ],
+  "scanned": "Ginger Ale 12 oz",
+  "candidate": "Ginger Ale 2 L",
+  "expected_score": 1.0,
+  "expect": "match",
+  "note": "identical after size cleanup",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E9c-plural-case",
+  "household": [
+   "Butter Beans",
+   "BUTTER BEAN",
+   "Kale"
+  ],
+  "scanned": "Butter Beans",
+  "candidate": "BUTTER BEAN",
+  "expected_score": 1.0,
+  "expect": "match",
+  "note": "identical after plural cleanup",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E9d-duplicate-word",
+  "household": [
+   "Mango Chunks In Mango Nectar",
+   "Mango Chunks In Nectar",
+   "Kale"
+  ],
+  "scanned": "Mango Chunks In Mango Nectar",
+  "candidate": "Mango Chunks In Nectar",
+  "expected_score": 1.0,
+  "expect": "match if words are a set (PM question if multiset)",
+  "note": "",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E9e-identical-all-common",
+  "household": [
+   "Vegetable Soup",
+   "Vegetable Soup",
+   "Vegetable Stock",
+   "Vegetable Oil",
+   "Soup Mix"
+  ],
+  "scanned": "Vegetable Soup",
+  "candidate": "Vegetable Soup",
+  "expected_score": 1.0,
+  "expect": "match",
+  "note": "every word common; bypass still matches",
+  "reference_score": 1.0,
+  "reference_kind": "identical"
+ },
+ {
+  "id": "E10-df0-scanned-word",
+  "household": [
+   "Kale",
+   "Pear Slices",
+   "Fig"
+  ],
+  "scanned": "Kale Chips",
+  "candidate": "Kale",
+  "expected_score": null,
+  "expect": "PM question",
+  "note": "literal formula: log(4/0)=+Inf -> score 0 (never matches); df floored to 1: 0.5",
+  "reference_score": 0.5,
+  "reference_kind": "score"
+ }
+]

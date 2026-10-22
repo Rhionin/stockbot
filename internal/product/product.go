@@ -14,9 +14,13 @@ import (
 // Product represents a type of pantry item identified by name and optionally
 // by one or more barcodes.
 type Product struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Category       string         `json:"category"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	// Brand is recorded structured data: a value stored on the product, or the
+	// brand Open Food Facts published. Link suggestions treat a leading word
+	// as a brand only when it matches a recorded brand.
+	Brand          string         `json:"brand,omitempty"`
 	UnitOfMeasure  string         `json:"unitOfMeasure"`
 	ImageURL       string         `json:"imageUrl,omitempty"`
 	CreatedAt      time.Time      `json:"createdAt"`
@@ -43,6 +47,7 @@ type ProductSummary struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
 	Category       string         `json:"category"`
+	Brand          string         `json:"brand,omitempty"`
 	UnitOfMeasure  string         `json:"unitOfMeasure"`
 	ImageURL       string         `json:"imageUrl,omitempty"`
 	ExternalSource ExternalSource `json:"externalSource,omitempty"`
@@ -97,11 +102,12 @@ func (r *Catalog) CreateProduct(ctx context.Context, product Product) error {
 	}
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO products (id, name, category, unit_of_measure, image_url, source, external_source, refreshed_at, name_overridden,
-		        net_base_value, net_dimension, net_size_origin, pack_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		        net_base_value, net_dimension, net_size_origin, pack_count, brand)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		product.ID, product.Name, nullableString(product.Category), nullableString(product.UnitOfMeasure),
 		nullableString(product.ImageURL), source, nullableString(string(product.ExternalSource)), nullableTime(product.RefreshedAt), product.NameOverridden,
 		nullableFloat(product.NetBaseValue), nullableString(product.NetDimension), nullableString(product.NetSizeOrigin), nullableIntPtr(product.PackCount),
+		nullableString(product.Brand),
 	)
 	if err != nil {
 		return fmt.Errorf("CreateProduct: %w", err)
@@ -178,7 +184,7 @@ func (r *Catalog) UpdateProduct(ctx context.Context, product Product) error {
 }
 
 // SaveRefresh writes the field values a revalidation merged from Product Opener
-// (name, category, unit_of_measure, image_url) and stamps refreshed_at and
+// (name, category, brand, unit_of_measure, image_url) and stamps refreshed_at and
 // external_source. It does not touch id, source, created_at, or name_overridden,
 // and it does not write the barcodes table, so every mapping keeps its barcode,
 // source, and user_id.
@@ -188,11 +194,12 @@ func (r *Catalog) SaveRefresh(ctx context.Context, product Product, refreshedAt 
 	}
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE products SET name = ?, category = ?, unit_of_measure = ?, image_url = ?, external_source = ?, refreshed_at = ?,
-		        net_base_value = ?, net_dimension = ?, net_size_origin = ?, pack_count = ?
+		        net_base_value = ?, net_dimension = ?, net_size_origin = ?, pack_count = ?, brand = ?
 		 WHERE id = ?`,
 		product.Name, nullableString(product.Category), nullableString(product.UnitOfMeasure),
 		nullableString(product.ImageURL), nullableString(string(product.ExternalSource)), refreshedAt,
 		nullableFloat(product.NetBaseValue), nullableString(product.NetDimension), nullableString(product.NetSizeOrigin), nullableIntPtr(product.PackCount),
+		nullableString(product.Brand),
 		product.ID,
 	)
 	if err != nil {
@@ -392,7 +399,7 @@ func nullableIntPtr(v *int) sql.NullInt64 {
 
 const productSelectColumns = `id, name, COALESCE(category, ''), COALESCE(unit_of_measure, ''), COALESCE(image_url, ''), created_at,
 		        source, COALESCE(external_source, ''), refreshed_at, COALESCE(name_overridden, 0),
-		        net_base_value, net_dimension, net_size_origin, pack_count`
+		        net_base_value, net_dimension, net_size_origin, pack_count, COALESCE(brand, '')`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -407,7 +414,7 @@ func scanProduct(row rowScanner) (Product, error) {
 	var pack sql.NullInt64
 	if err := row.Scan(&p.ID, &p.Name, &p.Category, &p.UnitOfMeasure, &p.ImageURL, &p.CreatedAt,
 		&p.Source, &externalSource, &refreshedAt, &p.NameOverridden,
-		&base, &dimension, &origin, &pack); err != nil {
+		&base, &dimension, &origin, &pack, &p.Brand); err != nil {
 		return Product{}, err
 	}
 	if refreshedAt.Valid {

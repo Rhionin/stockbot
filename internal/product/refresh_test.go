@@ -107,6 +107,18 @@ func TestMergeRefresh_UpstreamFieldOnlyWhenSupplied(t *testing.T) {
 	})
 }
 
+func TestMergeRefreshSetsBrandFromUpstream(t *testing.T) {
+	cached := Product{ID: "prod-1", Name: "N", Brand: "Old", Source: SourceExternal}
+	got := mergeRefresh(cached, ProductSummary{Name: "N", Brand: "Tillamook"})
+	if got.Brand != "Tillamook" {
+		t.Fatalf("brand = %q, want Tillamook", got.Brand)
+	}
+	kept := mergeRefresh(cached, ProductSummary{Name: "N"})
+	if kept.Brand != "Old" {
+		t.Fatalf("brand = %q, want the recorded brand kept", kept.Brand)
+	}
+}
+
 // TestMergeRefresh_FieldPresenceTable enumerates all 16 combinations of which
 // of the four upstream fields are present, including the all-empty case (the
 // shape of a not-found or failed upstream response). NameOverridden is false
@@ -248,6 +260,11 @@ func TestClassify(t *testing.T) {
 			expect: OutcomeUpdated,
 		},
 		{
+			name:   "brand differs",
+			after:  withField(base, "Brand", "Tillamook"),
+			expect: OutcomeUpdated,
+		},
+		{
 			name:   "all four equal",
 			after:  base,
 			expect: OutcomeUnchanged,
@@ -276,6 +293,8 @@ func withField(p Product, field, value string) Product {
 		p.UnitOfMeasure = value
 	case "ImageURL":
 		p.ImageURL = value
+	case "Brand":
+		p.Brand = value
 	}
 	return p
 }

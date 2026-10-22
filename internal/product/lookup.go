@@ -186,6 +186,7 @@ func (s *LookupService) persistExternalProduct(ctx context.Context, product *Pro
 		created := Product{
 			ID:             product.ID,
 			Name:           product.Name,
+			Brand:          product.Brand,
 			Category:       product.Category,
 			UnitOfMeasure:  product.UnitOfMeasure,
 			ImageURL:       product.ImageURL,

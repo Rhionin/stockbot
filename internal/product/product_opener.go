@@ -143,6 +143,7 @@ func DefaultProductOpenerClients() map[ExternalSource]BarcodeLookup {
 type productOpenerResponse struct {
 	Product struct {
 		Name                string    `json:"product_name"`
+		Brands              string    `json:"brands"`
 		Category            string    `json:"categories"`
 		Code                string    `json:"code"`
 		ImageThumbURL       string    `json:"image_front_small_url"`
@@ -245,6 +246,7 @@ func (c *ProductOpenerClient) LookupBarcode(ctx context.Context, barcode string)
 	ps := &ProductSummary{
 		ID:             barcode,
 		Name:           data.Product.Name,
+		Brand:          strings.TrimSpace(data.Product.Brands),
 		Category:       data.Product.Category,
 		UnitOfMeasure:  "",
 		ImageURL:       SafeImageURL(data.Product.ImageThumbURL),

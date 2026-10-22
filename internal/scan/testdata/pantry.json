@@ -1,0 +1,572 @@
+[
+ {
+  "id": "syn-001",
+  "name": "Ground Turkey",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-002",
+  "name": "Turkey Bacon",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-003",
+  "name": "Smoked Turkey Slices",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-004",
+  "name": "Turkey Chili",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-005",
+  "name": "Chili, Turkey",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-006",
+  "name": "Turkey Meatballs",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-007",
+  "name": "Turkey Stock",
+  "category": "Meat",
+  "brand": ""
+ },
+ {
+  "id": "syn-008",
+  "name": "Vegetable Oil",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-009",
+  "name": "Frozen Vegetable Medley",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-010",
+  "name": "Vegetable Lasagna",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-011",
+  "name": "Vegetable Crackers",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-012",
+  "name": "Vegetable Soup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-013",
+  "name": "Soup, Vegetable",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-014",
+  "name": "Hearty Vegetable Soup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-015",
+  "name": "Vegetable Stock",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-016",
+  "name": "Peanut Butter",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-017",
+  "name": "Salted Butter",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-018",
+  "name": "Apple Butter",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-019",
+  "name": "Butter Crackers",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-020",
+  "name": "Butter Beans",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-021",
+  "name": "BUTTER BEANS",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-022",
+  "name": "Almond Butter",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-023",
+  "name": "Hot Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-024",
+  "name": "Jalapeno Hot Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-025",
+  "name": "Teriyaki Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-026",
+  "name": "Alfredo Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-027",
+  "name": "Cranberry Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-028",
+  "name": "Steak Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-029",
+  "name": "Pizza Sauce",
+  "category": "Sauces",
+  "brand": ""
+ },
+ {
+  "id": "syn-030",
+  "name": "Navy Beans",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-031",
+  "name": "Lima Beans",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-032",
+  "name": "Baked Beans",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-033",
+  "name": "Pink Beans",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-034",
+  "name": "Sliced Jalapeno Peppers",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-035",
+  "name": "Sliced Beets",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-036",
+  "name": "Sliced Water Chestnuts",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-037",
+  "name": "Sliced Almonds",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-038",
+  "name": "Roasted Red Peppers",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-039",
+  "name": "Banana Peppers",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-040",
+  "name": "Stuffed Peppers",
+  "category": "Canned",
+  "brand": ""
+ },
+ {
+  "id": "syn-041",
+  "name": "Baby Spinach",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-042",
+  "name": "Spinach Dip",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-043",
+  "name": "Spinach Ravioli",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-044",
+  "name": "Frozen Spinach",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-045",
+  "name": "Chopped Spinach",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-046",
+  "name": "Chopped Dates",
+  "category": "Produce",
+  "brand": ""
+ },
+ {
+  "id": "syn-047",
+  "name": "Turkey Gravy Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-048",
+  "name": "Mushroom Gravy Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-049",
+  "name": "Waffle Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-050",
+  "name": "Brownie Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-051",
+  "name": "Trail Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-052",
+  "name": "Cornbread Mix",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-053",
+  "name": "Mushroom Risotto",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-054",
+  "name": "Mango Nectar",
+  "category": "Fruit",
+  "brand": ""
+ },
+ {
+  "id": "syn-055",
+  "name": "Mango Chunks In Mango Nectar",
+  "category": "Fruit",
+  "brand": ""
+ },
+ {
+  "id": "syn-056",
+  "name": "Mango Slices In Mango Nectar",
+  "category": "Fruit",
+  "brand": ""
+ },
+ {
+  "id": "syn-057",
+  "name": "Frozen Mango",
+  "category": "Fruit",
+  "brand": ""
+ },
+ {
+  "id": "syn-058",
+  "name": "Almond Milk",
+  "category": "Dairy alternatives",
+  "brand": ""
+ },
+ {
+  "id": "syn-059",
+  "name": "Organic Almond Slivers",
+  "category": "Dairy alternatives",
+  "brand": ""
+ },
+ {
+  "id": "syn-060",
+  "name": "Turkey Noodle Soup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-061",
+  "name": "Egg Noodle Soup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-062",
+  "name": "Light Corn Syrup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-063",
+  "name": "Dark Corn Syrup",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-064",
+  "name": "Steel Cut Oats",
+  "category": "Breakfast",
+  "brand": ""
+ },
+ {
+  "id": "syn-065",
+  "name": "Organic Irish Steel Cut Oats Quick Cooking",
+  "category": "Breakfast",
+  "brand": ""
+ },
+ {
+  "id": "syn-066",
+  "name": "Low-Fat Yogurt",
+  "category": "Breakfast",
+  "brand": ""
+ },
+ {
+  "id": "syn-067",
+  "name": "Lowfat Yogurt",
+  "category": "Breakfast",
+  "brand": ""
+ },
+ {
+  "id": "syn-068",
+  "name": "Maple Syrup",
+  "category": "Breakfast",
+  "brand": ""
+ },
+ {
+  "id": "syn-069",
+  "name": "Hillcrest Farms Maple Syrup",
+  "category": "Breakfast",
+  "brand": "Hillcrest Farms"
+ },
+ {
+  "id": "syn-070",
+  "name": "Sour Cream",
+  "category": "Dairy",
+  "brand": ""
+ },
+ {
+  "id": "syn-071",
+  "name": "Condensed Cream Soup",
+  "category": "Dairy",
+  "brand": ""
+ },
+ {
+  "id": "syn-072",
+  "name": "Whipped Cream",
+  "category": "Dairy",
+  "brand": ""
+ },
+ {
+  "id": "syn-073",
+  "name": "Ice Cream Sandwiches",
+  "category": "Dairy",
+  "brand": ""
+ },
+ {
+  "id": "syn-074",
+  "name": "Basmati Rice",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-075",
+  "name": "Couscous",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-076",
+  "name": "Hummus",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-077",
+  "name": "Asparagus Spears",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-078",
+  "name": "Citrus Juice Blend",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-079",
+  "name": "Kalamata Olives",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-080",
+  "name": "Capers",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-081",
+  "name": "Tahini",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-082",
+  "name": "Miso Paste",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-083",
+  "name": "Rice Vinegar",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-084",
+  "name": "Chia Seeds",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-085",
+  "name": "Cornstarch",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-086",
+  "name": "Paprika",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-087",
+  "name": "Cumin",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-088",
+  "name": "Bay Leaves",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-089",
+  "name": "Black Peppercorns",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-090",
+  "name": "Sauerkraut",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-091",
+  "name": "Pretzels",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-092",
+  "name": "Walnuts",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-093",
+  "name": "Ginger Ale 12 oz",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-094",
+  "name": "Ginger Ale 2 L",
+  "category": "Pantry",
+  "brand": ""
+ },
+ {
+  "id": "syn-095",
+  "name": "16 oz",
+  "category": "Pantry",
+  "brand": ""
+ }
+]
