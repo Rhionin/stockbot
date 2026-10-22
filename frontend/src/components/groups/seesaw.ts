@@ -15,7 +15,8 @@ export interface SeesawEnd {
   known: boolean;
   /** Household window, shown beside the pinned time. */
   isDefault: boolean;
-  labelText: string;
+  /** Expanded phrase for the pill, not part of its accessible name. */
+  description: string;
 }
 
 export interface SeesawView {
@@ -179,7 +180,7 @@ function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawE
       label: 'Set amount',
       known: false,
       isDefault: false,
-      labelText: 'Keep on hand amount, not set',
+      description: 'Keep on hand amount, not set',
     };
   }
   const shown = `${formatAmount(amount)} ${unit}`;
@@ -191,16 +192,17 @@ function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawE
       label: shown,
       known: true,
       isDefault: false,
-      labelText: `Keep on hand amount, pinned, ${spoken}`,
+      description: `Keep on hand amount, pinned, ${spoken}`,
     };
   }
+  const visible = `≈ ${shown}`;
   return {
     pin: 'amount',
     pinned: false,
-    label: `≈ ${shown}`,
+    label: visible,
     known: true,
     isDefault: false,
-    labelText: `Keep on hand amount, about ${spoken}`,
+    description: `Keep on hand amount, about ${spoken}`,
   };
 }
 
@@ -213,7 +215,7 @@ function endTime(pin: SeesawPin, months: number | null, isDefault: boolean): See
       label: 'Set time',
       known: false,
       isDefault: false,
-      labelText: 'Keep on hand time, not set',
+      description: 'Keep on hand time, not set',
     };
   }
   if (pinned) {
@@ -225,16 +227,17 @@ function endTime(pin: SeesawPin, months: number | null, isDefault: boolean): See
       label: shown,
       known: true,
       isDefault,
-      labelText: `Keep on hand time, pinned, ${speakSpan(shown)}${marker}`,
+      description: `Keep on hand time, pinned, ${speakSpan(shown)}${marker}`,
     };
   }
   const shown = formatDuration(months);
+  const visible = `≈ ${shown}`;
   return {
     pin: 'time',
     pinned: false,
-    label: `≈ ${shown}`,
+    label: visible,
     known: true,
     isDefault: false,
-    labelText: `Keep on hand time, about ${speakSpan(shown)}`,
+    description: `Keep on hand time, about ${speakSpan(shown)}`,
   };
 }
