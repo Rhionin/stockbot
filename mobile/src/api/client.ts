@@ -156,8 +156,9 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       });
     },
     async getInventoryList(query) {
-      const rows = await request<InventoryItem[]>(inventoryListPath(query));
-      return Array.isArray(rows) ? rows : [];
+      const rows = await request<unknown>(inventoryListPath(query, DEFAULT_SCAN_USER_ID));
+      if (!Array.isArray(rows)) throw new Error('Inventory could not be read.');
+      return rows as InventoryItem[];
     },
   };
 }

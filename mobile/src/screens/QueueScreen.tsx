@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   FlatList,
   Pressable,
@@ -70,6 +71,17 @@ function reconcilePins(
     next.set(entry.id, pin);
   }
   return next;
+}
+
+function readableInventory(rows: unknown): InventoryItem[] | null {
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (row === null || typeof row !== 'object') return null;
+    const item = (row as InventoryItem).item;
+    if (item === undefined || typeof item.productId !== 'string') return null;
+    if (typeof (row as InventoryItem).instanceCount !== 'number') return null;
+  }
+  return rows as InventoryItem[];
 }
 
 function isNothingOnHand(
@@ -155,6 +167,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+  const [amberBatch, setAmberBatch] = useState(false);
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -166,7 +179,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const changed = !sameQueue(shownIds.current, next);
     shownIds.current = new Set(next.map((entry) => entry.id));
     setEntries(next);
-    if (changed) setPartialLine('');
+    if (changed) {
+      setPartialLine('');
+      setAmberBatch(false);
+    }
     // Same cards are not a queue change. Replacing the mixed-batch sentence
     // here left the partial line as plain text, outside the failure banner.
     setError((current) => (
@@ -182,13 +198,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const loadHousehold = useCallback(async () => {
     try {
       const rows = await client.getInventoryList();
-      return Array.isArray(rows) ? rows : [];
+      return readableInventory(rows);
     } catch {
       return null;
     }
   }, [client]);
 
-  const refresh = useCallback(async (keepError = '') => {
+  const refresh = useCallback(async (keepError = '', surfaceError = true) => {
     setRefreshing(true);
     try {
       const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
@@ -197,7 +213,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     } catch (requestError) {
       setRefreshing(false);
       setLoading(false);
-      setError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+      if (surfaceError) {
+        setError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+      }
     }
   }, [applyEntries, client, loadHousehold, storeHousehold]);
 
@@ -225,6 +243,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setFocusSeen(focused);
     if (!focused) setPartialLine('');
   }
+
+  const previousFocus = useRef<boolean | null>(null);
+  useEffect(() => {
+    const previous = previousFocus.current;
+    previousFocus.current = focused;
+    // Regain focus reloads the household so a stock-in made elsewhere can clear amber.
+    if (previous === false && focused) void refresh();
+  }, [focused, refresh]);
 
   function showOffer(id: string, suggestions: PantryLinkSuggestion[], showEmptyLine: boolean) {
     setOffers((current) => ({
@@ -266,6 +292,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       next.set(id, pin);
       return next;
     });
+    AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
   }
 
   function releasePins(productId: string) {
@@ -334,8 +361,25 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setError('');
     setToast('');
     try {
-      await client.cancelScan(id);
-      await refresh();
+      const removed = await client.cancelScan(id);
+      if (removed.status !== 'cancelled') {
+        setToast('That scan could not be removed.');
+        return;
+      }
+      setEntries((current) => {
+        const next = current.filter((entry) => entry.id !== id);
+        shownIds.current = new Set(next.map((entry) => entry.id));
+        return next;
+      });
+      setPins((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      clearOffer(id);
+      clearNote(id);
+      await refresh('', false);
     } catch (requestError) {
       setToast(requestError instanceof Error ? requestError.message : 'That scan could not be removed.');
     } finally {
@@ -440,8 +484,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setNotes(nextNotes);
       setOffers(nextOffers);
       setExcluded({});
-      setError(notices.length > 0 ? BATCH_FAILURE_FALLBACK : '');
+      const stillThere = (noticeId: string) => pending.some((entry) => entry.id === noticeId);
+      const blocking = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND && stillThere(notice.id));
+      const amberLeft = notices.some((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id));
+      setAmberBatch(!blocking && amberLeft);
+      setError(blocking ? BATCH_FAILURE_FALLBACK : '');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
+      if (amberLeft) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
@@ -453,7 +502,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
-  const successBanner = error === '' && partialLine !== '' && !failedPending;
+  const successBanner = error === '' && !failedPending && (partialLine !== '' || amberBatch);
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const pill = nothingOnHandPill(blockedCount);
   const skipLine = confirmSkipsNothingOnHand(blockedCount);
@@ -465,7 +514,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
-      {(error !== '' || partialLine !== '') && (
+      {(error !== '' || partialLine !== '' || amberBatch) && (
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
@@ -546,6 +595,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                       style={styles.nothingTitle}
                       accessibilityLabel={`Scan ${item.barcode}, ${NOTHING_ON_HAND_TITLE}`}
                       accessibilityHint={NOTHING_ON_HAND_BODY}
+                      accessibilityLiveRegion={pins.has(item.id) ? 'polite' : undefined}
                     >
                       {NOTHING_ON_HAND_TITLE}
                     </Text>
@@ -572,7 +622,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         />
       )}
 
-      {entries.length > 1 && skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
+      {skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
       {entries.length > 1 && (
         <Pressable
           accessibilityRole="button"
@@ -820,7 +870,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
-    color: colors.nothingInk,
+    color: colors.ink,
     marginTop: 4,
   },
   rowMain: {
