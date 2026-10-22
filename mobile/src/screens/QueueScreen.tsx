@@ -294,9 +294,9 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(error !== '' || partialLine !== '') && (
-        <View accessibilityLiveRegion="polite">
+        <View testID="batch-banner" accessibilityLiveRegion="polite">
           {error !== '' && <Text style={styles.error}>{error}</Text>}
-          {partialLine !== '' && <Text style={styles.error}>{partialLine}</Text>}
+          {partialLine !== '' && <Text style={styles.bannerBody}>{partialLine}</Text>}
         </View>
       )}
 
@@ -342,6 +342,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
                 && <Text style={styles.note}>{NOTHING_ON_HAND}</Text>}
               {offers[item.id] && (
                 <LinkOffer
+                  key={offers[item.id].showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
                   suggestions={offers[item.id].suggestions}
                   showEmptyLine={offers[item.id].showEmptyLine}
                   busy={busyId === item.id}
@@ -489,6 +490,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: colors.danger,
+    marginBottom: 12,
+  },
+  bannerBody: {
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.ink,
     marginBottom: 12,
   },
   spinner: {

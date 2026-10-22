@@ -1,8 +1,10 @@
+import { StyleSheet } from 'react-native';
 import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import type { BatchCommitResponse } from '../../../frontend/src/api/contract';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
+import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 
 const entry = (overrides: Partial<ScanEntry> = {}): ScanEntry => ({
@@ -255,6 +257,7 @@ describe('QueueScreen', () => {
   });
 
   // testdata/contract/scan-batch-commit-partial.json from PR #300 head b005813.
+  // Inlined because that file is not on this branch.
   const scanBatchCommitPartialJson = `{
   "status": 200,
   "note": "One batch: a full stock-out (3 on hand, unitCount 2), a partial stock-out (1 on hand, unitCount 3), a stock-in of 2, and a stock-out with nothing on hand. stockOutCounts has one entry per committed stock-out, including the full removal. The stock-in and the failed card are absent. The partial card stays in committedIds. failedReasons and failedCodes stay parallel to failedIds.",
@@ -275,7 +278,7 @@ describe('QueueScreen', () => {
   }
 }
 `;
-  const batchContract = JSON.parse(scanBatchCommitPartialJson) as {
+  interface BatchContract {
     body: {
       updatedCount: number;
       committedIds: string[];
@@ -284,7 +287,9 @@ describe('QueueScreen', () => {
       failedCodes: string[];
       stockOutCounts: Record<string, { removedCount: number; requestedCount: number }>;
     };
-  };
+  }
+
+  const batchContract = JSON.parse(scanBatchCommitPartialJson) as BatchContract;
   const fullCount = batchContract.body.stockOutCounts['scan-batch-full'];
   const partialCount = batchContract.body.stockOutCounts['scan-batch-partial'];
   const batchResponse = (body: BatchCommitResponse): BatchCommitResponse => body;
@@ -315,6 +320,7 @@ describe('QueueScreen', () => {
       }),
       lines: [wasLine],
       absent: ['Some scans could not be confirmed.', wereLine, manyLine],
+      banner: [wasLine],
     },
     {
       label: 'a removed count above one',
@@ -330,6 +336,7 @@ describe('QueueScreen', () => {
       }),
       lines: [wereLine],
       absent: ['Some scans could not be confirmed.', wasLine, manyLine],
+      banner: [wereLine],
     },
     {
       label: 'two partial cards',
@@ -348,6 +355,7 @@ describe('QueueScreen', () => {
       }),
       lines: [manyLine],
       absent: ['Some scans could not be confirmed.', wasLine, wereLine, 'Tortilla chips', 'Rolled oats'],
+      banner: [manyLine],
     },
     {
       label: 'the partial batch fixture',
@@ -361,6 +369,7 @@ describe('QueueScreen', () => {
       batch: batchResponse(batchContract.body),
       lines: ['Some scans could not be confirmed.', wasLine, 'Nothing on hand to take out.'],
       absent: [wereLine, manyLine],
+      banner: ['Some scans could not be confirmed.', wasLine],
     },
     {
       label: 'no short card',
@@ -379,8 +388,9 @@ describe('QueueScreen', () => {
       }),
       lines: [] as string[],
       absent: ['Some scans could not be confirmed.', wasLine, wereLine, manyLine],
+      banner: [] as string[],
     },
-  ])('batch $label', async ({ cards, kept, batch, lines, absent }) => {
+  ])('batch $label', async ({ cards, kept, batch, lines, absent, banner }) => {
     const listed = [
       householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
       householdItem('Batch Full', 'prod-scan-batch-full', 2),
@@ -402,6 +412,19 @@ describe('QueueScreen', () => {
     for (const line of lines) expect(screen.getByText(line)).toBeTruthy();
     for (const line of absent) expect(screen.queryByText(line)).toBeNull();
     if (lines.includes(wasLine)) expect(screen.getAllByText(wasLine)).toHaveLength(1);
+    if (banner.length === 0) {
+      expect(screen.queryByTestId('batch-banner')).toBeNull();
+    } else {
+      const bannerNode = screen.getByTestId('batch-banner');
+      const texts = bannerNode.children.filter((child): child is Exclude<typeof child, string> => typeof child !== 'string');
+      expect(texts.map((node) => node.props.children)).toEqual(banner);
+      for (const node of texts) {
+        const line = String(node.props.children);
+        const flat = StyleSheet.flatten(node.props.style);
+        const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
+        expect(color).toBe(line === 'Some scans could not be confirmed.' ? colors.danger : colors.ink);
+      }
+    }
     const failed = cards.find((card) => card.id === 'scan-batch-none');
     if (failed && kept.some((card) => card.id === failed.id)) {
       const card = within(screen.getByTestId('scan-scan-batch-none'));
@@ -452,6 +475,10 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+    if (empty) {
+      await fireEvent(screen.getByLabelText('Search'), 'focus');
+      expect(screen.getByText('Brown Rice')).toBeTruthy();
+    }
     await fireEvent.press(await screen.findByLabelText('Link Sliced Pears'));
 
     expect(within(await screen.findByTestId('confirm-toast')).getByText("That item isn't available anymore. Pick another.")).toBeTruthy();
@@ -465,6 +492,7 @@ describe('QueueScreen', () => {
       expect(screen.queryByText('Sliced Pears')).toBeNull();
       expect(screen.queryByText('Brown Rice')).toBeNull();
       expect(screen.queryByLabelText('Link Brown Rice')).toBeNull();
+      expect(screen.queryByLabelText(/Link /)).toBeNull();
     } else {
       expect(screen.getByText(remaining)).toBeTruthy();
       expect(screen.queryByText('No close match found.')).toBeNull();
