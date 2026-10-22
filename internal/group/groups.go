@@ -14,6 +14,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/google/uuid"
+	"modernc.org/sqlite"
 )
 
 const (
@@ -26,6 +27,10 @@ const (
 	codeTarget   = "target"
 
 	targetRequiredMessage = "Choose what this group should keep on hand. These products already have their own supply setting."
+
+	// SQLITE_CONSTRAINT_UNIQUE. Two creates can both pass the name check,
+	// and the losing insert of the name hits this code.
+	sqliteConstraintUnique = 2067
 )
 
 // Error is a problem the household can act on.
@@ -270,6 +275,9 @@ func (g *Groups) Rename(ctx context.Context, id, name string) (Group, error) {
 		return Group{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE product_groups SET name = ?, name_key = ? WHERE id = ?`, strings.TrimSpace(name), key, id); err != nil {
+		if taken := nameConflict(err); taken != nil {
+			return Group{}, taken
+		}
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -769,6 +777,9 @@ func insertGroup(ctx context.Context, tx *sql.Tx, name, rule, pin string, produc
 		INSERT INTO product_groups (id, user_id, name, name_key, rule, pinned_product_id)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		id, householdUser, strings.TrimSpace(name), key, rule, pinVal); err != nil {
+		if taken := nameConflict(err); taken != nil {
+			return "", taken
+		}
 		return "", fmt.Errorf("could not save the group: %w", err)
 	}
 	for _, productID := range ids {
@@ -1224,6 +1235,14 @@ func (g *Groups) preflightName(ctx context.Context, name string) error {
 	}
 	defer tx.Rollback()
 	return ensureNameFree(ctx, tx, key, "")
+}
+
+func nameConflict(err error) error {
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) || driverErr.Code() != sqliteConstraintUnique {
+		return nil
+	}
+	return conflict("A group with that name already exists.")
 }
 
 func ensureNameFree(ctx context.Context, q querier, key, exceptID string) error {

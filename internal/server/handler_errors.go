@@ -119,9 +119,10 @@ func serverClientPayload(err error, _ string) (string, string, bool) {
 func sqliteBusy(err error) bool {
 	var driverErr *sqlite.Error
 	if errors.As(err, &driverErr) {
-		// Extended codes keep the primary in the low byte. Once the driver
-		// error is in hand, its text is not a second vote: a snapshot lock
-		// says "database is locked" and its code is not the primary 5.
+		// Extended codes keep the primary in the low byte. A snapshot lock is
+		// SQLITE_BUSY_SNAPSHOT (517), and 517 & 0xff == 5, so the mask
+		// classifies it. Once the driver error is in hand, its text is not
+		// a second vote.
 		switch driverErr.Code() & 0xff {
 		case sqlitePrimaryBusy, sqlitePrimaryLocked:
 			return true

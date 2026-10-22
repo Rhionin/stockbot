@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,7 +201,7 @@ func TestRealSQLiteLockErrors(t *testing.T) {
 		return struct{}{}, InternalError(errors.New("sql: no such table: products"))
 	})
 	res = serveJSON(other, http.MethodGet, "/api/inventory", "")
-	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, clientmsg.Generic) || strings.Contains(res.body, clientmsg.Busy) {
+	if res.code != http.StatusInternalServerError || res.body != genericBody() {
 		t.Fatalf("other = %d %s", res.code, res.body)
 	}
 }
@@ -230,7 +231,7 @@ func TestNoSpace503KeepsItsSentence(t *testing.T) {
 		return struct{}{}, &HTTPError{Code: http.StatusServiceUnavailable, Message: clientmsg.NoSpace, ErrorCode: "no_space"}
 	})
 	res = serveJSON(coded, http.MethodGet, "/api/restock", "")
-	if res.code != http.StatusServiceUnavailable || strings.Contains(res.body, `"code":"no_space"`) || !strings.Contains(res.body, clientmsg.Generic) {
+	if res.code != http.StatusServiceUnavailable || res.body != genericBody() {
 		t.Fatalf("coded = %d %s", res.code, res.body)
 	}
 
@@ -238,7 +239,7 @@ func TestNoSpace503KeepsItsSentence(t *testing.T) {
 		return struct{}{}, &HTTPError{Code: http.StatusServiceUnavailable, Message: "raw database detail"}
 	})
 	res = serveJSON(unclassified, http.MethodGet, "/api/restock", "")
-	if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, clientmsg.Generic) || strings.Contains(res.body, "raw database") {
+	if res.code != http.StatusServiceUnavailable || res.body != genericBody() {
 		t.Fatalf("unclassified = %d %s", res.code, res.body)
 	}
 }
@@ -337,6 +338,9 @@ func TestNoSpaceReportIsAWarning(t *testing.T) {
 	}
 	if event.Tags["db_no_space"] != "true" {
 		t.Fatalf("tags = %#v", event.Tags)
+	}
+	if event.Message != clientmsg.NoSpace {
+		t.Fatalf("message = %q", event.Message)
 	}
 	if len(event.Exception) != 0 {
 		t.Fatalf("full disk was captured as an exception: %+v", event.Exception)
@@ -495,6 +499,78 @@ func TestDuplicateGroupNameDoesNotWaitOnWriteLock(t *testing.T) {
 	}
 }
 
+func TestConcurrentGroupCreateOneWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	// Long enough that the requests stay blocked until this test releases
+	// the lock, then finish the insert.
+	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(5000)", nil)
+	// The name pre-check runs before the write transaction. One connection
+	// would run the requests one after another, and that pre-check alone
+	// would answer 409 after the winner commits. Eight connections, held
+	// until each has passed the pre-check and is waiting on the write, make
+	// the losers meet the in-transaction check or the unique constraint.
+	env.DB.SetMaxOpenConns(8)
+
+	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	const n = 8
+	results := make(chan lockedHTTPResult, n)
+	var ready sync.WaitGroup
+	ready.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			ready.Done()
+			results <- serveJSON(handler, http.MethodPost, "/api/groups", `{"name":"Beans"}`)
+		}()
+	}
+	ready.Wait()
+	deadline := time.Now().Add(2 * time.Second)
+	var heldSince time.Time
+	for {
+		if env.DB.Stats().InUse >= n {
+			if heldSince.IsZero() {
+				heldSince = time.Now()
+			}
+			if time.Since(heldSince) >= 50*time.Millisecond {
+				break
+			}
+		} else {
+			heldSince = time.Time{}
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatalf("connections in use = %d, want %d", env.DB.Stats().InUse, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	release()
+
+	created, conflict := 0, 0
+	for i := 0; i < n; i++ {
+		res := <-results
+		switch res.code {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			if !strings.Contains(res.body, "already exists") || strings.Contains(res.body, `"code":"busy"`) {
+				t.Fatalf("conflict = %s", res.body)
+			}
+			conflict++
+		default:
+			t.Fatalf("status = %d %s", res.code, res.body)
+		}
+	}
+	if created != 1 || conflict != n-1 {
+		t.Fatalf("created = %d conflict = %d", created, conflict)
+	}
+	var rows int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM product_groups`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("rows = %d", rows)
+	}
+}
+
 func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	_, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
@@ -521,7 +597,7 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 		PathParams: ProviderDisconnectRequest{ProviderID: "kroger"},
 	})
 	release()
-	requireDriverCause(t, err)
+	requireDriverCause(t, err, "failed to disconnect")
 
 	if err := dir.Write(context.Background(), &connection.Connection{
 		Provider:    "kroger",
@@ -536,15 +612,27 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
 	})
 	release()
-	requireDriverCause(t, err)
+	requireDriverCause(t, err, "failed to reset ledger")
 
+	// A reserved lock still allows the connection read. An exclusive lock
+	// is what makes that read fail.
 	release = holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
 	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
 		Context:    context.Background(),
+		PathParams: ProviderLedgerGetRequest{ProviderID: "kroger"},
+	})
+	requireDriverCause(t, err, "failed to read connection")
+	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
+		Context:    context.Background(),
+		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
+	})
+	requireDriverCause(t, err, "failed to read connection")
+	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
+		Context:    context.Background(),
 		PathParams: ProviderLedgerGetRequest{ProviderID: string(open.ID())},
 	})
-	requireDriverCause(t, err)
+	requireDriverCause(t, err, "failed to read ledger")
 }
 
 func busyBody() string {
@@ -553,6 +641,10 @@ func busyBody() string {
 
 func noSpaceBody() string {
 	return `{"error":"` + clientmsg.NoSpace + `","code":"no_space"}`
+}
+
+func genericBody() string {
+	return `{"error":"` + clientmsg.Generic + `"}`
 }
 
 type hiddenCause struct{ inner error }
@@ -629,11 +721,17 @@ func realDriverLocked(t *testing.T) error {
 	return locked
 }
 
-func requireDriverCause(t *testing.T, err error) {
+func requireDriverCause(t *testing.T, err error, wrap string) {
 	t.Helper()
 	var driverErr *sqlite.Error
 	if !errors.As(err, &driverErr) {
 		t.Fatalf("driver cause dropped: %v", err)
+	}
+	if driverErr.Code()&0xff != sqlitePrimaryBusy {
+		t.Fatalf("code = %d (%v)", driverErr.Code(), err)
+	}
+	if !strings.Contains(err.Error(), wrap) {
+		t.Fatalf("wrap = %v", err)
 	}
 }
 

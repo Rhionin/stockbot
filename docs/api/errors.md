@@ -42,5 +42,15 @@ The generic sentence does not replace the busy sentence or the no-space sentence
 
 ## 4xx
 
-A 4xx stays a 4xx when the underlying cause is a database lock or a full disk.
-The response reports the client error.
+A 4xx stays a 4xx when that 4xx is already decided. The response reports the
+client error, including when the cause is a database lock or a full disk.
+
+Some conflicts are decided only after the write transaction starts. Under
+write contention those requests can wait up to 3 seconds and then come back
+as a busy 503. That covers renaming a group to a name that already exists,
+and adding a product that is already in another group.
+
+Creating a group checks the name before the write transaction. A duplicate
+name is a 409 while another writer holds a reserved lock. An exclusive lock
+blocks that read as well, so the same duplicate check can wait and return a
+busy 503.

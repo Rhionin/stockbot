@@ -11,6 +11,13 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
+	"modernc.org/sqlite"
+)
+
+// SQLite primary result codes. Extended codes keep the same low byte.
+const (
+	sqlitePrimaryBusy   = 5
+	sqlitePrimaryLocked = 6
 )
 
 // ErrNotConfirmed is returned when backfill is invoked without --confirm.
@@ -218,6 +225,20 @@ func lockAvailable(ctx context.Context, db *sql.DB) error {
 }
 
 func sqliteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) {
+		// A driver error is classified by its code. The text is only a
+		// fallback for an error that did not come from the driver.
+		switch driverErr.Code() & 0xff {
+		case sqlitePrimaryBusy, sqlitePrimaryLocked:
+			return true
+		default:
+			return false
+		}
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked")
 }

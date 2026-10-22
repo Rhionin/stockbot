@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/getsentry/sentry-go"
 )
 
@@ -36,7 +37,9 @@ func scrubSentryEvent(event *sentry.Event) *sentry.Event {
 			ex.Mechanism.Data = nil
 		}
 	}
-	if event.Message != "" {
+	// The no-space warning is a fixed sentence with no household data.
+	// Replacing it would hide the report CaptureMessage sent.
+	if event.Message != "" && event.Message != clientmsg.NoSpace {
 		event.Message = genericServerMessage(typ)
 	}
 	if typ != "" {
