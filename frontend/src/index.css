@@ -486,6 +486,20 @@ code {
   min-height: 0;
 }
 
+/* All-commit is the brand teal wash. The sentence stays regular body text.
+   A mixed batch keeps the red alert and puts this line under it, unstyled. */
+.scan-page-queue .scan-batch-banner--success {
+  padding: 4px var(--mantine-spacing-md);
+  border-radius: var(--mantine-radius-default);
+  background: var(--mantine-color-teal-light);
+}
+
+.scan-page-queue .scan-batch-partial {
+  margin: 0;
+  color: var(--mantine-color-text);
+  overflow-wrap: anywhere;
+}
+
 .scan-batch-approve {
   flex: none;
 }

@@ -151,13 +151,13 @@ function countField(value: unknown): number | null {
   return value;
 }
 
-// A batch names the one short card, or counts them when several came up short.
-// Equal counts and a missing map say nothing.
+// A batch names the one short card. Several short cards, or one short card
+// with no name, use the count sentence. Equal counts and a missing map say nothing.
 function batchPartialLine(
   counts: Record<string, StockOutCount>,
   names: Readonly<Record<string, string>> | undefined,
 ): string | null {
-  const partials: { removed: number; requested: number; name: string }[] = [];
+  const partials: { removed: number; requested: number; name: string | null }[] = [];
   for (const [id, value] of Object.entries(counts)) {
     if (value === null || typeof value !== 'object') continue;
     const entry = value as unknown as Record<string, unknown>;
@@ -169,17 +169,16 @@ function batchPartialLine(
     partials.push({
       removed,
       requested,
-      name: rawName !== undefined && rawName !== '' ? rawName : 'Unknown product',
+      name: rawName !== undefined && rawName !== '' ? rawName : null,
     });
   }
   if (partials.length === 0) return null;
-  if (partials.length >= 2) {
-    return `${partials.length} cards had fewer on hand than scanned, so only what was on hand was taken out.`;
+  const only = partials.length === 1 ? partials[0] : undefined;
+  if (only !== undefined && only.name !== null) {
+    const verb = only.removed === 1 ? 'was' : 'were';
+    return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
   }
-  const only = partials[0];
-  if (only === undefined) return null;
-  const verb = only.removed === 1 ? 'was' : 'were';
-  return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
+  return `${partials.length} cards had fewer on hand than scanned, so only what was on hand was taken out.`;
 }
 
 // Fewer units left than the card asked for. A single confirm keeps the short

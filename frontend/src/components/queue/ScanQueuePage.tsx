@@ -337,7 +337,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     setSelectedIds(notices.map((notice) => notice.id));
     const names: Record<string, string> = {};
     for (const entry of entries) {
-      names[entry.id] = entry.product?.name ?? 'Unknown product';
+      const name = entry.product?.name;
+      if (name !== undefined && name !== '') names[entry.id] = name;
     }
     setPartialLine(formatPartialRemoval(response, names));
     void loadQueue();
@@ -439,17 +440,32 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
             />
             <BatchReviewPanel
               selectedIds={selectedIds.filter((id) => viewEntryIds.has(id))}
+              onStart={() => setPartialLine(null)}
               onComplete={rememberBatchOutcome}
             />
           </Group>
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {(failureById.size > 0 || partialLine !== null) && (
+        {failureById.size > 0 && (
           <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
-            {failureById.size > 0 && <div>{BATCH_FAILURE_FALLBACK}</div>}
-            {partialLine !== null && <div>{partialLine}</div>}
+            <div>{BATCH_FAILURE_FALLBACK}</div>
           </Alert>
+        )}
+        {/* An all-success batch has no summary sentence, so this line is the banner. */}
+        {failureById.size === 0 && partialLine !== null && (
+          <Text
+            role="status"
+            className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
+            style={{ flexShrink: 0 }}
+          >
+            {partialLine}
+          </Text>
+        )}
+        {failureById.size > 0 && partialLine !== null && (
+          <Text className="scan-batch-partial" role="status" style={{ flexShrink: 0 }}>
+            {partialLine}
+          </Text>
         )}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (
@@ -505,7 +521,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   commitCode={failureById.get(entry.id)?.code ?? ''}
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
-                  onConfirmStart={() => clearFailure(entry.id)}
+                  onConfirmStart={() => {
+                    clearFailure(entry.id);
+                    setPartialLine(null);
+                  }}
                   onChanged={() => void loadQueue()}
                 />
               ))}

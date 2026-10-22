@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const fallback = 'Some scans could not be confirmed.'
@@ -86,34 +86,61 @@ const confirmBatch = async (
   await page.getByRole('button', { name: `Confirm ${scans.length} selected scans` }).click()
 }
 
-const expectBannerFits = async (page: Page, lines: string[]) => {
-  const banner = page.locator('.scan-batch-banner')
-  await banner.scrollIntoViewIfNeeded()
-  await expect(banner).toBeVisible()
-  for (const line of lines) await expect(banner).toContainText(line)
-  await expect(page.locator('.restock-toast').filter({ hasText: lines[0] ?? '' })).toHaveCount(0)
-  await expect.poll(() => banner.evaluate((root, sentences) => {
+const fitsInViewport = async (locator: Locator) => {
+  await locator.scrollIntoViewIfNeeded()
+  await expect(locator).toBeVisible()
+  await expect.poll(() => locator.evaluate((root) => {
     const box = root.getBoundingClientRect()
-    const fits = box.width > 0
+    return box.width > 0
       && box.height > 0
       && box.left >= 0
       && box.right <= window.innerWidth + 0.5
       && box.top >= 0
       && box.bottom <= window.innerHeight + 0.5
       && root.scrollWidth <= root.clientWidth + 1
-    if (!fits) return false
-    return sentences.every((sentence) => {
-      const node = [...root.querySelectorAll('div')].find((element) => element.textContent === sentence)
-      if (node === undefined) return false
-      const rect = node.getBoundingClientRect()
-      return rect.width > 0
-        && rect.height > 0
-        && rect.left >= 0
-        && rect.right <= window.innerWidth + 0.5
-        && rect.top >= box.top - 1
-        && rect.bottom <= window.innerHeight + 0.5
-    })
-  }, lines)).toBe(true)
+  })).toBe(true)
+}
+
+const failureBanner = (page: Page) => page.locator('.mantine-Alert-root.scan-batch-banner')
+
+const expectSuccessBanner = async (page: Page, line: string) => {
+  const banner = page.locator('.scan-batch-banner--success')
+  await expect(banner).toHaveCount(1)
+  await expect(banner).toHaveText(line)
+  await expect(banner).toHaveAttribute('role', 'status')
+  await expect(banner).not.toHaveAttribute('role', 'alert')
+  await expect(failureBanner(page)).toHaveCount(0)
+  await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
+  await fitsInViewport(banner)
+}
+
+const expectFailureWithPartial = async (page: Page, line: string) => {
+  const failure = failureBanner(page)
+  const partial = page.locator('.scan-batch-partial').filter({ hasText: line })
+  await expect(failure).toHaveCount(1)
+  await expect(failure).toHaveText(fallback)
+  await expect(partial).toHaveCount(1)
+  await expect(partial).not.toHaveAttribute('role', 'alert')
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
+  await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
+  await expect.poll(() => page.evaluate((sentence) => {
+    const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
+    const note = [...document.querySelectorAll('.scan-batch-partial')].find((element) => element.textContent === sentence)
+    if (alert === null || note === undefined) return false
+    const follows = (alert.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    return !alert.contains(note) && follows && note.getAttribute('role') !== 'alert'
+  }, line)).toBe(true)
+  await fitsInViewport(failure)
+  await fitsInViewport(partial)
+}
+
+const expectFailureOnly = async (page: Page, line: string) => {
+  const failure = failureBanner(page)
+  await expect(failure).toHaveCount(1)
+  await expect(failure).toHaveText(line)
+  await expect(page.locator('.scan-batch-partial')).toHaveCount(0)
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
+  await fitsInViewport(failure)
 }
 
 for (const viewport of viewports) {
@@ -162,7 +189,7 @@ for (const viewport of viewports) {
         await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
-      await expectBannerFits(page, [fallback, wasLine])
+      await expectFailureWithPartial(page, wasLine)
       await expect(page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })).toContainText(failureNote)
     } finally {
       await page.unroute('**/api/scans/batch-commit')
@@ -201,7 +228,7 @@ test.describe('batch banner screenshots', () => {
             [oneScan.id]: { removedCount: 1, requestedCount: 3 },
           },
         }))
-        await expectBannerFits(page, [wasLine])
+        await expectSuccessBanner(page, wasLine)
         await page.screenshot({ path: `${shotDir}/banner_one_partial_${viewport.width}_${scheme}.png` })
         await page.unroute('**/api/scans/batch-commit')
 
@@ -222,7 +249,7 @@ test.describe('batch banner screenshots', () => {
             [right.id]: { removedCount: 2, requestedCount: 4 },
           },
         }))
-        await expectBannerFits(page, [manyLine])
+        await expectSuccessBanner(page, manyLine)
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await page.screenshot({ path: `${shotDir}/banner_multiple_partial_${viewport.width}_${scheme}.png` })
         await page.unroute('**/api/scans/batch-commit')
@@ -246,7 +273,7 @@ test.describe('batch banner screenshots', () => {
             [full.id]: { removedCount: 2, requestedCount: 2 },
           },
         }))
-        await expectBannerFits(page, [fallback])
+        await expectFailureOnly(page, fallback)
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)
         await page.screenshot({ path: `${shotDir}/banner_none_${viewport.width}_${scheme}.png` })

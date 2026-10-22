@@ -6,15 +6,17 @@ import type { BatchCommitResponse } from '../../api/contract';
 export interface BatchReviewPanelProps {
   selectedIds: string[];
   onComplete: (response: BatchCommitResponse) => void;
+  onStart?: () => void;
 }
 
-export const BatchReviewPanel = ({ selectedIds, onComplete }: BatchReviewPanelProps) => {
+export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchReviewPanelProps) => {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const handleApprove = async () => {
     setSubmitting(true);
     setError('');
+    onStart?.();
     try {
       const response = await batchCommitScanEntries({
         scanEntryIds: selectedIds,
