@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
+import { BuildStamp } from '../updates/BuildStamp';
 import { colors, fonts } from '../ui/theme';
 
 export interface ConnectionFormProps {
@@ -112,6 +113,8 @@ export function ConnectionForm({
           <Text style={styles.disconnectText}>Disconnect</Text>
         </Pressable>
       )}
+
+      <BuildStamp />
     </KeyboardAvoidingView>
   );
 }

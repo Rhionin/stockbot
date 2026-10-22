@@ -1,0 +1,54 @@
+# Manual preview update only. Never runs on push or pull_request.
+# CJ adds the EXPO_TOKEN secret and runs `eas init` in mobile/ first.
+# Dispatch this from the branch whose native fingerprint matches the
+# installed preview APK (master, once this app is on master).
+name: Mobile EAS Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Update message shown on the EAS dashboard
+        required: true
+        default: Preview update
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Publish preview update
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: mobile/.nvmrc
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Require EXPO_TOKEN
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Add the EXPO_TOKEN repository secret before running this workflow."
+            exit 1
+          fi
+
+      - name: Publish EAS Update
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          UPDATE_MESSAGE: ${{ inputs.message }}
+        run: npx --yes eas-cli@latest update --channel preview --non-interactive --message "$UPDATE_MESSAGE"

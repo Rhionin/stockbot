@@ -46,7 +46,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setState({ status: 'signedOut', error: '' });
           return;
         }
-        const client = createStockbotClient(saved, {
+        let serverUrl: string;
+        try {
+          serverUrl = normalizeServerUrl(saved.serverUrl);
+        } catch (error) {
+          await clearCredentials();
+          if (!active) return;
+          setState({
+            status: 'signedOut',
+            error: error instanceof Error ? error.message : 'The address must start with https://.',
+          });
+          return;
+        }
+        const credentials = { serverUrl, password: saved.password };
+        const client = createStockbotClient(credentials, {
           onUnauthorized: () => { void signOut('That password was rejected.'); },
         });
         try {
@@ -58,7 +71,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             setState({ status: 'signedOut', error: session.error });
             return;
           }
-          setState({ status: 'ready', serverUrl: saved.serverUrl, password: saved.password, client, warning: '' });
+          setState({ status: 'ready', serverUrl: credentials.serverUrl, password: credentials.password, client, warning: '' });
         } catch (error) {
           if (!active) return;
           if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
@@ -70,8 +83,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           const warning = error instanceof Error ? error.message : 'Stockbot did not answer at that address.';
           setState({
             status: 'ready',
-            serverUrl: saved.serverUrl,
-            password: saved.password,
+            serverUrl: credentials.serverUrl,
+            password: credentials.password,
             client,
             warning,
           });

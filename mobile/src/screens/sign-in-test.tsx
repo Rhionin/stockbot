@@ -30,6 +30,24 @@ function jsonResponse(status: number, body: unknown): Response {
   } as Response;
 }
 
+function HttpProbe() {
+  const session = useSession();
+  const [error, setError] = useState('');
+  if (session.status === 'loading') return <Text>Loading</Text>;
+  return (
+    <Pressable
+      accessibilityLabel="Connect insecure"
+      onPress={() => {
+        void session.signIn('http://192.168.1.20:8080', 'correct-horse').catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : 'failed');
+        });
+      }}
+    >
+      <Text>{error || (session.status === 'ready' ? 'Ready' : 'Signed out')}</Text>
+    </Pressable>
+  );
+}
+
 function ConnectProbe() {
   const session = useSession();
   const [error, setError] = useState('');
@@ -61,11 +79,12 @@ describe('ConnectionForm', () => {
       />,
     );
 
-    await fireEvent.changeText(screen.getByLabelText('Server'), 'http://192.168.1.20:8080/');
+    await fireEvent.changeText(screen.getByLabelText('Server'), 'https://pantry.example.com/');
     await fireEvent.changeText(screen.getByLabelText('Household password'), 'correct-horse');
     await fireEvent.press(screen.getByLabelText('Connect'));
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('http://192.168.1.20:8080/', 'correct-horse'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('https://pantry.example.com/', 'correct-horse'));
+    expect(screen.getByLabelText(/Version .+\. Update .+\. Runtime /)).toBeTruthy();
   });
 
   it('shows the message when connect fails', async () => {
@@ -114,6 +133,37 @@ describe('session sign-in', () => {
     );
     const init = jest.mocked(globalThis.fetch).mock.calls[0]?.[1];
     expect(new Headers(init?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, 'correct-horse'));
+  });
+
+  it('rejects an http address before calling the server', async () => {
+    const screen = await renderScreen(
+      <SessionProvider>
+        <HttpProbe />
+      </SessionProvider>,
+    );
+
+    await fireEvent.press(await screen.findByLabelText('Connect insecure'));
+
+    expect(await screen.findByText('The address must start with https://.')).toBeTruthy();
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects cleartext and forgets a saved http address', async () => {
+    mockMemory.set(SERVER_URL_KEY, 'http://192.168.1.20:8080');
+    mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    const screen = await renderScreen(
+      <SessionProvider>
+        <ConnectProbe />
+      </SessionProvider>,
+    );
+
+    expect(await screen.findByText('The address must start with https://.')).toBeTruthy();
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(SERVER_URL_KEY);
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(PASSWORD_KEY);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('stays signed out when the password is rejected', async () => {

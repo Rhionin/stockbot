@@ -21,8 +21,8 @@ export function normalizeServerUrl(input: string): string {
   } catch {
     throw new Error('Enter a full address, including https://.');
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new Error('The address must start with https:// or http://.');
+  if (url.protocol !== 'https:') {
+    throw new Error('The address must start with https://.');
   }
   if (url.username !== '' || url.password !== '') {
     throw new Error('Put the household password in the password field.');
