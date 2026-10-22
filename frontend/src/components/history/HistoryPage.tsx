@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
-  ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, TextInput,
+  ActionIcon, Alert, Anchor, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
 import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
@@ -259,7 +259,9 @@ export function HistoryPage() {
         {(pairCopy ?? undo) && (
           <Stack gap="sm">
             <p className="history-empty">{(pairCopy ?? undo)?.body}</p>
-            {pairCopy !== null && pairCopy.hideLine !== '' && <p className="history-empty">{pairCopy.hideLine}</p>}
+            <Collapse expanded={pairCopy !== null && pairCopy.hideLine !== ''}>
+              {pairCopy !== null && pairCopy.hideLine !== '' && <p className="history-empty">{pairCopy.hideLine}</p>}
+            </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
               <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>

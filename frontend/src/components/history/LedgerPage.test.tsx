@@ -155,9 +155,11 @@ describe('LedgerPage', () => {
     await vi.waitFor(() => expect(setMoveQuantity).toHaveBeenCalledWith('move-peas', 2));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change quantity' })).not.toBeInTheDocument());
 
+    expect(previewUndo).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Actions for Milk, 2 stocked in/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo this stock in?' });
+    expect(previewUndo).not.toHaveBeenCalled();
     expect(within(dialog).getByText(/leave the shelf/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
     expect(undoMove).not.toHaveBeenCalled();
@@ -399,11 +401,13 @@ describe('LedgerPage', () => {
     expect(rows[1]).toHaveTextContent('scan');
   });
 
-  it('shows the request error instead of an empty ledger', async () => {
+  it('shows the history load error instead of an empty ledger', async () => {
     getHouseholdHistory.mockRejectedValue(new Error('Unable to load history.'));
     renderLedger();
-    expect(await screen.findByText('Unable to load history.')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load history.');
+    expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
     expect(screen.queryByText(/No stock moves yet/)).not.toBeInTheDocument();
-    expect(screen.queryByText('will be hidden from your inventory again, since none are on hand.', { exact: false })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Loading history')).not.toBeInTheDocument();
+    expect(previewUndo).not.toHaveBeenCalled();
   });
 });

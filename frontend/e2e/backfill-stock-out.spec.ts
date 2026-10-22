@@ -261,6 +261,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   const toast = page.locator('.restock-toast').filter({ hasText: added })
   await expect(toast).toBeVisible()
   await expect(toast.getByRole('button', { name: 'Undo' })).toBeVisible()
+  await expect(page.locator('.restock-toast').filter({ hasText: sentence })).toHaveCount(0)
   expect(seen.backfill).toEqual({ backfill: true })
   await shoot(page, testInfo, 'toast')
 
@@ -271,6 +272,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
   await expect(page.getByText('Sour cream')).toBeVisible()
+  await expect(page.locator('.restock-toast')).toHaveCount(0)
   await shoot(page, testInfo, 'history')
 
   const hideLine = 'Sour cream will be hidden from your inventory again, since none are on hand.'
@@ -292,9 +294,11 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await page.getByRole('link', { name: 'Inventory' }).click()
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
+  const previewSettled = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/moves/move-backfill/preview')
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const plain = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
+  await previewSettled
   await expect.poll(() => seenPreview.path).toBe('/api/moves/move-backfill/preview')
   await expect(plain.getByText(pairBody)).toBeVisible()
   await expect(plain.getByText(hideLine)).toHaveCount(0)

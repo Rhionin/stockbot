@@ -47,6 +47,7 @@ describe('pair undo confirmation', () => {
     if (hide) expect(copy.hideLine).toBe(pairUndoHideLine('Sour cream'));
     expect(copy.confirm).toBe('Undo');
     expect(copy.cancel).toBe('Cancel');
+    expect(copy.body).not.toMatch(/\d/);
     expect(`${copy.body} ${copy.hideLine}`).not.toMatch(/pace|history|unit/i);
   });
 
@@ -55,11 +56,59 @@ describe('pair undo confirmation', () => {
     expect(pairUndoCopy('Sour cream', undefined).hideLine).toBe('');
   });
 
-  it('previews the backfill stock-in id for either row of the pair', () => {
-    const stockIn = { id: 'move-cream-in', source: 'backfill', at, productId: 'prod-sour' };
-    const stockOut = { id: 'move-cream-out', source: 'scan', at, productId: 'prod-sour' };
-    expect(pairStockInMoveId(stockIn, [stockOut, stockIn])).toBe('move-cream-in');
-    expect(pairStockInMoveId(stockOut, [stockOut, stockIn])).toBe('move-cream-in');
+  const stockIn = { id: 'move-cream-in', source: 'backfill', at, productId: 'prod-sour' };
+  const stockOut = { id: 'move-cream-out', source: 'scan', at, productId: 'prod-sour' };
+  const pairMoves = [stockOut, stockIn];
+
+  it.each([
+    { name: 'the stock-in row', move: stockIn, moves: pairMoves, id: 'move-cream-in' },
+    { name: 'the paired stock-out', move: stockOut, moves: pairMoves, id: 'move-cream-in' },
+    {
+      name: 'a different product',
+      move: { id: 'move-other-out', source: 'scan', at, productId: 'prod-other' },
+      moves: pairMoves,
+      id: 'move-other-out',
+    },
+    {
+      name: 'a different time',
+      move: { id: 'move-later-out', source: 'scan', at: '2026-10-19T16:40:00.000Z', productId: 'prod-sour' },
+      moves: pairMoves,
+      id: 'move-later-out',
+    },
+  ])('previews the backfill stock-in id for $name', ({ move, moves, id }) => {
+    expect(pairStockInMoveId(move, moves)).toBe(id);
+  });
+
+  it.each([
+    {
+      name: 'the stock-out id of this move',
+      effectId: { stockInMoveId: 'move-other', stockOutMoveId: 'move-cream-in' },
+      reshelvesOnUndo: true,
+      hide: true,
+    },
+    {
+      name: 'a different move',
+      effectId: { stockInMoveId: 'move-other', stockOutMoveId: 'move-else' },
+      reshelvesOnUndo: true,
+      hide: false,
+    },
+    {
+      name: 'this move when the undo does not re-shelve',
+      effectId: { stockInMoveId: 'move-cream-in', stockOutMoveId: 'move-cream-out' },
+      reshelvesOnUndo: false,
+      hide: false,
+    },
+  ])('matches the preview effect for $name', ({ effectId, reshelvesOnUndo, hide }) => {
+    expect(previewReshelves({
+      effects: [{
+        itemId: 'item-sour-cream',
+        productId: 'prod-sour-cream',
+        name: 'Sour cream',
+        onHand: 0,
+        reshelvesOnUndo,
+        ...effectId,
+      }],
+    }, 'move-cream-in')).toBe(hide);
   });
 });
 

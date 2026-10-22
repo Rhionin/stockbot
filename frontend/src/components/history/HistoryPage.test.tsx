@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../../api/client';
 import type { HistoryView } from '../../types';
 import { HistoryPage } from './HistoryPage';
 
@@ -47,13 +48,17 @@ const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
 const previewUndo = vi.fn();
 
-vi.mock('../../api/client', () => ({
-  getItemHistory: (...args: unknown[]) => getItemHistory(...args),
-  getGroupHistory: (...args: unknown[]) => getGroupHistory(...args),
-  setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
-  undoMove: (...args: unknown[]) => undoMove(...args),
-  previewUndo: (...args: unknown[]) => previewUndo(...args),
-}));
+vi.mock('../../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/client')>();
+  return {
+    ...actual,
+    getItemHistory: (...args: unknown[]) => getItemHistory(...args),
+    getGroupHistory: (...args: unknown[]) => getGroupHistory(...args),
+    setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
+    undoMove: (...args: unknown[]) => undoMove(...args),
+    previewUndo: (...args: unknown[]) => previewUndo(...args),
+  };
+});
 
 const renderHistory = (path = '/inventory/item-1/history') => render(
   <MantineProvider env="test">
@@ -208,8 +213,8 @@ describe('HistoryPage', () => {
   ])('shows the hide line only when the preview says the undo re-shelves ($name)', async ({ settle, hide }) => {
     const at = '2026-10-18T16:40:00.000Z';
     if (settle === 'loading') previewUndo.mockReturnValue(new Promise(() => {}));
-    if (settle === '404') previewUndo.mockRejectedValue(new Error('That move is no longer in the history.'));
-    if (settle === '409') previewUndo.mockRejectedValue(new Error('1 of these was already used. Undo that use first.'));
+    if (settle === '404') previewUndo.mockRejectedValue(new ApiError(404, 'That move is no longer in the history.'));
+    if (settle === '409') previewUndo.mockRejectedValue(new ApiError(409, '1 of these was already used. Undo that use first.'));
     if (settle === 'network') previewUndo.mockRejectedValue(new TypeError('Failed to fetch'));
     if (settle === 'other') previewUndo.mockResolvedValue(previewEffect(true, 'move-other'));
     if (settle === 'true') previewUndo.mockResolvedValue(previewEffect(true));
@@ -241,10 +246,126 @@ describe('HistoryPage', () => {
     if (settle === '409') expect(within(dialog).queryByText('1 of these was already used. Undo that use first.')).not.toBeInTheDocument();
   });
 
-  it('leaves the hide line out when history fails to load', async () => {
+  it('shows the history load error and does not preview an undo', async () => {
     getItemHistory.mockRejectedValue(new Error('Unable to load history.'));
     renderHistory();
-    expect(await screen.findByText('Unable to load history.')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load history.');
+    expect(screen.queryByRole('heading', { name: 'Black Beans' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Loading history')).not.toBeInTheDocument();
+    expect(previewUndo).not.toHaveBeenCalled();
+  });
+
+  it('does not preview while the dialog is closed or for a normal move', async () => {
+    renderHistory();
+    await screen.findByText('Used 1');
+    expect(previewUndo).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
+    expect(screen.getByRole('dialog', { name: 'Undo this use?' })).toBeInTheDocument();
+    expect(previewUndo).not.toHaveBeenCalled();
+  });
+
+  const gate = () => {
+    let resolve: (value: unknown) => void = () => {};
+    let reject: (reason: unknown) => void = () => {};
+    const promise = new Promise((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  };
+
+  const pairView = () => {
+    const at = '2026-10-18T16:40:00.000Z';
+    return {
+      ...view,
+      onHand: 0,
+      moves: [
+        { id: 'move-backfill', direction: 'in' as const, quantity: 1, at, source: 'backfill' as const, productId: 'prod-1', productName: 'Black Beans' },
+        { id: 'move-out-pair', direction: 'out' as const, quantity: 1, at, source: 'scan' as const, productId: 'prod-1', productName: 'Black Beans' },
+      ],
+    };
+  };
+
+  const openPairUndo = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /Actions for Stocked in 1/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
+    return screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
+  };
+
+  it.each([
+    { name: 'reopening drops the previous true answer', order: 'settled-then-false' },
+    { name: 'a slow earlier true loses to the later false', order: 'false-then-late-true' },
+    { name: 'a 404 on reopen leaves the line out', order: 'settled-then-404' },
+    { name: 'a 409 on reopen leaves the line out', order: 'settled-then-409' },
+  ])('$name', async ({ order }) => {
+    const first = gate();
+    const second = gate();
+    let calls = 0;
+    previewUndo.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? first.promise : second.promise;
+    });
+    getItemHistory.mockResolvedValue(pairView());
+    renderHistory();
+    const opened = await openPairUndo();
+    expect(within(opened).queryByText(hideLine)).not.toBeInTheDocument();
+    if (order !== 'false-then-late-true') {
+      await act(async () => {
+        first.resolve(previewEffect(true));
+      });
+      expect(within(opened).getByText(hideLine)).toBeInTheDocument();
+    }
+    fireEvent.click(within(opened).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(previewUndo).toHaveBeenCalledTimes(1);
+
+    const again = await openPairUndo();
+    expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(again).getByRole('button', { name: 'Undo' })).toBeEnabled();
+    if (order === 'settled-then-false' || order === 'false-then-late-true') {
+      await act(async () => {
+        second.resolve(previewEffect(false));
+      });
+    }
+    if (order === 'settled-then-404') {
+      await act(async () => {
+        second.reject(new ApiError(404, 'That move is no longer in the history.'));
+      });
+    }
+    if (order === 'settled-then-409') {
+      await act(async () => {
+        second.reject(new ApiError(409, '1 of these was already used. Undo that use first.'));
+      });
+    }
+    expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(again).queryByText('That move is no longer in the history.')).not.toBeInTheDocument();
+    expect(within(again).queryByText('1 of these was already used. Undo that use first.')).not.toBeInTheDocument();
+    if (order === 'false-then-late-true') {
+      await act(async () => {
+        first.resolve(previewEffect(true));
+      });
+      expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+    }
+    expect(previewUndo).toHaveBeenCalledTimes(2);
+    expect(previewUndo.mock.calls).toEqual([['move-backfill'], ['move-backfill']]);
+  });
+
+  it('undoes the pair while the preview is still pending', async () => {
+    const pending = gate();
+    previewUndo.mockReturnValue(pending.promise);
+    undoMove.mockResolvedValue(pairView());
+    getItemHistory.mockResolvedValue(pairView());
+    renderHistory();
+    const dialog = await openPairUndo();
+    expect(within(dialog).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Undo' }));
+    await vi.waitFor(() => expect(undoMove).toHaveBeenCalledWith('move-backfill'));
+    await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Undo "Add it and take it out"?' })).not.toBeInTheDocument());
+    await act(async () => {
+      pending.resolve(previewEffect(true));
+    });
     expect(screen.queryByText(hideLine)).not.toBeInTheDocument();
   });
 

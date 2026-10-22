@@ -17,7 +17,7 @@ import {
   SERVER_ERROR_FALLBACK,
   type CommitScanResponse,
 } from '../../api/contract';
-import { showUndo } from '../restock/undo';
+import { dismissUndo, showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -221,6 +221,7 @@ export const ScanEntryCard = ({
   const [newItemName, setNewItemName] = useState('');
   const nameEdited = useRef(false);
   const lookedUp = useRef<ProductSummary | null>(entry.product);
+  const sentenceToastId = useRef('');
 
   const prefersReducedMotion = () =>
     typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -301,7 +302,7 @@ export const ScanEntryCard = ({
   const showCommitSentence = (message: string) => {
     if (message === '') return;
     setToastedSentence(message);
-    showUndo({ detail: message, color: 'red' });
+    sentenceToastId.current = showUndo({ detail: message, color: 'red' });
   };
 
   const rememberOffer = (offer: PantryLinkSuggestion[] | null, hideEmpty: boolean) => {
@@ -502,6 +503,8 @@ export const ScanEntryCard = ({
     try {
       const result = await commitBackfill(entry.id);
       const moveId = result.backfill.stockInMoveId;
+      dismissUndo(sentenceToastId.current);
+      sentenceToastId.current = '';
       showUndo({
         detail: ADDED_AND_TAKEN_OUT,
         onUndo: moveId === '' ? undefined : () => {

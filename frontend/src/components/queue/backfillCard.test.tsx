@@ -793,4 +793,66 @@ describe('backfill card', () => {
     expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/moves/move-newer-in')).toBe(false);
     expect(calls.some((call) => call.url.includes('/history'))).toBe(false);
   });
+
+  it('clears the nothing-on-hand toast when the backfill succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/commit') && method === 'POST') {
+        const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as { backfill?: boolean };
+        if (body?.backfill === true) {
+          return Promise.resolve(json({
+            removed: 1,
+            backfilled: 1,
+            itemId: 'item-sour',
+            backfill: { stockInMoveId: 'move-backfill', stockOutMoveId: 'move-out' },
+          }));
+        }
+        return Promise.resolve(json({ error: 'barcode is not linked', code: 'no_item', suggestions: [] }, 409));
+      }
+      if (url.startsWith('/api/products/lookup')) return Promise.resolve(json({ product: null, source: '' }));
+      if (url === '/api/products' && method === 'POST') {
+        const written = JSON.parse(String(init?.body)) as { name: string };
+        return Promise.resolve(json({
+          id: 'prod-new',
+          name: written.name,
+          category: '',
+          unitOfMeasure: '',
+          createdAt: '2026-10-18T04:40:00.000Z',
+        }, 201));
+      }
+      if (url === '/api/products/overrides' && method === 'POST') return Promise.resolve(json({ source: 'user' }));
+      if (url === '/api/scans/scan-1' && method === 'PATCH') {
+        return Promise.resolve(json({
+          ...entry(false),
+          productId: 'prod-new',
+          status: 'pending',
+          onHand: 0,
+          product: { id: 'prod-new', name: 'Sour cream', category: '', unitOfMeasure: '' },
+        }));
+      }
+      return Promise.resolve(json([]));
+    }));
+
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanEntryCard entry={entry(false)} selected={false} onSelectedChange={vi.fn()} onChanged={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Product name' }), {
+      target: { value: 'Sour cream' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
+    await waitFor(() => {
+      expect(document.querySelector('.restock-toast-detail')?.textContent).toBe('Nothing on hand to take out.');
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
+    await waitFor(() => {
+      const details = [...document.querySelectorAll('.restock-toast-detail')].map((node) => node.textContent);
+      expect(details).toEqual(['Added and taken out.']);
+    });
+  });
 });

@@ -43,13 +43,13 @@ export function applyToastClearance(): void {
   for (const toast of toasts) clearanceObserver.observe(toast);
 };
 
-export function showUndo(title: string, detail: string, onUndo: () => void): void;
-export function showUndo(toast: UndoToast): void;
+export function showUndo(title: string, detail: string, onUndo: () => void): string;
+export function showUndo(toast: UndoToast): string;
 export function showUndo(
   titleOrToast: string | UndoToast,
   detail?: string,
   onUndo?: () => void,
-): void {
+): string {
   const toast: UndoToast = typeof titleOrToast === 'string'
     ? { title: titleOrToast, detail: detail ?? '', onUndo }
     : titleOrToast;
@@ -89,4 +89,10 @@ export function showUndo(
       </span>
     ),
   });
+  return id;
+}
+
+export function dismissUndo(id: string): void {
+  if (id === '') return;
+  notifications.hide(id);
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
+  ActionIcon, Alert, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
 import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
@@ -260,7 +260,9 @@ export function LedgerPage() {
         {(pairCopy ?? undo) && (
           <Stack gap="sm">
             <p className="ledger-empty">{(pairCopy ?? undo)?.body}</p>
-            {pairCopy !== null && pairCopy.hideLine !== '' && <p className="ledger-empty">{pairCopy.hideLine}</p>}
+            <Collapse expanded={pairCopy !== null && pairCopy.hideLine !== ''}>
+              {pairCopy !== null && pairCopy.hideLine !== '' && <p className="ledger-empty">{pairCopy.hideLine}</p>}
+            </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
               <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>

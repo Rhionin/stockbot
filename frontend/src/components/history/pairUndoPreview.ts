@@ -2,25 +2,33 @@ import { useEffect, useState } from 'react';
 import { previewUndo } from '../../api/client';
 import { previewReshelves } from '../../api/contract';
 
-// The hide line stays out until the preview for this move says the undo re-shelves.
-// A load still in flight, any error, and a preview with no matching effect all leave it out.
+// Each open gets its own answer. Closing drops the last one, so the next open
+// stays blank until that open's preview returns.
 export function usePairHideLine(moveId: string): boolean {
-  const [loaded, setLoaded] = useState<{ id: string; hide: boolean }>({ id: '', hide: false });
+  const [trackedId, setTrackedId] = useState(moveId);
+  const [openToken, setOpenToken] = useState(0);
+  if (trackedId !== moveId) {
+    setTrackedId(moveId);
+    setOpenToken((current) => current + 1);
+  }
+
+  const [answer, setAnswer] = useState<{ token: number; hide: boolean } | null>(null);
 
   useEffect(() => {
     if (moveId === '') return undefined;
+    const token = openToken;
     let active = true;
     void previewUndo(moveId)
       .then((preview) => {
-        if (active) setLoaded({ id: moveId, hide: previewReshelves(preview, moveId) });
+        if (active) setAnswer({ token, hide: previewReshelves(preview, moveId) });
       })
       .catch(() => {
-        if (active) setLoaded({ id: moveId, hide: false });
+        if (active) setAnswer({ token, hide: false });
       });
     return () => {
       active = false;
     };
-  }, [moveId]);
+  }, [moveId, openToken]);
 
-  return loaded.id === moveId && loaded.hide;
+  return moveId !== '' && answer !== null && answer.token === openToken && answer.hide;
 }
