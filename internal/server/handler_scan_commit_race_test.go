@@ -14,8 +14,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
-// commitGate holds every concurrent commit inside CommitStockOut until each
-// one has already observed the scan as pending. Releasing the gate is what
+// commitGate holds every concurrent commit inside the stock change until each
+// one has already observed the scan as open. Releasing the gate is what
 // makes the status claim race, instead of letting one request finish first.
 type commitGate struct {
 	*scan.Queue
@@ -27,6 +27,18 @@ func (g *commitGate) CommitStockOut(ctx context.Context, entry *scan.ScanEntry, 
 	g.ready.Done()
 	<-g.start
 	return g.Queue.CommitStockOut(ctx, entry, instanceID)
+}
+
+func (g *commitGate) CommitStockIn(ctx context.Context, entry *scan.ScanEntry) error {
+	g.ready.Done()
+	<-g.start
+	return g.Queue.CommitStockIn(ctx, entry)
+}
+
+func (g *commitGate) CommitStockOutLink(ctx context.Context, entry *scan.ScanEntry, instanceID *string, linkProductID string) (int, error) {
+	g.ready.Done()
+	<-g.start
+	return g.Queue.CommitStockOutLink(ctx, entry, instanceID, linkProductID)
 }
 
 func waitForCommitGate(t *testing.T, ready *sync.WaitGroup) {
@@ -300,4 +312,253 @@ func TestConcurrentSingleAndBatchCommitRemovesOnce(t *testing.T) {
 		removed = batchRemoved
 	}
 	assertRemovedOnce(t, env, handler, "item-mixed-race", before, removed)
+}
+
+func TestConcurrentFlaggedStockOutCommitRemovesOnce(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-flag-race", "Flagged Race Oats")
+	soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	stockShelf(env, "item-flag-race", "user-1", "prod-flag-race", []shelfUnit{
+		{"inst-flag-race-1", &soon},
+		{"inst-flag-race-2", &soon},
+	})
+	insertPendingScanUnits(env, "scan-flag-race", "prod-flag-race", scan.StockOut, 1)
+	if _, err := env.DB.Exec(`UPDATE scan_entries SET status = 'flagged' WHERE id = ?`, "scan-flag-race"); err != nil {
+		t.Fatalf("flag scan: %v", err)
+	}
+	before := onHand(env, handler)
+
+	gate := &commitGate{Queue: scan.NewQueue(env.DB), start: make(chan struct{})}
+	gate.ready.Add(2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
+
+	results := make([]commitResult, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = postCommit(mux, "/api/scans/scan-flag-race/commit", "")
+		}()
+	}
+	waitForCommitGate(t, &gate.ready)
+	close(gate.start)
+	wg.Wait()
+
+	var wins, losses, removed int
+	for _, res := range results {
+		won, nRemoved := singleOutcome(t, res)
+		if won {
+			wins++
+			removed = nRemoved
+			continue
+		}
+		losses++
+	}
+	if wins != 1 || losses != 1 {
+		t.Fatalf("wins %d losses %d", wins, losses)
+	}
+	assertRemovedOnce(t, env, handler, "item-flag-race", before, removed)
+}
+
+func TestConcurrentFlaggedBatchCommitRemovesOnce(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-flag-batch", "Flagged Batch Oats")
+	soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	stockShelf(env, "item-flag-batch", "user-1", "prod-flag-batch", []shelfUnit{
+		{"inst-flag-batch-1", &soon},
+		{"inst-flag-batch-2", &soon},
+	})
+	insertPendingScanUnits(env, "scan-flag-batch", "prod-flag-batch", scan.StockOut, 1)
+	if _, err := env.DB.Exec(`UPDATE scan_entries SET status = 'flagged' WHERE id = ?`, "scan-flag-batch"); err != nil {
+		t.Fatalf("flag scan: %v", err)
+	}
+	before := onHand(env, handler)
+
+	gate := &commitGate{Queue: scan.NewQueue(env.DB), start: make(chan struct{})}
+	gate.ready.Add(2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: gate}).Handle))
+
+	results := make([]commitResult, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = postCommit(mux, "/api/scans/batch-commit", `{"scanEntryIds":["scan-flag-batch"],"commit":true}`)
+		}()
+	}
+	waitForCommitGate(t, &gate.ready)
+	close(gate.start)
+	wg.Wait()
+
+	var wins, losses, removed int
+	for _, res := range results {
+		won, nRemoved := batchOutcome(t, res, "scan-flag-batch")
+		if won {
+			wins++
+			removed = nRemoved
+			continue
+		}
+		losses++
+	}
+	if wins != 1 || losses != 1 {
+		t.Fatalf("wins %d losses %d", wins, losses)
+	}
+	assertRemovedOnce(t, env, handler, "item-flag-batch", before, removed)
+}
+
+func TestConcurrentStockInCommitAddsOnce(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-in-race", "Stock In Race")
+	insertPendingScanUnits(env, "scan-in-race", "prod-in-race", scan.StockIn, 2)
+
+	gate := &commitGate{Queue: scan.NewQueue(env.DB), start: make(chan struct{})}
+	gate.ready.Add(2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
+
+	results := make([]commitResult, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = postCommit(mux, "/api/scans/scan-in-race/commit", "")
+		}()
+	}
+	waitForCommitGate(t, &gate.ready)
+	close(gate.start)
+	wg.Wait()
+
+	var wins, losses int
+	for _, res := range results {
+		won, _ := singleOutcome(t, res)
+		if won {
+			wins++
+			continue
+		}
+		losses++
+	}
+	if wins != 1 || losses != 1 {
+		t.Fatalf("wins %d losses %d", wins, losses)
+	}
+	got := onHand(env, handler)
+	if got != 2 {
+		t.Fatalf("on hand %v, want 2", got)
+	}
+}
+
+func TestConcurrentLinkCommitRemovesOnce(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-link-race", "Link Race Pears")
+	mustProduct(env, "prod-link-scan", "Unknown Pear")
+	soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	stockShelf(env, "item-link-race", "user-1", "prod-link-race", []shelfUnit{
+		{"inst-link-race-1", &soon},
+		{"inst-link-race-2", &soon},
+	})
+	insertPendingScanUnits(env, "scan-link-race", "prod-link-scan", scan.StockOut, 1)
+	before := onHand(env, handler)
+
+	gate := &commitGate{Queue: scan.NewQueue(env.DB), start: make(chan struct{})}
+	gate.ready.Add(2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
+
+	body := `{"linkProductId":"prod-link-race"}`
+	results := make([]commitResult, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = postCommit(mux, "/api/scans/scan-link-race/commit", body)
+		}()
+	}
+	waitForCommitGate(t, &gate.ready)
+	close(gate.start)
+	wg.Wait()
+
+	var wins, losses, removed int
+	for _, res := range results {
+		won, nRemoved := singleOutcome(t, res)
+		if won {
+			wins++
+			removed = nRemoved
+			continue
+		}
+		losses++
+	}
+	if wins != 1 || losses != 1 || removed != 1 {
+		t.Fatalf("wins %d losses %d removed %d", wins, losses, removed)
+	}
+	assertRemovedOnce(t, env, handler, "item-link-race", before, removed)
+}
+
+// TestLosingConcurrentCommitOutcomes pins the two loser responses. Both
+// requests inside the claim: the single loser is HTTP 400 not_pending. A
+// batch that reads the scan after that commit reports the stored counts.
+func TestLosingConcurrentCommitOutcomes(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-lose", "Loser Oats")
+	soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	stockShelf(env, "item-lose", "user-1", "prod-lose", []shelfUnit{
+		{"inst-lose-1", &soon},
+		{"inst-lose-2", &soon},
+	})
+	insertPendingScanUnits(env, "scan-lose", "prod-lose", scan.StockOut, 1)
+	before := onHand(env, handler)
+
+	gate := &commitGate{Queue: scan.NewQueue(env.DB), start: make(chan struct{})}
+	gate.ready.Add(2)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: scan.NewQueue(env.DB)}).Handle))
+
+	results := make([]commitResult, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = postCommit(mux, "/api/scans/scan-lose/commit", "")
+		}()
+	}
+	waitForCommitGate(t, &gate.ready)
+	close(gate.start)
+	wg.Wait()
+
+	var wins, losses, removed int
+	for _, res := range results {
+		won, nRemoved := singleOutcome(t, res)
+		if won {
+			wins++
+			removed = nRemoved
+			if res.status != http.StatusOK {
+				t.Fatalf("winner status %d", res.status)
+			}
+			continue
+		}
+		losses++
+		if res.status != http.StatusBadRequest {
+			t.Fatalf("single loser status %d body %s", res.status, res.body)
+		}
+	}
+	if wins != 1 || losses != 1 {
+		t.Fatalf("wins %d losses %d", wins, losses)
+	}
+	assertRemovedOnce(t, env, handler, "item-lose", before, removed)
+
+	again := postCommit(mux, "/api/scans/batch-commit", `{"scanEntryIds":["scan-lose"],"commit":true}`)
+	won, got := batchOutcome(t, again, "scan-lose")
+	if !won || got != removed {
+		t.Fatalf("batch after commit won %v removed %d body %s", won, got, again.body)
+	}
+	singleAgain := postCommit(mux, "/api/scans/scan-lose/commit", "")
+	if won, _ := singleOutcome(t, singleAgain); won || singleAgain.status != http.StatusBadRequest {
+		t.Fatalf("single after commit %d %s", singleAgain.status, singleAgain.body)
+	}
 }

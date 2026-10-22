@@ -34,6 +34,13 @@ const (
 	QR ScanStatus = "qr"
 )
 
+// OpenForCommit reports whether a scan in this status can still be committed.
+// Pending and flagged are open. A flagged scan still needs a product and a
+// direction. qr and cancelled are never committable.
+func OpenForCommit(status ScanStatus) bool {
+	return status == Pending || status == Flagged
+}
+
 // ScanEntry represents a single item in the scan queue.
 type ScanEntry struct {
 	ID        string                  `json:"id"`

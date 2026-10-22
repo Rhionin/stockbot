@@ -50,8 +50,8 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		return nil, commitClientError(scan.ErrScanNotFound)
 	}
 
-	// Validate the entry can be committed
-	if entry.Status != scan.Pending {
+	// An open scan is pending or flagged. qr, cancelled, and committed are not.
+	if !scan.OpenForCommit(entry.Status) {
 		return nil, commitClientError(scan.ErrNotPending)
 	}
 	if entry.Direction == nil {

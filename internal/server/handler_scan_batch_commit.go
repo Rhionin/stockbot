@@ -111,7 +111,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				}
 				continue
 			}
-			if entry.Status != scan.Pending {
+			if !scan.OpenForCommit(entry.Status) {
 				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrNotPending)
 				continue
 			}

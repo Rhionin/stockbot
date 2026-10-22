@@ -37,7 +37,7 @@ var (
 // (if set).
 //
 // This function handles the complete stock-in flow:
-// 1. Claims the scan while it is still pending
+// 1. Claims the scan while it is still open (pending or flagged)
 // 2. Ensures an item exists for the user+product combination
 // 3. Creates N item instances with the scan entry's timestamps
 //
@@ -515,9 +515,10 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 	return itemID, nil
 }
 
-// claimPendingScan marks the scan committed only while it is still pending.
-// Zero rows means another commit already took it. The caller rolls the
-// transaction back, so this attempt adds or removes no stock.
+// claimPendingScan marks the scan committed only while it is still open
+// (pending or flagged). Zero rows means another commit already took it, or
+// the scan is qr or cancelled. The caller rolls the transaction back, so
+// this attempt adds or removes no stock.
 func claimPendingScan(ctx context.Context, tx *sql.Tx, id string, committedAt time.Time, linkProductID string) error {
 	var (
 		res sql.Result
@@ -527,14 +528,14 @@ func claimPendingScan(ctx context.Context, tx *sql.Tx, id string, committedAt ti
 		res, err = tx.ExecContext(ctx, `
 			UPDATE scan_entries
 			SET product_id = ?, status = ?, committed_at = ?
-			WHERE id = ? AND status = 'pending'`,
+			WHERE id = ? AND status IN ('pending', 'flagged')`,
 			linkProductID, string(Committed), committedAt, id,
 		)
 	} else {
 		res, err = tx.ExecContext(ctx, `
 			UPDATE scan_entries
 			SET status = ?, committed_at = ?
-			WHERE id = ? AND status = 'pending'`,
+			WHERE id = ? AND status IN ('pending', 'flagged')`,
 			string(Committed), committedAt, id,
 		)
 	}
@@ -587,8 +588,8 @@ func recordStockOutCounts(ctx context.Context, tx *sql.Tx, id string, removed, r
 // and decrements that product. Nothing is linked on its own.
 //
 // All of the units leave in one transaction. The scan is claimed while it is
-// still pending, before any unit is removed. A second commit of that scan
-// returns ErrNotPending and leaves the shelf unchanged.
+// still open (pending or flagged), before any unit is removed. A second
+// commit of that scan returns ErrNotPending and leaves the shelf unchanged.
 func (r *Queue) CommitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string) (int, error) {
 	return r.commitStockOut(ctx, scanEntry, instanceID, "")
 }

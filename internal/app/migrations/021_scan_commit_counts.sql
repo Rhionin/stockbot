@@ -1,6 +1,11 @@
 -- A batch retry of a committed stock-out reports the counts from the first
--- commit. Those figures are not the card's live unit_count, which a later
--- edit must not change, and they are not recomputed from the shelf.
+-- commit. Those figures are not recomputed from the shelf.
+--
+-- requested_count is the card's current unit_count, and removed_count is the
+-- latest stock-out move's current quantity. A history correction rewrites
+-- stock_moves.quantity in place, and a later edit of the card can change
+-- unit_count. Neither table keeps the numbers from the moment of commit, so
+-- the current figures are the only ones left to store.
 ALTER TABLE scan_entries ADD COLUMN removed_count INTEGER;
 ALTER TABLE scan_entries ADD COLUMN requested_count INTEGER;
 
