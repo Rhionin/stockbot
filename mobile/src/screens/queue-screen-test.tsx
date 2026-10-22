@@ -170,27 +170,23 @@ describe('QueueScreen', () => {
     }
   });
 
-  it('shows an amber card when the stock-out product is absent', async () => {
+  it('an absent product shows the link offer, not an amber card', async () => {
     const api = client({
       listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
       getInventoryList: jest.fn(async () => []),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(409, 'Which item is this?', 'no_item', pears);
+      }),
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
-    const card = within(await screen.findByTestId('scan-scan-1'));
 
-    expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
-    expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
-    expect(card.getByText('!')).toBeTruthy();
-    expect(card.queryByLabelText('Confirm Oat milk')).toBeNull();
-    expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
-    const named = card.getByLabelText(`Scan 111222333444, ${NOTHING_ON_HAND_TITLE}`);
-    expect(named.props.accessibilityHint).toBe(NOTHING_ON_HAND_BODY);
-    expect(screen.queryByText('Which item is this?')).toBeNull();
-    const row = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
-    expect(row.backgroundColor).toBe(colors.nothingWash);
-    expect(row.borderColor).toBe(colors.nothingBorder);
-    const title = StyleSheet.flatten(card.getByText(NOTHING_ON_HAND_TITLE).props.style);
-    expect(title.color).toBe(colors.nothingInk);
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+
+    expect(await screen.findByText('Which item is this?')).toBeTruthy();
+    expect(screen.getByText('Sliced Pears')).toBeTruthy();
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
+    expect(screen.queryByText(NOTHING_ON_HAND_BODY)).toBeNull();
   });
 
   it('links the picked stock-out suggestion', async () => {
@@ -417,9 +413,9 @@ describe('QueueScreen', () => {
       ],
       kept: [batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1)],
       batch: batchResponse(batchContract.body),
-      lines: ['Some scans could not be confirmed.', wasLine, 'Nothing on hand to take out.'],
-      absent: [wereLine, manyLine],
-      banner: ['Some scans could not be confirmed.', wasLine],
+      lines: [wasLine, 'Nothing on hand to take out.'],
+      absent: [wereLine, manyLine, 'Some scans could not be confirmed.'],
+      banner: [wasLine],
     },
     {
       label: 'no short card',
@@ -539,11 +535,16 @@ describe('QueueScreen', () => {
 
   function expectCleared(
     screen: Awaited<ReturnType<typeof renderScreen>>,
-    state: 'gone' | 'failure',
+    state: 'gone' | 'failure' | 'teal',
   ) {
     expect(screen.queryByText(wasLine)).toBeNull();
     if (state === 'gone') {
       expectBanner(screen, 'gone', []);
+      return;
+    }
+    if (state === 'teal') {
+      expectBanner(screen, 'success', []);
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       return;
     }
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
@@ -554,10 +555,10 @@ describe('QueueScreen', () => {
     { label: 'a successful confirm', trigger: 'confirm-ok', banner: 'failure' as const },
     { label: 'a failed link', trigger: 'link-fail', banner: 'gone' as const },
     { label: 'a successful link', trigger: 'link-ok', banner: 'gone' as const },
-    { label: 'a new batch', trigger: 'batch', banner: 'failure' as const },
+    { label: 'a new batch', trigger: 'batch', banner: 'teal' as const },
     { label: 'a removed card', trigger: 'removed', banner: 'gone' as const },
-    { label: 'a new scan', trigger: 'arrived', banner: 'failure' as const },
-    { label: 'leaving the queue', trigger: 'leave', banner: 'failure' as const },
+    { label: 'a new scan', trigger: 'arrived', banner: 'gone' as const },
+    { label: 'leaving the queue', trigger: 'leave', banner: 'teal' as const },
   ])('clears the partial line on $label', async ({ trigger, banner }) => {
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
     const secondFailure = batchCard('scan-also', 'Second oil', 'stock_out', 1);
@@ -625,7 +626,12 @@ describe('QueueScreen', () => {
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
     expect(screen.getByText(wasLine)).toBeTruthy();
-    expect(screen.getByText('Some scans could not be confirmed.')).toBeTruthy();
+    if (blocking && !linking) {
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+      expectBanner(screen, 'success', [wasLine]);
+    } else {
+      expect(screen.getByText('Some scans could not be confirmed.')).toBeTruthy();
+    }
 
     if (trigger === 'batch') {
       await fireEvent.press(screen.getByLabelText('Confirm all'));
@@ -767,7 +773,9 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'success', [wasLine]);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expect(screen.getByText('Nothing on hand to take out.')).toBeTruthy();
 
     await reloadQueue(screen);
     if (refresh === 'fetch-error') {
@@ -777,14 +785,14 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(loadError.props.style);
       const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
       expect(color).toBe(colors.danger);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'success', [wasLine]);
       await reloadQueue(screen);
       await waitFor(() => expect(listPending).toHaveBeenCalledTimes(4));
       expect(screen.queryByText('The queue did not load.')).toBeNull();
       expect(screen.queryByTestId('queue-load-error')).toBeNull();
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+      expectBanner(screen, 'success', [wasLine]);
       expect(screen.getByText('Batch Empty')).toBeTruthy();
       return;
     }
@@ -794,14 +802,14 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     if (refresh === 'same') {
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+      expectBanner(screen, 'success', [wasLine]);
       return;
     }
     expect(screen.getByText('New rice')).toBeTruthy();
     expect(screen.queryByText(wasLine)).toBeNull();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'gone', []);
   });
 
   it('a successful confirm-all clears a queue load error', async () => {
@@ -916,15 +924,15 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(screen.queryByText('Tortilla chips')).toBeNull());
     if (kind === 'stale') {
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'success', [wasLine]);
       await act(async () => { releaseRefresh([chips, failed]); });
       expect(screen.queryByText('Tortilla chips')).toBeNull();
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'success', [wasLine]);
       return;
     }
     expect(screen.queryByText('Batch In')).toBeNull();
@@ -989,16 +997,17 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
     await fireEvent.press(screen.getByLabelText('Confirm all'));
     await waitFor(() => expect(screen.getByText(wasLine)).toBeTruthy());
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'success', [wasLine]);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
 
     await act(async () => { rejectRefresh('offline'); });
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByTestId('queue-load-error')).toBeNull();
     expect(screen.queryByText('Tortilla chips')).toBeNull();
     expect(screen.getByText('Batch Empty')).toBeTruthy();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'success', [wasLine]);
   });
 
   it('a failed retry of the only failed card clears the red sentence', async () => {
@@ -1087,7 +1096,7 @@ describe('QueueScreen', () => {
   it.each([
     { label: 'a failed link', fail: true },
     { label: 'a successful link', fail: false },
-  ])('retrying one failed card with $label keeps the other card on the red sentence', async ({ fail }) => {
+  ])('retrying one failed card with $label leaves the amber card off the red sentence', async ({ fail }) => {
     const unresolved = entry({
       id: 'scan-open',
       barcode: 'scan-open',
@@ -1136,8 +1145,8 @@ describe('QueueScreen', () => {
 
     expect(screen.queryByText(wasLine)).toBeNull();
     expect(screen.getByText('Kept oil')).toBeTruthy();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'gone', []);
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {
@@ -1321,8 +1330,8 @@ describe('QueueScreen', () => {
   });
 
   it.each([
-    { label: 'never stocked', direction: 'stock_out' as const, productId: 'prod-new' as string | null, name: 'Quinoa', count: null as number | null, sentence: true },
-    { label: 'wiped', direction: 'stock_out' as const, productId: 'prod-wiped', name: 'Rice cakes', count: null, sentence: true },
+    { label: 'never stocked', direction: 'stock_out' as const, productId: 'prod-new' as string | null, name: 'Quinoa', count: null as number | null, sentence: false },
+    { label: 'wiped', direction: 'stock_out' as const, productId: 'prod-wiped', name: 'Rice cakes', count: null, sentence: false },
     { label: 'stocked', direction: 'stock_out' as const, productId: 'prod-oats', name: 'Oats', count: 2, sentence: false },
     { label: 'zero on hand', direction: 'stock_out' as const, productId: 'prod-rice', name: 'Rice', count: 0, sentence: true },
     { label: 'stock-in', direction: 'stock_in' as const, productId: 'prod-new', name: 'Quinoa', count: null, sentence: false },
@@ -1349,7 +1358,7 @@ describe('QueueScreen', () => {
       expect(card.queryByLabelText(`Confirm ${name}`)).toBeNull();
       expect(card.getByLabelText(`Remove ${name}`)).toBeTruthy();
       expect(screen.getByText('1 with nothing on hand')).toBeTruthy();
-      expect(screen.queryByText('Confirm skips the one with nothing on hand.')).toBeNull();
+      expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
     } else {
       expect(card.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
       expect(card.queryByText(NOTHING_ON_HAND_BODY)).toBeNull();
@@ -1377,22 +1386,22 @@ describe('QueueScreen', () => {
   });
 
   it.each([
-    { label: 'one card', blocked: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the one with nothing on hand.' },
+    { label: 'one card', blocked: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the 1 with nothing on hand.' },
     { label: 'two cards', blocked: 2, pill: '2 with nothing on hand', skip: 'Confirm skips the 2 with nothing on hand.' },
   ])('confirm all skips $label with nothing on hand', async ({ blocked, pill, skip }) => {
-    const missing = entry({
-      id: 'scan-missing',
-      barcode: '111',
-      direction: 'stock_out',
-      productId: 'prod-missing',
-      product: { id: 'prod-missing', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
-    });
     const empty = entry({
       id: 'scan-empty',
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-empty',
       product: { id: 'prod-empty', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const second = entry({
+      id: 'scan-empty-2',
+      barcode: '111',
+      direction: 'stock_out',
+      productId: 'prod-empty-2',
+      product: { id: 'prod-empty-2', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
     });
     const stocked = entry({
       id: 'scan-ok',
@@ -1401,13 +1410,14 @@ describe('QueueScreen', () => {
       productId: 'prod-ok',
       product: { id: 'prod-ok', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
     });
-    const cards = blocked === 1 ? [missing, stocked] : [missing, empty, stocked];
+    const cards = blocked === 1 ? [empty, stocked] : [empty, second, stocked];
     const batchCommit = jest.fn(async () => ({ updatedCount: 1, committedIds: ['scan-ok'] }));
     const api = client({
       listPending: jest.fn(async () => cards),
       batchCommit,
       getInventoryList: jest.fn(async () => [
         householdItem('Rice', 'prod-empty', 0),
+        householdItem('Tea', 'prod-empty-2', 0),
         householdItem('Oats', 'prod-ok', 2),
       ]),
     });
@@ -1416,7 +1426,7 @@ describe('QueueScreen', () => {
     expect(await screen.findByText(pill)).toBeTruthy();
     expect(screen.getByText(skip)).toBeTruthy();
     expect(screen.queryByText('0 with nothing on hand')).toBeNull();
-    expect(within(screen.getByTestId('scan-scan-missing')).queryByLabelText('Confirm Tea')).toBeNull();
+    expect(within(screen.getByTestId('scan-scan-empty')).queryByLabelText('Confirm Rice')).toBeNull();
     expect(within(screen.getByTestId('scan-scan-ok')).getByLabelText('Confirm Oats')).toBeTruthy();
 
     await fireEvent.press(screen.getByLabelText('Confirm all'));
@@ -1521,7 +1531,7 @@ describe('QueueScreen', () => {
     const api = client({
       listPending,
       cancelScan,
-      getInventoryList: jest.fn(async () => []),
+      getInventoryList: jest.fn(async () => [householdItem('Tea', 'prod-missing', 0)]),
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
@@ -1529,6 +1539,153 @@ describe('QueueScreen', () => {
 
     await waitFor(() => expect(cancelScan).toHaveBeenCalledWith('scan-1'));
     expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
+  });
+
+  it('disables confirm all when every card has nothing on hand', async () => {
+    const rice = entry({
+      id: 'scan-rice',
+      barcode: '222',
+      direction: 'stock_out',
+      productId: 'prod-rice',
+      product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const tea = entry({
+      id: 'scan-tea',
+      barcode: '333',
+      direction: 'stock_out',
+      productId: 'prod-tea',
+      product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
+    });
+    const batchCommit = jest.fn();
+    const api = client({
+      listPending: jest.fn(async () => [rice, tea]),
+      batchCommit,
+      getInventoryList: jest.fn(async () => [
+        householdItem('Rice', 'prod-rice', 0),
+        householdItem('Tea', 'prod-tea', 0),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    const confirmAll = await screen.findByLabelText('Confirm all');
+    expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);
+    await fireEvent.press(confirmAll);
+    expect(batchCommit).not.toHaveBeenCalled();
+  });
+
+  it('a failed none_on_hand card turns amber and the banner is not red because of it', async () => {
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce([
+          entry({ id: 'scan-ok', barcode: '333', direction: 'stock_out', productId: 'prod-ok', product: { id: 'prod-ok', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' } }),
+          entry({ direction: 'stock_out' }),
+        ])
+        .mockResolvedValue([entry({ direction: 'stock_out' })]),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 1,
+        committedIds: ['scan-ok'],
+        failedIds: ['scan-1'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+        stockOutCounts: { 'scan-ok': { removedCount: 1, requestedCount: 3 } },
+      })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Oats', 'prod-ok', 2, 'Grain'),
+        householdItem('Oat milk', 'prod-1', 2),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText('Nothing on hand to take out.')).toBeTruthy();
+    expect(screen.getByText('Only 1 of 3 Oats was on hand, so 1 was taken out.')).toBeTruthy();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'success', ['Only 1 of 3 Oats was on hand, so 1 was taken out.']);
+  });
+
+  it('a mixed batch stays red until the non-amber card is resolved', async () => {
+    const waiting = [
+      entry({ direction: 'stock_out' }),
+      entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' }),
+    ];
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(waiting)
+      .mockResolvedValueOnce(waiting)
+      .mockResolvedValue([]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: ['scan-1', 'scan-2'],
+        failedReasons: ['Nothing on hand to take out.', 'Choose which item this is first.'],
+        failedCodes: ['none_on_hand', 'product_unresolved'],
+      })),
+      commitScan: jest.fn(async () => entry({ id: 'scan-2', status: 'committed' })),
+      getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expect(screen.getByText('Nothing on hand to take out.')).toBeTruthy();
+    expect(screen.getByText('Choose which item this is first.')).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText('Confirm 999'));
+    await waitFor(() => expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull());
+  });
+
+  it('does not turn every stock-out amber when inventory is malformed', async () => {
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
+      getInventoryList: jest.fn(async () => ({ unexpected: true } as never)),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    expect(await screen.findByLabelText('Confirm Oat milk')).toBeTruthy();
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
+  });
+
+  it('drops a removed card when the refresh fails and leaves no red banner', async () => {
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce([entry({
+          direction: 'stock_out',
+          productId: 'prod-rice',
+          product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+        })])
+        .mockRejectedValue(new Error('The queue did not load.')),
+      cancelScan: jest.fn(async () => entry({ status: 'cancelled' })),
+      getInventoryList: jest.fn(async () => [householdItem('Rice', 'prod-rice', 0)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Remove Rice'));
+
+    expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
+    expect(screen.queryByText('The queue did not load.')).toBeNull();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+  });
+
+  it('clears amber after the screen regains focus and the shelf has stock', async () => {
+    const getInventoryList = jest.fn()
+      .mockResolvedValueOnce([householdItem('Oat milk', 'prod-1', 0)])
+      .mockResolvedValue([householdItem('Oat milk', 'prod-1', 1)]);
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
+      getInventoryList,
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" focused />);
+
+    expect(await screen.findByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    await act(async () => {
+      screen.rerender(framed(<QueueScreen client={api} warning="" focused={false} />));
+    });
+    await act(async () => {
+      screen.rerender(framed(<QueueScreen client={api} warning="" focused />));
+    });
+
+    expect(await screen.findByLabelText('Confirm Oat milk')).toBeTruthy();
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
   });
 
   it('shows an empty queue as an invitation to scan', async () => {

@@ -40,7 +40,7 @@ describe('nothing on hand copy', () => {
 
   it.each([
     { count: 0, pill: null, skip: null },
-    { count: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the one with nothing on hand.' },
+    { count: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the 1 with nothing on hand.' },
     { count: 2, pill: '2 with nothing on hand', skip: 'Confirm skips the 2 with nothing on hand.' },
   ])('count $count', ({ count, pill, skip }) => {
     expect(nothingOnHandPill(count)).toBe(pill);
@@ -48,7 +48,7 @@ describe('nothing on hand copy', () => {
   });
 
   it.each([
-    { onHand: undefined, empty: true },
+    { onHand: undefined, empty: false },
     { onHand: 0, empty: true },
     { onHand: 1, empty: false },
   ])('on hand $onHand', ({ onHand, empty }) => {

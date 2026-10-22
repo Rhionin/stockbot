@@ -73,8 +73,8 @@ export function toQueryString(params: Record<string, string | undefined>): strin
 
 // Household items, including rows at zero. The inventory page and the link
 // card both use this. It is not the product catalog.
-export function inventoryListPath(query?: string): string {
-  return `/api/inventory${toQueryString({ q: query })}`;
+export function inventoryListPath(query?: string, userId?: string): string {
+  return `/api/inventory${toQueryString({ q: query, userId })}`;
 }
 
 // Commit outcomes for the web queue and the phone. Appended after the shared
@@ -218,9 +218,9 @@ export const NOTHING_ON_HAND_BODY =
 
 export const CODE_NONE_ON_HAND = 'none_on_hand';
 
-// Shelved rows are absent from the household list, so a missing count is empty.
+// A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
-  return onHand === undefined || onHand <= 0;
+  return onHand !== undefined && onHand <= 0;
 }
 
 export function nothingOnHandPill(count: number): string | null {
@@ -228,9 +228,8 @@ export function nothingOnHandPill(count: number): string | null {
   return `${count} with nothing on hand`;
 }
 
-// "the 1" does not read as a sentence. One card says "one"; two or more use the digit.
+// The count is the digit, including 1.
 export function confirmSkipsNothingOnHand(count: number): string | null {
   if (!Number.isInteger(count) || count < 1) return null;
-  const amount = count === 1 ? 'one' : String(count);
-  return `Confirm skips the ${amount} with nothing on hand.`;
+  return `Confirm skips the ${count} with nothing on hand.`;
 }

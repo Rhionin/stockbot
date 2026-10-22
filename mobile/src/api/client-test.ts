@@ -155,7 +155,7 @@ describe('createStockbotClient', () => {
     const { client } = clientWith(fetchImpl);
 
     await expect(client.getInventoryList()).resolves.toEqual([]);
-    expect(urls).toEqual([`${serverUrl}/api/inventory`]);
+    expect(urls).toEqual([`${serverUrl}/api/inventory?userId=user-1`]);
   });
 
   it('reads and sets the shared scanner mode', async () => {
