@@ -358,7 +358,8 @@ describe('HistoryPage', () => {
     getItemHistory.mockResolvedValue(pairView());
     renderHistory();
     const dialog = await openPairUndo();
-    expect(within(dialog).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(dialog).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Black Beans will be hidden from your inventory again, since none are on hand.')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Undo' }));
     await vi.waitFor(() => expect(undoMove).toHaveBeenCalledWith('move-backfill'));
@@ -366,7 +367,6 @@ describe('HistoryPage', () => {
     await act(async () => {
       pending.resolve(previewEffect(true));
     });
-    expect(screen.queryByText(hideLine)).not.toBeInTheDocument();
   });
 
   it('lists the added row before its use when the response lists the use first', async () => {

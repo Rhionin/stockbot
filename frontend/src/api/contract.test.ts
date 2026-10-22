@@ -34,6 +34,24 @@ const previewRows: { name: string; preview: UndoPreview; hide: boolean }[] = [
   { name: 'true', preview: { effects: [effect(true)] }, hide: true },
   { name: 'false', preview: { effects: [effect(false)] }, hide: false },
   { name: 'no matching effect', preview: { effects: [effect(true, 'move-other')] }, hide: false },
+  {
+    name: 'only one of two effects',
+    preview: {
+      effects: [
+        {
+          itemId: 'item-milk',
+          productId: 'prod-milk',
+          name: 'Milk',
+          stockInMoveId: 'move-milk-in',
+          stockOutMoveId: 'move-milk-out',
+          onHand: 1,
+          reshelvesOnUndo: true,
+        },
+        effect(true),
+      ],
+    },
+    hide: true,
+  },
 ];
 
 describe('pair undo confirmation', () => {

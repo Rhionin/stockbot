@@ -631,8 +631,11 @@ describe('backfill card', () => {
     }
 
     await waitFor(() => {
-      for (const text of row.visible) expect(screen.getAllByText(text).length).toBeGreaterThan(0);
       for (const text of row.absent) expect(screen.queryByText(text, { exact: false })).not.toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      for (const text of row.visible) expect(screen.getAllByText(text).length).toBeGreaterThan(0);
       if (row.toast !== undefined) {
         const detail = document.querySelector('.restock-toast-detail');
         expect(detail?.textContent).toBe(row.toast);
