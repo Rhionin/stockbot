@@ -12,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/steinfletcher/apitest"
 	jsonpath "github.com/steinfletcher/apitest-jsonpath"
 )
@@ -105,6 +106,7 @@ type testEnv struct {
 	Res           *http.Response // populated only inside afterRequest callbacks
 	Registry      *cart.Registry // the registry wired into the handler under test
 	Options       []Option
+	ScanQueue     *scan.Queue // the queue wired into the handler under test
 }
 
 // runHandlerTests executes a table of handler test cases.

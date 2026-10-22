@@ -467,8 +467,16 @@ func TestUpdateScanEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, db := newTestQueue(t)
 			ctx := context.Background()
+
+			if tt.productID != nil {
+				if err := product.NewCatalog(db).CreateProduct(ctx, product.Product{
+					ID: *tt.productID, Name: "Named Product", Category: "Pantry", UnitOfMeasure: "unit",
+				}); err != nil {
+					t.Fatalf("CreateProduct: %v", err)
+				}
+			}
 
 			// Setup: create scan entry
 			if !tt.expectError {

@@ -103,7 +103,7 @@ func setupTestWithContributor(t *testing.T, contributor product.UpstreamContribu
 		opts = append(opts, WithContributor(contributor))
 	}
 	opts = append(opts, extra...)
-	handler, _ := NewHandler(productRepo, lookupService, refresher, db, opts...)
+	handler, queue := NewHandler(productRepo, lookupService, refresher, db, opts...)
 
 	// Get the Open Food Facts fake for backward compatibility
 	offFake := databases[product.ExternalSourceOpenFoodFacts]
@@ -121,6 +121,7 @@ func setupTestWithContributor(t *testing.T, contributor product.UpstreamContribu
 		MissTTL:       missTTL,
 		Contributor:   contributor,
 		Registry:      registry,
+		ScanQueue:     queue,
 	}
 
 	return handler, env

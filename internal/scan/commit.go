@@ -53,6 +53,10 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	defer tx.Rollback()
 
+	if err := ensureHouseholdProduct(ctx, tx, scanEntry.UserID, *scanEntry.ProductID); err != nil {
+		return err
+	}
+
 	itemID, err := r.findOrCreateItem(ctx, tx, scanEntry.UserID, *scanEntry.ProductID)
 	if err != nil {
 		return fmt.Errorf("find/create item: %w", err)
@@ -137,7 +141,7 @@ func stockInUnits(ctx context.Context, tx *sql.Tx, productID string, unitCount i
 	var pack sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT pack_count FROM products WHERE id = ?`, productID).Scan(&pack)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("that product was not found")
+		return 0, fmt.Errorf("stockInUnits: product %q: %w", productID, ErrProductNotResolved)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("could not read how many units are in the pack: %w", err)
@@ -476,6 +480,10 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		targetProductID = linkProductID
 	}
 
+	if err := ensureHouseholdProduct(ctx, tx, scanEntry.UserID, targetProductID); err != nil {
+		return err
+	}
+
 	var itemID string
 	var shelved int
 	err = tx.QueryRowContext(ctx, `
@@ -580,17 +588,29 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 // This function creates a user_override barcode mapping and transitions the scan entry
 // from flagged to pending status.
 //
-// This function handles the complete flagged entry resolution flow:
-// 1. Validates the scan entry exists and has status 'flagged'
-// 2. Creates a product override (barcodes row with source='user_override')
-// 3. Sets the product_id on the scan entry
-// 4. Transitions the scan entry status from 'flagged' to 'pending'
+// The status read and the write are one transaction. The update matches only a
+// flagged row, so a remove that commits first leaves the scan cancelled and
+// returns ErrNotOpen without an override. A missing product returns
+// ErrProductNotResolved. An open scan that is not flagged returns ErrNotFlagged.
+// fields other than the product, or a status other than pending, return
+// ErrInvalidResolve and write nothing.
 //
-// All operations are performed within a transaction to ensure atomicity.
-func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error {
+// The returned entry is the row read inside this transaction after the write.
+// Callers show that row. A later read can already be a cancel.
+func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string, fields ...ResolveFields) (*ScanEntry, error) {
+	var extra ResolveFields
+	if len(fields) > 0 {
+		extra = fields[0]
+	}
+	// The hook runs before the transaction so a test can commit a cancel on
+	// the only pooled connection. The read below then sees that cancel.
+	if r.BeforeResolve != nil {
+		r.BeforeResolve()
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -601,27 +621,46 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID 
 	).Scan(&userID, &barcode, &status)
 
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("scan entry %q not found", scanEntryID)
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotFound)
 	}
 	if err != nil {
-		return fmt.Errorf("query scan entry: %w", err)
+		return nil, fmt.Errorf("query scan entry: %w", err)
 	}
 
-	if status != string(Flagged) {
-		return fmt.Errorf("scan entry %q has status %q, expected %q", scanEntryID, status, Flagged)
+	switch ScanStatus(status) {
+	case Flagged:
+	case Committed, Cancelled:
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotOpen)
+	default:
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotFlagged)
 	}
 
-	var productExists bool
-	err = tx.QueryRowContext(ctx, `
-		SELECT 1 FROM products WHERE id = ?`,
-		productID,
-	).Scan(&productExists)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("product %q not found", productID)
+	if extra.Rejects() {
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrInvalidResolve)
 	}
+
+	if err := ensureHouseholdProduct(ctx, tx, userID, productID); err != nil {
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", err)
+	}
+
+	// A second connection can cancel the row after the read above. The status
+	// predicate makes that update match nothing, so the override is not inserted.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries
+		SET product_id = ?, status = ?
+		WHERE id = ? AND status = ?`,
+		productID, string(Pending), scanEntryID, string(Flagged),
+	)
 	if err != nil {
-		return fmt.Errorf("verify product: %w", err)
+		return nil, fmt.Errorf("update scan entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("update scan entry rows affected: %w", err)
+	}
+	// RowsAffected is zero when that other connection won.
+	if n == 0 {
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotOpen)
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -633,28 +672,28 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID 
 		userID,
 	)
 	if err != nil {
-		return fmt.Errorf("create barcode override: %w", err)
+		return nil, fmt.Errorf("create barcode override: %w", err)
 	}
 
-	pendingStatus := Pending
-	err = r.updateScanEntryInTx(ctx, tx, scanEntryID, nil, nil, nil, &productID, &pendingStatus)
+	written, err := r.readScanEntry(ctx, tx, scanEntryID)
 	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", err)
+	}
+	if written == nil {
+		return nil, fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotFound)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	if r.AfterResolveCommit != nil {
+		r.AfterResolveCommit()
 	}
 
 	if r.Broadcaster != nil {
-		resolved, err := r.GetScanEntry(ctx, scanEntryID)
-		if err != nil {
-			return err
-		}
-		if resolved != nil {
-			r.Broadcaster.PublishScanEvent(*resolved)
-		}
+		r.Broadcaster.PublishScanEvent(*written)
 	}
 
-	return nil
+	return written, nil
 }

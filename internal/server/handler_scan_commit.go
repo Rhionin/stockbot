@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -63,6 +64,10 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 			return nil, BadRequest("linking a barcode is only available when scanning out")
 		}
 		if err := h.Queue.CommitStockIn(req.Context, entry); err != nil {
+			if errors.Is(err, scan.ErrProductNotResolved) {
+				text, code := clientmsg.Reject(clientmsg.ProductUnresolvedText, clientmsg.ProductUnresolvedCode, err)
+				return nil, BadRequestDetails(text, code)
+			}
 			return nil, InternalError(err)
 		}
 	} else if linkProductID != "" {
@@ -83,6 +88,10 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 }
 
 func stockOutError(err error) error {
+	if errors.Is(err, scan.ErrProductNotResolved) {
+		text, code := clientmsg.Reject(clientmsg.ProductUnresolvedText, clientmsg.ProductUnresolvedCode, err)
+		return BadRequestDetails(text, code)
+	}
 	var missing *scan.NoItemError
 	if errors.As(err, &missing) {
 		var suggestions any

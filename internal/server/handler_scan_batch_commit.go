@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -103,7 +105,12 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 
 			if commitErr != nil {
 				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, commitErr.Error())
+				if errors.Is(commitErr, scan.ErrProductNotResolved) {
+					text, _ := clientmsg.Reject(clientmsg.ProductUnresolvedText, clientmsg.ProductUnresolvedCode, commitErr)
+					failedReasons = append(failedReasons, text)
+				} else {
+					failedReasons = append(failedReasons, commitErr.Error())
+				}
 			} else {
 				committedIDs = append(committedIDs, id)
 			}

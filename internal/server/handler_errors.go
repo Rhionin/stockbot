@@ -37,6 +37,11 @@ func BadRequest(message string) error {
 	return &HTTPError{Code: http.StatusBadRequest, Message: message}
 }
 
+// BadRequestDetails is a 400 whose body also carries a machine-readable code.
+func BadRequestDetails(message, code string) error {
+	return &HTTPError{Code: http.StatusBadRequest, Message: message, ErrorCode: code}
+}
+
 func NotFound(message string) error {
 	return &HTTPError{Code: http.StatusNotFound, Message: message}
 }
