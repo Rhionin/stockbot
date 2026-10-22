@@ -4,7 +4,7 @@
 
 Changes a scan that is still open. The body may include any of `direction`, `unitCount`, `expiresAt`, `productId`, and `status`. Omitted fields stay as they are.
 
-`status`, when sent, must be `pending`, `flagged`, `committed`, or `cancelled`. Any other value is `400` with `"error": "invalid status value"`.
+`status`, when sent, must be `pending`, `flagged`, or `cancelled`. Sending `committed`, or any other value, is `400` with `"error": "invalid status value"`. A scan becomes committed only through `POST /api/scans/{id}/commit`.
 
 ## Open scans
 
@@ -29,7 +29,7 @@ Any change, including status, to a committed or cancelled scan returns `409` `no
 }
 ```
 
-Nothing is written. A committed scan stays on `GET /api/scans/history` with its stock move unchanged. A cancelled scan stays cancelled.
+Nothing is written. A committed scan stays on `GET /api/scans/history` with its stock move unchanged. A cancelled scan stays cancelled. Resolving a flagged scan (`productId`, with or without `status` `pending`) that loses to a remove is the same `409`, and no barcode override is written.
 
 An empty body `{}` on a closed scan returns `200` with no change.
 

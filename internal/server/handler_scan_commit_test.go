@@ -809,7 +809,28 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				method:         "PATCH",
 				path:           "/api/scans/scan-resolve-bad-prod",
 				body:           `{"productId":"prod-does-not-exist","status":"pending"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusBadRequest,
+				assertions: []assertion{
+					{path: "$.error", value: "product not resolved"},
+					{path: "$.code", absent: true},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				var status string
+				var productID sql.NullString
+				if err := env.DB.QueryRow(`SELECT status, product_id FROM scan_entries WHERE id = ?`, "scan-resolve-bad-prod").Scan(&status, &productID); err != nil {
+					env.T.Fatalf("scan row: %v", err)
+				}
+				if status != string(scan.Flagged) || productID.Valid {
+					env.T.Fatalf("flagged row changed: status %s product %v", status, productID)
+				}
+				var overrides int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcodes WHERE barcode = ? AND source = 'user_override'`, "666777888999").Scan(&overrides); err != nil {
+					env.T.Fatalf("overrides: %v", err)
+				}
+				if overrides != 0 {
+					env.T.Fatalf("override count %d", overrides)
+				}
 			},
 		},
 	}

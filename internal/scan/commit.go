@@ -580,13 +580,10 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 // This function creates a user_override barcode mapping and transitions the scan entry
 // from flagged to pending status.
 //
-// This function handles the complete flagged entry resolution flow:
-// 1. Validates the scan entry exists and has status 'flagged'
-// 2. Creates a product override (barcodes row with source='user_override')
-// 3. Sets the product_id on the scan entry
-// 4. Transitions the scan entry status from 'flagged' to 'pending'
-//
-// All operations are performed within a transaction to ensure atomicity.
+// The status read and the write are one transaction. The update matches only a
+// flagged row, so a remove that commits first leaves the scan cancelled and
+// returns ErrNotOpen without an override. A missing product returns
+// ErrProductNotResolved. An open scan that is not flagged returns ErrNotFlagged.
 func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -601,27 +598,50 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID 
 	).Scan(&userID, &barcode, &status)
 
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("scan entry %q not found", scanEntryID)
+		return fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotFound)
 	}
 	if err != nil {
 		return fmt.Errorf("query scan entry: %w", err)
 	}
 
-	if status != string(Flagged) {
-		return fmt.Errorf("scan entry %q has status %q, expected %q", scanEntryID, status, Flagged)
+	switch ScanStatus(status) {
+	case Flagged:
+	case Committed, Cancelled:
+		return fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotOpen)
+	default:
+		return fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotFlagged)
 	}
 
-	var productExists bool
+	var productExists int
 	err = tx.QueryRowContext(ctx, `
 		SELECT 1 FROM products WHERE id = ?`,
 		productID,
 	).Scan(&productExists)
 
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("product %q not found", productID)
+		return fmt.Errorf("ResolveFlaggedEntry: %w", ErrProductNotResolved)
 	}
 	if err != nil {
 		return fmt.Errorf("verify product: %w", err)
+	}
+
+	// The predicate is part of the write. A remove that lands after the read
+	// and before this statement matches nothing, and the override is not inserted.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries
+		SET product_id = ?, status = ?
+		WHERE id = ? AND status = ?`,
+		productID, string(Pending), scanEntryID, string(Flagged),
+	)
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update scan entry rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("ResolveFlaggedEntry: %w", ErrNotOpen)
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -634,12 +654,6 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID 
 	)
 	if err != nil {
 		return fmt.Errorf("create barcode override: %w", err)
-	}
-
-	pendingStatus := Pending
-	err = r.updateScanEntryInTx(ctx, tx, scanEntryID, nil, nil, nil, &productID, &pendingStatus)
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

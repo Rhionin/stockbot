@@ -33,10 +33,11 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		return nil, BadRequest("scan entry id is required")
 	}
 
-	// Validate status if provided
+	// Validate status if provided. Committed is not a patch: the commit
+	// endpoint is the only way a scan becomes committed and stock moves.
 	if req.Body.Status != nil {
 		status := *req.Body.Status
-		if status != scan.Pending && status != scan.Flagged && status != scan.Committed && status != scan.Cancelled {
+		if status != scan.Pending && status != scan.Flagged && status != scan.Cancelled {
 			return nil, BadRequest("invalid status value")
 		}
 	}
@@ -49,31 +50,32 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		}
 	}
 
-	// Check if this is a flagged entry resolution
-	// (updating productID and optionally status to pending on a flagged entry)
+	// A product id on a flagged scan resolves it. The status read and the
+	// write share one transaction, so a remove that commits first is
+	// not_open and does not write the override.
 	if req.Body.ProductID != nil {
-		entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
-		if err != nil {
-			return nil, InternalError(err)
-		}
-		if entry == nil {
-			return nil, NotFound("scan entry not found")
-		}
-
-		// If the entry is currently flagged and we're setting a productID,
-		// use ResolveFlaggedEntry which handles barcode override creation
-		if entry.Status == scan.Flagged {
-			err := h.Queue.ResolveFlaggedEntry(req.Context, req.PathParams.ID, *req.Body.ProductID)
-			if err != nil {
-				return nil, InternalError(err)
-			}
-
-			// Return the resolved entry
+		err := h.Queue.ResolveFlaggedEntry(req.Context, req.PathParams.ID, *req.Body.ProductID)
+		if err == nil {
 			resolved, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 			if err != nil {
 				return nil, InternalError(err)
 			}
+			if resolved == nil {
+				return nil, NotFound(scan.ErrNotFound.Error())
+			}
 			return resolved, nil
+		}
+		if errors.Is(err, scan.ErrNotOpen) {
+			return nil, ConflictDetails(scan.ErrNotOpen.Error(), "not_open", nil)
+		}
+		if errors.Is(err, scan.ErrNotFound) {
+			return nil, NotFound(scan.ErrNotFound.Error())
+		}
+		if errors.Is(err, scan.ErrProductNotResolved) {
+			return nil, BadRequest(scan.ErrProductNotResolved.Error())
+		}
+		if !errors.Is(err, scan.ErrNotFlagged) {
+			return nil, InternalError(err)
 		}
 	}
 

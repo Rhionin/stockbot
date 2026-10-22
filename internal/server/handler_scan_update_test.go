@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"testing"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestScanUpdateRefusesStatusChangeOnCommittedScan(t *testing.T) {
-	for _, status := range []string{"cancelled", "pending", "flagged", "committed"} {
+	for _, status := range []string{"cancelled", "pending", "flagged"} {
 		status := status
 		t.Run(status, func(t *testing.T) {
 			var moveID string
@@ -405,6 +406,282 @@ func openScanCancelled(id string) func(env testEnv) {
 			bodyExcludes:   []string{id},
 		},
 	)
+}
+
+func TestScanUpdateRejectsCommittedStatus(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      scan.ScanStatus
+		direction   scan.ScanDirection
+		units       int
+		withProduct bool
+		onHand      int
+		commitAfter bool
+	}{
+		{name: "pending stock-in", status: scan.Pending, direction: scan.StockIn, units: 3, withProduct: true, commitAfter: true},
+		{name: "pending stock-out", status: scan.Pending, direction: scan.StockOut, units: 2, withProduct: true, onHand: 2},
+		{name: "flagged stock-in", status: scan.Flagged, direction: scan.StockIn, units: 1},
+		{name: "flagged stock-out", status: scan.Flagged, direction: scan.StockOut, units: 2, onHand: 2},
+		{name: "qr stock-in", status: scan.QR, direction: scan.StockIn, units: 1},
+		{name: "qr stock-out", status: scan.QR, direction: scan.StockOut, units: 2, onHand: 2},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			runHandlerTests(t, []handlerTestCase{
+				{
+					name: "status committed is invalid and writes nothing",
+					setup: func(env testEnv) {
+						mustProduct(env, "prod-milk", "Whole Milk")
+						if tc.onHand > 0 {
+							seedOnHand(env, "prod-milk", tc.onHand)
+						}
+						insertDirectedScan(env, "scan-open", tc.status, tc.direction, tc.units, tc.withProduct)
+					},
+					httpExchange: httpExchange{
+						method:         "PATCH",
+						path:           "/api/scans/scan-open",
+						body:           `{"status":"committed","unitCount":9}`,
+						expectedStatus: http.StatusBadRequest,
+						assertions: []assertion{
+							{path: "$.error", value: "invalid status value"},
+							{path: "$.code", absent: true},
+						},
+					},
+					afterRequest: func(env testEnv) {
+						assertScanRowUntouched(env, "scan-open", tc.status, tc.units)
+						if env.T.Failed() {
+							return
+						}
+						productAssert := assertion{path: "$[0].productId", value: nil}
+						if tc.withProduct {
+							productAssert = assertion{path: "$[0].productId", value: "prod-milk"}
+						}
+						inventory := httpExchange{
+							method:         "GET",
+							path:           "/api/inventory",
+							expectedStatus: http.StatusOK,
+							assertions:     []assertion{{path: "$", value: []any{}}},
+						}
+						if tc.onHand > 0 {
+							inventory.assertions = []assertion{{path: "$[0].instanceCount", value: float64(tc.onHand)}}
+						}
+						checks := []httpExchange{
+							{
+								method:         "GET",
+								path:           "/api/scans",
+								query:          map[string]string{"userId": "user-1", "status": string(tc.status)},
+								expectedStatus: http.StatusOK,
+								assertions: []assertion{
+									{path: "$[0].id", value: "scan-open"},
+									{path: "$[0].status", value: string(tc.status)},
+									{path: "$[0].unitCount", value: float64(tc.units)},
+									{path: "$[0].direction", value: string(tc.direction)},
+									{path: "$[0].committedAt", value: nil},
+									productAssert,
+								},
+							},
+							{
+								method:         "GET",
+								path:           "/api/scans/history",
+								query:          map[string]string{"userId": "user-1"},
+								expectedStatus: http.StatusOK,
+								bodyExcludes:   []string{"scan-open"},
+							},
+							inventory,
+						}
+						if tc.onHand == 0 {
+							checks = append(checks, httpExchange{
+								method:         "GET",
+								path:           "/api/history",
+								expectedStatus: http.StatusOK,
+								assertions:     []assertion{{path: "$.moves", value: []any{}}},
+							})
+						}
+						exchanges(checks...)(env)
+						if !tc.commitAfter || env.T.Failed() {
+							return
+						}
+						exchanges(
+							httpExchange{
+								method:         "POST",
+								path:           "/api/scans/scan-open/commit",
+								body:           `{}`,
+								expectedStatus: http.StatusOK,
+								assertions: []assertion{
+									{path: "$.status", value: "committed"},
+									{path: "$.unitCount", value: float64(tc.units)},
+								},
+							},
+							httpExchange{
+								method:         "GET",
+								path:           "/api/inventory",
+								expectedStatus: http.StatusOK,
+								assertions:     []assertion{{path: "$[0].instanceCount", value: float64(tc.units)}},
+							},
+						)(env)
+					},
+				},
+			})
+		})
+	}
+}
+
+func TestScanUpdateKeepsCancelAndResolve(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "cancel a pending scan",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-beans", "Beans")
+				insertPendingScanUnits(env, "scan-pending", "prod-beans", scan.StockIn, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-pending",
+				body:           `{"status":"cancelled"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.status", value: "cancelled"},
+					{path: "$.unitCount", value: float64(1)},
+				},
+			},
+		},
+		{
+			name: "resolve a flagged scan with productId and pending",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-soup", "Tarnwell Soup")
+				insertDirectedScan(env, "scan-flagged", scan.Flagged, scan.StockIn, 1, false)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-flagged",
+				body:           `{"productId":"prod-soup","status":"pending"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.status", value: "pending"},
+					{path: "$.productId", value: "prod-soup"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				var productID string
+				if err := env.DB.QueryRow(`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`, "scan-flagged", "user-1").Scan(&productID); err != nil {
+					env.T.Fatalf("override: %v", err)
+				}
+				if productID != "prod-soup" {
+					env.T.Fatalf("override product %s", productID)
+				}
+			},
+		},
+	})
+}
+
+func TestScanResolveAfterCancelIsNotOpen(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "remove then resolve",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-soup", "Tarnwell Soup")
+				insertDirectedScan(env, "scan-flagged", scan.Flagged, scan.StockIn, 1, false)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-flagged",
+				body:           `{"status":"cancelled"}`,
+				expectedStatus: http.StatusOK,
+				assertions:     []assertion{{path: "$.status", value: "cancelled"}},
+			},
+			afterRequest: func(env testEnv) {
+				exchanges(httpExchange{
+					method:         "PATCH",
+					path:           "/api/scans/scan-flagged",
+					body:           `{"productId":"prod-soup","status":"pending"}`,
+					expectedStatus: http.StatusConflict,
+					assertions: []assertion{
+						{path: "$.error", value: "This scan was already handled."},
+						{path: "$.code", value: "not_open"},
+					},
+				}, httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "cancelled"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-flagged"},
+						{path: "$[0].status", value: "cancelled"},
+						{path: "$[0].productId", value: nil},
+					},
+				})(env)
+				var productID sql.NullString
+				if err := env.DB.QueryRow(`SELECT product_id FROM scan_entries WHERE id = ?`, "scan-flagged").Scan(&productID); err != nil {
+					env.T.Fatalf("scan row: %v", err)
+				}
+				if productID.Valid {
+					env.T.Fatalf("product written: %s", productID.String)
+				}
+				var overrides int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcodes WHERE source = 'user_override' AND barcode = ?`, "scan-flagged").Scan(&overrides); err != nil {
+					env.T.Fatalf("overrides: %v", err)
+				}
+				if overrides != 0 {
+					env.T.Fatalf("override count %d", overrides)
+				}
+			},
+		},
+	})
+}
+
+func insertDirectedScan(env testEnv, id string, status scan.ScanStatus, direction scan.ScanDirection, units int, withProduct bool) {
+	env.T.Helper()
+	entry := scan.ScanEntry{
+		ID:        id,
+		UserID:    "user-1",
+		Barcode:   id,
+		ScannedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		Direction: &direction,
+		UnitCount: units,
+		Status:    status,
+	}
+	if withProduct {
+		productID := "prod-milk"
+		entry.ProductID = &productID
+	}
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), entry); err != nil {
+		env.T.Fatalf("CreateScanEntry %s: %v", id, err)
+	}
+}
+
+func seedOnHand(env testEnv, productID string, n int) {
+	env.T.Helper()
+	itemID := "item-" + productID
+	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id) VALUES (?, 'user-1', ?)`, itemID, productID); err != nil {
+		env.T.Fatalf("item: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES (?, ?, ?)`,
+			fmt.Sprintf("%s-%d", itemID, i), itemID, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)); err != nil {
+			env.T.Fatalf("instance: %v", err)
+		}
+	}
+}
+
+func assertScanRowUntouched(env testEnv, id string, status scan.ScanStatus, units int) {
+	env.T.Helper()
+	var gotStatus string
+	var gotUnits int
+	var committedAt sql.NullTime
+	if err := env.DB.QueryRow(`SELECT status, unit_count, committed_at FROM scan_entries WHERE id = ?`, id).Scan(&gotStatus, &gotUnits, &committedAt); err != nil {
+		env.T.Fatalf("scan row: %v", err)
+	}
+	if gotStatus != string(status) || gotUnits != units || committedAt.Valid {
+		env.T.Fatalf("row changed: status %s units %d committed_at %v", gotStatus, gotUnits, committedAt)
+	}
+	var moves int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM stock_moves`).Scan(&moves); err != nil {
+		env.T.Fatalf("moves: %v", err)
+	}
+	if moves != 0 {
+		env.T.Fatalf("stock moves %d", moves)
+	}
 }
 
 func insertOpenScan(env testEnv, id, barcode string, status scan.ScanStatus) {

@@ -340,6 +340,14 @@ var ErrNotOpen = errors.New("This scan was already handled.")
 // ErrNotFound means the scan id is not in the queue.
 var ErrNotFound = errors.New("scan entry not found")
 
+// ErrNotFlagged means a resolve was asked of a scan that is still open but
+// not flagged. The caller updates the row as a normal patch.
+var ErrNotFlagged = errors.New("only a flagged scan can be resolved")
+
+// ErrProductNotResolved means the product id on a resolve is not in the catalog.
+// The sentence matches the batch-commit reason for a scan with no product.
+var ErrProductNotResolved = errors.New("product not resolved")
+
 // UpdateScanEntry updates direction, unit_count, expires_at, product_id, and
 // status for the given scan entry ID. Field edits go through here. A repeat
 // scan does not: CreateScanEntry writes unit_count and scanned_at together so
