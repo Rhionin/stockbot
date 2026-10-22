@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
@@ -130,17 +131,24 @@ func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (
 // households exist, the only household is the default. userId is accepted
 // only when it is omitted or a single exact value of that household. An
 // empty value, a different case, surrounding spaces, a repeated parameter,
-// or any other id is the same 404 as a missing move, before any read or write.
+// a malformed query, or any other id is the same 404 as a missing move,
+// before any read or write.
 func moveHousehold(r *http.Request) (string, error) {
 	household := history.DefaultHousehold()
-	if r == nil {
+	if r == nil || r.URL == nil {
 		return household, nil
 	}
-	values, present := r.URL.Query()["userId"]
-	if !present || len(values) == 0 {
+	// URL.Query drops a parse error, so a semicolon or a bad escape would
+	// look like an omitted userId and the default household would be used.
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return "", NotFound("That move is no longer in the history.")
+	}
+	ids, present := values["userId"]
+	if !present || len(ids) == 0 {
 		return household, nil
 	}
-	if len(values) == 1 && values[0] == household {
+	if len(ids) == 1 && ids[0] == household {
 		return household, nil
 	}
 	return "", NotFound("That move is no longer in the history.")

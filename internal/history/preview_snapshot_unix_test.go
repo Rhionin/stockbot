@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/Rhionin/stockbot/internal/app"
 )
 
 func TestPreviewFilesArePrivateWhileTheyAreCreated(t *testing.T) {
@@ -54,6 +56,31 @@ func TestPreviewFilesArePrivateWhileTheyAreCreated(t *testing.T) {
 		t.Fatal("expected a missing move")
 	}
 	if !checked {
+		t.Fatal("backup hook did not run")
+	}
+	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
+		t.Fatalf("preview dirs left: %v", dirs)
+	}
+}
+
+func TestSnapshotHoldsThePreviewLock(t *testing.T) {
+	dir := t.TempDir()
+	db := openHistoryFile(t, filepath.Join(dir, "pantry.db"))
+	var held bool
+	previewDuringBackup = func(path string) error {
+		previewDir := filepath.Dir(path)
+		if !app.PreviewDirBusy(previewDir) {
+			t.Errorf("snapshot did not hold the preview lock in %s", previewDir)
+		}
+		held = true
+		return nil
+	}
+	t.Cleanup(func() { previewDuringBackup = nil })
+
+	if _, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing"); err == nil {
+		t.Fatal("expected a missing move")
+	}
+	if !held {
 		t.Fatal("backup hook did not run")
 	}
 	if dirs := previewDirNames(t, dir); len(dirs) != 0 {

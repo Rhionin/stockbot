@@ -156,7 +156,7 @@ The pair is the exception to the usual stock-in undo rule. A normal stock-in who
 
 It changes nothing. It does not take the pantry write lock, and it does not update `history_repair`. It answers what `DELETE /api/moves/{id}` would do, using the same undo, including the same re-shelve decision. `{id}` is either move of a backfill pair, or any other history move.
 
-History corrections use the household `user-1`. The `userId` query is that household only when it is omitted, or sent once as exactly `user-1`. An empty value, a different case, surrounding spaces, a repeated `userId`, or any other household is the same `404` as a missing move: `That move is no longer in the history.` The body has no item id, product id, name, or on-hand count, and nothing is changed. A move that belongs to another household is that same `404`. Signed-in households come later.
+History corrections use the household `user-1`. The `userId` query is that household only when it is omitted, or sent once as exactly `user-1`. An empty value, a different case, surrounding spaces, a repeated `userId`, a malformed query (`userId=user-2;x`, `userId=%ZZ`), or any other household is the same `404` as a missing move: `That move is no longer in the history.` The body has no item id, product id, name, or on-hand count, and nothing is changed. A move that belongs to another household is that same `404`. Signed-in households come later.
 
 The preview is advisory. `DELETE /api/moves/{id}` checks the shelf again when it commits. A stock change that lands between the preview and the delete can change the result. The preview does not return a version token.
 

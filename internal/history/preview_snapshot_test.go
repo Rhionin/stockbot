@@ -264,8 +264,11 @@ func TestPreviewSpaceNeedIncludesTheJournalAndTheReserve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mem != previewReserveFloor {
-		t.Fatalf("memory need = %d", mem)
+	if previewReserveFloor != 32*1024*1024 {
+		t.Fatalf("floor = %d, want 32 MiB", previewReserveFloor)
+	}
+	if mem != 32*1024*1024 {
+		t.Fatalf("memory need = %d, want 32 MiB", mem)
 	}
 	if previewReserve(1) != previewReserveFloor {
 		t.Fatalf("small reserve = %d", previewReserve(1))
@@ -370,6 +373,47 @@ func TestPreviewUndoHoldsTheOnlySlot(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("backup calls = %d", calls.Load())
+	}
+}
+
+func TestBackupStopsWhenTheRequestContextIsCanceled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pantry.db")
+	db := openHistoryFile(t, path)
+	var pages int
+	if err := db.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	if pages < 3 {
+		t.Fatalf("database has %d pages", pages)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousEach := previewEachStep
+	previewEachStep = nil
+	var canceledDuringCopy bool
+	previewDuringBackup = func(string) error {
+		canceledDuringCopy = true
+		cancel()
+		return nil
+	}
+	t.Cleanup(func() {
+		previewDuringBackup = nil
+		previewEachStep = previousEach
+	})
+
+	journal := NewJournal(db)
+	_, err := journal.PreviewUndo(ctx, householdUser, "missing")
+	if !canceledDuringCopy || !errors.Is(err, context.Canceled) {
+		t.Fatalf("during copy = %v, err = %v", canceledDuringCopy, err)
+	}
+	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
+		t.Fatalf("preview dirs left: %v", dirs)
+	}
+	_, err = journal.PreviewUndo(context.Background(), householdUser, "missing")
+	var missing *NotFoundError
+	if !errors.As(err, &missing) {
+		t.Fatalf("next preview err = %v", err)
 	}
 }
 
