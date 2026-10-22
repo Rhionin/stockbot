@@ -40,9 +40,10 @@ type batchCommitResponse struct {
 	// that only read the sentences keep working.
 	FailedCodes []string `json:"failedCodes,omitempty"`
 	// StockOutCounts is keyed by scan id, one entry per committed stock-out
-	// (a full removal included). Stock-ins and failed cards are left out.
-	// Failures stay parallel arrays; this is a map because it is only the
-	// stock-out subset of committedIds.
+	// (a full removal included). A stock-out that was already committed is
+	// included again with the counts stored at that first commit. Stock-ins
+	// and failed cards are left out. Failures stay parallel arrays; this is
+	// a map because it is only the stock-out subset of committedIds.
 	StockOutCounts map[string]stockOutCount `json:"stockOutCounts,omitempty"`
 }
 
@@ -94,6 +95,20 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			}
 			if entry == nil {
 				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrScanNotFound)
+				continue
+			}
+			if entry.Status == scan.Committed {
+				committedIDs = append(committedIDs, id)
+				if entry.Direction != nil && *entry.Direction == scan.StockOut &&
+					entry.RemovedCount != nil && entry.RequestedCount != nil {
+					if stockOutCounts == nil {
+						stockOutCounts = map[string]stockOutCount{}
+					}
+					stockOutCounts[id] = stockOutCount{
+						RemovedCount:   *entry.RemovedCount,
+						RequestedCount: *entry.RequestedCount,
+					}
+				}
 				continue
 			}
 			if entry.Status != scan.Pending {

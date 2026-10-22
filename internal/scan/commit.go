@@ -551,6 +551,21 @@ func claimPendingScan(ctx context.Context, tx *sql.Tx, id string, committedAt ti
 	return nil
 }
 
+// recordStockOutCounts stores the figures a stock-out commit actually produced.
+// A later batch retry reports these instead of removing stock again.
+func recordStockOutCounts(ctx context.Context, tx *sql.Tx, id string, removed, requested int) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries
+		SET removed_count = ?, requested_count = ?
+		WHERE id = ?`,
+		removed, requested, id,
+	)
+	if err != nil {
+		return fmt.Errorf("record stock-out counts: %w", err)
+	}
+	return nil
+}
+
 // CommitStockOut commits a stock-out scan entry by removing up to its unit
 // count and marking the scan entry as committed. The returned count is how
 // many units left the shelf. When fewer than the unit count are on hand and
@@ -658,6 +673,9 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	scanID := scanEntry.ID
 	removed, err := r.removeStockOutUnitsTx(ctx, tx, itemID, instanceID, scanEntry.UnitCount, scanEntry.ScannedAt, &scanID)
 	if err != nil {
+		return 0, err
+	}
+	if err := recordStockOutCounts(ctx, tx, scanEntry.ID, removed, scanEntry.UnitCount); err != nil {
 		return 0, err
 	}
 

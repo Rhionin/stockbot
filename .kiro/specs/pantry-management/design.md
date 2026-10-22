@@ -222,7 +222,11 @@ Clients show the short-shelf note when `removedCount` is less than `requestedCou
 
 Each committed stock-out is also an entry in `stockOutCounts`, keyed by scan id. The value is the same two fields as a single stock-out commit: `removedCount` (units that left the shelf) and `requestedCount` (that card's `unitCount`, N). A full removal is included, so `removedCount` may equal `requestedCount`. A stock-in has no entry. A failed card has no entry. A partial stock-out still counts as committed and stays in `committedIds`. A stock-out with nothing on hand stays in `failedIds` with `failedCodes` `none_on_hand`. When the batch commits no stock-out, `stockOutCounts` is omitted.
 
-A shared example of that mixed 200 is `testdata/contract/scan-batch-commit-partial.json`.
+A scan that is already committed is reported in `committedIds` again, not in `failedIds`. For a stock-out, `stockOutCounts` repeats the `removedCount` and `requestedCount` stored at the first commit. The batch does not remove or add stock for that id. `unitCount`, `direction`, and `expiresAt` on the request do not change the committed scan. A stock-in that is already committed is in `committedIds` and has no `stockOutCounts` entry. A cancelled or flagged scan, or any scan that is not pending and not committed, stays in `failedIds` with `failedCodes` `not_pending` and the sentence "This scan was already handled." `updatedCount` stays the number of distinct ids in the request, including an id whose committed card was left unchanged.
+
+`POST /api/scans/{id}/commit` is unchanged when the scan is already committed: 400 `{ "error": "This scan was already handled.", "code": "not_pending" }`.
+
+A shared example of that mixed 200 is `testdata/contract/scan-batch-commit-partial.json`. A shared example of the already-committed stock-out retry is `testdata/contract/scan-batch-commit-retry.json`.
 
 #### Products
 
@@ -333,7 +337,9 @@ CREATE TABLE scan_entries (
                     CHECK (status IN ('pending', 'flagged', 'committed', 'cancelled')),
     product_id      TEXT REFERENCES products(id),   -- NULL until resolved/committed
     committed_at    DATETIME,
-    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    removed_count   INTEGER,          -- stock-out units removed at first commit; NULL otherwise
+    requested_count INTEGER           -- stock-out unit_count at first commit; NULL otherwise
 );
 
 -- ConsumptionEvent: records each stock-out for suggestion analytics (append-only)

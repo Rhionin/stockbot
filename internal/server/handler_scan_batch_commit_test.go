@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 func TestScanBatchCommit(t *testing.T) {
 	mixed := loadCommitContract(t, "scan-batch-commit-partial.json")
+	retry := loadCommitContract(t, "scan-batch-commit-retry.json")
 	runHandlerTests(t, []handlerTestCase{
 		{
 			name: "committing pending scans changes inventory and takes them off the queue",
@@ -70,10 +72,21 @@ func TestScanBatchCommit(t *testing.T) {
 						bodyExcludes:   []string{"scan-keep"},
 					},
 				)(env)
-				// Committing the same scan again does not move inventory.
+				// A stock-in that already committed is reported committed again.
+				// It is not a not_pending failure, and nothing else is stocked.
 				again := exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit",
-					`{"scanEntryIds":["scan-a"],"commit":true}`, http.StatusOK)
-				if !strings.Contains(string(again), "scan-a") || !strings.Contains(string(again), "This scan was already handled.") || !strings.Contains(string(again), "not_pending") {
+					`{"scanEntryIds":["scan-a"],"unitCount":4,"commit":true}`, http.StatusOK)
+				var againBody struct {
+					CommittedIDs   []string       `json:"committedIds"`
+					FailedIDs      []string       `json:"failedIds"`
+					StockOutCounts map[string]any `json:"stockOutCounts"`
+				}
+				if err := json.Unmarshal(again, &againBody); err != nil {
+					env.T.Fatalf("second commit: %v\n%s", err, again)
+				}
+				if len(againBody.CommittedIDs) != 1 || againBody.CommittedIDs[0] != "scan-a" ||
+					len(againBody.FailedIDs) != 0 || len(againBody.StockOutCounts) != 0 ||
+					strings.Contains(string(again), "not_pending") {
 					env.T.Fatalf("second commit = %s", again)
 				}
 				exchanges(httpExchange{
@@ -562,6 +575,160 @@ func TestScanBatchCommit(t *testing.T) {
 				expectedStatus: http.StatusOK,
 				assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
 			}),
+		},
+		{
+			name: "a committed stock-out stays committed with its original counts",
+			setup: func(env testEnv) {
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				mustProduct(env, "prod-retry", "Retry Oats")
+				stockShelf(env, "item-retry", "user-1", "prod-retry", []shelfUnit{
+					{"inst-retry-only", &soon},
+				})
+				insertPendingScanUnits(env, "scan-retry", "prod-retry", scan.StockOut, 3)
+				h := handlerFromEnv(env)
+				exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit",
+					`{"scanEntryIds":["scan-retry"],"commit":true}`, http.StatusOK)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-retry"],"unitCount":4,"direction":"stock_in","expiresAt":"2026-08-01T00:00:00Z","commit":true}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				raw, err := io.ReadAll(env.Res.Body)
+				if err != nil {
+					env.T.Fatalf("read retry: %v", err)
+				}
+				if env.Res.StatusCode != retry.Status {
+					env.T.Fatalf("status %d, contract %d", env.Res.StatusCode, retry.Status)
+				}
+				assertContractBody(env.T, raw, retry)
+				exchanges(
+					httpExchange{
+						method:         "GET",
+						path:           "/api/inventory",
+						expectedStatus: http.StatusOK,
+						assertions:     []assertion{{path: "$[0].instanceCount", value: float64(0)}},
+					},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/scans/history",
+						query:          map[string]string{"userId": "user-1"},
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].id", value: "scan-retry"},
+							{path: "$[0].unitCount", value: float64(3)},
+							{path: "$[0].direction", value: "stock_out"},
+							{path: "$[0].expiresAt", value: nil},
+						},
+						bodyExcludes: []string{"2026-08-01"},
+					},
+				)(env)
+			},
+		},
+		{
+			name: "a retry sending unitCount 4 leaves the committed count at 1",
+			setup: func(env testEnv) {
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				mustProduct(env, "prod-keep-count", "Keep Count")
+				stockShelf(env, "item-keep-count", "user-1", "prod-keep-count", []shelfUnit{
+					{"inst-keep-1", &soon},
+					{"inst-keep-2", &soon},
+					{"inst-keep-3", &soon},
+					{"inst-keep-4", &soon},
+				})
+				insertPendingScanUnits(env, "scan-keep-count", "prod-keep-count", scan.StockOut, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-keep-count"],"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: `$.stockOutCounts["scan-keep-count"].removedCount`, value: float64(1)},
+					{path: `$.stockOutCounts["scan-keep-count"].requestedCount`, value: float64(1)},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				h := handlerFromEnv(env)
+				again := exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit",
+					`{"scanEntryIds":["scan-keep-count"],"unitCount":4,"direction":"stock_in","commit":true}`, http.StatusOK)
+				var body struct {
+					CommittedIDs   []string `json:"committedIds"`
+					FailedIDs      []string `json:"failedIds"`
+					StockOutCounts map[string]struct {
+						RemovedCount   int `json:"removedCount"`
+						RequestedCount int `json:"requestedCount"`
+					} `json:"stockOutCounts"`
+				}
+				if err := json.Unmarshal(again, &body); err != nil {
+					env.T.Fatalf("retry: %v\n%s", err, again)
+				}
+				counts := body.StockOutCounts["scan-keep-count"]
+				if len(body.CommittedIDs) != 1 || body.CommittedIDs[0] != "scan-keep-count" ||
+					len(body.FailedIDs) != 0 || counts.RemovedCount != 1 || counts.RequestedCount != 1 {
+					env.T.Fatalf("retry = %s", again)
+				}
+				single := exchangeJSON(env.T, h, http.MethodPost, "/api/scans/scan-keep-count/commit", "", http.StatusBadRequest)
+				if !strings.Contains(string(single), "This scan was already handled.") || !strings.Contains(string(single), "not_pending") {
+					env.T.Fatalf("single retry = %s", single)
+				}
+				exchanges(
+					httpExchange{
+						method:         "GET",
+						path:           "/api/scans/history",
+						query:          map[string]string{"userId": "user-1"},
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].id", value: "scan-keep-count"},
+							{path: "$[0].unitCount", value: float64(1)},
+							{path: "$[0].direction", value: "stock_out"},
+						},
+					},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/inventory",
+						expectedStatus: http.StatusOK,
+						assertions:     []assertion{{path: "$[0].instanceCount", value: float64(3)}},
+					},
+				)(env)
+			},
+		},
+		{
+			name: "a cancelled scan stays not_pending beside a committed retry",
+			setup: func(env testEnv) {
+				soon := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				mustProduct(env, "prod-mix-retry", "Mix Retry")
+				stockShelf(env, "item-mix-retry", "user-1", "prod-mix-retry", []shelfUnit{
+					{"inst-mix-retry", &soon},
+				})
+				insertPendingScanUnits(env, "scan-mix-committed", "prod-mix-retry", scan.StockOut, 1)
+				insertPendingScanUnits(env, "scan-mix-cancelled", "prod-mix-retry", scan.StockOut, 1)
+				if _, err := env.DB.Exec(`UPDATE scan_entries SET status = 'cancelled' WHERE id = ?`, "scan-mix-cancelled"); err != nil {
+					env.T.Fatalf("cancel scan: %v", err)
+				}
+				h := handlerFromEnv(env)
+				exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit",
+					`{"scanEntryIds":["scan-mix-committed"],"commit":true}`, http.StatusOK)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-mix-committed","scan-mix-cancelled"],"unitCount":4,"commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.updatedCount", value: float64(2)},
+					{path: "$.committedIds[0]", value: "scan-mix-committed"},
+					{path: "$.committedIds[1]", absent: true},
+					{path: "$.failedIds[0]", value: "scan-mix-cancelled"},
+					{path: "$.failedCodes[0]", value: "not_pending"},
+					{path: "$.failedReasons[0]", value: "This scan was already handled."},
+					{path: `$.stockOutCounts["scan-mix-committed"].removedCount`, value: float64(1)},
+					{path: `$.stockOutCounts["scan-mix-committed"].requestedCount`, value: float64(1)},
+					{path: `$.stockOutCounts["scan-mix-cancelled"]`, absent: true},
+				},
+			},
 		},
 	})
 }
