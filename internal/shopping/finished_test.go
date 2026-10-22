@@ -2,7 +2,6 @@ package shopping
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -50,7 +49,7 @@ func TestStockInFinishesLine(t *testing.T) {
 }
 
 func TestStoredStockInFinishesTheLine(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

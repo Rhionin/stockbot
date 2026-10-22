@@ -14,7 +14,7 @@ import (
 // TestUpgradeRestockTargetsFrom018 applies every migration before 019, seeds the
 // rows a household could already have, then runs the 019 file itself.
 func TestUpgradeRestockTargetsFrom018(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestUpgradeRestockTargetsFrom018(t *testing.T) {
 func TestUpgradeIgnoresSupplyMonthsOutsideOneToTwelve(t *testing.T) {
 	for _, raw := range []string{"0", "abc", "13", "4.5"} {
 		t.Run(raw, func(t *testing.T) {
-			conn, err := sql.Open("sqlite", ":memory:")
+			conn, err := OpenSQLite(":memory:")
 			if err != nil {
 				t.Fatal(err)
 			}

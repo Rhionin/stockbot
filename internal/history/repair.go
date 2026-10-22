@@ -3,7 +3,9 @@ package history
 import (
 	"context"
 	"database/sql"
+	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,13 +30,20 @@ func ensure(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE history_repair SET id = 1 WHERE id = 1`); err != nil {
 		return err
 	}
-	if err := ensureStockIns(ctx, tx); err != nil {
+	scans, err := loadCommittedScans(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := ensureStockIns(ctx, tx, scans); err != nil {
 		return err
 	}
 	if err := ensureStockOuts(ctx, tx); err != nil {
 		return err
 	}
-	return ensureRemoved(ctx, tx)
+	if err := ensureRemoved(ctx, tx, scans); err != nil {
+		return err
+	}
+	return relabelManualMoves(ctx, tx, scans)
 }
 
 type instanceRow struct {
@@ -47,7 +56,7 @@ type instanceRow struct {
 	Reason    string
 }
 
-func ensureStockIns(ctx context.Context, tx *sql.Tx) error {
+func ensureStockIns(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT ii.id, ii.item_id, i.product_id, i.user_id, ii.stock_in_at
 		FROM item_instances ii
@@ -82,7 +91,7 @@ func ensureStockIns(ctx context.Context, tx *sql.Tx) error {
 		for i, row := range current {
 			ids[i] = row.ID
 		}
-		scanID, source := committedScan(ctx, tx, head.UserID, head.ProductID, "stock_in", head.At)
+		scanID, source := scans.first(head.UserID, head.ProductID, "stock_in", head.At)
 		tracked, err := stockInTracked(ctx, tx, head.ProductID, head.At)
 		if err != nil {
 			return err
@@ -244,7 +253,7 @@ func linkRemoved(ctx context.Context, tx *sql.Tx, itemID, moveID string, at time
 	return nil
 }
 
-func ensureRemoved(ctx context.Context, tx *sql.Tx) error {
+func ensureRemoved(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT ii.id, ii.item_id, i.product_id, i.user_id, ii.removed_at
 		FROM item_instances ii
@@ -273,7 +282,7 @@ func ensureRemoved(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	for _, row := range loaded {
-		scanID, source := committedScan(ctx, tx, row.userID, row.productID, "stock_out", row.at)
+		scanID, source := scans.first(row.userID, row.productID, "stock_out", row.at)
 		if err := AttachStockOut(ctx, tx, OutNote{
 			ItemID: row.itemID, ProductID: row.productID, At: row.at,
 			Source: source, ScanEntryID: scanID, Tracked: false, InstanceID: row.id,
@@ -284,16 +293,206 @@ func ensureRemoved(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func committedScan(ctx context.Context, tx *sql.Tx, userID, productID, direction string, at time.Time) (*string, string) {
-	var id string
-	err := tx.QueryRowContext(ctx, `
-		SELECT id FROM scan_entries
-		WHERE user_id = ? AND product_id = ? AND direction = ? AND status = 'committed' AND scanned_at = ?
-		LIMIT 1`, userID, productID, direction, at).Scan(&id)
-	if err != nil || id == "" {
-		return nil, "manual"
+// scanKey groups one user's committed scans so a repair matches instants in memory.
+// "Exactly one" is one scan for that user, product, and direction.
+// Move rows say "in" and "out"; scan rows say "stock_in" and "stock_out".
+type scanKey struct {
+	userID    string
+	productID string
+	direction string
+}
+
+type storedScan struct {
+	id string
+	at time.Time
+}
+
+type scanIndex struct {
+	byKey map[scanKey][]storedScan
+}
+
+func loadCommittedScans(ctx context.Context, tx *sql.Tx) (scanIndex, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, user_id, product_id, direction, CAST(scanned_at AS TEXT)
+		FROM scan_entries
+		WHERE status = 'committed' AND product_id IS NOT NULL AND direction IS NOT NULL
+		ORDER BY id`)
+	if err != nil {
+		return scanIndex{}, err
 	}
-	return &id, "scan"
+	defer rows.Close()
+	idx := scanIndex{byKey: map[scanKey][]storedScan{}}
+	for rows.Next() {
+		var id, userID, productID, direction, scannedAt string
+		if err := rows.Scan(&id, &userID, &productID, &direction, &scannedAt); err != nil {
+			return scanIndex{}, err
+		}
+		at, err := parseStoredTime(scannedAt)
+		if err != nil {
+			log.Printf("history repair: skipped a committed scan whose scanned_at could not be parsed")
+			continue
+		}
+		if id == "" {
+			continue
+		}
+		key := scanKey{userID: userID, productID: productID, direction: direction}
+		idx.byKey[key] = append(idx.byKey[key], storedScan{id: id, at: at})
+	}
+	if err := rows.Err(); err != nil {
+		return scanIndex{}, err
+	}
+	return idx, nil
+}
+
+// parseStoredTime reads a scanned_at value stored as text, including a legacy
+// monotonic " m=" suffix. Unreadable text is not a match.
+func parseStoredTime(raw string) (time.Time, error) {
+	raw = stripMonotonic(raw)
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05",
+	}
+	var last error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+		last = err
+	}
+	return time.Time{}, last
+}
+
+func stripMonotonic(raw string) string {
+	if i := strings.Index(raw, " m="); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
+// first is the earliest committed scan this user recorded for the product,
+// direction, and instant. Another user's scan at the same instant is not a match.
+func (idx scanIndex) first(userID, productID, direction string, at time.Time) (*string, string) {
+	for _, scan := range idx.byKey[scanKey{userID: userID, productID: productID, direction: direction}] {
+		if scan.at.Equal(at) {
+			id := scan.id
+			return &id, "scan"
+		}
+	}
+	return nil, "manual"
+}
+
+func moveScanDirection(direction string) (string, bool) {
+	switch direction {
+	case "in":
+		return "stock_in", true
+	case "out":
+		return "stock_out", true
+	default:
+		return "", false
+	}
+}
+
+// relabelManualMoves points an existing manual move at a committed scan when
+// that user has exactly one match for the product, direction, and instant,
+// and no other move already uses it. Two moves that share one scan are
+// taken in id order: the first is updated, then the scan is marked linked,
+// so the rest of the pass leaves it alone. Only source and scan_entry_id
+// change. A later pass finds nothing to update.
+func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
+	linked, err := linkedScanIDs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT m.id, i.user_id, m.product_id, m.direction, m.at
+		FROM stock_moves m
+		JOIN items i ON i.id = m.item_id
+		WHERE m.source = 'manual' AND m.scan_entry_id IS NULL
+		ORDER BY m.id`)
+	if err != nil {
+		return err
+	}
+	type manualMove struct {
+		id, userID, productID, direction string
+		at                               time.Time
+	}
+	var pending []manualMove
+	for rows.Next() {
+		var move manualMove
+		if err := rows.Scan(&move.id, &move.userID, &move.productID, &move.direction, &move.at); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, move)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, move := range pending {
+		direction, ok := moveScanDirection(move.direction)
+		if !ok {
+			continue
+		}
+		var matched *storedScan
+		ambiguous := false
+		key := scanKey{userID: move.userID, productID: move.productID, direction: direction}
+		for _, scan := range scans.byKey[key] {
+			if !scan.at.Equal(move.at) {
+				continue
+			}
+			if matched != nil {
+				ambiguous = true
+				break
+			}
+			copy := scan
+			matched = &copy
+		}
+		if ambiguous || matched == nil {
+			continue
+		}
+		if _, taken := linked[matched.id]; taken {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE stock_moves
+			SET source = 'scan', scan_entry_id = ?
+			WHERE id = ? AND source = 'manual' AND scan_entry_id IS NULL`,
+			matched.id, move.id,
+		); err != nil {
+			return err
+		}
+		linked[matched.id] = struct{}{}
+	}
+	return nil
+}
+
+func linkedScanIDs(ctx context.Context, tx *sql.Tx) (map[string]struct{}, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT scan_entry_id FROM stock_moves
+		WHERE scan_entry_id IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	linked := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id != "" {
+			linked[id] = struct{}{}
+		}
+	}
+	return linked, rows.Err()
 }
 
 func stockInTracked(ctx context.Context, tx *sql.Tx, productID string, at time.Time) (bool, error) {

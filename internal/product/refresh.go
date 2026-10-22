@@ -69,13 +69,14 @@ type Refresher struct {
 	wg       sync.WaitGroup
 }
 
-// now returns the current time, defaulting to time.Now so existing
-// construction sites that leave Now nil behave unchanged.
+// now returns the current time, defaulting to time.Now().UTC so existing
+// construction sites that leave Now nil behave unchanged. UTC drops the
+// monotonic clock reading before refreshed_at is stored.
 func (r *Refresher) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
 	}
-	return time.Now()
+	return time.Now().UTC()
 }
 
 // backgroundTimeout bounds a background revalidation goroutine, defaulting

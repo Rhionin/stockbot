@@ -135,7 +135,7 @@ func (s *Store) RemoveItem(ctx context.Context, id string) error {
 func (s *Store) MarkPurchased(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE shopping_list_items SET purchased_at = ? WHERE id = ?`,
-		time.Now(), id,
+		time.Now().UTC(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to mark shopping list item as purchased: %w", err)

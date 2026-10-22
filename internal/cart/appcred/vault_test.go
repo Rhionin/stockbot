@@ -2,7 +2,6 @@ package appcred
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -10,7 +9,7 @@ import (
 )
 
 func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

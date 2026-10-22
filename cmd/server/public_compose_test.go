@@ -87,7 +87,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(pantry.Environment["PANTRY_SESSION_SECRET"], "PANTRY_SESSION_SECRET") {
 		t.Fatalf("pantry must receive PANTRY_SESSION_SECRET from .env, got %q", pantry.Environment["PANTRY_SESSION_SECRET"])
 	}
-	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST"} {
+	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST", "SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TUNNEL_PROJECT_IDS", "SENTRY_TUNNEL_PUBLIC_KEYS"} {
 		if !strings.Contains(pantry.Environment[key], key) {
 			t.Fatalf("pantry must receive %s from .env, got %q", key, pantry.Environment[key])
 		}
@@ -189,6 +189,9 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(envText, "\nVAPID_PUBLIC_KEY=\n") || !strings.Contains(envText, "\nVAPID_PRIVATE_KEY=\n") || !strings.Contains(envText, "\nVAPID_SUBJECT=\n") {
 		t.Fatal(".env.example must leave VAPID keys empty so setup can fill them once")
+	}
+	if !strings.Contains(envText, "\nSENTRY_DSN=\n") || !strings.Contains(envText, "\nSENTRY_ENVIRONMENT=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PROJECT_IDS=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PUBLIC_KEYS=\n") {
+		t.Fatal(".env.example must leave Sentry values empty")
 	}
 
 	setup, err := os.ReadFile(filepath.Join("..", "..", "deploy", "setup.sh"))
@@ -376,7 +379,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !ok {
 		t.Fatal("cloudflared service missing")
 	}
-	if cloudflared.Image != "cloudflare/cloudflared:2026.10.0" {
+	if cloudflared.Image != "cloudflare/cloudflared:2026.10.1" {
 		t.Fatalf("cloudflared image = %q", cloudflared.Image)
 	}
 	if len(cloudflared.Profiles) != 1 || cloudflared.Profiles[0] != "tunnel" {

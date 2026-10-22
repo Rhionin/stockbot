@@ -195,7 +195,7 @@ func findMove(t *testing.T, view View, at time.Time, direction string) Move {
 
 func openHistoryDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

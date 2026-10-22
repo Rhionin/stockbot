@@ -16,7 +16,7 @@ import (
 // setupTestDB opens an in-memory SQLite database, applies all migrations, and returns the connection.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

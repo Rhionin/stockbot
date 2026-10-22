@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -24,7 +27,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/server"
-	_ "modernc.org/sqlite"
 )
 
 // defaultProductCacheTTL is used when PRODUCT_CACHE_TTL is unset, empty, or
@@ -161,7 +163,7 @@ func main() {
 	dbPath := envOrDefault("DB_PATH", "pantry.db")
 	addr := envOrDefault("ADDR", ":8080")
 
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := app.OpenSQLite(dbPath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
@@ -179,12 +181,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+	streams := server.NewStreamShutdown()
 	srv := &http.Server{
 		Handler:           gate,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 16,
 	}
+	// Shutdown does not cancel request contexts. This ends SSE handlers so a
+	// live /api/events tab does not hold the process for the whole budget.
+	streams.Register(srv)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- srv.Serve(ln)
@@ -260,8 +266,17 @@ func main() {
 		log.Println("product contribution: not signed in; opted-in products stay in this pantry")
 	}
 
+	sentrySettings := server.LoadSentrySettings(os.Getenv)
+	if err := server.InitSentry(sentrySettings); err != nil || sentrySettings.DSN == "" {
+		log.Print("sentry: error reporting is off")
+	} else {
+		log.Print("sentry: error reporting is on")
+	}
+
 	opts := []server.Option{
 		server.WithBroadcaster(broadcaster),
+		server.WithSentryTunnel(sentrySettings.TunnelConfig()),
+		server.WithStreamShutdown(streams),
 		server.WithScannerConfig(server.ScannerConfig{
 			StockInBarcode:  stockInBarcode,
 			StockOutBarcode: stockOutBarcode,
@@ -300,9 +315,54 @@ func main() {
 		go listener.Run(context.Background())
 	}
 
-	if err := <-serveErr; err != nil && err != http.ErrServerClosed {
+	stop := make(chan struct{})
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		close(stop)
+	}()
+	if err := runHTTPServer(srv, serveErr, stop, server.FlushSentry); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+}
+
+// shutdownTimeout is how long Shutdown waits for handlers to return. SSE
+// streams are ended by RegisterOnShutdown; anything still open after this is
+// closed outright so the process can exit.
+var shutdownTimeout = 5 * time.Second
+
+// shutdownHTTP is srv.Shutdown. Tests replace it to observe when it returns.
+var shutdownHTTP = func(srv *http.Server, ctx context.Context) error {
+	return srv.Shutdown(ctx)
+}
+
+// runHTTPServer waits until stop is closed or the listener's Serve returns,
+// then flushes error reports. main has already bound the port and started
+// Serve, so this does not listen again. A closed stop shuts that listener down.
+// Flush runs only after Shutdown has returned.
+func runHTTPServer(srv *http.Server, serveErr <-chan error, stop <-chan struct{}, flush func()) error {
+	var err error
+	select {
+	case err = <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+	case <-stop:
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		err = shutdownHTTP(srv, ctx)
+		<-serveErr
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Print("warning: open connections did not finish during shutdown; closing them")
+			_ = srv.Close()
+			err = nil
+		}
+	}
+	if flush != nil {
+		flush()
+	}
+	return err
 }
 
 // loadPushConfig reads the VAPID pair setup stores in the environment.
