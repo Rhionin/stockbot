@@ -56,6 +56,7 @@ interface Outcome {
   createBody?: unknown;
   undoStatus?: number;
   undoError?: string;
+  undoReject?: boolean;
 }
 
 const noneOnHand = {
@@ -182,6 +183,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'Choose which item this is first.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'units_on_hand refreshes the card and offers the normal stock-out',
@@ -208,6 +210,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'This only works when taking something out.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'not_pending shows the server sentence and reloads',
@@ -229,6 +232,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'Choose stock in or stock out first.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'scan_not_found shows the server sentence and reloads',
@@ -250,6 +254,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'Nothing on hand to take out.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'internal shows the server sentence',
@@ -260,6 +265,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'Something went wrong. Try again.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'a 500 with no sentence uses the shared fallback',
@@ -270,6 +276,7 @@ const outcomes: Outcome[] = [
     absent: ['Add it and take it out'],
     toast: 'Something went wrong. Try again.',
     confirm: true,
+    refreshed: false,
   },
   {
     name: 'a batch none_on_hand card does not offer backfill',
@@ -437,6 +444,25 @@ const outcomes: Outcome[] = [
     confirm: true,
   },
   {
+    name: 'a failed undo that never reaches the server uses the shared fallback',
+    kind: 'backfill',
+    status: 200,
+    body: {
+      removed: 1,
+      backfilled: 1,
+      itemId: 'item-sour',
+      backfill: { stockInMoveId: 'move-backfill', stockOutMoveId: 'move-out' },
+    },
+    visible: ['Added and taken out.'],
+    absent: [],
+    toast: 'Added and taken out.',
+    undoId: 'move-backfill',
+    undoReject: true,
+    undoError: SERVER_ERROR_FALLBACK,
+    refreshed: true,
+    confirm: true,
+  },
+  {
     name: 'undo deletes the stock-in id from the commit response',
     kind: 'backfill',
     status: 200,
@@ -547,6 +573,7 @@ describe('backfill card', () => {
         return Promise.resolve(json(history));
       }
       if (method === 'DELETE' && url.startsWith('/api/moves/')) {
+        if (row.undoReject) return Promise.reject(new TypeError('Failed to fetch'));
         if (row.undoStatus !== undefined && row.undoStatus >= 400) {
           const failure = row.undoStatus >= 500 ? {} : { error: row.undoError, code: 'not_pending' };
           return Promise.resolve(json(failure, row.undoStatus));
@@ -573,10 +600,12 @@ describe('backfill card', () => {
       </MantineProvider>,
     );
 
+    let refreshBefore = 0;
     if (row.kind === 'backfill') {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
       await screen.findByRole('button', { name: 'Add it and take it out' });
       notifications.clean();
+      refreshBefore = onChanged.mock.calls.length;
       fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
     } else if (row.kind === 'define' || row.kind === 'add' || row.kind === 'link' || row.kind === 'patch' || row.kind === 'suggest') {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
@@ -611,7 +640,13 @@ describe('backfill card', () => {
       if (row.confirm) {
         expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
       }
-      if (row.refreshed) expect(onChanged).toHaveBeenCalled();
+      if (row.kind === 'backfill' && row.refreshed === true) {
+        expect(onChanged.mock.calls.length).toBeGreaterThan(refreshBefore);
+      }
+      if (row.kind === 'backfill' && row.refreshed === false) {
+        expect(onChanged.mock.calls.length).toBe(refreshBefore);
+      }
+      if (row.kind !== 'backfill' && row.refreshed) expect(onChanged).toHaveBeenCalled();
       if (row.kind === 'add') {
         const created = row.typedName ?? row.lookupName;
         const product = calls.find((call) => call.url === '/api/products' && call.method === 'POST');
@@ -658,11 +693,12 @@ describe('backfill card', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
       await waitFor(() => {
         expect(calls.some((call) => call.method === 'DELETE' && call.url === `/api/moves/${row.undoId}`)).toBe(true);
+        expect(inventoryReads()).toBe(beforeInventory);
         if (row.undoError !== undefined) {
           const details = [...document.querySelectorAll('.restock-toast-detail')];
           expect(details.some((node) => node.textContent === row.undoError)).toBe(true);
+          expect(onChanged.mock.calls.length).toBe(beforeRefresh);
         } else {
-          expect(inventoryReads()).toBeGreaterThan(beforeInventory);
           expect(onChanged.mock.calls.length).toBeGreaterThan(beforeRefresh);
         }
       });
@@ -723,11 +759,13 @@ describe('backfill card', () => {
       return Promise.resolve(json([]));
     }));
 
+    const newerChanged = vi.fn();
+    const olderChanged = vi.fn();
     render(
       <MantineProvider>
         <Notifications />
-        <ScanEntryCard entry={newer} selected={false} itemId="item-sour" onSelectedChange={vi.fn()} onChanged={vi.fn()} />
-        <ScanEntryCard entry={older} selected={false} itemId="item-sour" onSelectedChange={vi.fn()} onChanged={vi.fn()} />
+        <ScanEntryCard entry={newer} selected={false} itemId="item-sour" onSelectedChange={vi.fn()} onChanged={newerChanged} />
+        <ScanEntryCard entry={older} selected={false} itemId="item-sour" onSelectedChange={vi.fn()} onChanged={olderChanged} />
       </MantineProvider>,
     );
 
@@ -743,12 +781,14 @@ describe('backfill card', () => {
 
     const inventoryReads = () => calls.filter((call) => call.method === 'GET' && call.url.startsWith('/api/inventory')).length;
     const beforeInventory = inventoryReads();
+    const beforeOlder = olderChanged.mock.calls.length;
     const latest = screen.getAllByText('Added and taken out.').at(-1)?.closest('.restock-toast');
     if (!(latest instanceof HTMLElement)) throw new Error('missing undo toast');
     fireEvent.click(within(latest).getByRole('button', { name: 'Undo' }));
     await waitFor(() => {
       expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/moves/move-older-in')).toBe(true);
-      expect(inventoryReads()).toBeGreaterThan(beforeInventory);
+      expect(olderChanged.mock.calls.length).toBeGreaterThan(beforeOlder);
+      expect(inventoryReads()).toBe(beforeInventory);
     });
     expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/moves/move-newer-in')).toBe(false);
     expect(calls.some((call) => call.url.includes('/history'))).toBe(false);

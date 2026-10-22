@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const barcode = '2940000002941'
@@ -16,7 +16,7 @@ const historyMove = {
   productName: 'Sour cream',
 }
 
-const shoot = async (page: Page, slug: string) => {
+const shoot = async (page: Page, testInfo: TestInfo, slug: string) => {
   for (const width of [390, 1280] as const) {
     for (const scheme of ['light', 'dark'] as const) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
@@ -25,13 +25,13 @@ const shoot = async (page: Page, slug: string) => {
       const card = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
       if (await card.count()) await card.scrollIntoViewIfNeeded()
       await page.screenshot({
-        path: `/opt/cursor/artifacts/backfill-${slug}-${width}-${scheme}.png`,
+        path: testInfo.outputPath(`backfill-${slug}-${width}-${scheme}.png`),
       })
     }
   }
 }
 
-test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', async ({ page, request }) => {
+test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', async ({ page, request }, testInfo) => {
   test.setTimeout(180_000)
   await page.setViewportSize({ width: 390, height: 844 })
   const seen: { product?: { name?: string }; override?: { barcode?: string; productId?: string }; patch?: { productId?: string; status?: string }; backfill?: unknown; undo?: string } = {}
@@ -140,6 +140,9 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
     })
   })
 
+  let reshelvesOnUndo: boolean | undefined = true
+  const stockInMove = () => (reshelvesOnUndo === undefined ? historyMove : { ...historyMove, reshelvesOnUndo })
+
   await page.route((url) => url.pathname === '/api/items/item-sour/history', async (route) => {
     await route.fulfill({
       status: 200,
@@ -150,7 +153,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
         name: 'Sour cream',
         onHand: 0,
         pace: { known: false, daysLeftKnown: false, sparkline: [] },
-        moves: [historyMove, { ...historyMove, id: 'move-out', direction: 'out', source: 'scan' }],
+        moves: [stockInMove(), { ...historyMove, id: 'move-out', direction: 'out', source: 'scan' }],
       }),
     })
   })
@@ -171,37 +174,11 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
     })
   })
 
-  let listOnHand = false
-  await page.route((url) => url.pathname === '/api/inventory', async (route) => {
-    if (!listOnHand || route.request().method() !== 'GET') {
-      await route.continue()
-      return
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([{
-        item: {
-          id: 'item-sour',
-          userId: 'user-1',
-          productId: 'prod-sour',
-          product: { id: 'prod-sour', name: 'Sour cream', category: 'Dairy', unitOfMeasure: 'tub' },
-          targetQuantity: null,
-          createdAt: '2026-10-18T16:40:00.000Z',
-        },
-        instanceCount: 0,
-        nearExpiryCount: 0,
-        expiredCount: 0,
-        needsAttention: false,
-      }]),
-    })
-  })
-
   await page.route((url) => url.pathname === '/api/history', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ moves: [historyMove] }),
+      body: JSON.stringify({ moves: [stockInMove()] }),
     })
   })
 
@@ -215,7 +192,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await expect(card.getByRole('button', { name: 'Add as a new item' })).toBeDisabled()
   await expect(card.getByRole('button', { name: 'Add it and take it out' })).toHaveCount(0)
   await expect(card.getByRole('textbox', { name: 'Product name' })).toHaveValue('')
-  await shoot(page, 'define')
+  await shoot(page, testInfo, 'define')
 
   await card.getByRole('textbox', { name: 'Product name' }).fill('Sour cream')
   await card.getByRole('button', { name: 'Add as a new item' }).click()
@@ -227,7 +204,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   expect(seen.product).toMatchObject({ name: 'Sour cream' })
   expect(seen.override).toEqual({ barcode, productId: 'prod-sour' })
   expect(seen.patch).toEqual({ productId: 'prod-sour', status: 'pending' })
-  await shoot(page, 'offer')
+  await shoot(page, testInfo, 'offer')
 
   await page.clock.install()
   await card.getByRole('button', { name: 'Add it and take it out' }).click()
@@ -236,26 +213,40 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await expect(toast).toBeVisible()
   await expect(toast.getByRole('button', { name: 'Undo' })).toBeVisible()
   expect(seen.backfill).toEqual({ backfill: true })
-  await shoot(page, 'toast')
+  await shoot(page, testInfo, 'toast')
 
   await toast.getByRole('button', { name: 'Undo' }).click()
   await expect.poll(() => seen.undo).toBe('/api/moves/move-backfill')
 
   await page.clock.runFor(6000)
-  listOnHand = true
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
   await expect(page.getByText('Sour cream')).toBeVisible()
-  await shoot(page, 'history')
+  await shoot(page, testInfo, 'history')
 
+  const hideLine = 'Sour cream will be hidden from your inventory again, since none are on hand.'
+  const pairBody = 'This removes both the add and the take-out for Sour cream, as if neither happened.'
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const confirm = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
-  await expect(confirm.getByText('This removes both the add and the take-out for Sour cream, as if neither happened.')).toBeVisible()
-  await expect(confirm.getByText('Sour cream will be hidden from your inventory again, since none are on hand.')).toBeVisible()
+  await expect(confirm.getByText(pairBody)).toBeVisible()
+  await expect(confirm.getByText(hideLine)).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Undo', exact: true })).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible()
-  await shoot(page, 'undo-confirm')
+  await shoot(page, testInfo, 'undo-confirm')
+
+  await confirm.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(confirm).toBeHidden()
+  reshelvesOnUndo = undefined
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  await page.getByRole('link', { name: 'History' }).click()
+  await expect(page.getByText(historyLabel)).toBeVisible()
+  await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
+  await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
+  const plain = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
+  await expect(plain.getByText(pairBody)).toBeVisible()
+  await expect(plain.getByText(hideLine)).toHaveCount(0)
+  await shoot(page, testInfo, 'undo-confirm-plain')
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   const pending = await request.get('/api/scans?userId=user-1&status=pending')

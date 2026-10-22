@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
-import { getHouseholdHistory, getInventoryList, setMoveQuantity, undoMove } from '../../api/client';
-import { onHandByProduct, pairUndoCopy, quantityLocked } from '../../api/contract';
+import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { pairReshelves, pairUndoCopy, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -59,22 +59,17 @@ export function LedgerPage() {
   const [quantity, setQuantity] = useState('1');
   const [undoing, setUndoing] = useState<LedgerMove | null>(null);
   const [pending, setPending] = useState(false);
-  const [units, setUnits] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(async () => {
       if (!active) return;
       try {
-        const [next, list] = await Promise.all([
-          readLedger(direction, query),
-          getInventoryList().catch(() => []),
-        ]);
+        const next = await readLedger(direction, query);
         if (!active) return;
         setMoves(next.moves);
         setLockMoves(next.lockMoves);
         setSetupAt(next.setupAt);
-        setUnits(onHandByProduct(list));
         setError('');
       } catch (requestError) {
         if (!active) return;
@@ -89,14 +84,10 @@ export function LedgerPage() {
   }, [direction, query]);
 
   const reload = async () => {
-    const [next, list] = await Promise.all([
-      readLedger(direction, query),
-      getInventoryList().catch(() => []),
-    ]);
+    const next = await readLedger(direction, query);
     setMoves(next.moves);
     setLockMoves(next.lockMoves);
     setSetupAt(next.setupAt);
-    setUnits(onHandByProduct(list));
   };
 
   const onInspect = useCallback((day: PulseInspect | null) => {
@@ -142,7 +133,7 @@ export function LedgerPage() {
   const groups = groupMovesByDay(orderBackfillPairs(moves ?? []), now);
   const pair = undoing !== null && quantityLocked(undoing, lockMoves);
   const pairCopy = pair && undoing !== null
-    ? pairUndoCopy(undoing.productName, units.get(undoing.productId) ?? Number.NaN)
+    ? pairUndoCopy(undoing.productName, pairReshelves(undoing, lockMoves) ? true : undefined)
     : null;
   const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
   const showEmpty = !loading && error === '' && moves !== null && groups.length === 0;

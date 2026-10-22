@@ -501,16 +501,12 @@ export const ScanEntryCard = ({
     setApproving(true);
     try {
       const result = await commitBackfill(entry.id);
-      const moveId = result.backfill?.stockInMoveId ?? '';
+      const moveId = result.backfill.stockInMoveId;
       showUndo({
         detail: ADDED_AND_TAKEN_OUT,
         onUndo: moveId === '' ? undefined : () => {
           void undoMove(moveId)
-            .then(async () => {
-              // Inventory is whatever the server still lists. Undo re-shelves
-              // only when no live unit remains, and this client does not hide
-              // an item the list still includes.
-              await getInventoryList().catch(() => undefined);
+            .then(() => {
               onChanged();
             })
             .catch((requestError: unknown) => {

@@ -43,13 +43,11 @@ const moves: LedgerMove[] = [
 ];
 
 const getHouseholdHistory = vi.fn();
-const getInventoryList = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getHouseholdHistory: (...args: unknown[]) => getHouseholdHistory(...args),
-  getInventoryList: (...args: unknown[]) => getInventoryList(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
 }));
@@ -81,11 +79,9 @@ describe('LedgerPage', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 14, 16, 0, 0));
     getHouseholdHistory.mockReset();
-    getInventoryList.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
     getHouseholdHistory.mockImplementation(async (filter?: { direction?: string; q?: string }) => filtered(filter));
-    getInventoryList.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -299,6 +295,7 @@ describe('LedgerPage', () => {
       productId: 'prod-peas',
       productName: 'Chickpeas',
       groupName: 'Legumes',
+      reshelvesOnUndo: true,
     };
     const pairedUse = {
       id: 'move-use',
@@ -324,9 +321,6 @@ describe('LedgerPage', () => {
       if (filter?.direction === 'out') return { moves: outs };
       return { moves: [backfill, ...outs] };
     });
-    getInventoryList.mockResolvedValue([
-      { item: { productId: 'prod-peas' }, instanceCount: 0 },
-    ]);
     renderLedger();
     await screen.findAllByText('Chickpeas');
     fireEvent.click(screen.getByRole('button', { name: 'Used' }));
@@ -347,23 +341,36 @@ describe('LedgerPage', () => {
     expect(screen.getByRole('menuitem', { name: 'Change quantity' })).toBeInTheDocument();
   });
 
-  it('leaves out the hide line when inventory still has a live unit', async () => {
+  const chickpeaLine = 'Chickpeas will be hidden from your inventory again, since none are on hand.';
+
+  it.each([
+    { name: 'true', reshelvesOnUndo: true as boolean | undefined, hide: true },
+    { name: 'false', reshelvesOnUndo: false as boolean | undefined, hide: false },
+    { name: 'absent', reshelvesOnUndo: undefined, hide: false },
+  ])('shows the hide line only when the server says the undo re-shelves ($name)', async ({ reshelvesOnUndo, hide }) => {
     const at = yesterdayAt.toISOString();
     getHouseholdHistory.mockResolvedValue({
       moves: [
-        { id: 'move-bf', direction: 'in', quantity: 2, at, source: 'backfill', productId: 'prod-peas', productName: 'Chickpeas' },
-        { id: 'move-use', direction: 'out', quantity: 2, at, source: 'scan', productId: 'prod-peas', productName: 'Chickpeas' },
+        {
+          id: 'move-bf',
+          direction: 'in',
+          quantity: 1,
+          at,
+          source: 'backfill',
+          productId: 'prod-peas',
+          productName: 'Chickpeas',
+          ...(reshelvesOnUndo === undefined ? {} : { reshelvesOnUndo }),
+        },
+        { id: 'move-use', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-peas', productName: 'Chickpeas' },
       ],
     });
-    getInventoryList.mockResolvedValue([
-      { item: { productId: 'prod-peas' }, instanceCount: 2 },
-    ]);
     renderLedger();
-    fireEvent.click(await screen.findByRole('button', { name: /Actions for Chickpeas, 2 stocked in/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Actions for Chickpeas, 1 stocked in/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
-    expect(within(dialog).queryByText(/hidden from your inventory again/)).not.toBeInTheDocument();
+    if (hide) expect(within(dialog).getByText(chickpeaLine)).toBeInTheDocument();
+    else expect(within(dialog).queryByText(chickpeaLine)).not.toBeInTheDocument();
   });
 
   it('lists the added row before its use', async () => {
@@ -385,5 +392,6 @@ describe('LedgerPage', () => {
     renderLedger();
     expect(await screen.findByText('Unable to load history.')).toBeInTheDocument();
     expect(screen.queryByText(/No stock moves yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText('will be hidden from your inventory again, since none are on hand.', { exact: false })).not.toBeInTheDocument();
   });
 });

@@ -43,14 +43,12 @@ const view: HistoryView = {
 
 const getItemHistory = vi.fn();
 const getGroupHistory = vi.fn();
-const getInventoryList = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getItemHistory: (...args: unknown[]) => getItemHistory(...args),
   getGroupHistory: (...args: unknown[]) => getGroupHistory(...args),
-  getInventoryList: (...args: unknown[]) => getInventoryList(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
 }));
@@ -70,12 +68,10 @@ describe('HistoryPage', () => {
   beforeEach(() => {
     getItemHistory.mockReset();
     getGroupHistory.mockReset();
-    getInventoryList.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
     getItemHistory.mockResolvedValue(view);
     getGroupHistory.mockResolvedValue({ ...view, kind: 'group', name: 'Beans' });
-    getInventoryList.mockResolvedValue([]);
   });
 
   it('leads with pace and then the recent moves', async () => {
@@ -145,7 +141,7 @@ describe('HistoryPage', () => {
       ...view,
       onHand: 0,
       moves: [
-        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
+        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans', reshelvesOnUndo: true },
         { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
       ],
     });
@@ -167,26 +163,49 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
     const used = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(used).queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
+    expect(within(used).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
     expect(within(used).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
   });
 
-  it('leaves out the hide line when the item still has a live unit', async () => {
+  const hideLine = 'Black Beans will be hidden from your inventory again, since none are on hand.';
+
+  it.each([
+    { name: 'true', reshelvesOnUndo: true as boolean | undefined, hide: true },
+    { name: 'false', reshelvesOnUndo: false as boolean | undefined, hide: false },
+    { name: 'absent', reshelvesOnUndo: undefined, hide: false },
+  ])('shows the hide line only when the server says the undo re-shelves ($name)', async ({ reshelvesOnUndo, hide }) => {
     const at = '2026-10-18T16:40:00.000Z';
     getItemHistory.mockResolvedValue({
       ...view,
-      onHand: 2,
+      onHand: 0,
       moves: [
-        { id: 'move-backfill', direction: 'in', quantity: 3, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
-        { id: 'move-out-pair', direction: 'out', quantity: 3, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
+        {
+          id: 'move-backfill',
+          direction: 'in',
+          quantity: 1,
+          at,
+          source: 'backfill',
+          productId: 'prod-1',
+          productName: 'Black Beans',
+          ...(reshelvesOnUndo === undefined ? {} : { reshelvesOnUndo }),
+        },
+        { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
       ],
     });
     renderHistory();
-    fireEvent.click(await screen.findByRole('button', { name: /Actions for Stocked in 3/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Actions for Stocked in 1/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
-    expect(within(dialog).queryByText(/hidden from your inventory again/)).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    if (hide) expect(within(dialog).getByText(hideLine)).toBeInTheDocument();
+    else expect(within(dialog).queryByText(hideLine)).not.toBeInTheDocument();
+  });
+
+  it('leaves the hide line out when history fails to load', async () => {
+    getItemHistory.mockRejectedValue(new Error('Unable to load history.'));
+    renderHistory();
+    expect(await screen.findByText('Unable to load history.')).toBeInTheDocument();
+    expect(screen.queryByText(hideLine)).not.toBeInTheDocument();
   });
 
   it('lists the added row before its use when the response lists the use first', async () => {

@@ -235,8 +235,26 @@ describe('FlaggedEntryResolver', () => {
     {
       name: 'drops a product that is no longer available and does not save the barcode',
       status: 409,
-      body: { error: goneSentence, code: 'link_target_gone' },
+      body: { error: goneSentence, code: 'link_target_gone' } as unknown,
       sentence: goneSentence,
+      drop: true,
+      reject: false,
+    },
+    {
+      name: 'keeps the product when the server refuses a different change',
+      status: 400,
+      body: { error: 'Choose one change at a time.', code: 'conflicting_fields' } as unknown,
+      sentence: 'Choose one change at a time.',
+      drop: false,
+      reject: false,
+    },
+    {
+      name: 'keeps the product when the request never reaches the server',
+      status: 0,
+      body: {} as unknown,
+      sentence: 'Failed to fetch',
+      drop: false,
+      reject: true,
     },
   ])('$name', async (row) => {
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
@@ -245,7 +263,10 @@ describe('FlaggedEntryResolver', () => {
         return Promise.resolve(jsonResponse([yogurt, milk]));
       }
       if (url === '/api/products/overrides') return Promise.resolve(jsonResponse({}));
-      if (url === '/api/scans/scan-1') return Promise.resolve(jsonResponse(row.body, row.status));
+      if (url === '/api/scans/scan-1') {
+        if (row.reject) return Promise.reject(new TypeError('Failed to fetch'));
+        return Promise.resolve(jsonResponse(row.body, row.status));
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -265,8 +286,13 @@ describe('FlaggedEntryResolver', () => {
       }),
     );
     expect(fetchMock.mock.calls.some((call) => String(call[0]) === '/api/products/overrides')).toBe(false);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Search products' }), { target: { value: '' } });
     fireEvent.click(screen.getByRole('combobox', { name: 'Search products' }));
-    expect(screen.queryByRole('option', { name: 'Whole Milk — Dairy' })).not.toBeInTheDocument();
+    if (row.drop) {
+      expect(screen.queryByRole('option', { name: 'Whole Milk — Dairy' })).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole('option', { name: 'Whole Milk — Dairy' })).toBeInTheDocument();
+    }
     expect(await screen.findByRole('option', { name: 'Greek Yogurt — Dairy' })).toBeInTheDocument();
   });
 });

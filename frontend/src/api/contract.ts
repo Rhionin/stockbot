@@ -225,9 +225,7 @@ export function readItemId(body: object | null | undefined): string {
 export const CODE_CONFLICTING_FIELDS = 'conflicting_fields';
 export const CODE_BACKFILL_LOCKED = 'backfill_locked';
 
-// Pair undo confirmation, shared with the phone. The stock-in unshelved flag
-// is not on the history or inventory JSON, so the extra line uses the live
-// count the client already has: history onHand, or the inventory list.
+// Pair undo confirmation, shared with the phone.
 export const PAIR_UNDO_TITLE = 'Undo "Add it and take it out"?';
 export const PAIR_UNDO_CONFIRM = 'Undo';
 export const PAIR_UNDO_CANCEL = 'Cancel';
@@ -248,32 +246,35 @@ export interface PairUndoCopy {
   cancel: string;
 }
 
-// onHand is the item's current live units. The pair nets to zero, so 0 means
-// undo leaves none on hand. Any other count omits the hide line.
-export function pairUndoCopy(itemName: string, onHand: number): PairUndoCopy {
+// Pending Backend. History and ledger moves do not send this yet.
+// true means undoing this pair re-shelves the item. Absent is not a yes.
+export interface PairUndoMove {
+  reshelvesOnUndo?: boolean;
+  source?: string;
+  at?: string;
+  productId?: string;
+}
+
+// True only when this move, or the other half of its pair, says so.
+// false, a missing field, and a failed load all leave the line out.
+export function pairReshelves(move: PairUndoMove, moves: readonly PairUndoMove[] = []): boolean {
+  if (move.reshelvesOnUndo === true) return true;
+  return moves.some((other) => other !== move
+    && other.reshelvesOnUndo === true
+    && other.productId !== undefined
+    && other.productId === move.productId
+    && other.at === move.at
+    && (other.source === BACKFILL_SOURCE || move.source === BACKFILL_SOURCE));
+}
+
+export function pairUndoCopy(itemName: string, reshelvesOnUndo: boolean | undefined): PairUndoCopy {
   return {
     title: PAIR_UNDO_TITLE,
     body: pairUndoBody(itemName),
-    hideLine: onHand === 0 ? pairUndoHideLine(itemName) : '',
+    hideLine: reshelvesOnUndo === true ? pairUndoHideLine(itemName) : '',
     confirm: PAIR_UNDO_CONFIRM,
     cancel: PAIR_UNDO_CANCEL,
   };
-}
-
-// GET /api/inventory has no top-level onHand. A group member carries onHand.
-// A row without that member uses instanceCount, the live units on the shelf.
-export function onHandByProduct(rows: {
-  item: { productId: string };
-  instanceCount: number;
-  group?: { members: { productId: string; onHand: number }[] };
-}[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  if (!Array.isArray(rows)) return counts;
-  for (const row of rows) {
-    const member = row.group?.members.find((entry) => entry.productId === row.item.productId);
-    counts.set(row.item.productId, member !== undefined ? member.onHand : row.instanceCount);
-  }
-  return counts;
 }
 
 export function linkSuggestionsPath(id: string): string {
