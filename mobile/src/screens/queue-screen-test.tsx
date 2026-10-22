@@ -557,7 +557,7 @@ describe('QueueScreen', () => {
     { label: 'a successful link', trigger: 'link-ok', banner: 'gone' as const },
     { label: 'a new batch', trigger: 'batch', banner: 'teal' as const },
     { label: 'a removed card', trigger: 'removed', banner: 'gone' as const },
-    { label: 'a new scan', trigger: 'arrived', banner: 'gone' as const },
+    { label: 'a new scan', trigger: 'arrived', banner: 'teal' as const },
     { label: 'leaving the queue', trigger: 'leave', banner: 'teal' as const },
   ])('clears the partial line on $label', async ({ trigger, banner }) => {
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
@@ -1694,6 +1694,112 @@ describe('QueueScreen', () => {
 
     expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
     expectBanner(screen, 'gone', []);
+  });
+
+  it('does not bring the banner back for a card the batch never marked', async () => {
+    const oats = entry({
+      id: 'scan-ok',
+      barcode: '333',
+      direction: 'stock_out',
+      productId: 'prod-ok',
+      product: { id: 'prod-ok', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+    });
+    const rice = entry({
+      id: 'scan-rice',
+      barcode: '222',
+      direction: 'stock_out',
+      productId: 'prod-rice',
+      product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const tea = entry({
+      id: 'scan-tea',
+      barcode: '444',
+      direction: 'stock_out',
+      productId: 'prod-tea',
+      product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
+    });
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([oats, rice])
+      .mockResolvedValueOnce([rice])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([tea]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 1,
+        committedIds: ['scan-ok'],
+        failedIds: ['scan-rice'],
+        failedReasons: ['nothing on hand'],
+        failedCodes: ['none_on_hand'],
+      })),
+      cancelScan: jest.fn(async () => entry({ id: 'scan-rice', status: 'cancelled' })),
+      getInventoryList: jest.fn()
+        .mockResolvedValueOnce([
+          householdItem('Oats', 'prod-ok', 2, 'Grain'),
+          householdItem('Rice', 'prod-rice', 0),
+        ])
+        .mockResolvedValueOnce([
+          householdItem('Oats', 'prod-ok', 2, 'Grain'),
+          householdItem('Rice', 'prod-rice', 0),
+        ])
+        .mockResolvedValue([householdItem('Tea', 'prod-tea', 0)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" focused />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Remove Rice'));
+    expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
+    expectBanner(screen, 'gone', []);
+
+    await act(async () => {
+      screen.rerender(framed(<QueueScreen client={api} warning="" focused={false} />));
+    });
+    await act(async () => {
+      screen.rerender(framed(<QueueScreen client={api} warning="" focused />));
+    });
+
+    expect(await screen.findByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.getByText('Tea')).toBeTruthy();
+    expectBanner(screen, 'gone', []);
+  });
+
+  it('keeps the skip line while a single confirm is in flight', async () => {
+    let releaseConfirm: (value: ScanEntry) => void = () => {};
+    const rice = entry({
+      id: 'scan-rice',
+      barcode: '222',
+      direction: 'stock_out',
+      productId: 'prod-rice',
+      product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const oats = entry({
+      id: 'scan-ok',
+      barcode: '333',
+      direction: 'stock_out',
+      productId: 'prod-ok',
+      product: { id: 'prod-ok', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+    });
+    const api = client({
+      listPending: jest.fn(async () => [rice, oats]),
+      commitScan: jest.fn(() => new Promise<ScanEntry>((resolve) => {
+        releaseConfirm = resolve;
+      })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Rice', 'prod-rice', 0),
+        householdItem('Oats', 'prod-ok', 2, 'Grain'),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    expect(await screen.findByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
+    const confirmAll = screen.getByLabelText('Confirm all');
+    expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);
+    await act(async () => {
+      releaseConfirm(entry({ id: 'scan-ok', status: 'committed' }));
+    });
   });
 
   it('disables confirm all when every card has nothing on hand', async () => {
