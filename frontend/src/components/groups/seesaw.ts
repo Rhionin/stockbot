@@ -15,7 +15,8 @@ export interface SeesawEnd {
   known: boolean;
   /** Household window, shown beside the pinned time. */
   isDefault: boolean;
-  labelText: string;
+  /** Expanded phrase for the pill, not part of its accessible name. */
+  description: string;
 }
 
 export interface SeesawView {
@@ -170,12 +171,6 @@ function speakSpan(shown: string): string {
   return bare;
 }
 
-// Speech input activates a control by the words on screen, so those words lead
-// the accessible name (WCAG 2.5.3). The rest expands the pill's abbreviations.
-function labelInName(visible: string, detail: string): string {
-  return `${visible}, ${detail}`;
-}
-
 function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawEnd {
   const pinned = pin === 'amount';
   if (!positive(amount)) {
@@ -185,7 +180,7 @@ function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawE
       label: 'Set amount',
       known: false,
       isDefault: false,
-      labelText: labelInName('Set amount', 'Keep on hand amount, not set'),
+      description: 'Keep on hand amount, not set',
     };
   }
   const shown = `${formatAmount(amount)} ${unit}`;
@@ -197,7 +192,7 @@ function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawE
       label: shown,
       known: true,
       isDefault: false,
-      labelText: labelInName(shown, `Keep on hand amount, pinned, ${spoken}`),
+      description: `Keep on hand amount, pinned, ${spoken}`,
     };
   }
   const visible = `≈ ${shown}`;
@@ -207,7 +202,7 @@ function endAmount(pin: SeesawPin, amount: number | null, unit: string): SeesawE
     label: visible,
     known: true,
     isDefault: false,
-    labelText: labelInName(visible, `Keep on hand amount, about ${spoken}`),
+    description: `Keep on hand amount, about ${spoken}`,
   };
 }
 
@@ -220,22 +215,19 @@ function endTime(pin: SeesawPin, months: number | null, isDefault: boolean): See
       label: 'Set time',
       known: false,
       isDefault: false,
-      labelText: labelInName('Set time', 'Keep on hand time, not set'),
+      description: 'Keep on hand time, not set',
     };
   }
   if (pinned) {
     const shown = `${Math.round(months)} mo`;
     const marker = isDefault ? ', household default' : '';
-    // "default" is a separate word beside the duration. DefaultMark keeps
-    // that split in the text axe reads.
-    const visible = isDefault ? `${shown} default` : shown;
     return {
       pin: 'time',
       pinned: true,
       label: shown,
       known: true,
       isDefault,
-      labelText: labelInName(visible, `Keep on hand time, pinned, ${speakSpan(shown)}${marker}`),
+      description: `Keep on hand time, pinned, ${speakSpan(shown)}${marker}`,
     };
   }
   const shown = formatDuration(months);
@@ -246,6 +238,6 @@ function endTime(pin: SeesawPin, months: number | null, isDefault: boolean): See
     label: visible,
     known: true,
     isDefault: false,
-    labelText: labelInName(visible, `Keep on hand time, about ${speakSpan(shown)}`),
+    description: `Keep on hand time, about ${speakSpan(shown)}`,
   };
 }

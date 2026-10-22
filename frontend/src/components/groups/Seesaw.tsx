@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useId, useRef, useState, type Ref } from 'react';
 import { Button, Group, NumberInput, Text } from '@mantine/core';
 import type { GroupTarget, ProductGroup } from '../../types';
 import { clampMonth, type SeesawDraft, type SeesawEnd, type SeesawPin, type SeesawView } from './seesaw';
@@ -15,13 +15,6 @@ function PinIcon() {
   );
 }
 
-function DefaultMark() {
-  // The pill is a flex row, so "3 mo" and "default" have no space character
-  // between them and read as one word. This zero-width space splits those
-  // words. The flex gap is the space you see, and this adds none of its own.
-  return <span className="seesaw-default">{'\u200B'}default</span>;
-}
-
 function Pill({
   end,
   onOpen,
@@ -31,19 +24,29 @@ function Pill({
   onOpen: (pin: SeesawPin) => void;
   buttonRef?: Ref<HTMLButtonElement>;
 }) {
+  const descriptionId = useId();
+  const visibleName = end.isDefault ? `${end.label} default` : end.label;
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      className={end.pinned ? 'seesaw-pill is-pinned' : 'seesaw-pill is-inferred'}
-      aria-pressed={end.pinned}
-      aria-label={end.labelText}
-      onClick={() => onOpen(end.pin)}
-    >
-      {end.pinned && <PinIcon />}
-      <span>{end.label}</span>
-      {end.isDefault && <DefaultMark />}
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={end.pinned ? 'seesaw-pill is-pinned' : 'seesaw-pill is-inferred'}
+        aria-pressed={end.pinned}
+        aria-label={visibleName}
+        aria-describedby={descriptionId}
+        onClick={() => onOpen(end.pin)}
+      >
+        {end.pinned && <PinIcon />}
+        <span>{end.label}</span>
+        {end.isDefault && (
+          // The space is in the name ("3 mo default"). nowrap collapses it,
+          // so the flex gap stays the only space on screen.
+          <span className="seesaw-default">{' '}default</span>
+        )}
+      </button>
+      <span id={descriptionId} className="seesaw-description">{end.description}</span>
+    </>
   );
 }
 
