@@ -82,6 +82,37 @@ func (h *HistoryHandler) Undo(req Request[struct{}, historyMoveParams]) (history
 	return view, nil
 }
 
+type undoPreviewResponse struct {
+	Effects []undoEffectJSON `json:"effects"`
+}
+
+type undoEffectJSON struct {
+	ItemID          string `json:"itemId"`
+	ProductID       string `json:"productId"`
+	Name            string `json:"name"`
+	StockInMoveID   string `json:"stockInMoveId,omitempty"`
+	StockOutMoveID  string `json:"stockOutMoveId,omitempty"`
+	OnHand          int    `json:"onHand"`
+	ReshelvesOnUndo bool   `json:"reshelvesOnUndo"`
+}
+
+// PreviewUndo reports what DELETE /api/moves/{id} would change. It writes nothing.
+func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (undoPreviewResponse, error) {
+	preview, err := h.Journal.PreviewUndo(req.Context, req.PathParams.ID)
+	if err != nil {
+		return undoPreviewResponse{}, historyHTTP(err)
+	}
+	effects := make([]undoEffectJSON, 0, len(preview.Effects))
+	for _, effect := range preview.Effects {
+		effects = append(effects, undoEffectJSON{
+			ItemID: effect.ItemID, ProductID: effect.ProductID, Name: effect.Name,
+			StockInMoveID: effect.StockInMoveID, StockOutMoveID: effect.StockOutMoveID,
+			OnHand: effect.OnHand, ReshelvesOnUndo: effect.ReshelvesOnUndo,
+		})
+	}
+	return undoPreviewResponse{Effects: effects}, nil
+}
+
 func (h *HistoryHandler) publish(ctx context.Context, itemID string) {
 	if h.Events == nil || h.Pantry == nil || itemID == "" {
 		return

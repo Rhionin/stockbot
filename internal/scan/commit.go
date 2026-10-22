@@ -84,7 +84,7 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
 		return err
 	}
-	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
 		return err
 	}
 
@@ -151,6 +151,14 @@ func claimScan(ctx context.Context, tx *sql.Tx, id string) error {
 	}
 	return nil
 }
+
+// openScanCheck is requireOpenScan. The rows-affected test replaces it so a
+// commit can reach markScanCommitted with a scan that check would reject.
+var openScanCheck = requireOpenScan
+
+// backfillMoveRead is nil in production. Tests set it to fail one of the
+// move-id reads after the pair is written.
+var backfillMoveRead func(direction string)
 
 // requireOpenScan rejects a scan that was committed or cancelled after the
 // caller read it. Two commits can both pass the handler's check; the
@@ -589,7 +597,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
 		return err
 	}
-	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
 		return err
 	}
 
@@ -740,7 +748,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (Backf
 	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
 		return BackfillResult{}, err
 	}
-	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
+	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
 		return BackfillResult{}, err
 	}
 
@@ -833,11 +841,17 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (Backf
 		return BackfillResult{}, err
 	}
 	var stockInID, stockOutID string
+	if backfillMoveRead != nil {
+		backfillMoveRead("in")
+	}
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM stock_moves
 		WHERE scan_entry_id = ? AND direction = 'in' AND source = 'backfill'`,
 		scanEntry.ID).Scan(&stockInID); err != nil {
 		return BackfillResult{}, fmt.Errorf("read backfill stock-in: %w", err)
+	}
+	if backfillMoveRead != nil {
+		backfillMoveRead("out")
 	}
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM stock_moves
