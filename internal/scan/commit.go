@@ -203,9 +203,9 @@ func (r *Queue) recordStockInTx(ctx context.Context, tx *sql.Tx, itemID, product
 }
 
 // recordStockOutTx removes one on-hand unit. A nil instanceID selects the
-// earliest expiration, undated last, then oldest stocked — the same unit a
-// one-count scan-out commits. After opening, the removal is one consumption
-// row. During opening the unit was already here, so it is not usage.
+// earliest expiration, then the earliest acquired, with undated units last —
+// the same unit a one-count scan-out commits. After opening, the removal is
+// one consumption row. During opening the unit was already here, so it is not usage.
 func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string, instanceID *string, at time.Time, scanEntryID *string) error {
 	_, err := r.removeStockOutUnitsTx(ctx, tx, itemID, instanceID, 1, at, scanEntryID)
 	return err
@@ -213,8 +213,9 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 
 // removeStockOutUnitsTx removes up to units on-hand units and records them
 // as one stock move. A named instance goes first. Any further units, and
-// every unit when none is named, are earliest expiry first, undated last,
-// then oldest stocked.
+// every unit when none is named, are earliest expiry first. The same expiry,
+// and undated units after every dated one, go earliest acquired first, then
+// lowest id.
 // When the shelf has some but fewer than units, every remaining unit is
 // removed and the returned count is how many left. An empty shelf returns
 // ErrNoneOnHand and removes nothing. A named instance that is not on the
@@ -275,8 +276,8 @@ func (r *Queue) removeStockOutUnitsTx(ctx context.Context, tx *sql.Tx, itemID st
 	return len(ids), nil
 }
 
-// stockOutOrder is earliest expiry first, undated last, then oldest stocked.
-// Equal stock-in times break by id so the choice does not depend on row order.
+// stockOutOrder is earliest expiry first. Units with the same expiry, and
+// undated units after every dated one, go earliest acquired first, then lowest id.
 const stockOutOrder = " ORDER BY expires_at ASC NULLS LAST, stock_in_at ASC, id ASC"
 
 // stockOutInstanceIDs chooses which on-hand units a stock-out takes.
@@ -524,9 +525,10 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // many units left the shelf. When fewer than the unit count are on hand and
 // at least one is, that count is smaller and the commit still succeeds.
 //
-// If instanceID is nil, units come off earliest expiry first, undated last,
-// then oldest stocked. If instanceID is set, that unit goes first and the
-// rest follow the same order, excluding the named unit.
+// If instanceID is nil, units come off earliest expiry first. The same expiry,
+// and undated units after every dated one, go earliest acquired first, then
+// lowest id. If instanceID is set, that unit goes first and the rest follow
+// the same order, excluding the named unit.
 //
 // A missing household item returns *NoItemError and changes nothing.
 // A shelved item is still linked and returns ErrNoneOnHand without ranking links.

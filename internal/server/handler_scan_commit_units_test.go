@@ -489,6 +489,44 @@ func TestStockOutRemovesUnitCount(t *testing.T) {
 			}),
 		},
 		{
+			name: "undated units go last and the earliest acquired undated goes first",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-undated", "Undated Oats")
+				when := soon
+				// Latest acquired is inserted first, so row order is not acquisition order.
+				stockShelf(env, "item-undated", "user-1", "prod-undated", []shelfUnit{
+					{"inst-undated-late", nil},
+					{"inst-undated-mid", nil},
+					{"inst-dated-last-stocked", &when},
+					{"inst-undated-early", nil},
+				})
+				setStockedAt(env, "inst-undated-late", time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-undated-mid", time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-dated-last-stocked", time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-undated-early", time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC))
+				insertPendingScanUnits(env, "scan-undated", "prod-undated", scan.StockOut, 3)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-undated/commit",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.removedCount", value: float64(3)},
+					{path: "$.requestedCount", value: float64(3)},
+				},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/inventory/item-undated/instances",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "inst-undated-late"},
+					{path: "$[1]", absent: true},
+				},
+				bodyExcludes: []string{"inst-undated-early", "inst-undated-mid", "inst-dated-last-stocked"},
+			}),
+		},
+		{
 			name: "the same stock-in time breaks by id",
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-tie-id", "Tie Id")
