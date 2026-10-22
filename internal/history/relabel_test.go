@@ -411,7 +411,7 @@ func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
 		t.Fatalf("garbage scan linked %d times", stolen)
 	}
 
-	corrected, err := journal.SetQuantity(t.Context(), "move-good", 2, now)
+	corrected, err := journal.SetQuantity(t.Context(), householdUser, "move-good", 2, now)
 	if err != nil {
 		t.Fatal(err)
 	}

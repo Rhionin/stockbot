@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/events"
@@ -65,7 +66,7 @@ func (h *HistoryHandler) Household(req Request[struct{}, struct{}]) (history.Led
 }
 
 func (h *HistoryHandler) SetQuantity(req Request[historyQuantityBody, historyMoveParams]) (history.View, error) {
-	view, err := h.Journal.SetQuantity(req.Context, req.PathParams.ID, req.Body.Quantity, time.Now())
+	view, err := h.Journal.SetQuantity(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID, req.Body.Quantity, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -74,7 +75,7 @@ func (h *HistoryHandler) SetQuantity(req Request[historyQuantityBody, historyMov
 }
 
 func (h *HistoryHandler) Undo(req Request[struct{}, historyMoveParams]) (history.View, error) {
-	view, err := h.Journal.Undo(req.Context, req.PathParams.ID, time.Now())
+	view, err := h.Journal.Undo(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -96,9 +97,9 @@ type undoEffectJSON struct {
 	ReshelvesOnUndo bool   `json:"reshelvesOnUndo"`
 }
 
-// PreviewUndo reports what DELETE /api/moves/{id} would change. It writes nothing.
+// PreviewUndo reports what DELETE /api/moves/{id} would change. It changes nothing.
 func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (undoPreviewResponse, error) {
-	preview, err := h.Journal.PreviewUndo(req.Context, req.PathParams.ID)
+	preview, err := h.Journal.PreviewUndo(req.Context, moveHousehold(req.RawRequest), req.PathParams.ID)
 	if err != nil {
 		return undoPreviewResponse{}, historyHTTP(err)
 	}
@@ -111,6 +112,15 @@ func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (
 		})
 	}
 	return undoPreviewResponse{Effects: effects}, nil
+}
+
+func moveHousehold(r *http.Request) string {
+	if r != nil {
+		if id := strings.TrimSpace(r.URL.Query().Get("userId")); id != "" {
+			return id
+		}
+	}
+	return history.DefaultHousehold()
 }
 
 func (h *HistoryHandler) publish(ctx context.Context, itemID string) {

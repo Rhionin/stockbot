@@ -16,7 +16,7 @@ var ErrBackfillLocked = errors.New("backfill quantity locked")
 
 // SetQuantity changes how many units a move put on or took off the shelf.
 // The returned view is that product's history after the change.
-func (j *Journal) SetQuantity(ctx context.Context, id string, quantity int, now time.Time) (View, error) {
+func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity int, now time.Time) (View, error) {
 	if quantity < 1 {
 		return View{}, &InputError{Message: "Quantity has to be at least 1. Undo the move to remove it."}
 	}
@@ -31,12 +31,12 @@ func (j *Journal) SetQuantity(ctx context.Context, id string, quantity int, now 
 	if err := ensure(ctx, tx); err != nil {
 		return View{}, err
 	}
-	move, err := loadMove(ctx, tx, id)
+	move, err := loadMove(ctx, tx, userID, id)
 	if err != nil {
 		return View{}, err
 	}
 	if quantity != move.Quantity {
-		_, paired, pairErr := backfillPartner(ctx, tx, move)
+		_, paired, pairErr := backfillPartner(ctx, tx, userID, move)
 		if pairErr != nil {
 			return View{}, pairErr
 		}
@@ -71,20 +71,20 @@ type UndoEffect struct {
 	ReshelvesOnUndo bool
 }
 
-// UndoPreview is what an undo would change. It writes nothing.
+// UndoPreview is what an undo would change. It changes nothing.
 type UndoPreview struct {
 	Effects []UndoEffect
 }
 
 // Undo removes a move and reverses what it did to the shelf and the pace.
 // The returned view is that product's history afterward.
-func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, error) {
+func (j *Journal) Undo(ctx context.Context, userID, id string, now time.Time) (View, error) {
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
 	}
 	defer tx.Rollback()
-	effect, err := applyUndo(ctx, tx, id)
+	effect, err := applyUndo(ctx, tx, userID, id, true)
 	if err != nil {
 		return View{}, err
 	}
@@ -94,31 +94,44 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	return j.Product(ctx, effect.ItemID, now)
 }
 
-// PreviewUndo reports what Undo would change. It runs that same undo and
-// rolls it back, so the shelf is unchanged and the re-shelve decision cannot
-// drift from the one Undo commits.
-func (j *Journal) PreviewUndo(ctx context.Context, id string) (UndoPreview, error) {
-	tx, err := j.db.BeginTx(ctx, nil)
+// PreviewUndo reports what Undo would change. It runs that same undo on a
+// throwaway copy of the pantry, so the pantry itself is only read and the
+// re-shelve decision cannot drift from the one Undo commits. The copy skips
+// the history_repair update. Repair still runs on the copy when older rows
+// would change the result.
+func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPreview, error) {
+	clone, cleanup, err := j.snapshot(ctx)
+	if err != nil {
+		return UndoPreview{}, err
+	}
+	defer cleanup()
+	tx, err := clone.BeginTx(ctx, nil)
 	if err != nil {
 		return UndoPreview{}, err
 	}
 	defer tx.Rollback()
-	effect, err := applyUndo(ctx, tx, id)
+	effect, err := applyUndo(ctx, tx, userID, id, false)
 	if err != nil {
 		return UndoPreview{}, err
 	}
 	return UndoPreview{Effects: []UndoEffect{effect}}, nil
 }
 
-func applyUndo(ctx context.Context, tx *sql.Tx, id string) (UndoEffect, error) {
-	if err := ensure(ctx, tx); err != nil {
-		return UndoEffect{}, err
+func applyUndo(ctx context.Context, tx *sql.Tx, userID, id string, lockRepair bool) (UndoEffect, error) {
+	var err error
+	if lockRepair {
+		err = ensure(ctx, tx)
+	} else {
+		err = repair(ctx, tx)
 	}
-	move, err := loadMove(ctx, tx, id)
 	if err != nil {
 		return UndoEffect{}, err
 	}
-	partner, paired, err := backfillPartner(ctx, tx, move)
+	move, err := loadMove(ctx, tx, userID, id)
+	if err != nil {
+		return UndoEffect{}, err
+	}
+	partner, paired, err := backfillPartner(ctx, tx, userID, move)
 	if err != nil {
 		return UndoEffect{}, err
 	}
@@ -193,7 +206,7 @@ func reshelveItem(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) 
 // backfillPartner is the other move from the same backfill commit.
 // A backfill stock-in and its stock-out share a scan id, and one of them
 // has source backfill. Undoing either one removes both.
-func backfillPartner(ctx context.Context, tx *sql.Tx, move moveRow) (moveRow, bool, error) {
+func backfillPartner(ctx context.Context, tx *sql.Tx, userID string, move moveRow) (moveRow, bool, error) {
 	if !move.ScanEntryID.Valid || move.ScanEntryID.String == "" {
 		return moveRow{}, false, nil
 	}
@@ -208,16 +221,17 @@ func backfillPartner(ctx context.Context, tx *sql.Tx, move moveRow) (moveRow, bo
 	}
 	var partnerID string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id FROM stock_moves
-		WHERE scan_entry_id = ? AND id != ? AND source = ?`,
-		move.ScanEntryID.String, move.ID, want).Scan(&partnerID)
+		SELECT m.id FROM stock_moves m
+		JOIN items i ON i.id = m.item_id
+		WHERE m.scan_entry_id = ? AND m.id != ? AND m.source = ? AND i.user_id = ?`,
+		move.ScanEntryID.String, move.ID, want, userID).Scan(&partnerID)
 	if err == sql.ErrNoRows {
 		return moveRow{}, false, nil
 	}
 	if err != nil {
 		return moveRow{}, false, err
 	}
-	other, err := loadMove(ctx, tx, partnerID)
+	other, err := loadMove(ctx, tx, userID, partnerID)
 	if err != nil {
 		return moveRow{}, false, err
 	}

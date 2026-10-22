@@ -35,10 +35,10 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	inID := moveBy(t, view, "in", "backfill")
 	outID := moveBy(t, view, "out", "scan")
 
-	if _, err := journal.SetQuantity(ctx, inID, 2, now); !errors.Is(err, ErrBackfillLocked) {
+	if _, err := journal.SetQuantity(ctx, householdUser, inID, 2, now); !errors.Is(err, ErrBackfillLocked) {
 		t.Fatalf("stock-in edit err = %v", err)
 	}
-	if _, err := journal.SetQuantity(ctx, outID, 2, now); !errors.Is(err, ErrBackfillLocked) {
+	if _, err := journal.SetQuantity(ctx, householdUser, outID, 2, now); !errors.Is(err, ErrBackfillLocked) {
 		t.Fatalf("stock-out edit err = %v", err)
 	}
 	if qty := moveQuantity(t, db, inID); qty != 1 {
@@ -47,11 +47,11 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	if qty := moveQuantity(t, db, outID); qty != 1 {
 		t.Fatalf("stock-out quantity = %d", qty)
 	}
-	if _, err := journal.SetQuantity(ctx, inID, 1, now); err != nil {
+	if _, err := journal.SetQuantity(ctx, householdUser, inID, 1, now); err != nil {
 		t.Fatalf("same quantity: %v", err)
 	}
 
-	undone, err := journal.Undo(ctx, inID, now)
+	undone, err := journal.Undo(ctx, householdUser, inID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,13 +81,13 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if len(outs) != 2 {
 			t.Fatalf("scan outs = %+v", view.Moves)
 		}
-		if _, err := journal.SetQuantity(ctx, outs[0].ID, 2, now); err != nil {
+		if _, err := journal.SetQuantity(ctx, householdUser, outs[0].ID, 2, now); err != nil {
 			t.Fatalf("editable scan out: %v", err)
 		}
 		if moveQuantity(t, db, outs[1].ID) != 1 {
 			t.Fatal("the other scan move was changed")
 		}
-		if _, err := journal.Undo(ctx, outs[1].ID, now); err != nil {
+		if _, err := journal.Undo(ctx, householdUser, outs[1].ID, now); err != nil {
 			t.Fatal(err)
 		}
 		if moveQuantity(t, db, outs[0].ID) != 2 {
@@ -111,7 +111,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if len(fills) != 2 {
 			t.Fatalf("backfills = %+v", view.Moves)
 		}
-		if _, err := journal.SetQuantity(ctx, fills[0].ID, 2, now); err != nil {
+		if _, err := journal.SetQuantity(ctx, householdUser, fills[0].ID, 2, now); err != nil {
 			t.Fatalf("unpaired backfill: %v", err)
 		}
 		if moveQuantity(t, db, fills[1].ID) != 1 {
@@ -125,7 +125,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, moveBy(t, view, "out", "scan"), now); err != nil {
+		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "out", "scan"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-hide"); shelved != 1 {
@@ -145,7 +145,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, moveBy(t, view, "in", "backfill"), now); err != nil {
+		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "in", "backfill"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-keep"); shelved != 0 {
@@ -175,7 +175,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, moveBy(t, view, "in", "backfill"), now); err != nil {
+		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "in", "backfill"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-used"); shelved != 1 {

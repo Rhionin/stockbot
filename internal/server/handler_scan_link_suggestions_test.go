@@ -332,6 +332,7 @@ func domainSnapshot(t *testing.T, db *sql.DB) string {
 			FROM consumption_events ORDER BY id`},
 		{"stockins", `SELECT CAST(id AS TEXT) || '|' || product_id || '|' || COALESCE(stock_move_id, '')
 			FROM stock_in_events ORDER BY id`},
+		{"history_repair", `SELECT CAST(id AS TEXT) FROM history_repair ORDER BY id`},
 	}
 	var b strings.Builder
 	for _, q := range queries {
@@ -355,6 +356,31 @@ func domainSnapshot(t *testing.T, db *sql.DB) string {
 			t.Fatal(err)
 		}
 		rows.Close()
+	}
+	b.WriteString("sqlite_sequence\n")
+	var sequence int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`).Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	if sequence == 0 {
+		b.WriteString("(absent)\n")
+		return b.String()
+	}
+	rows, err := db.Query(`SELECT name || '|' || CAST(seq AS TEXT) FROM sqlite_sequence ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	return b.String()
 }

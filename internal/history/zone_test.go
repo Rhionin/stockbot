@@ -126,7 +126,7 @@ func TestRaisingAUseTakesTheEarlierExpiryAcrossDST(t *testing.T) {
 		earlier, earlier, earlier, later); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewJournal(db).SetQuantity(context.Background(), "move", 2, earlier); err != nil {
+	if _, err := NewJournal(db).SetQuantity(context.Background(), householdUser, "move", 2, earlier); err != nil {
 		t.Fatal(err)
 	}
 	var id string

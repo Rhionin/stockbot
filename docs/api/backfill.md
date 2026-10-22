@@ -154,7 +154,11 @@ The pair is the exception to the usual stock-in undo rule. A normal stock-in who
 
 `GET /api/moves/{id}/preview`
 
-Read-only. It does not change the shelf, the scan, or any move. It answers what `DELETE /api/moves/{id}` would do, using the same re-shelve decision the undo commits. `{id}` is either move of a backfill pair, or any other history move.
+It changes nothing. It does not take the pantry write lock, and it does not update `history_repair`. It answers what `DELETE /api/moves/{id}` would do, using the same undo, including the same re-shelve decision. `{id}` is either move of a backfill pair, or any other history move.
+
+The household is the `userId` query when it is set, and `user-1` when it is omitted. `DELETE /api/moves/{id}` and `PATCH /api/moves/{id}` use that same household. A move that belongs to another household is the same `404` as a move that is not there: `That move is no longer in the history.` The body has no item id, product id, name, or on-hand count, and nothing is deleted.
+
+The preview is advisory. `DELETE /api/moves/{id}` checks the shelf again when it commits. A stock change that lands between the preview and the delete can change the result. The preview does not return a version token.
 
 `200`:
 
@@ -176,7 +180,7 @@ Read-only. It does not change the shelf, the scan, or any move. It answers what 
 
 `effects` is one entry per product the undo would change. A backfill pair is one product, so the list has one entry. `itemId` and `productId` identify that product. `name` is the product's display name. `stockInMoveId` and `stockOutMoveId` are the moves the undo would remove. A backfill sets both. A stock-in that is not half of a pair sets `stockInMoveId` and omits `stockOutMoveId`. A stock-out that is not half of a pair sets `stockOutMoveId` and omits `stockInMoveId`. `onHand` is how many units would be on hand after the undo. `0` is sent as `0`. `reshelvesOnUndo` is true only when this pair brought a wiped item back and the undo would leave no live unit. A unit that was stocked in later and then used up does not count as live. A unit still on the shelf keeps `reshelvesOnUndo` false. An item that was never shelved stays false even when `onHand` would be 0.
 
-When the move cannot be undone, the preview returns the same status and `error` as `DELETE /api/moves/{id}` and writes nothing. A missing move is `404` `That move is no longer in the history.` A stock-in whose units were already used is `409` `1 of these was already used. Undo that use first.`
+When the move cannot be undone, the preview returns the same status and `error` as `DELETE /api/moves/{id}` and changes nothing. A missing move is `404` `That move is no longer in the history.` A stock-in whose units were already used is `409` `1 of these was already used. Undo that use first.` A use whose units are no longer recorded is `409` `This use can't be undone because those units are no longer recorded.`
 
 ## Add as a new item
 

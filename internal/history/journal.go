@@ -230,12 +230,15 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 	return moves, rows.Err()
 }
 
-func loadMove(ctx context.Context, tx *sql.Tx, id string) (moveRow, error) {
+func loadMove(ctx context.Context, tx *sql.Tx, userID, id string) (moveRow, error) {
 	var move moveRow
 	var tracked, unshelved int
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved
-		FROM stock_moves WHERE id = ?`, id).Scan(
+		SELECT m.id, m.item_id, m.product_id, m.direction, m.quantity, m.at, m.source,
+			m.scan_entry_id, m.tracked, m.unshelved
+		FROM stock_moves m
+		JOIN items i ON i.id = m.item_id
+		WHERE m.id = ? AND i.user_id = ?`, id, userID).Scan(
 		&move.ID, &move.ItemID, &move.ProductID, &move.Direction, &move.Quantity, &move.At,
 		&move.Source, &move.ScanEntryID, &tracked, &unshelved,
 	)

@@ -129,53 +129,53 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 		t.Fatalf("missing group: %v", err)
 	}
 
-	if _, err := journal.SetQuantity(ctx, inScanned.ID, 0, now); !errors.As(err, new(*InputError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, inScanned.ID, 0, now); !errors.As(err, new(*InputError)) {
 		t.Fatalf("zero quantity: %v", err)
 	}
-	if _, err := journal.SetQuantity(ctx, inScanned.ID, 1000, now); !errors.As(err, new(*InputError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, inScanned.ID, 1000, now); !errors.As(err, new(*InputError)) {
 		t.Fatalf("huge quantity: %v", err)
 	}
-	if _, err := journal.SetQuantity(ctx, "missing-move", 1, now); !errors.As(err, new(*NotFoundError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, "missing-move", 1, now); !errors.As(err, new(*NotFoundError)) {
 		t.Fatalf("missing move: %v", err)
 	}
-	if _, err := journal.SetQuantity(ctx, inUsed.ID, 1, now); !errors.As(err, new(*ConflictError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, inUsed.ID, 1, now); !errors.As(err, new(*ConflictError)) {
 		t.Fatalf("used stock in: %v", err)
 	}
-	if _, err := journal.Undo(ctx, inRemoved.ID, now); !errors.As(err, new(*ConflictError)) {
+	if _, err := journal.Undo(ctx, householdUser, inRemoved.ID, now); !errors.As(err, new(*ConflictError)) {
 		t.Fatalf("undo used stock in: %v", err)
 	}
 
-	raised, err := journal.SetQuantity(ctx, inScanned.ID, 4, now)
+	raised, err := journal.SetQuantity(ctx, householdUser, inScanned.ID, 4, now)
 	if err != nil || raised.OnHand != 5 {
 		t.Fatalf("raise in: %+v err %v", raised, err)
 	}
-	usedMore, err := journal.SetQuantity(ctx, outBatch.ID, 4, now)
+	usedMore, err := journal.SetQuantity(ctx, householdUser, outBatch.ID, 4, now)
 	if err != nil || usedMore.OnHand != 3 {
 		t.Fatalf("raise out: %+v err %v", usedMore, err)
 	}
-	restored, err := journal.SetQuantity(ctx, outBatch.ID, 2, now)
+	restored, err := journal.SetQuantity(ctx, householdUser, outBatch.ID, 2, now)
 	if err != nil || restored.OnHand != 5 {
 		t.Fatalf("lower out: %+v err %v", restored, err)
 	}
-	if _, err := journal.SetQuantity(ctx, outScan.ID, 8, now); !errors.As(err, new(*ConflictError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, outScan.ID, 8, now); !errors.As(err, new(*ConflictError)) {
 		t.Fatalf("not enough: %v", err)
 	}
-	drained, err := journal.SetQuantity(ctx, outBatch.ID, 6, now)
+	drained, err := journal.SetQuantity(ctx, householdUser, outBatch.ID, 6, now)
 	if err != nil || drained.OnHand != 1 {
 		t.Fatalf("drain: %+v err %v", drained, err)
 	}
-	if _, err := journal.SetQuantity(ctx, outScan.ID, 3, now); !errors.As(err, new(*ConflictError)) {
+	if _, err := journal.SetQuantity(ctx, householdUser, outScan.ID, 3, now); !errors.As(err, new(*ConflictError)) {
 		t.Fatalf("one left: %v", err)
 	}
-	putBack, err := journal.Undo(ctx, outScan.ID, now)
+	putBack, err := journal.Undo(ctx, householdUser, outScan.ID, now)
 	if err != nil || putBack.OnHand != 2 {
 		t.Fatalf("undo out: %+v err %v", putBack, err)
 	}
-	cleared, err := journal.Undo(ctx, inLatest.ID, now)
+	cleared, err := journal.Undo(ctx, householdUser, inLatest.ID, now)
 	if err != nil || cleared.OnHand != 1 {
 		t.Fatalf("undo in: %+v err %v", cleared, err)
 	}
-	same, err := journal.SetQuantity(ctx, inUsed.ID, inUsed.Quantity, now)
+	same, err := journal.SetQuantity(ctx, householdUser, inUsed.ID, inUsed.Quantity, now)
 	if err != nil || same.OnHand != 1 {
 		t.Fatalf("unchanged quantity: %+v err %v", same, err)
 	}

@@ -27,10 +27,19 @@ type moveRow struct {
 
 // ensure groups older shelf rows that were written before moves existed.
 // The history_repair row is updated first so two readers cannot both insert.
+// That update takes the write lock. Preview uses repair on a throwaway copy
+// and does not call ensure.
 func ensure(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE history_repair SET id = 1 WHERE id = 1`); err != nil {
 		return err
 	}
+	return repair(ctx, tx)
+}
+
+// repair is the grouping work inside ensure, without the history_repair update.
+// On a shelf that is already grouped it only reads. When older rows still need
+// a move, it writes those moves. Preview runs it on a copy that is thrown away.
+func repair(ctx context.Context, tx *sql.Tx) error {
 	scans, err := loadCommittedScans(ctx, tx)
 	if err != nil {
 		return err
