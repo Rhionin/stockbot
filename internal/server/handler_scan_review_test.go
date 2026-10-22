@@ -28,9 +28,8 @@ func TestConcurrentBackfillRecordsOnePair(t *testing.T) {
 	at := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	seedScanAt(env, "scan-race", "prod-race", scan.StockOut, 1, at)
 
-	const n = 8
-	var start sync.WaitGroup
-	start.Add(1)
+	const n = 2
+	release := armCommitGate(t, n)
 	var done sync.WaitGroup
 	codes := make([]int, n)
 	bodies := make([]string, n)
@@ -38,11 +37,10 @@ func TestConcurrentBackfillRecordsOnePair(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer done.Done()
-			start.Wait()
 			codes[i], bodies[i] = postJSON(handler, http.MethodPost, "/api/scans/scan-race/commit", `{"backfill":true}`)
 		}(i)
 	}
-	start.Done()
+	release()
 	done.Wait()
 
 	ok, pending := 0, 0
@@ -98,9 +96,13 @@ func TestShelvedItemStaysHiddenUntilBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids := productIDs(t, handler)
+	ids := productIDs(t, handler, "/api/products")
 	if !ids["prod-live"] || ids["prod-hidden"] || !ids["prod-other"] {
 		t.Fatalf("product ids = %v", ids)
+	}
+	other := productIDs(t, handler, "/api/products?userId=user-2")
+	if !other["prod-live"] || !other["prod-hidden"] || other["prod-other"] {
+		t.Fatalf("user-2 product ids = %v", other)
 	}
 	exchangeJSON(t, handler, http.MethodGet, "/api/products/prod-hidden", "", http.StatusOK)
 
@@ -284,6 +286,25 @@ func TestPatchRejectsAMissingProductAndACancelTogether(t *testing.T) {
 	if strings.Contains(string(missing), inventory.CodeConflictingFields) {
 		t.Fatalf("missing scan = %s", missing)
 	}
+
+	for _, status := range []string{"committed", "flagged"} {
+		id := "scan-" + status
+		seedLooseScan(env, id, "0111100000"+status[:2], scan.StockOut, 1, nil, scan.Pending, at)
+		before = domainSnapshot(t, env.DB)
+		body := exchangeJSON(t, handler, http.MethodPatch, "/api/scans/"+id,
+			`{"productId":"prod-keep","status":"`+status+`"}`, http.StatusBadRequest)
+		assertCode(t, body, inventory.CodeConflictingFields, inventory.ConflictingFieldsMessage)
+		if got := domainSnapshot(t, env.DB); got != before {
+			t.Fatalf("status %s wrote rows:\n%s", status, got)
+		}
+		var still string
+		if err := env.DB.QueryRow(`SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&still); err != nil {
+			t.Fatal(err)
+		}
+		if still != string(scan.Pending) {
+			t.Fatalf("status %s left the scan %s", status, still)
+		}
+	}
 }
 
 func TestBackfillQuantityStaysLocked(t *testing.T) {
@@ -346,9 +367,9 @@ func TestBackfillQuantityStaysLocked(t *testing.T) {
 	}
 }
 
-func productIDs(t *testing.T, handler http.Handler) map[string]bool {
+func productIDs(t *testing.T, handler http.Handler, path string) map[string]bool {
 	t.Helper()
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/products", "", http.StatusOK)
+	body := exchangeJSON(t, handler, http.MethodGet, path, "", http.StatusOK)
 	var rows []struct {
 		ID string `json:"id"`
 	}
@@ -375,6 +396,135 @@ func openRaceDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
+}
+
+func TestConcurrentSingleAndBatchCommit(t *testing.T) {
+	db := openRaceDB(t)
+	handler, env := setupOnDB(t, db, nil)
+	t.Cleanup(func() { db.Close() })
+	finishOpening(env)
+	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+
+	t.Run("stock in", func(t *testing.T) {
+		seedShelfItem(env, "prod-race-in", "Race in", "item-race-in")
+		seedScanAt(env, "scan-race-in", "prod-race-in", scan.StockIn, 1, at)
+		codes, bodies := overlapCommits(t, handler, 2, http.MethodPost, "/api/scans/scan-race-in/commit", "")
+		ok, pending := countCommitResults(t, codes, bodies)
+		if ok != 1 || pending != 1 {
+			t.Fatalf("ok = %d, not_pending = %d, bodies = %v", ok, pending, bodies)
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-race-in'`); n != 1 {
+			t.Fatalf("instances = %d, want 1", n)
+		}
+	})
+
+	t.Run("stock out", func(t *testing.T) {
+		seedShelfItem(env, "prod-race-out", "Race out", "item-race-out")
+		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('race-out-1', 'item-race-out', ?)`, at); err != nil {
+			t.Fatal(err)
+		}
+		seedScanAt(env, "scan-race-out", "prod-race-out", scan.StockOut, 1, at)
+		codes, bodies := overlapCommits(t, handler, 2, http.MethodPost, "/api/scans/scan-race-out/commit", "")
+		ok, pending := countCommitResults(t, codes, bodies)
+		if ok != 1 || pending != 1 {
+			t.Fatalf("ok = %d, not_pending = %d, bodies = %v", ok, pending, bodies)
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-race-out' AND removed_at IS NULL`); n != 0 {
+			t.Fatalf("on hand = %d, want 0", n)
+		}
+	})
+
+	t.Run("batch", func(t *testing.T) {
+		seedShelfItem(env, "prod-race-batch", "Race batch", "item-race-batch")
+		seedScanAt(env, "scan-race-batch", "prod-race-batch", scan.StockIn, 1, at)
+		_, bodies := overlapCommits(t, handler, 2, http.MethodPost, "/api/scans/batch-commit",
+			`{"scanEntryIds":["scan-race-batch"],"commit":true}`)
+		committed, failed := 0, 0
+		for _, body := range bodies {
+			var got struct {
+				CommittedIDs []string `json:"committedIds"`
+				FailedCodes  []string `json:"failedCodes"`
+			}
+			if err := json.Unmarshal([]byte(body), &got); err != nil {
+				t.Fatalf("batch %s: %v", body, err)
+			}
+			if len(got.CommittedIDs) == 1 && got.CommittedIDs[0] == "scan-race-batch" && len(got.FailedCodes) == 0 {
+				committed++
+			}
+			if len(got.FailedCodes) == 1 && got.FailedCodes[0] == "not_pending" && len(got.CommittedIDs) == 0 {
+				failed++
+			}
+		}
+		if committed != 1 || failed != 1 {
+			t.Fatalf("batch committed = %d failed = %d bodies = %v", committed, failed, bodies)
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-race-batch'`); n != 1 {
+			t.Fatalf("instances = %d, want 1", n)
+		}
+	})
+}
+
+func overlapCommits(t *testing.T, handler http.Handler, n int, method, path, payload string) ([]int, []string) {
+	t.Helper()
+	release := armCommitGate(t, n)
+	var done sync.WaitGroup
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	done.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer done.Done()
+			codes[i], bodies[i] = postJSON(handler, method, path, payload)
+		}(i)
+	}
+	release()
+	done.Wait()
+	return codes, bodies
+}
+
+func countCommitResults(t *testing.T, codes []int, bodies []string) (ok, pending int) {
+	t.Helper()
+	for i := range codes {
+		switch codes[i] {
+		case http.StatusOK:
+			ok++
+		case http.StatusBadRequest:
+			assertCode(t, []byte(bodies[i]), "not_pending", "This scan was already handled.")
+			pending++
+		default:
+			t.Fatalf("response %d = %d %s", i, codes[i], bodies[i])
+		}
+	}
+	return ok, pending
+}
+
+// armCommitGate holds each request after the handler accepted it and before
+// the commit transaction, then lets them all proceed together.
+func armCommitGate(t *testing.T, n int) func() {
+	t.Helper()
+	arrived := make(chan struct{}, n)
+	release := make(chan struct{})
+	var once sync.Once
+	commitAfterCheck = func() {
+		arrived <- struct{}{}
+		<-release
+	}
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		commitAfterCheck = nil
+	})
+	return func() {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for i := 0; i < n; i++ {
+			select {
+			case <-arrived:
+			case <-deadline:
+				t.Fatal("commit did not reach the post-check gate")
+			}
+		}
+		once.Do(func() { close(release) })
+	}
 }
 
 func postJSON(handler http.Handler, method, path, payload string) (int, string) {

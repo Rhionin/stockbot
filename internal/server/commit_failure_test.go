@@ -354,8 +354,8 @@ func (q dbErrorQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) 
 func (q dbErrorQueue) CommitStockOutLink(context.Context, *scan.ScanEntry, *string, string) error {
 	return q.err
 }
-func (q dbErrorQueue) CommitBackfill(context.Context, *scan.ScanEntry) (string, int, error) {
-	return "", 0, q.err
+func (q dbErrorQueue) CommitBackfill(context.Context, *scan.ScanEntry) (scan.BackfillResult, error) {
+	return scan.BackfillResult{}, q.err
 }
 func (q dbErrorQueue) CountOnHand(context.Context, string, string) (int, error) {
 	return 0, q.err

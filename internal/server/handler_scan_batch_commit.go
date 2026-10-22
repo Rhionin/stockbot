@@ -94,6 +94,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrProductUnresolved)
 				continue
 			}
+			passCommitCheck()
 
 			var commitErr error
 			if *entry.Direction == scan.StockIn {

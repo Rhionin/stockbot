@@ -61,7 +61,8 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		if entry == nil {
 			return nil, NotFound("scan entry not found")
 		}
-		if req.Body.Status != nil && *req.Body.Status == scan.Cancelled {
+		// productId with pending is the link. Any other status is a second change.
+		if req.Body.Status != nil && *req.Body.Status != scan.Pending {
 			return nil, &HTTPError{
 				Code:      http.StatusBadRequest,
 				Message:   inventory.ConflictingFieldsMessage,

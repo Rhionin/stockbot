@@ -28,6 +28,10 @@ func TestBackfillRecordsThePairAtScannedAt(t *testing.T) {
 		Removed    int    `json:"removed"`
 		Backfilled int    `json:"backfilled"`
 		ItemID     string `json:"itemId"`
+		Backfill   struct {
+			StockInMoveID  string `json:"stockInMoveId"`
+			StockOutMoveID string `json:"stockOutMoveId"`
+		} `json:"backfill"`
 	}
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
@@ -51,6 +55,9 @@ func TestBackfillRecordsThePairAtScannedAt(t *testing.T) {
 	}
 	if out.Quantity != 2 || out.Source != "scan" || out.At != wantAt {
 		t.Fatalf("stock-out = %+v, want qty 2 source scan at %s", out, wantAt)
+	}
+	if got.Backfill.StockInMoveID != in.ID || got.Backfill.StockOutMoveID != out.ID || in.ID == out.ID {
+		t.Fatalf("backfill ids = %+v, history in %s out %s", got.Backfill, in.ID, out.ID)
 	}
 	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM stock_in_events WHERE product_id = 'prod-cream'`); n != 0 {
 		t.Fatalf("stock_in_events = %d, want 0", n)
@@ -190,6 +197,72 @@ func TestBackfillUndoRemovesBothMoves(t *testing.T) {
 	})
 }
 
+func TestUndoBackfillKeepsALaterUnit(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	seedShelfItem(env, "prod-later", "Later oats", "item-later")
+	if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-later'`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	seedScanAt(env, "scan-later", "prod-later", scan.StockOut, 1, at)
+	body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-later/commit", `{"backfill":true}`, http.StatusOK)
+	var committed struct {
+		Backfill struct {
+			StockInMoveID string `json:"stockInMoveId"`
+		} `json:"backfill"`
+	}
+	if err := json.Unmarshal(body, &committed); err != nil || committed.Backfill.StockInMoveID == "" {
+		t.Fatalf("backfill = %s (%v)", body, err)
+	}
+	var shelved int
+	if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-later'`).Scan(&shelved); err != nil {
+		t.Fatal(err)
+	}
+	if shelved != 0 {
+		t.Fatal("backfill left the item shelved")
+	}
+
+	seedScanAt(env, "scan-later-in", "prod-later", scan.StockIn, 1, at.Add(time.Hour))
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-later-in/commit", "", http.StatusOK)
+	exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+committed.Backfill.StockInMoveID, "", http.StatusOK)
+
+	if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-later'`).Scan(&shelved); err != nil {
+		t.Fatal(err)
+	}
+	if shelved != 0 {
+		t.Fatal("undo shelved an item that still has a unit")
+	}
+	inventory := exchangeJSON(t, handler, http.MethodGet, "/api/inventory", "", http.StatusOK)
+	var rows []struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+		InstanceCount float64 `json:"instanceCount"`
+	}
+	if err := json.Unmarshal(inventory, &rows); err != nil {
+		t.Fatal(err)
+	}
+	var count float64
+	var found bool
+	for _, row := range rows {
+		if row.Item.ID == "item-later" {
+			found = true
+			count = row.InstanceCount
+		}
+	}
+	if !found || count != 1 {
+		t.Fatalf("inventory row for item-later = found %v count %v in %s", found, count, inventory)
+	}
+	if !productIDs(t, handler, "/api/products")["prod-later"] {
+		t.Fatal("product dropped out of the picker")
+	}
+	view := productHistory(env, handler, "item-later")
+	if view.OnHand != 1 {
+		t.Fatalf("history on hand = %v, want 1", view.OnHand)
+	}
+}
+
 func TestBackfillRejectsUnlinkedAndUnitsOnHand(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	finishOpening(env)
@@ -279,13 +352,17 @@ func TestBackfillRejectsUnlinkedAndUnitsOnHand(t *testing.T) {
 
 		body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-wiped/commit", `{"backfill":true}`, http.StatusOK)
 		var got struct {
-			Removed int    `json:"removed"`
-			ItemID  string `json:"itemId"`
+			Removed  int    `json:"removed"`
+			ItemID   string `json:"itemId"`
+			Backfill struct {
+				StockInMoveID  string `json:"stockInMoveId"`
+				StockOutMoveID string `json:"stockOutMoveId"`
+			} `json:"backfill"`
 		}
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Removed != 1 || got.ItemID != "item-wiped" {
+		if got.Removed != 1 || got.ItemID != "item-wiped" || got.Backfill.StockInMoveID == "" || got.Backfill.StockOutMoveID == "" {
 			t.Fatalf("backfill = %+v", got)
 		}
 		if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-wiped'`).Scan(&shelved); err != nil {
@@ -308,10 +385,10 @@ func TestBackfillRejectsUnlinkedAndUnitsOnHand(t *testing.T) {
 				moveID = move.ID
 			}
 		}
-		if moveID == "" {
-			t.Fatalf("moves = %+v", view.Moves)
+		if moveID == "" || moveID != got.Backfill.StockInMoveID {
+			t.Fatalf("moves = %+v, commit stock-in %s", view.Moves, got.Backfill.StockInMoveID)
 		}
-		undone := exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+moveID, "", http.StatusOK)
+		undone := exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+got.Backfill.StockInMoveID, "", http.StatusOK)
 		var after struct {
 			OnHand float64       `json:"onHand"`
 			Moves  []historyMove `json:"moves"`
@@ -336,6 +413,37 @@ func TestBackfillRejectsUnlinkedAndUnitsOnHand(t *testing.T) {
 			t.Fatalf("re-shelved item is on the inventory list: %s", hidden)
 		}
 		exchangeJSON(t, handler, http.MethodGet, "/api/products/prod-wiped", "", http.StatusOK)
+	})
+
+	t.Run("shelved leftovers are not on hand", func(t *testing.T) {
+		seedShelfItem(env, "prod-left", "Leftover", "item-left")
+		for _, id := range []string{"left-1", "left-2"} {
+			if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES (?, 'item-left', ?)`, id, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-left'`); err != nil {
+			t.Fatal(err)
+		}
+		seedScanAt(env, "scan-left", "prod-left", scan.StockOut, 1, at)
+		exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-left/commit", `{"backfill":true}`, http.StatusOK)
+		var shelved int
+		if err := env.DB.QueryRow(`SELECT shelved FROM items WHERE id = 'item-left'`).Scan(&shelved); err != nil {
+			t.Fatal(err)
+		}
+		if shelved != 0 {
+			t.Fatal("backfill left the leftovers hidden")
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-left' AND removed_at IS NULL`); n != 2 {
+			t.Fatalf("leftover on hand = %d, want 2", n)
+		}
+		if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM stock_moves WHERE item_id = 'item-left'`); n != 2 {
+			t.Fatalf("moves = %d, want the backfill pair", n)
+		}
+		view := productHistory(env, handler, "item-left")
+		if view.OnHand != 2 {
+			t.Fatalf("history on hand = %v, want 2", view.OnHand)
+		}
 	})
 }
 

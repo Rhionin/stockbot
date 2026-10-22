@@ -972,7 +972,7 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 		t.Fatalf("user-2 instances after wipe: got %d, want 1", len(instances))
 	}
 
-	products, err := catalog.ListProducts(ctx)
+	products, err := catalog.ListProducts(ctx, "user-1")
 	if err != nil {
 		t.Fatalf("ListProducts: %v", err)
 	}

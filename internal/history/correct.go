@@ -98,9 +98,19 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	if err != nil {
 		return View{}, err
 	}
+	// A later stock-in can leave a live unit. Hide the item again only when
+	// this pair is what brought it back and nothing live remains.
 	if reshelve != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, reshelve); err != nil {
+		live, err := countQuery(ctx, tx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE item_id = ? AND removed_at IS NULL`, reshelve)
+		if err != nil {
 			return View{}, err
+		}
+		if live == 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, reshelve); err != nil {
+				return View{}, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

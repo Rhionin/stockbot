@@ -16,7 +16,7 @@ type ScanCommitHandler struct {
 		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
 		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) error
 		CommitStockOutLink(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) error
-		CommitBackfill(ctx context.Context, scanEntry *scan.ScanEntry) (string, int, error)
+		CommitBackfill(ctx context.Context, scanEntry *scan.ScanEntry) (scan.BackfillResult, error)
 		CountOnHand(ctx context.Context, userID, productID string) (int, error)
 	}
 }
@@ -27,10 +27,27 @@ type commitScanRequest struct {
 	Backfill      bool    `json:"backfill,omitempty"`
 }
 
+type backfillMoves struct {
+	StockInMoveID  string `json:"stockInMoveId"`
+	StockOutMoveID string `json:"stockOutMoveId"`
+}
+
 type backfillResponse struct {
-	Removed    int    `json:"removed"`
-	Backfilled int    `json:"backfilled"`
-	ItemID     string `json:"itemId"`
+	Removed    int           `json:"removed"`
+	Backfilled int           `json:"backfilled"`
+	ItemID     string        `json:"itemId"`
+	Backfill   backfillMoves `json:"backfill"`
+}
+
+// commitAfterCheck runs after a commit handler has accepted a pending scan
+// and before the commit transaction. Tests use it to overlap two requests
+// that have both passed that check.
+var commitAfterCheck func()
+
+func passCommitCheck() {
+	if commitAfterCheck != nil {
+		commitAfterCheck()
+	}
 }
 
 type commitScanPathParams struct {
@@ -62,6 +79,7 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 	if entry.ProductID == nil || *entry.ProductID == "" {
 		return nil, commitClientError(scan.ErrProductUnresolved)
 	}
+	passCommitCheck()
 
 	linkProductID := ""
 	if req.Body.LinkProductID != nil {
@@ -108,7 +126,8 @@ func (h *ScanCommitHandler) commitBackfill(ctx context.Context, entry *scan.Scan
 	if entry.ProductID == nil || *entry.ProductID == "" {
 		return nil, commitClientError(scan.ErrProductUnresolved)
 	}
-	itemID, units, err := h.Queue.CommitBackfill(ctx, entry)
+	passCommitCheck()
+	result, err := h.Queue.CommitBackfill(ctx, entry)
 	if err != nil {
 		var stocked *scan.UnitsOnHandError
 		if errors.As(err, &stocked) {
@@ -116,7 +135,10 @@ func (h *ScanCommitHandler) commitBackfill(ctx context.Context, entry *scan.Scan
 		}
 		return nil, commitClientError(err)
 	}
-	return backfillResponse{Removed: units, Backfilled: units, ItemID: itemID}, nil
+	return backfillResponse{
+		Removed: result.Units, Backfilled: result.Units, ItemID: result.ItemID,
+		Backfill: backfillMoves{StockInMoveID: result.StockInMoveID, StockOutMoveID: result.StockOutMoveID},
+	}, nil
 }
 
 func stockOutError(err error) error {

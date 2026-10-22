@@ -19,7 +19,15 @@ The scan must already be a pending stock-out whose barcode is linked to a househ
 `200` body:
 
 ```json
-{ "removed": 2, "backfilled": 2, "itemId": "item-sour-cream" }
+{
+  "removed": 2,
+  "backfilled": 2,
+  "itemId": "item-sour-cream",
+  "backfill": {
+    "stockInMoveId": "move-cream-in",
+    "stockOutMoveId": "move-cream-out"
+  }
+}
 ```
 
 | Field | Type | Meaning |
@@ -27,6 +35,10 @@ The scan must already be a pending stock-out whose barcode is linked to a househ
 | `removed` | number | Units taken out. Always the scan's `unitCount`. |
 | `backfilled` | number | Units stocked in. Always the same number as `removed`. |
 | `itemId` | string | The household item the scan was already linked to. |
+| `backfill.stockInMoveId` | string | History id of the stock-in (`direction` `in`, `source` `backfill`). |
+| `backfill.stockOutMoveId` | string | History id of the stock-out (`direction` `out`, `source` `scan`). |
+
+`DELETE /api/moves/{id}` takes either id and removes the pair.
 
 Example: a pending stock-out of sour cream, `unitCount` 2, linked to `item-sour-cream`, 0 on hand.
 
@@ -42,7 +54,15 @@ Content-Type: application/json
 Response `200`:
 
 ```json
-{ "removed": 2, "backfilled": 2, "itemId": "item-sour-cream" }
+{
+  "removed": 2,
+  "backfilled": 2,
+  "itemId": "item-sour-cream",
+  "backfill": {
+    "stockInMoveId": "move-cream-in",
+    "stockOutMoveId": "move-cream-out"
+  }
+}
 ```
 
 What that writes, in one transaction:
@@ -124,11 +144,11 @@ Both means:
 - the units those two moves created and consumed
 - the usage row for the stock-out
 
-The product stays. The barcode link stays. On hand stays 0, because the pair had put the units on the shelf and taken them off. An item that was already on the shelf stays visible. A pair that brought a wiped item back hides that item again: undo sets `shelved`, and the item drops off the inventory list until the next stock-in. Undo does not delete an item that was created earlier with **Add as a new item**. That was a separate step. The household deletes that item from the item's menu.
+The product stays. The barcode link stays. On hand stays 0, because the pair had put the units on the shelf and taken them off, unless a later stock-in left a live unit. An item that was already on the shelf stays visible. A pair that brought a wiped item back hides that item again only when the undo leaves no live units. Undo sets `shelved` in that case, and the item drops off `GET /api/inventory` and `GET /api/products` until the next stock-in. A real stock-in after the backfill leaves that unit: the undo removes the pair, the item stays unshelved, both of those lists still include it, and on hand is the count that stock-in added. An item that was never shelved stays visible even when the undo leaves on hand at 0. Undo does not delete an item that was created earlier with **Add as a new item**. That was a separate step. The household deletes that item from the item's menu.
 
 The pair is the exception to the usual stock-in undo rule. A normal stock-in whose units were already used returns `409` and the sentence `1 of these was already used. Undo that use first.` A backfill's units are used by its own stock-out, so that conflict does not apply to this pair. The server removes the stock-out and the stock-in together.
 
-`200` is the item's history view after the pair is gone (`GET /api/items/{itemId}/history` shape). The commit response does not include move ids. The client takes them from that history: the `in` row whose `source` is `backfill`, and the `out` row with the same `at`.
+`200` is the item's history view after the pair is gone (`GET /api/items/{itemId}/history` shape). The commit response names both move ids in `backfill.stockInMoveId` and `backfill.stockOutMoveId`. `DELETE /api/moves/{id}` takes either one. Those are the same ids history lists: the `in` row whose `source` is `backfill`, and the `out` row whose `source` is `scan`.
 
 ## Add as a new item
 
@@ -260,7 +280,7 @@ When the item is a live household item with 0 on hand, the response stays `409` 
 
 `PATCH /api/scans/{id}` that points a stock-out at a shelved item, or at a product id that does not exist, is the same `409` `link_target_gone` / `That item isn't available anymore. Pick another.` Nothing is written: no barcode override, no item, and the scan is unchanged. The body has no `onHand`.
 
-A body that sets `productId` and `status` `cancelled` together is `400`:
+A body that sets `productId` and a `status` other than `pending` (`cancelled`, `committed`, or `flagged`) is `400`:
 
 ```json
 { "error": "Choose one change at a time.", "code": "conflicting_fields" }
@@ -270,7 +290,7 @@ Nothing is written. A missing scan is still `404`. `productId` together with `st
 
 While an item is shelved, `onHand` is 0 everywhere it is reported, including `GET /api/items/{itemId}/history`, even when old instance rows remain.
 
-The web **What is it?** picker reads `GET /api/products`. That list omits a product whose household item (the `user-1` row) is shelved. A product shelved only for another household stays in the list. `GET /api/products/{id}` still returns the shelved product. `GET /api/inventory` already omitted shelved items. Link suggestions already omit them. The Expo client is not in this repo; it should read the same `GET /api/products` list.
+The web **What is it?** picker reads `GET /api/products`. An optional `userId` query names the household. Omitting it uses `user-1`, which is what the web client sends today. That list omits a product whose item for that household is shelved. A product shelved only for another household stays in the list. `GET /api/products?userId=user-2` hides products shelved for `user-2` and still lists a product shelved only for `user-1`. `GET /api/products/{id}` still returns the shelved product. `GET /api/inventory` already omitted shelved items. Link suggestions already omit them. The Expo client is not in this repo; it should read the same `GET /api/products` list.
 
 ### Add as a new item
 
@@ -296,7 +316,7 @@ The web **What is it?** picker reads `GET /api/products`. That list omits a prod
 
 ## Link suggestions
 
-Both clients refetch the ranked links by committing the scan again. That commit is a write, and a scan that already has a unit on hand would be taken out. The read is separate.
+Both clients read the ranked links from `GET /api/scans/{id}/link-suggestions`. They do not commit the scan to refresh the list. Committing is a write, and a scan that already has a unit on hand would be taken out.
 
 `GET /api/scans/{id}/link-suggestions`
 

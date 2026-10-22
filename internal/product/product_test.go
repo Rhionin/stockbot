@@ -69,7 +69,7 @@ func TestCreateProduct(t *testing.T) {
 
 			// If UUID generation test, retrieve from list and verify ID was generated
 			if tt.wantIDEmpty {
-				products, err := catalog.ListProducts(ctx)
+				products, err := catalog.ListProducts(ctx, "user-1")
 				if err != nil {
 					t.Fatalf("ListProducts: %v", err)
 				}
@@ -211,7 +211,7 @@ func TestListProducts(t *testing.T) {
 			}
 
 			// List and verify
-			got, err := catalog.ListProducts(ctx)
+			got, err := catalog.ListProducts(ctx, "user-1")
 			if err != nil {
 				t.Fatalf("ListProducts: %v", err)
 			}
@@ -1018,7 +1018,7 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		}
 
 		// Get the list of products - should still be empty
-		products, err := catalog.ListProducts(ctx)
+		products, err := catalog.ListProducts(ctx, "user-1")
 		if err != nil {
 			t.Fatalf("ListProducts: %v", err)
 		}

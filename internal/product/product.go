@@ -123,15 +123,15 @@ func (r *Catalog) GetProductByID(ctx context.Context, id string) (*Product, erro
 	return &p, nil
 }
 
-// ListProducts returns products ordered by name. A product whose household
-// item is shelved stays out of the picker until that item is stocked in again.
-func (r *Catalog) ListProducts(ctx context.Context) ([]Product, error) {
+// ListProducts returns products ordered by name. A product whose item for
+// userID is shelved stays out of the picker until that item is stocked in again.
+func (r *Catalog) ListProducts(ctx context.Context, userID string) ([]Product, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+productSelectColumns+` FROM products
 		WHERE id NOT IN (
-			SELECT product_id FROM items WHERE user_id = 'user-1' AND shelved = 1
+			SELECT product_id FROM items WHERE user_id = ? AND shelved = 1
 		)
-		ORDER BY name`)
+		ORDER BY name`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("ListProducts: %w", err)
 	}

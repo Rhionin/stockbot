@@ -18,7 +18,7 @@ type InNote struct {
 	Tracked     bool
 	InstanceIDs []string
 	// Unshelved is set when this stock-in put a wiped item back on the shelf.
-	// Undoing the pair hides the item again.
+	// Undoing the pair hides the item again when no live unit remains.
 	Unshelved bool
 }
 

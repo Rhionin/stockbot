@@ -135,6 +135,32 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 			t.Fatalf("moves left = %d", n)
 		}
 	})
+
+	t.Run("undo of a pair that unshelved leaves a later unit", func(t *testing.T) {
+		execHistory(t, db, `INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-keep', 'Keep', 'Pantry', 'unit')`)
+		execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item-keep', 'user-1', 'prod-keep')`)
+		recordBackfillPair(t, db, "item-keep", "prod-keep", "scan-keep", "inst-keep", at, true)
+		recordHeld(t, db, "item-keep", "prod-keep", "inst-keep-live", at.Add(time.Hour))
+		view, err := journal.Product(ctx, "item-keep", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Undo(ctx, moveBy(t, view, "in", "backfill"), now); err != nil {
+			t.Fatal(err)
+		}
+		if shelved := itemShelved(t, db, "item-keep"); shelved != 0 {
+			t.Fatal("undo shelved an item that still has a unit")
+		}
+		var live int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE item_id = 'item-keep' AND removed_at IS NULL`).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 1 {
+			t.Fatalf("live units = %d", live)
+		}
+	})
 }
 
 func recordBackfillPair(t *testing.T, db *sql.DB, itemID, productID, scanID, instanceID string, at time.Time, unshelved bool) {

@@ -702,35 +702,46 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	return nil
 }
 
+// BackfillResult is the pair one backfill commit wrote.
+// StockInMoveID is the history in move (source backfill).
+// StockOutMoveID is the history out move (source scan).
+// Either id undoes the pair.
+type BackfillResult struct {
+	ItemID         string
+	Units          int
+	StockInMoveID  string
+	StockOutMoveID string
+}
+
 // CommitBackfill stocks in unitCount and takes the same number back out at the
 // scan's scannedAt. The item must already belong to the scan's household and
 // have nothing on hand. The stock-in is recorded as source backfill and is not
 // a stock-in event. The stock-out is ordinary usage.
-func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (string, int, error) {
+func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (BackfillResult, error) {
 	if scanEntry.Direction == nil {
-		return "", 0, ErrDirectionUnset
+		return BackfillResult{}, ErrDirectionUnset
 	}
 	if *scanEntry.Direction != StockOut {
-		return "", 0, ErrNotStockOut
+		return BackfillResult{}, ErrNotStockOut
 	}
 	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
-		return "", 0, ErrProductUnresolved
+		return BackfillResult{}, ErrProductUnresolved
 	}
 	if scanEntry.UnitCount < 1 {
-		return "", 0, fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
+		return BackfillResult{}, fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", 0, fmt.Errorf("begin transaction: %w", err)
+		return BackfillResult{}, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
-		return "", 0, err
+		return BackfillResult{}, err
 	}
 	if err := requireOpenScan(ctx, tx, scanEntry.ID); err != nil {
-		return "", 0, err
+		return BackfillResult{}, err
 	}
 
 	var itemID string
@@ -741,10 +752,10 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 		scanEntry.UserID, *scanEntry.ProductID,
 	).Scan(&itemID, &shelved)
 	if err == sql.ErrNoRows {
-		return "", 0, ErrProductUnresolved
+		return BackfillResult{}, ErrProductUnresolved
 	}
 	if err != nil {
-		return "", 0, fmt.Errorf("find item: %w", err)
+		return BackfillResult{}, fmt.Errorf("find item: %w", err)
 	}
 	// A wipe hides the item. Those leftover rows are not on the shelf, so
 	// backfill brings the item back instead of refusing units_on_hand.
@@ -755,11 +766,11 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM item_instances
 			WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
-			return "", 0, fmt.Errorf("count on hand: %w", err)
+			return BackfillResult{}, fmt.Errorf("count on hand: %w", err)
 		}
 	}
 	if onHand > 0 {
-		return "", 0, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
+		return BackfillResult{}, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
 	}
 
 	at := scanEntry.ScannedAt
@@ -772,7 +783,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 			VALUES (?, ?, ?)`,
 			instanceID, itemID, at,
 		); err != nil {
-			return "", 0, fmt.Errorf("create instance %d: %w", i+1, err)
+			return BackfillResult{}, fmt.Errorf("create instance %d: %w", i+1, err)
 		}
 		ids = append(ids, instanceID)
 	}
@@ -782,12 +793,12 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 		ItemID: itemID, ProductID: *scanEntry.ProductID, At: at, Source: "backfill",
 		ScanEntryID: &scanID, Tracked: false, InstanceIDs: ids, Unshelved: wasShelved,
 	}); err != nil {
-		return "", 0, fmt.Errorf("record stock-in: %w", err)
+		return BackfillResult{}, fmt.Errorf("record stock-in: %w", err)
 	}
 
 	usage, err := r.trackRestock(ctx, tx)
 	if err != nil {
-		return "", 0, err
+		return BackfillResult{}, err
 	}
 	consumptionIDs := make([]string, 0, units)
 	for _, instanceID := range ids {
@@ -795,7 +806,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 			UPDATE item_instances
 			SET removed_at = ?, removal_reason = 'consumed'
 			WHERE id = ?`, at, instanceID); err != nil {
-			return "", 0, fmt.Errorf("remove instance: %w", err)
+			return BackfillResult{}, fmt.Errorf("remove instance: %w", err)
 		}
 		if !usage {
 			continue
@@ -806,7 +817,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 			VALUES (?, ?, ?, ?)`,
 			consumptionID, itemID, at, scanID,
 		); err != nil {
-			return "", 0, fmt.Errorf("create consumption event: %w", err)
+			return BackfillResult{}, fmt.Errorf("create consumption event: %w", err)
 		}
 		consumptionIDs = append(consumptionIDs, consumptionID)
 	}
@@ -815,19 +826,35 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (strin
 		ScanEntryID: &scanID, Tracked: usage, Quantity: units, InstanceIDs: ids,
 		ConsumptionIDs: consumptionIDs,
 	}); err != nil {
-		return "", 0, fmt.Errorf("record stock-out: %w", err)
+		return BackfillResult{}, fmt.Errorf("record stock-out: %w", err)
 	}
 
 	if err := markScanCommitted(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
-		return "", 0, err
+		return BackfillResult{}, err
+	}
+	var stockInID, stockOutID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE scan_entry_id = ? AND direction = 'in' AND source = 'backfill'`,
+		scanEntry.ID).Scan(&stockInID); err != nil {
+		return BackfillResult{}, fmt.Errorf("read backfill stock-in: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE scan_entry_id = ? AND direction = 'out' AND source = 'scan'`,
+		scanEntry.ID).Scan(&stockOutID); err != nil {
+		return BackfillResult{}, fmt.Errorf("read backfill stock-out: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", 0, fmt.Errorf("commit transaction: %w", err)
+		return BackfillResult{}, fmt.Errorf("commit transaction: %w", err)
 	}
 	if err := r.publishCommitted(ctx, scanEntry.ID, itemID); err != nil {
-		return "", 0, err
+		return BackfillResult{}, err
 	}
-	return itemID, units, nil
+	return BackfillResult{
+		ItemID: itemID, Units: units,
+		StockInMoveID: stockInID, StockOutMoveID: stockOutID,
+	}, nil
 }
 
 // LinkStockOutProduct points a pending or flagged stock-out at a product,
