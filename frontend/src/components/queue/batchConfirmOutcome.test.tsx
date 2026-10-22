@@ -237,7 +237,6 @@ interface OutcomeCase {
   bannerKind?: 'success' | 'failure';
   bannerLine?: string;
   amberBarcodes?: string[];
-  tealBanner?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -1066,7 +1065,7 @@ const partialBatchRows = (): OutcomeCase[] => {
       visible: ['Nothing on hand to take out.'],
       absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer', fallback],
       once: ['Nothing on hand to take out.'],
-      tealBanner: true,
+      bannerGone: true,
       amberBarcodes: ['scan-batch-none'],
       pendingBarcodes: ['scan-batch-none'],
       goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
@@ -1599,10 +1598,6 @@ describe('scan commit outcomes', () => {
       } else {
         expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
       }
-    }
-    if (row.tealBanner) {
-      expect(document.querySelector('.scan-batch-banner--success')).not.toBeNull();
-      expect(screen.queryByText(fallback)).not.toBeInTheDocument();
     }
     if (row.cardOnce) {
       const card = screen.getByRole('article', { name: scanName(row.cardOnce.barcode) });

@@ -183,21 +183,17 @@ const expectFailureWithPartial = async (page: Page, line: string) => {
   await fitsInViewport(partial)
 }
 
-// Amber cards are not batch failures. When they are all that remains, the teal
-// banner stays up, and the partial line is its text when one applies.
+// Amber cards are not batch failures. A partial line still uses the teal banner.
+// With nothing to say, there is no banner.
 const expectAmberLeftoverBanner = async (page: Page, line: string) => {
   await expectSuccessBanner(page, line)
   await expect(page.getByText(fallback)).toHaveCount(0)
 }
 
-const expectQuietAmberBanner = async (page: Page) => {
-  const banner = page.locator('.scan-batch-banner--success')
-  await expect(banner).toHaveCount(1)
-  await expect(banner).toHaveText('')
-  await expect(banner).toHaveAttribute('role', 'status')
+const expectNoBatchBanner = async (page: Page) => {
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
   await expect(failureBanner(page)).toHaveCount(0)
   await expect(page.getByText(fallback)).toHaveCount(0)
-  await fitsInViewport(banner)
 }
 
 for (const viewport of viewports) {
@@ -333,7 +329,7 @@ test.describe('batch banner screenshots', () => {
             [full.id]: { removedCount: 2, requestedCount: 2 },
           },
         }))
-        await expectQuietAmberBanner(page)
+        await expectNoBatchBanner(page)
         await expect(page.getByText(failureNote)).toBeVisible()
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)

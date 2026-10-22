@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE } from '../../api/contract';
@@ -82,6 +82,7 @@ interface QueueHarness {
   mode?: 'stock_in' | 'stock_out';
   failInventory?: boolean;
   holdInventory?: boolean;
+  batchResult?: Record<string, unknown>;
 }
 
 const renderQueue = (harness: QueueHarness) => {
@@ -103,7 +104,17 @@ const renderQueue = (harness: QueueHarness) => {
     if (url.includes('batch-commit') && method === 'POST') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { scanEntryIds?: string[] };
       batches.push(body.scanEntryIds ?? []);
-      return Promise.resolve(json({ updatedCount: body.scanEntryIds?.length ?? 0, committedIds: body.scanEntryIds ?? [] }));
+      const result = harness.batchResult ?? {
+        updatedCount: body.scanEntryIds?.length ?? 0,
+        committedIds: body.scanEntryIds ?? [],
+      };
+      const committed = Array.isArray(result.committedIds)
+        ? result.committedIds.filter((id): id is string => typeof id === 'string')
+        : [];
+      if (harness.batchResult !== undefined && committed.length > 0) {
+        pending = pending.filter((entry) => !committed.includes(entry.id));
+      }
+      return Promise.resolve(json(result));
     }
     if (url.endsWith('/commit') && method === 'POST') {
       const id = url.split('/').at(-2) ?? '';
@@ -446,6 +457,176 @@ describe('nothing on hand queue', () => {
     FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
     releaseInventory([shelf('milk', 'Milk', 0)]);
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 333' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+  });
+
+  const expectNoBatchBanner = () => {
+    expect(document.querySelector('.scan-batch-banner')).toBeNull();
+    expect(screen.queryByText('Some scans could not be confirmed.')).not.toBeInTheDocument();
+  };
+
+  const confirmBatch = async (count: number) => {
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
+  };
+
+  it('An amber-only batch with no partial line shows no banner.', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '333',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 1,
+        committedIds: ['scan-oats'],
+        failedIds: ['scan-rice'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 333' })).toBeInTheDocument();
+    await confirmBatch(2);
+    const riceCard = await screen.findByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` });
+    expect(within(riceCard).getByText(NOTHING_ON_HAND_TITLE)).toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Scan 333' })).not.toBeInTheDocument();
+    expectNoBatchBanner();
+  });
+
+  it('After a stock-in clears amber from the last none_on_hand card, the banner is gone.', async () => {
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-milk',
+      product: product('prod-milk', 'Milk'),
+    });
+    const inbound = scan({
+      id: 'scan-in',
+      barcode: '777',
+      direction: 'stock_in',
+      productId: 'prod-milk',
+      product: product('prod-milk', 'Milk'),
+    });
+    renderQueue({
+      scans: [rice, inbound],
+      inventory: [shelf('milk', 'Milk', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: ['scan-rice'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+    await confirmBatch(1);
+    expect(await screen.findByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /Stock in/ }));
+    fireEvent.click(within(await screen.findByRole('article', { name: 'Scan 777' })).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Stock out/ }));
+    await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 666' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+    expectNoBatchBanner();
+  });
+
+  it('A mixed batch stays red until its non-amber failure is resolved.', async () => {
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const open = scan({ id: 'scan-open', barcode: '444', productId: null, product: null });
+    renderQueue({
+      scans: [rice, open],
+      inventory: [shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: ['scan-rice', 'scan-open'],
+        failedReasons: ['Nothing on hand to take out.', 'Choose which item this is first.'],
+        failedCodes: ['none_on_hand', 'product_unresolved'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+    await confirmBatch(2);
+    await waitFor(() => {
+      const failure = document.querySelector('.scan-batch-banner');
+      expect(failure?.textContent).toContain('Some scans could not be confirmed.');
+      expect(failure?.className).not.toContain('scan-batch-banner--success');
+    });
+    expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    expect(screen.getByText('Choose which item this is first.')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 444' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 444' })).not.toBeInTheDocument());
+    expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    expectNoBatchBanner();
+  });
+
+  it('reconciles a pin against the list merged with live inventory', async () => {
+    const pinned = scan({ id: 'scan-pin', barcode: '666' });
+    const { releaseInventory } = renderQueue({ scans: [pinned], holdInventory: true });
+    expect(within(await screen.findByRole('article', { name: 'Scan 666' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    await act(async () => {
+      FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    await act(async () => {
+      releaseInventory([shelf('milk', 'Milk', 0)]);
+    });
+    expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+
+  it('clears live inventory updates when the next load starts', async () => {
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const { patches } = renderQueue({
+      scans: [milk, rice],
+      holdInventory: true,
+      nextInventory: [shelf('milk', 'Milk', 4)],
+    });
+    expect(within(await screen.findByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    await act(async () => {
+      FakeEventSource.instances[0]?.dispatch('inventory', shelf('rice', 'Rice', 0));
+    });
+    expect(await screen.findByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Increase unit count' }));
+    await waitFor(() => expect(patches.some((patch) => patch.id === 'scan-milk')).toBe(true));
+    await waitFor(() => expect(screen.queryByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).not.toBeInTheDocument());
+    expect(within(screen.getByRole('article', { name: 'Scan 666' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+  });
+
+  it('discards an inventory list that lost the race with a newer load', async () => {
+    const { releaseInventory, patches, fetchMock } = renderQueue({
+      scans: [milk],
+      holdInventory: true,
+      nextInventory: [shelf('milk', 'Milk', 4)],
+    });
+    expect(within(await screen.findByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    const inventoryCalls = () => fetchMock.mock.calls.filter((call) => String(call[0]).includes('/api/inventory')).length;
+    const before = inventoryCalls();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Increase unit count' }));
+    await waitFor(() => expect(patches.some((patch) => patch.id === 'scan-milk')).toBe(true));
+    await waitFor(() => expect(inventoryCalls()).toBeGreaterThan(before));
+    await act(async () => {
+      releaseInventory([shelf('milk', 'Milk', 0)]);
+    });
+    expect(within(screen.getByRole('article', { name: 'Scan 111' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
   });
 });

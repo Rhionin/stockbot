@@ -342,7 +342,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     ? confirmSkipsNothingOnHand(skippedBlocked)
     : null;
   const blockingFailures = [...failureById.values()].filter((notice) => notice.code !== CODE_NONE_ON_HAND);
-  const amberFailures = [...failureById.values()].filter((notice) => notice.code === CODE_NONE_ON_HAND);
 
   const rememberPin = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
@@ -363,15 +362,28 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
 
   const releasePins = useCallback((productIds: ReadonlySet<string>) => {
     if (productIds.size === 0) return;
+    const stocked = (entry: ScanEntry | undefined) => (
+      entry?.productId !== null && entry?.productId !== undefined && productIds.has(entry.productId)
+    );
     setPinnedNone((current) => {
       let changed = false;
       const next = new Map(current);
       for (const [id] of current) {
-        const entry = entriesRef.current.find((row) => row.id === id);
-        if (entry?.productId !== null && entry?.productId !== undefined && productIds.has(entry.productId)) {
-          next.delete(id);
-          changed = true;
-        }
+        if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
+        next.delete(id);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    // Stock arriving resolves the none_on_hand failure. Leaving it recorded kept an empty teal banner.
+    setFailureById((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [id, notice] of current) {
+        if (notice.code !== CODE_NONE_ON_HAND) continue;
+        if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
+        next.delete(id);
+        changed = true;
       }
       return changed ? next : current;
     });
@@ -619,8 +631,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
             {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
           </Alert>
         )}
-        {/* Amber cards carry their own message. The batch is the teal banner, and the partial line sits in it when one applies. */}
-        {blockingFailures.length === 0 && (partialLine !== null || amberFailures.length > 0) && (
+        {/* Amber cards carry their own message. The teal banner is only the partial line, and only when there is one. */}
+        {blockingFailures.length === 0 && partialLine !== null && (
           <Text
             role="status"
             className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
