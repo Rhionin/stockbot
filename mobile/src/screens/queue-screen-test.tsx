@@ -535,16 +535,11 @@ describe('QueueScreen', () => {
 
   function expectCleared(
     screen: Awaited<ReturnType<typeof renderScreen>>,
-    state: 'gone' | 'failure' | 'teal',
+    state: 'gone' | 'failure',
   ) {
     expect(screen.queryByText(wasLine)).toBeNull();
     if (state === 'gone') {
       expectBanner(screen, 'gone', []);
-      return;
-    }
-    if (state === 'teal') {
-      expectBanner(screen, 'success', []);
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       return;
     }
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
@@ -555,10 +550,10 @@ describe('QueueScreen', () => {
     { label: 'a successful confirm', trigger: 'confirm-ok', banner: 'failure' as const },
     { label: 'a failed link', trigger: 'link-fail', banner: 'gone' as const },
     { label: 'a successful link', trigger: 'link-ok', banner: 'gone' as const },
-    { label: 'a new batch', trigger: 'batch', banner: 'teal' as const },
+    { label: 'a new batch', trigger: 'batch', banner: 'gone' as const },
     { label: 'a removed card', trigger: 'removed', banner: 'gone' as const },
-    { label: 'a new scan', trigger: 'arrived', banner: 'teal' as const },
-    { label: 'leaving the queue', trigger: 'leave', banner: 'teal' as const },
+    { label: 'a new scan', trigger: 'arrived', banner: 'gone' as const },
+    { label: 'leaving the queue', trigger: 'leave', banner: 'gone' as const },
   ])('clears the partial line on $label', async ({ trigger, banner }) => {
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
     const secondFailure = batchCard('scan-also', 'Second oil', 'stock_out', 1);

@@ -183,7 +183,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
-  const [amberBatchIds, setAmberBatchIds] = useState<Set<string>>(() => new Set());
+  const [, setAmberBatchIds] = useState<Set<string>>(() => new Set());
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -554,8 +554,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
   const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
-  const amberBatchLeft = entries.some((entry) => amberBatchIds.has(entry.id));
-  const successBanner = batchHead === '' && !failedPending && (partialLine !== '' || (amberBatchLeft && blockedCount > 0));
+  // The amber batch flag can stay set. It never paints a banner by itself.
+  const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
   const confirmAllVisible = entries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
@@ -569,7 +569,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
-      {(batchHead !== '' || partialLine !== '' || (amberBatchLeft && blockedCount > 0)) && (
+      {(batchHead !== '' || partialLine !== '') && (
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
