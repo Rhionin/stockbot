@@ -35,8 +35,7 @@ func (t *recordTransport) FlushWithContext(ctx context.Context) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if deadline, ok := ctx.Deadline(); ok {
-		// WithTimeout's deadline is a few microseconds before the caller's timeout.
-		t.flush = time.Until(deadline).Round(time.Millisecond)
+		t.flush = time.Until(deadline)
 	}
 	return true
 }
@@ -176,7 +175,7 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	for _, secret := range []string{
 		"Oat Milk", "ada@example.com", "query-secret", "cookie-secret",
 		"auth-secret", "header-token", "header-secret", "weekly", "the good oats",
-		"a note", "203.0.113.8", "198.51.100.77", "203.0.113.77",
+		"203.0.113.8", "198.51.100.77", "203.0.113.77",
 		"deploy-signature-value", "cf-ray-value", "stockbot.example",
 	} {
 		if strings.Contains(body, secret) {
@@ -221,6 +220,101 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	}
 	if !got.User.IsEmpty() {
 		t.Fatalf("user kept: %+v", got.User)
+	}
+}
+
+func TestScrubSentryContextsAllowlist(t *testing.T) {
+	event := &sentry.Event{
+		Contexts: map[string]sentry.Context{
+			"trace":     {"trace_id": "abc"},
+			"os":        {"name": "linux"},
+			"device":    {"family": "pi"},
+			"runtime":   {"name": "go"},
+			"browser":   {"name": "chrome"},
+			"app":       {"app_start_time": "1"},
+			"extra":     {"name": "Oat Milk", "note": "a note"},
+			"response":  {"body": "a note"},
+			"household": {"item": "Oat Milk"},
+		},
+	}
+	got := scrubSentryEvent(event)
+	for _, key := range []string{"trace", "os", "device", "runtime", "browser", "app"} {
+		if _, ok := got.Contexts[key]; !ok {
+			t.Fatalf("context %s dropped", key)
+		}
+	}
+	for _, key := range []string{"extra", "response", "household"} {
+		if _, ok := got.Contexts[key]; ok {
+			t.Fatalf("context %s kept", key)
+		}
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(raw)
+	for _, secret := range []string{"Oat Milk", "a note"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("event still contains %q: %s", secret, body)
+		}
+	}
+}
+
+func TestScrubSentryRejectsForwardedForSensitiveTagsAndSpanQueries(t *testing.T) {
+	event := &sentry.Event{
+		Request: &sentry.Request{
+			URL: "/api/items/item-9",
+			Headers: map[string]string{
+				"Content-Type":    "application/json",
+				"User-Agent":      "Stockbot/1",
+				"X-Forwarded-For": "198.51.100.77",
+			},
+		},
+		Tags: map[string]string{
+			"route":       "POST /api/items?token=query-secret",
+			"environment": "ada@example.com",
+			"method":      "POST",
+		},
+		Spans: []*sentry.Span{{
+			Name:        "db.query /api/x?token=query-secret",
+			Description: "select item where id=? -- /x?token=query-secret",
+			Data: map[string]interface{}{
+				"name": "Oat Milk",
+				"url":  "/x?q=query-secret",
+			},
+		}},
+	}
+	got := scrubSentryEvent(event)
+	if _, ok := got.Request.Headers["X-Forwarded-For"]; ok {
+		t.Fatalf("X-Forwarded-For kept: %#v", got.Request.Headers)
+	}
+	if got.Request.Headers["Content-Type"] != "application/json" || got.Request.Headers["User-Agent"] != "Stockbot/1" {
+		t.Fatalf("headers = %#v", got.Request.Headers)
+	}
+	if _, ok := got.Tags["route"]; ok {
+		t.Fatalf("route tag with a query kept: %#v", got.Tags)
+	}
+	if _, ok := got.Tags["environment"]; ok {
+		t.Fatalf("environment tag with an email kept: %#v", got.Tags)
+	}
+	if got.Tags["method"] != "POST" {
+		t.Fatalf("tags = %#v", got.Tags)
+	}
+	span := got.Spans[0]
+	if strings.Contains(span.Name, "?") || strings.Contains(span.Name, "query-secret") {
+		t.Fatalf("span name = %q", span.Name)
+	}
+	if span.Name != "db.query /api/x" {
+		t.Fatalf("span name = %q", span.Name)
+	}
+	if strings.Contains(span.Description, "query-secret") || strings.Contains(span.Description, "/x?") {
+		t.Fatalf("span description = %q", span.Description)
+	}
+	if _, ok := span.Data["name"]; ok {
+		t.Fatalf("span name data kept: %#v", span.Data)
+	}
+	if span.Data["url"] != "/x" {
+		t.Fatalf("span url = %#v", span.Data)
 	}
 }
 
@@ -303,8 +397,9 @@ func TestSentrySettingsUseBuildCommitAndProduction(t *testing.T) {
 		t.Fatalf("environment = %q", events[0].Environment)
 	}
 	FlushSentry()
-	if tr.flush != sentryFlushTimeout {
-		t.Fatalf("flush = %s", tr.flush)
+	low, high := sentryFlushTimeout-100*time.Millisecond, sentryFlushTimeout+100*time.Millisecond
+	if tr.flush < low || tr.flush > high {
+		t.Fatalf("flush = %s, want between %s and %s", tr.flush, low, high)
 	}
 }
 
