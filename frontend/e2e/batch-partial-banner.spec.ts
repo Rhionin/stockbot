@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
+const shotDir = process.env.BATCH_BANNER_SHOTS
 const fallback = 'Some scans could not be confirmed.'
 const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.'
 const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.'
@@ -191,14 +192,15 @@ for (const viewport of viewports) {
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
       await expectFailureWithPartial(page, wasLine)
       await expect(page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })).toContainText(failureNote)
+      if (shotDir !== undefined) {
+        await page.screenshot({ path: `${shotDir}/banner_mixed_${viewport.width}_light.png` })
+      }
     } finally {
       await page.unroute('**/api/scans/batch-commit')
       await cancelScan(request, miss.id).catch(() => undefined)
     }
   })
 }
-
-const shotDir = process.env.BATCH_BANNER_SHOTS
 
 test.describe('batch banner screenshots', () => {
   test.skip(shotDir === undefined, 'set BATCH_BANNER_SHOTS to save viewport shots')
