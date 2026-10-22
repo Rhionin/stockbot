@@ -72,10 +72,10 @@ async function expectScannerMode(mode: 'stock_in' | 'stock_out') {
   });
 }
 
-const findScan = (barcode: string) => screen.findByRole('article', { name: `Scan ${barcode}` });
+const findScan = (barcode: string) => screen.findByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) });
 
 const scansNamed = (cards: HTMLElement[], barcodes: string[]) =>
-  cards.filter((card) => barcodes.includes(card.getAttribute('aria-label')?.replace(/^Scan /, '') ?? ''));
+  cards.filter((card) => barcodes.includes(card.getAttribute('aria-label')?.replace(/^Scan /, '').split(',')[0] ?? ''));
 
 describe('ScanQueuePage', () => {
   beforeEach(() => {
@@ -2316,7 +2316,26 @@ describe('ScanQueuePage', () => {
           return refresh;
         }
         if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if (url === '/api/products') return Promise.resolve(jsonResponse([]));
+        if (url === '/api/inventory') {
+          if (entry.productId === null || entry.product === null || entry.product === undefined) {
+            return Promise.resolve(jsonResponse([]));
+          }
+          return Promise.resolve(jsonResponse([{
+            item: {
+              id: 'item-1',
+              userId: 'user-1',
+              productId: entry.productId,
+              product: entry.product,
+              targetQuantity: null,
+              createdAt: '2026-03-20T10:00:00Z',
+            },
+            instanceCount: 2,
+            nearExpiryCount: 0,
+            expiredCount: 0,
+            needsAttention: false,
+          }]));
+        }
         if (url.endsWith('/api/scanner/config')) {
           return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: mode }));
         }

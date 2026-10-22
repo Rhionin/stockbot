@@ -1097,6 +1097,108 @@ code {
   background-color: var(--accent-bg);
 }
 
+/* Attention, not an error. The same amber ink has to clear AA on the wash
+   and on the page, in light and dark. */
+:root {
+  --scan-nothing-wash: #fffbeb;
+  --scan-nothing-ink: #92400e;
+  --scan-nothing-border: #b45309;
+}
+
+[data-mantine-color-scheme='dark'] {
+  --scan-nothing-wash: #2c2116;
+  --scan-nothing-ink: #fde68a;
+  --scan-nothing-border: #fbbf24;
+}
+
+.scan-entry-row.scan-entry-card--nothing,
+.scan-entry-list--flat > .scan-entry-row.scan-entry-card--nothing,
+.scan-entry-card--nothing.scan-entry-card--changed-static {
+  border: 1px solid var(--scan-nothing-border);
+  border-radius: 12px;
+  background: var(--scan-nothing-wash);
+  padding: 10px 12px 8px;
+  margin: 8px 0;
+}
+
+.scan-nothing {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 8px 0 4px;
+}
+
+.scan-nothing-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--scan-nothing-ink);
+  background: color-mix(in srgb, var(--scan-nothing-border) 16%, var(--scan-nothing-wash));
+  border: 1px solid var(--scan-nothing-border);
+}
+
+.scan-nothing-copy {
+  min-width: 0;
+}
+
+.scan-nothing-title {
+  margin: 0;
+  font-weight: 700;
+  color: var(--scan-nothing-ink);
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.scan-nothing-body {
+  margin: 2px 0 0;
+  color: var(--scan-nothing-ink);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.scan-nothing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--scan-nothing-wash);
+  color: var(--scan-nothing-ink);
+  border: 1px solid var(--scan-nothing-border);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.scan-nothing-pill-mark,
+.scan-nothing-skip-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--scan-nothing-border);
+  flex: none;
+}
+
+.scan-nothing-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--scan-nothing-ink);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 650;
+  line-height: 1.35;
+}
+
 @keyframes scan-entry-changed-flash {
   0% { background-color: var(--accent-bg); }
   100% { background-color: transparent; }

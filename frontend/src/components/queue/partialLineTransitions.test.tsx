@@ -49,6 +49,21 @@ const product = (id: string, name: string) => ({
   unitOfMeasure: 'bag',
 });
 
+const stockedShelf = (productId: string, name: string) => ({
+  item: {
+    id: `item-${productId}`,
+    userId: 'user-1',
+    productId,
+    product: product(productId, name),
+    targetQuantity: null,
+    createdAt: '2026-03-20T10:00:00Z',
+  },
+  instanceCount: 2,
+  nearExpiryCount: 0,
+  expiredCount: 0,
+  needsAttention: false,
+});
+
 const scanEntry = (overrides: Partial<ScanEntry>): ScanEntry => ({
   id: 'scan-batch-partial',
   userId: 'user-1',
@@ -161,7 +176,6 @@ describe('partial line transitions', () => {
             committedIds: [chips.id],
             failedIds: [kept.id],
             failedReasons: ['Nothing on hand to take out.'],
-            failedCodes: ['none_on_hand'],
             stockOutCounts: { [chips.id]: partialCount },
           }));
         }
@@ -194,7 +208,14 @@ describe('partial line transitions', () => {
         return Promise.resolve(json(pending));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(json([]));
-      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(json([]));
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
+        return Promise.resolve(json([
+          stockedShelf('prod-chips', 'Tortilla chips'),
+          stockedShelf('prod-keep', 'Kept oil'),
+          stockedShelf('prod-later', 'Rolled oats'),
+          stockedShelf('prod-new', 'New rice'),
+        ]));
+      }
       if (url === '/api/products' || url.startsWith('/api/products?')) return Promise.resolve(json([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(json({

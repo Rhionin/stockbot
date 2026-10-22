@@ -205,3 +205,27 @@ export function formatPartialRemoval(
 // A 5xx with no JSON error field: a migration 503, a proxy 502/504, or empty
 // HTTP/2 status text. Appended so the Expo client can show the same sentence.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
+
+export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
+
+export const NOTHING_ON_HAND_BODY =
+  "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
+
+export const CODE_NONE_ON_HAND = 'none_on_hand';
+
+// Shelved rows are absent from the household list, so a missing count is empty.
+export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
+  return onHand === undefined || onHand <= 0;
+}
+
+export function nothingOnHandPill(count: number): string | null {
+  if (!Number.isInteger(count) || count < 1) return null;
+  return `${count} with nothing on hand`;
+}
+
+// "the 1" does not read as a sentence. One card says "one"; two or more use the digit.
+export function confirmSkipsNothingOnHand(count: number): string | null {
+  if (!Number.isInteger(count) || count < 1) return null;
+  const amount = count === 1 ? 'one' : String(count);
+  return `Confirm skips the ${amount} with nothing on hand.`;
+}

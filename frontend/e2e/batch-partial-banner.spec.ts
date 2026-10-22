@@ -22,6 +22,16 @@ const cancelScan = async (request: APIRequestContext, id: string) => {
   expect(response.ok()).toBe(true)
 }
 
+const stockIn = async (request: APIRequestContext, barcode: string) => {
+  const created = await request.post('/api/scans', {
+    data: { barcode, direction: 'stock_in', userId: 'user-1' },
+  })
+  expect(created.ok(), await created.text()).toBe(true)
+  const body = await created.json() as { id: string }
+  const committed = await request.post(`/api/scans/${body.id}/commit`, { data: {} })
+  expect(committed.ok(), await committed.text()).toBe(true)
+}
+
 const seedStockOuts = async (
   page: Page,
   request: APIRequestContext,
@@ -34,6 +44,7 @@ const seedStockOuts = async (
       category: 'Grocery',
       unitOfMeasure: 'bag',
     })
+    await stockIn(request, item.barcode)
   }
   await page.goto('/')
   await resetToStockIn(page)
@@ -226,7 +237,7 @@ for (const viewport of viewports) {
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
       await expectFailureWithPartial(page, wasLine)
-      await expect(page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })).toContainText(failureNote)
+      await expect(page.getByRole('article', { name: new RegExp(`^Scan ${missBarcode}(,|$)`) })).toContainText(failureNote)
       if (shotDir !== undefined) {
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_light.png`)
       }

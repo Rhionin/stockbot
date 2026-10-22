@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, type CommitScanResponse } from '../../api/contract';
+import { CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
@@ -12,8 +12,6 @@ import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './que
 
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
-
-const NOTHING_ON_HAND = 'Nothing on hand to take out.';
 
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
@@ -152,9 +150,12 @@ export interface ScanEntryCardProps {
   justCaptured?: boolean;
   commitNotice?: string;
   commitCode?: string;
+  nothingOnHand?: boolean;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onConfirmStart?: () => void;
+  onBlocked?: () => void;
+  onStocked?: (productId: string) => void;
 }
 
 export const ScanEntryCard = ({
@@ -164,14 +165,17 @@ export const ScanEntryCard = ({
   justCaptured = false,
   commitNotice = '',
   commitCode = '',
+  nothingOnHand = false,
   onSelectedChange,
   onChanged,
   onConfirmStart,
+  onBlocked,
+  onStocked,
 }: ScanEntryCardProps) => {
+  const blockedBodyId = useId();
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approving, setApproving] = useState(false);
-  const [toastedSentence, setToastedSentence] = useState('');
   const [localOffer, setLocalOffer] = useState<{
     code: string;
     offer: PantryLinkSuggestion[] | null;
@@ -244,11 +248,16 @@ export const ScanEntryCard = ({
   const isStockOut = entry.direction === 'stock_out';
   // Pending confirmation is a list row. Flagged review stays a card.
   const flatRow = entry.status === 'pending';
+  const blocked = nothingOnHand;
+  const articleLabel = blocked
+    ? `Scan ${entry.barcode}, ${NOTHING_ON_HAND_TITLE}`
+    : `Scan ${entry.barcode}`;
 
   const changeIndicatorClass = [
     'scan-entry-card',
     flatRow ? 'scan-entry-row' : undefined,
-    !showChangeIndicator
+    blocked ? 'scan-entry-card--nothing' : undefined,
+    blocked || !showChangeIndicator
       ? undefined
       : prefersReducedMotion()
         ? 'scan-entry-card--changed-static'
@@ -279,7 +288,6 @@ export const ScanEntryCard = ({
 
   const showCommitSentence = (message: string) => {
     if (message === '') return;
-    setToastedSentence(message);
     showUndo({ detail: message, color: 'red' });
   };
 
@@ -310,6 +318,10 @@ export const ScanEntryCard = ({
   // Card state stays here (picker, link offer, search). The sentence itself
   // is published once, at the end, and only into the toast.
   const showCommitFailure = async (requestError: unknown, linkedProductId?: string): Promise<void> => {
+    if (requestError instanceof ApiError && requestError.code === CODE_NONE_ON_HAND) {
+      onBlocked?.();
+      return;
+    }
     let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
     if (requestError instanceof ApiError) {
       const behavior = commitConflictBehavior(requestError.code);
@@ -338,6 +350,7 @@ export const ScanEntryCard = ({
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       rememberOffer(null, false);
       noteCommitted(committed);
+      if (isStockIn && entry.productId !== null) onStocked?.(entry.productId);
       onChanged();
     } catch (requestError) {
       await showCommitFailure(requestError);
@@ -353,6 +366,7 @@ export const ScanEntryCard = ({
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       rememberOffer(null, false);
       noteCommitted(committed);
+      if (isStockIn) onStocked?.(productId);
       onChanged();
     } catch (requestError) {
       await showCommitFailure(requestError, productId);
@@ -549,7 +563,9 @@ export const ScanEntryCard = ({
             <Checkbox
               size="xs"
               aria-label="Select scan for batch approval"
-              checked={selected}
+              aria-describedby={blocked ? blockedBodyId : undefined}
+              checked={blocked ? false : selected}
+              disabled={blocked}
               onChange={(event) => onSelectedChange(event.currentTarget.checked)}
             />
           )}
@@ -608,6 +624,16 @@ export const ScanEntryCard = ({
         </div>
       </div>
 
+      {blocked && (
+        <div className="scan-nothing">
+          <span className="scan-nothing-mark" aria-hidden="true">!</span>
+          <div className="scan-nothing-copy">
+            <p className="scan-nothing-title">{NOTHING_ON_HAND_TITLE}</p>
+            <p className="scan-nothing-body" id={blockedBodyId}>{NOTHING_ON_HAND_BODY}</p>
+          </div>
+        </div>
+      )}
+
       {entry.status === 'pending' && (
         <Group
           className={flatRow ? 'scan-entry-actions scan-entry-row-controls' : 'scan-entry-actions'}
@@ -649,24 +675,39 @@ export const ScanEntryCard = ({
             </button>
           </div>
           {entry.direction !== null && (
-            <Group gap={4} wrap="nowrap">
-              <Button
-                size="compact-xs"
-                loading={approving}
-                onClick={() => void handleApprove()}
-              >
-                Confirm
-              </Button>
-              <Button
-                size="compact-xs"
-                variant="light"
-                color="red"
-                loading={removing}
-                onClick={() => void handleRemove()}
-              >
-                Remove
-              </Button>
-            </Group>
+            blocked ? (
+              // #294 replaces this Remove with "Add it and take it out".
+              <div className="scan-entry-action-slot scan-entry-blocked-action">
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color="red"
+                  loading={removing}
+                  onClick={() => void handleRemove()}
+                >
+                  Remove
+                </Button>
+              </div>
+            ) : (
+              <Group gap={4} wrap="nowrap">
+                <Button
+                  size="compact-xs"
+                  loading={approving}
+                  onClick={() => void handleApprove()}
+                >
+                  Confirm
+                </Button>
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color="red"
+                  loading={removing}
+                  onClick={() => void handleRemove()}
+                >
+                  Remove
+                </Button>
+              </Group>
+            )
           )}
           {isStockIn && (
             <div className="scan-entry-expiry-slot">
@@ -713,7 +754,7 @@ export const ScanEntryCard = ({
               )}
             </div>
           )}
-          {isStockOut && linkOffer === null && (
+          {isStockOut && linkOffer === null && !blocked && (
             <button
               type="button"
               className="scan-entry-more"
@@ -751,10 +792,6 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && toastedSentence !== NOTHING_ON_HAND && (
-        <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
-      )}
-
       {entry.status === 'flagged' && (
         <Group justify="flex-end" mt={4}>
           <Button size="compact-xs" onClick={() => setWhatOpen(true)}>
@@ -823,7 +860,7 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {commitNotice !== '' && (
+      {commitNotice !== '' && commitCode !== CODE_NONE_ON_HAND && (
         <Alert color="red" py={4} mt={4}>{commitNotice}</Alert>
       )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
@@ -834,14 +871,14 @@ export const ScanEntryCard = ({
 
   if (flatRow) {
     return (
-      <article className={changeIndicatorClass} aria-label={`Scan ${entry.barcode}`}>
+      <article className={changeIndicatorClass} aria-label={articleLabel}>
         {queueItem}
       </article>
     );
   }
 
   return (
-    <Card component="article" withBorder padding="xs" radius="md" className={changeIndicatorClass} aria-label={`Scan ${entry.barcode}`}>
+    <Card component="article" withBorder padding="xs" radius="md" className={changeIndicatorClass} aria-label={articleLabel}>
       {queueItem}
     </Card>
   );

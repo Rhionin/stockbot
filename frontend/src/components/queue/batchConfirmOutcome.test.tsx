@@ -104,6 +104,9 @@ const searchHousehold = [
   householdItem('empty', 'Empty Oats', 0),
   householdItem('rice', 'Plain Rice', 2),
 ];
+
+const scanName = (barcode: string) => new RegExp(`^Scan ${barcode}(,|$)`);
+
 const searchCatalog = [product('prod-catalog', 'Catalog Oats')];
 
 const inventory = [
@@ -137,6 +140,25 @@ const inventory = [
   },
 ];
 
+const householdFor = (row: { household?: unknown; wiped?: boolean; cards?: ScanEntry[] }) => {
+  const listed = Array.isArray(row.household) ? row.household : inventory;
+  if (row.wiped) return listed;
+  const rows = [...listed] as ReturnType<typeof householdItem>[];
+  const seen = new Set(rows.map((item) => item.item.productId));
+  const ensure = (productId: string | null, name: string) => {
+    if (productId === null || productId === '' || seen.has(productId)) return;
+    seen.add(productId);
+    const id = productId.startsWith('prod-') ? productId.slice('prod-'.length) : productId;
+    rows.push(householdItem(id, name === '' ? 'Item' : name, 2));
+  };
+  if (row.household !== undefined) {
+    ensure('prod-milk', 'Milk');
+    ensure('prod-oats', 'Oats');
+  }
+  for (const card of row.cards ?? []) ensure(card.productId, card.product?.name ?? 'Item');
+  return rows;
+};
+
 type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd' | 'kept';
 
 const crowd = Array.from({ length: 10 }, (_, index) => {
@@ -159,7 +181,7 @@ const pendingEntries = (which: PendingSet, kept: ScanEntry[]): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more' | 'batch-then-one' | 'batch-then-batch' | 'batch-then-remove' | 'batch-then-scan' | 'batch-then-tab' | 'batch-then-leave';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more' | 'view' | 'batch-then-one' | 'batch-then-batch' | 'batch-then-remove' | 'batch-then-scan' | 'batch-then-tab' | 'batch-then-leave';
   pendingAfter: PendingSet;
   pendingAfterConfirm?: PendingSet;
   pendingAfterScan?: PendingSet;
@@ -202,6 +224,7 @@ interface OutcomeCase {
   hideMore?: string;
   openMore?: boolean;
   household?: unknown;
+  wiped?: boolean;
   catalog?: unknown;
   stillSelected?: boolean;
   fixed?: boolean;
@@ -318,7 +341,6 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
     cardWithoutAlert: '111',
     instanceFetches: 1,
-    toast: 'Nothing on hand to take out.',
     noSearchOn: ['111'],
   },
   {
@@ -331,7 +353,6 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
-    toast: 'Nothing on hand to take out.',
     noSearchOn: ['111'],
   },
   {
@@ -724,17 +745,15 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
-    name: 'a wiped product confirms nothing on hand only in the toast',
-    action: 'confirm-milk',
+    name: 'a wiped product shows the amber card without More',
+    action: 'view',
     pendingAfter: 'both',
-    openMore: true,
+    wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
-    visible: ['Nothing on hand to take out.'],
+    visible: ['Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
     absent: ['No inventory item is available'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'a single confirm replaces the batch reason so the sentence shows once',
@@ -752,12 +771,12 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
     cardWithoutAlert: '111',
     cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
-    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'a stock-out with no household item says nothing is on hand',
-    action: 'more-milk',
+    action: 'view',
     pendingAfter: 'both',
+    wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
     visible: ['Nothing on hand to take out.'],
     absent: ['No inventory item is available'],
@@ -765,20 +784,16 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
   },
   {
-    name: 'confirming a wiped product with More open says nothing is on hand once',
-    action: 'confirm-milk-more',
+    name: 'a wiped product is amber before anyone confirms it',
+    action: 'view',
     pendingAfter: 'both',
+    wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    commit: {
-      status: 409,
-      body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' },
-    },
     visible: ['Nothing on hand to take out.'],
     absent: ['No inventory item is available'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
-    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'an empty search lists household items, including zero on hand',
@@ -1299,7 +1314,7 @@ describe('scan commit outcomes', () => {
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
         inventoryFetches += 1;
-        return Promise.resolve(jsonResponse(row.household ?? inventory));
+        return Promise.resolve(jsonResponse(householdFor(row)));
       }
       if (url === '/api/products' || url.startsWith('/api/products?')) {
         return Promise.resolve(jsonResponse(row.catalog ?? []));
@@ -1326,7 +1341,7 @@ describe('scan commit outcomes', () => {
 
     const milkCard = row.cards
       ? null
-      : await screen.findByRole('article', { name: 'Scan 111' });
+      : await screen.findByRole('article', { name: scanName('111') });
     if (row.cards) {
       const expectedCards = row.visibleCards ?? row.cards.length;
       if (row.visibleCards !== undefined) {
@@ -1337,7 +1352,7 @@ describe('scan commit outcomes', () => {
         expect(await screen.findAllByRole('article')).toHaveLength(expectedCards);
       }
     } else {
-      expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
+      expect(screen.getByRole('article', { name: scanName('222') })).toBeInTheDocument();
     }
 
     if (row.action === 'confirm-milk-instance' && milkCard) {
@@ -1365,7 +1380,7 @@ describe('scan commit outcomes', () => {
     } else if (row.action === 'confirm-milk-more' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
-    } else if (row.action !== 'batch' && milkCard) {
+    } else if (row.action !== 'batch' && row.action !== 'view' && milkCard) {
       if (row.openMore) {
         fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
         expect(within(milkCard).getByText('Nothing on hand to take out.')).toBeInTheDocument();
@@ -1377,12 +1392,12 @@ describe('scan commit outcomes', () => {
       await waitFor(() => {
         for (const text of row.thenSee ?? []) expect(screen.getByText(text)).toBeInTheDocument();
         for (const barcode of row.thenGone ?? []) {
-          expect(screen.queryByRole('article', { name: `Scan ${barcode}` })).not.toBeInTheDocument();
+          expect(screen.queryByRole('article', { name: scanName(barcode) })).not.toBeInTheDocument();
         }
       });
     }
     if (row.action === 'batch-then-one') {
-      const card = screen.getByRole('article', { name: `Scan ${row.followBarcode}` });
+      const card = screen.getByRole('article', { name: scanName(row.followBarcode ?? '') });
       fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
     }
     if (row.action === 'batch-then-batch') {
@@ -1397,7 +1412,7 @@ describe('scan commit outcomes', () => {
       releaseSecondBatch();
     }
     if (row.action === 'batch-then-remove') {
-      const card = screen.getByRole('article', { name: `Scan ${row.followBarcode}` });
+      const card = screen.getByRole('article', { name: scanName(row.followBarcode ?? '') });
       fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
     }
     if (row.action === 'batch-then-scan') {
@@ -1459,7 +1474,7 @@ describe('scan commit outcomes', () => {
 
     await waitFor(() => {
       for (const barcode of row.goneBarcodes) {
-        expect(screen.queryByRole('article', { name: `Scan ${barcode}` })).not.toBeInTheDocument();
+        expect(screen.queryByRole('article', { name: scanName(barcode) })).not.toBeInTheDocument();
       }
       for (const text of row.visible) {
         expect(screen.getAllByText(text).length).toBeGreaterThan(0);
@@ -1472,7 +1487,7 @@ describe('scan commit outcomes', () => {
         expect(screen.getAllByText(text)).toHaveLength(1);
       }
       if (row.cardWithoutAlert !== undefined) {
-        const card = screen.getByRole('article', { name: `Scan ${row.cardWithoutAlert}` });
+        const card = screen.getByRole('article', { name: scanName(row.cardWithoutAlert) });
         expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
       }
       if (row.quiet) {
@@ -1549,26 +1564,36 @@ describe('scan commit outcomes', () => {
       if (row.stillSelected) {
         expect(screen.getByRole('button', { name: `Confirm ${row.pendingBarcodes.length} selected scans` })).toBeInTheDocument();
         for (const barcode of row.pendingBarcodes) {
-          const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+          const card = screen.getByRole('article', { name: scanName(barcode) });
           expect(within(card).getByRole('checkbox')).toBeChecked();
         }
       }
     });
 
     for (const barcode of row.pendingBarcodes) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
-      expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      const card = screen.getByRole('article', { name: scanName(barcode) });
+      if (card.classList.contains('scan-entry-card--nothing')) {
+        expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+        expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+      } else {
+        expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      }
     }
     if (row.cardReason) {
-      const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
-      expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+      const card = screen.getByRole('article', { name: scanName(row.cardReason.barcode) });
+      if (card.classList.contains('scan-entry-card--nothing')) {
+        expect(within(card).getByText(row.cardReason.text)).toBeInTheDocument();
+        expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
+      } else {
+        expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+      }
     }
     if (row.cardOnce) {
-      const card = screen.getByRole('article', { name: `Scan ${row.cardOnce.barcode}` });
+      const card = screen.getByRole('article', { name: scanName(row.cardOnce.barcode) });
       expect(within(card).getAllByText(row.cardOnce.text)).toHaveLength(1);
     }
     if (row.unlinked) {
-      const card = screen.getByRole('article', { name: 'Scan 111' });
+      const card = screen.getByRole('article', { name: scanName('111') });
       expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
       expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
       expect(within(card).queryByText('Not in your pantry', { exact: false })).not.toBeInTheDocument();
@@ -1585,18 +1610,18 @@ describe('scan commit outcomes', () => {
       }
     }
     for (const barcode of row.searchOn ?? []) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      const card = screen.getByRole('article', { name: scanName(barcode) });
       expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
       expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
       expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
     }
     for (const barcode of row.noSearchOn ?? []) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      const card = screen.getByRole('article', { name: scanName(barcode) });
       expect(within(card).queryByLabelText('Search products')).not.toBeInTheDocument();
       expect(within(card).queryByRole('region', { name: 'Which item is this?' })).not.toBeInTheDocument();
     }
     if (row.relink) {
-      const card = screen.getByRole('article', { name: 'Scan 111' });
+      const card = screen.getByRole('article', { name: scanName('111') });
       expect(within(card).queryByRole('button', { name: `Link ${row.relink.name}` })).not.toBeInTheDocument();
       if (row.relink.remaining === null) {
         expect(within(card).getByText('No close match found.')).toBeInTheDocument();
@@ -1612,7 +1637,7 @@ describe('scan commit outcomes', () => {
       expect(commitBodies).toEqual([{}, { linkProductId: 'prod-stale' }]);
     }
     if (row.hideMore) {
-      const card = screen.getByRole('article', { name: `Scan ${row.hideMore}` });
+      const card = screen.getByRole('article', { name: scanName(row.hideMore) });
       expect(within(card).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     }
     if (row.searchPick) {
@@ -1626,20 +1651,11 @@ describe('scan commit outcomes', () => {
 
   it('keeps an open link search when a different card commits', async () => {
     let pending: PendingSet = 'both';
-    const household = [{
-      item: {
-        id: 'item-empty',
-        userId: 'user-1',
-        productId: 'prod-empty',
-        product: product('prod-empty', 'Empty Oats'),
-        targetQuantity: null,
-        createdAt: '2026-03-20T10:00:00Z',
-      },
-      instanceCount: 0,
-      nearExpiryCount: 0,
-      expiredCount: 0,
-      needsAttention: false,
-    }];
+    const household = [
+      householdItem('milk', 'Milk', 2),
+      householdItem('oats', 'Oats', 2),
+      householdItem('empty', 'Empty Oats', 0),
+    ];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/commit') && init?.method === 'POST') {
@@ -1670,8 +1686,8 @@ describe('scan commit outcomes', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<MantineProvider><ScanQueuePage /></MantineProvider>);
-    const milkCard = await screen.findByRole('article', { name: 'Scan 111' });
-    const oatsCard = screen.getByRole('article', { name: 'Scan 222' });
+    const milkCard = await screen.findByRole('article', { name: scanName('111') });
+    const oatsCard = screen.getByRole('article', { name: scanName('222') });
     fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     const search = await within(milkCard).findByLabelText('Search products');
     fireEvent.change(search, { target: { value: 'Oats' } });
@@ -1680,9 +1696,9 @@ describe('scan commit outcomes', () => {
     fireEvent.click(within(oatsCard).getByRole('button', { name: 'Confirm' }));
 
     await waitFor(() => {
-      expect(screen.queryByRole('article', { name: 'Scan 222' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('article', { name: scanName('222') })).not.toBeInTheDocument();
     });
-    const stillOpen = screen.getByRole('article', { name: 'Scan 111' });
+    const stillOpen = screen.getByRole('article', { name: scanName('111') });
     expect(within(stillOpen).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
     const stillSearch = within(stillOpen).getByLabelText('Search products');
     expect(stillSearch).toHaveValue('Oats');

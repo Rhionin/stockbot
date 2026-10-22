@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatPartialRemoval, type BatchCommitResponse } from './contract';
+import {
+  confirmSkipsNothingOnHand,
+  formatPartialRemoval,
+  nothingOnHandPill,
+  shelfHasNothingOnHand,
+  type BatchCommitResponse,
+} from './contract';
 
 const oneUnnamed = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
 const twoCards = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
@@ -123,5 +129,26 @@ describe('formatPartialRemoval', () => {
       body as BatchCommitResponse | null | undefined,
       names as Readonly<Record<string, string>> | undefined,
     )).toBe(line);
+  });
+});
+
+const pillRows: { name: string; count: number; pill: string | null; skip: string | null }[] = [
+  { name: 'none', count: 0, pill: null, skip: null },
+  { name: 'one', count: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the one with nothing on hand.' },
+  { name: 'two', count: 2, pill: '2 with nothing on hand', skip: 'Confirm skips the 2 with nothing on hand.' },
+];
+
+describe('nothing on hand copy', () => {
+  it.each(pillRows)('$name', ({ count, pill, skip }) => {
+    expect(nothingOnHandPill(count)).toBe(pill);
+    expect(confirmSkipsNothingOnHand(count)).toBe(skip);
+  });
+
+  it.each([
+    { name: 'missing from the list', onHand: undefined, empty: true },
+    { name: 'zero on hand', onHand: 0, empty: true },
+    { name: 'one on hand', onHand: 1, empty: false },
+  ])('$name', ({ onHand, empty }) => {
+    expect(shelfHasNothingOnHand(onHand)).toBe(empty);
   });
 });
