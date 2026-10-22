@@ -153,41 +153,21 @@ const expectSuccessBanner = async (page: Page, line: string) => {
   await fitsInViewport(banner)
 }
 
-const expectFailureWithPartial = async (page: Page, line: string) => {
-  const failure = failureBanner(page)
-  const partial = failure.locator('.scan-batch-partial')
-  await expect(failure).toHaveCount(1)
-  await expect(failure).toContainText(fallback)
-  await expect(partial).toHaveCount(1)
-  await expect(partial).toHaveText(line)
-  await expect(partial).not.toHaveAttribute('role', 'alert')
-  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
-  await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
-  await expect.poll(() => page.evaluate((sentence) => {
-    const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
-    const note = alert?.querySelector('.scan-batch-partial')
-    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === 'Some scans could not be confirmed.')
-    if (alert === null || alert === undefined || note === null || note === undefined || head === undefined) return false
-    const follows = (head.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
-    const oneAlert = document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
-    return alert.contains(note)
-      && note.textContent === sentence
-      && follows
-      && note.getAttribute('role') !== 'alert'
-      && oneAlert
-      && document.querySelectorAll('.scan-batch-banner--success').length === 0
-  }, line)).toBe(true)
-  await fitsInViewport(failure)
-  await fitsInViewport(partial)
+// Amber cards are not batch failures. When they are all that remains, the teal
+// banner stays up, and the partial line is its text when one applies.
+const expectAmberLeftoverBanner = async (page: Page, line: string) => {
+  await expectSuccessBanner(page, line)
+  await expect(page.getByText(fallback)).toHaveCount(0)
 }
 
-const expectFailureOnly = async (page: Page, line: string) => {
-  const failure = failureBanner(page)
-  await expect(failure).toHaveCount(1)
-  await expect(failure).toHaveText(line)
-  await expect(page.locator('.scan-batch-partial')).toHaveCount(0)
-  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
-  await fitsInViewport(failure)
+const expectQuietAmberBanner = async (page: Page) => {
+  const banner = page.locator('.scan-batch-banner--success')
+  await expect(banner).toHaveCount(1)
+  await expect(banner).toHaveText('')
+  await expect(banner).toHaveAttribute('role', 'status')
+  await expect(failureBanner(page)).toHaveCount(0)
+  await expect(page.getByText(fallback)).toHaveCount(0)
+  await fitsInViewport(banner)
 }
 
 for (const viewport of viewports) {
@@ -236,7 +216,7 @@ for (const viewport of viewports) {
         await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
-      await expectFailureWithPartial(page, wasLine)
+      await expectAmberLeftoverBanner(page, wasLine)
       await expect(page.getByRole('article', { name: new RegExp(`^Scan ${missBarcode}(,|$)`) })).toContainText(failureNote)
       if (shotDir !== undefined) {
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_light.png`)
@@ -321,7 +301,8 @@ test.describe('batch banner screenshots', () => {
             [full.id]: { removedCount: 2, requestedCount: 2 },
           },
         }))
-        await expectFailureOnly(page, fallback)
+        await expectQuietAmberBanner(page)
+        await expect(page.getByText(failureNote)).toBeVisible()
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)
         await saveShot(page, `${shotDir}/banner_none_${viewport.width}_${scheme}.png`)
@@ -347,7 +328,8 @@ test.describe('batch banner screenshots', () => {
             [mixedFull.id]: { removedCount: 1, requestedCount: 3 },
           },
         }))
-        await expectFailureWithPartial(page, wasLine)
+        await expectAmberLeftoverBanner(page, wasLine)
+        await expect(page.getByText(failureNote)).toBeVisible()
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
         await cancelScan(request, mixedEmpty.id)
