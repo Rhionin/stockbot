@@ -167,7 +167,10 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
 // request when one is available. The client still receives a fixed sentence.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// A deadline or cancel is the client hanging up only when this request's
+	// own context is already done. The same error on a live request is a
+	// server failure: it is logged and reported, and the client gets a 500.
+	if r != nil && r.Context().Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		log.Printf("request canceled")
 		return
 	}

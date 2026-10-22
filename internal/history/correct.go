@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/Rhionin/stockbot/internal/app"
 )
 
 // ErrBackfillLocked is a quantity edit on either move of a backfill pair.
@@ -107,24 +105,27 @@ func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPrevi
 		return UndoPreview{}, err
 	}
 	defer release()
-	clone, cleanup, err := j.snapshot(ctx)
+	clone, dir, cleanup, err := j.snapshot(ctx)
 	if err != nil {
 		return UndoPreview{}, err
 	}
 	defer cleanup()
-	// The copy's journal is created while the undo writes. Keep that file
-	// owner-readable only, the same way the backup creates preview.db.
-	var effect UndoEffect
-	err = app.WithPrivateFiles(func() error {
-		tx, err := clone.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		effect, err = applyUndo(ctx, tx, userID, id, false)
-		return err
-	})
+	// The undo creates the copy's journal with the process umask. Tighten
+	// that file before the copy is removed. The process umask stays as it
+	// was, so a live journal created during the preview is unaffected.
+	// chmodPreview does not use the copy's connection: the undo transaction
+	// already holds the only one.
+	defer func() { _ = chmodPreview(dir) }()
+	tx, err := clone.BeginTx(ctx, nil)
 	if err != nil {
+		return UndoPreview{}, previewErr(ctx, err)
+	}
+	defer tx.Rollback()
+	effect, err := applyUndo(ctx, tx, userID, id, false)
+	if err != nil {
+		return UndoPreview{}, previewErr(ctx, err)
+	}
+	if err := chmodPreview(dir); err != nil {
 		return UndoPreview{}, previewErr(ctx, err)
 	}
 	return UndoPreview{Effects: []UndoEffect{effect}}, nil

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
@@ -128,17 +127,23 @@ func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (
 }
 
 // moveHousehold is the household a move correction uses. Until signed-in
-// households exist, the only household is the default. A client userId that
-// names another household is the same 404 as a missing move, and the handler
-// returns it before any read or write.
+// households exist, the only household is the default. userId is accepted
+// only when it is omitted or a single exact value of that household. An
+// empty value, a different case, surrounding spaces, a repeated parameter,
+// or any other id is the same 404 as a missing move, before any read or write.
 func moveHousehold(r *http.Request) (string, error) {
 	household := history.DefaultHousehold()
-	if r != nil {
-		if id := strings.TrimSpace(r.URL.Query().Get("userId")); id != "" && id != household {
-			return "", NotFound("That move is no longer in the history.")
-		}
+	if r == nil {
+		return household, nil
 	}
-	return household, nil
+	values, present := r.URL.Query()["userId"]
+	if !present || len(values) == 0 {
+		return household, nil
+	}
+	if len(values) == 1 && values[0] == household {
+		return household, nil
+	}
+	return "", NotFound("That move is no longer in the history.")
 }
 
 func (h *HistoryHandler) publish(ctx context.Context, itemID string) {

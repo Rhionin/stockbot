@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -453,6 +455,77 @@ func TestForeignUserIDChangesNothing(t *testing.T) {
 	}
 }
 
+func TestMoveUserIDIsAnExactHouseholdOrOmitted(t *testing.T) {
+	at := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	seedShelfItem(env, "prod-exact", "Exact oats", "item-exact")
+	seedScanAt(env, "scan-exact", "prod-exact", scan.StockIn, 2, at)
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-exact/commit", "", http.StatusOK)
+	id := moveID(productHistory(env, handler, "item-exact").Moves, "in")
+	if id == "" {
+		t.Fatal("missing stock-in")
+	}
+	missing := exchangeJSON(t, handler, http.MethodGet, "/api/moves/missing/preview", "", http.StatusNotFound)
+	for _, path := range []string{
+		"/api/moves/" + id + "/preview",
+		"/api/moves/" + id + "/preview?userId=user-1",
+	} {
+		body := exchangeJSON(t, handler, http.MethodGet, path, "", http.StatusOK)
+		if !strings.Contains(string(body), `"onHand"`) {
+			t.Fatalf("%s body %s", path, body)
+		}
+	}
+	before := domainSnapshot(t, env.DB)
+	rejected := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=", ""},
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=User-1", ""},
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1%20", ""},
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=%20user-1", ""},
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1&userId=user-1", ""},
+		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1&userId=user-2", ""},
+		{http.MethodDelete, "/api/moves/" + id + "?userId=", ""},
+		{http.MethodDelete, "/api/moves/" + id + "?userId=User-1", ""},
+		{http.MethodDelete, "/api/moves/" + id + "?userId=user-1&userId=user-1", ""},
+		{http.MethodPatch, "/api/moves/" + id + "?userId=", `{"quantity":4}`},
+		{http.MethodPatch, "/api/moves/" + id + "?userId=user-1&userId=user-1", `{"quantity":4}`},
+		{http.MethodPatch, "/api/moves/" + id + "?userId=USER-1", `{"quantity":4}`},
+	}
+	for _, req := range rejected {
+		got := exchangeJSON(t, handler, req.method, req.path, req.body, http.StatusNotFound)
+		if string(got) != string(missing) {
+			t.Fatalf("%s %s %s", req.method, req.path, got)
+		}
+	}
+	if got := domainSnapshot(t, env.DB); got != before {
+		t.Fatalf("rejected userId changed the shelf:\n%s", got)
+	}
+	patched := exchangeJSON(t, handler, http.MethodPatch, "/api/moves/"+id+"?userId=user-1", `{"quantity":4}`, http.StatusOK)
+	var raised struct {
+		OnHand float64 `json:"onHand"`
+	}
+	if err := json.Unmarshal(patched, &raised); err != nil {
+		t.Fatal(err)
+	}
+	if raised.OnHand != 4 {
+		t.Fatalf("exact userId on hand = %v", raised.OnHand)
+	}
+	deleted := exchangeJSON(t, handler, http.MethodDelete, "/api/moves/"+id, "", http.StatusOK)
+	var after struct {
+		OnHand float64 `json:"onHand"`
+	}
+	if err := json.Unmarshal(deleted, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.OnHand != 0 {
+		t.Fatalf("omitted userId on hand = %v", after.OnHand)
+	}
+}
+
 func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	db, err := app.OpenSQLite(path)
@@ -605,8 +678,14 @@ func TestCanceledPreviewIsLoggedAsACancel(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/moves/anything/preview", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code == http.StatusInternalServerError {
-		t.Fatalf("canceled preview status %d body %s", rec.Code, rec.Body.String())
+	res := rec.Result()
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK || len(body) != 0 {
+		t.Fatalf("status %d body %q", res.StatusCode, body)
 	}
 	if strings.Contains(buf.String(), "request failed") || !strings.Contains(buf.String(), "request canceled") {
 		t.Fatalf("log = %q", buf.String())
@@ -616,6 +695,54 @@ func TestCanceledPreviewIsLoggedAsACancel(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("first preview did not finish")
+	}
+}
+
+func TestDeadlineOnALiveRequestIsAServerError(t *testing.T) {
+	handler, _ := setupTestWithDB(t)
+	restore := history.SetPreviewBackupForTest(func(context.Context, *sql.DB, string) error {
+		return fmt.Errorf("preview: %w", context.DeadlineExceeded)
+	})
+	t.Cleanup(restore)
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/moves/anything/preview", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	FlushSentry()
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "Something went wrong. Please try again." {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if strings.Contains(buf.String(), "request canceled") || !strings.Contains(buf.String(), "request failed") {
+		t.Fatalf("log = %q", buf.String())
+	}
+	events := tr.errors()
+	if len(events) != 1 {
+		t.Fatalf("reported events = %d", len(events))
+	}
+	var text string
+	for _, ex := range events[0].Exception {
+		text += ex.Value
+	}
+	if !strings.Contains(strings.ToLower(text), "deadline") {
+		t.Fatalf("event = %#v", events[0].Exception)
 	}
 }
 

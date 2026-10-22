@@ -60,3 +60,80 @@ func TestPreviewFilesArePrivateWhileTheyAreCreated(t *testing.T) {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}
 }
+
+func TestPreviewLeavesTheLiveJournalModeAlone(t *testing.T) {
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pantry.db")
+	db := openHistoryFile(t, dbPath)
+	journal := dbPath + "-journal"
+	sentinel := filepath.Join(dir, "created-during-preview")
+	var journalFile *os.File
+	var checked bool
+	previewDuringBackup = func(string) error {
+		// The live journal is created while the copy is in progress. Its mode
+		// is the process umask, which preview must not change. The descriptor
+		// stays open so the mode can be read after SQLite drops a stale name.
+		var err error
+		journalFile, err = os.OpenFile(journal, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o640)
+		if err != nil {
+			return err
+		}
+		if _, err := journalFile.Write([]byte("journal")); err != nil {
+			return err
+		}
+		info, err := journalFile.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm() != 0o640 {
+			t.Errorf("live journal mode %o during preview, want 0640", info.Mode().Perm())
+		}
+		file, err := os.OpenFile(sentinel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+		if err != nil {
+			return err
+		}
+		file.Close()
+		created, err := os.Stat(sentinel)
+		if err != nil {
+			return err
+		}
+		if created.Mode().Perm() != 0o666 {
+			t.Errorf("sentinel mode %o, want 0666", created.Mode().Perm())
+		}
+		checked = true
+		return nil
+	}
+	t.Cleanup(func() {
+		previewDuringBackup = nil
+		if journalFile != nil {
+			journalFile.Close()
+		}
+	})
+
+	if _, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing"); err == nil {
+		t.Fatal("expected a missing move")
+	}
+	if !checked {
+		t.Fatal("backup hook did not run")
+	}
+	info, err := journalFile.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("live journal mode %o after preview, want 0640", info.Mode().Perm())
+	}
+	if pathInfo, err := os.Stat(journal); err == nil && pathInfo.Mode().Perm() != 0o640 {
+		t.Fatalf("live journal path mode %o after preview, want 0640", pathInfo.Mode().Perm())
+	}
+	created, err := os.Stat(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Mode().Perm() != 0o666 {
+		t.Fatalf("sentinel mode %o after preview, want 0666", created.Mode().Perm())
+	}
+}

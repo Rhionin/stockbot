@@ -155,15 +155,27 @@ func writeSnapshot(db *sql.DB, spec snapshotSpec) error {
 // Tests use it to read the mode the copy itself created.
 var snapshotCopyHook func(temp string) error
 
+// previewLockName is held inside a preview directory for as long as that
+// copy is in use. Startup skips a directory whose lock is still held.
+const previewLockName = "preview.lock"
+
 func removePreviewDirs(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), PreviewDirPrefix) {
-			_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
+		name := entry.Name()
+		// ReadDir does not return "." or "..". A plain file, or a directory
+		// whose name is not exactly this prefix, is left alone.
+		if name == "." || name == ".." || !entry.IsDir() || !strings.HasPrefix(name, PreviewDirPrefix) {
+			continue
 		}
+		path := filepath.Join(dir, name)
+		if previewDirBusy(path) {
+			continue
+		}
+		_ = os.RemoveAll(path)
 	}
 }
 
