@@ -3,6 +3,7 @@ package grocysync
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
+	"modernc.org/sqlite"
 )
 
 func TestApplyHistoryWritesRealDatesAndIsIdempotent(t *testing.T) {
@@ -224,6 +226,10 @@ func TestApplyHistoryRefusesWhenDatabaseLooksInUse(t *testing.T) {
 	elapsed := time.Since(started)
 	if err == nil || !strings.Contains(err.Error(), "looks in use") || !strings.Contains(err.Error(), "Nothing was changed") {
 		t.Fatalf("locked err = %v", err)
+	}
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) {
+		t.Fatalf("locked cause dropped: %v", err)
 	}
 	// The in-use check waits on a 200ms busy timeout. An instant refusal
 	// means that wait was skipped, and a multi-second wait means the

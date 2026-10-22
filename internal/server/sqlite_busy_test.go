@@ -9,14 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/carttest"
+	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/getsentry/sentry-go"
 	"modernc.org/sqlite"
@@ -169,18 +171,24 @@ func TestRealSQLiteLockErrors(t *testing.T) {
 		t.Fatalf("client error = %d %s", res.code, res.body)
 	}
 
-	// Extended codes keep the primary in the low byte. 262 is SQLITE_LOCKED_SHAREDCACHE.
-	// The message still does not contain the busy sentinels, so equality with 6 is not enough.
-	shared := withDriverCode(t, realDriverLocked(t), sqlitePrimaryLocked|(1<<8))
-	var sharedErr *sqlite.Error
-	if !errors.As(shared, &sharedErr) || sharedErr.Code()&0xff != sqlitePrimaryLocked || sharedErr.Code() == sqlitePrimaryLocked {
-		t.Fatalf("extended = %v", shared)
+	// SQLITE_LOCKED's text is "database table is locked", which is not the busy
+	// sentence. Classification has to use the result code.
+	if strings.Contains(strings.ToLower(locked.Error()), "database is locked") || strings.Contains(strings.ToLower(locked.Error()), "sqlite_busy") {
+		t.Fatalf("locked text = %q", locked.Error())
 	}
-	if !sqliteBusy(shared) {
-		t.Fatal("extended SQLITE_LOCKED was not classified")
+
+	// A WAL snapshot upgrade returns SQLITE_BUSY_SNAPSHOT (517). The low byte
+	// is still busy, and the text does not say SQLITE_BUSY, so a check for
+	// the primary code alone misses it.
+	snap := realDriverBusySnapshot(t)
+	var snapErr *sqlite.Error
+	if !errors.As(snap, &snapErr) || snapErr.Code()&0xff != sqlitePrimaryBusy || snapErr.Code() == sqlitePrimaryBusy {
+		t.Fatalf("extended = %v", snap)
 	}
-	timeoutCode := withDriverCode(t, realDriverBusy(t), sqlitePrimaryBusy|(3<<8))
-	if !sqliteBusy(timeoutCode) {
+	if strings.Contains(strings.ToLower(snap.Error()), "sqlite_busy") {
+		t.Fatalf("snapshot text = %q", snap.Error())
+	}
+	if !sqliteBusy(snap) {
 		t.Fatal("extended SQLITE_BUSY was not classified")
 	}
 
@@ -188,13 +196,17 @@ func TestRealSQLiteLockErrors(t *testing.T) {
 		return struct{}{}, InternalError(errors.New("sql: no such table: products"))
 	})
 	res = serveJSON(other, http.MethodGet, "/api/inventory", "")
-	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, internalClientMessage) || strings.Contains(res.body, clientmsg.Busy) {
+	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, clientmsg.Generic) || strings.Contains(res.body, clientmsg.Busy) {
 		t.Fatalf("other = %d %s", res.code, res.body)
 	}
 }
 
 func TestNoSpace503KeepsItsSentence(t *testing.T) {
-	full := withDriverMessage(t, withDriverCode(t, realDriverBusy(t), sqlitePrimaryFull), "Insertion failed because database is full (SQLITE_FULL)")
+	full := realDriverFull(t)
+	var fullErr *sqlite.Error
+	if !errors.As(full, &fullErr) || fullErr.Code()&0xff != sqlitePrimaryFull {
+		t.Fatalf("full = %v", full)
+	}
 	if sqliteBusy(full) {
 		t.Fatal("a full disk was classified as busy")
 	}
@@ -205,23 +217,24 @@ func TestNoSpace503KeepsItsSentence(t *testing.T) {
 	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
 		t.Fatalf("full = %d %s", res.code, res.body)
 	}
-	if strings.Contains(res.body, clientmsg.Busy) || strings.Contains(res.body, internalClientMessage) {
+	if strings.Contains(res.body, clientmsg.Busy) || strings.Contains(res.body, clientmsg.Generic) {
 		t.Fatalf("full disk used another sentence: %s", res.body)
 	}
 
-	classified := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+	// Naming the code without a driver error does not select the sentence.
+	coded := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
 		return struct{}{}, &HTTPError{Code: http.StatusServiceUnavailable, Message: clientmsg.NoSpace, ErrorCode: "no_space"}
 	})
-	res = serveJSON(classified, http.MethodGet, "/api/restock", "")
-	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
-		t.Fatalf("classified = %d %s", res.code, res.body)
+	res = serveJSON(coded, http.MethodGet, "/api/restock", "")
+	if res.code != http.StatusServiceUnavailable || strings.Contains(res.body, `"code":"no_space"`) || !strings.Contains(res.body, clientmsg.Generic) {
+		t.Fatalf("coded = %d %s", res.code, res.body)
 	}
 
 	unclassified := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
 		return struct{}{}, &HTTPError{Code: http.StatusServiceUnavailable, Message: "raw database detail"}
 	})
 	res = serveJSON(unclassified, http.MethodGet, "/api/restock", "")
-	if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, internalClientMessage) || strings.Contains(res.body, "raw database") {
+	if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, clientmsg.Generic) || strings.Contains(res.body, "raw database") {
 		t.Fatalf("unclassified = %d %s", res.code, res.body)
 	}
 }
@@ -294,6 +307,139 @@ func TestBusyReportIsAWarning(t *testing.T) {
 	if strings.Contains(event.Message, "Oat Milk") || strings.Contains(event.Message, "database is locked") {
 		t.Fatalf("message = %q", event.Message)
 	}
+}
+
+func TestNoSpaceReportIsAWarning(t *testing.T) {
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	full := realDriverFull(t)
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, InternalError(fmt.Errorf("stock item Oat Milk: %w", full))
+	})
+	res := serveJSON(handler, http.MethodPost, "/api/scans", `{}`)
+	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
+		t.Fatalf("status = %d %s", res.code, res.body)
+	}
+	events := tr.errors()
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	event := events[0]
+	if event.Level != sentry.LevelWarning {
+		t.Fatalf("level = %q", event.Level)
+	}
+	if event.Tags["db_no_space"] != "true" {
+		t.Fatalf("tags = %#v", event.Tags)
+	}
+	if len(event.Exception) != 0 {
+		t.Fatalf("full disk was captured as an exception: %+v", event.Exception)
+	}
+	if strings.Contains(event.Message, "Oat Milk") || strings.Contains(event.Message, "disk is full") {
+		t.Fatalf("message = %q", event.Message)
+	}
+}
+
+func TestRestockSuggestionsLockFailsAfterOneWait(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(300)", nil)
+	open := serveJSON(handler, http.MethodGet, "/api/restock/suggestions", "")
+	if open.code != http.StatusOK {
+		t.Fatalf("unlocked = %d %s", open.code, open.body)
+	}
+	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
+	defer release()
+	done := make(chan lockedHTTPResult, 1)
+	started := time.Now()
+	go func() {
+		done <- serveJSON(handler, http.MethodGet, "/api/restock/suggestions", "")
+	}()
+	res := awaitLockedResult(t, env.DB, done, 200*time.Millisecond)
+	if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
+		t.Fatalf("suggestions = %d %s", res.code, res.body)
+	}
+	// One 300ms wait. A swallowed settings read would wait again before the
+	// query that returns the error, and that second wait does not fit here.
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("suggestions waited %s", elapsed)
+	}
+}
+
+func TestDuplicateGroupNameDoesNotWaitOnWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, _ := setupTestOnDSN(t, path+"?_pragma=busy_timeout(2000)", nil)
+	created := serveJSON(handler, http.MethodPost, "/api/groups", `{"name":"Beans"}`)
+	if created.code != http.StatusCreated {
+		t.Fatalf("create = %d %s", created.code, created.body)
+	}
+	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	defer release()
+	started := time.Now()
+	res := serveJSON(handler, http.MethodPost, "/api/groups", `{"name":"Beans"}`)
+	elapsed := time.Since(started)
+	if res.code != http.StatusConflict || !strings.Contains(res.body, "already exists") {
+		t.Fatalf("duplicate = %d %s", res.code, res.body)
+	}
+	if strings.Contains(res.body, clientmsg.Busy) {
+		t.Fatalf("duplicate = %s", res.body)
+	}
+	if elapsed >= 400*time.Millisecond {
+		t.Fatalf("duplicate waited %s", elapsed)
+	}
+}
+
+func TestProviderWrapKeepsDriverCause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	_, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
+	if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
+		t.Fatal(err)
+	}
+	open := carttest.NewFake(cart.Capabilities{
+		Auth:         cart.AuthNone,
+		Delivery:     cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest,
+		Mutation:     cart.MutateAddOnly,
+		Identity:     cart.IdentityDerived,
+	}, nil)
+	if err := env.Registry.Register(open); err != nil {
+		t.Fatal(err)
+	}
+	dir := connection.NewDirectory(env.DB)
+	ledger := cart.NewLedger(env.DB)
+	providers := ProvidersHandler{Registry: env.Registry, ConnectionDir: dir}
+
+	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	_, err := (&ProviderDisconnectHandler{ProvidersHandler: providers}).Handle(Request[struct{}, ProviderDisconnectRequest]{
+		Context:    context.Background(),
+		PathParams: ProviderDisconnectRequest{ProviderID: "kroger"},
+	})
+	release()
+	requireDriverCause(t, err)
+
+	if err := dir.Write(context.Background(), &connection.Connection{
+		Provider:    "kroger",
+		State:       connection.StateConnected,
+		AccessToken: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	release = holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
+		Context:    context.Background(),
+		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
+	})
+	release()
+	requireDriverCause(t, err)
+
+	release = holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
+	defer release()
+	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
+		Context:    context.Background(),
+		PathParams: ProviderLedgerGetRequest{ProviderID: string(open.ID())},
+	})
+	requireDriverCause(t, err)
 }
 
 func busyBody() string {
@@ -378,26 +524,77 @@ func realDriverLocked(t *testing.T) error {
 	return locked
 }
 
-func withDriverCode(t *testing.T, err error, code int) error {
-	t.Helper()
-	setDriverField(t, err, "code", func(v reflect.Value) { v.SetInt(int64(code)) })
-	return err
-}
-
-func withDriverMessage(t *testing.T, err error, msg string) error {
-	t.Helper()
-	setDriverField(t, err, "msg", func(v reflect.Value) { v.SetString(msg) })
-	return err
-}
-
-func setDriverField(t *testing.T, err error, name string, set func(reflect.Value)) {
+func requireDriverCause(t *testing.T, err error) {
 	t.Helper()
 	var driverErr *sqlite.Error
 	if !errors.As(err, &driverErr) {
-		t.Fatalf("not a driver error: %v", err)
+		t.Fatalf("driver cause dropped: %v", err)
 	}
-	field := reflect.ValueOf(driverErr).Elem().FieldByName(name)
-	set(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem())
+}
+
+func realDriverFull(t *testing.T) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "full.db")
+	db, err := app.OpenSQLite(path + "?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE t (x TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA max_page_count = 2`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO t VALUES (?)`, strings.Repeat("x", 8000))
+	if err == nil {
+		t.Fatal("expected SQLITE_FULL")
+	}
+	return err
+}
+
+func realDriverBusySnapshot(t *testing.T) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "snap.db")
+	db, err := app.OpenSQLite(path + "?_pragma=busy_timeout(0)&_txlock=deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var n int
+	if err := tx.QueryRow(`SELECT x FROM t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.OpenSQLite(path + "?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetMaxOpenConns(1)
+	if _, err := other.Exec(`UPDATE t SET x = 2`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(`UPDATE t SET x = 3`)
+	if err == nil {
+		t.Fatal("expected SQLITE_BUSY_SNAPSHOT")
+	}
+	return err
 }
 
 func serveJSON(handler http.Handler, method, target, body string) lockedHTTPResult {

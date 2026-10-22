@@ -203,6 +203,14 @@ func reportServerError(r *http.Request, err error) {
 		})
 		return
 	}
+	if sqliteNoSpace(err) {
+		hub.WithScope(func(scope *sentry.Scope) {
+			scope.SetLevel(sentry.LevelWarning)
+			scope.SetTag("db_no_space", "true")
+			hub.CaptureMessage(clientmsg.NoSpace)
+		})
+		return
+	}
 	hub.CaptureException(err)
 }
 

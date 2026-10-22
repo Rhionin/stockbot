@@ -17,11 +17,8 @@ const (
 )
 
 const (
-	// internalClientMessage is the sentence every unclassified 5xx returns.
-	// The server log keeps the underlying error.
-	internalClientMessage = "Something went wrong. Please try again."
-	busyErrorCode         = "busy"
-	noSpaceErrorCode      = "no_space"
+	busyErrorCode    = "busy"
+	noSpaceErrorCode = "no_space"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -104,23 +101,30 @@ func httpStatusFromError(err error) int {
 // serverClientPayload is the browser sentence for a 5xx.
 // A classified busy or no-space failure keeps its own sentence and code.
 // The generic sentence does not replace either of those.
-func serverClientPayload(err error, code string) (string, string, bool) {
+// The handler ErrorCode is ignored. A 5xx without a busy or full driver
+// cause stays generic, including one that already named "busy" or "no_space".
+func serverClientPayload(err error, _ string) (string, string, bool) {
 	switch {
-	case sqliteBusy(err) || code == busyErrorCode:
+	case sqliteBusy(err):
 		return clientmsg.Busy, busyErrorCode, true
-	case sqliteNoSpace(err) || code == noSpaceErrorCode:
+	case sqliteNoSpace(err):
 		return clientmsg.NoSpace, noSpaceErrorCode, true
 	default:
-		return internalClientMessage, "", false
+		return clientmsg.Generic, "", false
 	}
 }
 
 func sqliteBusy(err error) bool {
 	var driverErr *sqlite.Error
 	if errors.As(err, &driverErr) {
+		// Extended codes keep the primary in the low byte. Once the driver
+		// error is in hand, its text is not a second vote: a snapshot lock
+		// says "database is locked" and its code is not the primary 5.
 		switch driverErr.Code() & 0xff {
 		case sqlitePrimaryBusy, sqlitePrimaryLocked:
 			return true
+		default:
+			return false
 		}
 	}
 	for err != nil {
@@ -135,8 +139,8 @@ func sqliteBusy(err error) bool {
 
 func sqliteNoSpace(err error) bool {
 	var driverErr *sqlite.Error
-	if errors.As(err, &driverErr) && driverErr.Code()&0xff == sqlitePrimaryFull {
-		return true
+	if errors.As(err, &driverErr) {
+		return driverErr.Code()&0xff == sqlitePrimaryFull
 	}
 	for err != nil {
 		msg := strings.ToLower(err.Error())

@@ -135,7 +135,7 @@ func keepTag(key, value string) bool {
 	case "route", "transaction", "status", "method", "runtime", "runtime.name",
 		"os", "os.name", "server_name", "release", "environment", "device", "device.family",
 		"browser", "browser.name", "level", "mechanism", "handled", "http.status_code",
-		"db_busy":
+		"db_busy", "db_no_space":
 	default:
 		return false
 	}

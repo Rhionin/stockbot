@@ -230,6 +230,13 @@ func (g *Groups) Create(ctx context.Context, name string, productIDs []string, t
 	if err := ValidateTarget(target); err != nil {
 		return Group{}, err
 	}
+	// BEGIN IMMEDIATE waits out a reserved lock held by someone else.
+	// A duplicate name is a conflict the caller can fix, and a reader can
+	// see it while that lock is held, so the answer does not have to wait.
+	// insertGroup checks again inside the write transaction.
+	if err := g.preflightName(ctx, name); err != nil {
+		return Group{}, err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
@@ -1204,6 +1211,19 @@ func ensureProducts(ctx context.Context, q querier, ids []string) error {
 		}
 	}
 	return nil
+}
+
+func (g *Groups) preflightName(ctx context.Context, name string) error {
+	key, err := nameKey(name)
+	if err != nil {
+		return err
+	}
+	tx, err := g.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("could not save the group: %w", err)
+	}
+	defer tx.Rollback()
+	return ensureNameFree(ctx, tx, key, "")
 }
 
 func ensureNameFree(ctx context.Context, q querier, key, exceptID string) error {

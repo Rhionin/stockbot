@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -1087,8 +1088,14 @@ func loadCategoryRows(ctx context.Context, q Queryer, household string) ([]categ
 }
 
 func readHousehold(ctx context.Context, q Queryer) (Target, error) {
-	kind := readSetting(ctx, q, "supply_target_kind")
-	value := readSetting(ctx, q, "supply_target_value")
+	kind, err := readSetting(ctx, q, "supply_target_kind")
+	if err != nil {
+		return Target{}, fmt.Errorf("could not read the household default: %w", err)
+	}
+	value, err := readSetting(ctx, q, "supply_target_value")
+	if err != nil {
+		return Target{}, fmt.Errorf("could not read the household default: %w", err)
+	}
 	if kind == string(KindAmount) && value != "" {
 		return Target{Kind: KindAmount, Value: parseNumber(value, 0)}, nil
 	}
@@ -1098,13 +1105,16 @@ func readHousehold(ctx context.Context, q Queryer) (Target, error) {
 	return Target{Kind: KindMonths, Value: 3}, nil
 }
 
-func readSetting(ctx context.Context, q Queryer, key string) string {
+func readSetting(ctx context.Context, q Queryer, key string) (string, error) {
 	var value string
 	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
-	if err != nil {
-		return ""
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	return value
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func putSetting(ctx context.Context, q Queryer, key, value string) error {

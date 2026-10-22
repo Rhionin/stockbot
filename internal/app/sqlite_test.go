@@ -129,6 +129,12 @@ func TestSQLiteOpensGoThroughUTC(t *testing.T) {
 	}
 }
 
+func TestBusyTimeoutDSNPinsThreeSeconds(t *testing.T) {
+	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(3000)&_txlock=immediate"; got != want {
+		t.Fatalf("dsn = %s, want %s", got, want)
+	}
+}
+
 func TestWithSQLiteLocking(t *testing.T) {
 	busy := "busy_timeout(" + strconv.Itoa(sqliteBusyTimeoutMS) + ")"
 	if got, want := withSQLiteLocking(":memory:"), ":memory:?_pragma="+busy+"&_txlock=immediate"; got != want {

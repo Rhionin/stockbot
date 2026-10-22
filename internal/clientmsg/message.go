@@ -9,3 +9,7 @@ const Busy = "Stockbot is busy right now. Try again in a moment."
 // NoSpace is the sentence for HTTP 503 when SQLite cannot write because
 // the disk is full.
 const NoSpace = "Stockbot is out of space to save changes."
+
+// Generic is the sentence for every other 5xx. It is one constant so the
+// wording can change without hunting through handlers.
+const Generic = "Something went wrong. Please try again."
