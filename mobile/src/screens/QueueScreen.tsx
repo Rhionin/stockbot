@@ -208,6 +208,15 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
+  function clearFailure(id: string) {
+    setFailureBannerIds((current) => {
+      if (current[id] !== true) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
   async function showCommitFailure(id: string, requestError: ApiError) {
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
@@ -229,7 +238,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
-    setFailureBannerIds({});
+    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
@@ -254,7 +263,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
-    setFailureBannerIds({});
+    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
@@ -327,6 +336,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setFailureBannerIds(pendingFailures);
       setError(notices.length > 0 && Object.keys(pendingFailures).length === 0 ? BATCH_FAILURE_FALLBACK : '');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
+      setLoadError('');
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
