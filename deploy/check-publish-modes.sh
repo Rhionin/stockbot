@@ -196,7 +196,7 @@ lack "$public_cfg" 'Caddyfile.tunnel' "certificate mode must not mount the tunne
 
 lack "$tunnel_cfg" 'published: "80"' "tunnel mode must not publish port 80"
 lack "$tunnel_cfg" 'published: "443"' "tunnel mode must not publish port 443"
-have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.0' "tunnel mode pins cloudflared"
+have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.1' "tunnel mode pins cloudflared"
 have "$tunnel_cfg" "$tunnel_caddy" "tunnel mode pins Caddy"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.2' "cloudflared has the trusted address"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.3' "caddy has a fixed address"

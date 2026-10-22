@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useId, useRef, useState, type Ref } from 'react';
 import { Button, Group, NumberInput, Text } from '@mantine/core';
 import type { GroupTarget, ProductGroup } from '../../types';
 import { clampMonth, type SeesawDraft, type SeesawEnd, type SeesawPin, type SeesawView } from './seesaw';
@@ -24,19 +24,29 @@ function Pill({
   onOpen: (pin: SeesawPin) => void;
   buttonRef?: Ref<HTMLButtonElement>;
 }) {
+  const descriptionId = useId();
+  const visibleName = end.isDefault ? `${end.label} default` : end.label;
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      className={end.pinned ? 'seesaw-pill is-pinned' : 'seesaw-pill is-inferred'}
-      aria-pressed={end.pinned}
-      aria-label={end.labelText}
-      onClick={() => onOpen(end.pin)}
-    >
-      {end.pinned && <PinIcon />}
-      <span>{end.label}</span>
-      {end.isDefault && <span className="seesaw-default">default</span>}
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={end.pinned ? 'seesaw-pill is-pinned' : 'seesaw-pill is-inferred'}
+        aria-pressed={end.pinned}
+        aria-label={visibleName}
+        aria-describedby={descriptionId}
+        onClick={() => onOpen(end.pin)}
+      >
+        {end.pinned && <PinIcon />}
+        <span>{end.label}</span>
+        {end.isDefault && (
+          // The space is in the name ("3 mo default"). nowrap collapses it,
+          // so the flex gap stays the only space on screen.
+          <span className="seesaw-default">{' '}default</span>
+        )}
+      </button>
+      <span id={descriptionId} className="seesaw-description">{end.description}</span>
+    </>
   );
 }
 
