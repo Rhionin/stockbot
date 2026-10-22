@@ -58,6 +58,24 @@ func (j *Journal) SetQuantity(ctx context.Context, id string, quantity int, now 
 	return j.Product(ctx, move.ItemID, now)
 }
 
+// UndoEffect is one product an undo would change.
+// OnHand is the count after the undo. ReshelvesOnUndo is whether that
+// undo hides the item again.
+type UndoEffect struct {
+	ItemID          string
+	ProductID       string
+	Name            string
+	StockInMoveID   string
+	StockOutMoveID  string
+	OnHand          int
+	ReshelvesOnUndo bool
+}
+
+// UndoPreview is what an undo would change. It writes nothing.
+type UndoPreview struct {
+	Effects []UndoEffect
+}
+
 // Undo removes a move and reverses what it did to the shelf and the pace.
 // The returned view is that product's history afterward.
 func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, error) {
@@ -66,57 +84,110 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 		return View{}, err
 	}
 	defer tx.Rollback()
-	if err := ensure(ctx, tx); err != nil {
+	effect, err := applyUndo(ctx, tx, id)
+	if err != nil {
 		return View{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return View{}, err
+	}
+	return j.Product(ctx, effect.ItemID, now)
+}
+
+// PreviewUndo reports what Undo would change. It runs that same undo and
+// rolls it back, so the shelf is unchanged and the re-shelve decision cannot
+// drift from the one Undo commits.
+func (j *Journal) PreviewUndo(ctx context.Context, id string) (UndoPreview, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return UndoPreview{}, err
+	}
+	defer tx.Rollback()
+	effect, err := applyUndo(ctx, tx, id)
+	if err != nil {
+		return UndoPreview{}, err
+	}
+	return UndoPreview{Effects: []UndoEffect{effect}}, nil
+}
+
+func applyUndo(ctx context.Context, tx *sql.Tx, id string) (UndoEffect, error) {
+	if err := ensure(ctx, tx); err != nil {
+		return UndoEffect{}, err
 	}
 	move, err := loadMove(ctx, tx, id)
 	if err != nil {
-		return View{}, err
+		return UndoEffect{}, err
 	}
 	partner, paired, err := backfillPartner(ctx, tx, move)
 	if err != nil {
-		return View{}, err
+		return UndoEffect{}, err
 	}
-	var reshelve string
+	var broughtBack string
+	var stockInID, stockOutID string
 	if paired {
 		incoming, outgoing := move, partner
 		if incoming.Direction != "in" {
 			incoming, outgoing = partner, move
 		}
+		stockInID, stockOutID = incoming.ID, outgoing.ID
 		if incoming.Unshelved {
-			reshelve = incoming.ItemID
+			broughtBack = incoming.ItemID
 		}
 		if err = undoStockOut(ctx, tx, outgoing); err != nil {
-			return View{}, err
+			return UndoEffect{}, err
 		}
 		err = undoStockIn(ctx, tx, incoming)
 	} else if move.Direction == "in" {
+		stockInID = move.ID
 		err = undoStockIn(ctx, tx, move)
 	} else {
+		stockOutID = move.ID
 		err = undoStockOut(ctx, tx, move)
 	}
 	if err != nil {
-		return View{}, err
+		return UndoEffect{}, err
 	}
-	// A later stock-in can leave a live unit. Hide the item again only when
-	// this pair is what brought it back and nothing live remains.
-	if reshelve != "" {
-		live, err := countQuery(ctx, tx, `
-			SELECT COUNT(*) FROM item_instances
-			WHERE item_id = ? AND removed_at IS NULL`, reshelve)
-		if err != nil {
-			return View{}, err
-		}
-		if live == 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, reshelve); err != nil {
-				return View{}, err
-			}
+	reshelve, err := reshelveItem(ctx, tx, broughtBack)
+	if err != nil {
+		return UndoEffect{}, err
+	}
+	if reshelve {
+		if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, broughtBack); err != nil {
+			return UndoEffect{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return View{}, err
+	var productID, name string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT i.product_id, p.name
+		FROM items i JOIN products p ON p.id = i.product_id
+		WHERE i.id = ?`, move.ItemID).Scan(&productID, &name); err != nil {
+		return UndoEffect{}, err
 	}
-	return j.Product(ctx, move.ItemID, now)
+	onHand, err := countOnHand(ctx, tx, []string{move.ItemID})
+	if err != nil {
+		return UndoEffect{}, err
+	}
+	return UndoEffect{
+		ItemID: move.ItemID, ProductID: productID, Name: name,
+		StockInMoveID: stockInID, StockOutMoveID: stockOutID,
+		OnHand: onHand, ReshelvesOnUndo: reshelve,
+	}, nil
+}
+
+// reshelveItem reports whether undoing a pair that brought a wiped item back
+// hides it again. A later unit that is still on the shelf keeps the item visible.
+// Units that were already used do not.
+func reshelveItem(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+	if itemID == "" {
+		return false, nil
+	}
+	live, err := countQuery(ctx, tx, `
+		SELECT COUNT(*) FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`, itemID)
+	if err != nil {
+		return false, err
+	}
+	return live == 0, nil
 }
 
 // backfillPartner is the other move from the same backfill commit.

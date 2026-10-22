@@ -150,6 +150,34 @@ The pair is the exception to the usual stock-in undo rule. A normal stock-in who
 
 `200` is the item's history view after the pair is gone (`GET /api/items/{itemId}/history` shape). The commit response names both move ids in `backfill.stockInMoveId` and `backfill.stockOutMoveId`. `DELETE /api/moves/{id}` takes either one. Those are the same ids history lists: the `in` row whose `source` is `backfill`, and the `out` row whose `source` is `scan`.
 
+## Undo preview
+
+`GET /api/moves/{id}/preview`
+
+Read-only. It does not change the shelf, the scan, or any move. It answers what `DELETE /api/moves/{id}` would do, using the same re-shelve decision the undo commits. `{id}` is either move of a backfill pair, or any other history move.
+
+`200`:
+
+```json
+{
+  "effects": [
+    {
+      "itemId": "item-sour-cream",
+      "productId": "prod-sour-cream",
+      "name": "Sour cream",
+      "stockInMoveId": "move-cream-in",
+      "stockOutMoveId": "move-cream-out",
+      "onHand": 0,
+      "reshelvesOnUndo": true
+    }
+  ]
+}
+```
+
+`effects` is one entry per product the undo would change. A backfill pair is one product, so the list has one entry. `itemId` and `productId` identify that product. `name` is the product's display name. `stockInMoveId` and `stockOutMoveId` are the moves the undo would remove. A backfill sets both. A stock-in that is not half of a pair sets `stockInMoveId` and omits `stockOutMoveId`. A stock-out that is not half of a pair sets `stockOutMoveId` and omits `stockInMoveId`. `onHand` is how many units would be on hand after the undo. `0` is sent as `0`. `reshelvesOnUndo` is true only when this pair brought a wiped item back and the undo would leave no live unit. A unit that was stocked in later and then used up does not count as live. A unit still on the shelf keeps `reshelvesOnUndo` false. An item that was never shelved stays false even when `onHand` would be 0.
+
+When the move cannot be undone, the preview returns the same status and `error` as `DELETE /api/moves/{id}` and writes nothing. A missing move is `404` `That move is no longer in the history.` A stock-in whose units were already used is `409` `1 of these was already used. Undo that use first.`
+
 ## Add as a new item
 
 Stock-in already creates a product from a name and links the barcode without stocking anything. A stock-out **Add as a new item** uses that same sequence. The name is the one the household confirms (prefilled from the lookup, or typed when the lookup has no name).

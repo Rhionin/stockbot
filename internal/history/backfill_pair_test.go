@@ -161,6 +161,27 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 			t.Fatalf("live units = %d", live)
 		}
 	})
+
+	t.Run("a later unit that was used up still re-shelves", func(t *testing.T) {
+		execHistory(t, db, `INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-used', 'Used', 'Pantry', 'unit')`)
+		execHistory(t, db, `INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-used', 'user-1', 'prod-used', 1)`)
+		recordBackfillPair(t, db, "item-used", "prod-used", "scan-used", "inst-used", at, true)
+		recordHeld(t, db, "item-used", "prod-used", "inst-used-real", at.Add(time.Hour))
+		useUp(t, db, "item-used", "prod-used", "inst-used-real", at.Add(2*time.Hour))
+		if shelved := itemShelved(t, db, "item-used"); shelved != 0 {
+			t.Fatal("the item was still shelved before the undo")
+		}
+		view, err := journal.Product(ctx, "item-used", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Undo(ctx, moveBy(t, view, "in", "backfill"), now); err != nil {
+			t.Fatal(err)
+		}
+		if shelved := itemShelved(t, db, "item-used"); shelved != 1 {
+			t.Fatal("undo left a used-up item on the shelf")
+		}
+	})
 }
 
 func recordBackfillPair(t *testing.T, db *sql.DB, itemID, productID, scanID, instanceID string, at time.Time, unshelved bool) {
@@ -244,6 +265,30 @@ func recordConsumedMove(t *testing.T, db *sql.DB, itemID, productID, scanID, ins
 	if err := AttachStockOut(t.Context(), tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "scan",
 		ScanEntryID: &scan, InstanceID: instanceID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func useUp(t *testing.T, db *sql.DB, itemID, productID, instanceID string, at time.Time) {
+	t.Helper()
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), `
+		UPDATE item_instances
+		SET removed_at = ?, removal_reason = 'consumed'
+		WHERE id = ?`, at, instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := AttachStockOut(t.Context(), tx, OutNote{
+		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
+		InstanceID: instanceID,
 	}); err != nil {
 		t.Fatal(err)
 	}

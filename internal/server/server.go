@@ -454,6 +454,7 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/items/{itemId}/history", HandleJSON(historyHandler.Product))
 	apiMux.HandleFunc("GET /api/groups/{groupId}/history", HandleJSON(historyHandler.Group))
 	apiMux.HandleFunc("PATCH /api/moves/{id}", HandleJSON(historyHandler.SetQuantity))
+	apiMux.HandleFunc("GET /api/moves/{id}/preview", HandleJSON(historyHandler.PreviewUndo))
 	apiMux.HandleFunc("DELETE /api/moves/{id}", HandleJSON(historyHandler.Undo))
 
 	apiMux.HandleFunc("GET /api/settings/supply", HandleJSON(supplySettingsGetHandler.Handle))
