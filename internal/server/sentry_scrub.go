@@ -134,7 +134,8 @@ func keepTag(key, value string) bool {
 	switch strings.ToLower(key) {
 	case "route", "transaction", "status", "method", "runtime", "runtime.name",
 		"os", "os.name", "server_name", "release", "environment", "device", "device.family",
-		"browser", "browser.name", "level", "mechanism", "handled", "http.status_code":
+		"browser", "browser.name", "level", "mechanism", "handled", "http.status_code",
+		"db_busy":
 	default:
 		return false
 	}

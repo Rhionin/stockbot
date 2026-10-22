@@ -44,13 +44,13 @@ type Map struct {
 func OpenMap(path string) (*Map, error) {
 	db, err := app.OpenSQLite(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not open the sync map")
+		return nil, fmt.Errorf("could not open the sync map: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	m := &Map{db: db}
 	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("could not open the sync map")
+		return nil, fmt.Errorf("could not open the sync map: %w", err)
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS links (
 		pantry_type TEXT NOT NULL,
@@ -64,7 +64,7 @@ func OpenMap(path string) (*Map, error) {
 		PRIMARY KEY (pantry_type, pantry_id)
 	)`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("could not open the sync map")
+		return nil, fmt.Errorf("could not open the sync map: %w", err)
 	}
 	return m, nil
 }
@@ -87,7 +87,7 @@ func (m *Map) Get(typ, id string) (Link, bool, error) {
 		return Link{}, false, nil
 	}
 	if err != nil {
-		return Link{}, false, fmt.Errorf("could not read the sync map")
+		return Link{}, false, fmt.Errorf("could not read the sync map: %w", err)
 	}
 	return link, true, nil
 }
@@ -107,7 +107,7 @@ func (m *Map) Put(link Link) error {
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
-		return fmt.Errorf("could not write the sync map")
+		return fmt.Errorf("could not write the sync map: %w", err)
 	}
 	return nil
 }
@@ -115,7 +115,7 @@ func (m *Map) Put(link Link) error {
 func (m *Map) Delete(typ, id string) error {
 	_, err := m.db.ExecContext(context.Background(), `DELETE FROM links WHERE pantry_type = ? AND pantry_id = ?`, typ, id)
 	if err != nil {
-		return fmt.Errorf("could not write the sync map")
+		return fmt.Errorf("could not write the sync map: %w", err)
 	}
 	return nil
 }
@@ -125,14 +125,14 @@ func (m *Map) ByType(typ string) ([]Link, error) {
 		SELECT pantry_type, pantry_id, grocy_type, grocy_id, grocy_ref, hash, detail
 		FROM links WHERE pantry_type = ? ORDER BY pantry_id`, typ)
 	if err != nil {
-		return nil, fmt.Errorf("could not read the sync map")
+		return nil, fmt.Errorf("could not read the sync map: %w", err)
 	}
 	defer rows.Close()
 	var out []Link
 	for rows.Next() {
 		var link Link
 		if err := rows.Scan(&link.PantryType, &link.PantryID, &link.GrocyType, &link.GrocyID, &link.GrocyRef, &link.Hash, &link.Detail); err != nil {
-			return nil, fmt.Errorf("could not read the sync map")
+			return nil, fmt.Errorf("could not read the sync map: %w", err)
 		}
 		out = append(out, link)
 	}

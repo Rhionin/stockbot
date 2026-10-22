@@ -12,7 +12,7 @@ import (
 // drop its write lock. It is long enough for a brief shell, backup, or
 // grocy-sync lock, and short enough that a stuck lock becomes a retryable
 // HTTP error instead of hanging the request.
-const sqliteBusyTimeoutMS = 5000
+const sqliteBusyTimeoutMS = 3000
 
 // OpenSQLite opens a pantry or Grocy database.
 //

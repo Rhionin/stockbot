@@ -163,9 +163,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 }
 
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
-// request when one is available. The client receives a fixed sentence: a
-// busy lock says to retry, and every other 5xx stays generic so driver text
-// is not part of the body.
+// request when one is available. A classified busy or no-space 503 keeps its
+// own sentence. Every other 5xx uses the generic sentence, so driver text is
+// not part of the body.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
 	if status >= 500 {
 		reportServerError(r, err)
@@ -194,8 +194,9 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Printf("request failed: %s", message)
 		}
-		message = clientMessage(err)
-		extra = false
+		message, code, extra = serverClientPayload(err, code)
+		members = nil
+		suggestions = nil
 	}
 	if extra {
 		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})

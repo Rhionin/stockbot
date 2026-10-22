@@ -210,6 +210,7 @@ func TestApplyHistoryRefusesWhenDatabaseLooksInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Exec(`ROLLBACK`)
+	started := time.Now()
 	_, err = ApplyHistory(context.Background(), HistoryOptions{
 		DBPath:     locked,
 		LocationID: 1,
@@ -220,8 +221,15 @@ func TestApplyHistoryRefusesWhenDatabaseLooksInUse(t *testing.T) {
 			ID: "m1", ProductID: "p1", Direction: "in", Quantity: 1, At: time.Now(),
 		}}},
 	})
+	elapsed := time.Since(started)
 	if err == nil || !strings.Contains(err.Error(), "looks in use") || !strings.Contains(err.Error(), "Nothing was changed") {
 		t.Fatalf("locked err = %v", err)
+	}
+	// The in-use check waits on a 200ms busy timeout. An instant refusal
+	// means that wait was skipped, and a multi-second wait means the
+	// server default replaced it.
+	if elapsed < 150*time.Millisecond || elapsed >= 2*time.Second {
+		t.Fatalf("locked refusal took %s", elapsed)
 	}
 	if backups(t, locked) != 0 {
 		t.Fatal("locked database was backed up")

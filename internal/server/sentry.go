@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/buildinfo"
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/getsentry/sentry-go"
 	sentryhttp "github.com/getsentry/sentry-go/http"
 )
@@ -193,6 +194,14 @@ func reportServerError(r *http.Request, err error) {
 		if scoped := sentry.GetHubFromContext(r.Context()); scoped != nil {
 			hub = scoped
 		}
+	}
+	if sqliteBusy(err) {
+		hub.WithScope(func(scope *sentry.Scope) {
+			scope.SetLevel(sentry.LevelWarning)
+			scope.SetTag("db_busy", "true")
+			hub.CaptureMessage(clientmsg.Busy)
+		})
+		return
 	}
 	hub.CaptureException(err)
 }

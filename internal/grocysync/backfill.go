@@ -64,18 +64,18 @@ func ApplyHistory(ctx context.Context, opts HistoryOptions) (HistoryResult, erro
 	}
 	db, err := app.OpenSQLite(opts.DBPath)
 	if err != nil {
-		return HistoryResult{}, fmt.Errorf("could not open grocy.db")
+		return HistoryResult{}, fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 200`); err != nil {
-		return HistoryResult{}, fmt.Errorf("could not open grocy.db")
+		return HistoryResult{}, fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	if err := lockAvailable(ctx, db); err != nil {
 		return HistoryResult{}, err
 	}
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
-		return HistoryResult{}, fmt.Errorf("could not open grocy.db")
+		return HistoryResult{}, fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	cols, err := tableColumns(ctx, db, "stock_log")
 	if err != nil {
@@ -138,35 +138,35 @@ func ApplyHistory(ctx context.Context, opts HistoryOptions) (HistoryResult, erro
 		return HistoryResult{}, err
 	}
 	if _, err := db.ExecContext(ctx, `VACUUM INTO '`+backup+`'`); err != nil {
-		return HistoryResult{}, fmt.Errorf("could not back up grocy.db (%s). Stop Grocy and try again. Nothing was changed", err.Error())
+		return HistoryResult{}, fmt.Errorf("could not back up grocy.db (%w). Stop Grocy and try again. Nothing was changed", err)
 	}
 	result.BackupPath = backup
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return result, fmt.Errorf("could not write stock history. Restore from %s. %s", backup, RestoreSteps(backup, opts.DBPath))
+		return result, fmt.Errorf("could not write stock history. Restore from %s. %s: %w", backup, RestoreSteps(backup, opts.DBPath), err)
 	}
 	defer tx.Rollback()
 	for _, change := range changes {
 		switch change.kind {
 		case "insert":
 			if err := insertHistory(ctx, tx, cols, change.row); err != nil {
-				return result, fmt.Errorf("could not write stock history. Restore from %s. %s", backup, RestoreSteps(backup, opts.DBPath))
+				return result, fmt.Errorf("could not write stock history. Restore from %s. %s: %w", backup, RestoreSteps(backup, opts.DBPath), err)
 			}
 			result.Inserted++
 		case "update":
 			if err := updateHistory(ctx, tx, cols, change.id, change.row); err != nil {
-				return result, fmt.Errorf("could not write stock history. Restore from %s. %s", backup, RestoreSteps(backup, opts.DBPath))
+				return result, fmt.Errorf("could not write stock history. Restore from %s. %s: %w", backup, RestoreSteps(backup, opts.DBPath), err)
 			}
 			result.Updated++
 		case "undo":
 			if err := undoHistory(ctx, tx, cols, change.id, opts.Now); err != nil {
-				return result, fmt.Errorf("could not write stock history. Restore from %s. %s", backup, RestoreSteps(backup, opts.DBPath))
+				return result, fmt.Errorf("could not write stock history. Restore from %s. %s: %w", backup, RestoreSteps(backup, opts.DBPath), err)
 			}
 			result.Undone++
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("could not write stock history. Restore from %s. %s", backup, RestoreSteps(backup, opts.DBPath))
+		return result, fmt.Errorf("could not write stock history. Restore from %s. %s: %w", backup, RestoreSteps(backup, opts.DBPath), err)
 	}
 	return result, nil
 }
@@ -181,9 +181,9 @@ func grocyDBWritable(path string) error {
 		return nil
 	}
 	if os.IsPermission(err) {
-		return fmt.Errorf("grocy.db is not writable by this process. Backfill must run as Grocy's data owner (uid 1001). The grocy-sync image runs as uid 65532. Nothing was changed")
+		return fmt.Errorf("grocy.db is not writable by this process. Backfill must run as Grocy's data owner (uid 1001). The grocy-sync image runs as uid 65532. Nothing was changed: %w", err)
 	}
-	return fmt.Errorf("could not open grocy.db")
+	return fmt.Errorf("could not open grocy.db: %w", err)
 }
 
 func journalInUse(path string) error {
@@ -193,7 +193,7 @@ func journalInUse(path string) error {
 			return fmt.Errorf("grocy.db looks in use (grocy.db%s is present). Stop Grocy with docker stop grocy, then run backfill again. Nothing was changed", suffix)
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("could not check whether grocy.db is in use. Nothing was changed")
+			return fmt.Errorf("could not check whether grocy.db is in use. Nothing was changed: %w", err)
 		}
 	}
 	return nil
@@ -202,17 +202,17 @@ func journalInUse(path string) error {
 func lockAvailable(ctx context.Context, db *sql.DB) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("could not open grocy.db")
+		return fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		if sqliteBusy(err) {
-			return fmt.Errorf("grocy.db looks in use. Stop Grocy with docker stop grocy, then run backfill again. Nothing was changed")
+			return fmt.Errorf("grocy.db looks in use. Stop Grocy with docker stop grocy, then run backfill again. Nothing was changed: %w", err)
 		}
-		return fmt.Errorf("could not open grocy.db")
+		return fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
-		return fmt.Errorf("could not open grocy.db")
+		return fmt.Errorf("could not open grocy.db: %w", err)
 	}
 	return nil
 }
@@ -236,7 +236,7 @@ func nextBackupPath(dbPath string, now time.Time) (string, error) {
 			return candidate, nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("could not back up grocy.db (%s). Stop Grocy and try again. Nothing was changed", err.Error())
+			return "", fmt.Errorf("could not back up grocy.db (%w). Stop Grocy and try again. Nothing was changed", err)
 		}
 		candidate = fmt.Sprintf("%s-%d", base, n)
 	}
@@ -409,7 +409,7 @@ func loadHistory(ctx context.Context, db *sql.DB, cols map[string]bool) (map[str
 	q := "SELECT " + strings.Join(selects, ", ") + " FROM stock_log WHERE note LIKE ?"
 	rows, err := db.QueryContext(ctx, q, historyPrefix+"%")
 	if err != nil {
-		return nil, fmt.Errorf("could not read Grocy's stock journal")
+		return nil, fmt.Errorf("could not read Grocy's stock journal: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]existingHistory{}
@@ -429,7 +429,7 @@ func loadHistory(ctx context.Context, db *sql.DB, cols map[string]bool) (map[str
 			dest = append(dest, &purchased)
 		}
 		if err := rows.Scan(dest...); err != nil {
-			return nil, fmt.Errorf("could not read Grocy's stock journal")
+			return nil, fmt.Errorf("could not read Grocy's stock journal: %w", err)
 		}
 		if spoiled.Valid && spoiled.Int64 != 0 {
 			ex.Spoiled = 1
@@ -451,7 +451,7 @@ func tableColumns(ctx context.Context, db *sql.DB, table string) (map[string]boo
 	}
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(stock_log)`)
 	if err != nil {
-		return nil, fmt.Errorf("could not read Grocy's stock journal")
+		return nil, fmt.Errorf("could not read Grocy's stock journal: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]bool{}
@@ -460,7 +460,7 @@ func tableColumns(ctx context.Context, db *sql.DB, table string) (map[string]boo
 		var name, typ string
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, fmt.Errorf("could not read Grocy's stock journal")
+			return nil, fmt.Errorf("could not read Grocy's stock journal: %w", err)
 		}
 		out[name] = true
 	}

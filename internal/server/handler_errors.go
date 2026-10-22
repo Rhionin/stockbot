@@ -5,20 +5,23 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"modernc.org/sqlite"
 )
 
-// sqlitePrimaryBusy is SQLite's SQLITE_BUSY primary result code. Extended
-// codes such as SQLITE_BUSY_TIMEOUT keep this low byte.
-const sqlitePrimaryBusy = 5
+// SQLite primary result codes. Extended codes keep the same low byte.
+const (
+	sqlitePrimaryBusy   = 5
+	sqlitePrimaryLocked = 6
+	sqlitePrimaryFull   = 13
+)
 
 const (
-	// internalClientMessage is the sentence every other 5xx returns. The
-	// server log keeps the underlying error.
+	// internalClientMessage is the sentence every unclassified 5xx returns.
+	// The server log keeps the underlying error.
 	internalClientMessage = "Something went wrong. Please try again."
-	// busyClientMessage is the sentence after the busy timeout. The client
-	// can retry; the raw driver text stays in the log.
-	busyClientMessage = "The pantry is busy right now. Please try again."
+	busyErrorCode         = "busy"
+	noSpaceErrorCode      = "no_space"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -80,7 +83,8 @@ func BadGateway(message string) error {
 }
 
 // httpStatusFromError determines the HTTP status code from an error.
-// A lock that outlasts the busy timeout is a 503. Other server errors stay 500.
+// A lock that outlasts the busy timeout, or a full disk, is a 503.
+// A 4xx stays a 4xx even when the cause is one of those database errors.
 func httpStatusFromError(err error) int {
 	if err == nil {
 		return http.StatusOK
@@ -91,29 +95,52 @@ func httpStatusFromError(err error) int {
 	if errors.As(err, &httpErr) {
 		status = httpErr.Code
 	}
-	if status >= 500 && sqliteBusy(err) {
+	if status >= 500 && (sqliteBusy(err) || sqliteNoSpace(err)) {
 		return http.StatusServiceUnavailable
 	}
 	return status
 }
 
-// clientMessage is the fixed sentence a browser sees for a 5xx. Database text
-// is not included. A busy lock names the retry; every other 5xx stays generic.
-func clientMessage(err error) string {
-	if sqliteBusy(err) {
-		return busyClientMessage
+// serverClientPayload is the browser sentence for a 5xx.
+// A classified busy or no-space failure keeps its own sentence and code.
+// The generic sentence does not replace either of those.
+func serverClientPayload(err error, code string) (string, string, bool) {
+	switch {
+	case sqliteBusy(err) || code == busyErrorCode:
+		return clientmsg.Busy, busyErrorCode, true
+	case sqliteNoSpace(err) || code == noSpaceErrorCode:
+		return clientmsg.NoSpace, noSpaceErrorCode, true
+	default:
+		return internalClientMessage, "", false
 	}
-	return internalClientMessage
 }
 
 func sqliteBusy(err error) bool {
 	var driverErr *sqlite.Error
-	if errors.As(err, &driverErr) && driverErr.Code()&0xff == sqlitePrimaryBusy {
-		return true
+	if errors.As(err, &driverErr) {
+		switch driverErr.Code() & 0xff {
+		case sqlitePrimaryBusy, sqlitePrimaryLocked:
+			return true
+		}
 	}
 	for err != nil {
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
+func sqliteNoSpace(err error) bool {
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) && driverErr.Code()&0xff == sqlitePrimaryFull {
+		return true
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "sqlite_full") || strings.Contains(msg, "database or disk is full") || strings.Contains(msg, "disk is full") {
 			return true
 		}
 		err = errors.Unwrap(err)
