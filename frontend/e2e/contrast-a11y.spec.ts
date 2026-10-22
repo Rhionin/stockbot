@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
+import { resetSharedState } from './helpers'
 
 const minimumContrast = 4.5
 
@@ -171,6 +172,14 @@ const routes = [
 // Literal, so dropping a mode, a route, or a width fails even when the loops
 // are rewritten to match the shorter list. Home stays in the list.
 const expectedCombinations = 56
+
+test.beforeEach(async ({ request }) => {
+  await resetSharedState(request)
+})
+
+test.afterEach(async ({ request }) => {
+  await resetSharedState(request)
+})
 
 test('text contrast meets WCAG AA in every theme combination', async ({ page, request }, testInfo) => {
   test.setTimeout(240_000)
