@@ -94,6 +94,9 @@ import Caddyfile.legacy
 	# X-Pantry-Entry, and the handles above stay open. header_up replaces a
 	# value supplied by the client, so the LAN port cannot be made to look
 	# like the public site by omitting the header on the way through Caddy.
+	# POST /api/sentry-tunnel is answered before the household password so a
+	# login page can report a failure. It stays in this handle, which is what
+	# stamps the visitor address. Do not move it to a handle above.
 	handle {
 		route {
 			import security_headers

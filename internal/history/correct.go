@@ -3,11 +3,16 @@ package history
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrBackfillLocked is a quantity edit on either move of a backfill pair.
+// The server answers with the shared backfill_locked sentence.
+var ErrBackfillLocked = errors.New("backfill quantity locked")
 
 // SetQuantity changes how many units a move put on or took off the shelf.
 // The returned view is that product's history after the change.
@@ -31,6 +36,13 @@ func (j *Journal) SetQuantity(ctx context.Context, id string, quantity int, now 
 		return View{}, err
 	}
 	if quantity != move.Quantity {
+		_, paired, pairErr := backfillPartner(ctx, tx, move)
+		if pairErr != nil {
+			return View{}, pairErr
+		}
+		if paired {
+			return View{}, ErrBackfillLocked
+		}
 		if move.Direction == "in" {
 			err = resizeStockIn(ctx, tx, move, quantity)
 		} else {
@@ -61,7 +73,24 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	if err != nil {
 		return View{}, err
 	}
-	if move.Direction == "in" {
+	partner, paired, err := backfillPartner(ctx, tx, move)
+	if err != nil {
+		return View{}, err
+	}
+	var reshelve string
+	if paired {
+		incoming, outgoing := move, partner
+		if incoming.Direction != "in" {
+			incoming, outgoing = partner, move
+		}
+		if incoming.Unshelved {
+			reshelve = incoming.ItemID
+		}
+		if err = undoStockOut(ctx, tx, outgoing); err != nil {
+			return View{}, err
+		}
+		err = undoStockIn(ctx, tx, incoming)
+	} else if move.Direction == "in" {
 		err = undoStockIn(ctx, tx, move)
 	} else {
 		err = undoStockOut(ctx, tx, move)
@@ -69,10 +98,59 @@ func (j *Journal) Undo(ctx context.Context, id string, now time.Time) (View, err
 	if err != nil {
 		return View{}, err
 	}
+	// A later stock-in can leave a live unit. Hide the item again only when
+	// this pair is what brought it back and nothing live remains.
+	if reshelve != "" {
+		live, err := countQuery(ctx, tx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE item_id = ? AND removed_at IS NULL`, reshelve)
+		if err != nil {
+			return View{}, err
+		}
+		if live == 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, reshelve); err != nil {
+				return View{}, err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return View{}, err
 	}
 	return j.Product(ctx, move.ItemID, now)
+}
+
+// backfillPartner is the other move from the same backfill commit.
+// A backfill stock-in and its stock-out share a scan id, and one of them
+// has source backfill. Undoing either one removes both.
+func backfillPartner(ctx context.Context, tx *sql.Tx, move moveRow) (moveRow, bool, error) {
+	if !move.ScanEntryID.Valid || move.ScanEntryID.String == "" {
+		return moveRow{}, false, nil
+	}
+	want := ""
+	switch move.Source {
+	case "backfill":
+		want = "scan"
+	case "scan":
+		want = "backfill"
+	default:
+		return moveRow{}, false, nil
+	}
+	var partnerID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE scan_entry_id = ? AND id != ? AND source = ?`,
+		move.ScanEntryID.String, move.ID, want).Scan(&partnerID)
+	if err == sql.ErrNoRows {
+		return moveRow{}, false, nil
+	}
+	if err != nil {
+		return moveRow{}, false, err
+	}
+	other, err := loadMove(ctx, tx, partnerID)
+	if err != nil {
+		return moveRow{}, false, err
+	}
+	return other, true, nil
 }
 
 func resizeStockIn(ctx context.Context, tx *sql.Tx, move moveRow, quantity int) error {

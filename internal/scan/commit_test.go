@@ -3,6 +3,7 @@ package scan_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -968,8 +969,12 @@ func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 			queue.Broadcaster = broadcaster
 			queue.Pantry = inventory.NewPantry(db)
 
-			if err := queue.CommitStockOut(ctx, entry, instanceID); err == nil {
+			err := queue.CommitStockOut(ctx, entry, instanceID)
+			if err == nil {
 				t.Fatal("expected error, got nil")
+			}
+			if tt.name == "no available instances" && !errors.Is(err, scan.ErrNoneOnHand) {
+				t.Fatalf("CommitStockOut: %v", err)
 			}
 			if len(broadcaster.scanEvents) != 0 {
 				t.Errorf("expected 0 published scan events, got %d", len(broadcaster.scanEvents))

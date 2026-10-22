@@ -84,12 +84,13 @@ func RunMigrations(db *sql.DB) error {
 		}
 		sqlText := prepareMigrationSQL(name, string(sqlBytes))
 
-		// 019 rebuilds tables and 020 adds the shelved column and its trigger.
+		// 019 and 021 rebuild tables. 020 adds the shelved column and its trigger.
+		// 022 adds the unshelved flag on a backfill stock-in.
 		// VACUUM INTO cannot run inside a transaction, so the snapshot above
 		// stays outside. Each of these files plus its schema_migrations row
 		// commit together, so a failure leaves neither the schema change nor
 		// a recorded migration.
-		if name == targetsChangeMigration || name == shelveChangeMigration {
+		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration {
 			if err := applyMigrationTx(db, name, sqlText); err != nil {
 				return fmt.Errorf("apply migration %q: %w", name, err)
 			}

@@ -29,6 +29,9 @@ type batchCommitResponse struct {
 	CommittedIDs  []string `json:"committedIds,omitempty"`
 	FailedIDs     []string `json:"failedIds,omitempty"`
 	FailedReasons []string `json:"failedReasons,omitempty"`
+	// FailedCodes is parallel to FailedIDs and FailedReasons. Older clients
+	// that only read the sentences keep working.
+	FailedCodes []string `json:"failedCodes,omitempty"`
 }
 
 func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}]) (batchCommitResponse, error) {
@@ -54,7 +57,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			req.Body.ExpiresAt,
 		)
 		if err != nil {
-			return batchCommitResponse{}, InternalError(err)
+			return batchCommitResponse{}, commitClientError(err)
 		}
 	}
 
@@ -67,32 +70,31 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		committedIDs := []string{}
 		failedIDs := []string{}
 		failedReasons := []string{}
+		failedCodes := []string{}
 
 		for _, id := range req.Body.ScanEntryIDs {
 			entry, err := h.Queue.GetScanEntry(req.Context, id)
-			if err != nil || entry == nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "scan entry not found")
+			if err != nil {
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, err)
 				continue
 			}
-
+			if entry == nil {
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrScanNotFound)
+				continue
+			}
 			if entry.Status != scan.Pending {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "not pending")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrNotPending)
 				continue
 			}
-
 			if entry.Direction == nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "direction not set")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrDirectionUnset)
 				continue
 			}
-
 			if entry.ProductID == nil || *entry.ProductID == "" {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, "product not resolved")
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrProductUnresolved)
 				continue
 			}
+			passCommitCheck()
 
 			var commitErr error
 			if *entry.Direction == scan.StockIn {
@@ -102,8 +104,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			}
 
 			if commitErr != nil {
-				failedIDs = append(failedIDs, id)
-				failedReasons = append(failedReasons, commitErr.Error())
+				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, commitErr)
 			} else {
 				committedIDs = append(committedIDs, id)
 			}
@@ -112,7 +113,15 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		response.CommittedIDs = committedIDs
 		response.FailedIDs = failedIDs
 		response.FailedReasons = failedReasons
+		response.FailedCodes = failedCodes
 	}
 
 	return response, nil
+}
+
+func recordCommitFailure(ids, reasons, codes *[]string, id string, err error) {
+	message, code := explainCommitFailure(err)
+	*ids = append(*ids, id)
+	*reasons = append(*reasons, message)
+	*codes = append(*codes, code)
 }

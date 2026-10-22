@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
 
@@ -80,7 +81,7 @@ func TestApplyHistoryWritesRealDatesAndIsIdempotent(t *testing.T) {
 			t.Fatalf("consume = %+v", consume)
 		}
 	})
-	bak, err := sql.Open("sqlite", result.BackupPath)
+	bak, err := app.OpenSQLite(result.BackupPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestApplyHistoryRefusesWhenDatabaseLooksInUse(t *testing.T) {
 	locked := filepath.Join(t.TempDir(), "grocy.db")
 	open := openGrocyDB(t, locked)
 	open.Close()
-	holder, err := sql.Open("sqlite", locked)
+	holder, err := app.OpenSQLite(locked)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +273,7 @@ type histRow struct {
 
 func openGrocyDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := app.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +310,7 @@ func openGrocyDB(t *testing.T, path string) *sql.DB {
 
 func assertHistory(t *testing.T, path string, check func([]histRow, float64)) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := app.OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
 	}

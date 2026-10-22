@@ -20,7 +20,7 @@ import (
 // and returns an inventory Pantry.
 func newTestPantry(t *testing.T) (*inventory.Pantry, *product.Catalog, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -972,12 +972,19 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 		t.Fatalf("user-2 instances after wipe: got %d, want 1", len(instances))
 	}
 
-	products, err := catalog.ListProducts(ctx)
+	products, err := catalog.ListProducts(ctx, "user-1")
 	if err != nil {
 		t.Fatalf("ListProducts: %v", err)
 	}
-	if len(products) != 1 || products[0].Name != "Milk" {
-		t.Fatalf("products after wipe: got %+v", products)
+	if len(products) != 0 {
+		t.Fatalf("shelved product still in the picker: %+v", products)
+	}
+	keptProduct, err := catalog.GetProductByID(ctx, "prod-1")
+	if err != nil {
+		t.Fatalf("GetProductByID: %v", err)
+	}
+	if keptProduct == nil || keptProduct.Name != "Milk" {
+		t.Fatalf("product after wipe: got %+v", keptProduct)
 	}
 	found, err := catalog.LookupByBarcode(ctx, "111", "user-1")
 	if err != nil {

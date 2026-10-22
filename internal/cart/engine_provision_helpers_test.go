@@ -31,7 +31,7 @@ type provisionEnv struct {
 func newProvisionEnv(t *testing.T) *provisionEnv {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	require.NoError(t, err)
 	// A :memory: database lives inside one connection, and Provision opens a
 	// transaction on the same handle it queries through. Pin the pool to one

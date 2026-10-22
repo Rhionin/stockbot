@@ -44,6 +44,8 @@ type errorPayload struct {
 	Code        string `json:"code,omitempty"`
 	Members     any    `json:"members,omitempty"`
 	Suggestions any    `json:"suggestions,omitempty"`
+	ItemID      string `json:"itemId,omitempty"`
+	OnHand      *int   `json:"onHand,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -95,7 +97,7 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 
 		resp, err := fn(req)
 		if err != nil {
-			writeHTTPError(w, httpStatusFromError(err), err)
+			writeStatusError(r, w, httpStatusFromError(err), err)
 			return
 		}
 
@@ -154,11 +156,20 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // detail in the server log and returns a fixed sentence, so a database or
 // upstream message is not part of the HTTP body.
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeHTTPError(w, status, errors.New(message))
+	writeStatusError(nil, w, status, errors.New(message))
 }
 
 // writeHTTPError writes a JSON error. A 409 can include a code, a member list, and suggestions.
 func writeHTTPError(w http.ResponseWriter, status int, err error) {
+	writeStatusError(nil, w, status, err)
+}
+
+// writeStatusError writes a JSON error. A 5xx is also reported, with the
+// request when one is available. The client still receives a fixed sentence.
+func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
+	if status >= 500 {
+		reportServerError(r, err)
+	}
 	message := ""
 	if err != nil {
 		message = err.Error()
@@ -167,27 +178,48 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 	var code string
 	var members any
 	var suggestions any
+	var itemID string
+	var onHand *int
 	extra := false
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
 		}
-		if httpErr.ErrorCode != "" || httpErr.Members != nil || httpErr.Suggestions != nil {
+		if httpErr.ErrorCode != "" || httpErr.Members != nil || httpErr.Suggestions != nil || httpErr.ItemID != "" || httpErr.OnHand != nil {
 			extra = true
 			code = httpErr.ErrorCode
 			members = httpErr.Members
 			suggestions = httpErr.Suggestions
+			itemID = httpErr.ItemID
+			onHand = httpErr.OnHand
 		}
 	}
 	if status >= 500 {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("request failed: %s", message)
+		logged := message
+		if httpErr != nil && httpErr.Err != nil {
+			logged = httpErr.Err.Error()
 		}
-		message = "Something went wrong. Please try again."
-		extra = false
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("request failed: %s", logged)
+		}
+		// code internal is a deliberate client contract: the sentence is safe
+		// and the underlying error was logged above. Other 500s stay generic
+		// and omit the code.
+		if httpErr != nil && httpErr.ErrorCode == "internal" && httpErr.Message != "" {
+			message = httpErr.Message
+			code = httpErr.ErrorCode
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
+			extra = true
+		} else {
+			message = "Something went wrong. Please try again."
+			extra = false
+		}
 	}
 	if extra {
-		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})
+		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions, ItemID: itemID, OnHand: onHand})
 		return
 	}
 	writeJSON(w, status, map[string]string{"error": message})

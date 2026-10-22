@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -14,72 +16,129 @@ type ScanCommitHandler struct {
 		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
 		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) error
 		CommitStockOutLink(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) error
+		CommitBackfill(ctx context.Context, scanEntry *scan.ScanEntry) (scan.BackfillResult, error)
+		CountOnHand(ctx context.Context, userID, productID string) (int, error)
 	}
 }
 
 type commitScanRequest struct {
 	InstanceID    *string `json:"instanceId,omitempty"`
 	LinkProductID *string `json:"linkProductId,omitempty"`
+	Backfill      bool    `json:"backfill,omitempty"`
+}
+
+type backfillMoves struct {
+	StockInMoveID  string `json:"stockInMoveId"`
+	StockOutMoveID string `json:"stockOutMoveId"`
+}
+
+type backfillResponse struct {
+	Removed    int           `json:"removed"`
+	Backfilled int           `json:"backfilled"`
+	ItemID     string        `json:"itemId"`
+	Backfill   backfillMoves `json:"backfill"`
+}
+
+// commitAfterCheck runs after a commit handler has accepted a pending scan
+// and before the commit transaction. Tests use it to overlap two requests
+// that have both passed that check.
+var commitAfterCheck func()
+
+func passCommitCheck() {
+	if commitAfterCheck != nil {
+		commitAfterCheck()
+	}
 }
 
 type commitScanPathParams struct {
 	ID string `json:"id"`
 }
 
-func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPathParams]) (*scan.ScanEntry, error) {
+func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPathParams]) (any, error) {
 	if req.PathParams.ID == "" {
 		return nil, BadRequest("scan entry id is required")
 	}
 
-	// Get the scan entry
 	entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, commitClientError(err)
 	}
 	if entry == nil {
-		return nil, NotFound("scan entry not found")
+		return nil, commitClientError(scan.ErrScanNotFound)
 	}
 
-	// Validate the entry can be committed
 	if entry.Status != scan.Pending {
-		return nil, BadRequest("only pending scan entries can be committed")
+		return nil, commitClientError(scan.ErrNotPending)
 	}
 	if entry.Direction == nil {
-		return nil, BadRequest("scan direction must be set before committing")
+		return nil, commitClientError(scan.ErrDirectionUnset)
+	}
+	if req.Body.Backfill {
+		return h.commitBackfill(req.Context, entry)
 	}
 	if entry.ProductID == nil || *entry.ProductID == "" {
-		return nil, BadRequest("product must be resolved before committing")
+		return nil, commitClientError(scan.ErrProductUnresolved)
 	}
+	passCommitCheck()
 
 	linkProductID := ""
 	if req.Body.LinkProductID != nil {
 		linkProductID = strings.TrimSpace(*req.Body.LinkProductID)
 	}
 
-	// Commit based on direction. A link is an explicit choice: the server
-	// never attaches a barcode on its own when the household has no item.
+	// A link is an explicit choice: the server never attaches a barcode on
+	// its own when the household has no item.
 	if *entry.Direction == scan.StockIn {
 		if linkProductID != "" {
 			return nil, BadRequest("linking a barcode is only available when scanning out")
 		}
 		if err := h.Queue.CommitStockIn(req.Context, entry); err != nil {
-			return nil, InternalError(err)
+			return nil, commitClientError(err)
 		}
 	} else if linkProductID != "" {
 		if err := h.Queue.CommitStockOutLink(req.Context, entry, req.Body.InstanceID, linkProductID); err != nil {
+			var empty *scan.EmptyShelfLink
+			if errors.As(err, &empty) {
+				return nil, ShelfCount(http.StatusConflict, inventory.NoneOnHandMessage, inventory.CodeNoneOnHand, empty.ItemID, 0)
+			}
 			return nil, stockOutError(err)
 		}
 	} else if err := h.Queue.CommitStockOut(req.Context, entry, req.Body.InstanceID); err != nil {
 		return nil, stockOutError(err)
 	}
 
-	// Return the committed entry
 	committed, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, commitClientError(err)
+	}
+	if linkProductID != "" && committed != nil {
+		onHand, err := h.Queue.CountOnHand(req.Context, entry.UserID, linkProductID)
+		if err != nil {
+			return nil, commitClientError(err)
+		}
+		committed.OnHand = &onHand
 	}
 
 	return committed, nil
+}
+
+func (h *ScanCommitHandler) commitBackfill(ctx context.Context, entry *scan.ScanEntry) (any, error) {
+	if entry.ProductID == nil || *entry.ProductID == "" {
+		return nil, commitClientError(scan.ErrProductUnresolved)
+	}
+	passCommitCheck()
+	result, err := h.Queue.CommitBackfill(ctx, entry)
+	if err != nil {
+		var stocked *scan.UnitsOnHandError
+		if errors.As(err, &stocked) {
+			return nil, ShelfCount(http.StatusBadRequest, inventory.UnitsOnHandMessage, inventory.CodeUnitsOnHand, stocked.ItemID, stocked.OnHand)
+		}
+		return nil, commitClientError(err)
+	}
+	return backfillResponse{
+		Removed: result.Units, Backfilled: result.Units, ItemID: result.ItemID,
+		Backfill: backfillMoves{StockInMoveID: result.StockInMoveID, StockOutMoveID: result.StockOutMoveID},
+	}, nil
 }
 
 func stockOutError(err error) error {
@@ -89,10 +148,7 @@ func stockOutError(err error) error {
 		if len(missing.Suggestions) > 0 {
 			suggestions = missing.Suggestions
 		}
-		return ConflictSuggestions("Not in your pantry", "no_item", suggestions)
+		return ConflictSuggestions(inventory.WhichItemMessage, inventory.CodeNoItem, suggestions)
 	}
-	if errors.Is(err, scan.ErrLinkNotStocked) {
-		return BadRequest("That product is not in your pantry")
-	}
-	return InternalError(err)
+	return commitClientError(err)
 }

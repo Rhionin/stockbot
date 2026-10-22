@@ -21,7 +21,7 @@ import (
 // TestMigrationApplies verifies that RunMigrations applies the initial schema
 // to an in-memory SQLite database and that every expected table is created.
 func TestMigrationApplies(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestMigrationApplies(t *testing.T) {
 // TestMigrationIsIdempotent verifies that calling RunMigrations twice on the
 // same database does not return an error or duplicate any tables.
 func TestMigrationIsIdempotent(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -122,13 +122,13 @@ func TestMigrationIsIdempotent(t *testing.T) {
 
 	// One schema_migrations row per applied .sql file; the second RunMigrations
 	// must not re-apply any file, so the count equals the number of migration
-	// files (001 through 005, both 006 files, both 007 files, 008 through 020).
+	// files (001 through 005, both 006 files, both 007 files, 008 through 022).
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 22 {
-		t.Errorf("schema_migrations should have 22 rows after two runs, got %d", count)
+	if count != 24 {
+		t.Errorf("schema_migrations should have 24 rows after two runs, got %d", count)
 	}
 }
 
@@ -137,7 +137,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 // against a fresh database, and does not log the "schema up to date" summary
 // line (since at least one file was applied).
 func TestRunMigrations_LogsAppliedMigrationsOnFreshDB(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestRunMigrations_LogsAppliedMigrationsOnFreshDB(t *testing.T) {
 // (and no "applied migration:" lines) when called against a database that has
 // already been fully migrated.
 func TestRunMigrations_LogsSummaryWhenAlreadyMigrated(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestRunMigrations_LogsSummaryWhenAlreadyMigrated(t *testing.T) {
 // and re-run — mirroring the pattern in
 // internal/server/handler_external_persistence_test.go's orphan case.
 func TestMigration002BackfillsOrphanedProducts(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -305,7 +305,7 @@ func countProducts(t *testing.T, conn *sql.DB, id string) int {
 //
 // Validates: Requirements 1.1, 1.2, 1.3, 1.4
 func TestMigration004BackfillsProvenanceAndIsIdempotent(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -436,7 +436,7 @@ func applyMigrationsThrough003(t *testing.T, conn *sql.DB) {
 //
 // Validates: Requirements 3.2, 3.3
 func TestMigration005PreservesValuesAndAddsProvenanceAndIsIdempotent(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -643,7 +643,7 @@ func nullableSeed(s string) any {
 //
 // Validates: Requirements 2.2, 6.2, 8.2, 10.12
 func TestMigration006ReplacesCartIntegrationsWithProviderLedger(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestMigration006ReplacesCartIntegrationsWithProviderLedger(t *testing.T) {
 //
 // Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5
 func TestMigration006PreservesItemsDataAndSetsDefaultMode(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -837,7 +837,7 @@ func TestMigration006PreservesItemsDataAndSetsDefaultMode(t *testing.T) {
 }
 
 func TestMigration010NetSizeColumnsAndBackfill(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestMigration010NetSizeColumnsAndBackfill(t *testing.T) {
 }
 
 func TestMigration011ProductGroups(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

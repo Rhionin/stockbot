@@ -51,6 +51,8 @@ type ScanEntry struct {
 	GroupHint   *GroupHint `json:"groupHint,omitempty"`
 	CommittedAt *time.Time `json:"committedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// OnHand is set on a link response. It is not stored on the scan row.
+	OnHand *int `json:"onHand,omitempty"`
 }
 
 // GroupHint is the one line on a scan row that offers to add the product to a group.
@@ -115,6 +117,10 @@ type Queue struct {
 	// Supply distinguishes an opening snapshot from a later restock.
 	// Nil only in tests that construct a queue directly; the server always sets it.
 	Supply *supply.Service
+
+	// Now is the clock CommitStockIn stores in committed_at.
+	// Nil means time.Now().UTC, which drops a monotonic reading.
+	Now func() time.Time
 }
 
 // NewQueue creates a new Queue with the given database connection.
@@ -143,7 +149,7 @@ func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntr
 		}
 		scannedAt := entry.ScannedAt
 		if scannedAt.IsZero() {
-			scannedAt = time.Now()
+			scannedAt = time.Now().UTC()
 		}
 		if !scannedAt.After(existing.ScannedAt) {
 			scannedAt = existing.ScannedAt
@@ -403,7 +409,7 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 // CommitScanEntry marks a scan entry as committed and records the committed_at
 // timestamp. This is a convenience wrapper around UpdateScanEntry.
 func (r *Queue) CommitScanEntry(ctx context.Context, id string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	committed := Committed
 
 	_, err := r.db.ExecContext(ctx,

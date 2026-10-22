@@ -25,14 +25,13 @@ type LinkSuggestion struct {
 }
 
 // NoItemError is a stock-out of a product this household does not stock.
-// Suggestions are ranked for the caller to choose. The scan is not linked
-// or committed until that choice arrives.
+// The scan is left pending. Suggestions are ranked in case a caller offers a link.
 type NoItemError struct {
 	Suggestions []LinkSuggestion
 }
 
 func (e *NoItemError) Error() string {
-	return "Not in your pantry"
+	return "household does not stock this product"
 }
 
 type linkCandidate struct {
@@ -48,8 +47,33 @@ type linkQuery interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// suggestLinks ranks household items the scanned barcode might belong to.
-// A barcode that is a suffix of the scan outranks a name resemblance.
+// LinkSuggestions is the ranked list a stock-out commit returns with no_item.
+// The scan must still be pending. Candidates are this scan's household only:
+// unshelved items that still have a unit on hand, in the same order as that
+// commit. The call does not write.
+func (r *Queue) LinkSuggestions(ctx context.Context, id string) ([]LinkSuggestion, error) {
+	entry, err := r.GetScanEntry(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, ErrScanNotFound
+	}
+	if entry.Status != Pending {
+		return nil, ErrNotPending
+	}
+	if entry.Direction == nil {
+		return nil, ErrDirectionUnset
+	}
+	if *entry.Direction != StockOut {
+		return nil, ErrNotStockOut
+	}
+	return r.suggestLinks(ctx, r.db, entry)
+}
+
+// suggestLinks ranks unshelved household items that still have a unit on the shelf.
+// A barcode that is a suffix of the scan outranks a name resemblance. Wiped items
+// stay out of the list even when they still have instance rows.
 func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	excludeProductID := ""
@@ -76,7 +100,7 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 			), '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ?`,
+		WHERE i.user_id = ? AND i.shelved = 0`,
 		scanEntry.UserID,
 	)
 	if err != nil {

@@ -1,0 +1,58 @@
+package inventory
+
+import "testing"
+
+func TestNoneOnHandMessage(t *testing.T) {
+	if NoneOnHandMessage != "Nothing on hand to take out." {
+		t.Fatalf("NoneOnHandMessage = %q, want %q", NoneOnHandMessage, "Nothing on hand to take out.")
+	}
+}
+
+func TestInstanceGoneMessage(t *testing.T) {
+	if InstanceGoneMessage != "That one was already taken out. Pick another." {
+		t.Fatalf("InstanceGoneMessage = %q, want %q", InstanceGoneMessage, "That one was already taken out. Pick another.")
+	}
+}
+
+func TestCommitFailureCopy(t *testing.T) {
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"not pending", NotPendingMessage, "This scan was already handled."},
+		{"product unresolved", ProductUnresolvedMessage, "Choose which item this is first."},
+		{"which item", WhichItemMessage, "Which item is this?"},
+		{"link target gone", LinkTargetGoneMessage, "That item isn't available anymore. Pick another."},
+		{"scan not found", ScanNotFoundMessage, "This scan is no longer in the queue."},
+		{"direction unset", DirectionUnsetMessage, "Choose stock in or stock out first."},
+		{"units on hand", UnitsOnHandMessage, "You already have some on hand, so there's nothing to add."},
+		{"not stock out", NotStockOutMessage, "This only works when taking something out."},
+		{"internal", InternalMessage, "Something went wrong. Try again."},
+		{"conflicting fields", ConflictingFieldsMessage, "Choose one change at a time."},
+		{"backfill locked", BackfillLockedMessage, "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead."},
+	}
+	for _, tt := range checks {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+	if CodeNotPending != "not_pending" || CodeProductUnresolved != "product_unresolved" ||
+		CodeScanNotFound != "scan_not_found" || CodeDirectionUnset != "direction_unset" ||
+		CodeUnitsOnHand != "units_on_hand" || CodeNotStockOut != "not_stock_out" ||
+		CodeInternal != "internal" || CodeNoItem != "no_item" || CodeLinkTargetGone != "link_target_gone" ||
+		CodeConflictingFields != "conflicting_fields" || CodeBackfillLocked != "backfill_locked" {
+		t.Fatalf("codes drifted: %s %s %s %s %s %s %s", CodeNotPending, CodeProductUnresolved, CodeScanNotFound, CodeDirectionUnset, CodeInternal, CodeNoItem, CodeLinkTargetGone)
+	}
+}
+
+func TestStockOutConflictCodes(t *testing.T) {
+	if CodeNoneOnHand != "none_on_hand" {
+		t.Fatalf("CodeNoneOnHand = %q", CodeNoneOnHand)
+	}
+	if CodeInstanceGone != "instance_gone" {
+		t.Fatalf("CodeInstanceGone = %q", CodeInstanceGone)
+	}
+}

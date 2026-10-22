@@ -15,6 +15,8 @@ type HTTPError struct {
 	ErrorCode   string
 	Members     any
 	Suggestions any
+	ItemID      string
+	OnHand      *int
 }
 
 func (e *HTTPError) Error() string {
@@ -53,6 +55,19 @@ func ConflictDetails(message, code string, members any) error {
 // ConflictSuggestions is a 409 whose body carries a machine-readable code and link suggestions.
 func ConflictSuggestions(message, code string, suggestions any) error {
 	return &HTTPError{Code: http.StatusConflict, Message: message, ErrorCode: code, Suggestions: suggestions}
+}
+
+// ShelfCount is a client error that also names the item and how many units are on hand.
+// onHand is included even when it is 0.
+func ShelfCount(status int, message, code, itemID string, onHand int) error {
+	n := onHand
+	return &HTTPError{
+		Code:      status,
+		Message:   message,
+		ErrorCode: code,
+		ItemID:    itemID,
+		OnHand:    &n,
+	}
 }
 
 func InternalError(err error) error {
