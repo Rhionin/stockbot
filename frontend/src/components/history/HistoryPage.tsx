@@ -7,7 +7,7 @@ import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../.
 import { quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
-  daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
+  daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 import '../groups/groups.css';
 import './history.css';
@@ -102,7 +102,8 @@ export function HistoryPage() {
     void Promise.resolve().then(load);
   }, [load]);
 
-  const shown = (view?.moves ?? []).filter((move) => filter === 'recent' || move.direction === filter);
+  const orderedMoves = orderBackfillPairs(view?.moves ?? []);
+  const shown = orderedMoves.filter((move) => filter === 'recent' || move.direction === filter);
   const now = new Date();
 
   const saveQuantity = async () => {
@@ -140,7 +141,9 @@ export function HistoryPage() {
     }
   };
 
-  const undo = undoing ? undoCopy(undoing.direction, undoing.quantity) : null;
+  const undo = undoing
+    ? undoCopy(undoing.direction, undoing.quantity, quantityLocked(undoing, view?.moves ?? []))
+    : null;
 
   return (
     <Stack className="bin-page history-page" gap="md">

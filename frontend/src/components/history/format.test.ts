@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { quantityLocked } from '../../api/contract';
+import { backfillMoveId, quantityLocked } from '../../api/contract';
 import {
   dayHeading, daysLeftLabel, deltaName, deltaText, directionWord, formatMoveClock, formatMoveWhen, formatPaceNumber,
-  groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
+  groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 
 describe('history wording', () => {
@@ -29,14 +29,21 @@ describe('history wording', () => {
     expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'scan')).toMatch(/^Today, .+scan$/);
     expect(formatMoveWhen(new Date(2026, 9, 9, 18, 42, 0), now, 'scan')).toMatch(/^Yesterday, .+scan$/);
     expect(formatMoveWhen(new Date(2026, 9, 10, 8, 14, 0), now, 'backfill')).toContain('Added when taking out');
-    const pair = [
-      { source: 'backfill', direction: 'in', at: '2026-10-18T16:40:00.000Z', productId: 'prod-sour' },
-      { source: 'scan', direction: 'out', at: '2026-10-18T16:40:00.000Z', productId: 'prod-sour' },
-      { source: 'scan', direction: 'out', at: '2026-10-17T16:40:00.000Z', productId: 'prod-sour' },
-    ];
-    expect(quantityLocked(pair[0], pair)).toBe(true);
-    expect(quantityLocked(pair[1], pair)).toBe(true);
-    expect(quantityLocked(pair[2], pair)).toBe(false);
+    const at = '2026-10-18T16:40:00.000Z';
+    const backfill = { source: 'backfill', direction: 'in', at, productId: 'prod-sour' };
+    const pairedOut = { source: 'scan', direction: 'out', at, productId: 'prod-sour' };
+    const otherProduct = { source: 'scan', direction: 'out', at, productId: 'prod-milk' };
+    const otherTime = { source: 'scan', direction: 'out', at: '2026-10-17T16:40:00.000Z', productId: 'prod-sour' };
+    const manualOut = { source: 'manual', direction: 'out', at, productId: 'prod-sour' };
+    const scanIn = { source: 'scan', direction: 'in', at, productId: 'prod-sour' };
+    const pair = [backfill, pairedOut, otherProduct, otherTime, manualOut, scanIn];
+    expect(quantityLocked(backfill, [])).toBe(true);
+    expect(quantityLocked(pairedOut, pair)).toBe(true);
+    expect(quantityLocked(pairedOut, [pairedOut])).toBe(false);
+    expect(quantityLocked(otherProduct, pair)).toBe(false);
+    expect(quantityLocked(otherTime, pair)).toBe(false);
+    expect(quantityLocked(manualOut, pair)).toBe(false);
+    expect(quantityLocked(scanIn, pair)).toBe(false);
     expect(formatMoveClock(new Date(2026, 9, 10, 8, 14, 0), 'backfill')).toContain('Added when taking out');
     const older = formatMoveWhen(new Date(2026, 9, 8, 19, 20, 0), now, 'manual');
     expect(older).toContain('Oct');
@@ -93,5 +100,48 @@ describe('history wording', () => {
       confirm: 'Undo this use',
     });
     expect(undoCopy('in', 1).body).toBe('1 unit leaves the shelf. The pace is recalculated from the remaining history.');
+    const pairCopy = {
+      title: 'Undo this add and take out?',
+      body: 'This removes the added unit and the unit taken out. The pace is recalculated from the remaining history.',
+      confirm: 'Undo add and take out',
+    };
+    expect(undoCopy('in', 1, true)).toEqual(pairCopy);
+    expect(undoCopy('out', 1, true)).toEqual(pairCopy);
+    expect(undoCopy('in', 1, true).body).not.toContain('leaves the shelf');
+    expect(undoCopy('out', 2, true).body).toBe(
+      'This removes the 2 units that were added and the 2 units that were taken out. The pace is recalculated from the remaining history.',
+    );
+  });
+
+  it('keeps the added row immediately before its use', () => {
+    const at = '2026-10-18T16:40:00.000Z';
+    const added = { id: 'in', source: 'backfill', direction: 'in', at, productId: 'prod-sour' };
+    const used = { id: 'out', source: 'scan', direction: 'out', at, productId: 'prod-sour' };
+    const between = { id: 'oats', source: 'manual', direction: 'in', at: '2026-10-18T15:00:00.000Z', productId: 'prod-oats' };
+    const other = { id: 'milk', source: 'scan', direction: 'out', at, productId: 'prod-milk' };
+    expect(orderBackfillPairs([used, between, added, other]).map((move) => move.id)).toEqual(['in', 'oats', 'out', 'milk']);
+    expect(orderBackfillPairs([added, used, other]).map((move) => move.id)).toEqual(['in', 'out', 'milk']);
+    expect(orderBackfillPairs([other, between]).map((move) => move.id)).toEqual(['milk', 'oats']);
+  });
+});
+
+describe('backfill move id', () => {
+  it.each([
+    { name: 'an empty history has no move', moves: [], id: '' },
+    { name: 'a history with no backfill uses the first move', moves: [{ id: 'only', source: 'scan' }], id: 'only' },
+    {
+      name: 'a leading use is skipped for the backfill row',
+      moves: [{ id: 'scan-out', source: 'scan' }, { id: 'bf', source: 'backfill' }],
+      id: 'bf',
+    },
+    {
+      // The commit response still has no move ids, so this is the first backfill
+      // row until that response names the pair from this commit.
+      name: 'two backfill rows keep the first one',
+      moves: [{ id: 'bf-old', source: 'backfill' }, { id: 'bf-new', source: 'backfill' }],
+      id: 'bf-old',
+    },
+  ])('$name', (row) => {
+    expect(backfillMoveId(row.moves)).toBe(row.id);
   });
 });

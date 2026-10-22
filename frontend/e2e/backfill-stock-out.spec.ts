@@ -190,7 +190,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await card.getByRole('button', { name: 'Add as a new item' }).click()
   await expect(page.locator('.restock-toast').filter({ hasText: sentence })).toBeVisible()
   await expect(card.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
-  await expect(card.getByText(sentence)).toHaveCount(0)
+  await expect(card.getByText(sentence)).toBeVisible()
   await expect(card.getByRole('region', { name: 'Which item is this?' })).toHaveCount(0)
   await expect(card.getByText('Sour cream')).toBeVisible()
   expect(seen.product).toMatchObject({ name: 'Sour cream' })

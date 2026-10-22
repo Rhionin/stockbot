@@ -31,6 +31,45 @@ export function sourceLabel(source: string): string {
   return source === 'scan' ? 'scan' : 'by hand';
 }
 
+interface PairMove {
+  source: string;
+  direction: string;
+  at: string;
+  productId: string;
+}
+
+function isBackfillIn(move: PairMove): boolean {
+  return move.source === 'backfill' && move.direction === 'in';
+}
+
+function isPairedOut(move: PairMove): boolean {
+  return move.source === 'scan' && move.direction === 'out';
+}
+
+function samePair(left: PairMove, right: PairMove): boolean {
+  return left.productId === right.productId
+    && left.at === right.at
+    && ((isBackfillIn(left) && isPairedOut(right)) || (isBackfillIn(right) && isPairedOut(left)));
+}
+
+// The added row comes before its use. Other rows stay where they are.
+export function orderBackfillPairs<T extends PairMove>(moves: T[]): T[] {
+  const ordered = [...moves];
+  const used = new Set<number>();
+  for (let index = 0; index < ordered.length; index += 1) {
+    if (used.has(index) || !isPairedOut(ordered[index])) continue;
+    const match = ordered.findIndex((other, later) =>
+      later > index && !used.has(later) && samePair(ordered[index], other));
+    if (match === -1) continue;
+    const out = ordered[index];
+    ordered[index] = ordered[match];
+    ordered[match] = out;
+    used.add(index);
+    used.add(match);
+  }
+  return ordered;
+}
+
 function sameDay(left: Date, right: Date): boolean {
   return left.getFullYear() === right.getFullYear()
     && left.getMonth() === right.getMonth()
@@ -126,7 +165,22 @@ export function deltaName(direction: string, quantity: number): string {
   return quantity === 1 ? '1 used' : `${quantity} used`;
 }
 
-export function undoCopy(direction: string, quantity: number): { title: string; body: string; confirm: string } {
+export function undoCopy(
+  direction: string,
+  quantity: number,
+  pair = false,
+): { title: string; body: string; confirm: string } {
+  // Pair wording is provisional until product copy is settled.
+  if (pair) {
+    const both = quantity === 1
+      ? 'This removes the added unit and the unit taken out'
+      : `This removes the ${quantity} units that were added and the ${quantity} units that were taken out`;
+    return {
+      title: 'Undo this add and take out?',
+      body: `${both}. The pace is recalculated from the remaining history.`,
+      confirm: 'Undo add and take out',
+    };
+  }
   if (direction === 'in') {
     const shelf = quantity === 1 ? '1 unit leaves the shelf' : `${quantity} units leave the shelf`;
     return {

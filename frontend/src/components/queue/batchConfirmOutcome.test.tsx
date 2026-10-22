@@ -708,7 +708,7 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
-    name: 'a wiped product confirms nothing on hand only in the toast',
+    name: 'a wiped product shows nothing on hand on the card and in the toast',
     action: 'confirm-milk',
     pendingAfter: 'both',
     openMore: true,
@@ -1050,11 +1050,20 @@ describe('scan commit outcomes', () => {
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
-        expect(leaves).toHaveLength(1);
-        expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
-        expect(leaves[0]?.textContent).toBe(row.toast);
-        for (const article of screen.queryAllByRole('article')) {
-          expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
+        const echoed = (row.backfillOn?.length ?? 0) > 0 && row.toast === 'Nothing on hand to take out.';
+        if (echoed) {
+          expect(leaves.some((node) => node.closest('.restock-toast') !== null)).toBe(true);
+          for (const barcode of row.backfillOn ?? []) {
+            const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+            expect(within(card).getByText(row.toast)).toBeInTheDocument();
+          }
+        } else {
+          expect(leaves).toHaveLength(1);
+          expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
+          expect(leaves[0]?.textContent).toBe(row.toast);
+          for (const article of screen.queryAllByRole('article')) {
+            expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
+          }
         }
       }
       if (row.keepsUndo) {

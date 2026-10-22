@@ -514,7 +514,12 @@ export const ScanEntryCard = ({
       showUndo({
         detail: ADDED_AND_TAKEN_OUT,
         onUndo: moveId === '' ? undefined : () => {
-          void undoMove(moveId);
+          void undoMove(moveId).catch((requestError: unknown) => {
+            const message = requestError instanceof ApiError && requestError.message !== ''
+              ? requestError.message
+              : SERVER_ERROR_FALLBACK;
+            showCommitSentence(message);
+          });
         },
       });
       setOfferBackfill(false);
@@ -1013,7 +1018,8 @@ export const ScanEntryCard = ({
       )}
 
       {offerBackfill && isStockOut && (
-        <div className="scan-link-offer">
+        <div className="scan-link-offer" role="region" aria-labelledby={`backfill-offer-${entry.id}`}>
+          <p id={`backfill-offer-${entry.id}`} className="scan-link-offer-title">{NOTHING_ON_HAND}</p>
           <div className="scan-link-offer-actions">
             <Button
               size="compact-xs"

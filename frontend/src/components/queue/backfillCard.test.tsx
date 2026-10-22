@@ -50,6 +50,12 @@ interface Outcome {
   nameDisabled?: boolean;
   suggestions?: { itemId: string; productId: string; name: string; onHand: number }[];
   readsSuggestions?: boolean;
+  openingSuggestions?: { itemId: string; productId: string; name: string; onHand: number }[];
+  suggestionsFail?: boolean;
+  createStatus?: number;
+  createBody?: unknown;
+  undoStatus?: number;
+  undoError?: string;
 }
 
 const noneOnHand = {
@@ -294,7 +300,7 @@ const outcomes: Outcome[] = [
     status: 400,
     body: { error: 'Choose one change at a time.', code: 'conflicting_fields' },
     typedName: 'Sour cream',
-    visible: ['Choose one change at a time.', 'Which item is this?', 'Add as a new item'],
+    visible: ['Choose one change at a time.', 'Which item is this?', 'Add as a new item', 'Sour cream'],
     absent: ['Add it and take it out'],
     toast: 'Choose one change at a time.',
   },
@@ -355,6 +361,66 @@ const outcomes: Outcome[] = [
     toast: 'Choose stock in or stock out first.',
     readsSuggestions: true,
   },
+  {
+    name: 'patch link_target_gone drops the created product when suggestions cannot reload',
+    kind: 'patch',
+    status: 409,
+    body: { error: "That item isn't available anymore. Pick another.", code: 'link_target_gone' },
+    openingSuggestions: [
+      { itemId: 'item-new', productId: 'prod-new', name: 'Fresh Cream', onHand: 0 },
+      { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
+    ],
+    suggestionsFail: true,
+    typedName: 'Sour cream',
+    visible: ["That item isn't available anymore. Pick another.", 'Kept Oats', 'Which item is this?'],
+    absent: ['Fresh Cream', 'Add it and take it out'],
+    toast: "That item isn't available anymore. Pick another.",
+    readsSuggestions: true,
+  },
+  {
+    name: 'a create rejected as link_target_gone does not drop a suggestion that has no product',
+    kind: 'patch',
+    createStatus: 409,
+    createBody: { error: "That item isn't available anymore. Pick another.", code: 'link_target_gone' },
+    openingSuggestions: [
+      { itemId: 'item-blank', productId: '', name: 'Unnamed', onHand: 0 },
+      { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 },
+    ],
+    suggestionsFail: true,
+    typedName: 'Sour cream',
+    visible: ["That item isn't available anymore. Pick another.", 'Unnamed', 'Kept Oats'],
+    absent: ['Add it and take it out'],
+    toast: "That item isn't available anymore. Pick another.",
+    readsSuggestions: true,
+  },
+  {
+    name: 'a failed undo shows the server sentence',
+    kind: 'backfill',
+    status: 200,
+    body: { removed: 1, backfilled: 1, itemId: 'item-sour' },
+    visible: ['Added and taken out.'],
+    absent: [],
+    toast: 'Added and taken out.',
+    undoId: 'move-backfill',
+    undoStatus: 400,
+    undoError: 'This scan was already handled.',
+    refreshed: true,
+    confirm: true,
+  },
+  {
+    name: 'a failed undo with no sentence uses the shared fallback',
+    kind: 'backfill',
+    status: 200,
+    body: { removed: 1, backfilled: 1, itemId: 'item-sour' },
+    visible: ['Added and taken out.'],
+    absent: [],
+    toast: 'Added and taken out.',
+    undoId: 'move-backfill',
+    undoStatus: 500,
+    undoError: SERVER_ERROR_FALLBACK,
+    refreshed: true,
+    confirm: true,
+  },
 ];
 
 const json = (body: unknown, status = 200) =>
@@ -388,7 +454,7 @@ describe('backfill card', () => {
           return Promise.resolve(json({
             error: 'barcode is not linked',
             code: 'no_item',
-            suggestions: [{ itemId: 'item-linked', productId: 'prod-linked', name: 'Sour cream', onHand: 0 }],
+            suggestions: row.openingSuggestions ?? [{ itemId: 'item-linked', productId: 'prod-linked', name: 'Sour cream', onHand: 0 }],
           }, 409));
         }
         if (row.kind === 'suggest') {
@@ -406,6 +472,9 @@ describe('backfill card', () => {
         return Promise.resolve(json({ product, source: product === null ? '' : 'global' }));
       }
       if (url === '/api/products' && method === 'POST') {
+        if (row.createStatus !== undefined && row.createStatus >= 400) {
+          return Promise.resolve(json(row.createBody ?? {}, row.createStatus));
+        }
         const written = body as { name: string; category: string; unitOfMeasure: string };
         return Promise.resolve(json({
           id: 'prod-new',
@@ -433,6 +502,7 @@ describe('backfill card', () => {
         }));
       }
       if (url === '/api/scans/scan-1/link-suggestions') {
+        if (row.suggestionsFail) return Promise.reject(new TypeError('Failed to fetch'));
         if (row.kind === 'suggest' && row.status !== undefined && row.status !== 200) {
           return Promise.resolve(json(row.body ?? {}, row.status));
         }
@@ -443,6 +513,10 @@ describe('backfill card', () => {
       }
       if (url === '/api/items/item-sour/history') return Promise.resolve(json(history));
       if (url === '/api/moves/move-backfill' && method === 'DELETE') {
+        if (row.undoStatus !== undefined && row.undoStatus >= 400) {
+          const failure = row.undoStatus >= 500 ? {} : { error: row.undoError, code: 'not_pending' };
+          return Promise.resolve(json(failure, row.undoStatus));
+        }
         return Promise.resolve(json({ ...history, moves: [] }));
       }
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(json([]));
@@ -546,6 +620,10 @@ describe('backfill card', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
       await waitFor(() => {
         expect(calls.some((call) => call.method === 'DELETE' && call.url === `/api/moves/${row.undoId}`)).toBe(true);
+        if (row.undoError !== undefined) {
+          const details = [...document.querySelectorAll('.restock-toast-detail')];
+          expect(details.some((node) => node.textContent === row.undoError)).toBe(true);
+        }
       });
     }
   });

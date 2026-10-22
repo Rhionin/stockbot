@@ -150,16 +150,38 @@ describe('HistoryPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Actions for Stocked in 1/ }));
     expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Undo this stock in' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
+    const added = screen.getByRole('dialog', { name: 'Undo this add and take out?' });
+    expect(within(added).getByText('This removes the added unit and the unit taken out. The pace is recalculated from the remaining history.')).toBeInTheDocument();
+    expect(within(added).queryByText(/leaves the shelf/)).not.toBeInTheDocument();
+    fireEvent.click(within(added).getByRole('button', { name: 'Keep it' }));
 
     fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));
     expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Undo this use' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
+    const used = screen.getByRole('dialog', { name: 'Undo this add and take out?' });
+    expect(within(used).queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
+    expect(within(used).getByRole('button', { name: 'Undo add and take out' })).toBeInTheDocument();
+  });
+
+  it('lists the added row before its use when the response lists the use first', async () => {
+    const at = '2026-10-18T16:40:00.000Z';
+    getItemHistory.mockResolvedValue({
+      ...view,
+      moves: [
+        { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
+        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
+      ],
+    });
+    renderHistory();
+    const rows = await screen.findAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('Added when taking out');
+    expect(rows[1]).toHaveTextContent('scan');
   });
 
   it('shows the locked-count sentence when a save is refused', async () => {
     const sentence = "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead.";
-    setMoveQuantity.mockRejectedValue(Object.assign(new Error(sentence), { code: 'backfill_locked', status: 400 }));
+    setMoveQuantity.mockRejectedValue(Object.assign(new Error(sentence), { code: 'backfill_locked', status: 409 }));
     renderHistory();
     await screen.findByText('Used 1');
     fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));

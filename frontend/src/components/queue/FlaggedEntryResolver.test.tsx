@@ -129,6 +129,8 @@ describe('FlaggedEntryResolver', () => {
         body: JSON.stringify({ productId: 'product-1', status: 'pending' }),
       }),
     );
+    const sequence = fetchMock.mock.calls.map((call) => `${String(call[0])} ${call[1]?.method ?? 'GET'}`);
+    expect(sequence.indexOf('/api/scans/scan-1 PATCH')).toBeLessThan(sequence.indexOf('/api/products/overrides POST'));
   });
 
   it('clears the selected product when the search text changes', async () => {
@@ -225,5 +227,46 @@ describe('FlaggedEntryResolver', () => {
         }),
       }),
     );
+  });
+
+  const goneSentence = "That item isn't available anymore. Pick another.";
+
+  it.each([
+    {
+      name: 'drops a product that is no longer available and does not save the barcode',
+      status: 409,
+      body: { error: goneSentence, code: 'link_target_gone' },
+      sentence: goneSentence,
+    },
+  ])('$name', async (row) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/products' && request?.method === undefined) {
+        return Promise.resolve(jsonResponse([yogurt, milk]));
+      }
+      if (url === '/api/products/overrides') return Promise.resolve(jsonResponse({}));
+      if (url === '/api/scans/scan-1') return Promise.resolve(jsonResponse(row.body, row.status));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderResolver();
+
+    const search = screen.getByRole('combobox', { name: 'Search products' });
+    fireEvent.click(search);
+    fireEvent.click(await screen.findByRole('option', { name: 'Whole Milk — Dairy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use selected product' }));
+
+    expect(await screen.findByText(row.sentence)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/scans/scan-1',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ productId: 'product-1', status: 'pending' }),
+      }),
+    );
+    expect(fetchMock.mock.calls.some((call) => String(call[0]) === '/api/products/overrides')).toBe(false);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Search products' }));
+    expect(screen.queryByRole('option', { name: 'Whole Milk — Dairy' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: 'Greek Yogurt — Dairy' })).toBeInTheDocument();
   });
 });
