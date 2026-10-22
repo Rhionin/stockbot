@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -30,6 +30,12 @@ const NO_MATCHING_PRODUCTS = 'No matching products.';
 export interface QueueScreenProps {
   client: StockbotClient;
   warning: string;
+  focused?: boolean;
+}
+
+function sameQueue(current: Set<string>, next: ScanEntry[]): boolean {
+  if (current.size !== next.length) return false;
+  return next.every((entry) => current.has(entry.id));
 }
 
 interface LinkOfferState {
@@ -78,9 +84,10 @@ function householdRows(rows: InventoryItem[], query: string, excludeProductId: s
     }));
 }
 
-export function QueueScreen({ client, warning }: QueueScreenProps) {
+export function QueueScreen({ client, warning, focused = true }: QueueScreenProps) {
   const insets = useSafeAreaInsets();
   const [entries, setEntries] = useState<ScanEntry[]>([]);
+  const shownIds = useRef(new Set<string>());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -93,7 +100,10 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   const [excluded, setExcluded] = useState<Record<string, string>>({});
 
   const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
+    const changed = !sameQueue(shownIds.current, next);
+    shownIds.current = new Set(next.map((entry) => entry.id));
     setEntries(next);
+    if (changed) setPartialLine('');
     setError(nextError);
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
@@ -129,6 +139,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     Promise.all([client.listPending(), loadHousehold()]).then(([next, rows]) => {
       if (!active) return;
       setHousehold(rows);
+      shownIds.current = new Set(next.map((entry) => entry.id));
       setEntries(next);
       setError('');
       setLoading(false);
@@ -141,6 +152,12 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       active = false;
     };
   }, [client, loadHousehold]);
+
+  const [focusSeen, setFocusSeen] = useState(focused);
+  if (focusSeen !== focused) {
+    setFocusSeen(focused);
+    if (!focused) setPartialLine('');
+  }
 
   function showOffer(id: string, suggestions: PantryLinkSuggestion[], showEmptyLine: boolean) {
     setOffers((current) => ({
@@ -194,6 +211,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
+    setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id);
@@ -217,6 +235,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
+    setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id, productId);
@@ -273,6 +292,7 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
           showEmptyLine: !behavior.hideEmptyMatch,
         };
       }
+      shownIds.current = new Set(pending.map((entry) => entry.id));
       setEntries(pending);
       setNotes(nextNotes);
       setOffers(nextOffers);
@@ -289,6 +309,8 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
   }
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
+  const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
+  const successBanner = error === '' && partialLine !== '' && !failedPending;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 18 }]}>
@@ -300,11 +322,11 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
-          style={error === '' ? styles.successBanner : undefined}
+          style={successBanner ? styles.successBanner : undefined}
         >
           {error !== '' && <Text style={styles.error}>{error}</Text>}
           {partialLine !== '' && (
-            <Text style={error === '' ? styles.bannerBody : styles.partialLine}>{partialLine}</Text>
+            <Text style={successBanner ? styles.bannerBody : styles.partialLine}>{partialLine}</Text>
           )}
         </View>
       )}

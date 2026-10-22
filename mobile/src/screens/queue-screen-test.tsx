@@ -1,5 +1,7 @@
+import type { ReactElement } from 'react';
 import { StyleSheet } from 'react-native';
-import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { BatchCommitResponse } from '../../../frontend/src/api/contract';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
@@ -469,6 +471,138 @@ describe('QueueScreen', () => {
       expect(card.queryByText(wasLine)).toBeNull();
       expect(card.queryByText('Some scans could not be confirmed.')).toBeNull();
     }
+  });
+
+  function framed(ui: ReactElement) {
+    return (
+      <SafeAreaProvider
+        initialMetrics={{
+          insets: { top: 0, right: 0, bottom: 0, left: 0 },
+          frame: { x: 0, y: 0, width: 390, height: 844 },
+        }}
+      >
+        {ui}
+      </SafeAreaProvider>
+    );
+  }
+
+  async function reloadQueue(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const lists = screen.root?.queryAll((node) => node.props.refreshControl != null) ?? [];
+    const refresh = lists[0]?.props.refreshControl?.props?.onRefresh as undefined | (() => Promise<void>);
+    if (refresh === undefined) throw new Error('The queue list has no refresh.');
+    await act(async () => {
+      await refresh();
+    });
+  }
+
+  function expectCleared(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    expect(screen.queryByText(wasLine)).toBeNull();
+    const banner = screen.queryByTestId('batch-banner');
+    if (banner === null) return;
+    const host = StyleSheet.flatten(banner.props.style);
+    const wash = host && typeof host === 'object' && 'backgroundColor' in host ? host.backgroundColor : undefined;
+    expect(wash).not.toBe(colors.successWash);
+  }
+
+  it.each([
+    { label: 'a failed retry', trigger: 'confirm-fail' },
+    { label: 'a successful confirm', trigger: 'confirm-ok' },
+    { label: 'a failed link', trigger: 'link-fail' },
+    { label: 'a successful link', trigger: 'link-ok' },
+    { label: 'a new batch', trigger: 'batch' },
+    { label: 'a removed card', trigger: 'removed' },
+    { label: 'a new scan', trigger: 'arrived' },
+    { label: 'leaving the queue', trigger: 'leave' },
+  ])('clears the partial line on $label', async ({ trigger }) => {
+    const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
+    const secondFailure = batchCard('scan-also', 'Second oil', 'stock_out', 1);
+    const partialCard = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const unresolved = entry({
+      id: 'scan-open',
+      barcode: 'scan-open',
+      direction: 'stock_out',
+      productId: null,
+      product: null,
+    });
+    const linking = trigger === 'link-fail' || trigger === 'link-ok';
+    const cards = linking ? [partialCard, unresolved] : [partialCard, keptFailure, secondFailure];
+    const kept = linking ? [unresolved] : [keptFailure, secondFailure];
+    const arrived = entry({
+      id: 'scan-new',
+      barcode: '555666777888',
+      productId: 'prod-new',
+      product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const after = trigger === 'removed' ? [] : trigger === 'arrived' ? [...kept, arrived] : kept;
+    const batch = batchResponse({
+      updatedCount: cards.length,
+      committedIds: ['scan-batch-partial'],
+      failedIds: kept.map((card) => card.id),
+      failedReasons: kept.map(() => linking ? 'Choose which item this is first.' : 'Nothing on hand to take out.'),
+      failedCodes: kept.map(() => linking ? 'product_unresolved' : 'none_on_hand'),
+      stockOutCounts: { 'scan-batch-partial': partialCount },
+    });
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(cards)
+      .mockResolvedValueOnce(kept)
+      .mockResolvedValue(after);
+    const commitScan = jest.fn(async () => {
+      if (trigger === 'confirm-fail' || trigger === 'link-fail') {
+        throw new ApiError(409, 'Nothing on hand to take out.', 'none_on_hand');
+      }
+      return entry({ status: 'committed' });
+    });
+    const batchCommit = jest.fn()
+      .mockResolvedValueOnce(batch)
+      .mockResolvedValue({
+        updatedCount: kept.length,
+        failedIds: kept.map((card) => card.id),
+        failedReasons: kept.map(() => 'Nothing on hand to take out.'),
+        failedCodes: kept.map(() => 'none_on_hand'),
+      });
+    const api = client({
+      listPending,
+      commitScan,
+      batchCommit,
+      getInventoryList: jest.fn(async () => [
+        householdItem('Tortilla chips', 'prod-scan-batch-partial', 3),
+        householdItem('Kept oil', 'prod-scan-keep', 1),
+        householdItem('Second oil', 'prod-scan-also', 1),
+        householdItem('Oats', 'prod-oats', 2, 'Grain'),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(wasLine)).toBeTruthy();
+    expect(screen.getByText('Some scans could not be confirmed.')).toBeTruthy();
+
+    if (trigger === 'confirm-fail' || trigger === 'confirm-ok') {
+      await fireEvent.press(screen.getByLabelText('Confirm Kept oil'));
+      await waitFor(() => expect(commitScan).toHaveBeenCalled());
+    } else if (trigger === 'link-fail' || trigger === 'link-ok') {
+      await fireEvent(screen.getByLabelText('Search'), 'focus');
+      await fireEvent.press(await screen.findByLabelText('Link Oats'));
+      await waitFor(() => expect(commitScan).toHaveBeenCalled());
+    } else if (trigger === 'batch') {
+      await fireEvent.press(screen.getByLabelText('Confirm all'));
+      await waitFor(() => expect(batchCommit).toHaveBeenCalledTimes(2));
+    } else if (trigger === 'removed' || trigger === 'arrived') {
+      await reloadQueue(screen);
+      await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
+    } else {
+      await screen.rerender(framed(<QueueScreen client={api} warning="" focused={false} />));
+    }
+
+    expectCleared(screen);
+    if (trigger === 'confirm-fail') {
+      expect(screen.getByText('Kept oil')).toBeTruthy();
+      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    }
+    if (trigger === 'link-fail') expect(screen.getByText('Which item is this?')).toBeTruthy();
+    if (trigger === 'arrived') expect(screen.getByText('New rice')).toBeTruthy();
+    if (trigger === 'removed') expect(screen.queryByText('Kept oil')).toBeNull();
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {
