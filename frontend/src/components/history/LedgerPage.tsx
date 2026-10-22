@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
-import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { quantityLocked } from '../../api/contract';
+import { getHouseholdHistory, getInventoryList, setMoveQuantity, undoMove } from '../../api/client';
+import { onHandByProduct, pairUndoCopy, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -59,17 +59,22 @@ export function LedgerPage() {
   const [quantity, setQuantity] = useState('1');
   const [undoing, setUndoing] = useState<LedgerMove | null>(null);
   const [pending, setPending] = useState(false);
+  const [units, setUnits] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(async () => {
       if (!active) return;
       try {
-        const next = await readLedger(direction, query);
+        const [next, list] = await Promise.all([
+          readLedger(direction, query),
+          getInventoryList().catch(() => []),
+        ]);
         if (!active) return;
         setMoves(next.moves);
         setLockMoves(next.lockMoves);
         setSetupAt(next.setupAt);
+        setUnits(onHandByProduct(list));
         setError('');
       } catch (requestError) {
         if (!active) return;
@@ -84,10 +89,14 @@ export function LedgerPage() {
   }, [direction, query]);
 
   const reload = async () => {
-    const next = await readLedger(direction, query);
+    const [next, list] = await Promise.all([
+      readLedger(direction, query),
+      getInventoryList().catch(() => []),
+    ]);
     setMoves(next.moves);
     setLockMoves(next.lockMoves);
     setSetupAt(next.setupAt);
+    setUnits(onHandByProduct(list));
   };
 
   const onInspect = useCallback((day: PulseInspect | null) => {
@@ -131,7 +140,11 @@ export function LedgerPage() {
 
   const now = new Date();
   const groups = groupMovesByDay(orderBackfillPairs(moves ?? []), now);
-  const undo = undoing ? undoCopy(undoing.direction, undoing.quantity, quantityLocked(undoing, lockMoves)) : null;
+  const pair = undoing !== null && quantityLocked(undoing, lockMoves);
+  const pairCopy = pair && undoing !== null
+    ? pairUndoCopy(undoing.productName, units.get(undoing.productId) ?? Number.NaN)
+    : null;
+  const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
   const showEmpty = !loading && error === '' && moves !== null && groups.length === 0;
 
   return (
@@ -247,16 +260,21 @@ export function LedgerPage() {
       <Modal
         opened={undoing !== null}
         onClose={() => { if (!pending) setUndoing(null); }}
-        title={undo?.title ?? 'Undo this move?'}
+        title={pairCopy?.title ?? undo?.title ?? 'Undo this move?'}
         closeButtonProps={{ 'aria-label': 'Close' }}
       >
-        {undo && (
+        {(pairCopy ?? undo) && (
           <Stack gap="sm">
-            <p className="ledger-empty">{undo.body}</p>
+            <p className="ledger-empty">{(pairCopy ?? undo)?.body}</p>
+            {pairCopy !== null && pairCopy.hideLine !== '' && <p className="ledger-empty">{pairCopy.hideLine}</p>}
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
-              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>Keep it</Button>
-              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>{undo.confirm}</Button>
+              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>
+                {pairCopy?.cancel ?? 'Keep it'}
+              </Button>
+              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>
+                {(pairCopy ?? undo)?.confirm}
+              </Button>
             </Group>
           </Stack>
         )}

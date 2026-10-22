@@ -168,19 +168,7 @@ export function deltaName(direction: string, quantity: number): string {
 export function undoCopy(
   direction: string,
   quantity: number,
-  pair = false,
 ): { title: string; body: string; confirm: string } {
-  // Pair wording is provisional until product copy is settled.
-  if (pair) {
-    const both = quantity === 1
-      ? 'This removes the added unit and the unit taken out'
-      : `This removes the ${quantity} units that were added and the ${quantity} units that were taken out`;
-    return {
-      title: 'Undo this add and take out?',
-      body: `${both}. The pace is recalculated from the remaining history.`,
-      confirm: 'Undo add and take out',
-    };
-  }
   if (direction === 'in') {
     const shelf = quantity === 1 ? '1 unit leaves the shelf' : `${quantity} units leave the shelf`;
     return {

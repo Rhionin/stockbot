@@ -3,8 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
-import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { quantityLocked } from '../../api/contract';
+import { getGroupHistory, getInventoryList, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { onHandByProduct, pairUndoCopy, quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
@@ -85,12 +85,17 @@ export function HistoryPage() {
   const [quantity, setQuantity] = useState('1');
   const [undoing, setUndoing] = useState<HistoryMove | null>(null);
   const [pending, setPending] = useState(false);
+  const [units, setUnits] = useState<Map<string, number>>(new Map());
 
   const load = useCallback(async () => {
     setError('');
     try {
       const next = grouped ? await getGroupHistory(subjectId) : await getItemHistory(subjectId);
       setView(next);
+      if (grouped) {
+        const list = await getInventoryList().catch(() => []);
+        setUnits(onHandByProduct(list));
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to load history.');
     } finally {
@@ -141,9 +146,12 @@ export function HistoryPage() {
     }
   };
 
-  const undo = undoing
-    ? undoCopy(undoing.direction, undoing.quantity, quantityLocked(undoing, view?.moves ?? []))
-    : null;
+  const pair = undoing !== null && quantityLocked(undoing, view?.moves ?? []);
+  const onHand = !pair || undoing === null
+    ? Number.NaN
+    : (grouped ? (units.get(undoing.productId) ?? Number.NaN) : (view?.onHand ?? Number.NaN));
+  const pairCopy = pair && undoing !== null ? pairUndoCopy(undoing.productName, onHand) : null;
+  const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
 
   return (
     <Stack className="bin-page history-page" gap="md">
@@ -248,16 +256,21 @@ export function HistoryPage() {
       <Modal
         opened={undoing !== null}
         onClose={() => { if (!pending) setUndoing(null); }}
-        title={undo?.title ?? 'Undo this move?'}
+        title={pairCopy?.title ?? undo?.title ?? 'Undo this move?'}
         closeButtonProps={{ 'aria-label': 'Close' }}
       >
-        {undo && (
+        {(pairCopy ?? undo) && (
           <Stack gap="sm">
-            <p className="history-empty">{undo.body}</p>
+            <p className="history-empty">{(pairCopy ?? undo)?.body}</p>
+            {pairCopy !== null && pairCopy.hideLine !== '' && <p className="history-empty">{pairCopy.hideLine}</p>}
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
-              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>Keep it</Button>
-              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>{undo.confirm}</Button>
+              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>
+                {pairCopy?.cancel ?? 'Keep it'}
+              </Button>
+              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>
+                {(pairCopy ?? undo)?.confirm}
+              </Button>
             </Group>
           </Stack>
         )}

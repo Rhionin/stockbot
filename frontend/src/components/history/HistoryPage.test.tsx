@@ -43,12 +43,14 @@ const view: HistoryView = {
 
 const getItemHistory = vi.fn();
 const getGroupHistory = vi.fn();
+const getInventoryList = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getItemHistory: (...args: unknown[]) => getItemHistory(...args),
   getGroupHistory: (...args: unknown[]) => getGroupHistory(...args),
+  getInventoryList: (...args: unknown[]) => getInventoryList(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
 }));
@@ -68,10 +70,12 @@ describe('HistoryPage', () => {
   beforeEach(() => {
     getItemHistory.mockReset();
     getGroupHistory.mockReset();
+    getInventoryList.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
     getItemHistory.mockResolvedValue(view);
     getGroupHistory.mockResolvedValue({ ...view, kind: 'group', name: 'Beans' });
+    getInventoryList.mockResolvedValue([]);
   });
 
   it('leads with pace and then the recent moves', async () => {
@@ -151,17 +155,38 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Actions for Stocked in 1/ }));
     expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
-    const added = screen.getByRole('dialog', { name: 'Undo this add and take out?' });
-    expect(within(added).getByText('This removes the added unit and the unit taken out. The pace is recalculated from the remaining history.')).toBeInTheDocument();
-    expect(within(added).queryByText(/leaves the shelf/)).not.toBeInTheDocument();
-    fireEvent.click(within(added).getByRole('button', { name: 'Keep it' }));
+    const added = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
+    expect(within(added).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
+    expect(within(added).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    expect(within(added).queryByText(/pace|history|leaves the shelf/)).not.toBeInTheDocument();
+    expect(within(added).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    fireEvent.click(within(added).getByRole('button', { name: 'Cancel' }));
 
     fireEvent.click(screen.getByRole('button', { name: /Actions for Used 1/ }));
     expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
-    const used = screen.getByRole('dialog', { name: 'Undo this add and take out?' });
+    const used = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(used).queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
-    expect(within(used).getByRole('button', { name: 'Undo add and take out' })).toBeInTheDocument();
+    expect(within(used).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+  });
+
+  it('leaves out the hide line when the item still has a live unit', async () => {
+    const at = '2026-10-18T16:40:00.000Z';
+    getItemHistory.mockResolvedValue({
+      ...view,
+      onHand: 2,
+      moves: [
+        { id: 'move-backfill', direction: 'in', quantity: 3, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
+        { id: 'move-out-pair', direction: 'out', quantity: 3, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
+      ],
+    });
+    renderHistory();
+    fireEvent.click(await screen.findByRole('button', { name: /Actions for Stocked in 3/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
+    const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
+    expect(within(dialog).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/hidden from your inventory again/)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
   });
 
   it('lists the added row before its use when the response lists the use first', async () => {

@@ -171,6 +171,32 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
     })
   })
 
+  let listOnHand = false
+  await page.route((url) => url.pathname === '/api/inventory', async (route) => {
+    if (!listOnHand || route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        item: {
+          id: 'item-sour',
+          userId: 'user-1',
+          productId: 'prod-sour',
+          product: { id: 'prod-sour', name: 'Sour cream', category: 'Dairy', unitOfMeasure: 'tub' },
+          targetQuantity: null,
+          createdAt: '2026-10-18T16:40:00.000Z',
+        },
+        instanceCount: 0,
+        nearExpiryCount: 0,
+        expiredCount: 0,
+        needsAttention: false,
+      }]),
+    })
+  })
+
   await page.route((url) => url.pathname === '/api/history', async (route) => {
     await route.fulfill({
       status: 200,
@@ -216,10 +242,20 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await expect.poll(() => seen.undo).toBe('/api/moves/move-backfill')
 
   await page.clock.runFor(6000)
+  listOnHand = true
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
   await expect(page.getByText('Sour cream')).toBeVisible()
   await shoot(page, 'history')
+
+  await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
+  await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
+  const confirm = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
+  await expect(confirm.getByText('This removes both the add and the take-out for Sour cream, as if neither happened.')).toBeVisible()
+  await expect(confirm.getByText('Sour cream will be hidden from your inventory again, since none are on hand.')).toBeVisible()
+  await expect(confirm.getByRole('button', { name: 'Undo', exact: true })).toBeVisible()
+  await expect(confirm.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible()
+  await shoot(page, 'undo-confirm')
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   const pending = await request.get('/api/scans?userId=user-1&status=pending')

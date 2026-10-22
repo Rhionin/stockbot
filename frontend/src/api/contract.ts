@@ -225,6 +225,57 @@ export function readItemId(body: object | null | undefined): string {
 export const CODE_CONFLICTING_FIELDS = 'conflicting_fields';
 export const CODE_BACKFILL_LOCKED = 'backfill_locked';
 
+// Pair undo confirmation, shared with the phone. The stock-in unshelved flag
+// is not on the history or inventory JSON, so the extra line uses the live
+// count the client already has: history onHand, or the inventory list.
+export const PAIR_UNDO_TITLE = 'Undo "Add it and take it out"?';
+export const PAIR_UNDO_CONFIRM = 'Undo';
+export const PAIR_UNDO_CANCEL = 'Cancel';
+
+export function pairUndoBody(itemName: string): string {
+  return `This removes both the add and the take-out for ${itemName}, as if neither happened.`;
+}
+
+export function pairUndoHideLine(itemName: string): string {
+  return `${itemName} will be hidden from your inventory again, since none are on hand.`;
+}
+
+export interface PairUndoCopy {
+  title: string;
+  body: string;
+  hideLine: string;
+  confirm: string;
+  cancel: string;
+}
+
+// onHand is the item's current live units. The pair nets to zero, so 0 means
+// undo leaves none on hand. Any other count omits the hide line.
+export function pairUndoCopy(itemName: string, onHand: number): PairUndoCopy {
+  return {
+    title: PAIR_UNDO_TITLE,
+    body: pairUndoBody(itemName),
+    hideLine: onHand === 0 ? pairUndoHideLine(itemName) : '',
+    confirm: PAIR_UNDO_CONFIRM,
+    cancel: PAIR_UNDO_CANCEL,
+  };
+}
+
+// GET /api/inventory has no top-level onHand. A group member carries onHand.
+// A row without that member uses instanceCount, the live units on the shelf.
+export function onHandByProduct(rows: {
+  item: { productId: string };
+  instanceCount: number;
+  group?: { members: { productId: string; onHand: number }[] };
+}[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (!Array.isArray(rows)) return counts;
+  for (const row of rows) {
+    const member = row.group?.members.find((entry) => entry.productId === row.item.productId);
+    counts.set(row.item.productId, member !== undefined ? member.onHand : row.instanceCount);
+  }
+  return counts;
+}
+
 export function linkSuggestionsPath(id: string): string {
   return `${SCANS_PATH}/${id}/link-suggestions`;
 }

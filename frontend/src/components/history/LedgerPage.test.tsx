@@ -43,11 +43,13 @@ const moves: LedgerMove[] = [
 ];
 
 const getHouseholdHistory = vi.fn();
+const getInventoryList = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getHouseholdHistory: (...args: unknown[]) => getHouseholdHistory(...args),
+  getInventoryList: (...args: unknown[]) => getInventoryList(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
 }));
@@ -79,9 +81,11 @@ describe('LedgerPage', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 14, 16, 0, 0));
     getHouseholdHistory.mockReset();
+    getInventoryList.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
     getHouseholdHistory.mockImplementation(async (filter?: { direction?: string; q?: string }) => filtered(filter));
+    getInventoryList.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -320,6 +324,9 @@ describe('LedgerPage', () => {
       if (filter?.direction === 'out') return { moves: outs };
       return { moves: [backfill, ...outs] };
     });
+    getInventoryList.mockResolvedValue([
+      { item: { productId: 'prod-peas' }, instanceCount: 0 },
+    ]);
     renderLedger();
     await screen.findAllByText('Chickpeas');
     fireEvent.click(screen.getByRole('button', { name: 'Used' }));
@@ -329,14 +336,34 @@ describe('LedgerPage', () => {
     expect(screen.queryByRole('menuitem', { name: 'Change quantity' })).not.toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Undo this use' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
-    expect(screen.getByRole('dialog', { name: 'Undo this add and take out?' })).toHaveTextContent(
-      'This removes the added unit and the unit taken out. The pace is recalculated from the remaining history.',
-    );
-    expect(screen.queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
+    expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/pace|history|goes back on the shelf/)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: /Actions for Milk, 1 used/ }));
     expect(screen.getByRole('menuitem', { name: 'Change quantity' })).toBeInTheDocument();
+  });
+
+  it('leaves out the hide line when inventory still has a live unit', async () => {
+    const at = yesterdayAt.toISOString();
+    getHouseholdHistory.mockResolvedValue({
+      moves: [
+        { id: 'move-bf', direction: 'in', quantity: 2, at, source: 'backfill', productId: 'prod-peas', productName: 'Chickpeas' },
+        { id: 'move-use', direction: 'out', quantity: 2, at, source: 'scan', productId: 'prod-peas', productName: 'Chickpeas' },
+      ],
+    });
+    getInventoryList.mockResolvedValue([
+      { item: { productId: 'prod-peas' }, instanceCount: 2 },
+    ]);
+    renderLedger();
+    fireEvent.click(await screen.findByRole('button', { name: /Actions for Chickpeas, 2 stocked in/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
+    const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
+    expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/hidden from your inventory again/)).not.toBeInTheDocument();
   });
 
   it('lists the added row before its use', async () => {

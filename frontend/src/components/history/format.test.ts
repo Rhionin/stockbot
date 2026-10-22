@@ -100,17 +100,6 @@ describe('history wording', () => {
       confirm: 'Undo this use',
     });
     expect(undoCopy('in', 1).body).toBe('1 unit leaves the shelf. The pace is recalculated from the remaining history.');
-    const pairCopy = {
-      title: 'Undo this add and take out?',
-      body: 'This removes the added unit and the unit taken out. The pace is recalculated from the remaining history.',
-      confirm: 'Undo add and take out',
-    };
-    expect(undoCopy('in', 1, true)).toEqual(pairCopy);
-    expect(undoCopy('out', 1, true)).toEqual(pairCopy);
-    expect(undoCopy('in', 1, true).body).not.toContain('leaves the shelf');
-    expect(undoCopy('out', 2, true).body).toBe(
-      'This removes the 2 units that were added and the 2 units that were taken out. The pace is recalculated from the remaining history.',
-    );
   });
 
   it('keeps the added row immediately before its use', () => {
