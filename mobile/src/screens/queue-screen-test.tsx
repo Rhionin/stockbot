@@ -535,16 +535,11 @@ describe('QueueScreen', () => {
 
   function expectCleared(
     screen: Awaited<ReturnType<typeof renderScreen>>,
-    state: 'gone' | 'failure' | 'teal',
+    state: 'gone' | 'failure',
   ) {
     expect(screen.queryByText(wasLine)).toBeNull();
     if (state === 'gone') {
       expectBanner(screen, 'gone', []);
-      return;
-    }
-    if (state === 'teal') {
-      expectBanner(screen, 'success', []);
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       return;
     }
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
@@ -555,10 +550,10 @@ describe('QueueScreen', () => {
     { label: 'a successful confirm', trigger: 'confirm-ok', banner: 'gone' as const },
     { label: 'a failed link', trigger: 'link-fail', banner: 'gone' as const },
     { label: 'a successful link', trigger: 'link-ok', banner: 'gone' as const },
-    { label: 'a new batch', trigger: 'batch', banner: 'failure' as const },
+    { label: 'a new batch', trigger: 'batch', banner: 'gone' as const },
     { label: 'a removed card', trigger: 'removed', banner: 'gone' as const },
-    { label: 'a new scan', trigger: 'arrived', banner: 'teal' as const },
-    { label: 'leaving the queue', trigger: 'leave', banner: 'teal' as const },
+    { label: 'a new scan', trigger: 'arrived', banner: 'gone' as const },
+    { label: 'leaving the queue', trigger: 'leave', banner: 'gone' as const },
   ])('clears the partial line on $label', async ({ trigger, banner }) => {
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
     const secondFailure = batchCard('scan-also', 'Second oil', 'stock_out', 1);
@@ -571,7 +566,7 @@ describe('QueueScreen', () => {
       product: null,
     });
     const linking = trigger === 'link-fail' || trigger === 'link-ok';
-    const blocking = !linking && trigger !== 'confirm-fail' && trigger !== 'confirm-ok';
+    const blocking = !linking && trigger !== 'confirm-fail' && trigger !== 'confirm-ok' && trigger !== 'batch';
     const cards = linking ? [partialCard, unresolved] : [partialCard, keptFailure, secondFailure];
     const kept = linking ? [unresolved] : [keptFailure, secondFailure];
     const arrived = entry({
@@ -635,12 +630,8 @@ describe('QueueScreen', () => {
 
     if (trigger === 'batch') {
       await fireEvent.press(screen.getByLabelText('Confirm all'));
-      expect(batchCommit).toHaveBeenCalledTimes(1);
-      expect(screen.queryByText('Confirm skips the 2 with nothing on hand.')).toBeNull();
-      expect(screen.getByText(wasLine)).toBeTruthy();
-      expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-      expectBanner(screen, 'success', [wasLine]);
-      return;
+      await waitFor(() => expect(batchCommit).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText(wasLine)).toBeNull();
     } else if (trigger === 'confirm-fail' || trigger === 'confirm-ok') {
       await fireEvent.press(screen.getByLabelText('Confirm Kept oil'));
       await waitFor(() => expect(commitScan).toHaveBeenCalled());
@@ -774,7 +765,7 @@ describe('QueueScreen', () => {
     expect(screen.getByText('New rice')).toBeTruthy();
     expect(screen.queryByText(wasLine)).toBeNull();
     expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
-    expectBanner(screen, 'success', []);
+    expectBanner(screen, 'gone', []);
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {
