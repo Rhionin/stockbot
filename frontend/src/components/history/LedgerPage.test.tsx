@@ -45,11 +45,13 @@ const moves: LedgerMove[] = [
 const getHouseholdHistory = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
+const previewUndo = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getHouseholdHistory: (...args: unknown[]) => getHouseholdHistory(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
+  previewUndo: (...args: unknown[]) => previewUndo(...args),
 }));
 
 const filtered = (filter?: { direction?: string; q?: string }): HistoryLedger => {
@@ -81,6 +83,8 @@ describe('LedgerPage', () => {
     getHouseholdHistory.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
+    previewUndo.mockReset();
+    previewUndo.mockResolvedValue({ effects: [] });
     getHouseholdHistory.mockImplementation(async (filter?: { direction?: string; q?: string }) => filtered(filter));
   });
 
@@ -295,7 +299,6 @@ describe('LedgerPage', () => {
       productId: 'prod-peas',
       productName: 'Chickpeas',
       groupName: 'Legumes',
-      reshelvesOnUndo: true,
     };
     const pairedUse = {
       id: 'move-use',
@@ -321,6 +324,17 @@ describe('LedgerPage', () => {
       if (filter?.direction === 'out') return { moves: outs };
       return { moves: [backfill, ...outs] };
     });
+    previewUndo.mockResolvedValue({
+      effects: [{
+        itemId: 'item-peas',
+        productId: 'prod-peas',
+        name: 'Chickpeas',
+        stockInMoveId: 'move-bf',
+        stockOutMoveId: 'move-use',
+        onHand: 0,
+        reshelvesOnUndo: true,
+      }],
+    });
     renderLedger();
     await screen.findAllByText('Chickpeas');
     fireEvent.click(screen.getByRole('button', { name: 'Used' }));
@@ -332,35 +346,32 @@ describe('LedgerPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
-    expect(within(dialog).getByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    expect(await within(dialog).findByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
     expect(within(dialog).queryByText(/pace|history|goes back on the shelf/)).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
+    expect(previewUndo).toHaveBeenCalledWith('move-bf');
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: /Actions for Milk, 1 used/ }));
     expect(screen.getByRole('menuitem', { name: 'Change quantity' })).toBeInTheDocument();
   });
 
-  const chickpeaLine = 'Chickpeas will be hidden from your inventory again, since none are on hand.';
-
-  it.each([
-    { name: 'true', reshelvesOnUndo: true as boolean | undefined, hide: true },
-    { name: 'false', reshelvesOnUndo: false as boolean | undefined, hide: false },
-    { name: 'absent', reshelvesOnUndo: undefined, hide: false },
-  ])('shows the hide line only when the server says the undo re-shelves ($name)', async ({ reshelvesOnUndo, hide }) => {
+  it('leaves the hide line out when the preview says the undo does not re-shelve', async () => {
     const at = yesterdayAt.toISOString();
+    previewUndo.mockResolvedValue({
+      effects: [{
+        itemId: 'item-peas',
+        productId: 'prod-peas',
+        name: 'Chickpeas',
+        stockInMoveId: 'move-bf',
+        stockOutMoveId: 'move-use',
+        onHand: 0,
+        reshelvesOnUndo: false,
+      }],
+    });
     getHouseholdHistory.mockResolvedValue({
       moves: [
-        {
-          id: 'move-bf',
-          direction: 'in',
-          quantity: 1,
-          at,
-          source: 'backfill',
-          productId: 'prod-peas',
-          productName: 'Chickpeas',
-          ...(reshelvesOnUndo === undefined ? {} : { reshelvesOnUndo }),
-        },
+        { id: 'move-bf', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-peas', productName: 'Chickpeas' },
         { id: 'move-use', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-peas', productName: 'Chickpeas' },
       ],
     });
@@ -369,8 +380,9 @@ describe('LedgerPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
-    if (hide) expect(within(dialog).getByText(chickpeaLine)).toBeInTheDocument();
-    else expect(within(dialog).queryByText(chickpeaLine)).not.toBeInTheDocument();
+    await waitFor(() => expect(previewUndo).toHaveBeenCalledWith('move-bf'));
+    expect(within(dialog).queryByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
   });
 
   it('lists the added row before its use', async () => {

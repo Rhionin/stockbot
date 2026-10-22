@@ -4,11 +4,12 @@ import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairReshelves, pairUndoCopy, quantityLocked } from '../../api/contract';
+import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
 } from './format';
+import { usePairHideLine } from './pairUndoPreview';
 import '../groups/groups.css';
 import './history.css';
 
@@ -142,8 +143,10 @@ export function HistoryPage() {
   };
 
   const pair = undoing !== null && quantityLocked(undoing, view?.moves ?? []);
+  const stockInMoveId = pair && undoing !== null ? pairStockInMoveId(undoing, view?.moves ?? []) : '';
+  const hideLine = usePairHideLine(stockInMoveId);
   const pairCopy = pair && undoing !== null
-    ? pairUndoCopy(undoing.productName, pairReshelves(undoing, view?.moves ?? []) ? true : undefined)
+    ? pairUndoCopy(undoing.productName, hideLine ? true : undefined)
     : null;
   const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
 

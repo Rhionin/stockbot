@@ -246,25 +246,43 @@ export interface PairUndoCopy {
   cancel: string;
 }
 
-// Pending Backend. History and ledger moves do not send this yet.
-// true means undoing this pair re-shelves the item. Absent is not a yes.
-export interface PairUndoMove {
-  reshelvesOnUndo?: boolean;
-  source?: string;
-  at?: string;
-  productId?: string;
+// GET /api/moves/{id}/preview. Read-only. {id} is stockInMoveId or stockOutMoveId.
+export interface UndoPreviewEffect {
+  itemId: string;
+  productId: string;
+  name: string;
+  stockInMoveId?: string;
+  stockOutMoveId?: string;
+  onHand: number;
+  reshelvesOnUndo: boolean;
 }
 
-// True only when this move, or the other half of its pair, says so.
-// false, a missing field, and a failed load all leave the line out.
-export function pairReshelves(move: PairUndoMove, moves: readonly PairUndoMove[] = []): boolean {
-  if (move.reshelvesOnUndo === true) return true;
-  return moves.some((other) => other !== move
-    && other.reshelvesOnUndo === true
-    && other.productId !== undefined
+export interface UndoPreview {
+  effects: UndoPreviewEffect[];
+}
+
+export function undoPreviewPath(id: string): string {
+  return `/api/moves/${id}/preview`;
+}
+
+// The backfill stock-in id. Preview and DELETE both accept either id of the pair.
+export function pairStockInMoveId(
+  move: { id: string; source: string; at: string; productId: string },
+  moves: readonly { id: string; source: string; at: string; productId: string }[],
+): string {
+  if (move.source === BACKFILL_SOURCE) return move.id;
+  const stockIn = moves.find((other) => other.source === BACKFILL_SOURCE
     && other.productId === move.productId
-    && other.at === move.at
-    && (other.source === BACKFILL_SOURCE || move.source === BACKFILL_SOURCE));
+    && other.at === move.at);
+  return stockIn === undefined ? move.id : stockIn.id;
+}
+
+// True only when the effect for this move says the undo re-shelves.
+// A missing preview, a different effect, and false all leave the line out.
+export function previewReshelves(preview: UndoPreview | undefined, moveId: string): boolean {
+  if (preview === undefined) return false;
+  return preview.effects.some((effect) => effect.reshelvesOnUndo === true
+    && (effect.stockInMoveId === moveId || effect.stockOutMoveId === moveId));
 }
 
 export function pairUndoCopy(itemName: string, reshelvesOnUndo: boolean | undefined): PairUndoCopy {

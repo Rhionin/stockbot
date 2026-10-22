@@ -140,8 +140,8 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
     })
   })
 
-  let reshelvesOnUndo: boolean | undefined = true
-  const stockInMove = () => (reshelvesOnUndo === undefined ? historyMove : { ...historyMove, reshelvesOnUndo })
+  let reshelvesOnUndo = true
+  const seenPreview: { path?: string } = {}
 
   await page.route((url) => url.pathname === '/api/items/item-sour/history', async (route) => {
     await route.fulfill({
@@ -153,7 +153,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
         name: 'Sour cream',
         onHand: 0,
         pace: { known: false, daysLeftKnown: false, sparkline: [] },
-        moves: [stockInMove(), { ...historyMove, id: 'move-out', direction: 'out', source: 'scan' }],
+        moves: [historyMove, { ...historyMove, id: 'move-out', direction: 'out', source: 'scan' }],
       }),
     })
   })
@@ -178,7 +178,28 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ moves: [stockInMove()] }),
+      body: JSON.stringify({ moves: [historyMove] }),
+    })
+  })
+
+  // The history rows above are a fixture, so this answers the preview the dialog
+  // requests instead of looking up move-backfill on the server.
+  await page.route((url) => url.pathname === '/api/moves/move-backfill/preview', async (route) => {
+    seenPreview.path = new URL(route.request().url()).pathname
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        effects: [{
+          itemId: 'item-sour',
+          productId: 'prod-sour',
+          name: 'Sour cream',
+          stockInMoveId: 'move-backfill',
+          stockOutMoveId: 'move-out',
+          onHand: 0,
+          reshelvesOnUndo,
+        }],
+      }),
     })
   })
 
@@ -229,6 +250,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const confirm = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
+  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-backfill/preview')
   await expect(confirm.getByText(pairBody)).toBeVisible()
   await expect(confirm.getByText(hideLine)).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Undo', exact: true })).toBeVisible()
@@ -237,15 +259,18 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
 
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(confirm).toBeHidden()
-  reshelvesOnUndo = undefined
+  reshelvesOnUndo = false
+  seenPreview.path = undefined
   await page.getByRole('link', { name: 'Inventory' }).click()
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const plain = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
+  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-backfill/preview')
   await expect(plain.getByText(pairBody)).toBeVisible()
   await expect(plain.getByText(hideLine)).toHaveCount(0)
+  await expect(plain.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled()
   await shoot(page, testInfo, 'undo-confirm-plain')
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })

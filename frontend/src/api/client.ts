@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { linkSuggestionsPath, readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, type BackfillCommitRequest, type BackfillCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse } from './contract';
+import { linkSuggestionsPath, readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, undoPreviewPath, type BackfillCommitRequest, type BackfillCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type UndoPreview } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -344,6 +344,10 @@ export function setMoveQuantity(id: string, quantity: number): Promise<HistoryVi
 
 export function undoMove(id: string): Promise<HistoryView> {
   return apiFetch(`/api/moves/${id}`, { method: 'DELETE' });
+}
+
+export function previewUndo(id: string): Promise<UndoPreview> {
+  return apiFetch(undoPreviewPath(id));
 }
 
 // Exact phrase POST /api/inventory/wipe requires. Kept in sync with

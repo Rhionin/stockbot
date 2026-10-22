@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,12 +45,14 @@ const getItemHistory = vi.fn();
 const getGroupHistory = vi.fn();
 const setMoveQuantity = vi.fn();
 const undoMove = vi.fn();
+const previewUndo = vi.fn();
 
 vi.mock('../../api/client', () => ({
   getItemHistory: (...args: unknown[]) => getItemHistory(...args),
   getGroupHistory: (...args: unknown[]) => getGroupHistory(...args),
   setMoveQuantity: (...args: unknown[]) => setMoveQuantity(...args),
   undoMove: (...args: unknown[]) => undoMove(...args),
+  previewUndo: (...args: unknown[]) => previewUndo(...args),
 }));
 
 const renderHistory = (path = '/inventory/item-1/history') => render(
@@ -70,6 +72,8 @@ describe('HistoryPage', () => {
     getGroupHistory.mockReset();
     setMoveQuantity.mockReset();
     undoMove.mockReset();
+    previewUndo.mockReset();
+    previewUndo.mockResolvedValue({ effects: [] });
     getItemHistory.mockResolvedValue(view);
     getGroupHistory.mockResolvedValue({ ...view, kind: 'group', name: 'Beans' });
   });
@@ -141,9 +145,20 @@ describe('HistoryPage', () => {
       ...view,
       onHand: 0,
       moves: [
-        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans', reshelvesOnUndo: true },
+        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
         { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
       ],
+    });
+    previewUndo.mockResolvedValue({
+      effects: [{
+        itemId: 'item-1',
+        productId: 'prod-1',
+        name: 'Black Beans',
+        stockInMoveId: 'move-backfill',
+        stockOutMoveId: 'move-out-pair',
+        onHand: 0,
+        reshelvesOnUndo: true,
+      }],
     });
     renderHistory();
     expect(await screen.findByText(/Added when taking out/)).toBeInTheDocument();
@@ -153,7 +168,7 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const added = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(added).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
-    expect(within(added).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    expect(await within(added).findByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
     expect(within(added).queryByText(/pace|history|leaves the shelf/)).not.toBeInTheDocument();
     expect(within(added).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     fireEvent.click(within(added).getByRole('button', { name: 'Cancel' }));
@@ -163,32 +178,47 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
     const used = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(used).queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
-    expect(within(used).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
-    expect(within(used).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    expect(await within(used).findByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    expect(within(used).getByRole('button', { name: 'Undo' })).toBeEnabled();
+    expect(previewUndo).toHaveBeenCalledWith('move-backfill');
   });
 
   const hideLine = 'Black Beans will be hidden from your inventory again, since none are on hand.';
+  const pairBody = 'This removes both the add and the take-out for Black Beans, as if neither happened.';
+  const previewEffect = (reshelvesOnUndo: boolean, stockInMoveId = 'move-backfill') => ({
+    effects: [{
+      itemId: 'item-1',
+      productId: 'prod-1',
+      name: 'Black Beans',
+      stockInMoveId,
+      stockOutMoveId: 'move-out-pair',
+      onHand: 0,
+      reshelvesOnUndo,
+    }],
+  });
 
   it.each([
-    { name: 'true', reshelvesOnUndo: true as boolean | undefined, hide: true },
-    { name: 'false', reshelvesOnUndo: false as boolean | undefined, hide: false },
-    { name: 'absent', reshelvesOnUndo: undefined, hide: false },
-  ])('shows the hide line only when the server says the undo re-shelves ($name)', async ({ reshelvesOnUndo, hide }) => {
+    { name: 'true', settle: 'true', hide: true },
+    { name: 'false', settle: 'false', hide: false },
+    { name: 'loading', settle: 'loading', hide: false },
+    { name: '404', settle: '404', hide: false },
+    { name: '409', settle: '409', hide: false },
+    { name: 'network error', settle: 'network', hide: false },
+    { name: 'no matching effect', settle: 'other', hide: false },
+  ])('shows the hide line only when the preview says the undo re-shelves ($name)', async ({ settle, hide }) => {
     const at = '2026-10-18T16:40:00.000Z';
+    if (settle === 'loading') previewUndo.mockReturnValue(new Promise(() => {}));
+    if (settle === '404') previewUndo.mockRejectedValue(new Error('That move is no longer in the history.'));
+    if (settle === '409') previewUndo.mockRejectedValue(new Error('1 of these was already used. Undo that use first.'));
+    if (settle === 'network') previewUndo.mockRejectedValue(new TypeError('Failed to fetch'));
+    if (settle === 'other') previewUndo.mockResolvedValue(previewEffect(true, 'move-other'));
+    if (settle === 'true') previewUndo.mockResolvedValue(previewEffect(true));
+    if (settle === 'false') previewUndo.mockResolvedValue(previewEffect(false));
     getItemHistory.mockResolvedValue({
       ...view,
       onHand: 0,
       moves: [
-        {
-          id: 'move-backfill',
-          direction: 'in',
-          quantity: 1,
-          at,
-          source: 'backfill',
-          productId: 'prod-1',
-          productName: 'Black Beans',
-          ...(reshelvesOnUndo === undefined ? {} : { reshelvesOnUndo }),
-        },
+        { id: 'move-backfill', direction: 'in', quantity: 1, at, source: 'backfill', productId: 'prod-1', productName: 'Black Beans' },
         { id: 'move-out-pair', direction: 'out', quantity: 1, at, source: 'scan', productId: 'prod-1', productName: 'Black Beans' },
       ],
     });
@@ -196,9 +226,19 @@ describe('HistoryPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Actions for Stocked in 1/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
-    expect(within(dialog).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
+    expect(within(dialog).getByText(pairBody)).toBeInTheDocument();
+    await vi.waitFor(() => expect(previewUndo).toHaveBeenCalledWith('move-backfill'));
+    if (settle !== 'loading') {
+      const pending = previewUndo.mock.results.at(-1)?.value as Promise<unknown> | undefined;
+      await act(async () => {
+        await pending?.catch(() => undefined);
+      });
+    }
     if (hide) expect(within(dialog).getByText(hideLine)).toBeInTheDocument();
     else expect(within(dialog).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
+    if (settle === '404') expect(within(dialog).queryByText('That move is no longer in the history.')).not.toBeInTheDocument();
+    if (settle === '409') expect(within(dialog).queryByText('1 of these was already used. Undo that use first.')).not.toBeInTheDocument();
   });
 
   it('leaves the hide line out when history fails to load', async () => {

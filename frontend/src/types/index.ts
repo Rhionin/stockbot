@@ -3,8 +3,6 @@
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
 
-import type { PairUndoMove } from '../api/contract';
-
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 
 export type NetDimension = 'mass' | 'volume';
@@ -192,7 +190,7 @@ export interface HistoryPace {
   sparkline: number[];
 }
 
-export interface HistoryMove extends PairUndoMove {
+export interface HistoryMove {
   id: string;
   direction: 'in' | 'out';
   quantity: number;
@@ -212,7 +210,7 @@ export interface HistoryView {
   moves: HistoryMove[];
 }
 
-export interface LedgerMove extends PairUndoMove {
+export interface LedgerMove {
   id: string;
   direction: 'in' | 'out';
   quantity: number;

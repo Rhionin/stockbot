@@ -3,7 +3,7 @@ import {
   ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairReshelves, pairUndoCopy, quantityLocked } from '../../api/contract';
+import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -12,6 +12,7 @@ import {
 import { PulseChart, type PulseInspect } from './PulseChart';
 import '../groups/groups.css';
 import '../inventory/shelf.css';
+import { usePairHideLine } from './pairUndoPreview';
 import './history.css';
 
 type Direction = 'all' | 'in' | 'out';
@@ -132,8 +133,10 @@ export function LedgerPage() {
   const now = new Date();
   const groups = groupMovesByDay(orderBackfillPairs(moves ?? []), now);
   const pair = undoing !== null && quantityLocked(undoing, lockMoves);
+  const stockInMoveId = pair && undoing !== null ? pairStockInMoveId(undoing, lockMoves) : '';
+  const hideLine = usePairHideLine(stockInMoveId);
   const pairCopy = pair && undoing !== null
-    ? pairUndoCopy(undoing.productName, pairReshelves(undoing, lockMoves) ? true : undefined)
+    ? pairUndoCopy(undoing.productName, hideLine ? true : undefined)
     : null;
   const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
   const showEmpty = !loading && error === '' && moves !== null && groups.length === 0;
