@@ -570,7 +570,7 @@ describe('QueueScreen', () => {
       product: null,
     });
     const linking = trigger === 'link-fail' || trigger === 'link-ok';
-    const blocking = !linking && trigger !== 'confirm-fail' && trigger !== 'confirm-ok';
+    const blocking = !linking && trigger !== 'confirm-fail' && trigger !== 'confirm-ok' && trigger !== 'batch';
     const cards = linking ? [partialCard, unresolved] : [partialCard, keptFailure, secondFailure];
     const kept = linking ? [unresolved] : [keptFailure, secondFailure];
     const arrived = entry({
@@ -629,11 +629,8 @@ describe('QueueScreen', () => {
 
     if (trigger === 'batch') {
       await fireEvent.press(screen.getByLabelText('Confirm all'));
-      expect(batchCommit).toHaveBeenCalledTimes(1);
-      expect(screen.getByText('Confirm skips the 2 with nothing on hand.')).toBeTruthy();
-      expect(screen.getByText(wasLine)).toBeTruthy();
-      expect(screen.getByText('Some scans could not be confirmed.')).toBeTruthy();
-      return;
+      await waitFor(() => expect(batchCommit).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText(wasLine)).toBeNull();
     } else if (trigger === 'confirm-fail' || trigger === 'confirm-ok') {
       await fireEvent.press(screen.getByLabelText('Confirm Kept oil'));
       await waitFor(() => expect(commitScan).toHaveBeenCalled());
@@ -1052,7 +1049,8 @@ describe('QueueScreen', () => {
     const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
     const listPending = jest.fn()
       .mockResolvedValueOnce(stayed ? [chips, failed, other] : [chips, failed])
-      .mockResolvedValueOnce(stayed ? [other] : []);
+      .mockResolvedValueOnce(stayed ? [other] : [])
+      .mockResolvedValue(stayed ? [other] : []);
     const api = client({
       listPending,
       batchCommit: jest.fn(async () => batchResponse({
@@ -1079,6 +1077,11 @@ describe('QueueScreen', () => {
     expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    if (stayed) {
+      await reloadQueue(screen);
+      await waitFor(() => expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull());
+      expectBanner(screen, 'success', [wasLine]);
+    }
   });
 
   it.each([
