@@ -541,10 +541,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
   const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
-  const successBanner = batchHead === '' && !failedPending && (partialLine !== '' || amberBatch);
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
+  const successBanner = batchHead === '' && !failedPending && (partialLine !== '' || (amberBatch && blockedCount > 0));
   const pill = nothingOnHandPill(blockedCount);
-  const skipLine = confirmSkipsNothingOnHand(blockedCount);
+  const confirmAllVisible = entries.length > 1;
+  const confirmAllEnabled = busyId === '' && blockedCount < entries.length;
+  const skipLine = confirmAllVisible && confirmAllEnabled ? confirmSkipsNothingOnHand(blockedCount) : null;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 18 }]}>
@@ -553,7 +555,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
-      {(batchHead !== '' || partialLine !== '' || amberBatch) && (
+      {(batchHead !== '' || partialLine !== '' || (amberBatch && blockedCount > 0)) && (
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
@@ -668,7 +670,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       )}
 
       {skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
-      {entries.length > 1 && (
+      {confirmAllVisible && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"

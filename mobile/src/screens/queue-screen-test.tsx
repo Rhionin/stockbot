@@ -1468,7 +1468,8 @@ describe('QueueScreen', () => {
       expect(card.queryByLabelText(`Confirm ${name}`)).toBeNull();
       expect(card.getByLabelText(`Remove ${name}`)).toBeTruthy();
       expect(screen.getByText('1 with nothing on hand')).toBeTruthy();
-      expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
+      expect(screen.queryByText('Confirm skips the 1 with nothing on hand.')).toBeNull();
+      expect(screen.queryByLabelText('Confirm all')).toBeNull();
     } else {
       expect(card.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
       expect(card.queryByText(NOTHING_ON_HAND_BODY)).toBeNull();
@@ -1651,6 +1652,50 @@ describe('QueueScreen', () => {
     expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
   });
 
+  it('removing the last amber card leaves no empty banner', async () => {
+    const oats = entry({
+      id: 'scan-ok',
+      barcode: '333',
+      direction: 'stock_out',
+      productId: 'prod-ok',
+      product: { id: 'prod-ok', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+    });
+    const rice = entry({
+      id: 'scan-rice',
+      barcode: '222',
+      direction: 'stock_out',
+      productId: 'prod-rice',
+      product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([oats, rice])
+      .mockResolvedValueOnce([rice])
+      .mockResolvedValue([]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 1,
+        committedIds: ['scan-ok'],
+        failedIds: ['scan-rice'],
+        failedReasons: ['nothing on hand'],
+        failedCodes: ['none_on_hand'],
+      })),
+      cancelScan: jest.fn(async () => entry({ id: 'scan-rice', status: 'cancelled' })),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Oats', 'prod-ok', 2, 'Grain'),
+        householdItem('Rice', 'prod-rice', 0),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Remove Rice'));
+
+    expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
+    expectBanner(screen, 'gone', []);
+  });
+
   it('disables confirm all when every card has nothing on hand', async () => {
     const rice = entry({
       id: 'scan-rice',
@@ -1679,8 +1724,47 @@ describe('QueueScreen', () => {
 
     const confirmAll = await screen.findByLabelText('Confirm all');
     expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);
+    expect(screen.getByText('2 with nothing on hand')).toBeTruthy();
+    expect(screen.queryByText('Confirm skips the 2 with nothing on hand.')).toBeNull();
     await fireEvent.press(confirmAll);
     expect(batchCommit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'a single amber card and no Confirm all', cards: 'one' as const },
+    { label: 'every card amber and Confirm all disabled', cards: 'all' as const },
+  ])('hides the skip line for $label', async ({ cards }) => {
+    const rice = entry({
+      id: 'scan-rice',
+      barcode: '222',
+      direction: 'stock_out',
+      productId: 'prod-rice',
+      product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
+    const tea = entry({
+      id: 'scan-tea',
+      barcode: '333',
+      direction: 'stock_out',
+      productId: 'prod-tea',
+      product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
+    });
+    const api = client({
+      listPending: jest.fn(async () => (cards === 'one' ? [rice] : [rice, tea])),
+      getInventoryList: jest.fn(async () => [
+        householdItem('Rice', 'prod-rice', 0),
+        householdItem('Tea', 'prod-tea', 0),
+      ]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    expect(await screen.findByText(cards === 'one' ? '1 with nothing on hand' : '2 with nothing on hand')).toBeTruthy();
+    expect(screen.queryByText(/Confirm skips the /)).toBeNull();
+    if (cards === 'one') {
+      expect(screen.queryByLabelText('Confirm all')).toBeNull();
+      return;
+    }
+    const confirmAll = screen.getByLabelText('Confirm all');
+    expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);
   });
 
   it('a failed none_on_hand card turns amber and the banner is not red because of it', async () => {
