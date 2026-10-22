@@ -9,11 +9,11 @@ import (
 )
 
 // bootGate answers while the database is still migrating. A browser page
-// load gets a short HTML notice. API clients, including /health, get
-// 503 {"status":"migrating"}. GET /api/build reports this binary. use swaps
-// in the real handler when migrations finish. main listens with this gate
-// before it runs migrations, so a deploy can tell "still migrating" from
-// "process is dead".
+// load gets a short HTML notice. /health does too when Accept lists
+// text/html; any other Accept on /health is 503 {"status":"migrating"}.
+// GET /api/build reports this binary. use swaps in the real handler when
+// migrations finish. main listens with this gate before it runs migrations,
+// so a deploy can tell "still migrating" from "process is dead".
 type bootGate struct {
 	mu    sync.RWMutex
 	ready http.Handler
