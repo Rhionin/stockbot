@@ -11,11 +11,12 @@ import (
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 )
 
-// Colors are the locked mark and stock tokens, copied as written:
-// #0d9488 and #f59e0b from frontend/src/theme.ts (teal and amber shade 6)
-// and frontend/src/index.css (--accent, --stock-full, --stock-low).
-// Ink #08060d and paper #fff are --text-h and --bg on that sheet.
-// Amber is the attention color, so the page does not look like a failure.
+// Colors are copied from the web theme. Light paper #fff and ink #08060d
+// are --bg and --text-h in frontend/src/index.css. The bar is the locked
+// mark #0d9488 (theme.ts teal shade 6, --accent, --stock-full). The tick
+// is attention amber #f59e0b (amber shade 6, --stock-low). Dark mode uses
+// the same sheet: paper #16171d (--bg under prefers-color-scheme: dark)
+// and ink #f3f4f6 (--text-h under data-mantine-color-scheme='dark').
 var migratingPage = template.Must(template.New("migrating").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -28,38 +29,55 @@ var migratingPage = template.Must(template.New("migrating").Parse(`<!DOCTYPE htm
   body {
     margin: 0;
     min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
     background: #fff;
     color: #08060d;
-    font: 1.125rem/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
+    font: 1.125rem/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
   }
   body::before {
     content: "";
     display: block;
+    flex: none;
     height: 0.875rem;
     background: #0d9488;
   }
   main {
-    min-height: calc(100vh - 0.875rem);
+    flex: 1;
     display: flex;
     align-items: center;
+    justify-content: center;
     box-sizing: border-box;
-    padding: 2.5rem 1.5rem 3.5rem;
+    padding: 2.5rem 1.5rem;
   }
   h1 {
-    max-width: 11.5em;
+    max-width: 30rem;
     margin: 0;
-    font-size: 1.75rem;
+    text-align: center;
+    font-size: 1.625rem;
     font-weight: 600;
-    letter-spacing: -0.025em;
-    line-height: 1.2;
+    letter-spacing: -0.02em;
+    line-height: 1.35;
   }
   h1::after {
     content: "";
     display: block;
     width: 3.25rem;
     height: 0.35rem;
-    margin-top: 1.15rem;
+    margin: 1.15rem auto 0;
     background: #f59e0b;
+  }
+  @media (max-width: 480px) {
+    main { padding: 2rem 1.25rem; }
+    h1 { font-size: 1.375rem; }
+  }
+  @media (prefers-color-scheme: dark) {
+    html { color-scheme: dark; }
+    body {
+      background: #16171d;
+      color: #f3f4f6;
+    }
   }
 </style>
 </head>
