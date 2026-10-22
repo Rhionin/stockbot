@@ -458,14 +458,17 @@ func TestStockOutRemovesUnitCount(t *testing.T) {
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-tie-stock", "Tie Stock")
 				when := soon
+				// The earlier-acquired dated unit has the larger id, and the
+				// later-acquired one is inserted first. Dropping the
+				// acquired-at sort would remove inst-dated-a-late by id.
 				stockShelf(env, "item-tie-stock", "user-1", "prod-tie-stock", []shelfUnit{
 					{"inst-undated-early", nil},
-					{"inst-dated-late", &when},
-					{"inst-dated-early", &when},
+					{"inst-dated-a-late", &when},
+					{"inst-dated-z-early", &when},
 				})
 				setStockedAt(env, "inst-undated-early", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
-				setStockedAt(env, "inst-dated-late", time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC))
-				setStockedAt(env, "inst-dated-early", time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-dated-a-late", time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC))
+				setStockedAt(env, "inst-dated-z-early", time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))
 				insertPendingScanUnits(env, "scan-tie-stock", "prod-tie-stock", scan.StockOut, 1)
 			},
 			httpExchange: httpExchange{
@@ -482,7 +485,7 @@ func TestStockOutRemovesUnitCount(t *testing.T) {
 				path:           "/api/inventory/item-tie-stock/instances",
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$[0].id", value: "inst-dated-late"},
+					{path: "$[0].id", value: "inst-dated-a-late"},
 					{path: "$[1].id", value: "inst-undated-early"},
 					{path: "$[2]", absent: true},
 				},

@@ -37,11 +37,12 @@ var (
 // (if set).
 //
 // This function handles the complete stock-in flow:
-// 1. Ensures an item exists for the user+product combination
-// 2. Creates N item instances with the scan entry's timestamps
-// 3. Marks the scan entry as committed
+// 1. Claims the scan while it is still pending
+// 2. Ensures an item exists for the user+product combination
+// 3. Creates N item instances with the scan entry's timestamps
 //
 // All operations are performed within a transaction to ensure atomicity.
+// A scan another commit already took returns ErrNotPending and adds nothing.
 func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	if scanEntry.Direction == nil || *scanEntry.Direction != StockIn {
 		return fmt.Errorf("scan entry direction must be stock_in, got %v", scanEntry.Direction)
@@ -61,6 +62,10 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	defer tx.Rollback()
 
+	if err := claimPendingScan(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
+		return err
+	}
+
 	itemID, err := r.findOrCreateItem(ctx, tx, scanEntry.UserID, *scanEntry.ProductID)
 	if err != nil {
 		return fmt.Errorf("find/create item: %w", err)
@@ -75,16 +80,6 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	scanID := scanEntry.ID
 	if _, err := r.recordStockInTx(ctx, tx, itemID, *scanEntry.ProductID, scanEntry.ScannedAt, scanEntry.ExpiresAt, units, "scan", &scanID); err != nil {
 		return err
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		UPDATE scan_entries 
-		SET status = ?, committed_at = ?
-		WHERE id = ?`,
-		string(Committed), r.now(), scanEntry.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -520,6 +515,42 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 	return itemID, nil
 }
 
+// claimPendingScan marks the scan committed only while it is still pending.
+// Zero rows means another commit already took it. The caller rolls the
+// transaction back, so this attempt adds or removes no stock.
+func claimPendingScan(ctx context.Context, tx *sql.Tx, id string, committedAt time.Time, linkProductID string) error {
+	var (
+		res sql.Result
+		err error
+	)
+	if linkProductID != "" {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET product_id = ?, status = ?, committed_at = ?
+			WHERE id = ? AND status = 'pending'`,
+			linkProductID, string(Committed), committedAt, id,
+		)
+	} else {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET status = ?, committed_at = ?
+			WHERE id = ? AND status = 'pending'`,
+			string(Committed), committedAt, id,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	if n == 0 {
+		return ErrNotPending
+	}
+	return nil
+}
+
 // CommitStockOut commits a stock-out scan entry by removing up to its unit
 // count and marking the scan entry as committed. The returned count is how
 // many units left the shelf. When fewer than the unit count are on hand and
@@ -540,7 +571,9 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // CommitStockOutLink is the explicit choice that adds the scanned barcode
 // and decrements that product. Nothing is linked on its own.
 //
-// All of the units leave in one transaction.
+// All of the units leave in one transaction. The scan is claimed while it is
+// still pending, before any unit is removed. A second commit of that scan
+// returns ErrNotPending and leaves the shelf unchanged.
 func (r *Queue) CommitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string) (int, error) {
 	return r.commitStockOut(ctx, scanEntry, instanceID, "")
 }
@@ -606,6 +639,10 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		return 0, fmt.Errorf("find item: %w", err)
 	}
 
+	if err := claimPendingScan(ctx, tx, scanEntry.ID, time.Now().UTC(), linkProductID); err != nil {
+		return 0, err
+	}
+
 	if linkProductID != "" {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO barcodes (barcode, product_id, source, user_id)
@@ -622,25 +659,6 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	removed, err := r.removeStockOutUnitsTx(ctx, tx, itemID, instanceID, scanEntry.UnitCount, scanEntry.ScannedAt, &scanID)
 	if err != nil {
 		return 0, err
-	}
-
-	if linkProductID != "" {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET product_id = ?, status = ?, committed_at = ?
-			WHERE id = ?`,
-			linkProductID, string(Committed), time.Now().UTC(), scanEntry.ID,
-		)
-	} else {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET status = ?, committed_at = ?
-			WHERE id = ?`,
-			string(Committed), time.Now().UTC(), scanEntry.ID,
-		)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("update scan entry: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
