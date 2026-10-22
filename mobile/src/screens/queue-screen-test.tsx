@@ -677,18 +677,25 @@ describe('QueueScreen', () => {
     expect(screen.getByText('Batch In')).toBeTruthy();
   });
 
-  // Held for release review. Same-card pull-to-refresh currently clears the
-  // failure sentence and leaves this line as plain ink text on an unstyled
-  // banner. It should stay under that sentence, and the banner must not turn teal.
-  it.skip('pull to refresh with the same cards keeps the partial line inside the failure banner', async () => {
+  it.each([
+    { label: 'the same failed card', refresh: 'same' },
+    { label: 'different cards', refresh: 'different' },
+  ])('pull to refresh with $label', async ({ refresh }) => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+    const arrived = entry({
+      id: 'scan-new',
+      barcode: '555666777888',
+      productId: 'prod-new',
+      product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
+    });
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
       failed,
     ];
     const listPending = jest.fn()
       .mockResolvedValueOnce(cards)
-      .mockResolvedValue([failed]);
+      .mockResolvedValueOnce([failed])
+      .mockResolvedValue(refresh === 'same' ? [failed] : [failed, arrived]);
     const api = client({
       listPending,
       batchCommit: jest.fn(async () => batchResponse({
@@ -708,9 +715,17 @@ describe('QueueScreen', () => {
 
     await reloadQueue(screen);
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
-    expect(screen.getAllByText(wasLine)).toHaveLength(1);
     expect(screen.getByText('Batch Empty')).toBeTruthy();
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    if (refresh === 'same') {
+      expect(screen.getAllByText(wasLine)).toHaveLength(1);
+      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      return;
+    }
+    expect(screen.getByText('New rice')).toBeTruthy();
+    expect(screen.queryByText(wasLine)).toBeNull();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'gone', []);
   });
 
   it('none on hand keeps the scan and shows the server sentence', async () => {

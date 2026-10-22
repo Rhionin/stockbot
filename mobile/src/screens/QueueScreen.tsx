@@ -104,7 +104,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     shownIds.current = new Set(next.map((entry) => entry.id));
     setEntries(next);
     if (changed) setPartialLine('');
-    setError(nextError);
+    // Same cards are not a queue change. Replacing the mixed-batch sentence
+    // here left the partial line as plain text, outside the failure banner.
+    setError((current) => (
+      !changed && nextError === '' && current === BATCH_FAILURE_FALLBACK ? current : nextError
+    ));
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
