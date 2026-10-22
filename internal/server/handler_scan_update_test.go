@@ -156,6 +156,87 @@ func TestScanUpdateRefusesStatusChangeOnCancelledScan(t *testing.T) {
 	})
 }
 
+func TestScanUpdateNotOpenCopy(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "409 uses the handled sentence",
+			setup: func(env testEnv) {
+				seedClosedScanProducts(env)
+				insertClosedScan(env, "scan-closed", scan.Committed)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-closed",
+				body:           `{"status":"cancelled"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "This scan was already handled."},
+					{path: "$.code", value: "not_open"},
+				},
+			},
+		},
+	})
+}
+
+func TestScanUpdateEmptyBodyOnClosedScan(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "empty body on a committed scan",
+			setup: func(env testEnv) {
+				seedClosedScanProducts(env)
+				insertClosedScan(env, "scan-closed", scan.Committed)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-closed",
+				body:           `{}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.id", value: "scan-closed"},
+					{path: "$.status", value: "committed"},
+					{path: "$.unitCount", value: float64(2)},
+					{path: "$.direction", value: "stock_in"},
+					{path: "$.productId", value: "prod-milk"},
+					{path: "$.expiresAt", value: nil},
+				},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans/history",
+				query:          map[string]string{"userId": "user-1"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-closed"},
+					{path: "$[0].status", value: "committed"},
+					{path: "$[0].unitCount", value: float64(2)},
+				},
+			}),
+		},
+		{
+			name: "empty body on a cancelled scan",
+			setup: func(env testEnv) {
+				seedClosedScanProducts(env)
+				insertClosedScan(env, "scan-closed", scan.Cancelled)
+			},
+			httpExchange: httpExchange{
+				method:         "PATCH",
+				path:           "/api/scans/scan-closed",
+				body:           `{}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.id", value: "scan-closed"},
+					{path: "$.status", value: "cancelled"},
+					{path: "$.unitCount", value: float64(2)},
+					{path: "$.direction", value: "stock_in"},
+					{path: "$.productId", value: "prod-milk"},
+					{path: "$.expiresAt", value: nil},
+				},
+			},
+			afterRequest: exchanges(cancelledScanUnchanged()),
+		},
+	})
+}
+
 func TestScanUpdateMissingScanIsNotFound(t *testing.T) {
 	runHandlerTests(t, []handlerTestCase{
 		{

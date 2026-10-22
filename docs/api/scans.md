@@ -20,7 +20,7 @@ A scan is open when its status is `pending`, `flagged`, or `qr`. Cancelling one 
 
 Every change is one conditional update: the row is written only when its current status is still open (`pending`, `flagged`, or `qr`). That includes a body that changes `direction`, `unitCount`, `expiresAt`, or `productId` and does not mention `status`. A commit that wins the race is not overwritten, and neither is the stock move that commit recorded.
 
-`committed` and `cancelled` are not open. Changing any of those fields on either one is `409`:
+Any change, including status, to a committed or cancelled scan returns `409` `not_open`:
 
 ```json
 {
@@ -30,6 +30,8 @@ Every change is one conditional update: the row is written only when its current
 ```
 
 Nothing is written. A committed scan stays on `GET /api/scans/history` with its stock move unchanged. A cancelled scan stays cancelled.
+
+An empty body `{}` on a closed scan returns `200` with no change.
 
 A scan id that does not exist is `404` with `"error": "scan entry not found"`.
 
