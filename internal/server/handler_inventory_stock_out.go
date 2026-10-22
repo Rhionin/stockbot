@@ -19,7 +19,7 @@ type inventoryStockOutPathParams struct {
 }
 
 func (h *InventoryStockOutHandler) Handle(req Request[struct{}, inventoryStockOutPathParams]) (struct{}, error) {
-	err := h.Queue.StockOut(req.Context, req.PathParams.ItemID, time.Now())
+	err := h.Queue.StockOut(req.Context, req.PathParams.ItemID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, scan.ErrNoneOnHand) {
 			return struct{}{}, Conflict("There is nothing on hand.")

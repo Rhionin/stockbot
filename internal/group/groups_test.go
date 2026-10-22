@@ -16,7 +16,7 @@ import (
 
 func newTestGroups(t *testing.T) (*Groups, *product.Catalog, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -188,6 +188,31 @@ func TestFavorVarietyAndNoRestockRoundTrip(t *testing.T) {
 		if member.NoRestock {
 			t.Fatalf("still marked %+v", member)
 		}
+	}
+}
+
+func TestParseDBTimeDropsMonotonicSuffix(t *testing.T) {
+	groups, catalog, db := newTestGroups(t)
+	ctx := context.Background()
+	mustProduct(t, catalog, "p1", "Oats")
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-1', 'user-1', 'p1')`); err != nil {
+		t.Fatal(err)
+	}
+	const raw = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
+	if _, err := db.Exec(`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c1', 'item-1', ?)`, raw); err != nil {
+		t.Fatal(err)
+	}
+	view, err := groups.Create(ctx, "Oats", []string{"p1"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := groups.Get(ctx, view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 10, 17, 18, 55, 19, 32067103, time.UTC)
+	if len(got.Members) != 1 || got.Members[0].LastConsumedAt.IsZero() || !got.Members[0].LastConsumedAt.Equal(want) {
+		t.Fatalf("last used = %+v, want %s", got.Members, want)
 	}
 }
 

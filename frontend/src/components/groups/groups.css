@@ -70,6 +70,15 @@
   color: var(--suggestion-danger);
 }
 
+/* The default unchecked box is about 1.4:1 on the page. UI components need 3:1. */
+.suggestion-member .mantine-Checkbox-input:not(:checked) {
+  border-color: var(--mantine-color-gray-7);
+}
+
+:where([data-mantine-color-scheme='dark']) .suggestion-member .mantine-Checkbox-input:not(:checked) {
+  border-color: var(--mantine-color-gray-3);
+}
+
 .bin-page .suggestion-member .suggestion-name {
   color: inherit !important;
 }
@@ -238,6 +247,8 @@
 }
 
 .seesaw {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -251,15 +262,21 @@
 
 .seesaw-row {
   display: grid;
-  grid-template-columns: auto minmax(7.5rem, 1fr) auto;
+  /* The beam gives up width before either pill. A 7.5rem floor pushed
+     "3 mo default" past the phone column. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--mantine-spacing-sm);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .seesaw-end {
+  position: relative;
   display: flex;
   align-items: center;
-  min-width: 0;
+  min-width: max-content;
 }
 
 .seesaw-pill {
@@ -302,6 +319,18 @@
   font-size: var(--mantine-font-size-xs);
   font-weight: 500;
   letter-spacing: 0;
+}
+
+.seesaw-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .seesaw-beam {
@@ -582,12 +611,14 @@
 .bin-chip:hover,
 .bin-chip:active,
 .bin-chip:focus {
+  flex: none;
   font: inherit;
   color: var(--bin-ink);
   background: transparent;
   cursor: pointer;
   text-decoration: none;
   line-height: 1.3;
+  white-space: nowrap;
   padding: 0.2rem 0.45rem;
   border-radius: var(--mantine-radius-sm);
 }

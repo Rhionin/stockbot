@@ -13,9 +13,10 @@
 
 .shelf-filters {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: var(--mantine-spacing-xs);
-  overflow-x: auto;
+  max-width: 100%;
+  min-width: 0;
   padding-bottom: var(--mantine-spacing-xs);
 }
 

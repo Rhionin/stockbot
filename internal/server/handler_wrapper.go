@@ -95,7 +95,7 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 
 		resp, err := fn(req)
 		if err != nil {
-			writeHTTPError(w, httpStatusFromError(err), err)
+			writeStatusError(r, w, httpStatusFromError(err), err)
 			return
 		}
 
@@ -154,11 +154,20 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // detail in the server log and returns a fixed sentence, so a database or
 // upstream message is not part of the HTTP body.
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeHTTPError(w, status, errors.New(message))
+	writeStatusError(nil, w, status, errors.New(message))
 }
 
 // writeHTTPError writes a JSON error. A 409 can include a code, a member list, and suggestions.
 func writeHTTPError(w http.ResponseWriter, status int, err error) {
+	writeStatusError(nil, w, status, err)
+}
+
+// writeStatusError writes a JSON error. A 5xx is also reported, with the
+// request when one is available. The client still receives a fixed sentence.
+func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
+	if status >= 500 {
+		reportServerError(r, err)
+	}
 	message := ""
 	if err != nil {
 		message = err.Error()
@@ -180,7 +189,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 		}
 	}
 	if status >= 500 {
-		log.Printf("request failed: %s", message)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("request failed: %s", message)
+		}
 		message = "Something went wrong. Please try again."
 		extra = false
 	}

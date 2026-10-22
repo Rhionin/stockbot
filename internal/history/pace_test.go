@@ -68,6 +68,14 @@ func TestPaceFromUses(t *testing.T) {
 			sparkSum:  2,
 		},
 		{
+			name:   "use order does not change the pace",
+			onHand: 4,
+			uses: []time.Time{
+				now.Add(-1 * day), now.Add(-10 * day), now.Add(-30 * day), now.Add(-20 * day),
+			},
+			known: true, days: 7.5, left: 30, leftKnown: true, sparkSum: 3,
+		},
+		{
 			name: "steady when the rate matches",
 			uses: []time.Time{
 				now.Add(-50 * day), now.Add(-40 * day), now.Add(-35 * day), now.Add(-31 * day),

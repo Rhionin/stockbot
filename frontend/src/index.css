@@ -37,7 +37,6 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --text: #9ca3af;
-    --text-h: #f3f4f6;
     --bg: #16171d;
     --border: #2e303a;
     --code-bg: #1f2028;
@@ -54,7 +53,14 @@
   }
 }
 
+/* Headings follow the app theme. The OS media query is the same specificity,
+   so these later rules win once Mantine has set its scheme attribute. */
+[data-mantine-color-scheme='light'] {
+  --text-h: #08060d;
+}
+
 [data-mantine-color-scheme='dark'] {
+  --text-h: #f3f4f6;
   --stock-full-ink: #5eead4;
   --stock-low-ink: #fcd34d;
   --stock-out-ink: #fca5a5;
@@ -62,6 +68,10 @@
 
 [data-mantine-color-scheme='dark'] .scan-link-offer {
   background: rgba(239, 68, 68, 0.16);
+}
+
+.cart-reset-note {
+  color: var(--mantine-color-dimmed);
 }
 
 .stock-note--full {
@@ -91,7 +101,9 @@ body {
 h2 {
   font-family: var(--heading);
   font-weight: 600;
-  color: var(--text-h);
+  /* App scheme, not the OS media query. Otherwise a dark heading paints on a
+     light page (and the reverse) when the two schemes disagree. */
+  color: var(--mantine-color-text);
   font-size: 18px;
   line-height: 1.2;
   margin: 0 0 4px;
@@ -179,11 +191,11 @@ code {
 }
 
 .scan-direction-hint--stock_in {
-  color: var(--mantine-color-blue-7);
+  color: var(--mantine-color-blue-text);
 }
 
 .scan-direction-hint--stock_out {
-  color: var(--mantine-color-orange-7);
+  color: var(--mantine-color-orange-text);
 }
 
 /* "Mode: stock_…" stays available to queue drivers. It is not a control. */
@@ -251,7 +263,7 @@ code {
 }
 
 .scan-status--off {
-  color: var(--mantine-color-red-filled);
+  color: var(--mantine-color-red-text);
 }
 
 /* Device scan alerts. The title and scope use the same label and description

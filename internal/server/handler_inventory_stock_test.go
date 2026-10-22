@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,6 +205,45 @@ func TestInventoryStockMatchesScanLedger(t *testing.T) {
 	}
 
 	runHandlerTests(t, tests)
+}
+
+func TestManualStockOutLeavesGroupAndShoppingFillReadable(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{{
+		name: "group detail and shopping fill succeed after a manual stock-out",
+		setup: func(env testEnv) {
+			finishOpening(env)
+			seedShelfItem(env, "prod-oats", "Oats", "item-oats")
+			insertHeldInstance(env, "inst-oats", "item-oats", time.Time{})
+			insertGroup(env, "group-oats", "Oats")
+			insertMember(env, "group-oats", "prod-oats")
+		},
+		httpExchange: httpExchange{
+			method:         "POST",
+			path:           "/api/inventory/item-oats/stock-out",
+			expectedStatus: http.StatusOK,
+		},
+		afterRequest: func(env testEnv) {
+			var at string
+			if err := env.DB.QueryRow(`SELECT CAST(at AS TEXT) FROM stock_moves WHERE item_id = ?`, "item-oats").Scan(&at); err != nil {
+				env.T.Fatalf("stock_moves.at: %v", err)
+			}
+			if strings.Contains(at, "m=") {
+				env.T.Fatalf("stock_moves.at = %q", at)
+			}
+			exchanges(
+				httpExchange{
+					method:         http.MethodGet,
+					path:           "/api/groups/group-oats",
+					expectedStatus: http.StatusOK,
+				},
+				httpExchange{
+					method:         http.MethodPost,
+					path:           "/api/shopping-list/fill",
+					expectedStatus: http.StatusOK,
+				},
+			)(env)
+		},
+	}})
 }
 
 type heldUnit struct {

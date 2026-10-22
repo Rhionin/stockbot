@@ -29,6 +29,10 @@ go run ./cmd/server
 | `STOCK_IN_CONTROL_BARCODE` | `STOCK_IN` | Barcode to switch to stock-in mode |
 | `STOCK_OUT_CONTROL_BARCODE` | `STOCK_OUT` | Barcode to switch to stock-out mode |
 | `HEADLESS_USER_ID` | `user-1` | User ID for headless scan operations |
+| `SENTRY_DSN` | empty | Error reporting. Empty disables it and makes no network calls |
+| `SENTRY_ENVIRONMENT` | empty | Sent with errors when `SENTRY_DSN` is set. Empty means `production` |
+| `SENTRY_TUNNEL_PROJECT_IDS` | empty | Comma-separated project ids the browser tunnel may forward. Empty hides `POST /api/sentry-tunnel` |
+| `SENTRY_TUNNEL_PUBLIC_KEYS` | empty | Optional comma-separated DSN public keys for that tunnel. Empty does not check the key |
 
 ## Headless Scanner Input
 
@@ -109,9 +113,11 @@ curl -s https://stockbot.rhionin.com/api/telemetry
 can report timings. `GET /api/build` is public too, so an agent can see which
 build is running without the household password. `GET /brand/logo.png`,
 `GET /terms`, and `GET /privacy` are public because a grocery developer app
-stores those URLs and fetches them with no password. Every other path still
-asks for the shared password. The LAN listener on `:8080` is unchanged: it
-has no password. The menu's Build section shows the same version and commit.
+stores those URLs and fetches them with no password. `POST /api/sentry-tunnel`
+is public so a signed-out page can report a failure; see below. Every other
+path still asks for the shared password. The LAN listener on `:8080` is
+unchanged: it has no password. The menu's Build section shows the same
+version and commit.
 Diagnostics renders `pageLoad` for someone at the screen. On a Pi that is
 already public, `sudo ./setup.sh` is what loads the Caddyfile exception.
 
@@ -135,7 +141,39 @@ curl -s https://stockbot.rhionin.com/api/build
 ```
 
 The response is that identity only. It has no environment values, hostnames,
-or paths, and `Cache-Control` is `no-store`.
+or paths, and `Cache-Control` is `no-store`. Error reports use this same
+`commit` string as their release. There is not a second version source.
+
+## Browser error tunnel
+
+`POST /api/sentry-tunnel` forwards a Sentry envelope to the ingest host in
+`SENTRY_DSN`. A browser or mobile SDK points its tunnel option at
+`/api/sentry-tunnel`, so the app keeps `connect-src 'self'` and does not
+call the ingest host itself.
+
+| | |
+| --- | --- |
+| Method | `POST` |
+| Path | `/api/sentry-tunnel` |
+| Content-Type | `application/x-sentry-envelope` |
+| Body limit | 256 KB. Larger bodies return `413` |
+| Rate limit | Per client IP and a global cap. Excess requests return `429` |
+| `400` | Missing or wrong content type, an envelope or item header that is not valid (duplicate or differently-cased keys, a blank line between items, or an item length past the body), or an item type other than `event`, `transaction`, `session`, `sessions`, `client_report`, or `attachment` |
+| `403` | The envelope DSN host is not the ingest host of `SENTRY_DSN`, its project id is not listed in `SENTRY_TUNNEL_PROJECT_IDS`, or `SENTRY_TUNNEL_PUBLIC_KEYS` is set and does not contain the envelope's public key |
+| `404` | `SENTRY_DSN` or `SENTRY_TUNNEL_PROJECT_IDS` is empty |
+| `405` | Any method other than `POST` while the tunnel is configured |
+| `429` from ingest | That status is passed through, with `Retry-After` and `X-Sentry-Rate-Limits` when ingest sent them |
+| `502` | The forward to ingest failed |
+| Success | The ingest status, with an empty body |
+
+The route is open before household login, including on the login page, and
+it does not accept the sync token as a credential. No other route is opened
+with it. The client IP is the address Caddy already records
+(`X-Pantry-Client-IP` when `X-Pantry-Entry` is `public`, otherwise the
+connection address). `X-Forwarded-For` is not used. The envelope is not
+written to the log.
+
+SDK configuration uses the tunnel option `'/api/sentry-tunnel'`.
 
 In development the Vite server proxies `/api`, so the same path works against
 the dev UI's origin. The browser posts its own timings and errors to

@@ -248,39 +248,46 @@ func buildExpectations(req *apitest.Request, ex httpExchange) *apitest.Response 
 	return expect
 }
 
+// handlerFromEnv rebuilds the HTTP handler on the same database, registry, and
+// refresher the primary request used, so a follow-up call sees that write.
+func handlerFromEnv(env testEnv) http.Handler {
+	// Reuse env.Refresher rather than building a fresh one: a second
+	// Refresher would own a different WaitGroup and in-flight map, so
+	// env.Refresher.Wait() would return without awaiting goroutines this
+	// handler's exchanges started, and tests would flake silently.
+	// Similarly, reuse env.Upstream and env.Clock to maintain the same state
+	// across exchanges. Carry through env.MissTTL so miss-gate tests work
+	// correctly: a missing MissTTL there silently defaults to zero and
+	// makes every cached-miss assertion in an afterRequest sequence pass for
+	// the wrong reason.
+	var now func() time.Time
+	if env.Clock != nil {
+		now = env.Clock.Now
+	}
+	registry := env.Registry
+	if registry == nil {
+		registry = cart.NewRegistry()
+	}
+	opts := []Option{WithCartRegistry(registry, cart.NewLedger(env.DB))}
+	if env.Contributor != nil {
+		opts = append(opts, WithContributor(env.Contributor))
+	}
+	opts = append(opts, env.Options...)
+	handler, _ := NewHandler(env.ProductStore, &product.LookupService{
+		Catalog:   env.ProductStore,
+		Upstream:  env.Upstream,
+		Refresher: env.Refresher,
+		Now:       now,
+		MissTTL:   env.MissTTL,
+	}, env.Refresher, env.DB, opts...)
+	return handler
+}
+
 // exchanges returns an afterRequest callback that fires a sequence of HTTP requests
 // against the same handler and database, verifying state through the HTTP contract.
 func exchanges(exs ...httpExchange) func(env testEnv) {
 	return func(env testEnv) {
-		// Reuse env.Refresher rather than building a fresh one: a second
-		// Refresher would own a different WaitGroup and in-flight map, so
-		// env.Refresher.Wait() would return without awaiting goroutines this
-		// handler's exchanges started, and tests would flake silently.
-		// Similarly, reuse env.Upstream and env.Clock to maintain the same state
-		// across exchanges. Carry through env.MissTTL so miss-gate tests work
-		// correctly: a missing MissTTL there silently defaults to zero and
-		// makes every cached-miss assertion in an afterRequest sequence pass for
-		// the wrong reason.
-		var now func() time.Time
-		if env.Clock != nil {
-			now = env.Clock.Now
-		}
-		registry := env.Registry
-		if registry == nil {
-			registry = cart.NewRegistry()
-		}
-		opts := []Option{WithCartRegistry(registry, cart.NewLedger(env.DB))}
-		if env.Contributor != nil {
-			opts = append(opts, WithContributor(env.Contributor))
-		}
-		opts = append(opts, env.Options...)
-		handler, _ := NewHandler(env.ProductStore, &product.LookupService{
-			Catalog:   env.ProductStore,
-			Upstream:  env.Upstream,
-			Refresher: env.Refresher,
-			Now:       now,
-			MissTTL:   env.MissTTL,
-		}, env.Refresher, env.DB, opts...)
+		handler := handlerFromEnv(env)
 
 		for i, ex := range exs {
 			env.T.Run("", func(t *testing.T) {

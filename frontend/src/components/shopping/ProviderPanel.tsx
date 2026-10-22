@@ -111,7 +111,7 @@ const ProviderRow = ({
               >
                 Start a new cart
               </Button>
-              <Text size="xs" c="dimmed">This only forgets what was already sent.</Text>
+              <Text size="xs" c="dimmed" className="cart-reset-note">This forgets what was already sent and clears checked-off lines.</Text>
             </Stack>
           )}
         </Group>

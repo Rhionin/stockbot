@@ -51,7 +51,7 @@ describe('ProviderPanel', () => {
     renderPanel([provider({ connectionState: 'connected' })]);
     expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start a new cart' })).toBeInTheDocument();
-    expect(screen.getByText('This only forgets what was already sent.')).toBeInTheDocument();
+    expect(screen.getByText('This forgets what was already sent and clears checked-off lines.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
     expectCredentialsStayOffTheRow();
   });
@@ -68,7 +68,7 @@ describe('ProviderPanel', () => {
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start a new cart' })).toBeInTheDocument();
-    expect(screen.getByText('This only forgets what was already sent.')).toBeInTheDocument();
+    expect(screen.getByText('This forgets what was already sent and clears checked-off lines.')).toBeInTheDocument();
   });
 
   it('starts the authorization redirect', async () => {

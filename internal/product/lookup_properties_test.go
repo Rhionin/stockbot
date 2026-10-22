@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -292,7 +293,7 @@ func assertResultEqual(t rapidTB, a, b LookupResult) {
 		}
 		return
 	}
-	if *a.Product != *b.Product {
+	if !reflect.DeepEqual(*a.Product, *b.Product) {
 		t.Fatalf("Product differs: %+v vs %+v", *a.Product, *b.Product)
 	}
 }

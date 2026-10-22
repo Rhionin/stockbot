@@ -52,13 +52,13 @@ func TestGroupHandlers(t *testing.T) {
 			setup: func(env testEnv) {
 				mustGroupProduct(env, "p1", "Small")
 				mustGroupProduct(env, "p2", "Large")
-				mustExec(env, `INSERT INTO supply_overrides (product_id, quantity) VALUES ('p1', 4)`)
+				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1'), ('item-p2', 'user-1', 'p2')`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4), ('user-1', 'item-p2', 'months', 2)`)
 				base, _, err := product.BaseFromAmount(12, "fl oz")
 				if err != nil {
 					env.T.Fatal(err)
 				}
 				mustExec(env, `UPDATE products SET net_base_value = ?, net_dimension = 'volume', net_size_origin = 'manual' WHERE id = 'p1'`, base)
-				mustExec(env, `INSERT INTO supply_overrides (product_id, window_months) VALUES ('p2', 2)`)
 				mustExec(env, `UPDATE products SET net_dimension = 'mass' WHERE id = 'p2'`)
 			},
 			httpExchange: httpExchange{
@@ -113,7 +113,8 @@ func TestGroupHandlers(t *testing.T) {
 			name: "an unsized quantity override is a count, not ounces",
 			setup: func(env testEnv) {
 				mustGroupProduct(env, "p1", "Small")
-				mustExec(env, `INSERT INTO supply_overrides (product_id, quantity) VALUES ('p1', 4)`)
+				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1')`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4)`)
 				mustExec(env, `UPDATE products SET net_dimension = 'volume' WHERE id = 'p1'`)
 			},
 			httpExchange: httpExchange{

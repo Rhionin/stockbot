@@ -46,6 +46,9 @@ if [[ "$1" == "inspect" ]]; then
   exit 0
 fi
 if [[ "$*" == *hash-password* ]]; then
+  # docker run -i reads the password. Exit first and the writer dies with
+  # SIGPIPE, so pipefail reports that the hash failed.
+  cat >/dev/null
   printf '%s\n' '$2a$14$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz012'
   exit 0
 fi
@@ -182,19 +185,36 @@ run_setup() {
   rm -rf "$work"
 }
 
+# grep -q stops at the first match. Under pipefail a pipe then dies with
+# SIGPIPE, so have fails and lack passes even when the text is there.
 have() {
   local haystack="$1" needle="$2" label="$3"
-  if ! printf '%s\n' "$haystack" | grep -q -F -- "$needle"; then
+  if ! grep -q -F -- "$needle" <<<"$haystack"; then
     fail "$label (missing $needle)"
   fi
 }
 
 lack() {
   local haystack="$1" needle="$2" label="$3"
-  if printf '%s\n' "$haystack" | grep -q -F -- "$needle"; then
+  if grep -q -F -- "$needle" <<<"$haystack"; then
     fail "$label (unexpected $needle)"
   fi
 }
+
+# The match is the first of tens of thousands of lines, which is when the old
+# pipe helper lost the writer. Fifty tries is enough for that helper to fail
+# on every run. pipefail is already on for this file.
+assert_have_lack_large_input() {
+  local large n
+  large=$(awk 'BEGIN { print "NEEDLE-PRESENT"; for (i = 1; i <= 40000; i++) print "padding" }')
+  for ((n = 1; n <= 50; n++)); do
+    have "$large" "NEEDLE-PRESENT" "large input contains the needle"
+    if (lack "$large" "NEEDLE-PRESENT" "large input must report the needle") 2>/dev/null; then
+      fail "lack passed on large input that contains the needle (try $n)"
+    fi
+  done
+}
+assert_have_lack_large_input
 
 write_env() {
   local pantry="$1"
@@ -225,6 +245,11 @@ run_setup "$lan"
 [[ "$LAST_RC" -eq 0 ]] || fail "second LAN setup exited $LAST_RC: $LAST_OUT"
 secret2=$(grep '^DEPLOY_HOOK_SECRET=' "$lan/.env" | cut -d= -f2-)
 [[ "$secret1" == "$secret2" ]] || fail "setup rotated DEPLOY_HOOK_SECRET"
+grep -q '^SENTRY_DSN=$' "$lan/.env" || fail "setup did not append an empty SENTRY_DSN"
+grep -q '^SENTRY_ENVIRONMENT=$' "$lan/.env" || fail "setup did not append an empty SENTRY_ENVIRONMENT"
+grep -q '^SENTRY_TUNNEL_PROJECT_IDS=$' "$lan/.env" || fail "setup did not append an empty SENTRY_TUNNEL_PROJECT_IDS"
+grep -q '^SENTRY_TUNNEL_PUBLIC_KEYS=$' "$lan/.env" || fail "setup did not append an empty SENTRY_TUNNEL_PUBLIC_KEYS"
+[[ $(grep -c '^SENTRY_DSN=' "$lan/.env") -eq 1 ]] || fail "setup duplicated SENTRY_DSN"
 vapid_pub1=$(grep '^VAPID_PUBLIC_KEY=' "$lan/.env" | cut -d= -f2-)
 vapid_priv1=$(grep '^VAPID_PRIVATE_KEY=' "$lan/.env" | cut -d= -f2-)
 vapid_sub1=$(grep '^VAPID_SUBJECT=' "$lan/.env" | cut -d= -f2-)
@@ -246,7 +271,7 @@ lack "$LAST_DOCKER" "pull pantry" "LAN must not pull before the public site exis
 lack "$LAST_CURL" "/api/session" "LAN setup must not probe public sign-in"
 have "$LAST_CHOWN" "65532:65532 $lan/auth" "LAN setup still gives the auth directory to uid 65532"
 grep -q '^PANTRY_SESSION_SECRET=$' "$lan/.env" || fail "LAN setup filled a session secret"
-lack "$LAST_DOCKER" "restart pantry-caddy" "LAN must not restart Caddy"
+lack "$LAST_DOCKER" "restart $(basename "$lan")-caddy" "LAN must not restart Caddy"
 have "$LAST_IPTABLES" "--dport 9090" "firewall uses HOST_PORT"
 have "$LAST_OUT" "Stockbot setup complete" "LAN success"
 have "$LAST_OUT" "Non-LAN clients are blocked on port 9090" "LAN firewall summary"
@@ -276,7 +301,7 @@ cmp "$pub/auth.caddy" "$pub/auth.caddy.before" || fail "auth.caddy was regenerat
 grep -q '^BASIC_AUTH_PASSWORD=$' "$pub/.env" || fail "empty BASIC_AUTH_PASSWORD was rewritten"
 have "$LAST_DOCKER" "--profile public" "public profile"
 lack "$LAST_DOCKER" "docker-compose.tunnel.yml" "certificate mode must not select the tunnel file"
-have "$LAST_DOCKER" "restart pantry-caddy" "Caddyfile restart"
+have "$LAST_DOCKER" "restart $(basename "$pub")-caddy" "Caddyfile restart"
 lack "$LAST_DOCKER" "hash-password" "must not hash when auth.caddy exists"
 lack "$LAST_DOCKER" "stop caddy" "must not disable public HTTPS"
 have "$LAST_OUT" "Keeping existing" "kept auth.caddy"
@@ -522,7 +547,7 @@ run_setup "$tun"
 have "$LAST_DOCKER" "docker-compose.tunnel.yml" "tunnel compose file"
 have "$LAST_DOCKER" "--profile tunnel" "tunnel profile"
 lack "$LAST_DOCKER" "--profile public" "tunnel must not publish the certificate profile"
-have "$LAST_DOCKER" "restart pantry-caddy" "tunnel restarts Caddy"
+have "$LAST_DOCKER" "restart $(basename "$tun")-caddy" "tunnel restarts Caddy"
 have "$LAST_OUT" "http://caddy:80" "service URL is printed"
 have "$LAST_OUT" "Nothing on this Pi is listening on ports 80 or 443" "tunnel closes host 80/443"
 lack "$LAST_OUT" "Home Wi-Fi cannot open" "tunnel must not warn about hairpin"
@@ -887,6 +912,39 @@ PANTRY_INPUT_DEVICES="$none_devices" PANTRY_UDEV_RULE_FILE="$none_rule" \
 have "$LAST_OUT" "$none_rule" "failure names the rule path"
 [[ ! -e "$none_rule" ]] || fail "rule with no scanner wrote $none_rule"
 
-rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir"
+# Appending the empty Sentry lines must not rewrite a value that is already
+# set and must not change the file mode. This calls the helper directly so
+# the rest of setup, which restricts .env to its owner, is not involved.
+sentry_dir=$(mktemp -d)
+printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=keep-this' > "$sentry_dir/.env"
+chmod 640 "$sentry_dir/.env"
+sentry_mode=$(stat -c '%a' "$sentry_dir/.env")
+PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(stat -c '%a' "$sentry_dir/.env") == "$sentry_mode" ]] || fail "append_empty_env_keys changed the .env mode"
+grep -q '^SENTRY_DSN=keep-this$' "$sentry_dir/.env" || fail "append_empty_env_keys rewrote SENTRY_DSN"
+grep -q '^SENTRY_ENVIRONMENT=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_ENVIRONMENT"
+grep -q '^SENTRY_TUNNEL_PROJECT_IDS=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_TUNNEL_PROJECT_IDS"
+grep -q '^SENTRY_TUNNEL_PUBLIC_KEYS=$' "$sentry_dir/.env" || fail "append_empty_env_keys missed SENTRY_TUNNEL_PUBLIC_KEYS"
+PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(grep -c '^SENTRY_ENVIRONMENT=' "$sentry_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated SENTRY_ENVIRONMENT"
+[[ $(stat -c '%a' "$sentry_dir/.env") == "$sentry_mode" ]] || fail "second append changed the .env mode"
+
+# An exported assignment is already present. Neither the empty-key helper nor
+# reconcile may append a second KEY= line, and neither may rewrite the value.
+export_dir=$(mktemp -d)
+printf '%s\n' 'export SENTRY_DSN=keep-export' > "$export_dir/.env"
+chmod 640 "$export_dir/.env"
+export_mode=$(stat -c '%a' "$export_dir/.env")
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "append_empty_env_keys changed the exported .env mode"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "append_empty_env_keys rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated export SENTRY_DSN"
+printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=' 'SENTRY_ENVIRONMENT=' > "$export_dir/.env.example"
+PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile rewrote export SENTRY_DSN"
+[[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
+[[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
+
+rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
 rm -f /tmp/pantry-chown-fail.out /tmp/pantry-chown-skip.out
 echo "setup_apply_test ok"

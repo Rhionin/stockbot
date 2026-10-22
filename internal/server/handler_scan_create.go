@@ -67,7 +67,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 
 	log.Printf("scan received: barcode=%q direction=%s user=%s", req.Body.Barcode, directionLabel(req.Body.Direction), req.Body.UserID)
 
-	scannedAt := time.Now()
+	scannedAt := time.Now().UTC()
 	if scan.IsQRPayload(req.Body.Barcode) {
 		entry := scan.NewQREntry(req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
 		created, err := h.Queue.CreateScanEntry(req.Context, entry)

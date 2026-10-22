@@ -13,8 +13,9 @@ import (
 
 // GroupHandler serves product groups, suggestions, and the account rule.
 type GroupHandler struct {
-	Groups *group.Groups
-	Supply *supply.Service
+	Groups  *group.Groups
+	Supply  *supply.Service
+	Refresh func(ctx context.Context) error
 }
 
 type groupIDParams struct {
@@ -211,6 +212,9 @@ func (h *GroupHandler) PutMemberRestock(req Request[restockBody, groupMemberPara
 	if err != nil {
 		return nil, groupErr(err)
 	}
+	if err := h.syncList(req.Context); err != nil {
+		return nil, err
+	}
 	return &view, nil
 }
 
@@ -231,7 +235,20 @@ func (h *GroupHandler) PutTarget(req Request[targetBody, groupIDParams]) (*group
 	if err != nil {
 		return nil, groupErr(err)
 	}
+	if err := h.syncList(req.Context); err != nil {
+		return nil, err
+	}
 	return h.withUsage(req.Context, view)
+}
+
+func (h *GroupHandler) syncList(ctx context.Context) error {
+	if h == nil || h.Refresh == nil {
+		return nil
+	}
+	if err := h.Refresh(ctx); err != nil {
+		return InternalError(err)
+	}
+	return nil
 }
 
 func (h *GroupHandler) withUsage(ctx context.Context, view group.Group) (*groupView, error) {

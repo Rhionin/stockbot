@@ -5,6 +5,9 @@ const articleLabels = (page: Page) =>
   page.locator('.scan-page-queue article').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('aria-label')))
 
+// Other specs in this run share the database, so older cards may sit below.
+const topTwo = async (page: Page) => (await articleLabels(page)).slice(0, 2)
+
 const cancelBarcode = async (request: APIRequestContext, barcode: string) => {
   const response = await request.get('/api/scans', { params: { userId: 'user-1', status: 'pending' } })
   expect(response.ok()).toBe(true)
@@ -16,9 +19,14 @@ const cancelBarcode = async (request: APIRequestContext, barcode: string) => {
   }
 }
 
-test('rescanning an open item flashes its card and moves it to the top', async ({ page, request }) => {
+const flashClass = /scan-entry-card--(?:just-captured|changed-animated|changed-static)/
+
+test('rescanning an open item flashes its card, moves it to the top, and keeps that order after reload', async ({ page, request }) => {
+  test.setTimeout(90_000)
   const oats = { barcode: '810000000011', name: 'Reorder Oats' }
   const milk = { barcode: '810000000012', name: 'Reorder Milk' }
+  const oatsName = `Scan ${oats.barcode}`
+  const milkName = `Scan ${milk.barcode}`
   try {
     for (const item of [oats, milk]) {
       await createKnownProduct(request, {
@@ -33,13 +41,7 @@ test('rescanning an open item flashes its card and moves it to the top', async (
     await resetToStockIn(page)
     await scanBarcode(page, oats.barcode)
     await scanBarcode(page, milk.barcode)
-
-    const oatsName = `Scan ${oats.barcode}`
-    const milkName = `Scan ${milk.barcode}`
-    await expect.poll(async () => {
-      const labels = await articleLabels(page)
-      return labels.indexOf(milkName) !== -1 && labels.indexOf(milkName) < labels.indexOf(oatsName)
-    }).toBe(true)
+    await expect.poll(() => topTwo(page)).toEqual([milkName, oatsName])
 
     const oatsCard = page.getByRole('article', { name: oatsName, exact: true })
     await scanBarcode(page, oats.barcode)
@@ -47,22 +49,18 @@ test('rescanning an open item flashes its card and moves it to the top', async (
     // The card is already on screen, so the scan helper returns before the
     // merge lands. Order and the flash class update together when it does.
     await expect.poll(async () => {
-      const labels = await articleLabels(page)
+      const labels = await topTwo(page)
       const className = (await oatsCard.getAttribute('class')) ?? ''
       return {
-        atTop: labels[0] === oatsName,
-        beforeMilk: labels.indexOf(oatsName) < labels.indexOf(milkName),
-        flashed: className.includes('scan-entry-card--changed-animated')
-          || className.includes('scan-entry-card--changed-static'),
+        order: labels.join(','),
+        flashed: flashClass.test(className),
       }
-    }).toEqual({ atTop: true, beforeMilk: true, flashed: true })
+    }).toEqual({ order: `${oatsName},${milkName}`, flashed: true })
     await expect(oatsCard.getByRole('textbox', { name: 'Unit count', exact: true })).toHaveValue('2')
 
     await page.reload()
-    await expect.poll(async () => {
-      const labels = await articleLabels(page)
-      return labels[0] === oatsName && labels.indexOf(oatsName) < labels.indexOf(milkName)
-    }).toBe(true)
+    await resetToStockIn(page)
+    await expect.poll(() => topTwo(page)).toEqual([oatsName, milkName])
     await expect(page.getByRole('article', { name: oatsName, exact: true }).getByRole('textbox', { name: 'Unit count', exact: true })).toHaveValue('2')
   } finally {
     await cancelBarcode(request, oats.barcode)

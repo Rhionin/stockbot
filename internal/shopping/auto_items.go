@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,20 +106,35 @@ func (s *Store) SavePlannedLines(ctx context.Context, userID string, lines []Pla
 
 func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID string, quantity int, note string) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id FROM shopping_list_items
+		SELECT id, quantity, note, purchased_at, CAST(created_at AS TEXT) FROM shopping_list_items
 		WHERE user_id = ? AND item_id = ? AND source = 'auto'
 		ORDER BY created_at ASC, rowid ASC`, userID, itemID)
 	if err != nil {
 		return fmt.Errorf("could not load shopping list item %q: %w", itemID, err)
 	}
-	var ids []string
+	type autoRow struct {
+		id, note string
+		qty      int
+		bought   bool
+		added    time.Time
+	}
+	var existing []autoRow
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var row autoRow
+		var purchasedAt sql.NullTime
+		var addedRaw string
+		if err := rows.Scan(&row.id, &row.qty, &row.note, &purchasedAt, &addedRaw); err != nil {
 			rows.Close()
 			return fmt.Errorf("could not read shopping list item %q: %w", itemID, err)
 		}
-		ids = append(ids, id)
+		row.bought = purchasedAt.Valid
+		added, err := parseStoredTime(addedRaw)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("could not read shopping list item %q: %w", itemID, err)
+		}
+		row.added = added
+		existing = append(existing, row)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -128,11 +144,43 @@ func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID str
 		return fmt.Errorf("could not read shopping list item %q: %w", itemID, err)
 	}
 
+	stockIns, err := stockInTimes(ctx, tx, itemID)
+	if err != nil {
+		return err
+	}
+	var openID string
+	var extras []string
+	alreadyBought := false
+	for _, row := range existing {
+		if row.bought {
+			// A bought line is finished once the product has been stocked in
+			// at or after the line was added. The tick time does not matter.
+			// A finished line must not hold back the next need.
+			if stockInFinishesLine(stockIns, row.added) {
+				continue
+			}
+			if row.qty == quantity && row.note == note {
+				alreadyBought = true
+			}
+			continue
+		}
+		if openID == "" {
+			openID = row.id
+			continue
+		}
+		extras = append(extras, row.id)
+	}
+
 	var storedGroup any
 	if groupID != "" {
 		storedGroup = groupID
 	}
-	if len(ids) == 0 {
+	if openID == "" {
+		// A checked-off row for this exact line stays checked off. A different
+		// plan is a new unpurchased line, so the purchase is not rewritten.
+		if alreadyBought {
+			return nil
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, note, created_at, group_id)
 			VALUES (?, ?, ?, ?, 'auto', ?, ?, ?)`,
@@ -148,15 +196,14 @@ func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID str
 		UPDATE shopping_list_items
 		SET quantity = ?,
 		    note = ?,
-		    group_id = ?,
-		    purchased_at = CASE WHEN quantity = ? AND note = ? THEN purchased_at ELSE NULL END
+		    group_id = ?
 		WHERE id = ?`,
-		quantity, note, storedGroup, quantity, note, ids[0],
+		quantity, note, storedGroup, openID,
 	)
 	if err != nil {
 		return fmt.Errorf("could not refresh shopping list item %q: %w", itemID, err)
 	}
-	for _, extra := range ids[1:] {
+	for _, extra := range extras {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ?`, extra); err != nil {
 			return fmt.Errorf("could not refresh shopping list item %q: %w", itemID, err)
 		}
@@ -236,40 +283,194 @@ func groupSkipped(skipped, skippedGroups map[string]struct{}, key, itemID string
 
 func deleteUnplannedAuto(ctx context.Context, tx *sql.Tx, userID string, keep map[string]struct{}) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, item_id, touched FROM shopping_list_items
+		SELECT id, item_id, touched, purchased_at, CAST(created_at AS TEXT) FROM shopping_list_items
 		WHERE user_id = ? AND source = 'auto'`, userID)
 	if err != nil {
 		return fmt.Errorf("could not load derived shopping list items: %w", err)
 	}
-	defer rows.Close()
-	var drop []string
+	type candidate struct {
+		id, itemID string
+		touched    int
+		bought     bool
+		added      time.Time
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var id, itemID string
-		var touched int
-		if err := rows.Scan(&id, &itemID, &touched); err != nil {
+		var row candidate
+		var purchasedAt sql.NullTime
+		var addedRaw string
+		if err := rows.Scan(&row.id, &row.itemID, &row.touched, &purchasedAt, &addedRaw); err != nil {
+			rows.Close()
 			return fmt.Errorf("could not read derived shopping list item: %w", err)
 		}
-		if touched != 0 {
-			continue
+		row.bought = purchasedAt.Valid
+		if row.bought {
+			added, err := parseStoredTime(addedRaw)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("could not read derived shopping list item: %w", err)
+			}
+			row.added = added
 		}
-		if _, ok := keep[itemID]; ok {
-			continue
-		}
-		drop = append(drop, id)
+		candidates = append(candidates, row)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return fmt.Errorf("could not read derived shopping list items: %w", err)
 	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("could not read derived shopping list items: %w", err)
 	}
+	// The list is fully read before any row is deleted, so one fill removes
+	// every finished purchase.
+	stocked := map[string][]time.Time{}
+	var drop []string
+	for _, row := range candidates {
+		if row.bought {
+			// Target changes and undo keep a purchase while nothing has been
+			// stocked in since the line was added. Once that stock-in exists,
+			// master deletes the row the same way it deletes any other
+			// unplanned auto line.
+			times, ok := stocked[row.itemID]
+			if !ok {
+				times, err = stockInTimes(ctx, tx, row.itemID)
+				if err != nil {
+					return err
+				}
+				stocked[row.itemID] = times
+			}
+			if stockInFinishesLine(times, row.added) {
+				drop = append(drop, row.id)
+			}
+			continue
+		}
+		if row.touched != 0 {
+			continue
+		}
+		if _, ok := keep[row.itemID]; ok {
+			continue
+		}
+		drop = append(drop, row.id)
+	}
 	for _, id := range drop {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_entry_adjustments WHERE entry_id = ?`, id); err != nil {
-			return fmt.Errorf("could not clear shopping list item: %w", err)
+		if err := deleteShoppingRow(ctx, tx, id); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ?`, id); err != nil {
-			return fmt.Errorf("could not clear shopping list item: %w", err)
+	}
+	return nil
+}
+
+func stockInTimes(ctx context.Context, tx *sql.Tx, itemID string) ([]time.Time, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT CAST(at AS TEXT) FROM stock_in_events
+		WHERE product_id = (SELECT product_id FROM items WHERE id = ?)`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("could not read stock-in events: %w", err)
+	}
+	defer rows.Close()
+	var times []time.Time
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("could not read stock-in events: %w", err)
 		}
+		at, err := parseStoredTime(raw)
+		if err != nil {
+			return nil, fmt.Errorf("could not read stock-in events: %w", err)
+		}
+		times = append(times, at)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("could not read stock-in events: %w", err)
+	}
+	return times, nil
+}
+
+// stockInFinishesLine is true when a stock-in is at or after the moment the
+// line was added. Equal instants count. The tick time is not the boundary.
+func stockInFinishesLine(stockIns []time.Time, added time.Time) bool {
+	for _, at := range stockIns {
+		if !at.Before(added) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseStoredTime reads a sqlite time string. The driver writes time.Time.String,
+// which appends " m=+…" while a monotonic reading is present, and it keeps the
+// zone the value was stored in. Those strings do not sort in time order.
+func parseStoredTime(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, " m="); i >= 0 {
+		raw = raw[:i]
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05",
+	}
+	var last error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed, nil
+		}
+		last = err
+	}
+	return time.Time{}, last
+}
+
+// EndTrip drops checked-off auto rows. Starting a new cart ends the
+// protection those rows had during a target change, so the next list can
+// plan the item again.
+func (s *Store) EndTrip(ctx context.Context, userID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM shopping_list_items
+		WHERE user_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`, userID)
+	if err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("could not start a new cart: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
+	for _, id := range ids {
+		if err := deleteShoppingRow(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
+	return nil
+}
+
+func deleteShoppingRow(ctx context.Context, tx *sql.Tx, id string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_entry_adjustments WHERE entry_id = ?`, id); err != nil {
+		return fmt.Errorf("could not clear shopping list item: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("could not clear shopping list item: %w", err)
 	}
 	return nil
 }

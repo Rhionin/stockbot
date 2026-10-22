@@ -1911,56 +1911,67 @@ describe('ScanQueuePage', () => {
 
     const articleOrder = () => screen.getAllByRole('article').map((article) => article.getAttribute('aria-label'));
 
-    it('moves a rescanned card to the top of the open session and flashes it', async () => {
-      const grocery = (id: string, name: string): ScanEntry['product'] => ({
-        id, name, category: 'Grocery', unitOfMeasure: 'bag',
-      });
-      vi.stubGlobal('fetch', sessionQueue([
-        scanEntry({
-          id: 'oats', barcode: '111', direction: 'stock_in',
-          scannedAt: '2026-03-20T16:00:00Z', product: grocery('oats', 'Oats'), productId: 'oats',
-        }),
-        scanEntry({
-          id: 'milk', barcode: '222', direction: 'stock_in',
-          scannedAt: '2026-03-20T16:02:00Z', product: grocery('milk', 'Milk'), productId: 'milk',
-        }),
-      ]));
+    it('moves a rescanned card to the top of the open session and flashes it again', async () => {
+      // The highlight clears on a 600ms timer. Step that clock explicitly: a
+      // real sleep can return before the timer runs, and a later wait can
+      // outlive the second flash.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        vi.stubGlobal('fetch', sessionQueue([
+          scanEntry({
+            id: 'oats', barcode: '111', direction: 'stock_in',
+            scannedAt: '2026-03-20T16:00:00Z', unitCount: 1,
+            product: product('oats', 'Oats'), productId: 'oats',
+          }),
+          scanEntry({
+            id: 'milk', barcode: '222', direction: 'stock_in',
+            scannedAt: '2026-03-20T16:02:00Z', unitCount: 1,
+            product: product('milk', 'Milk'), productId: 'milk',
+          }),
+        ]));
 
-      render(<MantineProvider><ScanQueuePage /></MantineProvider>);
-      await screen.findByRole('article', { name: 'Scan 222' });
-      expect(articleOrder()).toEqual(['Scan 222', 'Scan 111']);
+        render(<MantineProvider><ScanQueuePage /></MantineProvider>);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(articleOrder()).toEqual(['Scan 222', 'Scan 111']);
 
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 700));
-      });
+        act(() => {
+          vi.advanceTimersByTime(600);
+        });
+        expect(screen.getByRole('article', { name: 'Scan 111' })).not.toHaveClass('scan-entry-card--changed-animated');
 
-      FakeEventSource.instances[0].dispatch('scan', scanEntry({
-        id: 'oats',
-        barcode: '111',
-        direction: 'stock_in',
-        scannedAt: '2026-03-20T16:04:00Z',
-        unitCount: 2,
-        product: grocery('oats', 'Oats'),
-        productId: 'oats',
-      }));
+        act(() => {
+          FakeEventSource.instances[0].dispatch('scan', scanEntry({
+            id: 'oats',
+            barcode: '111',
+            direction: 'stock_in',
+            scannedAt: '2026-03-20T16:04:00Z',
+            unitCount: 2,
+            product: product('oats', 'Oats'),
+            productId: 'oats',
+          }));
+        });
 
-      await vi.waitFor(() => expect(articleOrder()).toEqual(['Scan 111', 'Scan 222']));
-      expect(screen.getByRole('article', { name: 'Scan 111' })).toHaveClass('scan-entry-card--changed-animated');
-      expect(screen.getByRole('article', { name: 'Scan 222' })).not.toHaveClass('scan-entry-card--changed-animated');
+        expect(articleOrder()).toEqual(['Scan 111', 'Scan 222']);
+        const oats = screen.getByRole('article', { name: 'Scan 111' });
+        expect(oats).toHaveClass('scan-entry-card--changed-animated');
+        expect(screen.getByRole('article', { name: 'Scan 222' })).not.toHaveClass('scan-entry-card--changed-animated');
+        expect(within(oats).getByLabelText('Unit count')).toHaveValue('2');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('pulls a rescanned card out of an older session to the top', async () => {
-      const grocery = (id: string, name: string): ScanEntry['product'] => ({
-        id, name, category: 'Grocery', unitOfMeasure: 'bag',
-      });
       vi.stubGlobal('fetch', sessionQueue([
         scanEntry({
           id: 'yogurt', barcode: '444', direction: 'stock_in',
-          scannedAt: '2026-03-20T15:00:00Z', product: grocery('yogurt', 'Yogurt'), productId: 'yogurt',
+          scannedAt: '2026-03-20T15:00:00Z', product: product('yogurt', 'Yogurt'), productId: 'yogurt',
         }),
         scanEntry({
           id: 'bread', barcode: '333', direction: 'stock_in',
-          scannedAt: '2026-03-20T16:04:00Z', product: grocery('bread', 'Bread'), productId: 'bread',
+          scannedAt: '2026-03-20T16:04:00Z', product: product('bread', 'Bread'), productId: 'bread',
         }),
       ]));
 
@@ -1974,86 +1985,13 @@ describe('ScanQueuePage', () => {
         direction: 'stock_in',
         scannedAt: '2026-03-20T16:06:00Z',
         unitCount: 2,
-        product: grocery('yogurt', 'Yogurt'),
+        product: product('yogurt', 'Yogurt'),
         productId: 'yogurt',
       }));
 
       await screen.findByRole('article', { name: 'Scan 444' });
       expect(articleOrder()).toEqual(['Scan 444', 'Scan 333']);
       expect(screen.getByRole('article', { name: 'Scan 444' })).toHaveClass('scan-entry-card--changed-animated');
-    });
-
-    it('moves a rescanned card to the top and flashes it again', async () => {
-      const product = (id: string, name: string): ScanEntry['product'] => ({
-        id,
-        name,
-        category: 'Grocery',
-        unitOfMeasure: 'bag',
-      });
-      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes('status=pending')) {
-          return Promise.resolve(jsonResponse([
-            scanEntry({
-              id: 'oats',
-              barcode: '111',
-              direction: 'stock_in',
-              scannedAt: '2026-03-20T16:00:00Z',
-              unitCount: 1,
-              product: product('oats', 'Oats'),
-              productId: 'oats',
-            }),
-            scanEntry({
-              id: 'milk',
-              barcode: '222',
-              direction: 'stock_in',
-              scannedAt: '2026-03-20T16:02:00Z',
-              unitCount: 1,
-              product: product('milk', 'Milk'),
-              productId: 'milk',
-            }),
-          ]));
-        }
-        if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-        if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
-        if (url.endsWith('/api/scanner/config')) {
-          return Promise.resolve(jsonResponse({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
-        }
-        throw new Error(`Unexpected request: ${url}`);
-      }));
-
-      render(<MantineProvider><ScanQueuePage /></MantineProvider>);
-
-      await screen.findByRole('article', { name: 'Scan 222' });
-      expect(screen.getAllByRole('article').map((article) => article.getAttribute('aria-label'))).toEqual([
-        'Scan 222',
-        'Scan 111',
-      ]);
-
-      await new Promise((resolve) => {
-        setTimeout(resolve, 700);
-      });
-      expect(screen.getByRole('article', { name: 'Scan 111' })).not.toHaveClass('scan-entry-card--changed-animated');
-
-      FakeEventSource.instances[0].dispatch('scan', scanEntry({
-        id: 'oats',
-        barcode: '111',
-        direction: 'stock_in',
-        scannedAt: '2026-03-20T16:06:00Z',
-        unitCount: 2,
-        product: product('oats', 'Oats'),
-        productId: 'oats',
-      }));
-
-      await vi.waitFor(() => {
-        expect(screen.getAllByRole('article').map((article) => article.getAttribute('aria-label'))).toEqual([
-          'Scan 111',
-          'Scan 222',
-        ]);
-      });
-      const oats = screen.getByRole('article', { name: 'Scan 111' });
-      expect(oats).toHaveClass('scan-entry-card--changed-animated');
-      expect(within(oats).getByLabelText('Unit count')).toHaveValue('2');
     });
   });
 

@@ -4,7 +4,7 @@ import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, Text, TextInput, Tooltip,
 } from '@mantine/core';
 import {
-  addGroupMembers, getGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, removeGroupMember, renameGroup, setGroupTarget, setMemberRestock,
+  addGroupMembers, getGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, previewGroupTarget, removeGroupMember, renameGroup, setGroupTarget, setMemberRestock,
 } from '../../api/client';
 import type { GroupTarget, ProductDetail, ProductGroup } from '../../types';
 import { AddToGroup } from './AddToGroup';
@@ -15,7 +15,10 @@ import {
 } from './copy';
 import { RulePicker } from './RulePicker';
 import { restockNote } from './restock';
+import { StopDialog } from '../restock/StopDialog';
+import { restockCopy } from '../../restock/copy';
 import { Seesaw } from './Seesaw';
+import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter, type SeesawDraft } from './seesaw';
 import { groupStock } from '../../stockState';
 import '../history/history.css';
@@ -117,6 +120,7 @@ export const GroupDetailPage = () => {
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState('');
   const [draft, setDraft] = useState<SeesawDraft | null>(null);
+  const [groupPreview, setGroupPreview] = useState<RestockPreview | null>(null);
   const [adding, setAdding] = useState(false);
   const [candidates, setCandidates] = useState<AddCandidate[]>([]);
   const [ruleOpen, setRuleOpen] = useState(false);
@@ -238,10 +242,37 @@ export const GroupDetailPage = () => {
 
   return (
     <Stack gap="lg" className="bin-page">
-      <Group gap="md">
-        <Anchor className="history-back" component={Link} to="/inventory?filter=groups">Inventory</Anchor>
+      <Group justify="space-between">
+        <Group gap="md">
+          <Anchor className="history-back" component={Link} to="/inventory?filter=groups">Inventory</Anchor>
+          {group && (
+            <Anchor className="history-back" component={Link} to={`/groups/${group.id}/history`}>History</Anchor>
+          )}
+        </Group>
         {group && (
-          <Anchor className="history-back" component={Link} to={`/groups/${group.id}/history`}>History</Anchor>
+          <Menu position="bottom-end" withInitialFocusPlaceholder={false} transitionProps={{ duration: 0 }}>
+            <Menu.Target>
+              <ActionIcon
+                variant="subtle"
+                color="dark"
+                className="bin-icon-button"
+                style={iconInk}
+                aria-label={`Actions for ${group.name}`}
+              >
+                <KebabIcon />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown className="bin-member-menu">
+              <Menu.Item
+                onClick={() => {
+                  void previewGroupTarget(group.id, { kind: 'months', value: 0 }).then(setGroupPreview);
+                }}
+              >
+                <span className="bin-menu-label">Don't restock…</span>
+                <span className="bin-menu-hint">{restockCopy.previewHint(group.members.length)}</span>
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         )}
       </Group>
       {error !== '' && !renaming && <Alert color="red" py="xs">{error}</Alert>}
@@ -374,6 +405,18 @@ export const GroupDetailPage = () => {
           )}
         </>
       )}
+      <StopDialog
+        opened={groupPreview !== null}
+        preview={groupPreview}
+        onClose={() => setGroupPreview(null)}
+        onConfirm={() => {
+          if (!group) return;
+          void setGroupTarget(group.id, { windowMonths: 0 }).then(() => {
+            setGroupPreview(null);
+            void load();
+          });
+        }}
+      />
     </Stack>
   );
 };

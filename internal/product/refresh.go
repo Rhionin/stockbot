@@ -59,18 +59,24 @@ type Refresher struct {
 	// when zero.
 	BackgroundTimeout time.Duration
 
+	// Tags stores Open Food Facts category tags seen during a refresh. Nil skips that write.
+	Tags interface {
+		SaveOffTags(ctx context.Context, productID string, categories, foodGroups []string) error
+	}
+
 	mu       sync.Mutex
 	inFlight map[string]struct{}
 	wg       sync.WaitGroup
 }
 
-// now returns the current time, defaulting to time.Now so existing
-// construction sites that leave Now nil behave unchanged.
+// now returns the current time, defaulting to time.Now().UTC so existing
+// construction sites that leave Now nil behave unchanged. UTC drops the
+// monotonic clock reading before refreshed_at is stored.
 func (r *Refresher) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
 	}
-	return time.Now()
+	return time.Now().UTC()
 }
 
 // backgroundTimeout bounds a background revalidation goroutine, defaulting
@@ -227,6 +233,9 @@ func (r *Refresher) Refresh(ctx context.Context, productID string) (RefreshOutco
 	writeCtx, cancel := r.catalogWriteContext(ctx)
 	defer cancel()
 	if err := r.Catalog.SaveRefresh(writeCtx, merged, now); err != nil {
+		return OutcomeUnchanged, err
+	}
+	if err := saveOffTags(writeCtx, r.Tags, upstream); err != nil {
 		return OutcomeUnchanged, err
 	}
 	return classify(*row, merged), nil

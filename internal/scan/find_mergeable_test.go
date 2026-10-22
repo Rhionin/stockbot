@@ -16,7 +16,7 @@ import (
 // white-box access to findMergeableScanEntry, an unexported method on Queue.
 func newTestQueueInternal(t *testing.T) (*Queue, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

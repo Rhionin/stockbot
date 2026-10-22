@@ -1,0 +1,1 @@
+Approved mockups for issue #231. Open index.html with ?s=<screen> (item-from-category, item-menu, category-menu, category-confirm, shop-menu, shop-undo, settings, suggest). The PNG screenshots CJ signed off on were not present as files in this workspace; index.html is the mockup source.

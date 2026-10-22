@@ -1,9 +1,19 @@
+/// <reference types="node" />
 import type { ReactNode } from 'react';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import { ItemRow } from './ItemRow';
 import type { InventoryItem } from '../../types';
+
+const styleDir = dirname(fileURLToPath(import.meta.url));
+const menuCss = [
+  readFileSync(join(styleDir, '../restock/restock.css'), 'utf8'),
+  readFileSync(join(styleDir, '../groups/groups.css'), 'utf8'),
+].join('\n');
 
 const inventoryItem: InventoryItem = {
   item: {
@@ -125,5 +135,40 @@ describe('ItemRow', () => {
     fireEvent.click(within(article).getByRole('button', { name: 'Actions for Milk' }));
     const disclosure = screen.getByRole('menuitem', { name: 'Hide instances' });
     expect(disclosure).toBeInTheDocument();
+  });
+
+  it('puts the don\'t-restock hint on its own line', () => {
+    render(
+      <MantineProvider>
+        <ItemRow
+          inventoryItem={inventoryItem}
+          hand="3 carton"
+          selected={false}
+          controlsId="controls-item-1"
+          onSelect={vi.fn()}
+          onAdd={vi.fn()}
+          onStartGroup={vi.fn()}
+          onDontRestock={vi.fn()}
+          dontRestockHint="Sets this item's target to 0"
+        />
+      </MantineProvider>,
+    );
+
+    const style = document.createElement('style');
+    style.textContent = menuCss;
+    document.head.appendChild(style);
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Milk' }));
+      const item = screen.getByRole('menuitem', { name: /Don't restock/ });
+      const label = item.querySelector('.bin-menu-label');
+      const hint = item.querySelector('.bin-menu-hint');
+      expect(label).toHaveTextContent("Don't restock");
+      expect(hint).toHaveTextContent("Sets this item's target to 0");
+      expect(hint).not.toHaveClass('restock-quiet');
+      expect(getComputedStyle(label as Element).display).toBe('block');
+      expect(getComputedStyle(hint as Element).display).toBe('block');
+    } finally {
+      style.remove();
+    }
   });
 });

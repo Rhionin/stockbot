@@ -510,6 +510,40 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
+			name: "shelved item is not in the pantry",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-shelved", Name: "Wiped Soup", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-shelved', 'user-shelved', 'prod-shelved', 1)`); err != nil {
+					env.T.Fatalf("create item: %v", err)
+				}
+				scanRepo := scan.NewQueue(env.DB)
+				productID := "prod-shelved"
+				direction := scan.StockOut
+				entry := scan.ScanEntry{
+					ID: "scan-shelved", UserID: "user-shelved", Barcode: "444555666777",
+					ScannedAt: now, Direction: &direction, UnitCount: 1,
+					ProductID: &productID, Status: scan.Pending,
+				}
+				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+					env.T.Fatalf("CreateScanEntry: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-shelved/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "no_item"},
+					{path: "$.error", value: "Not in your pantry"},
+				},
+			},
+		},
+		{
 			name: "error when no item exists for user+product",
 			setup: func(env testEnv) {
 				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{

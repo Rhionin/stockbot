@@ -53,15 +53,21 @@ type LookupService struct {
 	// MissTTL is the age at which a recorded confirmed miss expires. Defaults to
 	// defaultMissTTL when zero, so existing struct literals keep compiling.
 	MissTTL time.Duration
+
+	// Tags stores Open Food Facts category tags for a product. Nil skips that write.
+	Tags interface {
+		SaveOffTags(ctx context.Context, productID string, categories, foodGroups []string) error
+	}
 }
 
-// now returns the current time, defaulting to time.Now so existing
-// construction sites that leave Now nil behave unchanged.
+// now returns the current time, defaulting to time.Now().UTC so existing
+// construction sites that leave Now nil behave unchanged. UTC drops the
+// monotonic clock reading before checked_at and refreshed_at are stored.
 func (s *LookupService) now() time.Time {
 	if s.Now != nil {
 		return s.Now()
 	}
-	return time.Now()
+	return time.Now().UTC()
 }
 
 // missTTL returns the time-to-live for a confirmed barcode miss, defaulting to
@@ -213,7 +219,25 @@ func (s *LookupService) persistExternalProduct(ctx context.Context, product *Pro
 	if err := s.Catalog.DeleteBarcodeMiss(ctx, product.ID); err != nil {
 		return fmt.Errorf("could not delete barcode miss: %w", err)
 	}
+	if err := saveOffTags(ctx, s.Tags, product); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func saveOffTags(ctx context.Context, tags interface {
+	SaveOffTags(ctx context.Context, productID string, categories, foodGroups []string) error
+}, product *ProductSummary) error {
+	if tags == nil || product == nil {
+		return nil
+	}
+	if len(product.CategoriesTags) == 0 && len(product.FoodGroupsTags) == 0 {
+		return nil
+	}
+	if err := tags.SaveOffTags(ctx, product.ID, product.CategoriesTags, product.FoodGroupsTags); err != nil {
+		return fmt.Errorf("could not save product tags: %w", err)
+	}
 	return nil
 }
 

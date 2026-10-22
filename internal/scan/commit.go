@@ -71,10 +71,9 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE scan_entries 
-		SET status = ?, committed_at = CURRENT_TIMESTAMP 
+		SET status = ?, committed_at = ?
 		WHERE id = ?`,
-		string(Committed),
-		scanEntry.ID,
+		string(Committed), r.now(), scanEntry.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update scan entry: %w", err)
@@ -105,6 +104,13 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 
 	return nil
+}
+
+func (r *Queue) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now().UTC()
 }
 
 // trackRestock reports whether a movement is past the opening snapshot.
@@ -226,9 +232,9 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE item_instances
-		SET removed_at = CURRENT_TIMESTAMP, removal_reason = 'consumed'
+		SET removed_at = ?, removal_reason = 'consumed'
 		WHERE id = ?`,
-		selected,
+		at, selected,
 	); err != nil {
 		return fmt.Errorf("remove instance: %w", err)
 	}
@@ -392,7 +398,9 @@ func (r *Queue) readInstance(ctx context.Context, id string) (*inventory.ItemIns
 }
 
 // findOrCreateItem retrieves the item ID for a user+product combination,
-// creating the item if it doesn't already exist.
+// creating the item if it doesn't already exist. A shelved row is still
+// this household's item: stock-in finds it, and the unshelve trigger puts
+// it back on the shelf.
 func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, productID string) (string, error) {
 	var itemID string
 	err := tx.QueryRowContext(ctx, `
@@ -469,13 +477,16 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	}
 
 	var itemID string
+	var shelved int
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM items 
+		SELECT id, shelved FROM items 
 		WHERE user_id = ? AND product_id = ?`,
 		scanEntry.UserID, targetProductID,
-	).Scan(&itemID)
+	).Scan(&itemID, &shelved)
 
-	if err == sql.ErrNoRows {
+	// A wipe keeps the item row and hides it. Scanning that product out is
+	// the same as scanning a product the household does not stock.
+	if err == sql.ErrNoRows || (err == nil && shelved != 0) {
 		if linkProductID != "" {
 			return ErrLinkNotStocked
 		}
@@ -522,16 +533,16 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	if linkProductID != "" {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE scan_entries
-			SET product_id = ?, status = ?, committed_at = CURRENT_TIMESTAMP
+			SET product_id = ?, status = ?, committed_at = ?
 			WHERE id = ?`,
-			linkProductID, string(Committed), scanEntry.ID,
+			linkProductID, string(Committed), time.Now().UTC(), scanEntry.ID,
 		)
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE scan_entries
-			SET status = ?, committed_at = CURRENT_TIMESTAMP
+			SET status = ?, committed_at = ?
 			WHERE id = ?`,
-			string(Committed), scanEntry.ID,
+			string(Committed), time.Now().UTC(), scanEntry.ID,
 		)
 	}
 	if err != nil {

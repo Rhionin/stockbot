@@ -3,7 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Button, Drawer, Group, Loader, Stack, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
 import {
-  createGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, listSuggestions, rescanSuggestions,
+  addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
+  listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
 } from '../../api/client';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
 import { InboxPage } from '../groups/InboxPage';
@@ -18,6 +19,12 @@ import { mergeInventoryEvent } from './inventoryUtils';
 import {
   asCatalog, asSuggestions, buildShelf, filterShelf, groupsForShelf, parseShelfFilter, type ShelfFilter, type ShelfMember,
 } from './shelf';
+import type { RestockItem, RestockSnapshot, RestockTarget } from '../../restock/types';
+import { restockCopy } from '../../restock/copy';
+import { TargetCard } from '../restock/TargetCard';
+import { TargetEditor } from '../restock/TargetEditor';
+import { showUndo } from '../restock/undo';
+import '../restock/restock.css';
 import '../groups/groups.css';
 import './shelf.css';
 import '../history/history.css';
@@ -50,9 +57,10 @@ const ProductBarcodeLine = ({ productId }: { productId: string }) => {
 
 const chips: { id: ShelfFilter; label: string }[] = [
   { id: 'all', label: 'All' },
-  { id: 'low', label: 'Running low' },
   { id: 'groups', label: 'Groups' },
-  { id: 'ungrouped', label: 'Ungrouped' },
+  { id: 'categories', label: 'Categories' },
+  { id: 'low', label: 'Running low' },
+  { id: 'restock', label: 'Not restocked' },
 ];
 
 export const InventoryPage = () => {
@@ -66,6 +74,8 @@ export const InventoryPage = () => {
   const [suggestions, setSuggestions] = useState<GroupSuggestion[]>([]);
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [householdMonths, setHouseholdMonths] = useState<number | undefined>();
+  const [restock, setRestock] = useState<RestockSnapshot | null>(null);
+  const [editorItem, setEditorItem] = useState<RestockItem | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
@@ -87,14 +97,16 @@ export const InventoryPage = () => {
     if (!quiet) setLoading(true);
     setError('');
     try {
-      const [items, settings, listed, cards, products] = await Promise.all([
+      const [items, settings, listed, cards, products, snapshot] = await Promise.all([
         getInventoryList(),
         getSupplySettings().catch(() => null),
         listGroups().catch(() => [] as ProductGroup[]),
         listSuggestions().catch(() => [] as GroupSuggestion[]),
         listProducts().catch(() => [] as Product[]),
+        getRestock().catch(() => null),
       ]);
       setInventoryItems(items);
+      setRestock(snapshot);
       setOpening(settings?.opening === true);
       setHouseholdMonths(settings?.months);
       setGroups(groupsForShelf(listed, items));
@@ -152,16 +164,29 @@ export const InventoryPage = () => {
     void rescan();
   }, [params, rescan, setParams]);
 
-  const rows = useMemo(
-    () => filterShelf(buildShelf({
-      items: inventoryItems,
-      groups,
+  const restockByItem = useMemo(() => {
+    const map = new Map<string, RestockItem>();
+    for (const item of restock?.items ?? []) map.set(item.itemId, item);
+    return map;
+  }, [restock]);
+
+  const rows = useMemo(() => {
+    const shelfFilter = filter === 'categories' || filter === 'restock' ? 'all' : filter;
+    const off = new Set((restock?.items ?? []).filter((item) => item.target.value === 0).map((item) => item.productId));
+    const items = filter === 'restock'
+      ? inventoryItems.filter((item) => restockByItem.get(item.item.id)?.target.value === 0)
+      : inventoryItems;
+    const visibleGroups = filter === 'restock'
+      ? groups.filter((group) => group.members.some((member) => off.has(member.productId)))
+      : groups;
+    return filterShelf(buildShelf({
+      items,
+      groups: visibleGroups,
       suggestions,
       catalog,
       householdMonths,
-    }), searchQuery, filter),
-    [inventoryItems, groups, suggestions, catalog, householdMonths, searchQuery, filter],
-  );
+    }), searchQuery, shelfFilter);
+  }, [inventoryItems, groups, suggestions, catalog, householdMonths, searchQuery, filter, restock, restockByItem]);
 
   const setFilter = (next: ShelfFilter) => {
     const updated = new URLSearchParams(params);
@@ -214,8 +239,59 @@ export const InventoryPage = () => {
     }
   };
 
-  const renderExpanded = (inventoryItem: InventoryItem): ReactNode => (
+  const saveItemTarget = async (item: RestockItem, target: RestockTarget) => {
+    await setItemTarget(item.itemId, target);
+    await loadInventory(true);
+  };
+
+  const stopItem = async (item: RestockItem) => {
+    const result = await dontRestockItem(item.itemId);
+    await loadInventory(true);
+    showUndo(result.title, result.detail, () => {
+      void (result.previous
+        ? setItemTarget(item.itemId, result.previous)
+        : clearItemTarget(item.itemId)
+      ).then(() => loadInventory(true));
+    });
+  };
+
+  const renderExpanded = (inventoryItem: InventoryItem): ReactNode => {
+    const view = restockByItem.get(inventoryItem.item.id);
+    return (
     <Stack gap="sm">
+      {view && (
+        <TargetCard
+          item={view}
+          onEdit={() => setEditorItem(view)}
+          onUseBroader={view.useAction ? () => { void clearItemTarget(view.itemId).then(() => loadInventory(true)); } : undefined}
+          onOpen={view.level === 'category' && view.categories[0] ? () => navigate(`/inventory/categories/${view.categories.find((category) => category.name === view.levelName)?.id ?? view.categories[0].id}`) : undefined}
+        />
+      )}
+      {view && (
+        <Group gap={6}>
+          {view.categories.map((category) => (
+            <Button key={category.id} size="compact-xs" variant="default" radius="xl" onClick={() => navigate(`/inventory/categories/${category.id}`)}>
+              {category.name}
+            </Button>
+          ))}
+          <Button
+            size="compact-xs"
+            variant="default"
+            radius="xl"
+            onClick={() => {
+              const next = restock?.categories.find((category) => !view.categories.some((member) => member.id === category.id));
+              if (next) void addItemCategory(view.itemId, next.id).then(() => loadInventory(true));
+            }}
+          >
+            + Category
+          </Button>
+          {view.categories.map((category) => (
+            <Button key={`remove-${category.id}`} size="compact-xs" variant="subtle" onClick={() => void removeItemCategory(view.itemId, category.id).then(() => loadInventory(true))}>
+              {`Remove ${category.name}`}
+            </Button>
+          ))}
+        </Group>
+      )}
       <ProductBarcodeLine productId={inventoryItem.item.productId} />
       <ItemInstanceList
         itemId={inventoryItem.item.id}
@@ -229,7 +305,8 @@ export const InventoryPage = () => {
         onSaved={() => void loadInventory()}
       />
     </Stack>
-  );
+    );
+  };
 
   const empty = !loading && error === '' && inventoryItems.length === 0 && groups.length === 0;
 
@@ -267,6 +344,7 @@ export const InventoryPage = () => {
             onClick={() => setFilter(chip.id)}
           >
             {chip.label}
+            {chip.id === 'restock' && restock && restock.notRestocked > 0 ? ` ${restock.notRestocked}` : ''}
           </UnstyledButton>
         ))}
       </div>
@@ -282,7 +360,17 @@ export const InventoryPage = () => {
       {!loading && error === '' && !empty && rows.length === 0 && (
         <Text c="dimmed">No products or groups match.</Text>
       )}
-      {rows.length > 0 && (
+      {filter === 'categories' && restock && (
+        <Stack gap={0}>
+          {restock.categories.map((category) => (
+            <UnstyledButton key={category.id} className="restock-row" onClick={() => navigate(`/inventory/categories/${category.id}`)}>
+              <span className="name"><b>{category.name}</b><span>{`${category.items} items`}</span></span>
+              <span className="value">{category.valueLabel}<span>{category.sourceLabel}</span></span>
+            </UnstyledButton>
+          ))}
+        </Stack>
+      )}
+      {filter !== 'categories' && rows.length > 0 && (
         <div className="shelf-list">
           {rows.map((row) => {
             if (row.kind === 'group') {
@@ -321,6 +409,14 @@ export const InventoryPage = () => {
                 onChecked={(next) => toggleChecked(inventoryItem.item.productId, next)}
                 onLongPress={() => startSelecting(inventoryItem.item.productId)}
                 onViewHistory={() => navigate(`/inventory/${inventoryItem.item.id}/history`)}
+                quietLine={restockByItem.get(inventoryItem.item.id)?.quietLine}
+                onRestockTarget={restockByItem.get(inventoryItem.item.id) ? () => setEditorItem(restockByItem.get(inventoryItem.item.id) ?? null) : undefined}
+                onDontRestock={restockByItem.get(inventoryItem.item.id) ? () => { void stopItem(restockByItem.get(inventoryItem.item.id)!); } : undefined}
+                dontRestockHint={restockCopy.dontItemHint}
+                useBroaderLabel={restockByItem.get(inventoryItem.item.id)?.useAction}
+                useBroaderHint={restockByItem.get(inventoryItem.item.id)?.useHint}
+                onUseBroader={restockByItem.get(inventoryItem.item.id)?.useAction ? () => { void clearItemTarget(inventoryItem.item.id).then(() => loadInventory(true)); } : undefined}
+                onCategories={() => selectItem(inventoryItem.item.id)}
               >
                 {selected ? renderExpanded(inventoryItem) : null}
               </ItemRow>
@@ -354,6 +450,16 @@ export const InventoryPage = () => {
           }}
         />
       )}
+      <TargetEditor
+        opened={editorItem !== null}
+        title={editorItem ? `Restock target for ${editorItem.name}` : 'Restock target'}
+        initial={editorItem?.target}
+        onClose={() => setEditorItem(null)}
+        onSave={async (target) => {
+          if (!editorItem) return;
+          await saveItemTarget(editorItem, target);
+        }}
+      />
       <Drawer.Root opened={reviewOpen} onClose={closeReview} position="right" size="md">
         <Drawer.Overlay />
         <Drawer.Content className="bin-page">

@@ -24,7 +24,7 @@ type inventoryInstanceCreateRequest struct {
 }
 
 func (h *InventoryInstanceCreateHandler) Handle(req Request[inventoryInstanceCreateRequest, inventoryInstanceCreatePathParams]) (Created, error) {
-	created, err := h.Queue.StockIn(req.Context, req.PathParams.ItemID, time.Now(), req.Body.ExpiresAt)
+	created, err := h.Queue.StockIn(req.Context, req.PathParams.ItemID, time.Now().UTC(), req.Body.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, scan.ErrItemNotFound) {
 			return Created{}, NotFound("item not found")

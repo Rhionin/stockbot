@@ -73,6 +73,7 @@ func TestHouseholdAuthPublicPathsAndLAN(t *testing.T) {
 		{http.MethodGet, "/terms"},
 		{http.MethodGet, "/privacy"},
 		{http.MethodPost, "/api/deploy-hook"},
+		{http.MethodPost, "/api/sentry-tunnel"},
 	}
 	for _, tc := range public {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
@@ -563,5 +564,97 @@ func TestSessionOpenWhenAuthIsNotConfigured(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"required":false`) {
 		t.Fatalf("session = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRequestHTTPSSessionCookie checks the Secure flag on a real Set-Cookie.
+// A public-hostname login is always Secure: cookieSecure returns before
+// requestHTTPS so a tunnel that reports X-Forwarded-Proto: http cannot drop
+// the flag. requestHTTPS itself is what a session cookie uses when that
+// short-circuit does not apply, which logout does.
+func TestRequestHTTPSSessionCookie(t *testing.T) {
+	gate := testHousehold(t, "pantry", "correct-horse-battery")
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(gate))
+	plain := httptest.NewServer(handler)
+	t.Cleanup(plain.Close)
+	tlsSrv := httptest.NewTLSServer(handler)
+	t.Cleanup(tlsSrv.Close)
+
+	const loginBody = `{"username":"pantry","password":"correct-horse-battery"}`
+	tests := []struct {
+		name       string
+		base       *httptest.Server
+		client     *http.Client
+		path       string
+		body       string
+		headers    map[string]string
+		wantStatus int
+		wantSecure bool
+	}{
+		{
+			name: "public login over plain http is still Secure",
+			base: plain, client: plain.Client(), path: "/api/login", body: loginBody,
+			headers: map[string]string{entryHeader: entryPublic}, wantStatus: http.StatusOK, wantSecure: true,
+		},
+		{
+			name: "public login with X-Forwarded-Proto https is Secure",
+			base: plain, client: plain.Client(), path: "/api/login", body: loginBody,
+			headers:    map[string]string{entryHeader: entryPublic, "X-Forwarded-Proto": "https"},
+			wantStatus: http.StatusOK, wantSecure: true,
+		},
+		{
+			name: "public login over TLS is Secure",
+			base: tlsSrv, client: tlsSrv.Client(), path: "/api/login", body: loginBody,
+			headers: map[string]string{entryHeader: entryPublic}, wantStatus: http.StatusOK, wantSecure: true,
+		},
+		{
+			name: "plain http without a forwarded proto is not Secure",
+			base: plain, client: plain.Client(), path: "/api/logout",
+			wantStatus: http.StatusOK, wantSecure: false,
+		},
+		{
+			name: "X-Forwarded-Proto http is not Secure",
+			base: plain, client: plain.Client(), path: "/api/logout",
+			headers: map[string]string{"X-Forwarded-Proto": "http, https"}, wantStatus: http.StatusOK, wantSecure: false,
+		},
+		{
+			name: "X-Forwarded-Proto https sets Secure",
+			base: plain, client: plain.Client(), path: "/api/logout",
+			headers: map[string]string{"X-Forwarded-Proto": " HTTPS , http"}, wantStatus: http.StatusOK, wantSecure: true,
+		},
+		{
+			name: "direct TLS sets Secure even when the proto header says http",
+			base: tlsSrv, client: tlsSrv.Client(), path: "/api/logout",
+			headers: map[string]string{"X-Forwarded-Proto": "http"}, wantStatus: http.StatusOK, wantSecure: true,
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, tt.base.URL+tt.path, strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set(clientIPHeader, "203.0.113."+strconv.Itoa(20+i))
+			for key, val := range tt.headers {
+				req.Header.Set(key, val)
+			}
+			res, err := tt.client.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != tt.wantStatus {
+				b, _ := io.ReadAll(res.Body)
+				t.Fatalf("status %d: %s", res.StatusCode, b)
+			}
+			cookies := res.Cookies()
+			if len(cookies) != 1 || cookies[0].Name != sessionCookie {
+				t.Fatalf("cookies = %+v", cookies)
+			}
+			raw := res.Header.Get("Set-Cookie")
+			if cookies[0].Secure != tt.wantSecure || strings.Contains(raw, "; Secure") != tt.wantSecure {
+				t.Fatalf("Secure = %v, Set-Cookie %q", cookies[0].Secure, raw)
+			}
+		})
 	}
 }

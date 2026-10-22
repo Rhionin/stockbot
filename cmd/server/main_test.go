@@ -164,4 +164,10 @@ func TestUnauthenticatedListenWarning(t *testing.T) {
 	if got := unauthenticatedListenWarning("localhost:8080"); got != "" {
 		t.Fatalf("localhost warned: %q", got)
 	}
+	if got := unauthenticatedListenWarning("localhost"); got != "" {
+		t.Fatalf("localhost without a port warned: %q", got)
+	}
+	if got := unauthenticatedListenWarning("0.0.0.0"); got == "" {
+		t.Fatal("wildcard without a port should warn")
+	}
 }

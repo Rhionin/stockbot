@@ -147,7 +147,7 @@ func (r *Pantry) ListItems(ctx context.Context, userID string) ([]Item, error) {
 			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ?
+		WHERE i.user_id = ? AND i.shelved = 0
 		ORDER BY p.name`,
 		userID,
 	)
@@ -398,6 +398,7 @@ func (r *Pantry) publishInventoryEvent(ctx context.Context, itemID string) {
 }
 
 // GetItem returns the item with the given ID, or nil if no such item exists.
+// A wiped (shelved) item is hidden from ListItems and still returned here.
 func (r *Pantry) GetItem(ctx context.Context, itemID string) (*Item, error) {
 	return r.getItemByID(ctx, itemID)
 }

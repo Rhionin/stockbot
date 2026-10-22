@@ -118,12 +118,19 @@ func TestSavePlannedLinesSnapshotsAutoRowsAndLeavesManuals(t *testing.T) {
 			continue
 		}
 		found = true
-		if row.ID != autoRow.ID || row.Quantity != 3 || row.PurchasedAt != nil {
-			t.Fatalf("changed plan should refresh the same row, got %#v", row)
+		if row.ID == autoRow.ID || row.Quantity != 3 || row.PurchasedAt != nil {
+			t.Fatalf("changed plan should add a new unpurchased line, got %#v", row)
 		}
 	}
 	if !found {
 		t.Fatalf("auto row missing after change: %#v", active)
+	}
+	purchased, err := deps.shopping.GetItemByID(ctx, autoRow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purchased == nil || purchased.PurchasedAt == nil || purchased.Quantity != 2 || purchased.Note != "replacing 2 you used" {
+		t.Fatalf("changed plan rewrote the purchased row: %#v", purchased)
 	}
 
 	if err := deps.shopping.SavePlannedLines(ctx, "user-1", nil, nil); err != nil {
@@ -135,5 +142,57 @@ func TestSavePlannedLinesSnapshotsAutoRowsAndLeavesManuals(t *testing.T) {
 	}
 	if len(active) != 1 || active[0].ItemID != manualID || active[0].Quantity != 5 {
 		t.Fatalf("clearing auto rows should leave the manual, got %#v", active)
+	}
+}
+
+func TestSavePlannedLinesKeepsPurchasedRowsAcrossATargetChange(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "user-1", "bought-product", "Bought Product")
+	manualID := createTestItem(t, deps, ctx, "user-1", "kept-manual", "Kept Manual")
+	if _, err := deps.shopping.AddManualItem(ctx, "user-1", manualID, 4); err != nil {
+		t.Fatalf("AddManualItem: %v", err)
+	}
+	line := shopping.PlannedLine{ItemID: itemID, Quantity: 2, Note: "replacing 2 you used"}
+	if err := deps.shopping.SavePlannedLines(ctx, "user-1", []shopping.PlannedLine{line}, nil); err != nil {
+		t.Fatalf("SavePlannedLines: %v", err)
+	}
+	active, err := deps.shopping.ListUnpurchased(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("ListUnpurchased: %v", err)
+	}
+	var bought shopping.ShoppingListItem
+	for _, row := range active {
+		if row.ItemID == itemID {
+			bought = row
+		}
+	}
+	if bought.ID == "" {
+		t.Fatal("missing planned row")
+	}
+	if err := deps.shopping.MarkPurchased(ctx, bought.ID); err != nil {
+		t.Fatalf("MarkPurchased: %v", err)
+	}
+
+	if err := deps.shopping.SavePlannedLines(ctx, "user-1", nil, nil); err != nil {
+		t.Fatalf("SavePlannedLines drop: %v", err)
+	}
+	if err := deps.shopping.SavePlannedLines(ctx, "user-1", []shopping.PlannedLine{line}, nil); err != nil {
+		t.Fatalf("SavePlannedLines undo: %v", err)
+	}
+
+	active, err = deps.shopping.ListUnpurchased(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("ListUnpurchased after undo: %v", err)
+	}
+	if len(active) != 1 || active[0].ItemID != manualID || active[0].Quantity != 4 {
+		t.Fatalf("list changed: %#v", active)
+	}
+	var purchased int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ? AND purchased_at IS NOT NULL`, bought.ID).Scan(&purchased); err != nil {
+		t.Fatal(err)
+	}
+	if purchased != 1 {
+		t.Fatal("purchased row was deleted or reopened")
 	}
 }

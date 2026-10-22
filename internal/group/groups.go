@@ -174,8 +174,8 @@ func ValidateTarget(in *TargetInput) error {
 	if set != 1 {
 		return invalid("Choose a window, a quantity, or clearing the target.")
 	}
-	if in.Window != nil && (*in.Window < 1 || *in.Window > 12) {
-		return invalid("The supply window has to be between 1 and 12 months.")
+	if in.Window != nil && (*in.Window < 0 || *in.Window > 12) {
+		return invalid("The supply window has to be between 0 and 12 months.")
 	}
 	if in.Quantity != nil {
 		q := *in.Quantity
@@ -410,26 +410,58 @@ func (g *Groups) SetRule(ctx context.Context, id, rule string, pin *string, conf
 }
 
 // SetMemberRestock keeps a product in the group and out of every shopping rule.
-// noRestock false puts it back in the rotation.
+// noRestock false puts it back in the rotation. The declaration is an item
+// target of 0, the same store every other don't-restock action uses.
 func (g *Groups) SetMemberRestock(ctx context.Context, groupID, productID string, noRestock bool) (Group, error) {
 	if err := ensureGroup(ctx, g.db, groupID); err != nil {
 		return Group{}, err
 	}
-	flag := 0
-	if noRestock {
-		flag = 1
+	var exists int
+	err := g.db.QueryRowContext(ctx, `
+		SELECT 1 FROM product_group_members WHERE group_id = ? AND product_id = ?`, groupID, productID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Group{}, missing("That product is not in this group.")
 	}
-	res, err := g.db.ExecContext(ctx, `
-		UPDATE product_group_members SET no_restock = ?
-		WHERE group_id = ? AND product_id = ?`, flag, groupID, productID)
 	if err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return Group{}, missing("That product is not in this group.")
+	itemID, err := ensureHouseholdItem(ctx, g.db, productID)
+	if err != nil {
+		return Group{}, err
+	}
+	if noRestock {
+		_, err = g.db.ExecContext(ctx, `
+			INSERT INTO item_targets (household_id, item_id, kind, value)
+			VALUES (?, ?, 'months', 0)
+			ON CONFLICT (household_id, item_id) DO UPDATE SET kind = 'months', value = 0`,
+			householdUser, itemID)
+	} else {
+		_, err = g.db.ExecContext(ctx, `
+			DELETE FROM item_targets WHERE household_id = ? AND item_id = ? AND value = 0`,
+			householdUser, itemID)
+	}
+	if err != nil {
+		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
 	return g.load(ctx, g.db, groupID)
+}
+
+func ensureHouseholdItem(ctx context.Context, q querier, productID string) (string, error) {
+	var id string
+	err := q.QueryRowContext(ctx, `
+		SELECT id FROM items WHERE user_id = ? AND product_id = ?`, householdUser, productID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("could not update the group: %w", err)
+	}
+	id = uuid.NewString()
+	if _, err := q.ExecContext(ctx, `
+		INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`, id, householdUser, productID); err != nil {
+		return "", fmt.Errorf("could not update the group: %w", err)
+	}
+	return id, nil
 }
 
 // SetTarget saves the group's target and does not change member supply settings.
@@ -880,13 +912,18 @@ func overrideNotices(ctx context.Context, q querier, ids []string) ([]OverrideNo
 		return nil, nil
 	}
 	query := `
-		SELECT o.product_id, p.name, o.window_months, o.quantity, p.net_base_value, COALESCE(p.net_dimension, '')
-		FROM supply_overrides o
-		JOIN products p ON p.id = o.product_id
-		WHERE o.product_id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+		SELECT i.product_id, p.name,
+			CASE WHEN t.kind = 'months' THEN t.value END,
+			CASE WHEN t.kind = 'amount' THEN t.value END,
+			p.net_base_value, COALESCE(p.net_dimension, '')
+		FROM item_targets t
+		JOIN items i ON i.id = t.item_id AND i.user_id = t.household_id
+		JOIN products p ON p.id = i.product_id
+		WHERE t.household_id = ? AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, householdUser)
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -896,18 +933,18 @@ func overrideNotices(ctx context.Context, q querier, ids []string) ([]OverrideNo
 	var notices []OverrideNotice
 	for rows.Next() {
 		var n OverrideNotice
-		var window, qty sql.NullInt64
+		var window, qty sql.NullFloat64
 		var net sql.NullFloat64
 		var dim string
 		if err := rows.Scan(&n.ProductID, &n.Name, &window, &qty, &net, &dim); err != nil {
 			return nil, fmt.Errorf("could not read supply settings: %w", err)
 		}
-		if window.Valid {
-			v := int(window.Int64)
+		if window.Valid && window.Float64 > 0 {
+			v := int(math.Round(window.Float64))
 			n.WindowMonths = &v
 		}
-		if qty.Valid {
-			count := int(qty.Int64)
+		if qty.Valid && qty.Float64 > 0 {
+			count := int(math.Round(qty.Float64))
 			n.Quantity = &count
 			if net.Valid && net.Float64 > 0 && count > 0 {
 				if ounces, _, ok := product.DisplayNetSize(net.Float64*float64(count), dim); ok {
@@ -935,6 +972,16 @@ func deleteOverrides(ctx context.Context, tx *sql.Tx, ids []string) error {
 		args[i] = id
 	}
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("could not update supply settings: %w", err)
+	}
+	itemQuery := `DELETE FROM item_targets WHERE value > 0 AND item_id IN (
+		SELECT id FROM items WHERE user_id = ? AND product_id IN (` + placeholders(len(ids)) + `))`
+	itemArgs := make([]any, 0, len(ids)+1)
+	itemArgs = append(itemArgs, householdUser)
+	for _, id := range ids {
+		itemArgs = append(itemArgs, id)
+	}
+	if _, err := tx.ExecContext(ctx, itemQuery, itemArgs...); err != nil {
 		return fmt.Errorf("could not update supply settings: %w", err)
 	}
 	return nil
@@ -1084,11 +1131,16 @@ func loadMembers(ctx context.Context, q querier, groupID string) ([]Member, erro
 		         JOIN items i ON i.id = c.item_id
 		         WHERE i.product_id = m.product_id AND i.user_id = ?),
 		       (SELECT MAX(s.at) FROM stock_in_events s WHERE s.product_id = m.product_id),
-		       m.no_restock
+		       COALESCE((
+		         SELECT 1 FROM item_targets t
+		         JOIN items it ON it.id = t.item_id AND it.user_id = t.household_id
+		         WHERE it.product_id = m.product_id AND t.household_id = ? AND t.value = 0
+		         LIMIT 1
+		       ), 0)
 		FROM product_group_members m
 		JOIN products p ON p.id = m.product_id
 		WHERE m.group_id = ?
-		ORDER BY p.name, m.product_id`, householdUser, householdUser, householdUser, groupID)
+		ORDER BY p.name, m.product_id`, householdUser, householdUser, householdUser, householdUser, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("could not load the group: %w", err)
 	}
@@ -1248,6 +1300,11 @@ func contains(ids []string, id string) bool {
 
 func parseDBTime(s string) time.Time {
 	s = strings.TrimSpace(s)
+	// time.Time.String appends " m=+…" while a monotonic reading is present.
+	// The sqlite driver stores that whole string, and MAX returns it as text.
+	if i := strings.Index(s, " m="); i >= 0 {
+		s = s[:i]
+	}
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,

@@ -2,7 +2,6 @@ package cart
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -15,7 +14,7 @@ import (
 )
 
 func TestEngine_RegistryValidation(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -46,7 +45,7 @@ func TestEngine_RegistryValidation(t *testing.T) {
 // Requirements: 1.8, 3.7, 4.9, 6.6, 7.9, 8.6, 9.12, 10.4, 11.8, 13.9
 func TestProperty7_Isolation_CapabilityCombinations(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		db, err := sql.Open("sqlite", ":memory:")
+		db, err := app.OpenSQLite(":memory:")
 		require.NoError(t, err)
 		defer db.Close()
 
@@ -100,7 +99,7 @@ func TestProperty7_Isolation_CapabilityCombinations(t *testing.T) {
 // Requirements: 1.8, 3.7, 4.9, 6.6, 7.9, 8.6, 9.12, 10.4, 11.8, 13.9
 func TestProperty8_Isolation_StateKinds(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		db, err := sql.Open("sqlite", ":memory:")
+		db, err := app.OpenSQLite(":memory:")
 		require.NoError(t, err)
 		defer db.Close()
 

@@ -13,19 +13,36 @@ fail() {
   exit 1
 }
 
+# grep -q stops at the first match. Under pipefail a pipe then dies with
+# SIGPIPE, so have fails and lack passes even when the text is there.
 have() {
   local haystack="$1" needle="$2" label="$3"
-  if ! printf '%s\n' "$haystack" | grep -q -F -- "$needle"; then
+  if ! grep -q -F -- "$needle" <<<"$haystack"; then
     fail "$label (missing $needle)"
   fi
 }
 
 lack() {
   local haystack="$1" needle="$2" label="$3"
-  if printf '%s\n' "$haystack" | grep -q -F -- "$needle"; then
+  if grep -q -F -- "$needle" <<<"$haystack"; then
     fail "$label (unexpected $needle)"
   fi
 }
+
+# The match is the first of tens of thousands of lines, which is when the old
+# pipe helper lost the writer. Fifty tries is enough for that helper to fail
+# on every run. pipefail is already on for this file.
+assert_have_lack_large_input() {
+  local large n
+  large=$(awk 'BEGIN { print "NEEDLE-PRESENT"; for (i = 1; i <= 40000; i++) print "padding" }')
+  for ((n = 1; n <= 50; n++)); do
+    have "$large" "NEEDLE-PRESENT" "large input contains the needle"
+    if (lack "$large" "NEEDLE-PRESENT" "large input must report the needle") 2>/dev/null; then
+      fail "lack passed on large input that contains the needle (try $n)"
+    fi
+  done
+}
+assert_have_lack_large_input
 
 # compose_service_image prints the image of a two-space-indented service.
 # The compose files are the source of the pin; callers compare them instead
@@ -179,7 +196,7 @@ lack "$public_cfg" 'Caddyfile.tunnel' "certificate mode must not mount the tunne
 
 lack "$tunnel_cfg" 'published: "80"' "tunnel mode must not publish port 80"
 lack "$tunnel_cfg" 'published: "443"' "tunnel mode must not publish port 443"
-have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.0' "tunnel mode pins cloudflared"
+have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.1' "tunnel mode pins cloudflared"
 have "$tunnel_cfg" "$tunnel_caddy" "tunnel mode pins Caddy"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.2' "cloudflared has the trusted address"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.3' "caddy has a fixed address"

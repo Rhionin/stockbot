@@ -2,6 +2,10 @@
 
 This directory contains the React frontend for Stockbot, built with TypeScript and Vite.
 
+## Requirements
+
+Node.js 24 or newer. `.nvmrc` pins `24` (run `nvm use` in this directory). Vitest crashes under Node 20 (jsdom/undici). `package.json` sets `"engines": { "node": ">=24" }` and `.npmrc` sets `engine-strict=true`, so `npm ci` on an older Node fails immediately.
+
 ## Local Development Workflow
 
 Stockbot runs as two separate processes during development:

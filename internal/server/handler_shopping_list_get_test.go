@@ -191,12 +191,20 @@ func beginUsing(t *testing.T, db *sql.DB, started time.Time) {
 
 func setSupplyQuantity(t *testing.T, db *sql.DB, productID string, qty int) {
 	t.Helper()
-	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO supply_overrides (product_id, quantity) VALUES (?, ?)
-		 ON CONFLICT(product_id) DO UPDATE SET quantity = excluded.quantity, window_months = NULL`,
-		productID, qty,
-	); err != nil {
+	res, err := db.ExecContext(context.Background(),
+		`INSERT INTO item_targets (household_id, item_id, kind, value)
+		 SELECT i.user_id, i.id, 'amount', ?
+		 FROM items i
+		 WHERE i.product_id = ? AND i.user_id = 'user-1'
+		 ON CONFLICT(household_id, item_id) DO UPDATE SET kind = 'amount', value = excluded.value`,
+		qty, productID,
+	)
+	if err != nil {
 		t.Fatalf("setSupplyQuantity: %v", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		t.Fatalf("setSupplyQuantity: no household item for %s", productID)
 	}
 }
 

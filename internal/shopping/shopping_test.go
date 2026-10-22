@@ -16,6 +16,7 @@ import (
 
 // testDeps holds all stores needed for shopping list tests.
 type testDeps struct {
+	db        *sql.DB
 	shopping  *shopping.Store
 	inventory *inventory.Pantry
 	product   *product.Catalog
@@ -25,7 +26,7 @@ type testDeps struct {
 // and returns stores for shopping, inventory, and product.
 func newTestStore(t *testing.T) testDeps {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -34,6 +35,7 @@ func newTestStore(t *testing.T) testDeps {
 		t.Fatalf("RunMigrations: %v", err)
 	}
 	return testDeps{
+		db:        conn,
 		shopping:  shopping.NewStore(conn),
 		inventory: inventory.NewPantry(conn),
 		product:   product.NewCatalog(conn),

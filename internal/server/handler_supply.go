@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/group"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/supply"
 )
 
@@ -73,8 +75,8 @@ func (h *SupplySettingsPutHandler) Handle(req Request[supplyMonthsRequest, struc
 
 // SupplyOverrideGetHandler handles GET /api/products/{id}/supply-override.
 type SupplyOverrideGetHandler struct {
-	Supply *supply.Service
-	Groups *group.Groups
+	Targets *restock.Targets
+	Groups  *group.Groups
 }
 
 func (h *SupplyOverrideGetHandler) Handle(req Request[struct{}, productIDParams]) (*supplyOverrideResponse, error) {
@@ -84,17 +86,17 @@ func (h *SupplyOverrideGetHandler) Handle(req Request[struct{}, productIDParams]
 	if err := refuseGroupedOverride(req.Context, h.Groups, req.PathParams.ID); err != nil {
 		return nil, err
 	}
-	override, err := h.Supply.Override(req.Context, supply.ProductID(req.PathParams.ID))
+	target, err := h.productTarget(req.Context, req.PathParams.ID)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, err
 	}
-	return overrideResponse(override), nil
+	return targetAsOverride(target), nil
 }
 
 // SupplyOverridePutHandler handles PUT /api/products/{id}/supply-override.
 type SupplyOverridePutHandler struct {
-	Supply *supply.Service
-	Groups *group.Groups
+	Targets *restock.Targets
+	Groups  *group.Groups
 }
 
 func (h *SupplyOverridePutHandler) Handle(req Request[supplyOverrideRequest, productIDParams]) (*supplyOverrideResponse, error) {
@@ -108,14 +110,46 @@ func (h *SupplyOverridePutHandler) Handle(req Request[supplyOverrideRequest, pro
 	if err != nil {
 		return nil, err
 	}
-	if err := h.Supply.SetOverride(req.Context, supply.ProductID(req.PathParams.ID), override); err != nil {
-		return nil, InternalError(err)
-	}
-	saved, err := h.Supply.Override(req.Context, supply.ProductID(req.PathParams.ID))
+	itemID, err := h.Targets.ItemIDByProduct(req.Context, req.PathParams.ID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	return overrideResponse(saved), nil
+	if itemID == "" {
+		return nil, NotFound("That product isn't in the household.")
+	}
+	switch {
+	case override == supply.Override{}:
+		err = h.Targets.ClearItem(req.Context, itemID)
+	default:
+		if months, ok := override.Window(); ok {
+			err = h.Targets.SetItem(req.Context, itemID, restock.Target{Kind: restock.KindMonths, Value: float64(months)})
+		} else if qty, ok := override.Quantity(); ok {
+			err = h.Targets.SetItem(req.Context, itemID, restock.Target{Kind: restock.KindAmount, Value: float64(qty)})
+		}
+	}
+	if err != nil {
+		return nil, restockError(err)
+	}
+	target, err := h.Targets.ItemTarget(req.Context, itemID)
+	if err != nil {
+		return nil, restockError(err)
+	}
+	return targetAsOverride(target), nil
+}
+
+func (h *SupplyOverrideGetHandler) productTarget(ctx context.Context, productID string) (*restock.Target, error) {
+	itemID, err := h.Targets.ItemIDByProduct(ctx, productID)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if itemID == "" {
+		return nil, nil
+	}
+	target, err := h.Targets.ItemTarget(ctx, itemID)
+	if err != nil {
+		return nil, restockError(err)
+	}
+	return target, nil
 }
 
 // OnboardingCompleteHandler handles POST /api/onboarding/complete.
@@ -161,14 +195,16 @@ func settingsResponse(settings supply.Settings) *supplySettingsResponse {
 	}
 }
 
-func overrideResponse(override supply.Override) *supplyOverrideResponse {
+func targetAsOverride(target *restock.Target) *supplyOverrideResponse {
 	resp := &supplyOverrideResponse{}
-	if months, ok := override.Window(); ok {
-		n := int(months)
-		resp.WindowMonths = &n
+	if target == nil || target.Value <= 0 {
+		return resp
 	}
-	if qty, ok := override.Quantity(); ok {
-		n := int(qty)
+	n := int(math.Round(target.Value))
+	switch target.Kind {
+	case restock.KindMonths:
+		resp.WindowMonths = &n
+	case restock.KindAmount:
 		resp.Quantity = &n
 	}
 	return resp

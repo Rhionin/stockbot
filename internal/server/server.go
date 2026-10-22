@@ -2,11 +2,13 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/brand"
 	"github.com/Rhionin/stockbot/internal/cart"
@@ -19,6 +21,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/push"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/shopping"
@@ -53,6 +56,8 @@ type config struct {
 	household        *HouseholdAuth
 	syncToken        string
 	push             push.Config
+	sentryTunnel     SentryTunnelConfig
+	streamShutdown   *StreamShutdown
 }
 
 // Option is a functional option for NewHandler.
@@ -142,6 +147,22 @@ func WithDeployHook(secret, path string) Option {
 	}
 }
 
+// WithStreamShutdown ends GET /api/events when the process stops. main
+// registers the same value with http.Server.RegisterOnShutdown.
+func WithStreamShutdown(s *StreamShutdown) Option {
+	return func(c *config) {
+		c.streamShutdown = s
+	}
+}
+
+// WithSentryTunnel enables POST /api/sentry-tunnel. An empty host or an
+// empty project list leaves the route looking like it is not there.
+func WithSentryTunnel(cfg SentryTunnelConfig) Option {
+	return func(c *config) {
+		c.sentryTunnel = cfg
+	}
+}
+
 // WithPush supplies the VAPID keys used to send scan alerts when no tab is
 // open. An unconfigured value leaves the subscribe route explaining that
 // background alerts are not set up, and the open tab still notifies itself.
@@ -204,7 +225,7 @@ func NewHandler(
 	// still asks a person to sign in. A wrong or missing token never falls
 	// through to the open LAN listener.
 	handler = syncGate(syncToken, handler)
-	return observeHTTP(reg, secureHeaders(handler)), scanQueue
+	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
 // newAPIMux creates the API-only mux with all existing route registrations.
@@ -264,7 +285,11 @@ func newAPIMux(
 		fmt.Fprintln(w, response)
 	})
 
-	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg}
+	var streams *StreamShutdown
+	if cfg != nil {
+		streams = cfg.streamShutdown
+	}
+	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg, Shutdown: streams}
 	apiMux.HandleFunc("GET /api/events", eventsHandler.Handle)
 	// Caddy serves this exact path without the household password, beside
 	// telemetry, and isPublicPath leaves it open when X-Pantry-Entry is set.
@@ -283,6 +308,14 @@ func newAPIMux(
 		deployPath = cfg.deployHookPath
 	}
 	apiMux.HandleFunc("POST /api/deploy-hook", deployhook.New(deploySecret, deployPath).ServeHTTP)
+
+	// Open before household login so a signed-out page can report a failure.
+	// syncGate also lets this path through. Nothing else is exempted with it.
+	var tunnelCfg SentryTunnelConfig
+	if cfg != nil {
+		tunnelCfg = cfg.sentryTunnel
+	}
+	apiMux.Handle(sentryTunnelPath, newSentryTunnel(tunnelCfg))
 
 	// Scanner mode + config handlers. The mode handler publishes through the
 	// same broadcaster GET /api/events uses, so a browser-initiated mode switch
@@ -396,8 +429,9 @@ func newAPIMux(
 	createHandler.Groups = groups
 	updateHandler.Groups = groups
 	lookupHandler.Groups = groups
-	supplyOverrideGetHandler := &SupplyOverrideGetHandler{Supply: supplySvc, Groups: groups}
-	supplyOverridePutHandler := &SupplyOverridePutHandler{Supply: supplySvc, Groups: groups}
+	restockTargets := restock.NewTargets(db)
+	supplyOverrideGetHandler := &SupplyOverrideGetHandler{Targets: restockTargets, Groups: groups}
+	supplyOverridePutHandler := &SupplyOverridePutHandler{Targets: restockTargets, Groups: groups}
 	onboardingCompleteHandler := &OnboardingCompleteHandler{Supply: supplySvc}
 
 	apiMux.HandleFunc("GET /api/inventory", HandleJSON(inventoryListHandler.Handle))
@@ -425,6 +459,26 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/products/{id}/supply-override", HandleJSON(supplyOverrideGetHandler.Handle))
 	apiMux.HandleFunc("PUT /api/products/{id}/supply-override", HandleJSON(supplyOverridePutHandler.Handle))
 	apiMux.HandleFunc("POST /api/onboarding/complete", HandleJSON(onboardingCompleteHandler.Handle))
+
+	restockHandler := &RestockHandler{Targets: restockTargets}
+	apiMux.HandleFunc("GET /api/restock", HandleJSON(restockHandler.Snapshot))
+	apiMux.HandleFunc("PUT /api/restock/household", HandleJSON(restockHandler.PutHousehold))
+	apiMux.HandleFunc("PUT /api/restock/items/{itemId}", HandleJSON(restockHandler.PutItem))
+	apiMux.HandleFunc("DELETE /api/restock/items/{itemId}", HandleJSON(restockHandler.DeleteItem))
+	apiMux.HandleFunc("POST /api/restock/items/{itemId}/dont-restock", HandleJSON(restockHandler.DontRestock))
+	apiMux.HandleFunc("POST /api/restock/items/{itemId}/categories", HandleJSON(restockHandler.AddItemCategory))
+	apiMux.HandleFunc("DELETE /api/restock/items/{itemId}/categories/{categoryId}", HandleJSON(restockHandler.RemoveItemCategory))
+	apiMux.HandleFunc("GET /api/restock/categories", HandleJSON(restockHandler.Categories))
+	apiMux.HandleFunc("POST /api/restock/categories", HandleJSON(restockHandler.CreateCategory))
+	apiMux.HandleFunc("PUT /api/restock/categories/{id}/target", HandleJSON(restockHandler.PutCategoryTarget))
+	apiMux.HandleFunc("POST /api/restock/categories/{id}/preview", HandleJSON(restockHandler.PreviewCategory))
+	apiMux.HandleFunc("PATCH /api/restock/categories/{id}", HandleJSON(restockHandler.RenameCategory))
+	apiMux.HandleFunc("POST /api/restock/categories/{id}/merge", HandleJSON(restockHandler.MergeCategory))
+	apiMux.HandleFunc("DELETE /api/restock/categories/{id}", HandleJSON(restockHandler.DeleteCategory))
+	apiMux.HandleFunc("POST /api/restock/groups/{id}/preview", HandleJSON(restockHandler.PreviewGroup))
+	apiMux.HandleFunc("GET /api/restock/suggestions", HandleJSON(restockHandler.Suggestions))
+	apiMux.HandleFunc("POST /api/restock/suggestions/apply", HandleJSON(restockHandler.ApplySuggestions))
+	apiMux.HandleFunc("POST /api/restock/suggestions/dismiss", HandleJSON(restockHandler.DismissSuggestions))
 
 	groupHandler := &GroupHandler{Groups: groups, Supply: supplySvc}
 	apiMux.HandleFunc("GET /api/groups", HandleJSON(groupHandler.List))
@@ -482,6 +536,12 @@ func newAPIMux(
 		Registry:     registry,
 		Adjustments:  shoppingList,
 	}
+	refreshPlan := func(ctx context.Context) error {
+		_, err := stageShoppingPlan(ctx, "user-1", pantry, shoppingList, supplySvc, time.Now())
+		return err
+	}
+	restockHandler.Refresh = refreshPlan
+	groupHandler.Refresh = refreshPlan
 	shoppingListItemCreateHandler := &ShoppingListItemCreateHandler{
 		ShoppingList: shoppingList,
 		Pantry:       pantry,
@@ -540,7 +600,10 @@ func newAPIMux(
 		Ledger:           ledger,
 	}
 	providerLedgerGetHandler := &ProviderLedgerGetHandler{ProviderLedgerHandler: *providerLedgerHandler}
-	providerLedgerResetHandler := &ProviderLedgerResetHandler{ProviderLedgerHandler: *providerLedgerHandler}
+	providerLedgerResetHandler := &ProviderLedgerResetHandler{
+		ProviderLedgerHandler: *providerLedgerHandler,
+		ShoppingList:          shoppingList,
+	}
 
 	apiMux.HandleFunc("GET /api/providers", HandleJSON(listProvidersHandler.Handle))
 	apiMux.HandleFunc("GET /api/providers/{providerId}/authorize", HandleJSON(providerAuthorizeHandler.Handle))

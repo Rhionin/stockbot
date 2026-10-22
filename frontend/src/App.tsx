@@ -7,6 +7,8 @@ import { InventoryPage } from './components/inventory/InventoryPage';
 import { ShoppingListPage } from './components/shopping/ShoppingListPage';
 import { DiagnosticsPage } from './components/diagnostics/DiagnosticsPage';
 import { SettingsPage } from './components/settings/SettingsPage';
+import { CategoryPage } from './components/restock/CategoryPage';
+import { SuggestionsPage } from './components/restock/SuggestionsPage';
 import { GroupDetailPage } from './components/groups/GroupDetailPage';
 import { HistoryPage } from './components/history/HistoryPage';
 import { LedgerPage } from './components/history/LedgerPage';
@@ -58,11 +60,13 @@ function SignedInApp() {
               <Routes>
                 <Route path="/" element={<ScanQueuePage />} />
                 <Route path="/inventory" element={<InventoryPage />} />
+                <Route path="/inventory/categories/:id" element={<CategoryPage />} />
                 <Route path="/inventory/:itemId/history" element={<HistoryPage />} />
                 <Route path="/history" element={<LedgerPage />} />
                 <Route path="/shopping" element={<ShoppingListPage />} />
                 <Route path="/diagnostics" element={<DiagnosticsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/settings/categories" element={<SuggestionsPage />} />
                 <Route path="/groups" element={<Navigate to="/inventory?filter=groups" replace />} />
                 <Route path="/groups/suggestions" element={<Navigate to="/inventory?review=1" replace />} />
                 <Route path="/groups/:id" element={<GroupDetailPage />} />

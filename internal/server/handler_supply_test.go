@@ -44,8 +44,8 @@ func TestSupplyPolicy(t *testing.T) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-qty", "Flour", "item-day29-qty")
 				setSupplyQuantity(env.T, env.DB, "prod-day29-qty", 12)
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-window", "Sugar", "item-day29-window")
-				if _, err := env.DB.Exec(`INSERT INTO supply_overrides (product_id, window_months) VALUES ('prod-day29-window', 6)`); err != nil {
-					env.T.Fatalf("window override: %v", err)
+				if _, err := env.DB.Exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-day29-window', 'months', 6)`); err != nil {
+					env.T.Fatalf("window target: %v", err)
 				}
 				insertConsumptionEvent(env.T, env.DB, "ce-day29-window", "item-day29-window", now.Add(-1*24*time.Hour))
 			},
@@ -296,14 +296,23 @@ func TestSupplyPolicy(t *testing.T) {
 			}),
 		},
 		{
-			name: "wipe clears the start date and leaves the supply length",
+			name: "wipe clears stock and the start date and keeps restock targets",
 			setup: func(env testEnv) {
 				beginUsing(env.T, env.DB, now.Add(-24*time.Hour))
-				if _, err := env.DB.Exec(`INSERT INTO app_settings (key, value) VALUES ('supply_months', '4')`); err != nil {
-					env.T.Fatalf("months: %v", err)
+				if _, err := env.DB.Exec(`INSERT INTO app_settings (key, value) VALUES ('supply_target_kind', 'months'), ('supply_target_value', '4')`); err != nil {
+					env.T.Fatalf("household default: %v", err)
 				}
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-wipe-supply", "Milk", "item-wipe-supply")
 				setSupplyQuantity(env.T, env.DB, "prod-wipe-supply", 8)
+				if _, err := env.DB.Exec(`INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-wipe', 'user-1', 'Wipe pantry', 'wipe pantry')`); err != nil {
+					env.T.Fatalf("category: %v", err)
+				}
+				if _, err := env.DB.Exec(`INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ('user-1', 'cat-wipe', 'amount', 2)`); err != nil {
+					env.T.Fatalf("category target: %v", err)
+				}
+				if _, err := env.DB.Exec(`INSERT INTO product_groups (id, user_id, name, name_key, rule, window_months) VALUES ('group-wipe', 'user-1', 'Wipe group', 'wipe group', 'same_as_ran_out', 2)`); err != nil {
+					env.T.Fatalf("group: %v", err)
+				}
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -311,33 +320,54 @@ func TestSupplyPolicy(t *testing.T) {
 				body:           `{"confirmation":"WIPE INVENTORY"}`,
 				expectedStatus: http.StatusOK,
 			},
-			afterRequest: exchanges(
-				httpExchange{
-					method:         "GET",
-					path:           "/api/settings/supply",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$.opening", value: true},
-						{path: "$.months", value: float64(4)},
+			afterRequest: func(env testEnv) {
+				exchanges(
+					httpExchange{
+						method:         "GET",
+						path:           "/api/settings/supply",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$.opening", value: true},
+							{path: "$.months", value: float64(4)},
+						},
 					},
-				},
-				httpExchange{
-					method:         "GET",
-					path:           "/api/products/prod-wipe-supply/supply-override",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$.quantity", value: float64(8)},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/restock",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$.household.kind", value: "months"},
+							{path: "$.household.value", value: float64(4)},
+						},
 					},
-				},
-				httpExchange{
-					method:         "GET",
-					path:           "/api/products/prod-wipe-supply",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$.name", value: "Milk"},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/groups/group-wipe",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$.windowMonths", value: float64(2)},
+						},
 					},
-				},
-			),
+					httpExchange{
+						method:         "GET",
+						path:           "/api/products/prod-wipe-supply",
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$.name", value: "Milk"},
+						},
+					},
+				)(env)
+				var itemTarget, categoryTarget int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM item_targets WHERE item_id = 'item-wipe-supply' AND kind = 'amount' AND value = 8`).Scan(&itemTarget); err != nil {
+					env.T.Fatal(err)
+				}
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM category_targets WHERE category_id = 'cat-wipe' AND kind = 'amount' AND value = 2`).Scan(&categoryTarget); err != nil {
+					env.T.Fatal(err)
+				}
+				if itemTarget != 1 || categoryTarget != 1 {
+					env.T.Fatalf("item target %d category target %d", itemTarget, categoryTarget)
+				}
+			},
 		},
 		{
 			name: "a wrong wipe phrase does not clear the start",

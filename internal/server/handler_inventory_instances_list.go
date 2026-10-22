@@ -23,6 +23,9 @@ type ItemInstanceWithStatus struct {
 	ExpiryStatus inventory.ExpiryStatus `json:"expiryStatus"`
 }
 
+// Handle lists instances for one item id. A wiped item stays addressable
+// here and returns 200 with an empty list. Inventory, restock, and the
+// planner hide that item; this direct read does not.
 func (h *InventoryInstancesListHandler) Handle(req Request[struct{}, inventoryInstancesListPathParams]) ([]ItemInstanceWithStatus, error) {
 	instances, err := h.Pantry.ListItemInstances(req.Context, req.PathParams.ItemID)
 	if err != nil {

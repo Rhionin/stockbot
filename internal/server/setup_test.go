@@ -10,6 +10,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/restock"
 	_ "modernc.org/sqlite"
 )
 
@@ -21,7 +22,7 @@ const testProductCacheTTL = 30 * 24 * time.Hour
 // setupTestDB opens an in-memory SQLite database, applies all migrations, and returns the connection.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
@@ -78,12 +79,14 @@ func setupTestWithContributor(t *testing.T, contributor product.UpstreamContribu
 		databases:      databases,
 	}
 
+	restockTargets := restock.NewTargets(db)
 	refresher := &product.Refresher{
 		Catalog:               productRepo,
 		Upstream:              upstream,
 		TTL:                   testProductCacheTTL,
 		ExternalLookupEnabled: true,
 		Now:                   clock.Now,
+		Tags:                  restockTargets,
 	}
 	lookupService := &product.LookupService{
 		Catalog:   productRepo,
@@ -91,6 +94,7 @@ func setupTestWithContributor(t *testing.T, contributor product.UpstreamContribu
 		Refresher: refresher,
 		Now:       clock.Now,
 		MissTTL:   5 * time.Minute,
+		Tags:      restockTargets,
 	}
 
 	registry := cart.NewRegistry()

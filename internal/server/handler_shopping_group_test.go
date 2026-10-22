@@ -197,6 +197,30 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			},
 		},
 		{
+			name: "a group with no target pools at the household window",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-a", "Can A", "item-a")
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-b", "Can B", "item-b")
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
+					env.T.Fatal(err)
+				}
+				started := time.Now().UTC().Add(-60 * 24 * time.Hour)
+				beginUsing(env.T, env.DB, started)
+				insertStockIn(env.T, env.DB, "prod-a", started.Add(24*time.Hour))
+				insertConsumptionEvent(env.T, env.DB, "out-1", "item-a", started.Add(20*24*time.Hour))
+				insertConsumptionEvent(env.T, env.DB, "out-2", "item-a", started.Add(50*24*time.Hour))
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/fill",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].group.name", value: "Cut green beans"},
+					{path: "$[1]", absent: true},
+				},
+			},
+		},
+		{
 			name:  "a this-trip swap survives a refill",
 			setup: beans,
 			httpExchange: httpExchange{

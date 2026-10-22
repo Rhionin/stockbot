@@ -33,6 +33,8 @@ type historyQuantityBody struct {
 	Quantity int `json:"quantity"`
 }
 
+// Product is the trail for one item id. A wiped item is hidden from
+// inventory and restock lists, and this direct read still returns 200.
 func (h *HistoryHandler) Product(req Request[struct{}, historyItemParams]) (history.View, error) {
 	view, err := h.Journal.Product(req.Context, req.PathParams.ItemID, time.Now())
 	if err != nil {

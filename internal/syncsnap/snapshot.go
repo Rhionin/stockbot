@@ -5,10 +5,12 @@ package syncsnap
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sort"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/group"
+	"github.com/Rhionin/stockbot/internal/restock"
 )
 
 const householdUser = "user-1"
@@ -122,6 +124,12 @@ func Build(ctx context.Context, db *sql.DB, now time.Time) (Snapshot, error) {
 		groupByID[groups[i].ID] = &groups[i]
 	}
 	if err := attachMembers(ctx, db, byID, groupByID); err != nil {
+		return Snapshot{}, err
+	}
+	if err := attachItemTargets(ctx, db, byID); err != nil {
+		return Snapshot{}, err
+	}
+	if err := applyResolvedRestock(ctx, db, byID); err != nil {
 		return Snapshot{}, err
 	}
 	for i := range products {
@@ -251,7 +259,7 @@ func removeBarcode(p *Product, barcode string) {
 
 func attachItems(ctx context.Context, db *sql.DB, byID map[string]*Product) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT product_id, target_quantity FROM items WHERE user_id = ?`, householdUser)
+		SELECT product_id, target_quantity FROM items WHERE user_id = ? AND shelved = 0`, householdUser)
 	if err != nil {
 		return err
 	}
@@ -307,7 +315,7 @@ func loadGroups(ctx context.Context, db *sql.DB) ([]Group, error) {
 
 func attachMembers(ctx context.Context, db *sql.DB, products map[string]*Product, groups map[string]*Group) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT group_id, product_id, no_restock
+		SELECT group_id, product_id
 		FROM product_group_members
 		ORDER BY group_id, product_id`)
 	if err != nil {
@@ -316,8 +324,7 @@ func attachMembers(ctx context.Context, db *sql.DB, products map[string]*Product
 	defer rows.Close()
 	for rows.Next() {
 		var groupID, productID string
-		var noRestock int
-		if err := rows.Scan(&groupID, &productID, &noRestock); err != nil {
+		if err := rows.Scan(&groupID, &productID); err != nil {
 			return err
 		}
 		if g := groups[groupID]; g != nil {
@@ -325,10 +332,64 @@ func attachMembers(ctx context.Context, db *sql.DB, products map[string]*Product
 		}
 		if p := products[productID]; p != nil {
 			p.GroupID = groupID
-			p.NoRestock = noRestock == 1
 		}
 	}
 	return rows.Err()
+}
+
+// attachItemTargets prefers the household item target over the older
+// target_quantity column and the member flag. An amount becomes the fixed
+// count. A value of 0 means don't restock.
+func attachItemTargets(ctx context.Context, db *sql.DB, byProduct map[string]*Product) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT i.product_id, t.kind, t.value
+		FROM item_targets t
+		JOIN items i ON i.id = t.item_id AND i.user_id = t.household_id
+		WHERE t.household_id = ? AND i.shelved = 0`, householdUser)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var productID, kind string
+		var value float64
+		if err := rows.Scan(&productID, &kind, &value); err != nil {
+			return err
+		}
+		p := byProduct[productID]
+		if p == nil {
+			continue
+		}
+		if kind == "amount" && value > 0 {
+			n := roundHalfUp(value)
+			p.TargetQuantity = &n
+		}
+	}
+	return rows.Err()
+}
+
+// applyResolvedRestock sets noRestock from the target the household actually
+// uses. Zero at any level means the mobile client should not restock it.
+func applyResolvedRestock(ctx context.Context, db *sql.DB, byProduct map[string]*Product) error {
+	snap, err := restock.Load(ctx, db, restock.HouseholdID)
+	if err != nil {
+		return err
+	}
+	for _, item := range snap.Items {
+		p := byProduct[item.ProductID]
+		if p == nil {
+			continue
+		}
+		p.NoRestock = item.Target.Value == 0
+	}
+	return nil
+}
+
+func roundHalfUp(x float64) int {
+	if x <= 0 {
+		return 0
+	}
+	return int(math.Floor(x + 0.5))
 }
 
 func loadInstances(ctx context.Context, db *sql.DB) ([]Instance, error) {
@@ -336,7 +397,7 @@ func loadInstances(ctx context.Context, db *sql.DB) ([]Instance, error) {
 		SELECT ii.id, i.product_id, ii.stock_in_at, ii.expires_at, COALESCE(ii.stock_move_id, '')
 		FROM item_instances ii
 		JOIN items i ON i.id = ii.item_id
-		WHERE i.user_id = ? AND ii.removed_at IS NULL
+		WHERE i.user_id = ? AND i.shelved = 0 AND ii.removed_at IS NULL
 		ORDER BY ii.stock_in_at, ii.id`, householdUser)
 	if err != nil {
 		return nil, err
@@ -366,7 +427,7 @@ func loadRemovals(ctx context.Context, db *sql.DB) ([]Removal, error) {
 		       ii.stock_in_at, ii.expires_at
 		FROM item_instances ii
 		JOIN items i ON i.id = ii.item_id
-		WHERE i.user_id = ? AND ii.removed_at IS NOT NULL
+		WHERE i.user_id = ? AND i.shelved = 0 AND ii.removed_at IS NOT NULL
 		ORDER BY ii.id`, householdUser)
 	if err != nil {
 		return nil, err
@@ -394,7 +455,7 @@ func loadMoves(ctx context.Context, db *sql.DB) ([]Move, error) {
 		SELECT m.id, m.item_id, m.product_id, m.direction, m.quantity, m.at, m.source
 		FROM stock_moves m
 		JOIN items i ON i.id = m.item_id
-		WHERE i.user_id = ?
+		WHERE i.user_id = ? AND i.shelved = 0
 		ORDER BY m.at, m.id`, householdUser)
 	if err != nil {
 		return nil, err
@@ -417,7 +478,7 @@ func loadShopping(ctx context.Context, db *sql.DB) ([]ShoppingLine, error) {
 		SELECT s.id, i.product_id, COALESCE(s.group_id, ''), s.quantity, s.source
 		FROM shopping_list_items s
 		JOIN items i ON i.id = s.item_id
-		WHERE s.user_id = ? AND s.purchased_at IS NULL AND s.quantity > 0
+		WHERE s.user_id = ? AND i.shelved = 0 AND s.purchased_at IS NULL AND s.quantity > 0
 		ORDER BY s.created_at, s.id`, householdUser)
 	if err != nil {
 		return nil, err

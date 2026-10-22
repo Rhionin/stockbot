@@ -366,6 +366,9 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 // ProviderLedgerResetHandler handles POST /api/providers/{providerId}/ledger/reset.
 type ProviderLedgerResetHandler struct {
 	ProviderLedgerHandler
+	ShoppingList interface {
+		EndTrip(ctx context.Context, userID string) error
+	}
 }
 
 type ProviderLedgerResetRequest struct {
@@ -401,6 +404,13 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 	// Reset ledger
 	if err := h.Ledger.ResetForProvider(req.Context, providerID); err != nil {
 		return Created{}, InternalError(fmt.Errorf("failed to reset ledger: %v", err))
+	}
+	// A new cart is a new trip. Checked-off lines from the previous trip
+	// no longer block the next list.
+	if h.ShoppingList != nil {
+		if err := h.ShoppingList.EndTrip(req.Context, "user-1"); err != nil {
+			return Created{}, InternalError(err)
+		}
 	}
 
 	return Created{Value: struct{}{}}, nil

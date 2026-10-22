@@ -19,7 +19,7 @@ type inventoryInstanceDeletePathParams struct {
 }
 
 func (h *InventoryInstanceDeleteHandler) Handle(req Request[struct{}, inventoryInstanceDeletePathParams]) (struct{}, error) {
-	err := h.Queue.StockOutInstance(req.Context, req.PathParams.InstanceID, time.Now())
+	err := h.Queue.StockOutInstance(req.Context, req.PathParams.InstanceID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, inventory.ErrInstanceNotFound) {
 			return struct{}{}, NotFound("item instance not found")

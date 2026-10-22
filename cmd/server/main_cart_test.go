@@ -13,7 +13,7 @@ import (
 
 func newCartDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -122,6 +122,29 @@ func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 	}
 	if envCreds.ClientID != "env-client" || envCreds.ClientSecret != "env-secret" {
 		t.Fatalf("env fallback = %+v", envCreds)
+	}
+}
+
+func TestLoadCartRegistryDropsUnusableSavedCredentials(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "")
+	t.Setenv("KROGER_CLIENT_SECRET", "")
+	t.Setenv("KROGER_REDIRECT_URI", "")
+	t.Setenv("KROGER_MODALITY", "")
+
+	db := newCartDB(t)
+	if err := appcred.NewVault(db).Save(context.Background(), appcred.Saved{
+		ProviderID:   "kroger",
+		ClientID:     "saved-client",
+		ClientSecret: "saved-secret",
+		RedirectURI:  "https://saved.example/cb",
+		Modality:     "SHIP",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	registry, _, _ := loadCartRegistry(db)
+	if registry.CredentialsConfigured("kroger") {
+		t.Fatal("saved credentials with a bad modality should not configure Kroger")
 	}
 }
 

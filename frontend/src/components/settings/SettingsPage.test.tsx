@@ -10,14 +10,27 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 const settings = { months: 3, opening: false, wipePhrase: 'WIPE INVENTORY' };
+const restock = {
+  household: { kind: 'months', value: 3 },
+  householdLabel: '3 months',
+  appliesTo: 1,
+  itemCount: 1,
+  items: [],
+  categories: [],
+  notRestocked: 0,
+  suggestionCount: 0,
+};
 
 describe('SettingsPage', () => {
-  it('saves a supply length between 1 and 12 months', async () => {
+  it('has one household default and no separate supply-length field', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (url === '/api/settings/supply' && method === 'PUT') {
-        return Promise.resolve(jsonResponse({ ...settings, months: 6 }));
+      if (url === '/api/restock' && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ ...restock, household: { kind: 'months', value: 6 }, householdLabel: '6 months' }));
+      }
+      if (url === '/api/restock') {
+        return Promise.resolve(jsonResponse(restock));
       }
       if (url === '/api/settings/supply') {
         return Promise.resolve(jsonResponse(settings));
@@ -27,14 +40,21 @@ describe('SettingsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<MantineProvider><SettingsPage /></MantineProvider>);
-    const months = await screen.findByLabelText('Months of supply');
-    fireEvent.change(months, { target: { value: '6' } });
-    fireEvent.blur(months);
+    expect(await screen.findAllByText('Household default')).not.toHaveLength(0);
+    expect(screen.getByText('3 months')).toBeInTheDocument();
+    expect(screen.queryByText(/How far ahead the shopping list looks/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Change' })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+    expect(await screen.findByText('Months of supply')).toBeInTheDocument();
+    expect(screen.getByText('Fixed amount')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/api/settings/supply',
-      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ months: 6 }) }),
+      '/api/restock/household',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ kind: 'months', value: 3 }) }),
     ));
+    expect(fetchMock.mock.calls.some((call) => String(call[0]) === '/api/settings/supply' && call[1]?.method === 'PUT')).toBe(false);
   });
 
   it('requires the exact confirmation phrase before wiping inventory', async () => {
@@ -44,6 +64,9 @@ describe('SettingsPage', () => {
       if (url === '/api/inventory/wipe' && method === 'POST') {
         return Promise.resolve(jsonResponse({}));
       }
+      if (url === '/api/restock') {
+        return Promise.resolve(jsonResponse(restock));
+      }
       if (url === '/api/settings/supply') {
         return Promise.resolve(jsonResponse(settings));
       }
@@ -52,7 +75,7 @@ describe('SettingsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<MantineProvider><SettingsPage /></MantineProvider>);
-    await screen.findByLabelText('Months of supply');
+    await screen.findAllByText('Household default');
 
     fireEvent.click(screen.getByRole('button', { name: 'Wipe inventory' }));
     const confirmButton = await screen.findByRole('button', { name: 'Confirm wipe' });
@@ -82,6 +105,9 @@ describe('SettingsPage', () => {
       if (url === '/api/inventory/wipe' && method === 'POST') {
         return Promise.resolve(jsonResponse({ error: 'Type WIPE INVENTORY to confirm wiping the inventory.' }, 400));
       }
+      if (url === '/api/restock') {
+        return Promise.resolve(jsonResponse(restock));
+      }
       if (url === '/api/settings/supply') {
         return Promise.resolve(jsonResponse(settings));
       }
@@ -90,7 +116,7 @@ describe('SettingsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<MantineProvider><SettingsPage /></MantineProvider>);
-    await screen.findByLabelText('Months of supply');
+    await screen.findAllByText('Household default');
 
     fireEvent.click(screen.getByRole('button', { name: 'Wipe inventory' }));
     fireEvent.change(await screen.findByLabelText('Type WIPE INVENTORY to confirm'), {
@@ -99,6 +125,6 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm wipe' }));
 
     expect(await screen.findByText('Type WIPE INVENTORY to confirm wiping the inventory.')).toBeInTheDocument();
-    expect(screen.getByLabelText('Months of supply')).toBeInTheDocument();
+    expect(screen.getAllByText('Household default').length).toBeGreaterThan(0);
   });
 });

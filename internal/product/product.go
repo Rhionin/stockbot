@@ -49,6 +49,10 @@ type ProductSummary struct {
 	NetBaseValue   *float64       `json:"netBaseValue,omitempty"`
 	NetDimension   string         `json:"netDimension,omitempty"`
 	PackCount      *int           `json:"packCount,omitempty"`
+	// CategoriesTags and FoodGroupsTags are raw Open Food Facts tags from a lookup.
+	// They are not stored on the product row.
+	CategoriesTags []string `json:"categoriesTags,omitempty"`
+	FoodGroupsTags []string `json:"foodGroupsTags,omitempty"`
 }
 
 // Catalog provides database operations for products and barcodes.
