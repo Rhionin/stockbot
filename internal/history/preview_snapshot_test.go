@@ -389,24 +389,29 @@ func TestBackupStopsWhenTheRequestContextIsCanceled(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	previousPages := previewBackupPages
+	previewBackupPages = 1
 	previousEach := previewEachStep
-	previewEachStep = nil
-	var canceledDuringCopy bool
-	previewDuringBackup = func(string) error {
-		canceledDuringCopy = true
-		cancel()
+	var steps int
+	previewEachStep = func() error {
+		steps++
+		if steps == 1 {
+			cancel()
+		}
 		return nil
 	}
 	t.Cleanup(func() {
-		previewDuringBackup = nil
+		previewBackupPages = previousPages
 		previewEachStep = previousEach
 	})
 
 	journal := NewJournal(db)
 	_, err := journal.PreviewUndo(ctx, householdUser, "missing")
-	if !canceledDuringCopy || !errors.Is(err, context.Canceled) {
-		t.Fatalf("during copy = %v, err = %v", canceledDuringCopy, err)
+	if steps != 1 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("steps = %d, err = %v", steps, err)
 	}
+	previewEachStep = nil
+	previewBackupPages = previousPages
 	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}

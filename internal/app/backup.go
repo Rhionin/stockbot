@@ -159,11 +159,6 @@ var snapshotCopyHook func(temp string) error
 // copy is in use. Startup skips a directory whose lock is still held.
 const previewLockName = "preview.lock"
 
-// PreviewDirBusy reports whether a preview directory's lock is held.
-func PreviewDirBusy(dir string) bool {
-	return previewDirBusy(dir)
-}
-
 func removePreviewDirs(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

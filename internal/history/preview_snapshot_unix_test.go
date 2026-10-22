@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-
-	"github.com/Rhionin/stockbot/internal/app"
 )
 
 func TestPreviewFilesArePrivateWhileTheyAreCreated(t *testing.T) {
@@ -69,7 +67,7 @@ func TestSnapshotHoldsThePreviewLock(t *testing.T) {
 	var held bool
 	previewDuringBackup = func(path string) error {
 		previewDir := filepath.Dir(path)
-		if !app.PreviewDirBusy(previewDir) {
+		if !previewLockHeld(t, previewDir) {
 			t.Errorf("snapshot did not hold the preview lock in %s", previewDir)
 		}
 		held = true
@@ -86,6 +84,20 @@ func TestSnapshotHoldsThePreviewLock(t *testing.T) {
 	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}
+}
+
+func previewLockHeld(t *testing.T, dir string) bool {
+	t.Helper()
+	file, err := os.Open(filepath.Join(dir, "preview.lock"))
+	if err != nil {
+		t.Fatalf("open preview lock: %v", err)
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return true
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false
 }
 
 func TestPreviewLeavesTheLiveJournalModeAlone(t *testing.T) {
