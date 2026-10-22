@@ -120,7 +120,7 @@ func (a *HouseholdAuth) enforced(r *http.Request) bool {
 
 // Middleware lets the LAN through unchanged. On the public hostname it
 // accepts a session cookie or a Basic credential, leaves the telemetry,
-// build, brand, legal, and deploy-hook paths open, and answers other API
+// build, brand, legal, deploy-hook, and sentry-tunnel paths open, and answers other API
 // calls with JSON. Document loads continue to the web UI, which shows the
 // login page. A public request is refused when the password file is not
 // configured.
@@ -387,7 +387,7 @@ func isDocument(r *http.Request) bool {
 // GET that brings the browser back from Kroger.
 func isPublicPath(r *http.Request) bool {
 	switch r.URL.Path {
-	case "/api/telemetry", "/api/telemetry/client", "/api/build", "/api/deploy-hook", "/brand/logo.png", "/terms", "/privacy":
+	case "/api/telemetry", "/api/telemetry/client", "/api/build", "/api/deploy-hook", sentryTunnelPath, "/brand/logo.png", "/terms", "/privacy":
 		return true
 	default:
 		return false

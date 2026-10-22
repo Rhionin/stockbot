@@ -55,6 +55,13 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # Empty leaves error reporting and POST /api/sentry-tunnel off.
+      # Values stay in /opt/pantry/.env. Do not put them in the image.
+      # An empty public-key list does not check the envelope key.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+      SENTRY_TUNNEL_PROJECT_IDS: ${SENTRY_TUNNEL_PROJECT_IDS:-}
+      SENTRY_TUNNEL_PUBLIC_KEYS: ${SENTRY_TUNNEL_PUBLIC_KEYS:-}
       # Alerts go to browsers registered on PUBLIC_HOST. A subscription from
       # LEGACY_PUBLIC_HOST is dropped. Empty PUBLIC_HOST keeps every other
       # subscription, including rows stored before origins existed.

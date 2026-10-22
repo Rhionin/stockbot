@@ -2,7 +2,6 @@ package supply
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -25,7 +24,7 @@ func TestPlanReplacesUseAcrossDenverUTCDayBoundary(t *testing.T) {
 		t.Fatalf("fixture is not a day boundary: started %s used %s", started.UTC(), used)
 	}
 
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

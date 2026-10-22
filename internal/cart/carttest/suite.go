@@ -1,7 +1,6 @@
 package carttest
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -53,7 +52,7 @@ func RunContractSuite(t *testing.T, p cart.Provider) {
 	}
 
 	// Run each applicable case
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

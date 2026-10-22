@@ -20,7 +20,7 @@ import (
 // and returns an inventory Pantry.
 func newTestPantry(t *testing.T) (*inventory.Pantry, *product.Catalog, *sql.DB) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}

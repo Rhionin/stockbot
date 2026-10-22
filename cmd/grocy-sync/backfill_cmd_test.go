@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/grocysync"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
@@ -26,7 +26,7 @@ func TestRunBackfillWritesOnce(t *testing.T) {
 	defer srv.Close()
 
 	dbPath := filepath.Join(t.TempDir(), "grocy.db")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := app.OpenSQLite(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestRunBackfillWritesOnce(t *testing.T) {
 	if err := runBackfill(cfg, []string{"--db", dbPath, "--confirm"}); err != nil {
 		t.Fatal(err)
 	}
-	check, err := sql.Open("sqlite", dbPath)
+	check, err := app.OpenSQLite(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
