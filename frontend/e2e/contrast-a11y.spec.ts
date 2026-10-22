@@ -32,16 +32,6 @@ function contrast(foreground: string, background: string) {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
-async function setScheme(page: Page, app: 'light' | 'dark', os: 'light' | 'dark') {
-  await page.emulateMedia({ colorScheme: os })
-  await page.evaluate((value) => {
-    window.localStorage.setItem('mantine-color-scheme-value', value)
-  }, app)
-  await page.reload()
-  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(app)
-  await expect.poll(() => page.evaluate(() => window.matchMedia('(prefers-color-scheme: dark)').matches)).toBe(os === 'dark')
-}
-
 async function paint(locator: Locator) {
   return locator.evaluate((el) => {
     const parse = (color: string) => {
@@ -169,37 +159,30 @@ const routes = [
   { path: '/inventory', name: 'inventory', ready: 'Inventory', heading: true },
 ] as const
 
-// Literal, so dropping a mode, a route, or a width fails even when the loops
-// are rewritten to match the shorter list. Home stays in the list.
-const expectedCombinations = 56
+// Literal, so dropping a mode, a route, or a width fails even when the cases
+// are generated from those lists. Home stays in the list.
+const pageCases = widths.flatMap((width) => modes.flatMap((mode) => routes.map((route) => ({ width, mode, route }))))
+const dialogCases = widths.flatMap((width) => modes.map((mode) => ({ width, mode })))
 
-test.beforeEach(async ({ request }) => {
-  await resetSharedState(request)
-})
+const axePrototype = AxeBuilder.prototype as AxeBuilder & { exclude(selector: string): AxeBuilder }
+const originalExclude = axePrototype.exclude
 
-test.afterEach(async ({ request }) => {
-  await resetSharedState(request)
-})
+// One page used to walk all 56 combinations inside a 240s test, and that test
+// timed out under a full-suite load. Each combination is its own test, and the
+// scheme is set before the only navigation so the check does not also reload.
+test.describe.configure({ mode: 'serial' })
 
-test('text contrast meets WCAG AA in every theme combination', async ({ page, request }, testInfo) => {
-  test.setTimeout(240_000)
-  const axePrototype = AxeBuilder.prototype as AxeBuilder & { exclude(selector: string): AxeBuilder }
-  const originalExclude = axePrototype.exclude
+test.beforeEach(() => {
   axePrototype.exclude = () => {
     throw new Error('color-contrast checks must not exclude selectors')
   }
-  expect(routes.map((route) => route.path)).toEqual([
-    '/',
-    '/shopping',
-    '/settings',
-    '/diagnostics',
-    '/inventory?review=1',
-    '/history',
-    '/inventory',
-  ])
-  expect(modes).toHaveLength(4)
-  expect(widths).toHaveLength(2)
-  await seedShopping(request)
+})
+
+test.afterEach(() => {
+  axePrototype.exclude = originalExclude
+})
+
+async function installBasis(page: Page) {
   // The API does not send basis. Attach it in the browser so the stock-note
   // ink renders without changing what the server returns.
   await page.route('**/api/shopping-list**', async (route) => {
@@ -215,67 +198,103 @@ test('text contrast meets WCAG AA in every theme combination', async ({ page, re
     }
     await route.fulfill({ response, json: rows })
   })
-  const measured: { name: string; app: string; os: string; width: number; foreground: string; background: string; ratio: number }[] = []
-  let combinations = 0
+}
 
-  try {
-    for (const width of widths) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
-      for (const mode of modes) {
-        for (const route of routes) {
-          await page.goto(route.path)
-          await setScheme(page, mode.app, mode.os)
-          const landmark = 'heading' in route
-            ? page.getByRole('heading', { name: route.ready })
-            : page.getByText(route.ready).first()
-          await expect(landmark).toBeVisible()
-          const where = `${route.name} ${mode.app}/${mode.os} ${width}`
-          if (route.path === '/') {
-            const hint = page.getByText('Scans add to stock')
-            const status = page.getByText('Scanner disconnected')
-            await expect(status).toBeVisible()
-            measured.push({ name: 'scan-direction-hint', ...mode, width, ...await expectContrast(hint) })
-            measured.push({ name: 'scan-status', ...mode, width, ...await expectContrast(status) })
-          }
-          if (route.path === '/shopping') {
-            await expect(page.getByText('Derived').first()).toBeVisible()
-            await expect(page.getByText(/\d+ on hand/).first()).toBeVisible()
-            await expect(page.getByText(/replacing \d+ you used/).first()).toBeVisible()
-            const kroger = page.getByText('Kroger is unconfigured.')
-            const remove = page.getByRole('button', { name: 'Remove Plain rice' })
-            const note = page.getByText(/\d+ on hand/).first()
-            measured.push({ name: 'kroger-unconfigured', ...mode, width, ...await expectContrast(kroger) })
-            measured.push({ name: 'remove-plain-rice', ...mode, width, ...await expectContrast(remove) })
-            measured.push({ name: 'stock-note', ...mode, width, ...await expectContrast(note) })
-            if (mode.app === mode.os) {
-              await shot(kroger, testInfo, `kroger-unconfigured-${mode.app}-${width}`)
-              await shot(remove, testInfo, `remove-plain-rice-${mode.app}-${width}`)
-            }
-          }
-          if (route.path === '/settings') {
-            const wipe = page.getByRole('button', { name: 'Wipe inventory' })
-            measured.push({ name: 'settings-wipe', ...mode, width, ...await expectContrast(wipe) })
-          }
-          if (route.path === '/shopping' || route.path === '/diagnostics') {
-            const heading = page.getByRole('heading', { level: 2 }).first()
-            await expect(heading).toBeVisible()
-            measured.push({ name: `${route.name}-h2`, ...mode, width, ...await expectContrast(heading) })
-          }
-          await expectAxe(page, where)
-          combinations += 1
-          if (route.path === '/') {
-            await page.getByRole('button', { name: 'Scan with camera' }).click()
-            const alert = page.getByRole('alert').filter({ hasText: 'Camera scanning unavailable' })
-            await expect(alert).toBeVisible()
-            const title = alert.locator('.mantine-Alert-title')
-            measured.push({ name: 'yellow-alert', ...mode, width, ...await expectContrast(title) })
-            await expectAxe(page, `${where} yellow alert`)
-          }
+async function openThemed(page: Page, path: string, app: 'light' | 'dark', os: 'light' | 'dark', width: number) {
+  await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
+  await page.emulateMedia({ colorScheme: os })
+  await page.addInitScript((value) => {
+    window.localStorage.setItem('mantine-color-scheme-value', value)
+  }, app)
+  await page.goto(path)
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(app)
+  await expect.poll(() => page.evaluate(() => window.matchMedia('(prefers-color-scheme: dark)').matches)).toBe(os === 'dark')
+}
+
+test.describe('text contrast on each page', () => {
+  test.beforeAll(async ({ request }) => {
+    await resetSharedState(request)
+    await seedShopping(request)
+  })
+
+  test.afterAll(async ({ request }) => {
+    await resetSharedState(request)
+  })
+
+  test('lists every route, mode, and width', () => {
+    expect(routes.map((route) => route.path)).toEqual([
+      '/',
+      '/shopping',
+      '/settings',
+      '/diagnostics',
+      '/inventory?review=1',
+      '/history',
+      '/inventory',
+    ])
+    expect(modes).toHaveLength(4)
+    expect(widths).toHaveLength(2)
+    expect(pageCases).toHaveLength(56)
+  })
+
+  for (const { width, mode, route } of pageCases) {
+    test(`${route.name} ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
+      if (route.path === '/shopping') await installBasis(page)
+      await openThemed(page, route.path, mode.app, mode.os, width)
+      const landmark = 'heading' in route
+        ? page.getByRole('heading', { name: route.ready })
+        : page.getByText(route.ready).first()
+      await expect(landmark).toBeVisible()
+      const where = `${route.name} ${mode.app}/${mode.os} ${width}`
+      const measured: { name: string; app: string; os: string; width: number; foreground: string; background: string; ratio: number }[] = []
+      if (route.path === '/') {
+        const hint = page.getByText('Scans add to stock')
+        const status = page.getByText('Scanner disconnected')
+        await expect(status).toBeVisible()
+        measured.push({ name: 'scan-direction-hint', ...mode, width, ...await expectContrast(hint) })
+        measured.push({ name: 'scan-status', ...mode, width, ...await expectContrast(status) })
+      }
+      if (route.path === '/shopping') {
+        await expect(page.getByText('Derived').first()).toBeVisible()
+        await expect(page.getByText(/\d+ on hand/).first()).toBeVisible()
+        await expect(page.getByText(/replacing \d+ you used/).first()).toBeVisible()
+        const kroger = page.getByText('Kroger is unconfigured.')
+        const remove = page.getByRole('button', { name: 'Remove Plain rice' })
+        const note = page.getByText(/\d+ on hand/).first()
+        measured.push({ name: 'kroger-unconfigured', ...mode, width, ...await expectContrast(kroger) })
+        measured.push({ name: 'remove-plain-rice', ...mode, width, ...await expectContrast(remove) })
+        measured.push({ name: 'stock-note', ...mode, width, ...await expectContrast(note) })
+        if (mode.app === mode.os) {
+          await shot(kroger, testInfo, `kroger-unconfigured-${mode.app}-${width}`)
+          await shot(remove, testInfo, `remove-plain-rice-${mode.app}-${width}`)
         }
       }
-    }
-    expect(combinations).toBe(expectedCombinations)
+      if (route.path === '/settings') {
+        const wipe = page.getByRole('button', { name: 'Wipe inventory' })
+        measured.push({ name: 'settings-wipe', ...mode, width, ...await expectContrast(wipe) })
+      }
+      if (route.path === '/shopping' || route.path === '/diagnostics') {
+        const heading = page.getByRole('heading', { level: 2 }).first()
+        await expect(heading).toBeVisible()
+        measured.push({ name: `${route.name}-h2`, ...mode, width, ...await expectContrast(heading) })
+      }
+      await expectAxe(page, where)
+      if (route.path === '/') {
+        await page.getByRole('button', { name: 'Scan with camera' }).click()
+        const alert = page.getByRole('alert').filter({ hasText: 'Camera scanning unavailable' })
+        await expect(alert).toBeVisible()
+        const title = alert.locator('.mantine-Alert-title')
+        measured.push({ name: 'yellow-alert', ...mode, width, ...await expectContrast(title) })
+        await expectAxe(page, `${where} yellow alert`)
+      }
+      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify(measured, null, 2))
+    })
+  }
+})
 
+test.describe('text contrast in the Kroger dialog', () => {
+  test.beforeAll(async ({ request }) => {
+    await resetSharedState(request)
+    await seedShopping(request)
     const saved = await request.put('/api/providers/kroger/credentials', {
       data: {
         clientId: 'contrast-client',
@@ -285,29 +304,29 @@ test('text contrast meets WCAG AA in every theme combination', async ({ page, re
       },
     })
     expect(saved.ok()).toBe(true)
+  })
 
-    for (const width of widths) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
-      for (const mode of modes) {
-        await page.goto('/shopping')
-        await setScheme(page, mode.app, mode.os)
-        await page.getByRole('button', { name: 'Menu' }).click()
-        await page.getByRole('menuitem', { name: 'Manage Kroger connection' }).click()
-        const dialog = page.getByRole('dialog', { name: 'Kroger connection' })
-        await expect(dialog).toBeVisible()
-        await expect(dialog).toHaveCSS('opacity', '1')
-        const body = dialog.getByText('A client secret is saved and is not shown.')
-        await expect(body).toBeVisible()
-        measured.push({ name: 'dialog-body', ...mode, width, ...await expectContrast(body) })
-        if (mode.app === mode.os) await shot(body, testInfo, `dialog-body-${mode.app}-${width}`)
-        const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
-        expect(dialogAxe.violations, violationText(dialogAxe.violations)).toEqual([])
-        await page.keyboard.press('Escape')
-      }
-    }
-  } finally {
-    axePrototype.exclude = originalExclude
-    writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify(measured, null, 2))
+  test.afterAll(async ({ request }) => {
     await request.delete('/api/providers/kroger/credentials')
+    await resetSharedState(request)
+  })
+
+  for (const { width, mode } of dialogCases) {
+    test(`dialog ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
+      await openThemed(page, '/shopping', mode.app, mode.os, width)
+      await page.getByRole('button', { name: 'Menu' }).click()
+      await page.getByRole('menuitem', { name: 'Manage Kroger connection' }).click()
+      const dialog = page.getByRole('dialog', { name: 'Kroger connection' })
+      await expect(dialog).toBeVisible()
+      await expect(dialog).toHaveCSS('opacity', '1')
+      const body = dialog.getByText('A client secret is saved and is not shown.')
+      await expect(body).toBeVisible()
+      const sample = await expectContrast(body)
+      if (mode.app === mode.os) await shot(body, testInfo, `dialog-body-${mode.app}-${width}`)
+      const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
+      expect(dialogAxe.violations, violationText(dialogAxe.violations)).toEqual([])
+      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'dialog-body', ...mode, width, ...sample }], null, 2))
+      await page.keyboard.press('Escape')
+    })
   }
 })

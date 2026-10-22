@@ -104,6 +104,23 @@ const fitsInViewport = async (locator: Locator) => {
 
 const failureBanner = (page: Page) => page.locator('.mantine-Alert-root.scan-batch-banner')
 
+// A fade can still be running when the text is already correct. Wait out finite
+// banner animations, and ignore anything that loops.
+const settleBanner = async (page: Page) => {
+  await page.evaluate(async () => {
+    const nodes = [...document.querySelectorAll('.scan-batch-banner, .scan-batch-partial')]
+    const pending = nodes.flatMap((node) => node.getAnimations({ subtree: true })).filter((animation) => {
+      return animation.effect?.getComputedTiming().iterations !== Infinity
+    })
+    await Promise.all(pending.map((animation) => animation.finished.catch(() => undefined)))
+  })
+}
+
+const saveShot = async (page: Page, path: string) => {
+  await settleBanner(page)
+  await page.screenshot({ path })
+}
+
 const expectSuccessBanner = async (page: Page, line: string) => {
   const banner = page.locator('.scan-batch-banner--success')
   await expect(banner).toHaveCount(1)
@@ -211,7 +228,7 @@ for (const viewport of viewports) {
       await expectFailureWithPartial(page, wasLine)
       await expect(page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })).toContainText(failureNote)
       if (shotDir !== undefined) {
-        await page.screenshot({ path: `${shotDir}/banner_mixed_${viewport.width}_light.png` })
+        await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_light.png`)
       }
     } finally {
       await page.unroute('**/api/scans/batch-commit')
@@ -223,7 +240,7 @@ for (const viewport of viewports) {
 test.describe('batch banner screenshots', () => {
   test.skip(shotDir === undefined, 'set BATCH_BANNER_SHOTS to save viewport shots')
 
-  test('saves one partial, multiple partial, and none at both widths and schemes', async ({ page, request }) => {
+  test('saves none, one partial, multiple partial, and mixed at both widths and schemes', async ({ page, request }) => {
     test.setTimeout(300_000)
     const schemes = ['light', 'dark'] as const
     let serial = 0
@@ -249,7 +266,7 @@ test.describe('batch banner screenshots', () => {
           },
         }))
         await expectSuccessBanner(page, wasLine)
-        await page.screenshot({ path: `${shotDir}/banner_one_partial_${viewport.width}_${scheme}.png` })
+        await saveShot(page, `${shotDir}/banner_one_partial_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
 
         const manyA = `${prefix}11`
@@ -271,7 +288,7 @@ test.describe('batch banner screenshots', () => {
         }))
         await expectSuccessBanner(page, manyLine)
         await expect(page.getByText(wasLine)).toHaveCount(0)
-        await page.screenshot({ path: `${shotDir}/banner_multiple_partial_${viewport.width}_${scheme}.png` })
+        await saveShot(page, `${shotDir}/banner_multiple_partial_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
 
         const fullBarcode = `${prefix}21`
@@ -296,9 +313,33 @@ test.describe('batch banner screenshots', () => {
         await expectFailureOnly(page, fallback)
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)
-        await page.screenshot({ path: `${shotDir}/banner_none_${viewport.width}_${scheme}.png` })
+        await saveShot(page, `${shotDir}/banner_none_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
         await cancelScan(request, empty.id)
+
+        const mixedChips = `${prefix}31`
+        const mixedMiss = `${prefix}32`
+        const mixed = await seedStockOuts(page, request, [
+          { barcode: mixedChips, name: 'Tortilla chips' },
+          { barcode: mixedMiss, name: 'Short loaf' },
+        ])
+        const mixedFull = mixed[0]
+        const mixedEmpty = mixed[1]
+        if (mixedFull === undefined || mixedEmpty === undefined) throw new Error('missing mixed scans')
+        await confirmBatch(page, mixed, () => ({
+          updatedCount: 2,
+          committedIds: [mixedFull.id],
+          failedIds: [mixedEmpty.id],
+          failedReasons: [failureNote],
+          failedCodes: ['none_on_hand'],
+          stockOutCounts: {
+            [mixedFull.id]: { removedCount: 1, requestedCount: 3 },
+          },
+        }))
+        await expectFailureWithPartial(page, wasLine)
+        await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_${scheme}.png`)
+        await page.unroute('**/api/scans/batch-commit')
+        await cancelScan(request, mixedEmpty.id)
       }
     }
   })

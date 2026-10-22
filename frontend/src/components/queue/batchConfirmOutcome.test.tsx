@@ -1532,6 +1532,7 @@ describe('scan commit outcomes', () => {
         const alerts = screen.getAllByRole('alert').filter((alert) => alert.classList.contains('scan-batch-banner'));
         expect(alerts).toHaveLength(1);
         expect(alerts[0]?.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.bannerExact);
+        expect(alerts[0]?.querySelector('.scan-batch-partial')).toBeNull();
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
