@@ -7,6 +7,9 @@ export const colors = {
   paper: '#F3F6F8',
   shelf: '#0D9488',
   shelfDeep: '#115E59',
+  // Mantine teal-light wash and the brand accent edge, used for a success banner.
+  successWash: 'rgba(13, 148, 136, 0.1)',
+  successEdge: 'rgba(13, 148, 136, 0.5)',
   using: '#92400E',
   rule: '#D3DDE3',
   camera: '#0C1C22',

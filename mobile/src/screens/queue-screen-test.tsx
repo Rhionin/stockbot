@@ -296,6 +296,7 @@ describe('QueueScreen', () => {
   const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
   const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
   const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
+  const oneCardLine = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
   const batchCard = (id: string, name: string, direction: 'stock_in' | 'stock_out', unitCount: number) => entry({
     id,
     barcode: id,
@@ -356,6 +357,36 @@ describe('QueueScreen', () => {
       lines: [manyLine],
       absent: ['Some scans could not be confirmed.', wasLine, wereLine, 'Tortilla chips', 'Rolled oats'],
       banner: [manyLine],
+    },
+    {
+      label: 'one short card with no name',
+      cards: [
+        entry({
+          id: 'scan-batch-partial',
+          barcode: 'scan-batch-partial',
+          direction: 'stock_out',
+          unitCount: partialCount.requestedCount,
+          productId: null,
+          product: null,
+        }),
+        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      ],
+      kept: [] as ReturnType<typeof entry>[],
+      batch: batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-in'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      }),
+      lines: [oneCardLine],
+      absent: [
+        '1 cards had fewer on hand than scanned, so only what was on hand was taken out.',
+        'Unknown product',
+        'Some scans could not be confirmed.',
+        wasLine,
+        wereLine,
+        manyLine,
+      ],
+      banner: [oneCardLine],
     },
     {
       label: 'the partial batch fixture',
@@ -424,6 +455,12 @@ describe('QueueScreen', () => {
         const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
         expect(color).toBe(line === 'Some scans could not be confirmed.' ? colors.danger : colors.ink);
       }
+      const host = StyleSheet.flatten(bannerNode.props.style);
+      const wash = host && typeof host === 'object' && 'backgroundColor' in host ? host.backgroundColor : undefined;
+      const edge = host && typeof host === 'object' && 'borderColor' in host ? host.borderColor : undefined;
+      const success = banner[0] !== 'Some scans could not be confirmed.';
+      expect(wash).toBe(success ? colors.successWash : undefined);
+      expect(edge).toBe(success ? colors.successEdge : undefined);
     }
     const failed = cards.find((card) => card.id === 'scan-batch-none');
     if (failed && kept.some((card) => card.id === failed.id)) {

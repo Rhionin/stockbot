@@ -251,7 +251,10 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
     setToast('');
     try {
       const names: Record<string, string> = {};
-      for (const entry of entries) names[entry.id] = entry.product?.name ?? 'Unknown product';
+      for (const entry of entries) {
+        const name = entry.product?.name;
+        if (name !== undefined && name !== '') names[entry.id] = name;
+      }
       const result = await client.batchCommit(entries.map((entry) => entry.id));
       const notices = batchFailureNotices(result);
       if (notices.some((notice) => commitConflictBehavior(notice.code || undefined).refreshSuggestions)) {
@@ -294,9 +297,15 @@ export function QueueScreen({ client, warning }: QueueScreenProps) {
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(error !== '' || partialLine !== '') && (
-        <View testID="batch-banner" accessibilityLiveRegion="polite">
+        <View
+          testID="batch-banner"
+          accessibilityLiveRegion="polite"
+          style={error === '' ? styles.successBanner : undefined}
+        >
           {error !== '' && <Text style={styles.error}>{error}</Text>}
-          {partialLine !== '' && <Text style={styles.bannerBody}>{partialLine}</Text>}
+          {partialLine !== '' && (
+            <Text style={error === '' ? styles.bannerBody : styles.partialLine}>{partialLine}</Text>
+          )}
         </View>
       )}
 
@@ -497,6 +506,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: colors.ink,
+  },
+  partialLine: {
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.ink,
+    marginBottom: 12,
+  },
+  successBanner: {
+    backgroundColor: colors.successWash,
+    borderColor: colors.successEdge,
+    borderWidth: 1,
+    borderRadius: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 16,
     marginBottom: 12,
   },
   spinner: {
