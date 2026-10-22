@@ -57,13 +57,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     const changed = scannerModeRef.current !== mode;
     scannerModeRef.current = mode;
     setScannerModeState(mode);
-    if (changed) setSelectedIds([]);
+    if (changed) {
+      setSelectedIds([]);
+      setPartialLine(null);
+    }
   }, []);
 
   const holdLocalMode = useCallback((mode: QueueView) => {
     modeEpoch.current += 1;
     scannerModeRef.current = mode;
     setScannerModeState(mode);
+    setPartialLine(null);
   }, []);
 
   const stockInCount = useMemo(() => getEntriesForView(entries, 'stock_in').length, [entries]);
@@ -104,7 +108,9 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     [eligibleEntries, selectedIds],
   );
 
-  const loadQueue = useCallback(async () => {
+  // A batch outcome reloads the queue because cards just left. That refresh
+  // must keep the line it recorded. Every other reload is a queue change.
+  const loadQueue = useCallback(async (keepPartialLine = false) => {
     try {
       const [pending, flagged, qr] = await Promise.all([
         listScanEntries(userId, 'pending'),
@@ -124,6 +130,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         }
         return changed ? next : current;
       });
+      if (!keepPartialLine) setPartialLine(null);
       setError('');
       void getInventoryList().then(setInventory).catch(() => setInventory([]));
     } catch (requestError) {
@@ -134,10 +141,13 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   }, [userId]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadQueue);
+    void Promise.resolve().then(() => loadQueue());
   }, [loadQueue]);
 
-  useEffect(() => () => window.clearTimeout(captureHighlightTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(captureHighlightTimer.current);
+    setPartialLine(null);
+  }, []);
 
   useEffect(() => {
     if (capturedBarcode === '') return;
@@ -200,6 +210,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     trackEventSource(eventSource);
     eventSource.addEventListener('scan', (message) => {
       const scanEntry = JSON.parse((message as MessageEvent).data) as ScanEntry;
+      setPartialLine(null);
       setEntries((current) => {
         const next = sortScansNewestFirst(mergeScanEvent(current, scanEntry));
         setSelectedIds((selected) => pruneSelection(selected, next));
@@ -289,6 +300,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
 
   const captureBarcode = async (barcode: string) => {
     setScanError('');
+    setPartialLine(null);
     const targetMode = classifyControlBarcode(barcode);
     if (targetMode !== null) {
       // Show the switch immediately. The mode write and the scanner_mode event
@@ -341,7 +353,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       if (name !== undefined && name !== '') names[entry.id] = name;
     }
     setPartialLine(formatPartialRemoval(response, names));
-    void loadQueue();
+    void loadQueue(true);
   };
 
   const clearFailure = (entryId: string) => {
@@ -450,6 +462,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
         {failureById.size > 0 && (
           <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
             <div>{BATCH_FAILURE_FALLBACK}</div>
+            {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
           </Alert>
         )}
         {/* An all-success batch has no summary sentence, so this line is the banner. */}
@@ -459,11 +472,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
             className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
             style={{ flexShrink: 0 }}
           >
-            {partialLine}
-          </Text>
-        )}
-        {failureById.size > 0 && partialLine !== null && (
-          <Text className="scan-batch-partial" role="status" style={{ flexShrink: 0 }}>
             {partialLine}
           </Text>
         )}

@@ -111,25 +111,43 @@ const expectSuccessBanner = async (page: Page, line: string) => {
   await expect(banner).toHaveAttribute('role', 'status')
   await expect(banner).not.toHaveAttribute('role', 'alert')
   await expect(failureBanner(page)).toHaveCount(0)
+  await expect.poll(() => banner.evaluate((node) => {
+    const style = getComputedStyle(node)
+    const probe = document.createElement('div')
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent-border').trim()
+    probe.style.borderTop = `1px solid ${accent}`
+    document.body.appendChild(probe)
+    const expected = getComputedStyle(probe).borderTopColor
+    probe.remove()
+    return style.borderTopWidth === '1px' && style.borderTopStyle === 'solid' && style.borderTopColor === expected
+  })).toBe(true)
   await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
   await fitsInViewport(banner)
 }
 
 const expectFailureWithPartial = async (page: Page, line: string) => {
   const failure = failureBanner(page)
-  const partial = page.locator('.scan-batch-partial').filter({ hasText: line })
+  const partial = failure.locator('.scan-batch-partial')
   await expect(failure).toHaveCount(1)
-  await expect(failure).toHaveText(fallback)
+  await expect(failure).toContainText(fallback)
   await expect(partial).toHaveCount(1)
+  await expect(partial).toHaveText(line)
   await expect(partial).not.toHaveAttribute('role', 'alert')
   await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
   await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
   await expect.poll(() => page.evaluate((sentence) => {
     const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
-    const note = [...document.querySelectorAll('.scan-batch-partial')].find((element) => element.textContent === sentence)
-    if (alert === null || note === undefined) return false
-    const follows = (alert.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
-    return !alert.contains(note) && follows && note.getAttribute('role') !== 'alert'
+    const note = alert?.querySelector('.scan-batch-partial')
+    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === 'Some scans could not be confirmed.')
+    if (alert === null || alert === undefined || note === null || note === undefined || head === undefined) return false
+    const follows = (head.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const oneAlert = document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
+    return alert.contains(note)
+      && note.textContent === sentence
+      && follows
+      && note.getAttribute('role') !== 'alert'
+      && oneAlert
+      && document.querySelectorAll('.scan-batch-banner--success').length === 0
   }, line)).toBe(true)
   await fitsInViewport(failure)
   await fitsInViewport(partial)
