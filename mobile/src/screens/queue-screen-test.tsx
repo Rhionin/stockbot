@@ -948,12 +948,51 @@ describe('QueueScreen', () => {
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
   });
 
-  it('keeps the red sentence when a failed card is no longer pending', async () => {
+  it('a failed retry of the only failed card clears the red sentence', async () => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
     const listPending = jest.fn()
       .mockResolvedValueOnce([chips, failed])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([failed]);
+    const commitScan = jest.fn(async () => {
+      throw new ApiError(409, 'Nothing on hand to take out.', 'none_on_hand');
+    });
+    const api = client({
+      listPending,
+      commitScan,
+      batchCommit: jest.fn(async () => batchResponse({
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial'],
+        failedIds: ['scan-batch-none'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      })),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+
+    await fireEvent.press(screen.getByLabelText('Confirm Batch Empty'));
+    await waitFor(() => expect(commitScan).toHaveBeenCalled());
+    expect(screen.getByText('Batch Empty')).toBeTruthy();
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expect(screen.queryByText(wasLine)).toBeNull();
+    expectBanner(screen, 'gone', []);
+  });
+
+  it.each([
+    { label: 'the queue is empty', stayed: false },
+    { label: 'another card is still pending', stayed: true },
+  ])('keeps the red sentence when a failed card is no longer pending and $label', async ({ stayed }) => {
+    const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+    const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(stayed ? [chips, failed, other] : [chips, failed])
+      .mockResolvedValueOnce(stayed ? [other] : []);
     const api = client({
       listPending,
       batchCommit: jest.fn(async () => batchResponse({
@@ -971,6 +1010,7 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Batch Empty')).toBeNull();
     expect(screen.queryByText('Tortilla chips')).toBeNull();
+    if (stayed) expect(screen.getByText('Batch In')).toBeTruthy();
     expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
