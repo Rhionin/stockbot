@@ -119,6 +119,16 @@ type Queue struct {
 	// Now is the clock CommitStockIn stores in committed_at.
 	// Nil means time.Now().UTC, which drops a monotonic reading.
 	Now func() time.Time
+
+	// BeforeResolve, when set, runs at the start of ResolveFlaggedEntry
+	// before that call opens a transaction. A test lets a cancel request
+	// commit on the single pooled connection in that window. Nil in production.
+	BeforeResolve func()
+
+	// AfterResolveCommit, when set, runs after the resolve transaction has
+	// committed and the written row has already been read. The caller returns
+	// that row, so a later change is not what the client is shown. Nil in production.
+	AfterResolveCommit func()
 }
 
 // NewQueue creates a new Queue with the given database connection.
@@ -231,28 +241,57 @@ func (r *Queue) recordMergedScan(ctx context.Context, id string, unitCount int, 
 	return nil
 }
 
+const scanEntryByID = `
+	SELECT 
+		se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
+		se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
+		p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+	FROM scan_entries se
+	LEFT JOIN products p ON p.id = se.product_id
+	WHERE se.id = ?`
+
+type queryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // GetScanEntry returns the scan entry with the given ID, or nil if no such
 // entry exists. Includes joined product information if available.
 func (r *Queue) GetScanEntry(ctx context.Context, id string) (*ScanEntry, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT 
-			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
-			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
-		FROM scan_entries se
-		LEFT JOIN products p ON p.id = se.product_id
-		WHERE se.id = ?`,
-		id,
-	)
+	entry, err := r.readScanEntry(ctx, r.db, id)
+	if err != nil {
+		return nil, fmt.Errorf("GetScanEntry: %w", err)
+	}
+	return entry, nil
+}
 
-	entry, err := scanScanEntry(row)
+func (r *Queue) readScanEntry(ctx context.Context, q queryRower, id string) (*ScanEntry, error) {
+	entry, err := scanScanEntry(q.QueryRowContext(ctx, scanEntryByID, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("GetScanEntry: %w", err)
+		return nil, err
 	}
 	return entry, nil
+}
+
+// ensureHouseholdProduct reports ErrProductNotResolved when productID is
+// blank or not in the household catalog. The catalog is this database's
+// products table; householdID is the scan's user, so the detail names whose
+// scan was refused. The check runs on the same transaction as the write.
+func ensureHouseholdProduct(ctx context.Context, q queryRower, householdID, productID string) error {
+	if productID == "" {
+		return fmt.Errorf("household %s: empty product id: %w", householdID, ErrProductNotResolved)
+	}
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT id FROM products WHERE id = ?`, productID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("household %s: product %q: %w", householdID, productID, ErrProductNotResolved)
+	}
+	if err != nil {
+		return fmt.Errorf("verify product: %w", err)
+	}
+	return nil
 }
 
 // findMergeableScanEntry returns the oldest pending or flagged scan entry for
@@ -344,9 +383,31 @@ var ErrNotFound = errors.New("scan entry not found")
 // not flagged. The caller updates the row as a normal patch.
 var ErrNotFlagged = errors.New("only a flagged scan can be resolved")
 
-// ErrProductNotResolved means the product id on a resolve is not in the catalog.
-// The sentence matches the batch-commit reason for a scan with no product.
+// ErrProductNotResolved means the product id names nothing in the household
+// catalog. The HTTP body uses a fixed sentence; this text stays in the log.
 var ErrProductNotResolved = errors.New("product not resolved")
+
+// ErrInvalidResolve means a flagged resolve included a field other than the
+// product, or a status other than pending. Nothing is written.
+var ErrInvalidResolve = errors.New("invalid resolve")
+
+// ResolveFields are the other patch fields sent alongside a product id.
+// On a flagged scan, only a pending status is allowed with the product.
+type ResolveFields struct {
+	Direction *ScanDirection
+	UnitCount *int
+	ExpiresAt *time.Time
+	Status    *ScanStatus
+}
+
+// Rejects reports whether these fields are not a resolve. Status pending,
+// or no status, is the resolve. Any other field or status is not.
+func (f ResolveFields) Rejects() bool {
+	if f.Direction != nil || f.UnitCount != nil || f.ExpiresAt != nil {
+		return true
+	}
+	return f.Status != nil && *f.Status != Pending
+}
 
 // UpdateScanEntry updates direction, unit_count, expires_at, product_id, and
 // status for the given scan entry ID. Field edits go through here. A repeat
@@ -402,7 +463,29 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 	query += " WHERE id = ? AND status IN (?, ?, ?)"
 	args = append(args, id, string(Pending), string(Flagged), string(QR))
 
-	res, err := r.db.ExecContext(ctx, query, args...)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("UpdateScanEntry: %w", err)
+	}
+	defer tx.Rollback()
+
+	// The product check shares this transaction with the write. A missing
+	// product returns before the update, for every status, and writes nothing.
+	if productID != nil {
+		var householdID string
+		err := tx.QueryRowContext(ctx, `SELECT user_id FROM scan_entries WHERE id = ?`, id).Scan(&householdID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("UpdateScanEntry: %w", ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("UpdateScanEntry: %w", err)
+		}
+		if err := ensureHouseholdProduct(ctx, tx, householdID, *productID); err != nil {
+			return fmt.Errorf("UpdateScanEntry: %w", err)
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("UpdateScanEntry: %w", err)
 	}
@@ -412,7 +495,7 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		return fmt.Errorf("UpdateScanEntry rows affected: %w", err)
 	}
 	if n == 0 {
-		existing, getErr := r.GetScanEntry(ctx, id)
+		existing, getErr := r.readScanEntry(ctx, tx, id)
 		if getErr != nil {
 			return getErr
 		}
@@ -420,6 +503,10 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 			return fmt.Errorf("UpdateScanEntry: %w", ErrNotOpen)
 		}
 		return fmt.Errorf("UpdateScanEntry: %w", ErrNotFound)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("UpdateScanEntry: %w", err)
 	}
 
 	updated, err := r.GetScanEntry(ctx, id)

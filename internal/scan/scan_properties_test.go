@@ -566,7 +566,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 			entryID = flagged.ID
 
 			queue.Broadcaster = broadcaster
-			if err := queue.ResolveFlaggedEntry(ctx, entryID, productID); err != nil {
+			if _, err := queue.ResolveFlaggedEntry(ctx, entryID, productID); err != nil {
 				rt.Fatalf("ResolveFlaggedEntry failed: %v", err)
 			}
 		case 3: // CommitStockIn
@@ -764,7 +764,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				}); createErr != nil {
 					rt.Fatalf("CreateProduct failed: %v", createErr)
 				}
-				err = queue.ResolveFlaggedEntry(ctx, unknownID, productID)
+				_, err = queue.ResolveFlaggedEntry(ctx, unknownID, productID)
 			case 1: // scan entry is not flagged
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
@@ -784,11 +784,11 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 					rt.Fatalf("CreateScanEntry (setup) failed: %v", createErr)
 				}
 				broadcaster.scanEvents = nil
-				err = queue.ResolveFlaggedEntry(ctx, created.ID, productID)
+				_, err = queue.ResolveFlaggedEntry(ctx, created.ID, productID)
 			case 2: // product not found
 				flagged := createFlaggedEntry(t, queue, ctx)
 				broadcaster.scanEvents = nil
-				err = queue.ResolveFlaggedEntry(ctx, flagged.ID, "no-such-product")
+				_, err = queue.ResolveFlaggedEntry(ctx, flagged.ID, "no-such-product")
 			}
 		case 4: // CommitStockIn, one of its documented error conditions
 			var entry *scan.ScanEntry

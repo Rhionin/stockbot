@@ -19,7 +19,7 @@ func TestResolveFlaggedEntry_CancelledIsNotOpen(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 
-	err := queue.ResolveFlaggedEntry(ctx, id, productID)
+	_, err := queue.ResolveFlaggedEntry(ctx, id, productID)
 	if !errors.Is(err, scan.ErrNotOpen) {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestResolveFlaggedEntry_PendingIsNotFlagged(t *testing.T) {
 		t.Fatalf("pending: %v", err)
 	}
 
-	err := queue.ResolveFlaggedEntry(ctx, id, productID)
+	_, err := queue.ResolveFlaggedEntry(ctx, id, productID)
 	if !errors.Is(err, scan.ErrNotFlagged) || errors.Is(err, scan.ErrNotOpen) {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestResolveFlaggedEntry_MissingProduct(t *testing.T) {
 	ctx := context.Background()
 	id, _ := seedFlaggedResolve(t, queue, db, "scan-missing-product")
 
-	err := queue.ResolveFlaggedEntry(ctx, id, "no-such-product")
+	_, err := queue.ResolveFlaggedEntry(ctx, id, "no-such-product")
 	if !errors.Is(err, scan.ErrProductNotResolved) {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
@@ -72,7 +72,8 @@ func TestResolveFlaggedEntry_LosesToCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- queue.ResolveFlaggedEntry(ctx, id, productID)
+		_, err := queue.ResolveFlaggedEntry(ctx, id, productID)
+		errCh <- err
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -112,7 +113,7 @@ func TestResolveFlaggedEntry_ThenCancelStaysCancelled(t *testing.T) {
 	ctx := context.Background()
 	id, productID := seedFlaggedResolve(t, queue, db, "scan-then-cancel")
 
-	if err := queue.ResolveFlaggedEntry(ctx, id, productID); err != nil {
+	if _, err := queue.ResolveFlaggedEntry(ctx, id, productID); err != nil {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
 	cancelled := scan.Cancelled

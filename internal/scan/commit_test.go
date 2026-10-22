@@ -474,7 +474,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 			ctx := context.Background()
 			scanEntryID, productID := tt.setup(t, queue, db, ctx)
 
-			err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID)
+			_, err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID)
 			if tt.expectError {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -607,7 +607,7 @@ func TestResolveFlaggedEntry_PublishesScanEvent(t *testing.T) {
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	if err := queue.ResolveFlaggedEntry(ctx, entry.ID, productID); err != nil {
+	if _, err := queue.ResolveFlaggedEntry(ctx, entry.ID, productID); err != nil {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
 
@@ -686,7 +686,7 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 			broadcaster := &fakeBroadcaster{}
 			queue.Broadcaster = broadcaster
 
-			if err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID); err == nil {
+			if _, err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID); err == nil {
 				t.Fatal("expected error, got nil")
 			}
 			if len(broadcaster.scanEvents) != 0 {
@@ -997,7 +997,7 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 		t.Fatalf("CreateProduct: %v", err)
 	}
 	flagged := createFlaggedEntry(t, queue, ctx)
-	if err := queue.ResolveFlaggedEntry(ctx, flagged.ID, productID); err != nil {
+	if _, err := queue.ResolveFlaggedEntry(ctx, flagged.ID, productID); err != nil {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
 

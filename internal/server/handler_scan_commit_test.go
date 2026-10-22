@@ -811,8 +811,8 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				body:           `{"productId":"prod-does-not-exist","status":"pending"}`,
 				expectedStatus: http.StatusBadRequest,
 				assertions: []assertion{
-					{path: "$.error", value: "product not resolved"},
-					{path: "$.code", absent: true},
+					{path: "$.error", value: "Choose which item this is first."},
+					{path: "$.code", value: "product_unresolved"},
 				},
 			},
 			afterRequest: func(env testEnv) {

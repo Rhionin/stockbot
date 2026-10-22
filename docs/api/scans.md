@@ -4,7 +4,39 @@
 
 Changes a scan that is still open. The body may include any of `direction`, `unitCount`, `expiresAt`, `productId`, and `status`. Omitted fields stay as they are.
 
-`status`, when sent, must be `pending`, `flagged`, or `cancelled`. Sending `committed`, or any other value, is `400` with `"error": "invalid status value"`. A scan becomes committed only through `POST /api/scans/{id}/commit`.
+`status`, when sent, must be `pending`, `flagged`, or `cancelled`. Sending `committed`, or any other value, is `400` with `"error": "invalid status value"`. That check runs before the closed-scan check below, so the same `400` is what a committed or cancelled scan gets when the body says `status` `committed`, and nothing is written. A scan becomes committed only through `POST /api/scans/{id}/commit`.
+
+`productId`, when sent, must name a product in the household catalog. The household is the scan's user. A missing id is `400` for every scan status, including pending stock-in, pending stock-out, `qr`, and flagged, and nothing is written:
+
+```json
+{
+  "error": "Choose which item this is first.",
+  "code": "product_unresolved"
+}
+```
+
+`POST /api/scans/{id}/commit` returns that same `400` for stock-in and for stock-out when the stored product id is already dangling, instead of a server error or `no_item`. `POST /api/scans/batch-commit` keeps `200` and lists that sentence in `failedReasons` for the scan.
+
+## Resolving a flagged scan
+
+On a flagged scan, a resolve is exactly `productId`, optionally with `status` `pending`:
+
+```json
+{ "productId": "prod_abc", "status": "pending" }
+```
+
+That links the barcode, sets the product, and moves the scan to pending. The `200` body is the row written inside that transaction, so it stays `pending` even if a remove lands after the write.
+
+Any other field, or any other status, sent with `productId` on a flagged scan is `400` and writes nothing, including no barcode override:
+
+```json
+{
+  "error": "Choose the item first, then change other details.",
+  "code": "invalid_resolve"
+}
+```
+
+A pending or `qr` scan can still send `productId` together with other fields. The product must exist.
 
 ## Open scans
 
@@ -20,7 +52,9 @@ A scan is open when its status is `pending`, `flagged`, or `qr`. Cancelling one 
 
 Every change is one conditional update: the row is written only when its current status is still open (`pending`, `flagged`, or `qr`). That includes a body that changes `direction`, `unitCount`, `expiresAt`, or `productId` and does not mention `status`. A commit that wins the race is not overwritten, and neither is the stock move that commit recorded.
 
-Any change, including status, to a committed or cancelled scan returns `409` `not_open`:
+An invalid `status`, including `committed`, is the `400` `"invalid status value"` above, before this check. An unknown `productId` is the `400` `product_unresolved` above, also before this check.
+
+Any other change, including status, to a committed or cancelled scan returns `409` `not_open`:
 
 ```json
 {

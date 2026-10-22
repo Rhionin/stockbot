@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -12,7 +13,7 @@ type ScanUpdateHandler struct {
 	Queue interface {
 		UpdateScanEntry(ctx context.Context, id string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *scan.ScanStatus) error
 		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
-		ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error
+		ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string, fields ...scan.ResolveFields) (*scan.ScanEntry, error)
 	}
 }
 
@@ -52,27 +53,25 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 
 	// A product id on a flagged scan resolves it. The status read and the
 	// write share one transaction, so a remove that commits first is
-	// not_open and does not write the override.
+	// not_open and does not write the override. The returned row is the
+	// one that transaction wrote.
 	if req.Body.ProductID != nil {
-		err := h.Queue.ResolveFlaggedEntry(req.Context, req.PathParams.ID, *req.Body.ProductID)
+		resolved, err := h.Queue.ResolveFlaggedEntry(req.Context, req.PathParams.ID, *req.Body.ProductID, scan.ResolveFields{
+			Direction: req.Body.Direction,
+			UnitCount: req.Body.UnitCount,
+			ExpiresAt: req.Body.ExpiresAt,
+			Status:    req.Body.Status,
+		})
 		if err == nil {
-			resolved, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
-			if err != nil {
-				return nil, InternalError(err)
-			}
+			// Nil means the write reported success and the row was already
+			// gone. A second connection can do that. Do not invent a scan.
 			if resolved == nil {
 				return nil, NotFound(scan.ErrNotFound.Error())
 			}
 			return resolved, nil
 		}
-		if errors.Is(err, scan.ErrNotOpen) {
-			return nil, ConflictDetails(scan.ErrNotOpen.Error(), "not_open", nil)
-		}
-		if errors.Is(err, scan.ErrNotFound) {
-			return nil, NotFound(scan.ErrNotFound.Error())
-		}
-		if errors.Is(err, scan.ErrProductNotResolved) {
-			return nil, BadRequest(scan.ErrProductNotResolved.Error())
+		if mapped := scanPatchError(err); mapped != nil {
+			return nil, mapped
 		}
 		if !errors.Is(err, scan.ErrNotFlagged) {
 			return nil, InternalError(err)
@@ -90,11 +89,8 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		req.Body.Status,
 	)
 	if err != nil {
-		if errors.Is(err, scan.ErrNotOpen) {
-			return nil, ConflictDetails(scan.ErrNotOpen.Error(), "not_open", nil)
-		}
-		if errors.Is(err, scan.ErrNotFound) {
-			return nil, NotFound(scan.ErrNotFound.Error())
+		if mapped := scanPatchError(err); mapped != nil {
+			return nil, mapped
 		}
 		return nil, InternalError(err)
 	}
@@ -109,4 +105,24 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	}
 
 	return entry, nil
+}
+
+// scanPatchError maps a typed scan error onto the client body. An unrecognized
+// error returns nil so the caller can treat it as a server failure.
+func scanPatchError(err error) error {
+	if errors.Is(err, scan.ErrNotOpen) {
+		return ConflictDetails(scan.ErrNotOpen.Error(), "not_open", nil)
+	}
+	if errors.Is(err, scan.ErrNotFound) {
+		return NotFound(scan.ErrNotFound.Error())
+	}
+	if errors.Is(err, scan.ErrProductNotResolved) {
+		text, code := clientmsg.Reject(clientmsg.ProductUnresolvedText, clientmsg.ProductUnresolvedCode, err)
+		return BadRequestDetails(text, code)
+	}
+	if errors.Is(err, scan.ErrInvalidResolve) {
+		text, code := clientmsg.Reject(clientmsg.InvalidResolveText, clientmsg.InvalidResolveCode, err)
+		return BadRequestDetails(text, code)
+	}
+	return nil
 }
