@@ -18,9 +18,9 @@ import {
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
-  CODE_BUSY,
   CODE_NONE_ON_HAND,
-  CODE_NO_SPACE,
+  failuresAfterConfirm,
+  type BatchFailureNotice,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
@@ -163,7 +163,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, string>>({});
+  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, BatchFailureNotice>>({});
+  const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState('');
   const refreshGeneration = useRef(0);
   const [toast, setToast] = useState('');
@@ -173,7 +174,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
-  const [batchSentence, setBatchSentence] = useState('');
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -191,10 +191,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setError(nextError);
     setLoadError('');
     setFailureBannerIds((current) => {
-      const kept: Record<string, string> = {};
+      const kept: Record<string, BatchFailureNotice> = {};
       for (const entry of next) {
-        const code = current[entry.id];
-        if (code !== undefined) kept[entry.id] = code;
+        const notice = current[entry.id];
+        if (notice !== undefined) kept[entry.id] = notice;
       }
       return kept;
     });
@@ -298,17 +298,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
-  // A busy or no_space banner is one sentence for the stop. Confirming one
-  // card makes that sentence out of date, so the banner comes down. Other
-  // failure codes still clear one card at a time.
+  // A finished confirm drops the lock and disk notices, and the card just
+  // confirmed. Item-specific codes stay until that card is resolved.
   function retireSingleConfirm(id: string) {
     setFailureBannerIds((current) => {
-      const hadStorage = Object.values(current).some((code) => code === CODE_BUSY || code === CODE_NO_SPACE);
-      if (hadStorage) return {};
-      if (current[id] === undefined) return current;
-      const next = { ...current };
-      delete next[id];
-      return next;
+      const next = failuresAfterConfirm(Object.values(current), id);
+      if (next.length === Object.keys(current).length) return current;
+      return Object.fromEntries(next.map((notice) => [notice.id, notice]));
     });
   }
 
@@ -521,20 +517,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setExcluded({});
       const stillThere = (noticeId: string) => pending.some((entry) => entry.id === noticeId);
       const amberLeft = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id)).map((notice) => notice.id);
-      const pendingFailures: Record<string, string> = {};
+      const pendingFailures: Record<string, BatchFailureNotice> = {};
       for (const notice of notices) {
         if (notice.code === CODE_NONE_ON_HAND) continue;
-        if (stillThere(notice.id)) pendingFailures[notice.id] = notice.code;
+        if (stillThere(notice.id)) pendingFailures[notice.id] = notice;
       }
       setFailureBannerIds(pendingFailures);
-      const banner = batchFailureBannerText(
-        notices.filter((notice) => stillThere(notice.id)),
-        result.committedIds?.length ?? 0,
-      ) ?? '';
-      setBatchSentence(banner);
-      // Red only while a non-amber failure is still open. A card that already
-      // left, including one beside an amber card, does not keep the sentence.
-      setError(banner);
+      setConfirmedCount(result.committedIds?.length ?? 0);
+      // The banner is derived from the notices still listed. A card that already
+      // left, including one beside an amber card, does not keep a sentence.
+      setError('');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
       setLoadError('');
       if (amberLeft.length > 0) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
@@ -549,8 +541,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
-  const failureBanner = entries.some((entry) => failureBannerIds[entry.id] !== undefined);
-  const batchHead = failureBanner ? batchSentence : error;
+  const openNotices = entries.flatMap((entry) => {
+    const notice = failureBannerIds[entry.id];
+    return notice === undefined ? [] : [notice];
+  });
+  const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
+  const batchHead = derivedBanner !== '' ? derivedBanner : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
