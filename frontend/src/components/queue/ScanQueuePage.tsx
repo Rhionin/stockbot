@@ -488,7 +488,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
     setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
-    setConfirmedCount(response.committedIds?.length ?? 0);
+    // The prefix belongs to this batch. A batch that saved everything leaves
+    // nothing for a later lock or full disk to inherit.
+    const unresolved = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND);
+    setConfirmedCount(unresolved ? (response.committedIds?.length ?? 0) : 0);
     const blockedIds = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND).map((notice) => notice.id);
     rememberPin(blockedIds);
     setSelectedIds(notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND).map((notice) => notice.id));
@@ -519,10 +522,12 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   };
 
   // A lock or a full disk from one card is the banner, including the first time.
-  // A notice already on that card stays.
+  // A notice already on that card stays. A new one is not the batch that saved
+  // earlier scans, so that count does not prefix it.
   const noteStorageFailure = (entryId: string, code: string, message: string) => {
     setFailureById((current) => {
       if (current.has(entryId)) return current;
+      setConfirmedCount(0);
       const next = new Map(current);
       next.set(entryId, { id: entryId, code, message });
       return next;

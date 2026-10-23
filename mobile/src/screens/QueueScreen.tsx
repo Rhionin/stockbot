@@ -303,11 +303,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   // confirmed. Item-specific codes stay until that card is resolved. A confirm
   // that fails leaves the banner up.
   // A lock or a full disk is the banner, including the first time one card fails.
-  // A notice already on that card stays, and nothing about it is toasted.
+  // A notice already on that card stays, and nothing about it is toasted. A new
+  // one is not the batch that saved earlier scans, so that count does not prefix it.
   function noteStorageFailure(id: string, code: string, message: string) {
     setToast('');
     setFailureBannerIds((current) => {
       if (current[id] !== undefined) return current;
+      setConfirmedCount(0);
       return { ...current, [id]: { id, code, message } };
     });
   }
@@ -545,7 +547,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (stillThere(notice.id)) pendingFailures[notice.id] = notice;
       }
       setFailureBannerIds(pendingFailures);
-      setConfirmedCount(result.committedIds?.length ?? 0);
+      // The prefix belongs to this batch. A batch that saved everything leaves
+      // nothing for a later lock or full disk to inherit.
+      setConfirmedCount(Object.keys(pendingFailures).length === 0 ? 0 : (result.committedIds?.length ?? 0));
       // The banner is derived from the notices still listed. A card that already
       // left, including one beside an amber card, does not keep a sentence.
       setError('');

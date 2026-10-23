@@ -1066,6 +1066,93 @@ describe('nothing on hand queue', () => {
     expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText(sentence)).not.toBeInTheDocument();
   });
 
+  it.each([
+    { name: 'a busy confirm after a saved batch has no confirmed prefix', id: 'scan-busy-first', sentence: BUSY_SENTENCE },
+    { name: 'a no_space confirm after a saved batch has no confirmed prefix', id: 'scan-nospace-first', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ id, sentence }) => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const later = scan({
+      id,
+      barcode: '777',
+      productId: 'prod-later',
+      product: product('prod-later', 'Later loaf'),
+    });
+    const { commits } = renderQueue({
+      scans: [oats, rice, later],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2), shelf('later', 'Later loaf', 2)],
+      batchResult: {
+        updatedCount: 2,
+        committedIds: [oats.id, rice.id],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 777' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('checkbox', { name: 'Select scan for batch approval' }));
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 666' })).getByRole('checkbox', { name: 'Select scan for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 555' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('article', { name: 'Scan 666' })).not.toBeInTheDocument();
+    expect(document.querySelector('.scan-batch-banner')).toBeNull();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 777' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(commits).toContain(id));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.queryByText('confirmed.', { exact: false })).not.toBeInTheDocument();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(document.querySelector('.scan-batch-banner')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(sentence);
+    expect(within(screen.getByRole('article', { name: 'Scan 777' })).queryByText(sentence)).not.toBeInTheDocument();
+  });
+
+  it('a busy retry leaves the other card and the banner alone', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-busy-fail',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const { commits } = renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: [oats.id, rice.id],
+        failedReasons: [BUSY_SENTENCE, 'Which item is this?'],
+        failedCodes: ['busy', 'no_item'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    const banner = 'Some scans could not be confirmed.';
+    expect((await screen.findByText(banner)).closest('.scan-batch-banner')).not.toBeNull();
+    expect(within(screen.getByRole('article', { name: 'Scan 666' })).getByText('Which item is this?')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 666' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(commits).toContain('scan-busy-fail'));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.getAllByText(banner)).toHaveLength(1);
+    expect(document.querySelector('.scan-batch-banner')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(banner);
+    expect(within(screen.getByRole('article', { name: 'Scan 666' })).getByText('Which item is this?')).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText('Which item is this?')).not.toBeInTheDocument();
+  });
+
   it('a batch response with no committedIds key has no confirmed prefix', async () => {
     const oats = scan({
       id: 'scan-oats',

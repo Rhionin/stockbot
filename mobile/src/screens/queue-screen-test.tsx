@@ -537,6 +537,76 @@ describe('QueueScreen', () => {
   });
 
   it.each([
+    { name: 'a busy confirm after a saved batch has no confirmed prefix', status: 503, code: 'busy', sentence: BUSY_SENTENCE },
+    { name: 'a no_space confirm after a saved batch has no confirmed prefix', status: 507, code: 'no_space', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ status, code, sentence }) => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const later = stocked('scan-c', 'Loaf');
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce([oats, rice])
+        .mockResolvedValue([later]),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 2,
+        committedIds: [oats.id, rice.id],
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(status, sentence, code);
+      }),
+      getInventoryList: jest.fn(async () => [oats, rice, later].map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(screen.queryByText('Oats')).toBeNull());
+    expect(screen.queryByText('Rice')).toBeNull();
+    expectBanner(screen, 'gone', []);
+    await fireEvent.press(screen.getByLabelText('Confirm Loaf'));
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalledWith('scan-c'));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.queryByText('2 confirmed.')).toBeNull();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expectBanner(screen, 'failure', [sentence]);
+    expect(within(screen.getByTestId('scan-scan-c')).queryByText(sentence)).toBeNull();
+    expect(screen.getByText('Loaf')).toBeTruthy();
+  });
+
+  it('a busy retry leaves the other card, the banner, and the link offer', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const api = client({
+      listPending: jest.fn(async () => cards),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: [oats.id, rice.id],
+        failedReasons: [BUSY_SENTENCE, 'Which item is this?'],
+        failedCodes: ['busy', 'no_item'],
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(503, BUSY_SENTENCE, 'busy');
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByText('Which item is this?')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByLabelText('Dismiss')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Confirm Rice'));
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalledWith('scan-b'));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.queryByText(BUSY_SENTENCE)).toBeNull();
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(within(screen.getByTestId('scan-scan-b')).getByText('Which item is this?')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByLabelText('Dismiss')).toBeTruthy();
+    expect(screen.getByText('Oats')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-a')).queryByText('Which item is this?')).toBeNull();
+  });
+
+  it.each([
     {
       name: 'all busy then a single confirm',
       failures: [
