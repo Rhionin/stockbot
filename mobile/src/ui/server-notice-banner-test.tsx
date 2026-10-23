@@ -10,7 +10,7 @@ import SignInRoute from '../app/sign-in';
 import { SessionProvider } from '../session';
 import { QueueScreen } from '../screens/QueueScreen';
 import { ScanScreen } from '../screens/ScanScreen';
-import { ServerNoticeBanner, SERVER_NOTICE_INSET, SERVER_NOTICE_RED } from './ServerNoticeBanner';
+import { ServerNoticeBanner, SERVER_NOTICE_INSET } from './ServerNoticeBanner';
 
 const mockMemory = new Map<string, string>();
 
@@ -156,8 +156,11 @@ describe('mobile server notice banner', () => {
     const banner = await view.findByTestId('server-notice-banner');
     expect(view.getByText(OFFLINE_SENTENCE)).toBeTruthy();
     const style = StyleSheet.flatten(banner.props.style);
-    expect(style.backgroundColor).toBe(SERVER_NOTICE_RED);
-    expect(style.backgroundColor).toBe('#EF4444');
+    expect(style.backgroundColor).toBe('#ffeeee');
+    expect(style.borderColor).toBe('#EF4444');
+    expect(style.borderWidth).toBe(1);
+    const sentence = StyleSheet.flatten(view.getByText(OFFLINE_SENTENCE).props.style);
+    expect(sentence.color).toBe('#000000');
     expect(style.borderRadius).toBe(4);
     expect(style.marginTop).toBe(TOP);
     expect(style.marginHorizontal).toBe(SERVER_NOTICE_INSET);
