@@ -298,7 +298,7 @@ func TestBadFilesystem(t *testing.T) {
 	}
 }
 
-func TestUnreadableAssetUsesSharedServerError(t *testing.T) {
+func TestUnreadableAssetUsesSharedGeneric(t *testing.T) {
 	logs := captureLog(t)
 	handler := NewHandlerFS(assetTree{
 		"index.html":       &sliceFile{name: "index.html", data: []byte("<html>shell</html>")},
