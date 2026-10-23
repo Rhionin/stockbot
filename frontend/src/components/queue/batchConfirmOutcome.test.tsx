@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
@@ -103,6 +104,9 @@ const searchHousehold = [
   householdItem('empty', 'Empty Oats', 0),
   householdItem('rice', 'Plain Rice', 2),
 ];
+
+const scanName = (barcode: string) => new RegExp(`^Scan ${barcode}(,|$)`);
+
 const searchCatalog = [product('prod-catalog', 'Catalog Oats')];
 
 const inventory = [
@@ -136,7 +140,26 @@ const inventory = [
   },
 ];
 
-type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd';
+const householdFor = (row: { household?: unknown; wiped?: boolean; cards?: ScanEntry[] }) => {
+  const listed = Array.isArray(row.household) ? row.household : inventory;
+  if (row.wiped) return listed;
+  const rows = [...listed] as ReturnType<typeof householdItem>[];
+  const seen = new Set(rows.map((item) => item.item.productId));
+  const ensure = (productId: string | null, name: string) => {
+    if (productId === null || productId === '' || seen.has(productId)) return;
+    seen.add(productId);
+    const id = productId.startsWith('prod-') ? productId.slice('prod-'.length) : productId;
+    rows.push(householdItem(id, name === '' ? 'Item' : name, 2));
+  };
+  if (row.household !== undefined) {
+    ensure('prod-milk', 'Milk');
+    ensure('prod-oats', 'Oats');
+  }
+  for (const card of row.cards ?? []) ensure(card.productId, card.product?.name ?? 'Item');
+  return rows;
+};
+
+type PendingSet = 'both' | 'oats' | 'milk' | 'none' | 'crowd' | 'kept';
 
 const crowd = Array.from({ length: 10 }, (_, index) => {
   const at = new Date(Date.parse('2026-03-20T16:00:00Z') + index * 20_000).toISOString();
@@ -148,17 +171,29 @@ const crowd = Array.from({ length: 10 }, (_, index) => {
   });
 });
 
-const pendingEntries = (which: PendingSet): ScanEntry[] => {
+const pendingEntries = (which: PendingSet, kept: ScanEntry[]): ScanEntry[] => {
   if (which === 'both') return [milk, oats];
   if (which === 'oats') return [oats];
   if (which === 'milk') return [milk];
+  if (which === 'kept') return kept;
   return [];
 };
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more' | 'view' | 'batch-then-one' | 'batch-then-batch' | 'batch-then-remove' | 'batch-then-scan' | 'batch-then-tab' | 'batch-then-leave';
   pendingAfter: PendingSet;
+  pendingAfterConfirm?: PendingSet;
+  pendingAfterScan?: PendingSet;
+  pendingAfterRemove?: PendingSet;
+  pendingSequence?: PendingSet[];
+  holdSecondBatch?: boolean;
+  bannerGone?: boolean;
+  batches?: unknown[];
+  thenSee?: string[];
+  thenGone?: string[];
+  followBarcode?: string;
+  secondConfirmCount?: number;
   commit?: { status: number; body: unknown; empty?: boolean };
   batch?: unknown;
   instancesAfter?: ItemInstanceWithStatus[];
@@ -189,11 +224,19 @@ interface OutcomeCase {
   hideMore?: string;
   openMore?: boolean;
   household?: unknown;
+  wiped?: boolean;
   catalog?: unknown;
   stillSelected?: boolean;
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
+  kept?: ScanEntry[];
+  visibleCards?: number;
+  confirmCount?: number;
+  bannerExact?: string;
+  bannerKind?: 'success' | 'failure';
+  bannerLine?: string;
+  amberBarcodes?: string[];
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -298,8 +341,8 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
+    amberBarcodes: ['111'],
     instanceFetches: 1,
-    toast: 'Nothing on hand to take out.',
     noSearchOn: ['111'],
   },
   {
@@ -312,7 +355,7 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
-    toast: 'Nothing on hand to take out.',
+    amberBarcodes: ['111'],
     noSearchOn: ['111'],
   },
   {
@@ -607,6 +650,7 @@ const cases: OutcomeCase[] = [
     cardReason: { barcode: '111', text: 'Choose which item this is first.' },
     searchOn: ['111'],
     noSearchOn: ['222'],
+    amberBarcodes: ['222'],
   },
   {
     name: 'a batch without failedCodes still shows only the reason',
@@ -705,17 +749,15 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
-    name: 'a wiped product confirms nothing on hand only in the toast',
-    action: 'confirm-milk',
+    name: 'an absent product keeps Confirm',
+    action: 'view',
     pendingAfter: 'both',
-    openMore: true,
+    wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
-    visible: ['Nothing on hand to take out.'],
-    absent: ['No inventory item is available'],
+    visible: ['Milk'],
+    absent: ['No inventory item is available', 'Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'a single confirm replaces the batch reason so the sentence shows once',
@@ -732,34 +774,32 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
+    amberBarcodes: ['111'],
     cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
-    toast: 'Nothing on hand to take out.',
   },
   {
-    name: 'a stock-out with no household item says nothing is on hand',
-    action: 'more-milk',
+    name: 'an absent product is not an amber card',
+    action: 'view',
     pendingAfter: 'both',
+    wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
-    visible: ['Nothing on hand to take out.'],
-    absent: ['No inventory item is available'],
+    visible: ['Milk'],
+    absent: ['No inventory item is available', 'Nothing on hand to take out.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
   {
-    name: 'confirming a wiped product with More open says nothing is on hand once',
-    action: 'confirm-milk-more',
+    name: 'a listed zero is amber before anyone confirms it',
+    action: 'view',
     pendingAfter: 'both',
-    household: [householdItem('oats', 'Oats', 1)],
-    commit: {
-      status: 409,
-      body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' },
-    },
+    wiped: true,
+    household: [householdItem('milk', 'Milk', 0), householdItem('oats', 'Oats', 1)],
     visible: ['Nothing on hand to take out.'],
     absent: ['No inventory item is available'],
+    amberBarcodes: ['111'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
-    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'an empty search lists household items, including zero on hand',
@@ -840,6 +880,377 @@ const cases: OutcomeCase[] = [
   },
 ];
 
+// testdata/contract/scan-batch-commit-partial.json from PR #300 head b005813.
+// Inlined because that file is not on this branch.
+const scanBatchCommitPartialJson = `{
+  "status": 200,
+  "note": "One batch: a full stock-out (3 on hand, unitCount 2), a partial stock-out (1 on hand, unitCount 3), a stock-in of 2, and a stock-out with nothing on hand. stockOutCounts has one entry per committed stock-out, including the full removal. The stock-in and the failed card are absent. The partial card stays in committedIds. failedReasons and failedCodes stay parallel to failedIds.",
+  "request": {
+    "scanEntryIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in", "scan-batch-none"],
+    "commit": true
+  },
+  "body": {
+    "updatedCount": 4,
+    "committedIds": ["scan-batch-full", "scan-batch-partial", "scan-batch-in"],
+    "failedIds": ["scan-batch-none"],
+    "failedReasons": ["Nothing on hand to take out."],
+    "failedCodes": ["none_on_hand"],
+    "stockOutCounts": {
+      "scan-batch-full": { "removedCount": 2, "requestedCount": 2 },
+      "scan-batch-partial": { "removedCount": 1, "requestedCount": 3 }
+    }
+  }
+}
+`;
+
+interface BatchContract {
+  body: {
+    updatedCount: number;
+    committedIds: string[];
+    failedIds: string[];
+    failedReasons: string[];
+    failedCodes: string[];
+    stockOutCounts: Record<string, { removedCount: number; requestedCount: number }>;
+  };
+}
+
+const batchContract = JSON.parse(scanBatchCommitPartialJson) as BatchContract;
+const fullCount = batchContract.body.stockOutCounts['scan-batch-full'];
+const partialCount = batchContract.body.stockOutCounts['scan-batch-partial'];
+
+const fixtureCard = (
+  id: string,
+  name: string,
+  direction: 'stock_in' | 'stock_out',
+  unitCount: number,
+): ScanEntry => scanEntry({
+  id,
+  barcode: id,
+  direction,
+  unitCount,
+  productId: `prod-${id}`,
+  product: product(`prod-${id}`, name),
+});
+
+const chips = fixtureCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
+const fullCard = fixtureCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount);
+const stockInCard = fixtureCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+const emptyCard = fixtureCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
+const wereChips = fixtureCard('scan-batch-partial', 'Tortilla chips', 'stock_out', 5);
+const secondPartial = fixtureCard('scan-batch-second', 'Rolled oats', 'stock_out', 4);
+
+const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
+const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
+const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
+const unnamedLine = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
+const laterChips = fixtureCard('scan-batch-later', 'Tortilla chips', 'stock_out', 5);
+const nameless = scanEntry({
+  id: 'scan-batch-partial',
+  barcode: 'scan-batch-partial',
+  direction: 'stock_out',
+  unitCount: partialCount.requestedCount,
+  productId: 'prod-scan-batch-partial',
+  product: product('prod-scan-batch-partial', ''),
+});
+const chipsPartial = {
+  updatedCount: 1,
+  committedIds: ['scan-batch-partial'],
+  stockOutCounts: { 'scan-batch-partial': partialCount },
+};
+const laterPartial = {
+  updatedCount: 1,
+  committedIds: ['scan-batch-later'],
+  stockOutCounts: {
+    'scan-batch-later': { removedCount: 2, requestedCount: 5 },
+  },
+};
+
+const partialBatchRows = (): OutcomeCase[] => {
+  const omitted = { ...batchContract.body } as Record<string, unknown>;
+  delete omitted.stockOutCounts;
+  return [
+    {
+      name: 'one partial card names the item in the batch banner',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [chips],
+      batch: {
+        updatedCount: 1,
+        committedIds: ['scan-batch-partial'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      },
+      visible: [wasLine],
+      absent: [fallback, wereLine, manyLine, 'were on hand', 'were taken out'],
+      once: [wasLine],
+      bannerKind: 'success',
+      bannerLine: wasLine,
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      fixed: true,
+      quiet: true,
+    },
+    {
+      name: 'one partial card with more than one on hand uses were',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [wereChips],
+      batch: {
+        updatedCount: 1,
+        committedIds: ['scan-batch-partial'],
+        stockOutCounts: {
+          'scan-batch-partial': { removedCount: 2, requestedCount: 5 },
+        },
+      },
+      visible: [wereLine],
+      absent: [fallback, wasLine, manyLine, 'was on hand', 'was taken out'],
+      once: [wereLine],
+      bannerKind: 'success',
+      bannerLine: wereLine,
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      fixed: true,
+      quiet: true,
+    },
+    {
+      name: 'two partial cards share one count line',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [chips, secondPartial],
+      batch: {
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial', 'scan-batch-second'],
+        stockOutCounts: {
+          'scan-batch-partial': partialCount,
+          'scan-batch-second': { removedCount: 2, requestedCount: 4 },
+        },
+      },
+      visible: [manyLine],
+      absent: [fallback, wasLine, wereLine, 'Tortilla chips', 'Rolled oats'],
+      once: [manyLine],
+      bannerKind: 'success',
+      bannerLine: manyLine,
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-second'],
+      fixed: true,
+      quiet: true,
+    },
+    {
+      name: 'a batch of full stock-outs adds no partial line',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [fullCard, chips],
+      batch: {
+        updatedCount: 2,
+        committedIds: ['scan-batch-full', 'scan-batch-partial'],
+        stockOutCounts: {
+          'scan-batch-full': fullCount,
+          'scan-batch-partial': { removedCount: partialCount.requestedCount, requestedCount: partialCount.requestedCount },
+        },
+      },
+      visible: [],
+      absent: [fallback, wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer'],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial'],
+      quiet: true,
+    },
+    {
+      name: 'a batch that omits stockOutCounts adds no partial line',
+      action: 'batch',
+      pendingAfter: 'kept',
+      cards: [fullCard, chips, stockInCard, emptyCard],
+      kept: [emptyCard],
+      visibleCards: 3,
+      confirmCount: 3,
+      batch: omitted,
+      visible: ['Nothing on hand to take out.'],
+      absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer', fallback],
+      once: ['Nothing on hand to take out.'],
+      bannerGone: true,
+      amberBarcodes: ['scan-batch-none'],
+      pendingBarcodes: ['scan-batch-none'],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
+      cardReason: { barcode: 'scan-batch-none', text: 'Nothing on hand to take out.' },
+    },
+    {
+      name: 'a mixed batch keeps the failure reason and adds the partial line once',
+      action: 'batch',
+      pendingAfter: 'kept',
+      cards: [fullCard, chips, stockInCard, emptyCard],
+      kept: [emptyCard],
+      visibleCards: 3,
+      confirmCount: 3,
+      batch: batchContract.body,
+      visible: ['Nothing on hand to take out.', wasLine],
+      absent: [wereLine, manyLine, 'were taken out', 'cards had fewer', fallback],
+      once: [wasLine, 'Nothing on hand to take out.'],
+      bannerKind: 'success',
+      amberBarcodes: ['scan-batch-none'],
+      bannerLine: wasLine,
+      pendingBarcodes: ['scan-batch-none'],
+      goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
+      cardReason: { barcode: 'scan-batch-none', text: 'Nothing on hand to take out.' },
+      fixed: true,
+    },
+    {
+      name: 'a partial card with no name uses the count line',
+      action: 'batch',
+      pendingAfter: 'none',
+      cards: [nameless],
+      batch: chipsPartial,
+      visible: [unnamedLine],
+      absent: ['Unknown product', wasLine, wereLine, manyLine, fallback],
+      once: [unnamedLine],
+      bannerKind: 'success',
+      bannerLine: unnamedLine,
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      fixed: true,
+      quiet: true,
+    },
+    {
+      name: 'a later single confirm clears the partial line',
+      action: 'batch-then-one',
+      pendingAfter: 'kept',
+      pendingAfterConfirm: 'none',
+      cards: [chips, laterChips],
+      kept: [laterChips],
+      confirmCount: 2,
+      followBarcode: 'scan-batch-later',
+      thenSee: [wasLine],
+      thenGone: ['scan-batch-partial'],
+      batch: chipsPartial,
+      commit: { status: 200, body: { id: 'scan-batch-later', status: 'committed' } },
+      visible: [],
+      absent: [wasLine, wereLine, manyLine, fallback, 'was taken out', 'were taken out', 'cards had fewer'],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-later'],
+      quiet: true,
+    },
+    {
+      name: 'the next batch replaces the partial line',
+      action: 'batch-then-batch',
+      pendingAfter: 'kept',
+      pendingSequence: ['kept', 'none'],
+      batches: [chipsPartial, laterPartial],
+      cards: [chips, laterChips],
+      kept: [laterChips],
+      confirmCount: 2,
+      secondConfirmCount: 1,
+      thenSee: [wasLine],
+      thenGone: ['scan-batch-partial'],
+      visible: [wereLine],
+      absent: [wasLine, manyLine, fallback, 'was on hand', 'was taken out'],
+      once: [wereLine],
+      bannerKind: 'success',
+      bannerLine: wereLine,
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-later'],
+      fixed: true,
+      quiet: true,
+    },
+    {
+      name: 'a new batch clears the partial line when it starts',
+      action: 'batch-then-batch',
+      pendingAfter: 'kept',
+      pendingSequence: ['kept', 'none'],
+      holdSecondBatch: true,
+      batches: [chipsPartial, { updatedCount: 1, committedIds: ['scan-batch-later'] }],
+      cards: [chips, laterChips],
+      kept: [laterChips],
+      confirmCount: 2,
+      secondConfirmCount: 1,
+      thenSee: [wasLine],
+      thenGone: ['scan-batch-partial'],
+      visible: [],
+      absent: [wasLine, fallback, 'cards had fewer'],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-later'],
+      bannerGone: true,
+      quiet: true,
+    },
+    {
+      name: 'removing the failed card clears the partial line',
+      action: 'batch-then-remove',
+      pendingAfter: 'kept',
+      pendingAfterRemove: 'none',
+      cards: [chips, emptyCard],
+      kept: [emptyCard],
+      confirmCount: 2,
+      followBarcode: 'scan-batch-none',
+      thenSee: [wasLine],
+      thenGone: ['scan-batch-partial'],
+      batch: {
+        updatedCount: 2,
+        committedIds: ['scan-batch-partial'],
+        failedIds: ['scan-batch-none'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+        stockOutCounts: { 'scan-batch-partial': partialCount },
+      },
+      visible: [],
+      absent: [wasLine, fallback, 'Nothing on hand to take out.'],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial', 'scan-batch-none'],
+      bannerGone: true,
+      quiet: true,
+    },
+    {
+      name: 'a new scan clears the partial line',
+      action: 'batch-then-scan',
+      pendingAfter: 'none',
+      pendingAfterScan: 'kept',
+      cards: [chips],
+      kept: [fixtureCard('444444444444', 'Fresh loaf', 'stock_out', 1)],
+      batch: chipsPartial,
+      thenSee: [wasLine],
+      visible: ['Fresh loaf'],
+      absent: [wasLine, fallback],
+      pendingBarcodes: ['444444444444'],
+      goneBarcodes: ['scan-batch-partial'],
+      bannerGone: true,
+      quiet: true,
+    },
+    {
+      name: 'switching tabs clears the partial line',
+      action: 'batch-then-tab',
+      pendingAfter: 'none',
+      cards: [chips],
+      batch: chipsPartial,
+      thenSee: [wasLine],
+      visible: [],
+      absent: [wasLine, fallback],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      bannerGone: true,
+      quiet: true,
+    },
+    {
+      name: 'leaving the queue clears the partial line',
+      action: 'batch-then-leave',
+      pendingAfter: 'none',
+      cards: [chips],
+      batch: chipsPartial,
+      thenSee: [wasLine],
+      visible: ['Left the queue'],
+      absent: [wasLine, fallback],
+      pendingBarcodes: [],
+      goneBarcodes: ['scan-batch-partial'],
+      bannerGone: true,
+    },
+  ];
+};
+
+const outcomeCases: OutcomeCase[] = [...cases, ...partialBatchRows()];
+
+const QueueOrLeft = ({ leaveRef }: { leaveRef: { current: () => void } }) => {
+  const [here, setHere] = useState(true);
+  useEffect(() => {
+    leaveRef.current = () => setHere(false);
+  }, [leaveRef]);
+  if (!here) return <h1>Left the queue</h1>;
+  return <ScanQueuePage />;
+};
+
 describe('scan commit outcomes', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
@@ -852,19 +1263,40 @@ describe('scan commit outcomes', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(cases)('$name', async (row) => {
+  it.each(outcomeCases)('$name', async (row) => {
     let pending: PendingSet = row.cards ? 'crowd' : 'both';
+    let batchRound = 0;
+    let releaseSecondBatch = () => {};
     let instanceFetches = 0;
     let inventoryFetches = 0;
     const commitBodies: { linkProductId?: string }[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('batch-commit') && init?.method === 'POST') {
-        pending = row.pendingAfter;
-        return Promise.resolve(jsonResponse(row.batch ?? {}));
+        const round = batchRound;
+        pending = row.pendingSequence?.[round] ?? row.pendingAfter;
+        const body = row.batches?.[round] ?? row.batch ?? {};
+        batchRound += 1;
+        if (row.holdSecondBatch && round === 1) {
+          return new Promise((resolve) => {
+            releaseSecondBatch = () => resolve(jsonResponse(body));
+          });
+        }
+        return Promise.resolve(jsonResponse(body));
+      }
+      if (url === '/api/scans' && init?.method === 'POST') {
+        if (row.pendingAfterScan !== undefined) pending = row.pendingAfterScan;
+        return Promise.resolve(jsonResponse({ id: 'scan-new', status: 'pending' }));
+      }
+      if (init?.method === 'PATCH' && /\/api\/scans\/[^/]+$/.test(url)) {
+        pending = row.pendingAfterRemove ?? pending;
+        return Promise.resolve(jsonResponse({ status: 'cancelled' }));
+      }
+      if (url.endsWith('/api/scanner/mode') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ mode: 'stock_in' }));
       }
       if (url.endsWith('/commit') && init?.method === 'POST') {
-        pending = row.pendingAfter;
+        pending = row.pendingAfterConfirm ?? row.pendingAfter;
         const parsed = init.body ? JSON.parse(String(init.body)) as { linkProductId?: string } : {};
         commitBodies.push(parsed);
         if (parsed.linkProductId && row.relink) {
@@ -884,13 +1316,13 @@ describe('scan commit outcomes', () => {
         return Promise.resolve(jsonResponse(body));
       }
       if (url.includes('status=pending')) {
-        const body = pending === 'crowd' ? (row.cards ?? []) : pendingEntries(pending);
+        const body = pending === 'crowd' ? (row.cards ?? []) : pendingEntries(pending, row.kept ?? []);
         return Promise.resolve(jsonResponse(body));
       }
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
         inventoryFetches += 1;
-        return Promise.resolve(jsonResponse(row.household ?? inventory));
+        return Promise.resolve(jsonResponse(householdFor(row)));
       }
       if (url === '/api/products' || url.startsWith('/api/products?')) {
         return Promise.resolve(jsonResponse(row.catalog ?? []));
@@ -907,20 +1339,28 @@ describe('scan commit outcomes', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    const leaveRef = { current: () => {} };
     render(
       <MantineProvider>
         <Notifications />
-        <ScanQueuePage />
+        {row.action === 'batch-then-leave' ? <QueueOrLeft leaveRef={leaveRef} /> : <ScanQueuePage />}
       </MantineProvider>,
     );
 
     const milkCard = row.cards
       ? null
-      : await screen.findByRole('article', { name: 'Scan 111' });
+      : await screen.findByRole('article', { name: scanName('111') });
     if (row.cards) {
-      expect(await screen.findAllByRole('article')).toHaveLength(row.cards.length);
+      const expectedCards = row.visibleCards ?? row.cards.length;
+      if (row.visibleCards !== undefined) {
+        await waitFor(() => {
+          expect(screen.getAllByRole('article')).toHaveLength(expectedCards);
+        });
+      } else {
+        expect(await screen.findAllByRole('article')).toHaveLength(expectedCards);
+      }
     } else {
-      expect(screen.getByRole('article', { name: 'Scan 222' })).toBeInTheDocument();
+      expect(screen.getByRole('article', { name: scanName('222') })).toBeInTheDocument();
     }
 
     if (row.action === 'confirm-milk-instance' && milkCard) {
@@ -933,8 +1373,8 @@ describe('scan commit outcomes', () => {
       expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument();
     }
 
-    if (row.action === 'batch' || row.action === 'batch-then-milk') {
-      const count = (row.cards ?? [milk, oats]).length;
+    if (row.action === 'batch' || row.action === 'batch-then-milk' || row.action === 'batch-then-one' || row.action === 'batch-then-batch' || row.action === 'batch-then-remove' || row.action === 'batch-then-scan' || row.action === 'batch-then-tab' || row.action === 'batch-then-leave') {
+      const count = row.confirmCount ?? (row.cards ?? [milk, oats]).length;
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
     }
@@ -948,12 +1388,51 @@ describe('scan commit outcomes', () => {
     } else if (row.action === 'confirm-milk-more' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
-    } else if (row.action !== 'batch' && milkCard) {
+    } else if (row.action !== 'batch' && row.action !== 'view' && milkCard) {
       if (row.openMore) {
         fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
         expect(within(milkCard).getByText('Nothing on hand to take out.')).toBeInTheDocument();
       }
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
+    }
+
+    if (row.action === 'batch-then-one' || row.action === 'batch-then-batch' || row.action === 'batch-then-remove' || row.action === 'batch-then-scan' || row.action === 'batch-then-tab' || row.action === 'batch-then-leave') {
+      await waitFor(() => {
+        for (const text of row.thenSee ?? []) expect(screen.getByText(text)).toBeInTheDocument();
+        for (const barcode of row.thenGone ?? []) {
+          expect(screen.queryByRole('article', { name: scanName(barcode) })).not.toBeInTheDocument();
+        }
+      });
+    }
+    if (row.action === 'batch-then-one') {
+      const card = screen.getByRole('article', { name: scanName(row.followBarcode ?? '') });
+      fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
+    }
+    if (row.action === 'batch-then-batch') {
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+      fireEvent.click(screen.getByRole('button', { name: `Confirm ${row.secondConfirmCount} selected scans` }));
+    }
+    if (row.holdSecondBatch) {
+      await waitFor(() => {
+        expect(screen.queryByText(row.thenSee?.[0] ?? '')).not.toBeInTheDocument();
+        expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
+      });
+      releaseSecondBatch();
+    }
+    if (row.action === 'batch-then-remove') {
+      const card = screen.getByRole('article', { name: scanName(row.followBarcode ?? '') });
+      fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
+    }
+    if (row.action === 'batch-then-scan') {
+      const input = screen.getByLabelText('Barcode scanner input');
+      fireEvent.change(input, { target: { value: '444444444444' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    }
+    if (row.action === 'batch-then-tab') {
+      fireEvent.click(screen.getByRole('tab', { name: 'Stock in' }));
+    }
+    if (row.action === 'batch-then-leave') {
+      leaveRef.current();
     }
 
     if (row.relink && milkCard) {
@@ -1003,7 +1482,7 @@ describe('scan commit outcomes', () => {
 
     await waitFor(() => {
       for (const barcode of row.goneBarcodes) {
-        expect(screen.queryByRole('article', { name: `Scan ${barcode}` })).not.toBeInTheDocument();
+        expect(screen.queryByRole('article', { name: scanName(barcode) })).not.toBeInTheDocument();
       }
       for (const text of row.visible) {
         expect(screen.getAllByText(text).length).toBeGreaterThan(0);
@@ -1016,12 +1495,16 @@ describe('scan commit outcomes', () => {
         expect(screen.getAllByText(text)).toHaveLength(1);
       }
       if (row.cardWithoutAlert !== undefined) {
-        const card = screen.getByRole('article', { name: `Scan ${row.cardWithoutAlert}` });
+        const card = screen.getByRole('article', { name: scanName(row.cardWithoutAlert) });
         expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
       }
       if (row.quiet) {
-        const extra = screen.getAllByRole('alert').filter((alert) => !alert.textContent?.includes('Mode:'));
+        const extra = screen.queryAllByRole('alert').filter((alert) => !alert.textContent?.includes('Mode:'));
         expect(extra).toEqual([]);
+      }
+      if (row.bannerGone) {
+        expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
+        expect(document.querySelector('.scan-batch-banner')).toBeNull();
       }
       if (row.instanceFetches !== undefined) {
         expect(instanceFetches).toBe(row.instanceFetches);
@@ -1030,14 +1513,49 @@ describe('scan commit outcomes', () => {
         expect(screen.getByRole('radio', { name: keptLabel })).toBeInTheDocument();
       }
       if (row.fixed) {
-        const pinned = screen.getAllByRole('alert').filter((alert) => {
-          const text = alert.textContent ?? '';
-          return text.includes(fallback) || text.startsWith('Only ');
-        });
+        const pinned = [
+          ...screen.getAllByRole('alert').filter((alert) => {
+            const text = alert.textContent ?? '';
+            return text.includes(fallback) || text.startsWith('Only ') || text.includes('cards had fewer');
+          }),
+          ...document.querySelectorAll('.scan-batch-banner--success, .scan-batch-partial'),
+        ];
         expect(pinned.length).toBeGreaterThan(0);
         for (const notice of pinned) {
           expect(notice).toHaveStyle({ flexShrink: '0' });
         }
+      }
+      if (row.bannerKind === 'success') {
+        const line = screen.getByText(row.bannerLine ?? '');
+        expect(line).toHaveClass('scan-batch-banner--success');
+        expect(line).toHaveAttribute('role', 'status');
+        expect(line).not.toHaveAttribute('role', 'alert');
+        expect(line.className).not.toMatch(/error|red/i);
+        expect(line.closest('[role="alert"]')).toBeNull();
+        expect(line.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.bannerLine);
+        const failureBanners = screen.queryAllByRole('alert').filter((alert) => alert.classList.contains('scan-batch-banner'));
+        expect(failureBanners).toEqual([]);
+      }
+      if (row.bannerKind === 'failure') {
+        const alerts = screen.getAllByRole('alert').filter((alert) => alert.classList.contains('scan-batch-banner'));
+        expect(alerts).toHaveLength(1);
+        const bannerText = alerts[0]?.textContent?.replace(/\s+/g, ' ').trim();
+        expect(bannerText?.startsWith(fallback)).toBe(true);
+        expect(bannerText).toContain(row.bannerLine);
+        const line = screen.getByText(row.bannerLine ?? '');
+        expect(alerts[0]?.contains(line)).toBe(true);
+        expect(line.closest('[role="alert"]')).toBe(alerts[0]);
+        expect(line).not.toHaveAttribute('role', 'alert');
+        expect(line.className).not.toMatch(/error|red/i);
+        expect(document.querySelectorAll('.scan-batch-banner--success')).toHaveLength(0);
+        const head = within(alerts[0] as HTMLElement).getByText(fallback);
+        expect(head.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+      if (row.bannerExact !== undefined) {
+        const alerts = screen.getAllByRole('alert').filter((alert) => alert.classList.contains('scan-batch-banner'));
+        expect(alerts).toHaveLength(1);
+        expect(alerts[0]?.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.bannerExact);
+        expect(alerts[0]?.querySelector('.scan-batch-partial')).toBeNull();
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
@@ -1054,26 +1572,39 @@ describe('scan commit outcomes', () => {
       if (row.stillSelected) {
         expect(screen.getByRole('button', { name: `Confirm ${row.pendingBarcodes.length} selected scans` })).toBeInTheDocument();
         for (const barcode of row.pendingBarcodes) {
-          const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+          const card = screen.getByRole('article', { name: scanName(barcode) });
           expect(within(card).getByRole('checkbox')).toBeChecked();
         }
       }
     });
 
+    const amberBarcodes = new Set(row.amberBarcodes ?? []);
     for (const barcode of row.pendingBarcodes) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
-      expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      const card = screen.getByRole('article', { name: scanName(barcode) });
+      if (amberBarcodes.has(barcode)) {
+        expect(card).toHaveClass('scan-entry-card--nothing');
+        expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+        expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+      } else {
+        expect(card).not.toHaveClass('scan-entry-card--nothing');
+        expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      }
     }
     if (row.cardReason) {
-      const card = screen.getByRole('article', { name: `Scan ${row.cardReason.barcode}` });
-      expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+      const card = screen.getByRole('article', { name: scanName(row.cardReason.barcode) });
+      if (amberBarcodes.has(row.cardReason.barcode)) {
+        expect(within(card).getByText(row.cardReason.text)).toBeInTheDocument();
+        expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
+      } else {
+        expect(within(card).getByRole('alert')).toHaveTextContent(row.cardReason.text);
+      }
     }
     if (row.cardOnce) {
-      const card = screen.getByRole('article', { name: `Scan ${row.cardOnce.barcode}` });
+      const card = screen.getByRole('article', { name: scanName(row.cardOnce.barcode) });
       expect(within(card).getAllByText(row.cardOnce.text)).toHaveLength(1);
     }
     if (row.unlinked) {
-      const card = screen.getByRole('article', { name: 'Scan 111' });
+      const card = screen.getByRole('article', { name: scanName('111') });
       expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
       expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
       expect(within(card).queryByText('Not in your pantry', { exact: false })).not.toBeInTheDocument();
@@ -1090,18 +1621,18 @@ describe('scan commit outcomes', () => {
       }
     }
     for (const barcode of row.searchOn ?? []) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      const card = screen.getByRole('article', { name: scanName(barcode) });
       expect(within(card).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
       expect(within(card).getByLabelText('Search products')).toBeInTheDocument();
       expect(within(card).queryByText('No close match found.')).not.toBeInTheDocument();
     }
     for (const barcode of row.noSearchOn ?? []) {
-      const card = screen.getByRole('article', { name: `Scan ${barcode}` });
+      const card = screen.getByRole('article', { name: scanName(barcode) });
       expect(within(card).queryByLabelText('Search products')).not.toBeInTheDocument();
       expect(within(card).queryByRole('region', { name: 'Which item is this?' })).not.toBeInTheDocument();
     }
     if (row.relink) {
-      const card = screen.getByRole('article', { name: 'Scan 111' });
+      const card = screen.getByRole('article', { name: scanName('111') });
       expect(within(card).queryByRole('button', { name: `Link ${row.relink.name}` })).not.toBeInTheDocument();
       if (row.relink.remaining === null) {
         expect(within(card).getByText('No close match found.')).toBeInTheDocument();
@@ -1117,7 +1648,7 @@ describe('scan commit outcomes', () => {
       expect(commitBodies).toEqual([{}, { linkProductId: 'prod-stale' }]);
     }
     if (row.hideMore) {
-      const card = screen.getByRole('article', { name: `Scan ${row.hideMore}` });
+      const card = screen.getByRole('article', { name: scanName(row.hideMore) });
       expect(within(card).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     }
     if (row.searchPick) {
@@ -1131,20 +1662,11 @@ describe('scan commit outcomes', () => {
 
   it('keeps an open link search when a different card commits', async () => {
     let pending: PendingSet = 'both';
-    const household = [{
-      item: {
-        id: 'item-empty',
-        userId: 'user-1',
-        productId: 'prod-empty',
-        product: product('prod-empty', 'Empty Oats'),
-        targetQuantity: null,
-        createdAt: '2026-03-20T10:00:00Z',
-      },
-      instanceCount: 0,
-      nearExpiryCount: 0,
-      expiredCount: 0,
-      needsAttention: false,
-    }];
+    const household = [
+      householdItem('milk', 'Milk', 2),
+      householdItem('oats', 'Oats', 2),
+      householdItem('empty', 'Empty Oats', 0),
+    ];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/commit') && init?.method === 'POST') {
@@ -1158,7 +1680,7 @@ describe('scan commit outcomes', () => {
           suggestions: [],
         }, 409));
       }
-      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending)));
+      if (url.includes('status=pending')) return Promise.resolve(jsonResponse(pendingEntries(pending, [])));
       if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(jsonResponse(household));
       if (url === '/api/products' || url.startsWith('/api/products?')) return Promise.resolve(jsonResponse([product('prod-catalog', 'Catalog Oats')]));
@@ -1175,8 +1697,8 @@ describe('scan commit outcomes', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<MantineProvider><ScanQueuePage /></MantineProvider>);
-    const milkCard = await screen.findByRole('article', { name: 'Scan 111' });
-    const oatsCard = screen.getByRole('article', { name: 'Scan 222' });
+    const milkCard = await screen.findByRole('article', { name: scanName('111') });
+    const oatsCard = screen.getByRole('article', { name: scanName('222') });
     fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     const search = await within(milkCard).findByLabelText('Search products');
     fireEvent.change(search, { target: { value: 'Oats' } });
@@ -1185,9 +1707,9 @@ describe('scan commit outcomes', () => {
     fireEvent.click(within(oatsCard).getByRole('button', { name: 'Confirm' }));
 
     await waitFor(() => {
-      expect(screen.queryByRole('article', { name: 'Scan 222' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('article', { name: scanName('222') })).not.toBeInTheDocument();
     });
-    const stillOpen = screen.getByRole('article', { name: 'Scan 111' });
+    const stillOpen = screen.getByRole('article', { name: scanName('111') });
     expect(within(stillOpen).getByRole('region', { name: 'Which item is this?' })).toBeInTheDocument();
     const stillSearch = within(stillOpen).getByLabelText('Search products');
     expect(stillSearch).toHaveValue('Oats');

@@ -35,7 +35,7 @@ const scrollLowCardIntoView = async (page: Page, barcode: string) => {
   const queue = page.locator('.scan-page-queue')
   const max = await queue.evaluate((element) => element.scrollHeight - element.clientHeight)
   expect(max).toBeGreaterThan(80)
-  const card = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
+  const card = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
   const offsets = Array.from({ length: 25 }, (_, step) => Math.round((max * step) / 24))
   for (const hidden of offsets) {
     await queue.evaluate((element, slack) => {
@@ -126,6 +126,17 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
     })
   }
 
+  for (const item of items) {
+    if (item.barcode === partialBarcode) continue
+    const created = await request.post('/api/scans', {
+      data: { barcode: item.barcode, direction: 'stock_in', userId: 'user-1' },
+    })
+    expect(created.ok(), await created.text()).toBe(true)
+    const createdBody = await created.json() as { id: string }
+    const committed = await request.post(`/api/scans/${createdBody.id}/commit`, { data: {} })
+    expect(committed.ok(), await committed.text()).toBe(true)
+  }
+
   await page.goto('/')
   await resetToStockIn(page)
   const stocked = await scanBarcode(page, partialBarcode)
@@ -185,7 +196,9 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
   const beforeFailure = await readScroll(page)
   await failureCard.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(failureCard).toBeVisible()
-  await expectToastInside(page, failureNote, '--mantine-color-red-6')
+  await expect(failureCard).toHaveClass(/scan-entry-card--nothing/)
+  await expect(failureCard.getByText(failureNote, { exact: true })).toBeVisible()
+  await expect(page.locator('.restock-toast').filter({ hasText: failureNote })).toHaveCount(0)
   expect(await readScroll(page)).toEqual(beforeFailure)
 })
 }
