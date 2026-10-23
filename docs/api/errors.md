@@ -78,16 +78,30 @@ line leads with the committed count and "confirmed.", then the sentence. Two
 committed items and a lock read:
 `2 confirmed. Stockbot is busy right now. Try again in a moment.`
 
+## 503 sign-in not configured
+
+`GET /api/session` and `POST /api/login` return HTTP 503 when the public
+hostname requires a password and none is configured. The code is
+`auth_not_configured` and the message is `Sign-in isn't set up yet.`
+
+```json
+{"error":"Sign-in isn't set up yet.","code":"auth_not_configured"}
+```
+
+This response does not include a `Retry-After` header.
+
 ## Other 5xx
 
 Every other 5xx uses the generic sentence
 `Something went wrong. Try again.` The body has no `code`, except an
 unexpected commit or stock-out failure, which keeps code `internal` with
 that same sentence. A lock or a full disk on a single commit or stock-out
-is still the 503 above. A batch commit stays HTTP 200 and reports those
-same codes on each affected item.
+is still `busy` or `no_space`. A batch commit stays HTTP 200 and reports
+`busy`, `no_space`, or `internal` on each affected item. Sign-in that is
+not configured is `auth_not_configured`, not this generic sentence.
 
-The generic sentence does not replace the busy sentence or the no-space sentence.
+The generic sentence does not replace the busy sentence, the no-space
+sentence, or the sign-in sentence.
 
 ## 4xx
 

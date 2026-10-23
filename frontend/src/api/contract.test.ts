@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BATCH_FAILURE_FALLBACK,
   BUSY_SENTENCE,
+  CODE_AUTH_NOT_CONFIGURED,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
@@ -287,6 +290,16 @@ describe('batch failure banner', () => {
     expect(batchFailureBannerText(notices, 2)).toBe(`2 confirmed. ${BUSY_SENTENCE}`);
     expect(batchCardCommitNotice('busy', BUSY_SENTENCE)).toBe('');
     expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
+  });
+});
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
+
+describe('auth_not_configured', () => {
+  it('is the sign-in code', () => {
+    expect(CODE_AUTH_NOT_CONFIGURED).toBe(authNotConfigured.code);
   });
 });
 
