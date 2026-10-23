@@ -253,6 +253,8 @@ export type HostedErrorCode =
   | 'conflict'
   | 'invite_expired'
   | 'invite_required'
+  | 'reset_expired'
+  | 'account_exists'
   | 'validation'
   | 'not_pending'
   | 'product_unresolved'

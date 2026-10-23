@@ -43,6 +43,8 @@ func existingContractSentences() map[string]string {
 		"rate_limited":                  "Too many tries. Wait a moment and try again.",
 		"payload_too_large":             "That file is too large to import.",
 		"invite_required":               "You need an invite to start a household.",
+		"reset_expired":                 "This reset link has expired or was already used. Ask for a new one.",
+		"account_exists":                "That email already has an account. Sign in, then open the invite again.",
 		"device_revoked":                "This device was disconnected. Pair it again to keep using it.",
 		"upgrade_required":              "Update Stockbot to keep using it.",
 	}

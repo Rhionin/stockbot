@@ -45,6 +45,8 @@ const existingSentences: Record<string, string> = {
   rate_limited: 'Too many tries. Wait a moment and try again.',
   payload_too_large: 'That file is too large to import.',
   invite_required: 'You need an invite to start a household.',
+  reset_expired: 'This reset link has expired or was already used. Ask for a new one.',
+  account_exists: 'That email already has an account. Sign in, then open the invite again.',
   device_revoked: 'This device was disconnected. Pair it again to keep using it.',
   upgrade_required: 'Update Stockbot to keep using it.',
 };
@@ -166,6 +168,10 @@ describe('hosted API contract', () => {
     expect(doc).toContain('POST /api/auth/reset');
     expect(doc).toContain('POST /api/household/household-password/retire');
     expect(doc).toContain('Clients label `revoked` as Cancelled.');
+    expect(doc).toContain('A missing `X-Stockbot-Client` header means web, so there is no version gate.');
+    expect(doc).toContain('`Authorization: Basic` and no `X-Stockbot-Client` returns `426` `upgrade_required`, not `401`');
+    expect(doc).toContain('activeHouseholdId order');
+    expect(source).toContain('export interface LoginResponse');
     expect(doc).toContain('"inviteCode"?: string');
     expect(source).toContain('inviteCode?: string');
     expect(doc).toContain('householdPassword: null');
