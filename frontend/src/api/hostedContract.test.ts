@@ -182,6 +182,16 @@ describe('hosted API contract', () => {
     expect(doc).toContain('Stage 3; Pi returns `not_found`');
     expect(doc).toContain('GET /api/events');
     expect(doc).toContain('looksLikePairingCode');
+    expect(source).toContain("export const CLIENT_HEADER = 'X-Stockbot-Client'");
+    expect(source).toContain("export const AUTH_SESSION_PATH = '/api/auth/session'");
+    expect(source).toContain("export const SESSION_COOKIE_NAME = '__Host-stockbot_session'");
+    expect(source).toContain('householdPasswordSignIn: boolean');
+    expect(source).toContain("kind: SessionKind");
+    expect(source).toContain('field?: string');
+    expect(doc).toContain('https://stockbot.rhionin.com');
+    expect(doc).toContain('LAN_PEOPLE=signin');
+    expect(doc).toContain('households` is the same list');
+    expect(doc).toContain('rekey` never appears on the Pi stream');
     expect(source).toContain("status: 'pending' | 'ready'");
     expect(source).toContain("status: 'created' | 'duplicate' | 'conflict' | 'rejected'");
     expect(source.match(/export interface CreateHouseholdRequest/g)).toHaveLength(1);

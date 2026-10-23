@@ -240,6 +240,11 @@ func TestHostedAPIContract(t *testing.T) {
 		"UUIDv7 text ids preserved; no sequences",
 		"looksLikePairingCode",
 		"Stage 3; Pi returns `not_found`",
+		"https://stockbot.rhionin.com",
+		"LAN_PEOPLE=signin",
+		"CLIENT_HEADER",
+		"reset_expired",
+		"operator-only on the public entry",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)

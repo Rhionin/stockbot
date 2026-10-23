@@ -50,6 +50,10 @@ export interface SetScannerModeResponse {
 export const DEFAULT_SCAN_USER_ID = 'user-1';
 
 export const SESSION_PATH = '/api/session';
+export const AUTH_SESSION_PATH = '/api/auth/session';
+/** Default `SESSION_COOKIE_NAME`. Host-only, Secure, so it is not set on plain-HTTP LAN. */
+export const SESSION_COOKIE_NAME = '__Host-stockbot_session';
+export const CLIENT_HEADER = 'X-Stockbot-Client';
 export const SCANS_PATH = '/api/scans';
 export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';
 export const SCANNER_CONFIG_PATH = '/api/scanner/config';
@@ -279,17 +283,30 @@ export type HostedErrorCode =
 export interface HostedErrorBody {
   error: string;
   code: HostedErrorCode;
+  /** Present on `validation` when one input should show the message. */
+  field?: string;
   members?: unknown;
   suggestions?: unknown;
 }
 
+export type SessionKind = 'signed_out' | 'account' | 'household_password' | 'lan';
+
+export interface SessionHousehold {
+  householdId: string;
+  name: string;
+  role: HouseholdRole;
+  /** Set while the household is inside the restore window. */
+  deletedAt: string | null;
+}
+
 export interface AuthSession {
-  /** Null when nobody is signed in, and on a household-password session. */
+  /** Null when nobody is signed in, and on a household-password or LAN session. */
   user: { id: string; email: string; name: string } | null;
+  kind: SessionKind;
   /** #364 list. `householdId` is the membership id. */
-  memberships: { householdId: string; name: string; role: HouseholdRole }[];
-  /** Same memberships, with `id` instead of `householdId`. */
-  households: { id: string; name: string; role: HouseholdRole }[];
+  memberships: SessionHousehold[];
+  /** Switcher list. Same rows as `memberships`, with `id` instead of `householdId`. */
+  households: { id: string; name: string; role: HouseholdRole; deletedAt: string | null }[];
   activeHouseholdId: string | null;
   operator: boolean;
 }
@@ -395,7 +412,8 @@ export interface AcceptInviteRequest {
   household?: { name: string; restockMode?: RestockMode };
 }
 
-export interface AcceptInviteResponse {
+/** LoginResponse plus the #364 accept fields. Accept with `account` creates the session. */
+export interface AcceptInviteResponse extends LoginResponse {
   householdId: string;
   name: string;
   role: 'member' | 'owner';
@@ -751,8 +769,13 @@ export interface DeleteAccountRequest {
 export type LiveTransport = 'sse' | 'poll' | 'push';
 
 export type LiveConfig =
-  | { live: 'sse' | 'poll'; minClientVersion: { expo: string } }
-  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string } };
+  | { live: 'sse' | 'poll'; minClientVersion: { expo: string }; householdPasswordSignIn: boolean }
+  | {
+      live: 'push';
+      appsync: { httpUrl: string; realtimeUrl: string };
+      minClientVersion: { expo: string };
+      householdPasswordSignIn: boolean;
+    };
 
 export interface LiveTicket {
   ticket: string;

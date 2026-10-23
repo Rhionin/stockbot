@@ -22,7 +22,7 @@ tenant-rule: Nothing in this contract accepts a client-supplied tenant other tha
 
 The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token, and that client still sends `X-Household-Id` on each data request. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call.
 
-`X-Household-Id` is optional on session routes. When it is omitted, the session's `activeHouseholdId` is the household for that request. Login, invite accept, and setup set `activeHouseholdId` when the person has exactly one household. No header and no active household is `400` `validation`. A household the caller does not belong to, or an unknown household, is `404` `not_found`. `GET /api/events` and a same-origin export download use the session and do not require the header. The download's household is the one stored on the export job.
+`X-Household-Id` is optional on session routes. When it is omitted, the session's `activeHouseholdId` is the household for that request. At login and at reset, `activeHouseholdId` is the last-used household if the person is still a member, else their only membership, else null. Invite accept sets it to the household on the invite. Setup sets it when the person has exactly one household. After the person is removed, `activeHouseholdId` becomes null, and a request that still sends the old header is `404` `not_found`. The header accepts any household the person belongs to, including one that differs from the stored id. The stored id is only the default. No header and no active household is `400` `validation`. A household the caller does not belong to, or an unknown household, is `404` `not_found`. `GET /api/events` and a same-origin export download use the session and do not require the header. The download's household is the one stored on the export job.
 
 activeHouseholdId order, for a personal session: a present `X-Household-Id` is the household for that request, and it must be one of the caller's memberships. If the header is omitted, the server uses the `activeHouseholdId` stored on the session, which must still be a membership. The header wins when both are present. The stored id is not a client-supplied tenant on the data request. `POST /api/auth/session/household` is what writes it, and its `householdId` body is the one exception to the tenant rule. A header that is not a membership is `404` `not_found`. A missing header with no stored `activeHouseholdId` is `400` `validation`.
 
@@ -58,9 +58,9 @@ Proposed: restore does not revive device tokens. The owner re-pairs each device 
 | Device | `Authorization: Bearer sbd_…` device token, returned once at pairing and stored hashed. | Bound to the token. One household per device. |
 | Household password | Only during household 1's changeover. `{ "householdPassword": string }` on login, or the existing `pantry_session` cookie. Member of household 1. Ignores `X-Household-Id`. | Household 1 |
 
-Web cookie calls that change state also require an `Origin` equal to `APP_BASE_URL` (design §5). Bearer calls do not use that cookie. `APP_BASE_URL` is per-stage config. Production is `https://app.stockbot.rhionin.com`. The server reads the variable. This contract does not hardcode the host.
+Cookie auth and the `Origin` check apply to the public entry. Web cookie calls that change state also require an `Origin` equal to `APP_BASE_URL` (design §5). Bearer calls do not use that cookie. `APP_BASE_URL` is per-stage config. The server reads the variable. On the Pi the default is `https://stockbot.rhionin.com`. A rename is a config change. Invite and reset links use that value. Stage 3 production is `https://app.stockbot.rhionin.com`.
 
-Session cookie, decided by CJ on 2026-10-23 (§11.3): the name is `__Host-stockbot_session` (`SESSION_COOKIE_NAME`). Attributes are `HttpOnly; Secure; SameSite=Lax; Path=/`. It is host-only, so it has no `Domain`. Expo does not use the cookie. Expo sends `Authorization: Bearer sbs_…`. The token is 32 random bytes, base64url, prefixed `sbs_`. Only the SHA-256 is stored. Lifetime is a 30-day sliding window and a 180-day absolute cap. At the cap the response is `unauthorized`. Logout revokes this session. Password reset revokes all of that user's sessions, then signs them in. Removing a member ends that member's access on the next request: a session whose active household was the one they left must choose again. `pantry_session` is the household-password cookie during the changeover only. Retirement replaces its signing key, so every `pantry_session` fails at once. Personal sessions do not use that key.
+Session cookie, decided by CJ on 2026-10-23 (§11.3): the name is `__Host-stockbot_session` (`SESSION_COOKIE_NAME`). Attributes are `HttpOnly; Secure; SameSite=Lax; Path=/`. It is host-only, so it has no `Domain`. Expo does not use the cookie. Expo sends `Authorization: Bearer sbs_…`. The token is 32 random bytes, base64url, prefixed `sbs_`. Only the SHA-256 is stored. Lifetime is a 30-day sliding window and a 180-day absolute cap. At the cap the response is `unauthorized`. Logout revokes this session. Password reset revokes all of that user's sessions, then signs them in. Removing a member ends that member's access on the next request. `activeHouseholdId` becomes null, and the old header is `not_found`. The client shows the switcher when `activeHouseholdId` is null. `pantry_session` is the household-password cookie during the changeover only. Retirement replaces its signing key, so every `pantry_session` fails at once. Personal sessions do not use that key.
 
 Roles, from design §5:
 
@@ -79,7 +79,7 @@ Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own 
 
 CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
 
-The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` includes `minClientVersion.expo`. An Expo request sends `X-Stockbot-Client: expo/<semver>`. Below that minimum the response is `426` `upgrade_required`, sentence "Update Stockbot to keep using it." A value that starts with `expo/` and is not `expo/<semver>` is the same `426`. Web is never gated.
+The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>`, where `<semver>` is `expo.version` from `app.json`. The server compares that dotted number numerically. A pre-release suffix is ignored. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated.
 
 Both of these rules apply:
 
@@ -88,9 +88,9 @@ Both of these rules apply:
 
 Pi-only additions, outside the stage-3 AWS behavior: `householdPassword` and `householdPasswordRestoreUntil` on `GET /api/household/settings`, and `POST /api/household/household-password/retire` and `POST /api/household/household-password/restore`. Stage 3 returns `householdPassword: null` and `not_found` for those two routes. Households other than household 1 also return `householdPassword: null` and `not_found` for the routes, including in stage 1.
 
-LAN `:8080`, while the household password is on: no personal sign-in, household 1, member. `X-Household-Id` is ignored, so the LAN cannot return another household's data. Owner and operator routes need a personal session. Device routes use device tokens. After the password is retired, a browser document request on the LAN is `302` to `APP_BASE_URL`, and other people-facing `/api/*` on the LAN is `401`. Device routes and `GET /api/build` keep working. The listener decides LAN versus public. A client cannot forge it with a header.
+LAN `:8080`, while the household password is on: people get the LAN principal. That is household 1, member, no sign-in, and `X-Household-Id` is ignored, so the LAN cannot return another household's data. `GET /api/auth/session` on that listener returns this principal: `kind` `lan`, `user` null, `operator` false, `activeHouseholdId` household 1, and one membership with role `member`. There is no LAN cookie in stage 1. A plain-HTTP LAN origin cannot hold `__Host-stockbot_session`. `LAN_PEOPLE=signin` is a documented future option and is not stage 1. Owner and operator routes need a personal session. Device routes use device tokens. After the password is retired, a browser document GET on the LAN is `302` to `APP_BASE_URL`, other people-facing `/api/*` on the LAN return `401`, and `/api/device/*` and `GET /api/build` keep working. The listener decides LAN versus public. A client cannot forge it with a header.
 
-`GET /api/telemetry` and `POST /api/telemetry/client` stay public. They are timing counters and durations, with no household data. The changeover counts (household-password sessions and Basic requests in the last 7 days) are operator-only. A caller who is not the operator, including a household-password, LAN, or device principal, gets `not_found`.
+`GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. A caller who is not the operator, including a household-password, LAN, or device principal, gets `not_found`. `POST /api/telemetry/client` stays a public write. Its response has no household activity and no process-wide counts. The changeover counts (household-password sessions and Basic requests in the last 7 days) are part of the operator-only GET. Both telemetry routes stay exempt from the version gate.
 
 ## Endpoint index
 
@@ -186,7 +186,7 @@ Stage 1. Email and password. The household-password form exists only while house
 | Response | `200` `LoginResponse`. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
 | Errors | `unauthorized`, `validation`, `rate_limited`, `busy` |
 
-Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`. When the signed-in person has exactly one household, login sets `activeHouseholdId` to it. A wait of more than 2 seconds for the argon2id semaphore is `busy`. Reset and invite accept use that same semaphore.
+Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`. At login, `activeHouseholdId` is the last-used household if the person is still a member, else their only membership, else null. Reset uses the same rule. A wait of more than 2 seconds for the argon2id semaphore is `busy`. Reset and invite accept use that same semaphore.
 
 Limits: 5 failures per 15 minutes per client IP, and 10 failures per 15 minutes per normalised email. Over the limit is `429` `rate_limited` with `Retry-After`. The body is still the registry sentence and does not say which field was wrong.
 
@@ -230,20 +230,21 @@ Stage 1 revokes this session row and clears the cookie. Stage 3, after that row 
 ```ts
 interface AuthSession {
   user: { id: string; email: string; name: string } | null;
-  memberships: { householdId: string; name: string; role: 'owner' | 'member' }[];
-  households: { id: string; name: string; role: 'owner' | 'member' }[];
+  kind: 'signed_out' | 'account' | 'household_password' | 'lan';
+  memberships: { householdId: string; name: string; role: 'owner' | 'member'; deletedAt: string | null }[];
+  households: { id: string; name: string; role: 'owner' | 'member'; deletedAt: string | null }[];
   activeHouseholdId: string | null;
   operator: boolean;
 }
 ```
 
-`user` is null when nobody is signed in. Then `memberships` and `households` are empty, `activeHouseholdId` is null, and `operator` is false. A household-password session has `user: null`, `operator: false`, `activeHouseholdId` set to household 1, and one membership with role `member`.
+`user` is null when nobody is signed in. Then `kind` is `signed_out`, `memberships` and `households` are empty, `activeHouseholdId` is null, and `operator` is false. A household-password session has `kind` `household_password`, `user: null`, `operator: false`, `activeHouseholdId` set to household 1, and one membership with role `member`. The LAN principal uses `kind` `lan` and the same household 1 membership. An account session has `kind` `account`.
 
-`memberships` is the #364 list. `households` is the same list with `id` in place of `householdId`. Both include a household that is soft-deleted and still inside the 30-day restore window. Neither list is a tenant the client can override. A later call follows the activeHouseholdId order above. `name` on `user` is the person's display name. `operator` is a flag, not a household role, and it does not grant another household's data.
+`memberships` is the #364 list. `households` is the same list with `id` in place of `householdId`, and it is the switcher list. Both include `deletedAt`, so the switcher can offer Restore while the household is soft-deleted and still inside the 30-day window. Neither list is a tenant the client can override. A later call follows the activeHouseholdId order above. `name` on `user` is the person's display name. `operator` is a flag, not a household role, and it does not grant another household's data.
 
 ### POST /api/auth/session/household
 
-Sets the session's `activeHouseholdId`. The client then sends that id as `X-Household-Id`.
+Sets the session's `activeHouseholdId`. The header on a later request may name any household the person belongs to. The stored id is the default when the header is omitted. After this returns, the client refetches every scope and closes and reopens `GET /api/events`.
 
 | | |
 |---|---|
@@ -266,10 +267,10 @@ Sets a new password from a reset link. The link is single use and expires 24 hou
 | Role | None |
 | X-Household-Id | Omit |
 | Request | `{ "code": string, "password": string }` |
-| Response | `200` `LoginResponse`. This signs the person in and revokes their other sessions. |
+| Response | `200` `LoginResponse`. This signs the person in and revokes their other sessions. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
 | Errors | `validation`, `reset_expired`, `not_found`, `rate_limited`, `busy` |
 
-Password rules match login. A code past its expiry, or already used, is `reset_expired`. A code that was never issued is `not_found`. Invite links do not use `reset_expired`. Limits match invite accept: 10 per 15 minutes per IP, and 5 attempts per code. The server builds the link that created this code as `<APP_BASE_URL>/reset/<code>`.
+Password rules match login. A code past its expiry, or already used, is `reset_expired`, sentence "This reset link has expired or was already used. Ask for a new one." A revoked or unknown code is `not_found`. Invite links do not use `reset_expired`. Limits match invite accept: 10 per 15 minutes per IP, and 5 attempts per code. The server builds the link that created this code as `<APP_BASE_URL>/reset/<code>`. Caddy and the app redact that code from logs. The path is not a fragment.
 
 ## Households, members, and roles
 
@@ -455,7 +456,7 @@ Demoting the last owner returns `last_owner` and changes nothing.
 
 ### DELETE /api/households/{id}/members/{userId}
 
-Remove that member. The server publishes a `rekey` hint on the current channel, then rotates `channel_key`.
+Remove that member. On the Pi the member's event streams close. Stage 3 publishes a `rekey` hint on the current channel, then rotates `channel_key`.
 
 | | |
 |---|---|
@@ -466,7 +467,7 @@ Remove that member. The server publishes a `rekey` hint on the current channel, 
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `last_owner`, `busy` |
 
-Removing the last owner returns `last_owner`. An owner who is not the last owner may remove themselves. Removal ends that person's access immediately. Their sessions whose active household was this one must choose again. Their other sessions stay, without this household.
+Removing the last owner returns `last_owner`. An owner who is not the last owner may remove themselves. Removal ends that person's access immediately. `activeHouseholdId` becomes null, and the old header is `not_found`. Their other memberships stay. On the Pi this closes that member's `GET /api/events` streams. Stage 3 publishes a `rekey` hint on the current channel, then rotates `channel_key`. `rekey` is not sent on the Pi stream.
 
 ### POST /api/households/{id}/members/{userId}/reset-link
 
@@ -560,7 +561,7 @@ The code is in the body so it does not land in an access log as a path. No sessi
 | Response | `200` `{ "kind": "start_household" \| "join_household", "householdName"?: string, "invitedBy"?: string, "expiresAt": string }` |
 | Errors | `validation`, `invite_expired`, `not_found`, `rate_limited` |
 
-`join_household` includes `householdName`. `start_household` omits it. `invitedBy` is a display name. A code past `expiresAt`, or already used, is `invite_expired`. A revoked or never issued code is `not_found`. Limits: 10 per 15 minutes per IP, and 5 attempts per code.
+`join_household` includes `householdName`. `start_household` omits it. `invitedBy` is a display name. A code past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." A revoked or never issued code is `not_found`. Limits: 10 per 15 minutes per IP, and 5 attempts per code.
 
 ### POST /api/invites/accept
 
@@ -572,14 +573,14 @@ The code is in the body so it does not land in an access log as a path. The #364
 | Role | Signed in, or none when creating the account |
 | X-Household-Id | Omit. The invite names the household. |
 | Request | `{ "code": string, "account"?: { "name": string, "email": string, "password": string }, "household"?: { "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold" } }` |
-| Response | `200` `{ "householdId": string, "name": string, "role": "member" \| "owner" }` |
+| Response | `200` `LoginResponse` with `householdId`, `name`, and `role`. Accept with `account` creates the session: web sets `__Host-stockbot_session`, and Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
 | Errors | `unauthorized`, `validation`, `invite_expired`, `not_found`, `account_exists`, `busy`, `rate_limited` |
 
-A code that is past `expiresAt`, or already used, is `invite_expired`. A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
+A code that is past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
-Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`.
+Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`. A signed-in person sends no `account`. Sending a session and `account` together is `validation`.
 
-`join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. The client then sends `householdId` as `X-Household-Id`. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership.
+`join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership. Invite links are `<APP_BASE_URL>/invite/<code>`. Caddy and the app redact that code from logs.
 
 ### POST /api/operator/household-invites
 
@@ -1050,7 +1051,7 @@ Owner. On the Pi the export is synchronous. `POST` returns `202` with `status` `
 | Response | `202` `{ "jobId": string, "status": "pending" \| "ready" }` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy`, `no_space` |
 
-The Pi status is `ready`. The stage-3 status is `pending`.
+The Pi status is `ready`. The stage-3 status is `pending`. Stage 1 on the Pi serves export and household delete (S8). They are not hosted-only. `DELETE /api/households/{id}` is that delete.
 
 ### GET /api/export/{id}
 
@@ -1201,7 +1202,18 @@ Stage 1, Pi only. Stage 3 does not serve this stream and returns `not_found`.
 | Response | `200` `text/event-stream` |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
-Events are named `hint`. The data is a `LiveHint`. Household 1 also keeps the event payloads it already receives today. A principal may hold at most 10 streams. Removing a member closes that member's streams for the household. Retiring the household password closes the household-password streams after commit.
+The stream is scoped to the session's `activeHouseholdId`. `EventSource` cannot send `X-Household-Id`, so a cookie client uses the stored id. A bearer client may send the header, and a membership header wins. A session with no active household and no header is `400` `validation`. After `POST /api/auth/session/household` the client refetches every scope and closes and reopens this stream.
+
+The frame is `id`, `event`, and `data`. Stage-1 hints use the event name `hint`. The data is a `LiveHint`:
+
+| event | data |
+|---|---|
+| `hint` | `{"type":"scans","cursor":"<cursor>"}` |
+| `hint` | `{"type":"stock","cursor":"<cursor>"}` |
+| `hint` | `{"type":"list","cursor":"<cursor>"}` |
+| `hint` | `{"type":"devices"}` |
+
+`rekey` never appears on the Pi stream. Stage 3 publishes `rekey` on AppSync before rotating `channel_key`. Household 1 also keeps the event names it already receives: `scan`, `inventory`, `scanner_mode`, `scan_processing`, and `scan_processing_failed`, each with the JSON it carries today. A principal may hold at most 10 streams. Removing a member closes that member's streams for the household. Retiring the household password closes the household-password streams after commit.
 
 ### GET /api/config
 
@@ -1217,9 +1229,11 @@ Design §3.1 gives this as the example the client uses to pick a transport. PM c
 
 ```ts
 type LiveConfig =
-  | { live: 'sse' | 'poll'; minClientVersion: { expo: string } }
-  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string } };
+  | { live: 'sse' | 'poll'; minClientVersion: { expo: string }; householdPasswordSignIn: boolean }
+  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string }; householdPasswordSignIn: boolean };
 ```
+
+`householdPasswordSignIn` is true on the Pi while household 1's shared password can still sign in, and false otherwise. The login screen reads it from this route before anyone signs in. Stage 3 returns false.
 
 The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string } }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. The version gate in [Stage 1 auth](#stage-1-auth) uses it. A missing `X-Stockbot-Client` header means web, so there is no version gate. The exception is `Authorization: Basic` with no `X-Stockbot-Client` after the household password is retired: that request returns `426` `upgrade_required`, not `401`. An `X-Stockbot-Client: expo/<semver>` below the minimum also returns `426` `upgrade_required`. A value that starts with `expo/` and is not a semver is the same `426`. The gate does not run on this route, on `GET /api/build`, or on telemetry. Stage 3 returns the same `minClientVersion` field.
 
@@ -1292,10 +1306,10 @@ interface LiveFallbackRules {
 Every error body is JSON:
 
 ```json
-{ "error": "<plain sentence>", "code": "<stable code>" }
+{ "error": "<plain sentence>", "code": "<stable code>", "field": "<input name>" }
 ```
 
-`error` is the sentence the household sees. `code` is what the client branches on. Logs may carry detail. The response does not.
+`error` is the sentence the household sees. `code` is what the client branches on. `field` is optional and only on `validation`, so a field-specific sentence can sit on one input. Other codes omit it. Logs may carry detail. The response does not.
 
 A scan commit may also include `members` or `suggestions`, as today's 409 bodies do. Other codes do not.
 
@@ -1326,9 +1340,9 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Rewritten by PM. Also the response for cross-household access. |
 | `conflict` | 409 | Someone else just changed this. Refresh and try again. | Rewritten by PM. |
 | `invite_expired` | 409 | This invite has expired or was already used. Ask for a new one. | Rewritten by PM. Reset links use `reset_expired` instead. |
-| `reset_expired` | 409 | This reset link has expired or was already used. Ask for a new one. | `POST /api/auth/reset` only. A code that was never issued stays `not_found`. |
+| `reset_expired` | 409 | This reset link has expired or was already used. Ask for a new one. | `POST /api/auth/reset` only. A revoked or unknown code stays `not_found`. |
 | `account_exists` | 409 | That email already has an account. Sign in, then open the invite again. | `POST /api/invites/accept` when `account.email` is already registered. Login stays `unauthorized` for a bad password. |
-| `validation` | 400 | Check what you entered and try again. | Rewritten by PM. Clients show a field-specific message instead when they have one. |
+| `validation` | 400 | Check what you entered and try again. | Rewritten by PM. Clients show a field-specific message instead when they have one. The body may include `field`. |
 | `not_pending` | 400 | This scan was already handled. | Existing scan-queue sentence. Unchanged. |
 | `product_unresolved` | 400 | Choose which item this is first. | Existing scan-queue sentence. Unchanged. |
 | `none_on_hand` | 409 | Nothing on hand to take out. | Existing scan-queue sentence. Unchanged. |
@@ -1383,6 +1397,8 @@ Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
 - **Start a household.** `POST /api/households` takes optional `inviteCode`. Stage 1 requires a `start_household` code. Missing is `invite_required`. Expired or used is `invite_expired`. Revoked, unknown, or a join code is `not_found`. The code is consumed in the same transaction that creates the household and the owner. Invite-accept limits apply, so the route also returns `rate_limited`. A later stage may omit the code on this same route. Open question 7 stays closed.
 - **Reset link.** `<APP_BASE_URL>/reset/<code>` stands.
 - **`device_revoked`.** The sentence is "This device was disconnected. Pair it again to keep using it."
+- **`reset_expired`.** An expired or already-used reset code is `reset_expired`. The sentence is "This reset link has expired or was already used. Ask for a new one." A revoked or unknown reset code stays `not_found`.
+- **Telemetry.** `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. The route stays exempt from the version gate. `POST /api/telemetry/client` stays a public write and returns no such counts.
 
 ## Decided by Architect
 
@@ -1402,7 +1418,7 @@ Stage-1 answers confirmed by the Architect, matching `docs/design/multi-househol
 - **LAN.** As in §3.7. While the household password is on, LAN `:8080` is household 1 as member and ignores `X-Household-Id`. After retirement, browsers redirect to `APP_BASE_URL` and people-facing API calls are `401`. Device routes keep working.
 - **Login.** Success is `LoginResponse`. An invite accept whose `account.email` is already registered is `409` `account_exists`.
 - **Reset.** An expired or used reset link is `reset_expired`, not `invite_expired`.
-- **Telemetry.** The public timing routes stay public. Changeover counts are operator-only.
+- **Telemetry.** Superseded by PM: `GET /api/telemetry` is operator-only on the public entry. Both telemetry routes stay exempt from the version gate.
 - **Version gate.** A missing `X-Stockbot-Client` means web and is not gated. After retirement, Basic with no `X-Stockbot-Client` is `426` `upgrade_required`, not `401`.
 - **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs. There is no `device_unauthorized`.
 
@@ -1431,6 +1447,19 @@ From the review on PR #364. Where one of these refines an earlier ruling, the te
 10. **History page.** The body returns `nextBefore`. `since` does not apply to committed or cancelled paging.
 11. **AppSync header.** base64url without padding. `host` is the HTTP domain.
 12. **Presigned import.** The imports bucket needs CORS for the origin in `APP_BASE_URL`. Network Engineer owns that. Job start checks that a file `importId` matches the request.
+
+Review of this contract at `6de8179`, from the client:
+
+- **LAN.** No LAN cookie in stage 1. While the household password is on, `GET /api/auth/session` on `:8080` reports the LAN principal. `LAN_PEOPLE=signin` is not stage 1. Cookie auth and the Origin check are the public entry. The Pi `APP_BASE_URL` defaults to `https://stockbot.rhionin.com`.
+- **Sessions from reset and accept.** Both return `LoginResponse` and create a session the same way login does. A session sent with `account` is `validation`. `account_exists` stays the registry sentence.
+- **Version header.** `CLIENT_HEADER` is `X-Stockbot-Client`. The value is `expo/<semver>` from `app.json` `expo.version`, compared numerically. `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt and `GET /api/telemetry` is operator-only on the public entry.
+- **Pi events.** Scoped to `activeHouseholdId`. The client reopens the stream after a switch. Hint frames are event `hint` plus the `LiveHint` data, including `devices`. `rekey` is not on the Pi stream.
+- **Active household.** Login and reset use last-used, else the only membership, else null. Removal clears it. The header may name any membership.
+- **Switcher.** `households` is the switcher list. Both lists keep `deletedAt`. After a switch the client refetches every scope and reopens the stream.
+- **Validation `field`.** Optional on `validation` only.
+- **Config.** `householdPasswordSignIn` tells the login screen whether the shared password can still sign in.
+- **Pi export and delete.** Both exist in stage 1 (S8).
+- **Log redaction.** Reset and invite codes in URL paths are redacted from Caddy and app logs.
 
 ## Decided by CJ
 
