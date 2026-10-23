@@ -28,6 +28,7 @@ function RouteTelemetry() {
 }
 
 function SignedInApp() {
+  const { pathname } = useLocation();
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const notifyCredentialsChanged = useCallback(() => {
     setCredentialsRevision((current) => current + 1);
@@ -57,7 +58,7 @@ function SignedInApp() {
             </div>
           </AppShell.Header>
           <AppShell.Main>
-            <ServerNoticeBanner />
+            {pathname !== '/' && <ServerNoticeBanner />}
             <div className="page-frame">
               <Routes>
                 <Route path="/" element={<ScanQueuePage />} />

@@ -4,9 +4,10 @@ import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
-import { inlineFailure, BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, offlineBannerActive, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
 import { CameraScanner } from '../scanner/CameraScanner';
@@ -76,6 +77,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const [error, setError] = useState('');
   const [queueLoaded, setQueueLoaded] = useState(false);
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
+  const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -493,6 +495,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
     setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
+    // The prefix belongs to this batch. A batch that saved everything leaves
+    // nothing for a later lock or full disk to inherit.
+    const unresolved = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND);
+    setConfirmedCount(unresolved ? (response.committedIds?.length ?? 0) : 0);
     const blockedIds = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND).map((notice) => notice.id);
     rememberPin(blockedIds);
     setSelectedIds(notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND).map((notice) => notice.id));
@@ -505,11 +511,32 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     void loadQueue(true);
   };
 
-  const clearFailure = (entryId: string) => {
+  // The partial line belongs to the batch that just finished. Starting another
+  // confirm retires it. A lock or a full disk stays until that confirm succeeds.
+  const beginSingleConfirm = () => {
+    setPartialLine(null);
+  };
+
+  // A confirm that succeeds, including this card on its own, makes a lock or a
+  // full disk out of date. Those notices come down together. Item-specific codes
+  // stay until that card is resolved. A confirm that fails leaves them up.
+  const finishSingleConfirm = (entryId: string) => {
     setFailureById((current) => {
-      if (!current.has(entryId)) return current;
+      const next = failuresAfterConfirm([...current.values()], entryId);
+      if (next.length === current.size) return current;
+      return new Map(next.map((notice) => [notice.id, notice]));
+    });
+  };
+
+  // A lock or a full disk from one card is the banner, including the first time.
+  // A notice already on that card stays. A new one is not the batch that saved
+  // earlier scans, so that count does not prefix it.
+  const noteStorageFailure = (entryId: string, code: string, message: string) => {
+    setFailureById((current) => {
+      if (current.has(entryId)) return current;
+      setConfirmedCount(0);
       const next = new Map(current);
-      next.delete(entryId);
+      next.set(entryId, { id: entryId, code, message });
       return next;
     });
   };
@@ -619,12 +646,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {!offline && blockingFailures.length > 0 && (
-          <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
-            <div>{BATCH_FAILURE_FALLBACK}</div>
-            {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
-          </Alert>
-        )}
+        <ServerNoticeBanner
+          text={batchFailureBannerText(blockingFailures, confirmedCount) ?? ''}
+          partial={partialLine ?? ''}
+        />
         {/* Amber cards carry their own message. The teal banner is only the partial line, and only when there is one. */}
         {!offline && blockingFailures.length === 0 && partialLine !== null && (
           <Text
@@ -682,24 +707,22 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             >
               {batch.map((entry) => {
                 const notice = failureById.get(entry.id);
-                const blockedNotice = notice?.code === CODE_NONE_ON_HAND;
                 return (
                 <ScanEntryCard
                   key={entry.id}
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
-                  commitNotice={blockedNotice ? '' : (notice?.message ?? '')}
+                  commitNotice={batchCardCommitNotice(notice?.code ?? '', notice?.message ?? '')}
                   commitCode={notice?.code ?? ''}
                   nothingOnHand={nothingOnHandIds.has(entry.id)}
                   cueNothingOnHand={cuedNothing.has(entry.id)}
                   selected={selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
-                  onConfirmStart={() => {
-                    clearFailure(entry.id);
-                    setPartialLine(null);
-                  }}
+                  onConfirmStart={beginSingleConfirm}
+                  onConfirmSuccess={() => finishSingleConfirm(entry.id)}
                   onBlocked={() => rememberPin([entry.id])}
+                  onStorageFailure={(code, message) => noteStorageFailure(entry.id, code, message)}
                   onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}
                   userId={userId}

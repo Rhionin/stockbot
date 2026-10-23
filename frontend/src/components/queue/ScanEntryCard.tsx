@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, ServerNoticeError, UnreachableError, type CommitScanResponse } from '../../api/contract';
+import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, isStorageFailureCode, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, ServerNoticeError, UnreachableError, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import { clearOfflineNotice } from './offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
@@ -20,6 +20,11 @@ const UNIT_COUNT_SAVE_DELAY_MS = 200;
 
 function heldByBanner(error: unknown): boolean {
   return error instanceof UnreachableError || error instanceof ServerNoticeError;
+}
+
+function storageFailure(error: unknown): { code: string; message: string } | null {
+  if (!(error instanceof ApiError) || !isStorageFailureCode(error.code)) return null;
+  return { code: error.code, message: error.message };
 }
 
 const multipackName = /\d+\s*x\s*\d/i;
@@ -162,7 +167,9 @@ export interface ScanEntryCardProps {
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onConfirmStart?: () => void;
+  onConfirmSuccess?: () => void;
   onBlocked?: () => void;
+  onStorageFailure?: (code: string, message: string) => void;
   onStocked?: (productId: string) => void;
   userId?: string;
 }
@@ -179,7 +186,9 @@ export const ScanEntryCard = ({
   onSelectedChange,
   onChanged,
   onConfirmStart,
+  onConfirmSuccess,
   onBlocked,
+  onStorageFailure,
   onStocked,
   userId,
 }: ScanEntryCardProps) => {
@@ -331,11 +340,16 @@ export const ScanEntryCard = ({
     setInstancePickerOpen(false);
   };
 
-  // Card state stays here (picker, link offer, search). The sentence itself
-  // is published once, at the end, and only into the toast.
+  // Card state stays here (picker, link offer, search). A lock or a full disk
+  // is the banner. Every other sentence is the toast.
   const showCommitFailure = async (requestError: unknown, linkedProductId?: string): Promise<void> => {
     if (requestError instanceof ApiError && requestError.code === CODE_NONE_ON_HAND) {
       onBlocked?.();
+      return;
+    }
+    const storage = storageFailure(requestError);
+    if (storage !== null) {
+      onStorageFailure?.(storage.code, storage.message);
       return;
     }
     let message = inlineFailure(requestError, 'Unable to confirm scan.') ?? '';
@@ -365,6 +379,7 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       clearOfflineNotice();
       setRemoveError('');
@@ -383,6 +398,7 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       clearOfflineNotice();
       setRemoveError('');
@@ -404,6 +420,11 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
+      const storage = storageFailure(requestError);
+      if (storage !== null) {
+        onStorageFailure?.(storage.code, storage.message);
+        return;
+      }
       if (heldByBanner(requestError)) return;
       setRemoveError(inlineFailure(requestError, 'Unable to remove scan.') ?? '');
     } finally {

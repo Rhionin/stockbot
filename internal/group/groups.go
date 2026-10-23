@@ -14,6 +14,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/google/uuid"
+	"modernc.org/sqlite"
 )
 
 const (
@@ -26,6 +27,10 @@ const (
 	codeTarget   = "target"
 
 	targetRequiredMessage = "Choose what this group should keep on hand. These products already have their own supply setting."
+
+	// SQLITE_CONSTRAINT_UNIQUE. Two creates can both pass the name check,
+	// and the losing insert of the name hits this code.
+	sqliteConstraintUnique = 2067
 )
 
 // Error is a problem the household can act on.
@@ -230,6 +235,13 @@ func (g *Groups) Create(ctx context.Context, name string, productIDs []string, t
 	if err := ValidateTarget(target); err != nil {
 		return Group{}, err
 	}
+	// BEGIN IMMEDIATE waits out a reserved lock held by someone else.
+	// A duplicate name is a conflict the caller can fix, and a reader can
+	// see it while that lock is held, so the answer does not have to wait.
+	// insertGroup checks again inside the write transaction.
+	if err := g.preflightName(ctx, name); err != nil {
+		return Group{}, err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
@@ -263,6 +275,9 @@ func (g *Groups) Rename(ctx context.Context, id, name string) (Group, error) {
 		return Group{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE product_groups SET name = ?, name_key = ? WHERE id = ?`, strings.TrimSpace(name), key, id); err != nil {
+		if taken := nameConflict(err); taken != nil {
+			return Group{}, taken
+		}
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -762,6 +777,9 @@ func insertGroup(ctx context.Context, tx *sql.Tx, name, rule, pin string, produc
 		INSERT INTO product_groups (id, user_id, name, name_key, rule, pinned_product_id)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		id, householdUser, strings.TrimSpace(name), key, rule, pinVal); err != nil {
+		if taken := nameConflict(err); taken != nil {
+			return "", taken
+		}
 		return "", fmt.Errorf("could not save the group: %w", err)
 	}
 	for _, productID := range ids {
@@ -1204,6 +1222,30 @@ func ensureProducts(ctx context.Context, q querier, ids []string) error {
 		}
 	}
 	return nil
+}
+
+func (g *Groups) preflightName(ctx context.Context, name string) error {
+	key, err := nameKey(name)
+	if err != nil {
+		return err
+	}
+	tx, err := g.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("could not save the group: %w", err)
+	}
+	defer tx.Rollback()
+	return ensureNameFree(ctx, tx, key, "")
+}
+
+// nameConflict reports a duplicate group name. Only SQLITE_CONSTRAINT_UNIQUE
+// (2067) is that conflict. Other constraint codes, such as a foreign key
+// (787) or NOT NULL (1299), stay server errors.
+func nameConflict(err error) error {
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) || driverErr.Code() != sqliteConstraintUnique {
+		return nil
+	}
+	return conflict("A group with that name already exists.")
 }
 
 func ensureNameFree(ctx context.Context, q querier, key, exceptID string) error {

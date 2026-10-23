@@ -27,7 +27,7 @@ func (h *syncSnapshotHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	snap, err := syncsnap.Build(r.Context(), h.DB, time.Now())
 	if err != nil {
-		writeStatusError(r, w, http.StatusInternalServerError, err)
+		writeStatusError(r, w, httpStatusFromError(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, snap)

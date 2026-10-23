@@ -93,7 +93,6 @@ function renderQueue(failure: unknown) {
   render(
     <MantineProvider>
       <Notifications />
-      <ServerNoticeBanner />
       <ScanQueuePage />
     </MantineProvider>,
   );
@@ -194,7 +193,6 @@ describe('offline notice', () => {
     render(
       <MantineProvider>
         <Notifications />
-        <ServerNoticeBanner />
         <ScanQueuePage />
       </MantineProvider>,
     );
@@ -299,7 +297,6 @@ describe('offline notice', () => {
     render(
       <MantineProvider>
         <Notifications />
-        <ServerNoticeBanner />
         <ScanQueuePage />
       </MantineProvider>,
     );

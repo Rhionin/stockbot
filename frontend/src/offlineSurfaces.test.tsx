@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
 import { OFFLINE_SENTENCE, notifyApiSuccess, raiseOfflineBanner } from './api/contract';
-import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import type { ScanEntry } from './types';
 
@@ -38,7 +37,6 @@ const scan = (id: string, barcode: string): ScanEntry => ({
 const renderQueue = () => render(
   <MantineProvider>
     <MemoryRouter>
-      <ServerNoticeBanner />
       <ScanQueuePage />
     </MemoryRouter>
   </MantineProvider>,

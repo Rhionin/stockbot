@@ -7,16 +7,17 @@ import { fonts } from './theme';
 // share this one banner so every tab looks the same.
 export const SERVER_NOTICE_RED = '#EF4444';
 
-export function ServerNoticeBanner({ topInset = 0 }: { topInset?: number }) {
-  const text = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
-  if (text === '') return null;
+export function ServerNoticeBanner({ topInset = 0, text = '' }: { topInset?: number; text?: string }) {
+  const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
+  const shown = notice !== '' ? notice : text;
+  if (shown === '') return null;
   return (
     <View
       testID="server-notice-banner"
       accessibilityLiveRegion="polite"
       style={[styles.banner, { marginTop: topInset }]}
     >
-      <Text style={styles.sentence}>{text}</Text>
+      <Text style={styles.sentence}>{shown}</Text>
     </View>
   );
 }

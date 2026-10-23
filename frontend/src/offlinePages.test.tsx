@@ -67,11 +67,11 @@ const shoppingEntry = (): ShoppingListEntry => ({
   purchasedAt: null,
 });
 
-function shell(node: ReactNode) {
+function shell(node: ReactNode, banner = true) {
   return render(
     <MantineProvider>
       <MemoryRouter>
-        <ServerNoticeBanner />
+        {banner && <ServerNoticeBanner />}
         {node}
       </MemoryRouter>
     </MantineProvider>,
@@ -111,7 +111,7 @@ describe('offline sentence appears once on each page', () => {
           }
           return Promise.resolve(json([]));
         }));
-        shell(<ScanQueuePage />);
+        shell(<ScanQueuePage />, false);
         const card = await screen.findByRole('article', { name: /^Scan 111(,|$)/ });
         fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
         expect(await screen.findByText(OFFLINE_SENTENCE)).toBeInTheDocument();
