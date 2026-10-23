@@ -78,6 +78,18 @@ line leads with the committed count and "confirmed.", then the sentence. Two
 committed items and a lock read:
 `2 confirmed. Stockbot is busy right now. Try again in a moment.`
 
+## 503 sign-in not configured
+
+`GET /api/session` and `POST /api/login` return HTTP 503 when the public
+hostname requires a password and none is configured. The code is
+`auth_not_configured` and the message is `Sign-in isn't set up yet.`
+
+```json
+{"error":"Sign-in isn't set up yet.","code":"auth_not_configured"}
+```
+
+This response does not include a `Retry-After` header.
+
 ## Other 5xx
 
 Every other 5xx uses the generic sentence
@@ -87,14 +99,13 @@ same sentence. A lock or a full disk on a single commit or stock-out is
 still `busy` or `no_space`. A batch commit stays HTTP 200 and reports
 `busy`, `no_space`, or `internal` on each affected item.
 
-`updating` and `provider_unavailable` are not this generic response.
-Sign-in that is not configured is `auth_not_configured` from #393, which
-this document does not repeat.
+`updating`, `provider_unavailable`, and `auth_not_configured` are not this
+generic response. Sign-in that is not configured is the 503 above.
 
 The generic sentence does not replace the busy sentence, the no-space
-sentence, the updating sentence, or the provider sentence. A 5xx whose
-handler set some other message still answers with this sentence. The
-detail stays in the server log.
+sentence, the updating sentence, the provider sentence, or the sign-in
+sentence. A 5xx whose handler set some other message still answers with
+this sentence. The detail stays in the server log.
 
 ## 4xx
 
@@ -190,19 +201,20 @@ screen shows the sentence, as it does today.
 
 | Status | Code | Sentence | Where |
 | --- | --- | --- | --- |
-| 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected Basic credential (`internal/server/household_auth.go:167`, `:180`, `:206`, `:213`). Also a protected `/api` route when a password is required and none is configured (`:148`), except `GET /api/session` and `POST /api/login`. |
-| 404 | `not_found` | `Sign-in is not used on this address.` | `POST /api/login` when this address does not require sign-in (`:219`). |
-| 400 | `validation` | `Enter your username and password.` | `POST /api/login` when the body is missing or not JSON (`:232`). This response does not include `field`. |
-| 401 | `unauthorized` | `The username or password is incorrect.` | `POST /api/login` when the username or password is wrong (`:242`). |
-| 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | The sign-in limiter on Basic auth, `GET /api/session`, and `POST /api/login` (`:158`, `:196`, `:237`, written at `:361`). |
+| 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected Basic credential (`internal/server/household_auth.go:169`, `:182`, `:208`, `:215`). Also a protected `/api` route when a password is required and none is configured (`:150`), except `GET /api/session` and `POST /api/login`. |
+| 404 | `not_found` | `Sign-in is not used on this address.` | `POST /api/login` when this address does not require sign-in (`:221`). |
+| 400 | `validation` | `Enter your username and password.` | `POST /api/login` when the body is missing or not JSON (`:234`). This response does not include `field`. |
+| 401 | `unauthorized` | `The username or password is incorrect.` | `POST /api/login` when the username or password is wrong (`:244`). |
+| 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | The sign-in limiter on Basic auth, `GET /api/session`, and `POST /api/login` (`:160`, `:199`, `:239`, written at `:370`). |
 
 `GET /api/session` and `POST /api/login` when a password is required and
-none is configured are not in this table. That 503 is
-`auth_not_configured` in #393. Until that merges, those two responses
-are still `Sign-in is unavailable right now.` with no `code`
-(`household_auth.go:191` and `:223`). This contract does not assign
-them a second code. #393 also moves unconfigured `POST /api/login` off
-the 401 at `:148`.
+none is configured are HTTP 503 `auth_not_configured`
+(`household_auth.go:193` and `:225`, written at `:357`). The sentence is
+`Sign-in isn't set up yet.` The body is the one in
+[503 sign-in not configured](#503-sign-in-not-configured). The code string
+is `testdata/contract/auth_not_configured.json`. This response does not
+include a `Retry-After` header. Unconfigured `POST /api/login` is that
+503, not the 401 at `:150`.
 
 ## Request parsing
 
@@ -440,10 +452,11 @@ These stay. This contract does not rename them.
 | `in_group` | 409 | `members.groupId` |
 | `target_decision_required` | 409 | `members` |
 
-`auth_not_configured` is specified by #393, which has not merged. It is
-HTTP 503 on `GET /api/session` and `POST /api/login` when a password is
-required and none is configured. The sentence there is
-`Sign-in isn't set up yet.` Do not define it again here.
+`auth_not_configured` is the 503 in
+[503 sign-in not configured](#503-sign-in-not-configured): HTTP 503 on
+`GET /api/session` and `POST /api/login` when a password is required and
+none is configured. The sentence is `Sign-in isn't set up yet.` The
+fixture is `testdata/contract/auth_not_configured.json`.
 
 Shared constants for the codes on this page live in
 `frontend/src/api/contract.ts`. The phone imports that module.

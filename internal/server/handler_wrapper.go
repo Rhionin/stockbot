@@ -161,9 +161,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeStatusError(nil, w, status, &HTTPError{Code: status, Message: message, ErrorCode: code})
 }
 
-// writeExemptError writes a JSON error with no code. The browser tunnel and
-// the two unconfigured sign-in responses are the only callers. A code on
-// those bodies is a contract change.
+// writeExemptError writes a JSON error with no code. The browser tunnel is
+// the only caller. A code on that body is a contract change.
 func writeExemptError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorPayload{Error: message})
 }

@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BATCH_FAILURE_FALLBACK,
   BODY_TOO_LARGE_SENTENCE,
   BUSY_SENTENCE,
+  CODE_AUTH_NOT_CONFIGURED,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
@@ -341,6 +344,16 @@ describe('app-facing error codes', () => {
     expect(METHOD_NOT_ALLOWED_SENTENCE).toBe('Method not allowed.');
     expect(CODE_INTERNAL).toBe('internal');
     expect(SERVER_ERROR_FALLBACK).toBe('Something went wrong. Try again.');
+  });
+});
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
+
+describe('auth_not_configured', () => {
+  it('is the sign-in code', () => {
+    expect(CODE_AUTH_NOT_CONFIGURED).toBe(authNotConfigured.code);
   });
 });
 

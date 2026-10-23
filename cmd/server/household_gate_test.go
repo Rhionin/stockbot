@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -29,6 +31,28 @@ func TestPublicEntryFailsClosedWithoutHouseholdLogin(t *testing.T) {
 		t.Setenv("PANTRY_AUTH_FILE", path)
 		assertPublicEntryRefused(t, loadHouseholdAuth())
 	})
+}
+
+func authNotConfiguredFixtureCode(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate auth code fixture")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "testdata", "contract", "auth_not_configured.json"))
+	if err != nil {
+		t.Fatalf("read auth code fixture: %v", err)
+	}
+	var fixture struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse auth code fixture: %v", err)
+	}
+	if fixture.Code == "" {
+		t.Fatal("auth code fixture has an empty code")
+	}
+	return fixture.Code
 }
 
 func assertPublicEntryRefused(t *testing.T, gate *server.HouseholdAuth) {
@@ -60,20 +84,21 @@ func assertPublicEntryRefused(t *testing.T, gate *server.HouseholdAuth) {
 		t.Fatalf("public page = %d %s", pageRec.Code, pageRec.Header().Get("Content-Type"))
 	}
 
-	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"pantry","password":"secret"}`))
+	notConfigured := `{"error":"Sign-in isn't set up yet.","code":"` + authNotConfiguredFixtureCode(t) + `"}`
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
 	login.Header.Set("X-Pantry-Entry", "public")
 	loginRec := httptest.NewRecorder()
 	handler.ServeHTTP(loginRec, login)
-	if loginRec.Code != http.StatusUnauthorized {
-		t.Fatalf("public login = %d %s, want a login that cannot succeed", loginRec.Code, loginRec.Body.String())
+	if loginRec.Code != http.StatusServiceUnavailable || loginRec.Body.String() != notConfigured {
+		t.Fatalf("public login = %d %s", loginRec.Code, loginRec.Body.String())
 	}
 
 	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
 	session.Header.Set("X-Pantry-Entry", "public")
 	sessionRec := httptest.NewRecorder()
 	handler.ServeHTTP(sessionRec, session)
-	if sessionRec.Code != http.StatusServiceUnavailable || !strings.Contains(sessionRec.Body.String(), "Sign-in is unavailable") {
-		t.Fatalf("public session = %d %s, want sign-in unavailable", sessionRec.Code, sessionRec.Body.String())
+	if sessionRec.Code != http.StatusServiceUnavailable || sessionRec.Body.String() != notConfigured {
+		t.Fatalf("public session = %d %s", sessionRec.Code, sessionRec.Body.String())
 	}
 
 	lan := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -81,5 +106,31 @@ func assertPublicEntryRefused(t *testing.T, gate *server.HouseholdAuth) {
 	handler.ServeHTTP(lanRec, lan)
 	if lanRec.Code == http.StatusUnauthorized {
 		t.Fatal("LAN /health asked for a login")
+	}
+}
+
+func TestLANInstallWithoutPasswordFile(t *testing.T) {
+	t.Setenv("PANTRY_AUTH_FILE", "sentinel")
+	os.Unsetenv("PANTRY_AUTH_FILE")
+	gate := loadHouseholdAuth()
+	if gate == nil || gate.Configured || !gate.FailClosed {
+		t.Fatalf("gate = %+v, want a fail-closed login", gate)
+	}
+	handler, _ := server.NewHandler(nil, nil, nil, nil, server.WithHouseholdAuth(gate))
+
+	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	session.RemoteAddr = "192.168.1.20:4000"
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, session)
+	if sessionRec.Code != http.StatusOK || sessionRec.Body.String() != `{"required":false}` {
+		t.Fatalf("LAN session = %d %s", sessionRec.Code, sessionRec.Body.String())
+	}
+
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
+	login.RemoteAddr = "192.168.1.20:4000"
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, login)
+	if loginRec.Code != http.StatusNotFound || loginRec.Body.String() != `{"error":"Sign-in is not used on this address.","code":"not_found"}` {
+		t.Fatalf("LAN login = %d %s", loginRec.Code, loginRec.Body.String())
 	}
 }

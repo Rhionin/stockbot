@@ -31,7 +31,6 @@ import (
 //   - GET /health after boot, and a wrong method on /health: not an app route. While migrations run, /health is updating, which is not this exemption.
 //   - GET /api/build during migration: 200 build JSON. TestBootGateServesMigratingThenReady covers that response and the updating body on every other route.
 //   - A 502, 503, 504, or 530 this server did not produce: not generated here, so the client can still treat it as offline.
-//   - GET /api/session and POST /api/login while sign-in is not configured: 503 with no code. auth_not_configured belongs to #393. The live login request is still the middleware 401; ServeLogin's 503 is what #393 will replace.
 var appErrorExemptions = []string{
 	"POST /api/sentry-tunnel",
 	"POST /api/deploy-hook",
@@ -40,12 +39,11 @@ var appErrorExemptions = []string{
 	"GET /health after boot, and a wrong method on /health",
 	"GET /api/build during migration",
 	"a 502, 503, 504, or 530 this server did not produce",
-	"unconfigured sign-in 503 (GET /api/session and POST /api/login)",
 }
 
 func TestAPIJSONErrorsCarryACode(t *testing.T) {
-	if len(appErrorExemptions) != 8 {
-		t.Fatalf("exemptions = %d, the contract lists 8", len(appErrorExemptions))
+	if len(appErrorExemptions) != 7 {
+		t.Fatalf("exemptions = %d, the contract lists 7", len(appErrorExemptions))
 	}
 	handler, _ := setupTestWithContributor(t, nil)
 	routes, err := enumerateRoutes()
@@ -107,20 +105,11 @@ func TestAPIJSONErrorsCarryACode(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing password file returned no error")
 	}
-	closedHandler := publicHandler(closed)
+	closedHandler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(closed))
 	session := callAPI(closedHandler, http.MethodGet, "/api/session", "", publicHeaders())
-	if session.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unconfigured session = %d %s", session.Code, session.Body.String())
-	}
-	assertCodelessJSON(t, session, "Sign-in is unavailable right now.")
-	loginDirect := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"pantry","password":"x"}`))
-	withPublicEntry(loginDirect)
-	loginRec := httptest.NewRecorder()
-	closed.ServeLogin(loginRec, loginDirect)
-	if loginRec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("ServeLogin unconfigured = %d %s", loginRec.Code, loginRec.Body.String())
-	}
-	assertCodelessJSON(t, loginRec, "Sign-in is unavailable right now.")
+	assertSignInNotConfigured(t, session)
+	login := callAPI(closedHandler, http.MethodPost, "/api/login", `{"username":"pantry","password":"x"}`, publicHeaders())
+	assertSignInNotConfigured(t, login)
 
 	sentry := callAPI(handler, http.MethodPost, sentryTunnelPath, "")
 	if sentry.Code != http.StatusNotFound {
@@ -370,12 +359,6 @@ func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
 				}
 			case "writeExemptError":
 				exemptCalls[name]++
-				if name == "household_auth.go" {
-					lit, ok := call.Args[len(call.Args)-1].(*ast.BasicLit)
-					if !ok || lit.Value != `"Sign-in is unavailable right now."` {
-						t.Errorf("%s: writeExemptError is only for the unconfigured sign-in sentence", fset.Position(call.Pos()))
-					}
-				}
 			}
 			return true
 		})
@@ -383,12 +366,9 @@ func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
 	if exemptCalls["sentry_tunnel.go"] == 0 {
 		t.Fatal("sentry tunnel no longer uses writeExemptError")
 	}
-	if exemptCalls["household_auth.go"] != 2 {
-		t.Fatalf("household writeExemptError calls = %d, want the two #393 lines", exemptCalls["household_auth.go"])
-	}
 	for name, n := range exemptCalls {
-		if name != "sentry_tunnel.go" && name != "household_auth.go" {
-			t.Errorf("%s has %d writeExemptError calls; that file is not an exemption", name, n)
+		if name != "sentry_tunnel.go" {
+			t.Errorf("%s has %d writeExemptError calls; only the sentry tunnel may omit a code", name, n)
 		}
 	}
 
@@ -446,7 +426,7 @@ func codeArg(expr ast.Expr) bool {
 		switch v.Name {
 		case "codeUnauthorized", "codeValidation", "codeConfirmationMismatch", "codeRateLimited",
 			"codePayloadTooLarge", "codeNotFound", "codeConflict", "codeMethodNotAllowed",
-			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "CodeInternal":
+			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "authNotConfiguredCode", "CodeInternal":
 			return true
 		default:
 			return false
@@ -461,7 +441,7 @@ func codeArg(expr ast.Expr) bool {
 		switch s {
 		case "unauthorized", "validation", "confirmation_mismatch", "rate_limited", "payload_too_large",
 			"not_found", "conflict", "method_not_allowed", "internal", "sync_read_only",
-			"provider_unavailable", "updating", "busy", "no_space":
+			"provider_unavailable", "updating", "busy", "no_space", "auth_not_configured":
 			return true
 		default:
 			return false

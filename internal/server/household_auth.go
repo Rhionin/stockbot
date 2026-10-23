@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/go-json-experiment/json"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -138,10 +139,11 @@ func (a *HouseholdAuth) Middleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Session is the one API call that says sign-in is unavailable.
-			// A 401 is what a visitor who has not signed in also gets, so
-			// setup could not tell an unreadable password file from that.
-			if r.URL.Path == "/api/session" && r.Method == http.MethodGet {
+			// Session and login say the password file is missing. A 401 is
+			// what a visitor who has not signed in also gets, so the rest
+			// of the API stays that status and setup can still tell them apart.
+			if (r.URL.Path == "/api/session" && r.Method == http.MethodGet) ||
+				(r.URL.Path == "/api/login" && r.Method == http.MethodPost) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -188,7 +190,7 @@ func (a *HouseholdAuth) ServeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a == nil || !a.Configured {
-		writeExemptError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
+		writeSignInNotConfigured(w)
 		return
 	}
 	if user, pass, ok := basicCredentials(r); ok {
@@ -220,7 +222,7 @@ func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.Configured {
-		writeExemptError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
+		writeSignInNotConfigured(w)
 		return
 	}
 	var body struct {
@@ -350,6 +352,13 @@ func requestHTTPS(r *http.Request) bool {
 
 func writeAuthError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorPayload{Error: message, Code: code})
+}
+
+func writeSignInNotConfigured(w http.ResponseWriter) {
+	writeJSON(w, http.StatusServiceUnavailable, errorPayload{
+		Error: clientmsg.AuthNotConfigured,
+		Code:  authNotConfiguredCode,
+	})
 }
 
 func writeLimited(w http.ResponseWriter, retry time.Duration) {
