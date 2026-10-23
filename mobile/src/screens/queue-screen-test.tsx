@@ -18,7 +18,7 @@ import {
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
-import { SERVER_NOTICE_RED } from '../ui/ServerNoticeBanner';
+import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '../../../frontend/src/noticeBanner';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 
@@ -1253,7 +1253,13 @@ describe('QueueScreen', () => {
       expect(within(notice).getByText(head)).toBeTruthy();
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
-      expect(fill).toBe(SERVER_NOTICE_RED);
+      expect(fill).toBe(NOTICE_BANNER_TINT);
+      const edge = flat && typeof flat === 'object' && 'borderColor' in flat ? flat.borderColor : undefined;
+      expect(edge).toBe(NOTICE_BANNER_EDGE);
+      const sentence = within(notice).getByText(head);
+      const ink = StyleSheet.flatten(sentence.props.style);
+      const inkColor = ink && typeof ink === 'object' && 'color' in ink ? ink.color : undefined;
+      expect(inkColor).toBe(NOTICE_BANNER_TEXT);
       if (rest.length === 0) {
         expect(batch).toBeNull();
         return;
