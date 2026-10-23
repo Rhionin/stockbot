@@ -603,7 +603,7 @@ Status codes that already exist, unchanged:
 | `instance_gone` | 409 | The chosen unit is already gone. Body may include `members`, as today. |
 | `link_target_gone` | 409 | `linkProductId` does not name a live item. |
 
-A batch commit stays `200`. Per-item failures are `failedIds`, `failedReasons`, and `failedCodes`, parallel arrays, as today. A committed retry stays in `committedIds` and is not a `not_pending` failure. See the open question on `busy` inside a batch.
+A committed retry stays in `committedIds` and is not a `not_pending` failure. Batch `busy` and `no_space` are specified on `POST /api/scans/batch-commit`.
 
 ### POST /api/scans/batch-commit
 
@@ -613,7 +613,16 @@ Today's body, unchanged: `scanEntryIds`, optional `direction`, `unitCount`, `exp
 |---|---|
 | X-Household-Id | Required. Every id must be in that household. |
 | Response | `200` today's batch body (`updatedCount`, `committedIds`, `failedIds`, `failedReasons`, `failedCodes`, `stockOutCounts`) |
-| Errors | `unauthorized`, `validation`, `not_found`, `busy`, `no_space` |
+| Errors | `unauthorized`, `validation`, `not_found` |
+
+The HTTP status stays `200` when an item hits `busy` or `no_space`. This lands with [#330](https://github.com/Rhionin/stockbot/issues/330) (in progress). PM's ruling on that issue:
+
+- On the first `busy` or `no_space` result, the batch stops. Items after that one are not tried.
+- The failed item and every untried item get that same code and its sentence in `failedCodes` and `failedReasons`. `failedIds` lists them in request order. They stay pending. A flagged scan stays flagged: the status is left unchanged, so a retry does not stock the same unit twice.
+- Items confirmed before the stop stay confirmed and stay in `committedIds`.
+- Other per-item failures (`none_on_hand`, `no_item`, `not_pending`, and the rest) do not stop the batch. They stay parallel entries, as they do today.
+
+A single commit or stock-out still uses HTTP 503 for `busy` and `no_space`. Only the batch puts those codes on the `200` body.
 
 An id from another household is `not_found` for the whole request. **Proposed:** the request does not partially commit a mix of households, and it does not report the foreign id as a per-item failure.
 
@@ -891,9 +900,9 @@ generic-sentence: Something went wrong. Try again.
 
 That sentence is `clientmsg.ServerError` on master. PR #320 (open, not merged) calls the same sentence `clientmsg.Generic` and uses it for every 5xx that is not `busy` or `no_space`. A 5xx body then has no `code`, except a commit or stock-out that already uses `internal`.
 
-`busy` and `no_space` use the sentences PR #320 locks. On the hosted API, `busy` is also the response when an optimistic-concurrency conflict retries until the attempt budget is exhausted (design §6, T12). `no_space` is the response when the write cannot be stored. Neither body includes `Retry-After`.
+`busy` and `no_space` use the sentences PR #320 locks. On the hosted API, `busy` is also the response when an optimistic-concurrency conflict retries until the attempt budget is exhausted (design §6, T12). `no_space` is the response when the write cannot be stored. Neither body includes `Retry-After`. A single commit or stock-out returns those as HTTP 503.
 
-PR #320 keeps a batch commit at `200`. A lock or a full disk on one of its items stays inside that body as `internal` and the generic sentence. Whether a hosted batch does the same for `busy` and `no_space` is open.
+A batch commit stays HTTP 200. On the first `busy` or `no_space` result the batch stops. The failed item and every untried item get that code and sentence in `failedCodes` and stay pending (a flagged scan stays flagged). Items already confirmed stay confirmed. Other per-item failures do not stop the batch. This lands with #330.
 
 ### Error code registry
 
@@ -901,8 +910,8 @@ The TypeScript union `HostedErrorCode` matches this table. A sentence marked **p
 
 | code | HTTP | sentence | notes |
 |---|---|---|---|
-| `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. |
-| `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. |
+| `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
+| `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `unauthorized` | 401 | Sign in to continue. | proposed, PM to confirm |
 | `forbidden_role` | 403 | Only an owner can do that. | proposed, PM to confirm |
 | `not_found` | 404 | That isn't available. | proposed, PM to confirm. Also the response for cross-household access. |
@@ -948,13 +957,12 @@ These are the points the design leaves open. The working assumption used above i
 20. **Product snapshot.** Assumed the export copies the products the household references, not the shared catalog. Ties to the open catalog question in design §13.
 21. **AppSync URLs** on `GET /api/config`. The client needs the realtime domain. The design doesn't say where it is published.
 22. **Hint types** are only `scans`, `stock`, and `list`. History, restock, and export/import job completion have no hint. Assumed those screens refetch on the type they already show, and that job polls are ordinary GET polls.
-23. **Batch commit and `busy` / `no_space`.** A single request uses `503`. PR #320 keeps a batch at `200` and reports a per-item lock as `internal`. Hosted OCC inside one batch item is not specified.
-24. **Unrecognized changes-since cursor.** Assumed a full `200`, not `validation`.
-25. **Default scan status filter** when `status` is omitted. Assumed today's queue (pending, flagged, qr).
-26. **Foreign id inside a batch.** Assumed the whole request is `not_found`.
-27. **Invite URL host.** The hosted domain is still TODO(CJ) in design §13. The server builds the URL. The client does not send a host.
-28. **AppSync header JSON key** that carries the live ticket (`authorization` vs another name).
-29. **Reconnect backoff numbers.** The design says exponential backoff with jitter and does not give the delays. The 2 s / 10 s polls and the 300 s `ka` timeout are specified; the backoff schedule is not.
-30. **Sign-up restock question.** Assumed it stays on the existing restock settings route after `POST /api/households`, not in the create body.
-31. **Pi auth.** Design §13 still asks whether the Pi gets this auth or keeps the shared password. This contract does not change the Pi either way.
-32. **Grocy.** Design §13 is open. No Grocy route is added here. A Grocy token, if it stays, is a device-class token for one household and is not a client-supplied tenant.
+23. **Unrecognized changes-since cursor.** Assumed a full `200`, not `validation`.
+24. **Default scan status filter** when `status` is omitted. Assumed today's queue (pending, flagged, qr).
+25. **Foreign id inside a batch.** Assumed the whole request is `not_found`.
+26. **Invite URL host.** The hosted domain is still TODO(CJ) in design §13. The server builds the URL. The client does not send a host.
+27. **AppSync header JSON key** that carries the live ticket (`authorization` vs another name).
+28. **Reconnect backoff numbers.** The design says exponential backoff with jitter and does not give the delays. The 2 s / 10 s polls and the 300 s `ka` timeout are specified; the backoff schedule is not.
+29. **Sign-up restock question.** Assumed it stays on the existing restock settings route after `POST /api/households`, not in the create body.
+30. **Pi auth.** Design §13 still asks whether the Pi gets this auth or keeps the shared password. This contract does not change the Pi either way.
+31. **Grocy.** Design §13 is open. No Grocy route is added here. A Grocy token, if it stays, is a device-class token for one household and is not a client-supplied tenant.
