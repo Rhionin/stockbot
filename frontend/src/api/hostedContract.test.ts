@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { classifyImportDocument, type HostedErrorCode, type LiveHint } from './contract';
+import {
+  classifyImportDocument,
+  type AcceptInviteRequest,
+  type HostedErrorCode,
+  type HouseholdSettings,
+  type InviteCreateRequest,
+  type LiveHint,
+} from './contract';
 
 // Pins the union to a real member so a deleted code fails typecheck.
 const sampleCode: HostedErrorCode = 'busy';
@@ -152,7 +159,7 @@ describe('hosted API contract', () => {
     expect(source).toContain('heartbeat?: boolean');
     expect(source).toContain("status: 'accepted' | 'duplicate'");
     expect(source).toContain("status: 'open' | 'revoked' | 'used' | 'expired'");
-    expect(source).toContain('householdPassword: \'on\' | \'off\' | null');
+    expect(source).toContain('householdPasswordEnabled: boolean');
     expect(source).toContain('minClientVersion: { expo: string }');
     expect(source).toContain("type: 'devices'");
     expect(doc).toContain('__Host-stockbot_session');
@@ -166,7 +173,7 @@ describe('hosted API contract', () => {
     expect(source).toContain('export interface LoginResponse');
     expect(doc).toContain('"inviteCode"?: string');
     expect(source).toContain('inviteCode?: string');
-    expect(doc).toContain('householdPassword: null');
+    expect(doc).toContain('householdPasswordEnabled: false');
     expect(doc).toContain('not_found');
     expect(doc).toContain('BEGIN IMMEDIATE');
     expect(doc).toContain('UUIDv7 text ids preserved; no sequences');
@@ -189,7 +196,56 @@ describe('hosted API contract', () => {
     expect(source).toContain("status: 'pending' | 'ready'");
     expect(source).toContain("status: 'created' | 'duplicate' | 'conflict' | 'rejected'");
     expect(source.match(/export interface CreateHouseholdRequest/g)).toHaveLength(1);
-    expect(source).toContain('barcodeValue?: string');
+    expect(source).toContain('barcodeValue: string');
     expect(source).not.toContain('pairingCodeCollidesWithBarcode');
+  });
+
+  it('sets invite role at create and exposes only the household-password state', () => {
+    type AcceptHasNoRole = 'role' extends keyof AcceptInviteRequest ? false : true;
+    type SettingsHasEnabled = HouseholdSettings['householdPasswordEnabled'] extends boolean ? true : false;
+    type SettingsDroppedSecret = 'householdPassword' extends keyof HouseholdSettings ? false : true;
+    type CreateSetsRole = NonNullable<InviteCreateRequest['role']> extends 'member' | 'owner' ? true : false;
+    const typePins: [AcceptHasNoRole, SettingsHasEnabled, SettingsDroppedSecret, CreateSetsRole] = [
+      true,
+      true,
+      true,
+      true,
+    ];
+    expect(typePins).toEqual([true, true, true, true]);
+
+    const accept: AcceptInviteRequest = { code: 'invite-code' };
+    expect(accept).not.toHaveProperty('role');
+
+    const enabled: HouseholdSettings = { restockMode: 'auto', householdPasswordEnabled: true };
+    const retired: HouseholdSettings = {
+      restockMode: 'auto',
+      householdPasswordEnabled: false,
+      householdPasswordRestoreUntil: '2026-10-30T00:00:00Z',
+    };
+    for (const settings of [enabled, retired]) {
+      const keys = Object.keys(settings);
+      expect(keys).not.toContain('householdPassword');
+      expect(keys).not.toContain('password');
+      expect(keys.join(' ').toLowerCase()).not.toContain('hash');
+      expect(Object.values(settings).join(' ')).not.toMatch(/\$2[aby]\$/);
+    }
+
+    expect(doc).toContain(
+      'invite-role: The role is set when the invite is created. Only an owner can create an owner invite. A member who sends `role` `owner` gets `forbidden_role`. Omitting `role` stores `member`. Accept echoes that role and does not accept a role in the body. The person accepting cannot choose or raise it.',
+    );
+    expect(doc).toContain(
+      'password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`.',
+    );
+
+    const settingsType = source.slice(source.indexOf('export interface HouseholdSettings'), source.indexOf('export interface ExportProductV1'));
+    expect(settingsType).toContain('householdPasswordEnabled: boolean');
+    expect(settingsType).toContain('householdPasswordRestoreUntil?: string');
+    expect(settingsType).not.toContain('householdPassword:');
+    expect(settingsType.toLowerCase()).not.toContain('hash');
+
+    const acceptType = source.slice(source.indexOf('export interface AcceptInviteRequest'), source.indexOf('export interface AcceptInviteResponse'));
+    expect(acceptType).not.toContain('role');
+    const createType = source.slice(source.indexOf('export interface InviteCreateRequest'), source.indexOf('export interface InviteCreated'));
+    expect(createType).toContain("role?: 'member' | 'owner'");
   });
 });

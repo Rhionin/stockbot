@@ -383,6 +383,8 @@ export interface ChangeRoleRequest {
 
 export interface InviteCreateRequest {
   email?: string;
+  /** Stored at create. Omit for member. Only an owner may send owner. */
+  role?: 'member' | 'owner';
 }
 
 export interface InviteCreated {
@@ -391,12 +393,15 @@ export interface InviteCreated {
   /** Server-built `<APP_BASE_URL>/invite/<code>`. APP_BASE_URL is per-stage config. */
   url: string;
   email: string | null;
+  /** The role stored at create. Accept echoes this and cannot change it. */
+  role: 'member' | 'owner';
   expiresAt: string;
 }
 
 export interface InviteSummary {
   id: string;
   email: string | null;
+  role: 'member' | 'owner';
   createdBy: string;
   expiresAt: string;
   status: 'open' | 'revoked' | 'used' | 'expired';
@@ -406,6 +411,7 @@ export interface InviteListResponse {
   invites: InviteSummary[];
 }
 
+/** No `role` field. The role was stored when the invite was created. */
 export interface AcceptInviteRequest {
   code: string;
   account?: { name: string; email: string; password: string };
@@ -416,12 +422,14 @@ export interface AcceptInviteRequest {
 export interface AcceptInviteResponse extends LoginResponse {
   householdId: string;
   name: string;
-  /** `member` for join_household. `owner` for start_household. */
+  /** Echo of the role stored on the invite. Accept cannot choose or raise it. */
   role: 'member' | 'owner';
 }
 
 export interface InvitePreview {
   kind: 'start_household' | 'join_household';
+  /** Echo of the role stored at create. */
+  role: 'member' | 'owner';
   householdName?: string;
   invitedBy?: string;
   expiresAt: string;
@@ -433,10 +441,10 @@ export interface PairingCode {
   expiresAt: string;
   /** Poll id for GET /api/devices/pair/{pairingId}. */
   pairingId: string;
-  /** Same text as `code`, drawn as Code 128. Omit when the client reuses `code`. */
-  barcodeValue?: string;
-  /** Same text as `qrPayload`, drawn as QR. Omit when the client reuses `qrPayload`. */
-  qrValue?: string;
+  /** Same text as `code`, drawn as Code 128, and the typed-code fallback. */
+  barcodeValue: string;
+  /** Same text as `qrPayload`, drawn as QR. */
+  qrValue: string;
 }
 
 export interface PairingLookup {
@@ -608,10 +616,11 @@ export interface CreateHouseholdRequest {
   inviteCode?: string;
 }
 
-/** GET and PATCH /api/household/settings. Stage 3 returns householdPassword null. */
+/** GET and PATCH /api/household/settings. State only: never the password or its hash. */
 export interface HouseholdSettings {
   restockMode: RestockMode;
-  householdPassword: 'on' | 'off' | null;
+  householdPasswordEnabled: boolean;
+  /** RFC3339, only while a retired password can be restored. */
   householdPasswordRestoreUntil?: string;
 }
 

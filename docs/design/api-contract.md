@@ -86,7 +86,7 @@ Both of these rules apply:
 1. A missing `X-Stockbot-Client` header means web, so there is no version gate.
 2. The exception: once the household password is retired, a request with `Authorization: Basic` and no `X-Stockbot-Client` returns `426` `upgrade_required`, not `401`. Old Expo builds then show the update sentence and do not loop on sign-in. While the household password is still on, that Basic request signs in as a member of household 1.
 
-Pi-only additions, outside the stage-3 AWS behavior: `householdPassword` and `householdPasswordRestoreUntil` on `GET /api/household/settings`, and `POST /api/household/household-password/retire` and `POST /api/household/household-password/restore`. Stage 3 returns `householdPassword: null` and `not_found` for those two routes. Households other than household 1 also return `householdPassword: null` and `not_found` for the routes, including in stage 1.
+Pi-only additions, outside the stage-3 AWS behavior: `householdPasswordEnabled` and `householdPasswordRestoreUntil` on `GET /api/household/settings`, and `POST /api/household/household-password/retire` and `POST /api/household/household-password/restore`. Stage 3 returns `householdPasswordEnabled: false` and `not_found` for those two routes. Households other than household 1 also return `householdPasswordEnabled: false` and `not_found` for the routes, including in stage 1. The settings body never includes the password or its hash.
 
 LAN `:8080`, while the household password is on: people get the LAN principal. That is household 1, member, no sign-in, and `X-Household-Id` is ignored, so the LAN cannot return another household's data. `GET /api/auth/session` on that listener returns this principal: `kind` `lan`, `user` null, `operator` false, `activeHouseholdId` household 1, and one membership with role `member`. There is no LAN cookie in stage 1. A plain-HTTP LAN origin cannot hold `__Host-stockbot_session`. `LAN_PEOPLE=signin` is a documented future option and is not stage 1. Owner and operator routes need a personal session. Device routes use device tokens. After the password is retired, a browser document GET on the LAN is `302` to `APP_BASE_URL`, other people-facing `/api/*` on the LAN return `401`, and `/api/device/*` and `GET /api/build` keep working. The listener decides LAN versus public. A client cannot forge it with a header.
 
@@ -331,18 +331,22 @@ Proposed. These two routes are the household restock mode from #296. They supers
 ```ts
 interface HouseholdSettings {
   restockMode: 'auto' | 'ask_restock' | 'ask_hold';
-  householdPassword: 'on' | 'off' | null;
+  householdPasswordEnabled: boolean;
   householdPasswordRestoreUntil?: string; // RFC3339, only while a retired password can be restored
 }
 ```
 
-`restockMode` is the #364 field. `householdPassword` and `householdPasswordRestoreUntil` are the stage-1 additions. `on` means household 1's shared password still signs in. `off` means it was retired and `householdPasswordRestoreUntil` is set for 7 days. `null` means this household never had one. Stage 3 returns `householdPassword: null` and omits `householdPasswordRestoreUntil`. PATCH does not accept those two fields. Changing the password state is the retire and restore routes.
+`restockMode` is the #364 field. `householdPasswordEnabled` and `householdPasswordRestoreUntil` are the stage-1 additions. `householdPasswordEnabled` is true only while household 1's shared password can still sign in. After retire it is false, and `householdPasswordRestoreUntil` is set for 7 days. A household that never had a shared password, stage 3, and every household other than household 1 return `householdPasswordEnabled: false` and omit `householdPasswordRestoreUntil`.
+
+password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`.
+
+PATCH accepts `restockMode` only. A body that includes `householdPasswordEnabled`, `householdPasswordRestoreUntil`, the password, or a hash is `validation`. Changing the switch is the retire and restore routes. Login's `{ "householdPassword": string }` is the sign-in secret for that request. It is not this field, and no response returns it.
 
 ### POST /api/household/household-password/retire
 
 ### POST /api/household/household-password/restore
 
-Owner actions for household 1 during stage 1. Retire turns the shared password off, replaces its session key, and revokes sessions that came from that password. In that same transaction it deletes household-password push subscriptions, the rows with `household_id = 1` and `user_id` null. After commit, `LiveHub.Kick` closes those SSE streams. Personal sessions stay. Restore, before `householdPasswordRestoreUntil`, turns the same password back on. The new session key stays, so old `pantry_session` cookies stay dead.
+Owner actions for household 1 during stage 1. Retire sets `householdPasswordEnabled` to false, replaces the session key, and revokes sessions that came from that password. In that same transaction it deletes household-password push subscriptions, the rows with `household_id = 1` and `user_id` null. After commit, `LiveHub.Kick` closes those SSE streams. Personal sessions stay. Restore, before `householdPasswordRestoreUntil`, sets `householdPasswordEnabled` back to true. The new session key stays, so old `pantry_session` cookies stay dead. A member of household 1 who is not an owner gets `forbidden_role`. The response is `HouseholdSettings` and does not include the password or its hash.
 
 | | |
 |---|---|
@@ -518,9 +522,9 @@ The household is the caller's `X-Household-Id` on create, list, and revoke. Acce
 | Auth | Session |
 | Role | Member |
 | X-Household-Id | Required |
-| Request | `{ "email"?: string }` |
+| Request | `{ "email"?: string, "role"?: "member" \| "owner" }` |
 | Response | `201` `InviteCreated` |
-| Errors | `unauthorized`, `validation`, `not_found`, `busy` |
+| Errors | `unauthorized`, `forbidden_role`, `validation`, `not_found`, `busy` |
 
 ```ts
 interface InviteCreated {
@@ -528,9 +532,12 @@ interface InviteCreated {
   code: string;       // shown once
   url: string;        // <APP_BASE_URL>/invite/<code>
   email: string | null;
+  role: 'member' | 'owner'; // the role stored at create
   expiresAt: string;  // created plus 7 days
 }
 ```
+
+invite-role: The role is set when the invite is created. Only an owner can create an owner invite. A member who sends `role` `owner` gets `forbidden_role`. Omitting `role` stores `member`. Accept echoes that role and does not accept a role in the body. The person accepting cannot choose or raise it.
 
 Invite codes are 48 bits. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. Stage 1 ignores `email`: it does not store it and it does not send mail, so `email` in the response is null. Stage 3, when `email` is present, sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
 
@@ -548,6 +555,7 @@ Invite codes are 48 bits. The server builds `url` as `<APP_BASE_URL>/invite/<cod
 interface InviteSummary {
   id: string;
   email: string | null;
+  role: 'member' | 'owner';
   createdBy: string; // user id
   expiresAt: string;
   status: 'open' | 'revoked' | 'used' | 'expired';
@@ -579,7 +587,7 @@ The code is in the body so it does not land in an access log as a path. No sessi
 | Role | None |
 | X-Household-Id | Omit |
 | Request | `{ "code": string }` |
-| Response | `200` `{ "kind": "start_household" \| "join_household", "householdName"?: string, "invitedBy"?: string, "expiresAt": string }` |
+| Response | `200` `{ "kind": "start_household" \| "join_household", "role": "member" \| "owner", "householdName"?: string, "invitedBy"?: string, "expiresAt": string }` |
 | Errors | `validation`, `invite_expired`, `not_found`, `rate_limited` |
 
 `join_household` includes `householdName`. `start_household` omits it. `invitedBy` is a display name. A code past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." A revoked or never issued code is `not_found`. Limits: 10 per 15 minutes per IP, and 5 attempts per code.
@@ -599,13 +607,13 @@ The code is in the body so it does not land in an access log as a path. The #364
 
 A code that is past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
-Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`. A signed-in person sends no `account`. Sending a session and `account` together is `validation`.
+Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`. A signed-in person sends no `account`. Sending a session and `account` together is `validation`. The accept body has no `role`. Sending `role` is `validation`, including a value that matches the invite. Accept cannot raise a `member` invite to `owner` or lower an `owner` invite to `member`.
 
-`role` on the accept response is `member` for `join_household` and `owner` for `start_household`. `join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership. Invite links are `<APP_BASE_URL>/invite/<code>`. Caddy and the app redact that code from logs.
+`role` on the accept response is the role stored when the invite was created. It is not chosen from `kind` at accept time. `join_household` is `member` unless an owner stored `owner`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership. Invite links are `<APP_BASE_URL>/invite/<code>`. Caddy and the app redact that code from logs.
 
 ### POST /api/operator/household-invites
 
-Operator only. Creates a `start_household` invite. Same code rules as `POST /api/invites`: single use, 7 days, 48 bits, stored hashed.
+Operator only. Creates a `start_household` invite whose stored role is `owner`. Same code rules as `POST /api/invites`: single use, 7 days, 48 bits, stored hashed. The body does not take a role. Sending `role` is `validation`.
 
 | | |
 |---|---|
@@ -642,9 +650,9 @@ interface PairingCode {
   code: string;          // #364 field. SBP-XXXX-XXXX-C
   qrPayload: string;     // #364 field. Same text as code.
   expiresAt: string;
-  pairingId: string;      // poll id for GET /api/devices/pair/{pairingId}
-  barcodeValue?: string;  // same text as code, drawn as Code 128. Optional.
-  qrValue?: string;       // same text as qrPayload, drawn as QR. Optional.
+  pairingId: string;     // poll id for GET /api/devices/pair/{pairingId}
+  barcodeValue: string;  // same text as code, drawn as Code 128, and the typed-code fallback
+  qrValue: string;       // same text as qrPayload, drawn as QR
 }
 ```
 
