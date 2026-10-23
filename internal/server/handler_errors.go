@@ -20,8 +20,9 @@ const (
 )
 
 const (
-	busyErrorCode    = "busy"
-	noSpaceErrorCode = "no_space"
+	busyErrorCode         = "busy"
+	noSpaceErrorCode      = "no_space"
+	authNotConfiguredCode = "auth_not_configured"
 )
 
 // HTTPError represents an error with an associated HTTP status code.

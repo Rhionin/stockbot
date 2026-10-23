@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -117,24 +118,34 @@ func TestScanListOnHandIsTheHouseholdsOwn(t *testing.T) {
 	empty := scanListRows(t, exchangeJSON(t, handler, http.MethodGet, "/api/scans?userId=user-1", "", http.StatusOK))
 	stocked := scanListRows(t, exchangeJSON(t, handler, http.MethodGet, "/api/scans?userId=user-2", "", http.StatusOK))
 	if len(empty) != 1 || empty[0].ID != "scan-empty" || empty[0].UserID != "user-1" || empty[0].OnHand == nil || *empty[0].OnHand != 0 {
-		t.Fatalf("user-1 = %+v", empty)
+		t.Fatalf("user-1 = %s", formatScanListRows(empty))
 	}
 	if len(stocked) != 1 || stocked[0].ID != "scan-stocked" || stocked[0].UserID != "user-2" || stocked[0].OnHand == nil || *stocked[0].OnHand != 3 {
-		t.Fatalf("user-2 = %+v", stocked)
+		t.Fatalf("user-2 = %s", formatScanListRows(stocked))
 	}
 }
 
-func scanListRows(t *testing.T, body []byte) []struct {
+type scanListRow struct {
 	ID     string `json:"id"`
 	UserID string `json:"userId"`
 	OnHand *int   `json:"onHand"`
-} {
-	t.Helper()
-	var rows []struct {
-		ID     string `json:"id"`
-		UserID string `json:"userId"`
-		OnHand *int   `json:"onHand"`
+}
+
+func formatScanListRows(rows []scanListRow) string {
+	parts := make([]string, len(rows))
+	for i, row := range rows {
+		onHand := "<nil>"
+		if row.OnHand != nil {
+			onHand = fmt.Sprintf("%d", *row.OnHand)
+		}
+		parts[i] = fmt.Sprintf("{id:%s user:%s onHand:%s}", row.ID, row.UserID, onHand)
 	}
+	return strings.Join(parts, " ")
+}
+
+func scanListRows(t *testing.T, body []byte) []scanListRow {
+	t.Helper()
+	var rows []scanListRow
 	if err := json.Unmarshal(body, &rows); err != nil {
 		t.Fatal(err)
 	}
