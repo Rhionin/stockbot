@@ -47,6 +47,7 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
+import { formatShoppingQuantity } from './quantity';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
@@ -359,9 +360,9 @@ export const ShoppingListPage = () => {
                     </Table.Td>
                     <Table.Td data-label="Quantity">
                       <Stack gap={4}>
-                        <Text>{entry.quantity} {unit}</Text>
+                        <Text>{formatShoppingQuantity(entry.quantity, unit)}</Text>
                         {entry.adjustment !== undefined && entry.computedQuantity !== undefined && (
-                          <Text size="sm" c="dimmed">Computed {entry.computedQuantity} {unit}</Text>
+                          <Text size="sm" c="dimmed">Computed {formatShoppingQuantity(entry.computedQuantity, unit)}</Text>
                         )}
                         {entry.id !== '' && targetProvider !== null && (
                           <NumberInput
@@ -436,6 +437,7 @@ export const ShoppingListPage = () => {
                             Mark {productName} purchased
                           </Button>
                           <Button
+                            className="shopping-remove"
                             size="xs"
                             color="red"
                             variant="light"

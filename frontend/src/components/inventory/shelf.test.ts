@@ -101,6 +101,17 @@ describe('buildShelf', () => {
     expect(group.photoSrc).toBe('https://images.openfoodfacts.org/glacier.jpg');
   });
 
+  it('separates a count from a size on an ungrouped row', () => {
+    const beans = item('beans', 'Cut green beans', { instanceCount: 2 });
+    beans.item.product.unitOfMeasure = '14.5 oz';
+    const boxes = item('oats', 'Rolled oats', { instanceCount: 2 });
+    const rows = buildShelf({ items: [beans, boxes], groups: [], suggestions: [], catalog: [] });
+    const sized = rows.find((row) => row.id === 'beans');
+    const counted = rows.find((row) => row.id === 'oats');
+    expect(sized?.kind === 'item' && sized.hand).toBe('2 × 14.5 oz');
+    expect(counted?.kind === 'item' && counted.hand).toBe('2 canister');
+  });
+
   it('keeps a grouped product out of the ungrouped rows and links a suggestion', () => {
     const built = rows();
     expect(built.some((row) => row.kind === 'item' && row.item.item.productId === 'lemon')).toBe(false);

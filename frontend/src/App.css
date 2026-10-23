@@ -339,6 +339,41 @@ a.group-row {
   grid-area: notices;
 }
 
+/* The hint sits under the cart control. On a phone the row stays one line:
+   the hint wraps inside the leftover width instead of pushing the button down. */
+.provider-row {
+  width: 100%;
+}
+
+/* A long store name yields width so the cart control stays on the screen. */
+.provider-identity {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.provider-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.provider-cart {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.provider-hint {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* Light variant draws a transparent border, so the only edge in dark mode is
+   the wash (about 1.3:1 on the page). The ink token is the text color, which
+   the theme resolver already chooses, and it clears the 3:1 boundary. */
+.shopping-remove {
+  border-color: var(--button-color);
+}
+
 @media (max-width: 47.99em) {
   .shopping-toolbar {
     width: 100%;
