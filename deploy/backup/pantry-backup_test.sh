@@ -30,10 +30,13 @@ if [[ "$*" == *cleanup-stage* ]]; then
 fi
 if [[ "$*" == *"/config-secrets:ro"* ]]; then
   src=$(printf '%s\n' "$*" | sed -n 's/.*--volume \([^ ]*\):\/config-secrets:ro.*/\1/p')
-  [[ -f "$src/auth.caddy" && -f "$src/.env" && -f "$src/.env.bak" ]] || exit 4
+  [[ -d "$src" ]] || exit 4
   [[ ! -e "$src/.env.example" ]] || exit 4
-  mode=$(stat -c '%a' "$src/auth.caddy")
-  [[ "$mode" == "400" ]] || exit 4
+  for f in "$src"/*; do
+    [[ -f "$f" ]] || exit 4
+    mode=$(stat -c '%a' "$f")
+    [[ "$mode" == "400" ]] || exit 4
+  done
 fi
 if [[ "${SLEEP_RUN:-}" == 1 && "$*" == *"--stage"* ]]; then
   printf '%s\n' "$$" >"${SLEEP_PID:?}"
@@ -115,24 +118,29 @@ log=$(cat "$work/docker.log")
 for needle in \
   "--with-secrets" \
   "--secrets-path /config-secrets/auth.caddy" \
-  "--secrets-path /config-secrets/.env" \
   "--secrets-path /config-secrets/.env.bak" \
   ":/config-secrets:ro"
 do
   [[ "$log" == *"$needle"* ]] || fail "docker args missing $needle"
 done
+if printf '%s\n' "$log" | grep -E -q '(^| )--secrets-path /config-secrets/\.env( |$)'; then
+  fail "live .env was archived by default"
+fi
 [[ "$log" == *".env.example"* ]] && fail "env example was archived"
 src=$(sed -n 's/.*--volume \([^ ]*\):\/config-secrets:ro.*/\1/p' <<<"$log")
 [[ -n "$src" ]] || fail "config secret mount was not recorded"
 [[ ! -d "$src" ]] || fail "config secret copy was left behind"
 
-rm -f "$work/pantry/auth.caddy"
-ln -s "$work/nowhere" "$work/pantry/auth.caddy"
+mkdir -p "$work/pantry/backup"
+printf '%s\n' "$work/pantry/.env" >"$work/pantry/backup/secrets-paths"
 : >"$work/docker.log"
 rc=$(run_backup nightly)
-[[ "$rc" == 40 ]] || fail "symlink config secret rc=$rc"
-[[ ! -s "$work/docker.log" ]] || fail "symlink config secret started a backup"
-rm -f "$work/pantry/auth.caddy" "$work/pantry/.env" "$work/pantry/.env.bak" "$work/pantry/.env.example"
+[[ "$rc" == 0 ]] || fail "explicit .env archive rc=$rc err=$(cat "$work/err")"
+log=$(cat "$work/docker.log")
+if ! printf '%s\n' "$log" | grep -E -q '(^| )--secrets-path /config-secrets/\.env( |$)'; then
+  fail "an explicitly configured .env was not archived"
+fi
+rm -f "$work/pantry/backup/secrets-paths"
 
 printf 'HC_BACKUP_RUN_URL=https://hc.example/backup-run-token\n' >"$work/pantry/secrets/backup/r2.env"
 chmod 0400 "$work/pantry/secrets/backup/r2.env"
@@ -142,6 +150,28 @@ printf '%s\n' "$*" >>"${CURL_LOG:?}"
 exit 0
 EOF
 chmod +x "$bin/curl"
+
+rm -f "$work/pantry/auth.caddy"
+ln -s "$work/nowhere" "$work/pantry/auth.caddy"
+: >"$work/docker.log"
+: >"$work/curl.log"
+rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
+[[ "$rc" == 40 ]] || fail "symlink config secret rc=$rc"
+[[ ! -s "$work/docker.log" ]] || fail "symlink config secret started a backup"
+grep -q '/fail' "$work/curl.log" || fail "symlink config secret did not ping healthchecks"
+[[ "$(cat "$work/out" "$work/err")" != *backup-run-token* ]] || fail "healthchecks URL was printed"
+rm -f "$work/pantry/auth.caddy"
+
+mkdir -p "$work/pantry/not-a-file"
+printf '%s\n' "$work/pantry/not-a-file" >"$work/pantry/backup/secrets-paths"
+: >"$work/docker.log"
+: >"$work/curl.log"
+rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
+[[ "$rc" == 40 ]] || fail "invalid config secret rc=$rc err=$(cat "$work/err")"
+[[ ! -s "$work/docker.log" ]] || fail "invalid config secret started a backup"
+grep -q '/fail' "$work/curl.log" || fail "invalid config secret did not ping healthchecks"
+rm -f "$work/pantry/backup/secrets-paths" "$work/pantry/.env" "$work/pantry/.env.bak" "$work/pantry/.env.example"
+rmdir "$work/pantry/not-a-file"
 
 : >"$work/docker.log"
 : >"$work/curl.log"

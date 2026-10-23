@@ -233,6 +233,16 @@ log=$(cat "$work/docker.log")
 [[ "$log" == *"network create --internal"* ]] || fail "smoke network was not internal"
 [[ "$log" == *"/api/build"* && "$log" == *"/api/products"* ]] || fail "probe did not ask for the API"
 [[ "$log" == *"-p "* || "$log" == *127.0.0.1:* ]] && fail "smoke published a host port"
+app_line=$(printf '%s\n' "$log" | grep ' -d ' | head -1)
+probe_line=$(printf '%s\n' "$log" | grep '/api/build' | head -1)
+app_net=$(printf '%s\n' "$app_line" | sed -n 's/.*--network \([^ ]*\).*/\1/p')
+probe_net=$(printf '%s\n' "$probe_line" | sed -n 's/.*--network \([^ ]*\).*/\1/p')
+[[ -n "$app_net" && "$app_net" == pantry-drill-* ]] || fail "app is not on the drill network: $app_line"
+[[ "$app_net" != "bridge" && "$app_net" != "default" ]] || fail "app is on the default bridge"
+[[ "$probe_net" == "$app_net" ]] || fail "probe network $probe_net is not the app network $app_net"
+[[ "$probe_line" != *localhost* && "$probe_line" != *127.0.0.1* ]] || fail "probe hit localhost: $probe_line"
+[[ "$probe_line" == *http://pantry-drill-* ]] || fail "probe did not use the drill container name"
+[[ "$log" == *"curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"* ]] || fail "probe image is not pinned by digest"
 [[ "$log" == *DISABLE_EXTERNAL_PRODUCT_LOOKUP=true* ]] || fail "external lookup was not disabled"
 [[ "$log" == *PANTRY_AUTH_FILE* ]] && fail "smoke set PANTRY_AUTH_FILE"
 [[ "$(cat "$work/out" "$work/err")" != *token-not-a-path* ]] || fail "secrets plaintext was printed"
@@ -306,3 +316,37 @@ grep -q 'scratch removed' "$work/out" || fail "pasted drill did not remove scrat
 if find /dev/shm /tmp -maxdepth 2 -name 'age-identity.txt' -print 2>/dev/null | grep -q .; then
   fail "pasted identity file remains"
 fi
+
+python3 - "$ROOT/deploy/backup/restore-drill.sh" <<'PY'
+import os, pathlib, subprocess, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+start = text.index("import os, sys\n")
+end = text.index('b"\\0")', start)
+snippet = text[start:end] + 'b"\\0")\n'
+if "os.environb" not in snippet:
+    sys.exit("python fallback does not use os.environb")
+runner = "import os, sys\nos.environb[b'BAD'] = bytes([0xff])\n" + snippet
+bad = subprocess.run([sys.executable, "-c", runner], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+if bad.returncode == 0:
+    sys.exit("a non-utf8 environment value was accepted")
+good = subprocess.check_output([sys.executable, "-c", snippet])
+if b"\0" not in good or b"PATH=" not in good:
+    sys.exit("a valid environment was not emitted as NUL records")
+PY
+
+cat >"$work/bin/env" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-0" ]; then
+  exit 1
+fi
+exec /usr/bin/env "$@"
+EOF
+cat >"$work/bin/python3" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$work/bin/env" "$work/bin/python3"
+rc=$(drill --identity "$work/cj-age.txt" --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "python fallback failure rc=$rc err=$(cat "$work/err")"
+grep -q 'could not read the environment' "$work/err" || fail "python fallback did not fail closed"
+rm -f "$work/bin/env" "$work/bin/python3"

@@ -515,13 +515,35 @@ func TestIntegrityMismatchRowUploadsNothing(t *testing.T) {
 			for _, query := range []string{
 				`CREATE TABLE idx_items (id INTEGER PRIMARY KEY, name TEXT)`,
 				`CREATE INDEX idx_items_name ON idx_items(name)`,
-				`INSERT INTO idx_items (name) VALUES ('a'), ('b')`,
+				`INSERT INTO idx_items (name) VALUES ('a')`,
 				`PRAGMA writable_schema=ON`,
 				`UPDATE sqlite_schema SET sql='CREATE INDEX idx_items_name ON idx_items(id)' WHERE name='idx_items_name'`,
 			} {
 				if _, err := db.Exec(query); err != nil {
 					return err
 				}
+			}
+			// One indexed row makes integrity_check return a single non-ok
+			// line. A length check would still see one line, so only a
+			// comparison with "ok" refuses the snapshot.
+			rows, err := db.Query(`PRAGMA integrity_check`)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			var lines []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					return err
+				}
+				lines = append(lines, line)
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if len(lines) != 1 || lines[0] == "ok" {
+				return errClass(ExitIntegrity, "integrity", "the integrity fixture did not return one non-ok row")
 			}
 			return nil
 		},
@@ -594,10 +616,10 @@ func TestSweepDeletesOnlyExpired(t *testing.T) {
 	store.putAt(just, []byte("new"), now)
 	store.putAt("nightly/just.manifest.json", []byte("{}"), now)
 	store.putAt("nightly/fresh.pantry.db.gz.age", []byte("a"), now.Add(-13*24*time.Hour))
-	store.putAt("nightly/edge-keep.pantry.db.gz.age", []byte("k"), now.Add(-retentionAge))
-	store.putAt("nightly/edge-drop.pantry.db.gz.age", []byte("d"), now.Add(-retentionAge-time.Second))
+	store.putAt("nightly/edge-keep.pantry.db.gz.age", []byte("k"), now.Add(-14*24*time.Hour))
+	store.putAt("nightly/edge-drop.pantry.db.gz.age", []byte("d"), now.Add(-14*24*time.Hour-time.Second))
 	store.putAt("secrets/old.tar.age", []byte("c"), now.Add(-20*24*time.Hour))
-	store.putAt("secrets/edge-keep.tar.age", []byte("e"), now.Add(-retentionAge))
+	store.putAt("secrets/edge-keep.tar.age", []byte("e"), now.Add(-14*24*time.Hour))
 	store.putAt("manual/keep.manual.pantry.db.gz.age", []byte("m"), now.Add(-time.Hour))
 	runner := &Runner{Store: store, Now: func() time.Time { return now }}
 	if err := runner.sweep(context.Background(), []string{just}); err != nil {
@@ -663,7 +685,7 @@ func TestOverAgeBoundary(t *testing.T) {
 	exact := newMemStore(func() time.Time { return now })
 	exact.putAt(just, []byte("j"), now)
 	const edge = "secrets/edge.tar.age"
-	exact.putAt(edge, []byte("e"), now.Add(-overAgeLimit))
+	exact.putAt(edge, []byte("e"), now.Add(-15*24*time.Hour))
 	exact.failDelete[edge] = true
 	runner := &Runner{Store: exact, Now: func() time.Time { return now }}
 	err := runner.sweep(context.Background(), []string{just})
@@ -672,7 +694,7 @@ func TestOverAgeBoundary(t *testing.T) {
 	}
 	late := newMemStore(func() time.Time { return now })
 	late.putAt(just, []byte("j"), now)
-	late.putAt(edge, []byte("e"), now.Add(-overAgeLimit-time.Second))
+	late.putAt(edge, []byte("e"), now.Add(-15*24*time.Hour-time.Second))
 	late.failDelete[edge] = true
 	runner.Store = late
 	err = runner.sweep(context.Background(), []string{just})
@@ -724,13 +746,171 @@ func TestStaleBackup(t *testing.T) {
 	if _, err := newestKey(context.Background(), orphanOnly); err == nil {
 		t.Fatal("fetch selected a backup that has no manifest")
 	}
-	putBackup("edge-stale", now.Add(-staleAfter-time.Second), true)
+	putBackup("edge-stale", now.Add(-26*time.Hour-time.Second), true)
 	if err := runner.CheckStale(context.Background()); ExitCode(err) != ExitSweep {
 		t.Fatal("a backup one second past 26 hours counted as fresh")
 	}
-	putBackup("edge-fresh", now.Add(-staleAfter+time.Second), true)
+	putBackup("edge-fresh", now.Add(-26*time.Hour+time.Second), true)
 	if err := runner.CheckStale(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	exact := newMemStore(func() time.Time { return now })
+	exact.putAt("nightly/exact.pantry.db.gz.age", []byte("exact"), now.Add(-26*time.Hour))
+	exact.putAt("nightly/exact.manifest.json", []byte("{}"), now.Add(-26*time.Hour))
+	runner.Store = exact
+	if err := runner.CheckStale(context.Background()); err != nil {
+		t.Fatal("a backup exactly 26 hours old was treated as stale")
+	}
+}
+
+func TestSweepSkewLimit(t *testing.T) {
+	server := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	const just = "nightly/just.pantry.db.gz.age"
+	const old = "secrets/old.tar.age"
+	atLimit := newMemStore(func() time.Time { return server })
+	atLimit.putAt(just, []byte("j"), server)
+	atLimit.putAt(old, []byte("o"), server.Add(-14*24*time.Hour-time.Second))
+	runner := &Runner{Store: atLimit, Now: func() time.Time { return server.Add(12 * time.Hour) }}
+	if err := runner.sweep(context.Background(), []string{just}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := atLimit.objs[old]; ok {
+		t.Fatal("a 12 hour skew skipped the sweep")
+	}
+
+	over := newMemStore(func() time.Time { return server })
+	over.putAt(just, []byte("j"), server)
+	over.putAt(old, []byte("o"), server.Add(-30*24*time.Hour))
+	runner = &Runner{Store: over, Now: func() time.Time { return server.Add(12*time.Hour + time.Second) }}
+	err := runner.sweep(context.Background(), []string{just})
+	if ExitCode(err) != ExitSweep || AlertClass(err) != "clock" {
+		t.Fatalf("err = %v class %s", err, AlertClass(err))
+	}
+	if over.deleteCount() != 0 {
+		t.Fatal("a skew one second past 12 hours deleted objects")
+	}
+	if _, ok := over.objs[just]; !ok {
+		t.Fatal("the uploaded object was deleted when the clock was refused")
+	}
+}
+
+func TestSweepCutoffUsesServerClock(t *testing.T) {
+	server := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	const just = "nightly/just.pantry.db.gz.age"
+	const edge = "secrets/edge.tar.age"
+
+	// The Pi is 12 hours fast, which is still inside the skew limit. An
+	// object exactly 14 days old by the server clock is kept. A cutoff of
+	// Pi time minus 14 days would delete it.
+	fast := newMemStore(func() time.Time { return server })
+	fast.putAt(just, []byte("j"), server)
+	fast.putAt(edge, []byte("e"), server.Add(-14*24*time.Hour))
+	runner := &Runner{Store: fast, Now: func() time.Time { return server.Add(12 * time.Hour) }}
+	if err := runner.sweep(context.Background(), []string{just}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fast.objs[edge]; !ok {
+		t.Fatal("the sweep used the Pi clock and deleted a backup that is 14 days old on the server")
+	}
+
+	// The Pi is 12 hours slow. An object one second past 14 server days is
+	// deleted. A cutoff of Pi time minus 14 days would keep it.
+	slow := newMemStore(func() time.Time { return server })
+	slow.putAt(just, []byte("j"), server)
+	slow.putAt(edge, []byte("e"), server.Add(-14*24*time.Hour-time.Second))
+	runner = &Runner{Store: slow, Now: func() time.Time { return server.Add(-12 * time.Hour) }}
+	if err := runner.sweep(context.Background(), []string{just}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := slow.objs[edge]; ok {
+		t.Fatal("the sweep used the slow Pi clock and kept an expired backup")
+	}
+}
+
+func TestVerifiedBackupSurvivesLaterFailure(t *testing.T) {
+	server := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		offset  time.Duration
+		class   string
+		prepare func(t *testing.T, path string, store *memStore) *Runner
+	}{
+		{name: "13h fast", offset: 13 * time.Hour, class: "clock"},
+		{name: "13h slow", offset: -13 * time.Hour, class: "clock"},
+		{name: "14 days fast", offset: 14 * 24 * time.Hour, class: "clock"},
+		{name: "15 days slow", offset: -15 * 24 * time.Hour, class: "clock"},
+		{
+			name:   "failing delete",
+			offset: 0,
+			class:  "sweep",
+			prepare: func(t *testing.T, path string, store *memStore) *Runner {
+				const old = "nightly/old.pantry.db.gz.age"
+				at := server.Add(-14*24*time.Hour - time.Second)
+				store.putAt(old, []byte("old"), at)
+				store.putAt("nightly/old.manifest.json", []byte("{}"), at)
+				store.failDelete[old] = true
+				return nil
+			},
+		},
+		{
+			name:   "secrets failure",
+			offset: 0,
+			class:  "secrets",
+			prepare: func(t *testing.T, path string, store *memStore) *Runner {
+				return &Runner{IncludeSecrets: true, SecretsPaths: []string{filepath.Join(t.TempDir(), "missing-secret")}}
+			},
+		},
+		{
+			name:   "prune failure",
+			offset: 0,
+			class:  "prune",
+			prepare: func(t *testing.T, path string, store *memStore) *Runner {
+				pre := filepath.Join(filepath.Dir(path), "pantry-pre-groups.db")
+				if err := os.Mkdir(pre, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(pre, "child"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return &Runner{PrunePremigration: true}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixtureDB(t)
+			pi := server.Add(tc.offset)
+			store := newMemStore(func() time.Time { return server })
+			pings := &recordPinger{}
+			runner := &Runner{
+				DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+				Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+				Now: func() time.Time { return pi }, UploadRetries: 1, UploadRetryWait: time.Millisecond,
+				HealthURL: "https://hc.example/backup", Health: pings,
+			}
+			if tc.prepare != nil {
+				extra := tc.prepare(t, path, store)
+				if extra != nil {
+					runner.IncludeSecrets = extra.IncludeSecrets
+					runner.SecretsPaths = extra.SecretsPaths
+					runner.PrunePremigration = extra.PrunePremigration
+				}
+			}
+			_, err := runner.Run(context.Background())
+			if err == nil || AlertClass(err) != tc.class {
+				t.Fatalf("err = %v class %s", err, AlertClass(err))
+			}
+			if !pings.failed || !strings.Contains(pings.body, "class="+tc.class) {
+				t.Fatalf("failure ping = %+v", pings)
+			}
+			dataKey, manifestKey, err := objectNames(pi, "nightly")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if store.get(dataKey) == nil || store.get(manifestKey) == nil {
+				t.Fatalf("tonight's backup is missing: %v", store.keys())
+			}
+		})
 	}
 }
 

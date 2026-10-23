@@ -33,13 +33,33 @@ env_records() {
     env -0
     return
   fi
-  python3 -c 'import os, sys
-for name, value in os.environ.items():
-    sys.stdout.buffer.write(name.encode() + b"=" + value.encode() + b"\0")'
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c '
+import os, sys
+try:
+    items = list(os.environb.items())
+except Exception:
+    sys.exit(1)
+for name, value in items:
+    try:
+        name.decode("utf-8")
+        value.decode("utf-8")
+    except UnicodeDecodeError:
+        sys.exit(1)
+    sys.stdout.buffer.write(name + b"=" + value + b"\0")
+'
 }
 
 refuse_identity_env() {
-  local line name value label refuse
+  local line name value label refuse env_dump
+  env_dump=$(mktemp)
+  if ! env_records >"$env_dump"; then
+    rm -f "$env_dump"
+    echo "could not read the environment" >&2
+    exit 2
+  fi
+  label=""
+  refuse=0
   while IFS= read -r -d '' line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || continue
     name=${line%%=*}
@@ -60,14 +80,18 @@ refuse_identity_env() {
         ;;
     esac
     if [[ "$refuse" -eq 1 ]]; then
-      if [[ -n "$label" ]]; then
-        echo "refusing to read a private key from the environment variable $label" >&2
-      else
-        echo "refusing to read a private key from an environment variable" >&2
-      fi
-      exit 2
+      break
     fi
-  done < <(env_records)
+  done <"$env_dump"
+  rm -f "$env_dump"
+  if [[ "$refuse" -eq 1 ]]; then
+    if [[ -n "$label" ]]; then
+      echo "refusing to read a private key from the environment variable $label" >&2
+    else
+      echo "refusing to read a private key from an environment variable" >&2
+    fi
+    exit 2
+  fi
 }
 refuse_identity_env
 
@@ -338,7 +362,7 @@ fi
 
 DOCKER="${BACKUP_DRILL_DOCKER:-docker}"
 image="${PANTRY_DRILL_IMAGE:-ghcr.io/rhionin/pantry:latest}"
-probe_image="${PANTRY_DRILL_PROBE_IMAGE:-curlimages/curl:8.11.1}"
+probe_image="${PANTRY_DRILL_PROBE_IMAGE:-curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69}"
 mkdir -p "$scratch/data"
 cp "$scratch/pantry.db" "$scratch/data/pantry.db"
 chmod 0600 "$scratch/data/pantry.db"

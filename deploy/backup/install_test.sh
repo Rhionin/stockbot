@@ -100,6 +100,23 @@ grep -q 'rows=4' "$work/out" || fail "row total was not printed"
 [[ "$(cat "$work/out" "$work/err")" != *products=* ]] || fail "install printed a table name"
 [[ "$(cat "$work/out" "$work/err")" != *"$secret"* ]] || fail "install printed the secret access key"
 grep -q 'version' "$work/docker.log" || fail "image was not checked for stockbot-backup before prompts"
+[[ ! -e "$work/pantry/backup/secrets-paths" ]] || fail "install wrote a secrets list without being asked"
+
+: >"$work/docker.log"
+: >"$work/systemctl.log"
+rc=$(PANTRY_BACKUP_SECRETS_PATHS="/opt/pantry/auth.caddy,/opt/pantry/note.txt" run_install "$ROOT/deploy/backup/install.sh")
+[[ "$rc" == 0 ]] || fail "explicit secrets install rc=$rc err=$(cat "$work/err")"
+[[ "$(cat "$work/pantry/backup/secrets-paths")" == $'/opt/pantry/auth.caddy\n/opt/pantry/note.txt' ]] || fail "secrets list was $(cat "$work/pantry/backup/secrets-paths")"
+grep -q '/opt/pantry/.env' "$work/pantry/backup/secrets-paths" && fail "live .env was added without being named"
+rm -f "$work/pantry/backup/secrets-paths"
+
+set +e
+PANTRY_DIR="$work/pantry" PANTRY_SETUP_SKIP_ROOT=1 PANTRY_BACKUP_SECRETS_PATHS="note.txt" \
+  bash "$ROOT/deploy/backup/install.sh" >"$work/rel.out" 2>"$work/rel.err"
+rel_rc=$?
+set -e
+[[ "$rel_rc" != 0 ]] || fail "a relative secrets path was accepted"
+grep -q 'absolute path' "$work/rel.err" || fail "relative secrets path was not explained"
 
 # A private key is rejected before the settings file is replaced.
 printf '%s\n' "AGE-SECRET-KEY-TEST" "acct" "id" "secret-value" "" "" | \

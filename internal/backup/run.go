@@ -48,20 +48,28 @@ type Runner struct {
 	Health            HealthPinger
 	AfterSnapshot     func(path string) error
 
-	// uploaded is the objects this run has verified. A later failure deletes
-	// them so an incomplete run is not a fresh backup.
+	// uploaded is every object this run has verified. verified is set once
+	// the database object and its manifest are both in the bucket. Until
+	// then a failure deletes uploaded, so a half-written run is not a fresh
+	// backup. After that, a failure keeps them.
 	uploaded []string
+	verified bool
 }
 
 // Run snapshots, verifies, encrypts, uploads, sweeps, and checks freshness.
 func (r *Runner) Run(ctx context.Context) (Manifest, error) {
 	r.uploaded = nil
+	r.verified = false
 	started := r.now()
 	manifest, err := r.run(ctx, started)
 	if err != nil {
-		// The ciphertext may already be in R2. Remove it so this run does
-		// not reset the freshness check.
-		r.deleteUploaded(ctx)
+		// A failure before the database and its manifest are both verified
+		// deletes that run's objects. A later failure (secrets, sweep, clock
+		// skew, a delete that did not succeed, stale, or prune) keeps them,
+		// pings, and returns the error.
+		if !r.verified {
+			r.deleteUploaded(ctx)
+		}
 		r.ping(ctx, false, "class="+AlertClass(err))
 		return Manifest{}, err
 	}
@@ -158,6 +166,7 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	if err := r.putVerified(ctx, manifestKey, raw, nil); err != nil {
 		return Manifest{}, err
 	}
+	r.verified = true
 	if err := r.archiveSecrets(ctx, started); err != nil {
 		return Manifest{}, err
 	}

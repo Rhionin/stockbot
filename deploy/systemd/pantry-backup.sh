@@ -13,10 +13,13 @@
 # data volume. The EXIT trap deletes that directory even when the container
 # is killed. The plaintext file is removed once the upload is verified.
 #
-# auth.caddy, .env, and .env backups are copied onto a separate tmpfs and
-# archived when those files exist as regular files. A symlink among them
-# fails the run before the backup container starts. .env.example and the
-# R2 settings file are not included.
+# auth.caddy and .env backup copies are archived when they exist as regular
+# files. The live .env is not in that list. Extra paths come only from
+# ${PANTRY_DIR}/backup/secrets-paths, which the installer writes from
+# PANTRY_BACKUP_SECRETS_PATHS. A symlink or any other path that is not a
+# regular file fails the run, after a healthchecks failure ping, before
+# the backup container starts. .env.example and the R2 settings file are
+# not included.
 set -euo pipefail
 
 PANTRY_DIR="${PANTRY_DIR:-/opt/pantry}"
@@ -40,19 +43,64 @@ volume="${PANTRY_DATA_VOLUME:-$(compose_project_name)_pantry-data}"
 secret_stage=""
 config_secrets=()
 
-consider_secret() {
-  local path="$1"
-  if [[ -L "$path" ]]; then
-    echo "backup: a config secret is a symlink" >&2
-    exit 40
+# Tell healthchecks the night was missed. The URL is not printed.
+ping_failure() {
+  local settings="$PANTRY_DIR/secrets/backup/r2.env" mode perm url
+  [[ -f "$settings" ]] || return 0
+  mode=$(stat -c '%a' "$settings" 2>/dev/null || stat -f '%OLp' "$settings" 2>/dev/null || true)
+  [[ -n "$mode" ]] || return 0
+  perm=$((8#$mode))
+  if (( (perm & 077) != 0 )); then
+    return 0
   fi
-  if [[ -f "$path" ]]; then
-    config_secrets+=("$path")
+  url=$(awk '/^HC_BACKUP_RUN_URL=/ {print substr($0, length("HC_BACKUP_RUN_URL=")+1); exit}' "$settings" 2>/dev/null || true)
+  [[ -n "$url" ]] || return 0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -X POST --max-time 10 -o /dev/null "${url%/}/fail" >/dev/null 2>&1 || true
   fi
 }
 
+refuse_secret() {
+  echo "backup: $1" >&2
+  ping_failure
+  exit 40
+}
+
+add_secret() {
+  local path="$1" existing
+  if [[ ${#config_secrets[@]} -gt 0 ]]; then
+    for existing in "${config_secrets[@]}"; do
+      [[ "$existing" == "$path" ]] && return 0
+    done
+  fi
+  config_secrets+=("$path")
+}
+
+consider_secret() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    refuse_secret "a config secret is a symlink"
+  fi
+  if [[ -e "$path" && ! -f "$path" ]]; then
+    refuse_secret "a config secret is not a regular file"
+  fi
+  if [[ -f "$path" ]]; then
+    add_secret "$path"
+  fi
+}
+
+consider_configured() {
+  local path="$1"
+  if [[ "$path" != /* ]]; then
+    refuse_secret "a configured secret path is not absolute"
+  fi
+  if [[ -L "$path" || ! -f "$path" ]]; then
+    refuse_secret "a configured secret path is not a regular file"
+  fi
+  add_secret "$path"
+}
+
 consider_secret "$PANTRY_DIR/auth.caddy"
-consider_secret "$PANTRY_DIR/.env"
 shopt -s nullglob
 for path in \
   "$PANTRY_DIR"/.env.bak \
@@ -63,6 +111,15 @@ do
   consider_secret "$path"
 done
 shopt -u nullglob
+if [[ -f "$PANTRY_DIR/backup/secrets-paths" ]]; then
+  if [[ -L "$PANTRY_DIR/backup/secrets-paths" ]]; then
+    refuse_secret "the secrets path list is a symlink"
+  fi
+  while IFS= read -r path || [[ -n "$path" ]]; do
+    [[ -z "$path" || "$path" == \#* ]] && continue
+    consider_configured "$path"
+  done <"$PANTRY_DIR/backup/secrets-paths"
+fi
 
 remove_secret_stage() {
   local f
@@ -98,6 +155,7 @@ stage_config_secrets() {
       echo "[warn] Could not give the config-secret copy to uid 65532" >&2
     else
       echo "Could not give the config-secret copy to uid 65532" >&2
+      ping_failure
       exit 40
     fi
   fi
@@ -113,23 +171,6 @@ if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
   fi
 fi
 chmod 755 "$PANTRY_DIR/deploy-trigger"
-
-# Tell healthchecks the night was missed. The URL is not printed.
-ping_failure() {
-  local settings="$PANTRY_DIR/secrets/backup/r2.env" mode perm url
-  [[ -f "$settings" ]] || return 0
-  mode=$(stat -c '%a' "$settings" 2>/dev/null || stat -f '%OLp' "$settings" 2>/dev/null || true)
-  [[ -n "$mode" ]] || return 0
-  perm=$((8#$mode))
-  if (( (perm & 077) != 0 )); then
-    return 0
-  fi
-  url=$(awk '/^HC_BACKUP_RUN_URL=/ {print substr($0, length("HC_BACKUP_RUN_URL=")+1); exit}' "$settings" 2>/dev/null || true)
-  [[ -n "$url" ]] || return 0
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS -X POST --max-time 10 -o /dev/null "${url%/}/fail" >/dev/null 2>&1 || true
-  fi
-}
 
 exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
 if ! flock -w "$PANTRY_BACKUP_LOCK_WAIT" 9; then

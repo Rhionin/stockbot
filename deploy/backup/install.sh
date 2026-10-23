@@ -10,6 +10,11 @@
 # it asks for anything. It enables the 03:30 America/Denver timer and then
 # starts one manual backup.
 #
+# PANTRY_BACKUP_SECRETS_PATHS is an optional comma-separated list of absolute
+# paths to archive in addition to auth.caddy and .env backup copies. The
+# live .env is not included unless it is named here. The list is written to
+# ${PANTRY_DIR}/backup/secrets-paths. An empty value archives nothing extra.
+#
 # PANTRY_SETUP_SKIP_ROOT=1 is the same test seam the rest of deploy/ uses.
 # PANTRY_BACKUP_INSTALL_KEEP=1 leaves the script in place. Otherwise a copy
 # invoked from /tmp is shredded after a successful install.
@@ -24,6 +29,19 @@ reason_file="${PANTRY_BACKUP_REASON_FILE:-/run/pantry-backup.env}"
 if [[ "$(id -u)" -ne 0 && "${PANTRY_SETUP_SKIP_ROOT:-}" != 1 ]]; then
   echo "Run this as root: sudo bash $0" >&2
   exit 1
+fi
+
+secrets_paths=()
+if [[ -n "${PANTRY_BACKUP_SECRETS_PATHS:-}" ]]; then
+  while IFS= read -r path; do
+    path=${path//$'\r'/}
+    [[ -z "$path" ]] && continue
+    if [[ "$path" != /* ]]; then
+      echo "a secrets path must be an absolute path" >&2
+      exit 1
+    fi
+    secrets_paths+=("$path")
+  done < <(printf '%s\n' "$PANTRY_BACKUP_SECRETS_PATHS" | tr ',' '\n')
 fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -122,6 +140,12 @@ printf '%s\n' "$age_recipient" >"$recipient_tmp"
 chmod 0444 "$recipient_tmp"
 mv "$recipient_tmp" "$PANTRY_DIR/backup/recipients"
 unset secret_key access_key
+if [[ ${#secrets_paths[@]} -gt 0 ]]; then
+  secrets_tmp=$(mktemp "$PANTRY_DIR/backup/secrets-paths.XXXXXX")
+  printf '%s\n' "${secrets_paths[@]}" >"$secrets_tmp"
+  chmod 0644 "$secrets_tmp"
+  mv "$secrets_tmp" "$PANTRY_DIR/backup/secrets-paths"
+fi
 
 cp "$unit_src/pantry-backup.service" "$PANTRY_DIR/systemd/pantry-backup.service"
 cp "$unit_src/pantry-backup.timer" "$PANTRY_DIR/systemd/pantry-backup.timer"

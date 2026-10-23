@@ -46,12 +46,16 @@ the object just uploaded or the newest database backup.
 
 If an object older than 15 days remains, or a delete fails, the job
 exits 30. A database object counts as a backup only when its manifest
-was stored too. If a later step fails, that run's objects are removed,
-so the failed run does not reset the freshness check. `stockbot-backup
-stale` exits non-zero when the newest manifest-backed database backup
-is older than about 26 hours. An object exactly 14 days old is kept; one
-a second older is deleted. The same strict instant applies at 15 days
-and at 26 hours.
+was stored too. Once the database object and its manifest are both verified, a later
+failure leaves them in the bucket. That includes the secrets archive,
+the sweep, a clock that is too far from R2, a delete that did not
+succeed, the stale check, and prune. The job still sends a failure ping
+and exits non-zero. A failure before that verification deletes the
+objects from that run, so an incomplete upload does not count as a fresh
+backup. `stockbot-backup stale` exits non-zero when the newest
+manifest-backed database backup is older than 26 hours. An object
+exactly 14 days old is kept; one a second older is deleted. The same
+strict instant applies at 15 days and at 26 hours.
 
 ## Credentials
 
@@ -97,15 +101,20 @@ The library leaves this off unless `--with-secrets` or
 and the database backup still succeeds. A missing path or a symlink fails
 that run.
 
-On the Pi, the nightly wrapper turns the archive on when these regular
-files exist: `/opt/pantry/auth.caddy`, `/opt/pantry/.env`, and `.env`
-backups named `.env.bak`, `.env.bak.*`, `.env.backup`, or
-`.env.backup.*`. It copies them onto a tmpfs as mode `0400` for uid
-65532, mounts that directory read-only, and shreds the copy when the
-script exits. `.env.example` and the R2 settings file are not included.
-A symlink in that set fails the wrapper before the backup container
-starts, and a missing `auth.caddy` does not. The archive uses the same
-age public key and the same 14-day retention, under `secrets/`.
+On the Pi, the nightly wrapper archives these regular files when they
+exist: `/opt/pantry/auth.caddy`, and `.env` backups named `.env.bak`,
+`.env.bak.*`, `.env.backup`, or `.env.backup.*`. The live
+`/opt/pantry/.env` is not in that list. To add paths, including the live
+`.env` if you want it, set `PANTRY_BACKUP_SECRETS_PATHS` to a
+comma-separated list of absolute paths when you run the installer. It
+writes only those paths to `/opt/pantry/backup/secrets-paths`. Nothing
+else is added. The wrapper copies the chosen files onto a tmpfs as mode
+`0400` for uid 65532, mounts that directory read-only, and shreds the
+copy when the script exits. `.env.example` and the R2 settings file are
+not included. A symlink, or a configured path that is not a regular
+file, sends a healthchecks failure ping and exits before the backup
+container starts. A missing `auth.caddy` does not. The archive uses the
+same age public key and the same 14-day retention, under `secrets/`.
 
 ## Pre-migration copies
 
@@ -135,10 +144,18 @@ environment value containing `AGE-SECRET-KEY-` are refused. Only a
 variable name that is a shell identifier is printed. The value is not.
 
 The restored app runs on an internal Docker network, with no published
-port and no route to the internet. A second container on that network
-requests `GET /api/build` and `GET /api/products`. The script refuses to
-start when `/opt/pantry/docker-compose.yml` is present, so it does not
-run on the Pi.
+port and no route to the internet. A second container on that same
+network, not on the default bridge and not via localhost, requests
+`GET /api/build` and `GET /api/products`. The script refuses to start
+when `/opt/pantry/docker-compose.yml` is present, so it does not run on
+the Pi.
+
+Pull the probe image on this computer before the drill. The script does
+not pull it:
+
+```bash
+docker pull curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+```
 
 The script checks the plaintext sha256, runs the integrity check,
 compares row counts with the manifest, starts the image against the
