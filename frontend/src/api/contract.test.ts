@@ -4,6 +4,7 @@ import {
   BUSY_SENTENCE,
   batchCardCommitNotice,
   batchFailureBannerText,
+  batchFailureNotices,
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
   NO_SPACE_SENTENCE,
@@ -197,15 +198,16 @@ describe('batch failure banner', () => {
     const body: BatchCommitResponse = {
       updatedCount: 0,
       failedIds: ['scan-fail'],
-      failedReasons: [BUSY_SENTENCE],
+      failedReasons: ['The pantry database is locked.'],
       failedCodes: ['busy'],
     };
     expect(body.committedIds).toBeUndefined();
-    const banner = batchFailureBannerText(
-      [{ code: 'busy', message: BUSY_SENTENCE }],
-      body.committedIds?.length ?? 0,
-    );
-    expect(banner).toBe(BUSY_SENTENCE);
+    const notices = batchFailureNotices(body);
+    expect(notices).toEqual([
+      { id: 'scan-fail', message: 'The pantry database is locked.', code: 'busy' },
+    ]);
+    expect(batchFailureBannerText(notices, body.committedIds?.length ?? 0)).toBe('The pantry database is locked.');
+    expect(batchCardCommitNotice('busy', 'The pantry database is locked.')).toBe('');
   });
 
   it('a busy card beside amber uses the busy sentence once', () => {

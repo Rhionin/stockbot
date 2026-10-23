@@ -274,6 +274,37 @@ describe('QueueScreen', () => {
     expectBanner(screen, 'failure', [BUSY_SENTENCE]);
   });
 
+  it('a single confirm clears a no_space notice', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue(cards),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: cards.map((card) => card.id),
+        failedReasons: cards.map(() => "Stockbot is out of storage space, so this wasn't saved."),
+        failedCodes: cards.map(() => 'no_space'),
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(409, 'Nothing on hand to take out.', 'none_on_hand');
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText("Stockbot is out of storage space, so this wasn't saved.")).toBeTruthy();
+    expectBanner(screen, 'failure', ["Stockbot is out of storage space, so this wasn't saved."]);
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(await screen.findByText('Nothing on hand to take out.')).toBeTruthy();
+    expect(screen.queryByText("Stockbot is out of storage space, so this wasn't saved.")).toBeNull();
+    expectBanner(screen, 'gone', []);
+    expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
   it('a failed id missing from the next listing shows no sentence', async () => {
     const cards = [stocked('scan-a', 'Rice'), stocked('scan-b', 'Oats')];
     const listPending = jest.fn()

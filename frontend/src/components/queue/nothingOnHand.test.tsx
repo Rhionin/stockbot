@@ -789,4 +789,75 @@ describe('nothing on hand queue', () => {
     expect(screen.queryByText('Stockbot is busy right now. Try again in a moment.')).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
+
+  it('a single confirm clears a no_space notice', async () => {
+    const oats = scan({
+      id: 'scan-pin',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: [oats.id, rice.id],
+        failedReasons: [NO_SPACE_SENTENCE, NO_SPACE_SENTENCE],
+        failedCodes: ['no_space', 'no_space'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    const banner = await screen.findByText("Stockbot is out of storage space, so this wasn't saved.");
+    expect(banner.closest('.scan-batch-banner')).not.toBeNull();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    const card = await screen.findByRole('article', { name: 'Scan 555, Nothing on hand to take out.' });
+    expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
+    expect(document.querySelector('.scan-batch-banner')).toBeNull();
+    expect(screen.queryByText("Stockbot is out of storage space, so this wasn't saved.")).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+  });
+
+  it('a batch response with no committedIds key has no confirmed prefix', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        failedIds: [oats.id, rice.id],
+        failedReasons: [
+          'Stockbot is busy right now. Try again in a moment.',
+          'Stockbot is busy right now. Try again in a moment.',
+        ],
+        failedCodes: ['busy', 'busy'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    const banner = await screen.findByText('Stockbot is busy right now. Try again in a moment.');
+    expect(banner.closest('.scan-batch-banner')?.textContent).toBe('Stockbot is busy right now. Try again in a moment.');
+    expect(screen.queryByText('confirmed.', { exact: false })).not.toBeInTheDocument();
+  });
 });
