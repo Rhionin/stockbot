@@ -242,7 +242,8 @@ flowchart TD
   SY -->|yes| SYNC["Sync principal (household 1, read-only)"]
   SY -->|no| DV{"/api/device/* with Bearer sbd_…?"}
   DV -->|valid| DEV["Device principal (its household)"]
-  DV -->|invalid| E401[401 device_unauthorized]
+  DV -->|unknown or invalid token| E401["401 unauthorized<br/>hub stops, wipes token, re-pairs"]
+  DV -->|owner revoked the hub| EREV["401 device_revoked<br/>hub stops, wipes token, re-pairs"]
   DV -->|not device path| PS{"Personal session<br/>(cookie or Bearer sbs_…)?"}
   PS -->|valid| USER["User principal: household = header or session choice,<br/>checked against memberships"]
   PS -->|no| LG{"Household password on<br/>and pantry_session / Basic /<br/>household-password bearer valid?"}
@@ -254,6 +255,7 @@ flowchart TD
   DOC -->|no| U401[401 unauthorized]
 ```
 
+- On `/api/device/*`, an unknown or invalid device token is `401 unauthorized`, and an owner-revoked hub is `401 device_revoked`. Both mean the hub stops, wipes its token and re-pairs.
 - A single `Principal` value carries `{kind, userId?, householdId, role, operator, deviceId?, sessionId?}`. `tenant.Scope` is derived only from it.
 - **Active household** (PM-REQ R2.4). The session stores `active_household_id`. A request may send `X-Household-Id`, as in #364, so the same client code works in Stage 3. It is honoured only when the user has that membership; otherwise the response is `not_found`. Switching is `POST /api/auth/session/household {householdId}`.
 - The household-password and LAN principals exist only while the household password is on (§3.7, §3.9). After retirement a LAN document GET is redirected to `APP_BASE_URL`. Both are deleted from the code in phase C.
@@ -400,7 +402,7 @@ The WAF rule (§6) is an edge backstop only.
 | LAN browsers | No sign-in, household 1 | Redirected to the HTTPS site to sign in (§3.7) |
 | Public-site browsers on `pantry_session` | Work, with the teal banner C2A.1 | Signed out at once; land on sign-in with C2A.3 |
 | Expo, new build, household-password option | Works, with banner | Session revoked; back to the sign-in screen with C2A.3 |
-| Expo, old build (Basic `pantry`) | Works | `401`. Its existing password screen shows. The version gate (below) asks for the update. |
+| Expo, old build (Basic `pantry`) | Works | `426 upgrade_required`, not `401`. The build shows "Update Stockbot to keep using it." and never a sign-in loop. |
 | Push subscriptions made under the household password | Work | **Dropped at retirement** (§2A A8, PM decided §10.23): rows with `household_id = 1` and `user_id IS NULL` are deleted. People turn notifications on again after signing in. |
 | Personal sessions | Work | Untouched |
 
@@ -437,11 +439,11 @@ The WAF rule (§6) is an edge backstop only.
   - Every request sends `X-Stockbot-Client: expo/<version>`.
   - **Any 401 clears the token and returns to the sign-in screen**, showing C2A.3 when the server's `householdPassword` is `"off"`.
   - PR #230's Cognito code is parked for Stage 3 behind the same `IdentityProvider` seam.
-- **Version gate:**
-  - `GET /api/config` gains `minClientVersion.expo`. The new build checks it on launch and on each 401, and shows "Update Stockbot to keep using it" when it is too old.
-  - The server returns `426 upgrade_required` (a new #364 error code) to an Expo request whose version is below the minimum.
+- **Version gate** (runs before auth). Web is never gated.
+  - Header `X-Stockbot-Client: expo/<semver>`. Below `minClientVersion.expo` the server returns `426 upgrade_required`.
+  - `GET /api/config` still exposes `minClientVersion.expo`. The new build checks it on launch and on each 401, and shows "Update Stockbot to keep using it." when it is too old.
   - CJ raises the minimum only after the new build is in the family's hands.
-- **Old builds** send Basic and have no gate. They work until retirement and then get `401`. They cannot show an update message, so the banner during phase A and the Server page's count of Basic requests (counts only) tell CJ when it is safe to retire.
+- **Old builds** send `Authorization: Basic` and no `X-Stockbot-Client`. They work until retirement. After the household password is retired, that request gets `426 upgrade_required`, not `401`, so the build shows "Update Stockbot to keep using it." and never a sign-in loop. The banner during phase A and the Server page's count of Basic requests (counts only) still tell CJ when it is safe to retire.
 
 **Ordering and rollback**
 
@@ -865,7 +867,7 @@ Renaming the product or moving the domain is a config change plus a Network Engi
 | S10 | Web: sign-in (email + password; household-password link only while on), C2A.1 banner, C2A.2 retire/restore confirm under ⋯, C2A.3 sign-in note, household switcher, members/invites, devices/pairing screens (Code 128 + QR + print), status indicators, export/delete (T21), copy per PM-REQ §8 | Frontend Builder | S1 (mock), S5–S8 |
 | S11 | Expo: delete the Basic (`pantry`) path; email + password and changeover household-password sign-in, Bearer in SecureStore, `X-Stockbot-Client`; any 401 → sign-in (C2A.3); version gate; C2A.1 banner; household switcher, pairing screen, offline/online indicators | Frontend Builder | S1, S5, S15 |
 | S12 | Hub: `stockbot hub` binary, buffer, flush, heartbeat, signed update/rollback; pi-gen image and Imager customisation check | Backend Builder (binary) + Network Engineer (image, release signing key custody) | S6 |
-| S13 | Tests: isolation suite on every route with a coverage check, migration test on a synthetic DB, hub offline-flush test, auth/limit tests, LAN-pinning test, catalog-leak test, restore drill sign-off; **changeover tests**: device independence (§3.9), retire ends every household-password session and keeps personal sessions, restore within 7 days, purge on day 7, `/setup` locked after the first account, LAN redirect after retirement, old-build 401; backup lifecycle and alarm test | Tester | S3–S12, S15 |
+| S13 | Tests: isolation suite on every route with a coverage check, migration test on a synthetic DB, hub offline-flush test, auth/limit tests, LAN-pinning test, catalog-leak test, restore drill sign-off; **changeover tests**: device independence (§3.9), retire ends every household-password session and keeps personal sessions, restore within 7 days, purge on day 7, `/setup` locked after the first account, LAN redirect after retirement, old-build `426 upgrade_required` (Basic with no `X-Stockbot-Client` after retirement; version gate before auth); backup lifecycle and alarm test | Tester | S3–S12, S15 |
 | S14 | Operator overview (ids and counts only) and household-start invites | Backend Builder | S5 |
 
 ```mermaid
@@ -920,7 +922,7 @@ flowchart LR
 | A2 | Remove Caddy basic-auth and the `X-Pantry-Entry: public` rule | The hash is imported from `auth.caddy` to the DB, then `auth.caddy` and `PANTRY_AUTH_FILE` are deleted. Caddy proxies to the internal `:8081` listener, and the app decides entry by listener and ignores the header. Sign-in is the app's own everywhere. | §3.8, §6 task 11 |
 | A3 | LAN `:8080` after retirement | People must sign in: the LAN redirects browsers to `APP_BASE_URL`, because LAN sign-in over plain http is rejected **(opinion)**. The LAN keeps serving device routes and `/api/build`. `LAN_PEOPLE=signin` is the fallback. | §3.7 |
 | A4 | End every `pantry_session` at once, without touching personal sessions | Retirement replaces `household_password.session_key`, so every cookie fails verification. Household-password bearer rows are revoked and their SSE streams kicked. Personal sessions are opaque rows with no shared key. | §3.5, §3.9 |
-| A5 | Mobile: remove built-in Basic (`pantry`); 401 → sign-in | The new Expo build deletes the Basic path and uses Bearer `sbs_`. Any 401 clears the token and shows sign-in with C2A.3. A version gate (`minClientVersion.expo`, `426`) covers future breaks. Old builds get 401 at retirement. | §3.9 |
+| A5 | Mobile: remove built-in Basic (`pantry`); 401 → sign-in | The new Expo build deletes the Basic path and uses Bearer `sbs_`. Any 401 clears the token and shows sign-in with C2A.3. The version gate runs before auth (`X-Stockbot-Client: expo/<semver>`; `426 upgrade_required` below `minClientVersion.expo`). After retirement, Basic with no `X-Stockbot-Client` gets 426, not 401. Web is never gated. | §3.9 |
 | A6 | Keep the hash 7 days for restore, then delete | `restore_until = retired_at + 7 d`, and restore uses the same hash. On day 7 the purge NULLs the hash and key with `secure_delete`. Snapshots age out by about day 22. | §3.9, §9.1 |
 | A7 | `/dev/input` scanner and paired devices independent of sessions | The direct scanner is in-process and bound to household 1's seeded direct device. Hubs use `sbd_` tokens checked only by `DeviceAuth`. The S13 retire test proves both, plus sync and store connections. | §3.9, §4.6, §4.9 |
 | A8 | Push subscriptions made under the household password | Dropped at retirement (`household_id = 1 AND user_id IS NULL`), in the same transaction. People turn notifications on again (PM decided §10.23). | §3.9, §5 |
