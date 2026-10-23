@@ -106,19 +106,6 @@ function sameQueue(current: Set<string>, next: ScanEntry[]): boolean {
   return next.every((entry) => current.has(entry.id));
 }
 
-// The batch banner follows the cards that failed with nothing on hand, not every amber card that shows up later.
-function retainAmberBatch(current: Set<string>, listed: ScanEntry[]): Set<string> {
-  if (current.size === 0) return current;
-  const present = new Set(listed.map((entry) => entry.id));
-  let dropped = false;
-  const next = new Set<string>();
-  for (const id of current) {
-    if (present.has(id)) next.add(id);
-    else dropped = true;
-  }
-  return dropped ? next : current;
-}
-
 interface LinkOfferState {
   suggestions: PantryLinkSuggestion[];
   showEmptyLine: boolean;
@@ -183,7 +170,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
-  const [, setAmberBatchIds] = useState<Set<string>>(() => new Set());
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -196,7 +182,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     shownIds.current = new Set(next.map((entry) => entry.id));
     setEntries(next);
     if (changed) setPartialLine('');
-    setAmberBatchIds((current) => retainAmberBatch(current, next));
     // The red sentence follows the failed cards still pending. A load error
     // lives in its own state, so a refresh cannot replace that sentence.
     setError(nextError);
@@ -406,7 +391,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         shownIds.current = new Set(next.map((entry) => entry.id));
         return next;
       });
-      setAmberBatchIds((current) => retainAmberBatch(current, entries.filter((entry) => entry.id !== id)));
       setPins((current) => {
         if (!current.has(id)) return current;
         const next = new Map(current);
@@ -533,7 +517,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (stillThere(notice.id)) pendingFailures[notice.id] = true;
       }
       setFailureBannerIds(pendingFailures);
-      setAmberBatchIds(blocking ? new Set() : new Set(amberLeft));
       // Red only while a non-amber failure is still open. A card that already
       // left, including one beside an amber card, does not keep the sentence.
       setError(blocking ? BATCH_FAILURE_FALLBACK : '');
@@ -554,7 +537,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
   const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
-  // The amber batch flag can stay set. It never paints a banner by itself.
   const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
   const confirmAllVisible = entries.length > 1;
