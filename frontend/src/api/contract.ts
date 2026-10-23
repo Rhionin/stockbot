@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { ScanDirection, ScanStatus } from '../types';
+import type { ProductSummary, ScanDirection, ScanGroupHint, ScanStatus } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -58,12 +58,21 @@ export const SCANS_PATH = '/api/scans';
 // stock-out. A shelved item and a live item with nothing left are 0, and a
 // removed unit is not counted. The field is omitted when the product is
 // unresolved, this household has no item, or the scan is not a stock-out.
-// Absence is not an empty shelf.
+// Absence is not an empty shelf. product and groupHint are omitted the same way.
 export interface ScanListEntry {
   id: string;
+  userId: string;
+  barcode: string;
+  scannedAt: string;
   direction: ScanDirection | null;
-  productId: string | null;
+  unitCount: number;
+  expiresAt: string | null;
   status: ScanStatus;
+  productId: string | null;
+  product?: ProductSummary;
+  groupHint?: ScanGroupHint;
+  committedAt: string | null;
+  createdAt: string;
   onHand?: number;
 }
 export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';

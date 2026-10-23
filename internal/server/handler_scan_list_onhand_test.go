@@ -90,6 +90,57 @@ func TestScanListReportsOnHand(t *testing.T) {
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-some/commit", "", http.StatusOK)
 }
 
+// Two households can stock the same product. Each list uses that household's
+// item. Dropping the user match from the item join pairs one scan with both
+// items, so this list grows a second row and the other household's count.
+func TestScanListOnHandIsTheHouseholdsOwn(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	at := time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC)
+	seedShelfItem(env, "prod-shared", "Shared Cream", "item-empty")
+	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-stocked', 'user-2', 'prod-shared')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"stocked-1", "stocked-2", "stocked-3"} {
+		mustInsertInstance(env, id, "item-stocked", at, nil, "")
+	}
+	seedScanAt(env, "scan-empty", "prod-shared", scan.StockOut, 1, at)
+	out := scan.StockOut
+	productID := "prod-shared"
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		ID: "scan-stocked", UserID: "user-2", Barcode: "scan-stocked", ScannedAt: at.Add(time.Second),
+		Direction: &out, UnitCount: 1, ProductID: &productID, Status: scan.Pending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	empty := scanListRows(t, exchangeJSON(t, handler, http.MethodGet, "/api/scans?userId=user-1", "", http.StatusOK))
+	stocked := scanListRows(t, exchangeJSON(t, handler, http.MethodGet, "/api/scans?userId=user-2", "", http.StatusOK))
+	if len(empty) != 1 || empty[0].ID != "scan-empty" || empty[0].UserID != "user-1" || empty[0].OnHand == nil || *empty[0].OnHand != 0 {
+		t.Fatalf("user-1 = %+v", empty)
+	}
+	if len(stocked) != 1 || stocked[0].ID != "scan-stocked" || stocked[0].UserID != "user-2" || stocked[0].OnHand == nil || *stocked[0].OnHand != 3 {
+		t.Fatalf("user-2 = %+v", stocked)
+	}
+}
+
+func scanListRows(t *testing.T, body []byte) []struct {
+	ID     string `json:"id"`
+	UserID string `json:"userId"`
+	OnHand *int   `json:"onHand"`
+} {
+	t.Helper()
+	var rows []struct {
+		ID     string `json:"id"`
+		UserID string `json:"userId"`
+		OnHand *int   `json:"onHand"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
 type listedScanOnHand struct {
 	status string
 	onHand *int
