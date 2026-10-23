@@ -189,6 +189,7 @@ interface OutcomeCase {
   pendingSequence?: PendingSet[];
   holdSecondBatch?: boolean;
   bannerGone?: boolean;
+  skippedLine?: string;
   batches?: unknown[];
   thenSee?: string[];
   thenGone?: string[];
@@ -758,7 +759,7 @@ const cases: OutcomeCase[] = [
     wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
     visible: ['Milk'],
-    absent: ['No inventory item is available', 'Not in your pantry', 'Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
+    absent: ['No inventory item is available', 'Not in your pantry', 'Nothing on hand to take out.', 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
@@ -1066,7 +1067,7 @@ const partialBatchRows = (): OutcomeCase[] => {
       visible: ['Nothing on hand to take out.'],
       absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer', fallback],
       once: ['Nothing on hand to take out.'],
-      bannerGone: true,
+      skippedLine: '2 taken out. 1 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
       amberBarcodes: ['scan-batch-none'],
       pendingBarcodes: ['scan-batch-none'],
       goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
@@ -1515,6 +1516,10 @@ describe('scan commit outcomes', () => {
         expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
         expect(document.querySelector('.scan-batch-banner')).toBeNull();
       }
+      if (row.skippedLine !== undefined) {
+        const skipped = document.querySelector('.scan-nothing-skipped');
+        expect(skipped?.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.skippedLine);
+      }
       if (row.instanceFetches !== undefined) {
         expect(instanceFetches).toBe(row.instanceFetches);
       }
@@ -1568,20 +1573,11 @@ describe('scan commit outcomes', () => {
       }
       if (row.toast !== undefined) {
         const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
-        const echoed = (row.backfillOn?.length ?? 0) > 0 && row.toast === 'Nothing on hand to take out.';
-        if (echoed) {
-          expect(leaves.some((node) => node.closest('.restock-toast') !== null)).toBe(true);
-          for (const barcode of row.backfillOn ?? []) {
-            const card = screen.getByRole('article', { name: `Scan ${barcode}` });
-            expect(within(card).getByText(row.toast)).toBeInTheDocument();
-          }
-        } else {
-          expect(leaves).toHaveLength(1);
-          expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
-          expect(leaves[0]?.textContent).toBe(row.toast);
-          for (const article of screen.queryAllByRole('article')) {
-            expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
-          }
+        expect(leaves).toHaveLength(1);
+        expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
+        expect(leaves[0]?.textContent).toBe(row.toast);
+        for (const article of screen.queryAllByRole('article')) {
+          expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
         }
       }
       if (row.keepsUndo) {

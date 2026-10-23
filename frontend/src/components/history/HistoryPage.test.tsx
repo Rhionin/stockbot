@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -173,7 +173,7 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this stock in' }));
     const added = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(added).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
-    expect(await within(added).findByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    await waitFor(() => expect(within(added).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeVisible());
     expect(within(added).queryByText(/pace|history|leaves the shelf/)).not.toBeInTheDocument();
     expect(within(added).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     fireEvent.click(within(added).getByRole('button', { name: 'Cancel' }));
@@ -183,7 +183,7 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
     const used = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(used).queryByText(/goes back on the shelf/)).not.toBeInTheDocument();
-    expect(await within(used).findByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    await waitFor(() => expect(within(used).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).toBeVisible());
     expect(within(used).getByRole('button', { name: 'Undo' })).toBeEnabled();
     expect(previewUndo).toHaveBeenCalledWith('move-backfill');
   });
@@ -239,8 +239,8 @@ describe('HistoryPage', () => {
         await pending?.catch(() => undefined);
       });
     }
-    if (hide) expect(within(dialog).getByText(hideLine)).toBeInTheDocument();
-    else expect(within(dialog).queryByText(hideLine)).not.toBeInTheDocument();
+    if (hide) expect(within(dialog).getByText(hideLine)).toBeVisible();
+    else expect(within(dialog).getByText(hideLine)).not.toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
     if (settle === '404') expect(within(dialog).queryByText('That move is no longer in the history.')).not.toBeInTheDocument();
     if (settle === '409') expect(within(dialog).queryByText('1 of these was already used. Undo that use first.')).not.toBeInTheDocument();
@@ -309,19 +309,19 @@ describe('HistoryPage', () => {
     getItemHistory.mockResolvedValue(pairView());
     renderHistory();
     const opened = await openPairUndo();
-    expect(within(opened).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(opened).getByText(hideLine)).not.toBeVisible();
     if (order !== 'false-then-late-true') {
       await act(async () => {
         first.resolve(previewEffect(true));
       });
-      expect(within(opened).getByText(hideLine)).toBeInTheDocument();
+      expect(within(opened).getByText(hideLine)).toBeVisible();
     }
     fireEvent.click(within(opened).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(previewUndo).toHaveBeenCalledTimes(1);
 
     const again = await openPairUndo();
-    expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(again).getByText(hideLine)).not.toBeVisible();
     expect(within(again).getByRole('button', { name: 'Undo' })).toBeEnabled();
     if (order === 'settled-then-false' || order === 'false-then-late-true') {
       await act(async () => {
@@ -338,14 +338,14 @@ describe('HistoryPage', () => {
         second.reject(new ApiError(409, '1 of these was already used. Undo that use first.'));
       });
     }
-    expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+    expect(within(again).getByText(hideLine)).not.toBeVisible();
     expect(within(again).queryByText('That move is no longer in the history.')).not.toBeInTheDocument();
     expect(within(again).queryByText('1 of these was already used. Undo that use first.')).not.toBeInTheDocument();
     if (order === 'false-then-late-true') {
       await act(async () => {
         first.resolve(previewEffect(true));
       });
-      expect(within(again).queryByText(hideLine)).not.toBeInTheDocument();
+      expect(within(again).getByText(hideLine)).not.toBeVisible();
     }
     expect(previewUndo).toHaveBeenCalledTimes(2);
     expect(previewUndo.mock.calls).toEqual([['move-backfill'], ['move-backfill']]);
@@ -359,7 +359,7 @@ describe('HistoryPage', () => {
     renderHistory();
     const dialog = await openPairUndo();
     expect(within(dialog).getByText('This removes both the add and the take-out for Black Beans, as if neither happened.')).toBeInTheDocument();
-    expect(within(dialog).queryByText('Black Beans will be hidden from your inventory again, since none are on hand.')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('Black Beans will be hidden from your inventory again, since none are on hand.')).not.toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Undo' }));
     await vi.waitFor(() => expect(undoMove).toHaveBeenCalledWith('move-backfill'));
@@ -369,7 +369,7 @@ describe('HistoryPage', () => {
     });
   });
 
-  it('lists the added row before its use when the response lists the use first', async () => {
+  it('keeps the server order when the response lists the use first', async () => {
     const at = '2026-10-18T16:40:00.000Z';
     getItemHistory.mockResolvedValue({
       ...view,
@@ -380,8 +380,8 @@ describe('HistoryPage', () => {
     });
     renderHistory();
     const rows = await screen.findAllByRole('listitem');
-    expect(rows[0]).toHaveTextContent('Added when taking out');
-    expect(rows[1]).toHaveTextContent('scan');
+    expect(rows[0]).toHaveTextContent('scan');
+    expect(rows[1]).toHaveTextContent('Added when taking out');
   });
 
   it('shows the locked-count sentence when a save is refused', async () => {

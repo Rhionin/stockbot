@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { quantityLocked } from '../../api/contract';
 import {
   dayHeading, daysLeftLabel, deltaName, deltaText, directionWord, formatMoveClock, formatMoveWhen, formatPaceNumber,
-  groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
+  groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 
 describe('history wording', () => {
@@ -100,16 +100,5 @@ describe('history wording', () => {
       confirm: 'Undo this use',
     });
     expect(undoCopy('in', 1).body).toBe('1 unit leaves the shelf. The pace is recalculated from the remaining history.');
-  });
-
-  it('keeps the added row immediately before its use', () => {
-    const at = '2026-10-18T16:40:00.000Z';
-    const added = { id: 'in', source: 'backfill', direction: 'in', at, productId: 'prod-sour' };
-    const used = { id: 'out', source: 'scan', direction: 'out', at, productId: 'prod-sour' };
-    const between = { id: 'oats', source: 'manual', direction: 'in', at: '2026-10-18T15:00:00.000Z', productId: 'prod-oats' };
-    const other = { id: 'milk', source: 'scan', direction: 'out', at, productId: 'prod-milk' };
-    expect(orderBackfillPairs([used, between, added, other]).map((move) => move.id)).toEqual(['in', 'oats', 'out', 'milk']);
-    expect(orderBackfillPairs([added, used, other]).map((move) => move.id)).toEqual(['in', 'out', 'milk']);
-    expect(orderBackfillPairs([other, between]).map((move) => move.id)).toEqual(['milk', 'oats']);
   });
 });

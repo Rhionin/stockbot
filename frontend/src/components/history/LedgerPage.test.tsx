@@ -348,7 +348,7 @@ describe('LedgerPage', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this use' }));
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
-    expect(await within(dialog).findByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).toBeVisible());
     expect(within(dialog).queryByText(/pace|history|goes back on the shelf/)).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
     expect(previewUndo).toHaveBeenCalledWith('move-bf');
@@ -383,11 +383,11 @@ describe('LedgerPage', () => {
     const dialog = screen.getByRole('dialog', { name: 'Undo "Add it and take it out"?' });
     expect(within(dialog).getByText('This removes both the add and the take-out for Chickpeas, as if neither happened.')).toBeInTheDocument();
     await waitFor(() => expect(previewUndo).toHaveBeenCalledWith('move-bf'));
-    expect(within(dialog).queryByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('Chickpeas will be hidden from your inventory again, since none are on hand.')).not.toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'Undo' })).toBeEnabled();
   });
 
-  it('lists the added row before its use', async () => {
+  it('keeps the server order when the response lists the use first', async () => {
     const at = todayAt.toISOString();
     getHouseholdHistory.mockResolvedValue({
       moves: [
@@ -397,8 +397,8 @@ describe('LedgerPage', () => {
     });
     renderLedger();
     const rows = await screen.findAllByRole('listitem');
-    expect(rows[0]).toHaveTextContent('Added when taking out');
-    expect(rows[1]).toHaveTextContent('scan');
+    expect(rows[0]).toHaveTextContent('scan');
+    expect(rows[1]).toHaveTextContent('Added when taking out');
   });
 
   it('shows the history load error instead of an empty ledger', async () => {

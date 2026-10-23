@@ -394,8 +394,22 @@ export function quantityLocked(
 
 export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
-export const NOTHING_ON_HAND_BODY =
-  "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
+const NOTHING_ON_HAND_BODY_ONE =
+  'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.';
+
+export function nothingOnHandBody(unitCount: number): string {
+  if (Number.isInteger(unitCount) && unitCount > 1) {
+    return `Stockbot thinks you have none. If you had ${unitCount} anyway, this adds them and takes them out in one step.`;
+  }
+  return NOTHING_ON_HAND_BODY_ONE;
+}
+
+// After a batch confirm that skipped nothing-on-hand cards. The lead is "{M} taken out."
+export function skippedNothingOnHandBanner(takenOut: number, stillQueued: number): string | null {
+  if (!Number.isInteger(takenOut) || takenOut < 1) return null;
+  if (!Number.isInteger(stillQueued) || stillQueued < 1) return null;
+  return `${takenOut} taken out. ${stillQueued} with nothing on hand are still in the queue. Each one has its own Add it and take it out button.`;
+}
 
 // A lock or a full disk is the banner sentence. The card does not repeat it.
 // Amber never does. An item failure stays on its card.
@@ -450,6 +464,15 @@ export function batchFailureBannerText(
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
   return onHand !== undefined && onHand <= 0;
+}
+
+// TODO: GET /api/scans sends onHand on linked stock-out scans. Use that number when the payload includes it. Fall back to the inventory list only when onHand is absent.
+export function scanOnHand(
+  entry: { onHand?: number },
+  listedOnHand: number | undefined,
+): number | undefined {
+  if (typeof entry.onHand === 'number' && Number.isInteger(entry.onHand)) return entry.onHand;
+  return listedOnHand;
 }
 
 export function nothingOnHandPill(count: number): string | null {

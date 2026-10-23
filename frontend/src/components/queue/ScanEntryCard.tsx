@@ -14,12 +14,13 @@ import {
   formatPartialRemoval,
   isStorageFailureCode,
   NO_CLOSE_MATCH,
-  NOTHING_ON_HAND_BODY,
+  nothingOnHandBody,
   NOTHING_ON_HAND_TITLE,
   readOnHand,
   SERVER_ERROR_FALLBACK,
   type CommitScanResponse,
 } from '../../api/contract';
+import { offlineMessage } from '../../offline';
 import { dismissUndo, showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
@@ -291,6 +292,8 @@ export const ScanEntryCard = ({
     setOfferBackfill(false);
   }
   const blocked = nothingOnHand || offerBackfill;
+  const draftUnits = typeof unitCountDraft === 'number' ? unitCountDraft : Number(unitCountDraft);
+  const offerUnits = Number.isInteger(draftUnits) && draftUnits >= 1 ? draftUnits : entry.unitCount;
   useLayoutEffect(() => {
     if (!cueNothingOnHand) return;
     articleRef.current?.focus();
@@ -520,9 +523,8 @@ export const ScanEntryCard = ({
 
   const showBackfillFailure = async (requestError: unknown) => {
     if (!(requestError instanceof ApiError)) {
-      const message = requestError instanceof Error ? requestError.message : SERVER_ERROR_FALLBACK;
       setOfferBackfill(false);
-      showCommitSentence(message);
+      showCommitSentence(offlineMessage(requestError, SERVER_ERROR_FALLBACK));
       return;
     }
     const message = requestError.message || SERVER_ERROR_FALLBACK;
@@ -835,14 +837,17 @@ export const ScanEntryCard = ({
           <span className="scan-nothing-mark" aria-hidden="true">!</span>
           <div className="scan-nothing-copy">
             <p className="scan-nothing-title" role={cueNothingOnHand ? 'status' : undefined}>{NOTHING_ON_HAND_TITLE}</p>
-            <p className="scan-nothing-body" id={blockedBodyId}>{NOTHING_ON_HAND_BODY}</p>
+            <p className="scan-nothing-body" id={blockedBodyId}>{nothingOnHandBody(offerUnits)}</p>
           </div>
         </div>
       )}
 
       {entry.status === 'pending' && (
         <Group
-          className={flatRow ? 'scan-entry-actions scan-entry-row-controls' : 'scan-entry-actions'}
+          className={[
+            flatRow ? 'scan-entry-actions scan-entry-row-controls' : 'scan-entry-actions',
+            blocked ? 'scan-entry-actions--offer' : '',
+          ].filter(Boolean).join(' ')}
           gap={flatRow ? 6 : 4}
           align="center"
           wrap="wrap"
@@ -853,7 +858,7 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Decrease unit count"
-              disabled={blocked || !isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
+              disabled={!isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
               onClick={() => adjustUnitCount(-1)}
             >
               <span aria-hidden="true">−</span>
@@ -866,7 +871,6 @@ export const ScanEntryCard = ({
               step={1}
               allowDecimal={false}
               value={unitCountDraft}
-              disabled={blocked}
               onChange={handleUnitCountChange}
               onBlur={handleUnitCountBlur}
               onKeyDown={handleUnitCountKeyDown}
@@ -876,7 +880,6 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Increase unit count"
-              disabled={blocked}
               onClick={() => adjustUnitCount(1)}
             >
               <span aria-hidden="true">+</span>
@@ -884,16 +887,15 @@ export const ScanEntryCard = ({
           </div>
           {entry.direction !== null && (
             blocked ? (
-              <Group gap={4} wrap="nowrap">
-                <div className="scan-entry-action-slot scan-entry-blocked-action">
-                  <Button
-                    size="compact-xs"
-                    loading={approving}
-                    onClick={() => void handleBackfill()}
-                  >
-                    {ADD_IT_AND_TAKE_IT_OUT}
-                  </Button>
-                </div>
+              <div className="scan-entry-blocked-row">
+                <Button
+                  className="scan-entry-offer"
+                  size="md"
+                  loading={approving}
+                  onClick={() => void handleBackfill()}
+                >
+                  {ADD_IT_AND_TAKE_IT_OUT}
+                </Button>
                 <button
                   type="button"
                   className="scan-entry-more"
@@ -902,7 +904,7 @@ export const ScanEntryCard = ({
                 >
                   More
                 </button>
-              </Group>
+              </div>
             ) : (
               <Group gap={4} wrap="nowrap">
                 <Button

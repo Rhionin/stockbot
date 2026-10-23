@@ -18,13 +18,16 @@ import {
   failuresAfterConfirm,
   formatPartialRemoval,
   NO_SPACE_SENTENCE,
+  nothingOnHandBody,
   nothingOnHandPill,
   pairStockInMoveId,
   pairUndoBody,
   pairUndoCopy,
   pairUndoHideLine,
   previewReshelves,
+  scanOnHand,
   shelfHasNothingOnHand,
+  skippedNothingOnHandBanner,
   type BackfillCommitResponse,
   type BatchCommitResponse,
   type UndoPreview,
@@ -310,6 +313,69 @@ describe('nothing on hand copy', () => {
     { name: 'one on hand', onHand: 1, empty: false },
   ])('$name', ({ onHand, empty }) => {
     expect(shelfHasNothingOnHand(onHand)).toBe(empty);
+  });
+
+  it.each([
+    { name: 'one unit', count: 1, body: 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.' },
+    { name: 'two units', count: 2, body: 'Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.' },
+    { name: 'four units', count: 4, body: 'Stockbot thinks you have none. If you had 4 anyway, this adds them and takes them out in one step.' },
+  ])('body for $name', ({ count, body }) => {
+    expect(nothingOnHandBody(count)).toBe(body);
+  });
+
+  it.each([
+    {
+      name: 'scan onHand 0 beats a stocked list',
+      entry: { onHand: 0 },
+      listed: 4,
+      count: 0,
+    },
+    {
+      name: 'scan onHand 3 beats an empty list',
+      entry: { onHand: 3 },
+      listed: 0,
+      count: 3,
+    },
+    {
+      name: 'absent onHand uses the empty list',
+      entry: {},
+      listed: 0,
+      count: 0,
+    },
+    {
+      name: 'absent onHand uses a stocked list',
+      entry: {},
+      listed: 3,
+      count: 3,
+    },
+    {
+      name: 'absent onHand and a missing list row',
+      entry: {},
+      listed: undefined,
+      count: undefined,
+    },
+  ])('$name', ({ entry, listed, count }) => {
+    expect(scanOnHand(entry, listed)).toBe(count);
+    expect(shelfHasNothingOnHand(scanOnHand(entry, listed))).toBe(count !== undefined && count <= 0);
+  });
+
+  it.each([
+    {
+      name: 'one taken out and one still queued',
+      takenOut: 1,
+      stillQueued: 1,
+      line: '1 taken out. 1 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
+    },
+    {
+      name: 'two taken out and three still queued',
+      takenOut: 2,
+      stillQueued: 3,
+      line: '2 taken out. 3 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
+    },
+    { name: 'nothing taken out', takenOut: 0, stillQueued: 1, line: null },
+    { name: 'none still queued', takenOut: 1, stillQueued: 0, line: null },
+  ])('$name', ({ takenOut, stillQueued, line }) => {
+    expect(skippedNothingOnHandBanner(takenOut, stillQueued)).toBe(line);
   });
 });
 

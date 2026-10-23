@@ -9,6 +9,9 @@ mkdirSync(shotDir, { recursive: true })
 
 const title = 'Nothing on hand to take out.'
 const skipTwo = 'Confirm skips the 2 with nothing on hand.'
+const bodyOne = 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'
+const banner = '1 taken out. 2 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.'
+const added = 'Added and taken out.'
 
 const settle = async (page: Page) => {
   await expect(page.locator('.scan-entry-card--changed-animated, .scan-entry-card--just-captured')).toHaveCount(0)
@@ -82,7 +85,13 @@ for (const shot of shots) {
     await expect(emptyCard).toBeVisible()
     await expect(missingCard.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
     await expect(missingCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
+    await expect(missingCard.getByText(bodyOne)).toBeVisible()
+    await expect(missingCard.getByRole('button', { name: 'Increase unit count' })).toBeEnabled()
+    await expect(missingCard.getByRole('button', { name: 'Decrease unit count' })).toBeDisabled()
     await expect(missingCard.getByRole('button', { name: 'Remove' })).toHaveCount(0)
+    const offerBox = await missingCard.getByRole('button', { name: 'Add it and take it out' }).boundingBox()
+    const cardBox = await missingCard.boundingBox()
+    expect(offerBox && cardBox && offerBox.width > cardBox.width * 0.55).toBeTruthy()
     await expect(normal.getByRole('button', { name: 'Confirm' })).toBeVisible()
     await expect(page.getByText('2 with nothing on hand', { exact: true })).toBeVisible()
     await expect(page.getByText(skipTwo)).toBeVisible()
@@ -90,6 +99,23 @@ for (const shot of shots) {
     await settle(page)
     await page.screenshot({
       path: `${shotDir}/queue-${shot.width}-${shot.scheme}.png`,
+      fullPage: true,
+    })
+
+    await page.getByRole('button', { name: 'Confirm 1 selected scans' }).click()
+    await expect(page.locator('.scan-nothing-skipped')).toHaveText(banner)
+    await expect(missingCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
+    await settle(page)
+    await page.screenshot({
+      path: `${shotDir}/banner-${shot.width}-${shot.scheme}.png`,
+      fullPage: true,
+    })
+
+    await missingCard.getByRole('button', { name: 'Add it and take it out' }).click()
+    await expect(page.locator('.restock-toast').filter({ hasText: added })).toBeVisible()
+    await settle(page)
+    await page.screenshot({
+      path: `${shotDir}/toast-${shot.width}-${shot.scheme}.png`,
       fullPage: true,
     })
   })

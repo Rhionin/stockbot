@@ -3,11 +3,11 @@ import {
   ActionIcon, Alert, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
+import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
-  deltaName, deltaText, directionWord, formatMoveClock, groupMovesByDay, ledgerEmptyCopy, orderBackfillPairs, quantityPrompt, undoCopy,
+  deltaName, deltaText, directionWord, formatMoveClock, groupMovesByDay, ledgerEmptyCopy, quantityPrompt, undoCopy,
 } from './format';
 import { PulseChart, type PulseInspect } from './PulseChart';
 import '../groups/groups.css';
@@ -131,7 +131,7 @@ export function LedgerPage() {
   };
 
   const now = new Date();
-  const groups = groupMovesByDay(orderBackfillPairs(moves ?? []), now);
+  const groups = groupMovesByDay(moves ?? [], now);
   const pair = undoing !== null && quantityLocked(undoing, lockMoves);
   const stockInMoveId = pair && undoing !== null ? pairStockInMoveId(undoing, lockMoves) : '';
   const hideLine = usePairHideLine(stockInMoveId);
@@ -260,8 +260,14 @@ export function LedgerPage() {
         {(pairCopy ?? undo) && (
           <Stack gap="sm">
             <p className="ledger-empty">{(pairCopy ?? undo)?.body}</p>
-            <Collapse expanded={pairCopy !== null && pairCopy.hideLine !== ''}>
-              {pairCopy !== null && pairCopy.hideLine !== '' && <p className="ledger-empty">{pairCopy.hideLine}</p>}
+            <Collapse
+              expanded={pairCopy !== null && pairCopy.hideLine !== ''}
+              keepMounted
+              keepMountedMode="display-none"
+            >
+              {undoing !== null && pair && (
+                <p className="ledger-empty">{pairUndoHideLine(undoing.productName)}</p>
+              )}
             </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>

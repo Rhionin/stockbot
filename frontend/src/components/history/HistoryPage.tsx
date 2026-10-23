@@ -4,10 +4,10 @@ import {
   ActionIcon, Alert, Anchor, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairStockInMoveId, pairUndoCopy, quantityLocked } from '../../api/contract';
+import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
-  daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, orderBackfillPairs, quantityPrompt, trendLabel, undoCopy,
+  daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 import { usePairHideLine } from './pairUndoPreview';
 import '../groups/groups.css';
@@ -103,7 +103,7 @@ export function HistoryPage() {
     void Promise.resolve().then(load);
   }, [load]);
 
-  const orderedMoves = orderBackfillPairs(view?.moves ?? []);
+  const orderedMoves = view?.moves ?? [];
   const shown = orderedMoves.filter((move) => filter === 'recent' || move.direction === filter);
   const now = new Date();
 
@@ -259,8 +259,14 @@ export function HistoryPage() {
         {(pairCopy ?? undo) && (
           <Stack gap="sm">
             <p className="history-empty">{(pairCopy ?? undo)?.body}</p>
-            <Collapse expanded={pairCopy !== null && pairCopy.hideLine !== ''}>
-              {pairCopy !== null && pairCopy.hideLine !== '' && <p className="history-empty">{pairCopy.hideLine}</p>}
+            <Collapse
+              expanded={pairCopy !== null && pairCopy.hideLine !== ''}
+              keepMounted
+              keepMountedMode="display-none"
+            >
+              {undoing !== null && pair && (
+                <p className="history-empty">{pairUndoHideLine(undoing.productName)}</p>
+              )}
             </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>

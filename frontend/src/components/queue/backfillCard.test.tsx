@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
 import { SERVER_ERROR_FALLBACK } from '../../api/contract';
+import { OFFLINE_SENTENCE } from '../../offline';
 import { ScanEntryCard } from './ScanEntryCard';
 import type { ScanEntry } from '../../types';
 
@@ -57,6 +58,7 @@ interface Outcome {
   undoStatus?: number;
   undoError?: string;
   undoReject?: boolean;
+  offline?: boolean;
 }
 
 const noneOnHand = {
@@ -278,6 +280,16 @@ const outcomes: Outcome[] = [
     refreshed: false,
   },
   {
+    name: 'an offline backfill uses the offline sentence',
+    kind: 'backfill',
+    offline: true,
+    visible: [OFFLINE_SENTENCE],
+    absent: ['Failed to fetch', 'Add it and take it out'],
+    toast: OFFLINE_SENTENCE,
+    confirm: true,
+    refreshed: false,
+  },
+  {
     name: 'a batch never offers or claims a backfill',
     kind: 'batch',
     visible: [],
@@ -289,7 +301,7 @@ const outcomes: Outcome[] = [
     visible: [
       'Nothing on hand to take out.',
       'Add it and take it out',
-      "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.",
+      'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.',
     ],
     absent: ['Added and taken out.', 'No inventory item is available for this product.', 'Not in your pantry'],
   },
@@ -513,6 +525,7 @@ describe('backfill card', () => {
       calls.push({ method, url, body });
       if (url.endsWith('/commit') && method === 'POST') {
         commits += 1;
+        if (row.offline && commits > 1) return Promise.reject(new TypeError('Failed to fetch'));
         if ((row.kind === 'backfill' || row.kind === 'none') && commits === 1) {
           return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand', itemId: 'item-sour', onHand: 0 }, 409));
         }
@@ -882,5 +895,67 @@ describe('backfill card', () => {
       const details = [...document.querySelectorAll('.restock-toast-detail')].map((node) => node.textContent);
       expect(details).toEqual(['Added and taken out.']);
     });
+  });
+
+  it.each([
+    { name: 'on hand stays empty', onHand: 0, postsBackfill: true },
+    { name: 'the link finds some on hand', onHand: 4, postsBackfill: false },
+  ])('patches the named product before a backfill when $name', async ({ onHand, postsBackfill }) => {
+    const calls: Call[] = [];
+    const onChanged = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown;
+      calls.push({ method, url, body });
+      if (url.endsWith('/commit') && method === 'POST') {
+        const written = body as { backfill?: boolean };
+        if (written.backfill === true) {
+          return Promise.resolve(json({
+            removed: 1,
+            backfilled: 1,
+            itemId: 'item-sour',
+            backfill: { stockInMoveId: 'move-cream-in', stockOutMoveId: 'move-cream-out' },
+          }));
+        }
+        return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand', onHand: 0 }, 409));
+      }
+      if (url === '/api/scans/scan-1' && method === 'PATCH') {
+        return Promise.resolve(json({ ...entry(true), status: 'pending', onHand }));
+      }
+      return Promise.resolve(json([]));
+    }));
+
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanEntryCard
+          entry={entry(true)}
+          selected={false}
+          onSelectedChange={vi.fn()}
+          onChanged={onChanged}
+        />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add it and take it out' }));
+    await waitFor(() => {
+      const patch = calls.find((call) => call.method === 'PATCH' && call.url === '/api/scans/scan-1');
+      expect(patch?.body).toEqual({ productId: 'prod-sour', status: 'pending' });
+    });
+    const patchAt = calls.findIndex((call) => call.method === 'PATCH' && call.url === '/api/scans/scan-1');
+    const backfillAt = calls.findIndex((call) => {
+      const written = call.body as { backfill?: boolean } | undefined;
+      return call.method === 'POST' && written?.backfill === true;
+    });
+    if (postsBackfill) {
+      expect(backfillAt).toBeGreaterThan(patchAt);
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    } else {
+      expect(backfillAt).toBe(-1);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+      expect(onChanged).toHaveBeenCalled();
+    }
   });
 });

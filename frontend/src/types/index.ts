@@ -122,6 +122,8 @@ export interface ScanEntry {
   status: ScanStatus;
   productId: string | null;
   product: ProductSummary | null;
+  // Present on a linked stock-out from GET /api/scans. Omitted when the server has not decided.
+  onHand?: number;
   groupHint?: ScanGroupHint;
   committedAt: string | null;
   createdAt: string;

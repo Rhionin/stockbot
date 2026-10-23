@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
 
@@ -273,7 +273,7 @@ describe('nothing on hand queue', () => {
       expect(card).toHaveClass('scan-entry-card--nothing');
       expect(card).not.toHaveClass('scan-entry-card--changed-animated');
       expect(within(card).getByText(NOTHING_ON_HAND_TITLE).tagName).toBe('P');
-      expect(within(card).getByText(NOTHING_ON_HAND_BODY)).toBeInTheDocument();
+      expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
       expect(card.querySelector('.scan-nothing-mark')?.textContent).toBe('!');
       expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
       expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe('nothing on hand queue', () => {
       const checkbox = within(card).getByRole('checkbox');
       expect(checkbox).toBeDisabled();
       expect(checkbox).not.toBeChecked();
-      expect(checkbox.getAttribute('aria-describedby')).toBe(within(card).getByText(NOTHING_ON_HAND_BODY).id);
+      expect(checkbox.getAttribute('aria-describedby')).toBe(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.').id);
     }
     for (const barcode of row.normal) {
       const card = await screen.findByRole('article', { name: `Scan ${barcode}` });
@@ -374,6 +374,32 @@ describe('nothing on hand queue', () => {
     expect(await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
   });
 
+  it('uses onHand from the scan when the payload includes it', async () => {
+    const counted = scan({ id: 'scan-counted', barcode: '333', onHand: 0 });
+    renderQueue({
+      scans: [counted],
+      inventory: [shelf('milk', 'Milk', 4)],
+      holdInventory: true,
+    });
+    const card = await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` });
+    expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+
+  it('a positive onHand on the scan stays confirmable when the list is empty', async () => {
+    const counted = scan({ id: 'scan-counted', barcode: '333', onHand: 2 });
+    renderQueue({ scans: [counted], inventory: [] });
+    const card = await screen.findByRole('article', { name: 'Scan 333' });
+    expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the inventory list when the scan omits onHand', async () => {
+    const counted = scan({ id: 'scan-counted', barcode: '333' });
+    renderQueue({ scans: [counted], inventory: [shelf('milk', 'Milk', 0)] });
+    expect(await screen.findByRole('article', { name: `Scan 333, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
+  });
+
   it('leaves cards alone when the inventory list fails', async () => {
     renderQueue({ scans: [missing], inventory: [], failInventory: true });
     const card = await screen.findByRole('article', { name: 'Scan 222' });
@@ -391,9 +417,9 @@ describe('nothing on hand queue', () => {
     expect(within(amber).getByText(NOTHING_ON_HAND_TITLE)).toHaveAttribute('role', 'status');
     expect(within(amber).queryByRole('alert')).not.toBeInTheDocument();
     expect(document.querySelector('.restock-toast')).toBeNull();
-    expect(within(amber).getByRole('button', { name: 'Increase unit count' })).toBeDisabled();
+    expect(within(amber).getByRole('button', { name: 'Increase unit count' })).toBeEnabled();
     expect(within(amber).getByRole('button', { name: 'Decrease unit count' })).toBeDisabled();
-    expect(within(amber).getByRole('textbox', { name: 'Unit count' })).toBeDisabled();
+    expect(within(amber).getByRole('textbox', { name: 'Unit count' })).toBeEnabled();
     FakeEventSource.instances[0]?.dispatch('inventory', shelf('milk', 'Milk', 4));
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).not.toBeInTheDocument();
@@ -509,7 +535,7 @@ describe('nothing on hand queue', () => {
     fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
   };
 
-  it('An amber-only batch with no partial line shows no banner.', async () => {
+  it('An amber-only batch that skipped some shows how many were taken out.', async () => {
     const oats = scan({
       id: 'scan-oats',
       barcode: '333',
@@ -542,7 +568,11 @@ describe('nothing on hand queue', () => {
     expect(screen.queryByText('Added and taken out.')).not.toBeInTheDocument();
     expect(batchBodies).toEqual([{ scanEntryIds: ['scan-oats', 'scan-rice'], commit: true }]);
     expect(screen.queryByRole('article', { name: 'Scan 333' })).not.toBeInTheDocument();
-    expectNoBatchBanner();
+    const banner = document.querySelector('.scan-nothing-skipped');
+    expect(banner?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '1 taken out. 1 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
+    );
+    expect(within(banner as HTMLElement).getByText('1 taken out.')).toBeVisible();
   });
 
   it('After a stock-in clears amber from the last none_on_hand card, the banner is gone.', async () => {
@@ -829,7 +859,7 @@ describe('nothing on hand queue', () => {
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
     const card = await screen.findByRole('article', { name: 'Scan 555, Nothing on hand to take out.' });
     expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
-    expect(within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.")).toBeInTheDocument();
+    expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain('Stockbot is busy right now. Try again in a moment.');
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
