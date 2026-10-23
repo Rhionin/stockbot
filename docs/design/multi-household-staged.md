@@ -1,6 +1,6 @@
 # Multi-household Stockbot: staged design (#224)
 
-- **Status:** draft for CJ approval. Build work is paused until CJ approves.
+- **Status:** Approved by CJ 2026-10-23 8:21 AM MDT (relayed by Stockbot Manager); build in progress per tracker #363.
 - **Repo basis:** `Rhionin/stockbot` master `dd3c6be`, the #364 contract (`docs/design/api-contract.md` on the PR ref), the #224 AWS design (`multi-tenant-saas.md`, `multi-tenant-saas-costs.md`), tickets T1–T25 (#337–#360, #362), and PM's Stage-1 requirements (`224-stage1-requirements.md`, called **PM-REQ** below).
 - **Concrete Stage-1 target:** `https://stockbot.rhionin.com` on CJ's Pi 3B+. The domain, app name, cookie name and domain, and email sender are config (§10), so a rename is only a config change.
 - **Conventions:**
