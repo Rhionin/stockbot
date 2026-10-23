@@ -78,8 +78,10 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	}
 
 	// Apply batch updates if any fields are provided. A lock or a full disk
-	// here is the same per-item result as a commit that cannot start. The
-	// update transaction rolls back, so the cards stay as they were.
+	// here is the same per-item result as a commit that cannot start.
+	// A lock rolls this update back, so the cards stay as they were.
+	// On a full disk the field edit can persist and the stock commit then
+	// fails. Stock is still applied exactly once.
 	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
 		err := h.Queue.BatchUpdateScanEntries(
 			req.Context,
