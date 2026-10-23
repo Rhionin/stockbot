@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "note": "Retry of a stock-out that already committed with one unit on hand and unitCount 3. The retry also sends unitCount 4, direction stock_in, and an expiry. The card stays in committedIds with the original removedCount 1 and requestedCount 3. It is not not_pending, and stock is not removed again. The single-scan commit endpoint is a different response: 400 not_pending.",
+  "body": {
+    "updatedCount": 1,
+    "committedIds": ["scan-retry"],
+    "stockOutCounts": {
+      "scan-retry": { "removedCount": 1, "requestedCount": 3 }
+    }
+  }
+}

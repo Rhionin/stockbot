@@ -192,7 +192,12 @@ func TestInventoryStockMatchesScanLedger(t *testing.T) {
 				method:         "POST",
 				path:           "/api/inventory/item-empty/stock-out",
 				expectedStatus: http.StatusConflict,
-				bodyContains:   []string{"There is nothing on hand."},
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
 			afterRequest: func(env testEnv) {
 				assertShelf(env.T, env.DB, "item-empty", "prod-empty", shelfState{

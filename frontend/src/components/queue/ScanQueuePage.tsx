@@ -3,7 +3,8 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices, type BatchFailureNotice } from '../../api/contract';
+import type { BatchCommitResponse, InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
 import { CameraScanner } from '../scanner/CameraScanner';
@@ -34,11 +35,16 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
+  const [removalNotes, setRemovalNotes] = useState<string[]>([]);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
   const [sessionExpansion, setSessionExpansion] = useState<Record<string, boolean>>({});
   const captureHighlightTimer = useRef(0);
+  // The id-set key changes when one scan commits and would remount the cards
+  // that are still open. Each scan keeps the key it first joined.
+  const [sessionTokens, setSessionTokens] = useState<Map<string, string>>(() => new Map());
   const scannerModeRef = useRef<QueueView>('stock_in');
   // Bumped when this page or an event stream sets the mode, so a config
   // response that started earlier cannot put the previous direction back.
@@ -67,6 +73,26 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const qrEntries = useMemo(() => viewEntries.filter((entry) => entry.status === 'qr'), [viewEntries]);
   const sessionEntries = useMemo(() => viewEntries.filter((entry) => entry.status !== 'qr'), [viewEntries]);
   const batches = useMemo(() => groupScansIntoBatches(sessionEntries), [sessionEntries]);
+  const sessionKeys = batches.map((batch) => {
+    const joined = batch.map((entry) => entry.id).sort().join('|');
+    const known = batch
+      .map((entry) => sessionTokens.get(entry.id))
+      .find((token) => token !== undefined);
+    return known ?? joined;
+  });
+  const missingTokens = batches.flatMap((batch, index) => {
+    const key = sessionKeys[index] ?? '';
+    return batch
+      .filter((entry) => sessionTokens.get(entry.id) !== key)
+      .map((entry) => [entry.id, key] as const);
+  });
+  if (missingTokens.length > 0) {
+    setSessionTokens((current) => {
+      const next = new Map(current);
+      for (const [id, key] of missingTokens) next.set(id, key);
+      return next;
+    });
+  }
   const processingForView = useMemo(
     () => processing.filter((notice) => notice.userId === userId && entryMatchesView(notice.direction, scannerMode)),
     [processing, userId, scannerMode],
@@ -87,6 +113,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       ]);
       setEntries(sortScansNewestFirst([...pending, ...flagged, ...qr]));
       setSelectedIds((current) => current.filter((id) => pending.some((entry) => entry.id === id)));
+      setFailureById((current) => {
+        if (current.size === 0) return current;
+        const pendingIds = new Set(pending.map((entry) => entry.id));
+        let changed = false;
+        const next = new Map<string, BatchFailureNotice>();
+        for (const [id, notice] of current) {
+          if (pendingIds.has(id)) next.set(id, notice);
+          else changed = true;
+        }
+        return changed ? next : current;
+      });
       setError('');
       void getInventoryList().then(setInventory).catch(() => setInventory([]));
     } catch (requestError) {
@@ -294,6 +331,14 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     void captureBarcode(barcode);
   };
 
+  const rememberBatchOutcome = (response: BatchCommitResponse) => {
+    const notices = batchFailureNotices(response);
+    setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
+    setRemovalNotes([]);
+    setSelectedIds(notices.map((notice) => notice.id));
+    void loadQueue();
+  };
+
   const setEntrySelected = (entryId: string, selected: boolean) => {
     setSelectedIds((current) =>
       selected ? [...new Set([...current, entryId])] : current.filter((id) => id !== entryId),
@@ -381,15 +426,18 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
             />
             <BatchReviewPanel
               selectedIds={selectedIds.filter((id) => viewEntryIds.has(id))}
-              onComplete={() => {
-                setSelectedIds([]);
-                void loadQueue();
-              }}
+              onComplete={rememberBatchOutcome}
             />
           </Group>
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
+        {failureById.size > 0 && (
+          <Alert color="red" py={4} style={{ flexShrink: 0 }}>{BATCH_FAILURE_FALLBACK}</Alert>
+        )}
+        {removalNotes.map((note) => (
+          <Alert key={note} py={4} style={{ flexShrink: 0 }}>{note}</Alert>
+        ))}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (
           <Alert color="red" py={4}>
@@ -416,7 +464,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
           />
         ))}
         {batches.map((batch, index) => {
-          const key = batch.map((entry) => entry.id).sort().join('|');
+          const key = sessionKeys[index] ?? '';
           const expanded = sessionExpansion[key] ?? index === 0;
           return (
             <ScanSessionCard
@@ -440,9 +488,12 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
+                  commitNotice={failureById.get(entry.id)?.message ?? ''}
+                  commitCode={failureById.get(entry.id)?.code ?? ''}
                   selected={selectedIds.includes(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
                   onChanged={() => void loadQueue()}
+                  onCommitNote={(note) => setRemovalNotes(note === '' ? [] : [note])}
                 />
               ))}
             </ScanSessionCard>

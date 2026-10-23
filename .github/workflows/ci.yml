@@ -144,7 +144,12 @@ jobs:
       
       - name: Build server binary
         run: go build -o ../bin/stockbot-server ../cmd/server
-      
+
+      # One worker, this order. These specs share the suite database, and the
+      # full run can hide a leak when another spec resets state between them.
+      - name: Run contrast-a11y then shopping-list in order
+        run: npx playwright test e2e/contrast-a11y.spec.ts e2e/shopping-list.spec.ts --workers=1
+
       - name: Run Playwright e2e tests
         run: npx playwright test
       
