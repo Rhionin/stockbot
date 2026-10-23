@@ -6,7 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"net/http"
-	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -216,14 +216,18 @@ func TestEveryRouteHasIsolationCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot enumerate routes: %v", err)
 	}
-	if err := crossCheckLiveRouter(t, routes); err != nil {
+	// served is what the muxes actually register. coverageProblems has to
+	// see that list: dropping this call leaves served unused and does not
+	// compile, and a router pattern missing from the source list fails it.
+	served, err := crossCheckLiveRouter(t, routes)
+	if err != nil {
 		t.Fatalf("live router: %v", err)
 	}
 	decisions, err := routeDecisions()
 	if err != nil {
 		t.Fatalf("isolation case table: %v", err)
 	}
-	if problems := coverageProblems(routes, decisions); len(problems) > 0 {
+	if problems := coverageProblems(served, decisions); len(problems) > 0 {
 		t.Fatalf("isolation coverage:\n%s", strings.Join(problems, "\n"))
 	}
 	if err := publicAllowlistMatchesSource(); err != nil {
@@ -250,19 +254,96 @@ func TestRouteInventoryRejectsNonLiteralPattern(t *testing.T) {
 
 func TestCoverageCheckRejectsUnlistedRoute(t *testing.T) {
 	const probe = "GET /api/isolation-probe"
+	// Registration goes through a struct field and a helper. An identifier
+	// walk of HandleFunc would not see either shape. The pattern that
+	// reaches the case table is the one the mux serves.
 	mux := http.NewServeMux()
-	mux.HandleFunc(probe, func(http.ResponseWriter, *http.Request) {})
-	req := httptest.NewRequest(http.MethodGet, "/api/isolation-probe", nil)
-	_, pattern := mux.Handler(req)
-	if pattern != probe {
-		t.Fatalf("test router matched %q, want %s", pattern, probe)
+	type holder struct{ m *http.ServeMux }
+	registerIsolationProbe(holder{m: mux}.m, probe)
+
+	served, err := patternsServed(mux)
+	if err != nil {
+		t.Fatalf("list test router: %v", err)
+	}
+	var found []cataloguedRoute
+	for pattern := range served {
+		found = append(found, cataloguedRoute{pattern: pattern, at: "struct field"})
+	}
+	if len(found) != 1 || found[0].pattern != probe {
+		t.Fatalf("test router serves %v, want %s", found, probe)
 	}
 
 	routes, decisions := coverageBaseline(t)
-	routes = append(routes, cataloguedRoute{pattern: probe, receiver: "apiMux", at: "test-only router"})
-	problems := coverageProblems(routes, decisions)
-	if !problemContains(problems, `unlisted route "`+probe+`" (test-only router) has no isolation-case decision`) {
+	problems := coverageProblems(append(routes, found...), decisions)
+	if !problemContains(problems, `unlisted route "`+probe+`" (struct field) has no isolation-case decision`) {
 		t.Fatalf("problems = %v, want an unlisted-route failure", problems)
+	}
+}
+
+// registerIsolationProbe is the helper a route can hide behind. The caller
+// passes the mux through a struct field.
+func registerIsolationProbe(mux *http.ServeMux, pattern string) {
+	mux.HandleFunc(pattern, func(http.ResponseWriter, *http.Request) {})
+}
+
+func TestLiveRouterCheckRunsBothWays(t *testing.T) {
+	const probe = "GET /api/isolation-probe"
+	mux := http.NewServeMux()
+	type holder struct{ m *http.ServeMux }
+	registerIsolationProbe(holder{m: mux}.m, probe)
+
+	_, err := crossCheckMuxes(nil, mux, http.NewServeMux())
+	if err == nil || !strings.Contains(err.Error(), `unlisted route "`+probe+`"`) {
+		t.Fatalf("route served but not inventoried: err = %v", err)
+	}
+
+	_, err = crossCheckMuxes(
+		[]cataloguedRoute{{pattern: "GET /health", receiver: "apiMux", at: "test"}},
+		http.NewServeMux(),
+		http.NewServeMux(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "GET /health") || !strings.Contains(err.Error(), "does not serve") {
+		t.Fatalf("inventoried route the router does not serve: err = %v", err)
+	}
+}
+
+func TestRouteInventoryRejectsHiddenRegistration(t *testing.T) {
+	const fieldSrc = "package server\n" +
+		"type holder struct{ m *http.ServeMux }\n" +
+		"func register(h holder) { h.m.HandleFunc(\"GET /api/isolation-probe\", nil) }\n"
+	fset, file := parseSnippet(t, "field.go", fieldSrc)
+	_, _, err := collectRegistrations(fset, file, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "not a plain router variable") {
+		t.Fatalf("struct-field registration err = %v", err)
+	}
+
+	const valueSrc = "package server\n" +
+		"func register() {\n" +
+		"\tf := apiMux.HandleFunc\n" +
+		"\tf(\"GET /api/isolation-probe\", nil)\n" +
+		"}\n"
+	fset, file = parseSnippet(t, "value.go", valueSrc)
+	_, _, err = collectRegistrations(fset, file, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "method value") {
+		t.Fatalf("method-value registration err = %v", err)
+	}
+}
+
+func TestPublicDrift(t *testing.T) {
+	open := routeDecision{category: catQuarantine, kind: kindListLeak, reason: waitsOnHouseholdScope}
+	if msg := publicDrift("GET /api/build", open); !strings.Contains(msg, "open on the public entry") {
+		t.Fatalf("public route classified as quarantine: %q", msg)
+	}
+	closed := routeDecision{category: catPublic, reason: "should not be public"}
+	if msg := publicDrift("GET /health", closed); !strings.Contains(msg, "public allowlist") {
+		t.Fatalf("ops route classified as public: %q", msg)
+	}
+	if msg := publicDrift("GET /api/products", open); msg != "" {
+		t.Fatalf("quarantined route reported drift: %q", msg)
+	}
+	matching := routeDecision{category: catPublic, reason: "build identity"}
+	if msg := publicDrift("GET /api/build", matching); msg != "" {
+		t.Fatalf("public route in the public allowlist reported drift: %q", msg)
 	}
 }
 
@@ -327,6 +408,22 @@ func cloneDecisions(in map[string]routeDecision) map[string]routeDecision {
 		out[pattern] = decision
 	}
 	return out
+}
+
+func TestQuarantineCeilingNeedsReviewerSignOff(t *testing.T) {
+	src, err := os.ReadFile("isolation_cases_test.go")
+	if err != nil {
+		t.Fatalf("read quarantine ceiling: %v", err)
+	}
+	text := string(src)
+	idx := strings.Index(text, "const maxQuarantined")
+	if idx < 0 {
+		t.Fatal("maxQuarantined is missing")
+	}
+	window := text[max(0, idx-500):idx]
+	if !strings.Contains(window, "explicit reviewer sign-off") {
+		t.Fatal("raising maxQuarantined needs an explicit reviewer sign-off note next to the constant")
+	}
 }
 
 func problemContains(problems []string, needle string) bool {

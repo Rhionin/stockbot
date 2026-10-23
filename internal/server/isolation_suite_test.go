@@ -85,12 +85,43 @@ func assertReachedAllowlistRoute(t *testing.T, pattern string, code int, header 
 			t.Fatalf("GET /health body = %s", snippet(body))
 		}
 	case "GET /api/build", "GET /api/session", "GET /terms", "GET /privacy", "GET /brand/logo.png":
-		if code != http.StatusOK {
-			t.Fatalf("%s status = %d, body %s", pattern, code, snippet(body))
+		expectStatus(t, pattern, code, body, http.StatusOK)
+	case "POST /api/login":
+		expectStatus(t, pattern, code, body, http.StatusNotFound)
+		expectBody(t, pattern, body, "Sign-in is not used on this address.")
+	case "POST /api/logout":
+		expectStatus(t, pattern, code, body, http.StatusOK)
+		if strings.TrimSpace(string(body)) != "{}" {
+			t.Fatalf("POST /api/logout body = %s", snippet(body))
 		}
+	case "POST /api/telemetry/client":
+		expectStatus(t, pattern, code, body, http.StatusBadRequest)
+		expectBody(t, pattern, body, "invalid report")
+	case "POST /api/deploy-hook":
+		expectStatus(t, pattern, code, body, http.StatusServiceUnavailable)
+		expectBody(t, pattern, body, "deploy hook is not configured")
+	case "/api/sentry-tunnel":
+		expectStatus(t, pattern, code, body, http.StatusNotFound)
+		expectBody(t, pattern, body, "Not found.")
+	default:
+		t.Fatalf("%s has no status check, so the leak assertion may be looking at an error page", pattern)
 	}
 	if pattern == "GET /brand/logo.png" && !strings.HasPrefix(header.Get("Content-Type"), "image/png") {
 		t.Fatalf("GET /brand/logo.png content-type = %q", header.Get("Content-Type"))
+	}
+}
+
+func expectStatus(t *testing.T, pattern string, code int, body []byte, want int) {
+	t.Helper()
+	if code != want {
+		t.Fatalf("%s status = %d, want %d, body %s", pattern, code, want, snippet(body))
+	}
+}
+
+func expectBody(t *testing.T, pattern string, body []byte, needle string) {
+	t.Helper()
+	if !strings.Contains(string(body), needle) {
+		t.Fatalf("%s body = %s, want %q", pattern, snippet(body), needle)
 	}
 }
 

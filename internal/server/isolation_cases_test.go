@@ -4,8 +4,12 @@ import "testing"
 
 // maxQuarantined is the number of routes still waiting on per-household
 // authorization (#377). The coverage test fails when the quarantine list
-// is longer than this. When a route leaves quarantine, lower this constant
-// to the new length in the same change. Do not raise it.
+// is longer than this, and when it is shorter until this constant is
+// lowered to match. When a route leaves quarantine, lower this constant
+// to the new length in the same change.
+//
+// Raising maxQuarantined requires explicit reviewer sign-off. Raising it
+// is not an acceptable way to add a route.
 const maxQuarantined = 99
 
 const waitsOnHouseholdScope = "waits #377"

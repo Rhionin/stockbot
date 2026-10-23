@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/Rhionin/stockbot/internal/brand"
 	"github.com/Rhionin/stockbot/internal/product"
@@ -38,9 +40,11 @@ type cataloguedRoute struct {
 }
 
 // enumerateRoutes reads route registrations from the server and brand
-// sources. Go's ServeMux cannot list its routes, and exporting a registrar
-// would be a production change, so the inventory is the source. A pattern
-// that is not a string literal or a string constant fails here.
+// sources. A pattern that is not a string literal or a string constant
+// fails here. A Handle or HandleFunc call whose receiver is not a plain
+// router variable fails here too, as does taking that method as a value.
+// Routes that never appear in these files are caught the other way:
+// crossCheckLiveRouter lists every pattern the mux actually serves.
 func enumerateRoutes() ([]cataloguedRoute, error) {
 	serverDir, brandDir, err := sourceDirs()
 	if err != nil {
@@ -166,6 +170,9 @@ func stringConsts(files []*ast.File) map[string]string {
 }
 
 func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string]string) ([]cataloguedRoute, map[string]string, error) {
+	if err := rejectMuxMethodValues(fset, file); err != nil {
+		return nil, nil, err
+	}
 	var routes []cataloguedRoute
 	mounts := map[string]string{}
 	var err error
@@ -177,11 +184,17 @@ func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string
 		if !ok {
 			return true
 		}
-		recv, ok := handleReceiver(call)
+		recvExpr, ok := handleReceiver(call)
 		if !ok {
 			return true
 		}
 		at := formatPos(fset, call.Pos())
+		recvIdent, isIdent := recvExpr.(*ast.Ident)
+		if !isIdent {
+			err = fmt.Errorf("%s: Handle on %s is not a plain router variable; the inventory cannot see this route", at, exprLabel(recvExpr))
+			return false
+		}
+		recv := recvIdent.Name
 		if recv != "apiMux" && recv != "mux" && recv != "root" {
 			err = fmt.Errorf("%s: Handle on %s is not a known router (apiMux, mux, or root); the inventory cannot see this route", at, recv)
 			return false
@@ -217,16 +230,94 @@ func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string
 	return routes, mounts, err
 }
 
-func handleReceiver(call *ast.CallExpr) (string, bool) {
+// handleReceiver reports the receiver of a router Handle or HandleFunc call.
+// A one-argument Handle is a different method, such as middleware wrapping,
+// and is not a route registration. The caller decides whether the receiver
+// is a router it can see. Skipping a non-identifier receiver would hide a
+// route registered through a struct field.
+func handleReceiver(call *ast.CallExpr) (ast.Expr, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") {
-		return "", false
-	}
-	id, ok := sel.X.(*ast.Ident)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return id.Name, true
+	switch sel.Sel.Name {
+	case "HandleFunc":
+		return sel.X, true
+	case "Handle":
+		if len(call.Args) < 2 {
+			return nil, false
+		}
+		return sel.X, true
+	default:
+		return nil, false
+	}
+}
+
+// rejectMuxMethodValues fails when a router Handle or HandleFunc is taken
+// as a value (`f := apiMux.HandleFunc`). The call through f is not a
+// selector, so the pattern walk would not see it.
+func rejectMuxMethodValues(fset *token.FileSet, file *ast.File) error {
+	called := map[token.Pos]struct{}{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && (sel.Sel.Name == "Handle" || sel.Sel.Name == "HandleFunc") {
+			called[sel.Pos()] = struct{}{}
+		}
+		return true
+	})
+	var err error
+	ast.Inspect(file, func(n ast.Node) bool {
+		if err != nil {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if _, isCall := called[sel.Pos()]; isCall || !muxMethodValue(sel) {
+			return true
+		}
+		err = fmt.Errorf("%s: %s is used as a method value; the inventory cannot see routes registered through it", formatPos(fset, sel.Pos()), sel.Sel.Name)
+		return false
+	})
+	return err
+}
+
+func muxMethodValue(sel *ast.SelectorExpr) bool {
+	if sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc" {
+		return false
+	}
+	if id, ok := sel.X.(*ast.Ident); ok {
+		switch id.Name {
+		case "apiMux", "mux", "root":
+			return true
+		default:
+			// eventsHandler.Handle is the handler passed to the router,
+			// not the router method.
+			return false
+		}
+	}
+	// h.m.HandleFunc. A selector receiver that is not the router variable
+	// is still a router method when the name is HandleFunc. Handle on a
+	// selector is the same shape (h.m.Handle); handler methods are named
+	// Handle but their receiver in this code is an identifier.
+	_, nested := sel.X.(*ast.SelectorExpr)
+	return nested
+}
+
+func exprLabel(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return exprLabel(v.X) + "." + v.Sel.Name
+	default:
+		return "a non-identifier receiver"
+	}
 }
 
 func patternText(expr ast.Expr, consts map[string]string) (string, error) {
@@ -328,35 +419,162 @@ func requestForPattern(pattern string) (*http.Request, error) {
 	return httptest.NewRequest(method, path, nil), nil
 }
 
-// crossCheckLiveRouter requests every catalogued pattern on the mux that
-// registers it. mux.Handler must return that same pattern.
-func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) error {
+// crossCheckLiveRouter builds the muxes the server builds and checks them
+// in both directions. The returned routes are the patterns those muxes
+// serve, so the coverage check cannot pass on the source list alone.
+func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) ([]cataloguedRoute, error) {
 	t.Helper()
 	db := setupTestDB(t)
 	apiMux, _, _ := newAPIMux(product.NewCatalog(db), nil, nil, db, nil)
 	brandMux := http.NewServeMux()
 	brand.Register(brandMux)
+	return crossCheckMuxes(routes, apiMux, brandMux)
+}
 
+// crossCheckMuxes requires every catalogued route to be served by the mux
+// that registers it, and every pattern that mux serves to be catalogued.
+// A route registered through a struct field, a method value, or a helper
+// in another package is still on the mux, so it fails here as an unlisted
+// route when the source walk did not record it.
+func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) ([]cataloguedRoute, error) {
+	apiServed, err := patternsServed(apiMux)
+	if err != nil {
+		return nil, err
+	}
+	brandServed, err := patternsServed(brandMux)
+	if err != nil {
+		return nil, err
+	}
+	servedByReceiver := map[string]map[string]struct{}{
+		"apiMux": apiServed,
+		"mux":    brandServed,
+	}
+	muxByReceiver := map[string]*http.ServeMux{
+		"apiMux": apiMux,
+		"mux":    brandMux,
+	}
+
+	catalogued := map[string]cataloguedRoute{}
 	for _, route := range routes {
-		var mux *http.ServeMux
-		switch route.receiver {
-		case "apiMux":
-			mux = apiMux
-		case "mux":
-			mux = brandMux
-		default:
-			return fmt.Errorf("%s (%s) is not on a mux the inventory can cross-check", route.pattern, route.at)
+		if prev, ok := catalogued[route.pattern]; ok {
+			return nil, fmt.Errorf("duplicate registered route %q at %s and %s", route.pattern, prev.at, route.at)
+		}
+		catalogued[route.pattern] = route
+		served, ok := servedByReceiver[route.receiver]
+		if !ok {
+			return nil, fmt.Errorf("%s (%s) is not on a mux the inventory can cross-check", route.pattern, route.at)
+		}
+		if _, ok := served[route.pattern]; !ok {
+			return nil, fmt.Errorf("%s (%s) is registered in source but the live router does not serve it", route.pattern, route.at)
 		}
 		req, err := requestForPattern(route.pattern)
 		if err != nil {
-			return fmt.Errorf("%s (%s): %w", route.pattern, route.at, err)
+			return nil, fmt.Errorf("%s (%s): %w", route.pattern, route.at, err)
 		}
-		_, got := mux.Handler(req)
+		_, got := muxByReceiver[route.receiver].Handler(req)
 		if got != route.pattern {
-			return fmt.Errorf("%s (%s): live router matched %q", route.pattern, route.at, got)
+			return nil, fmt.Errorf("%s (%s): live router matched %q", route.pattern, route.at, got)
 		}
 	}
-	return nil
+
+	var servedRoutes []cataloguedRoute
+	for _, served := range servedByReceiver {
+		for pattern := range served {
+			route, ok := catalogued[pattern]
+			if !ok {
+				return nil, fmt.Errorf("unlisted route %q is served by the live router and has no inventory entry", pattern)
+			}
+			servedRoutes = append(servedRoutes, route)
+		}
+	}
+	if len(servedRoutes) != len(routes) {
+		return nil, fmt.Errorf("live router serves %d routes, inventory has %d", len(servedRoutes), len(routes))
+	}
+	return servedRoutes, nil
+}
+
+// patternsServed lists every pattern registered on mux. ServeMux has no
+// public way to list routes, so this reads the router's own index. A Go
+// release that moves that index fails here instead of reporting an empty
+// router. The same pattern is stored under more than one index key; the
+// result is deduplicated.
+func patternsServed(mux *http.ServeMux) (map[string]struct{}, error) {
+	if mux == nil {
+		return nil, fmt.Errorf("no router to enumerate")
+	}
+	muxVal := reflect.ValueOf(mux).Elem()
+	indexField := muxVal.FieldByName("index")
+	if !indexField.IsValid() {
+		return nil, fmt.Errorf("ServeMux has no index field; the Go router changed and the inventory cannot list the routes it serves")
+	}
+	index := clearUnexported(indexField)
+	segments := index.FieldByName("segments")
+	multis := index.FieldByName("multis")
+	if !segments.IsValid() || !multis.IsValid() {
+		return nil, fmt.Errorf("ServeMux index has no segments or multis field; the Go router changed and the inventory cannot list the routes it serves")
+	}
+	seen := map[string]struct{}{}
+	if err := collectServedPatterns(clearUnexported(segments), seen); err != nil {
+		return nil, err
+	}
+	if err := collectServedPatterns(clearUnexported(multis), seen); err != nil {
+		return nil, err
+	}
+	return seen, nil
+}
+
+func collectServedPatterns(v reflect.Value, seen map[string]struct{}) error {
+	if !v.IsValid() {
+		return fmt.Errorf("route index is missing; the Go router changed and the inventory cannot list the routes it serves")
+	}
+	switch v.Kind() {
+	case reflect.Map:
+		if v.IsNil() {
+			return nil
+		}
+		iter := v.MapRange()
+		for iter.Next() {
+			if err := collectServedPatterns(iter.Value(), seen); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if err := collectServedPatterns(v.Index(i), seen); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.Pointer:
+		if v.IsNil() {
+			return nil
+		}
+		return collectServedPatterns(v.Elem(), seen)
+	case reflect.Struct:
+		str := v.FieldByName("str")
+		if !str.IsValid() || str.Kind() != reflect.String {
+			return fmt.Errorf("route pattern has no string field; the Go router changed and the inventory cannot list the routes it serves")
+		}
+		pattern := str.String()
+		if pattern == "" {
+			return fmt.Errorf("route pattern is empty; the Go router changed and the inventory cannot list the routes it serves")
+		}
+		seen[pattern] = struct{}{}
+		return nil
+	default:
+		return fmt.Errorf("route index has unexpected %s; the Go router changed and the inventory cannot list the routes it serves", v.Kind())
+	}
+}
+
+// clearUnexported makes an unexported field readable from this package.
+// Reflection sets the read-only flag on those fields, and MapRange refuses
+// a map that still has it.
+func clearUnexported(v reflect.Value) reflect.Value {
+	if !v.IsValid() || v.CanInterface() || !v.CanAddr() {
+		return v
+	}
+	return reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
 }
 
 // publicSurface is the path set inside isPublicPath and the method patterns

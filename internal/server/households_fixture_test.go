@@ -3,16 +3,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"unicode"
 
 	"github.com/Rhionin/stockbot/internal/product"
 )
-
-// todayPrincipalID is the only account the process has. Per-household
-// authorization does not exist yet; see S4 (#377).
-const todayPrincipalID = "user-1"
 
 // fixtureHousehold is an invented household. Names, ids, markers, and
 // barcodes are synthetic. This suite must never copy a real household.
@@ -49,8 +48,11 @@ type user1Principal struct {
 
 func (p user1Principal) Household() fixtureHousehold { return p.household }
 
-func (p user1Principal) Apply(r *http.Request) {
-	r.Header.Set("X-Stockbot-Test-Principal", todayPrincipalID)
+func (p user1Principal) Apply(*http.Request) {
+	// The process has one account, user-1, and the server does not read a
+	// household selector. Apply is the seam #377 replaces. It deliberately
+	// leaves the request unchanged: a header the server ignores would look
+	// like authentication.
 }
 
 // twoHouseholds is one test's Alder and Birch, each seeded through the
@@ -97,11 +99,13 @@ func newTwoHouseholds(t *testing.T) *twoHouseholds {
 func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {
 	t.Helper()
 	ctx := context.Background()
-	// The marker is the product name and the household name is the
-	// category, so either string in a response is this household's data.
+	// The product name carries the marker and the household id, and the
+	// category carries the household name. Any of those strings in a
+	// response is this household's data. The id has to be stored or it
+	// cannot leak, and then it is not a marker.
 	err := env.ProductStore.CreateProduct(ctx, product.Product{
 		ID:       h.ProductID,
-		Name:     h.Marker,
+		Name:     h.Marker + " " + h.ID,
 		Category: h.Name,
 	})
 	if err != nil {
@@ -111,19 +115,26 @@ func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {
 		t.Fatalf("seed %s barcode: %v", h.Name, err)
 	}
 	got, err := env.ProductStore.GetProductByID(ctx, h.ProductID)
-	if err != nil || got == nil || got.Name != h.Marker || got.Category != h.Name {
+	if err != nil || got == nil || got.Name != h.Marker+" "+h.ID || got.Category != h.Name {
 		t.Fatalf("seed %s did not store the marker (product %+v, err %v)", h.Name, got, err)
 	}
 	summary, err := env.ProductStore.LookupByBarcode(ctx, h.Barcode, "")
-	if err != nil || summary == nil || summary.Name != h.Marker {
+	if err != nil || summary == nil || summary.Name != h.Marker+" "+h.ID {
 		t.Fatalf("seed %s barcode was not stored (summary %+v, err %v)", h.Name, summary, err)
 	}
+}
+
+// leakFatal is the part of testing.TB that assertNoLeak uses. A fake
+// records Fatalf so a test can prove the check is able to fail.
+type leakFatal interface {
+	Helper()
+	Fatalf(format string, args ...any)
 }
 
 // assertNoLeak fails when body contains any sentinel from other.
 // Pass the household that must not be visible. The check is on the
 // response bytes, not on a SQL dialect.
-func assertNoLeak(t *testing.T, body []byte, other fixtureHousehold) {
+func assertNoLeak(t leakFatal, body []byte, other fixtureHousehold) {
 	t.Helper()
 	for _, marker := range other.leakMarkers() {
 		if marker == "" {
@@ -132,6 +143,60 @@ func assertNoLeak(t *testing.T, body []byte, other fixtureHousehold) {
 		if bytes.Contains(body, []byte(marker)) {
 			t.Fatalf("response contains %s marker %q", other.Name, marker)
 		}
+	}
+}
+
+// leakReport records the first Fatalf from assertNoLeak.
+type leakReport struct {
+	failed bool
+	msg    string
+}
+
+func (r *leakReport) Helper() {}
+
+func (r *leakReport) Fatalf(format string, args ...any) {
+	if r.failed {
+		return
+	}
+	r.failed = true
+	r.msg = fmt.Sprintf(format, args...)
+}
+
+func TestAssertNoLeakRejectsOtherHousehold(t *testing.T) {
+	fx := newTwoHouseholds(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/products", nil)
+	fx.principalFor(fx.Alder).Apply(req)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/products as %s: status %d, body %s", fx.Alder.Name, rec.Code, snippet(rec.Body.Bytes()))
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(fx.Birch.Marker)) {
+		t.Fatalf("GET /api/products as %s did not contain %s marker %q", fx.Alder.Name, fx.Birch.Name, fx.Birch.Marker)
+	}
+
+	body := []byte("requested as " + fx.Alder.Name + " leaked " + fx.Birch.Marker)
+	report := &leakReport{}
+	assertNoLeak(report, body, fx.Birch)
+	if !report.failed || !strings.Contains(report.msg, fx.Birch.Name) || !strings.Contains(report.msg, fx.Birch.Marker) {
+		t.Fatalf("assertNoLeak(Birch marker, requested as Alder) = failed:%v msg:%q", report.failed, report.msg)
+	}
+}
+
+func TestAssertNoLeakRejectsHouseholdID(t *testing.T) {
+	fx := newTwoHouseholds(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/products", nil)
+	fx.principalFor(fx.Alder).Apply(req)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(fx.Alder.ID)) {
+		t.Fatalf("GET /api/products as %s did not contain household id %s (status %d, body %s)", fx.Alder.Name, fx.Alder.ID, rec.Code, snippet(rec.Body.Bytes()))
+	}
+
+	report := &leakReport{}
+	assertNoLeak(report, []byte(fx.Alder.ID), fx.Alder)
+	if !report.failed || !strings.Contains(report.msg, fx.Alder.ID) {
+		t.Fatalf("assertNoLeak(Alder household id) = failed:%v msg:%q", report.failed, report.msg)
 	}
 }
 

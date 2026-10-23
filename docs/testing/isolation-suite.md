@@ -17,13 +17,19 @@ Every registered route is in exactly one category. The key is the pattern the ro
 
 `GET /api/telemetry` is on the public allowlist. The runner requires HTTP 200, a snapshot `status` of `ok`, and no household id, name, marker, or barcode from either fixture household.
 
+Every allowlist route asserts the status of its own handler before the marker check. Login on this address is 404, logout is 200 with an empty object, an empty client telemetry report is 400, an unconfigured deploy hook is 503, and an unconfigured sentry tunnel is 404. A route with no status expectation fails the suite, so the marker check is not reading a generic error page.
+
 ## How a route is inventoried
 
-`http.ServeMux` cannot list its routes, and this suite does not add a production registrar. The test parses `Handle` and `HandleFunc` calls in the non-test Go files of `internal/server` and `internal/brand`. The pattern argument must be a string literal or a string constant such as `sentryTunnelPath`. Anything else fails the test, with the file and line, so a registration cannot hide.
+The check runs in both directions.
 
-Each pattern is then requested on the live mux: `newAPIMux` for API routes, `brand.Register` for the brand and legal pages. The pattern `ServeMux.Handler` returns must be the same string. A wildcard the filler does not understand (`{name...}`, `{$}`, an empty name) fails instead of matching a different route.
+The source walk parses `Handle` and `HandleFunc` calls in the non-test Go files of `internal/server` and `internal/brand`. The pattern argument must be a string literal or a string constant such as `sentryTunnelPath`. The receiver must be the router variable (`apiMux`, `mux`, or `root`). A struct-field receiver (`h.m.HandleFunc`) or a method value (`f := apiMux.HandleFunc`) fails the walk, with the file and line. A one-argument `Handle` is middleware wrapping, not a route, and is ignored.
 
-The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount.
+`http.ServeMux` does not export its route list, and this suite does not add a production registrar. The live check reads the pattern index inside the mux `newAPIMux` returns and the mux passed to `brand.Register`. A Go release that moves that index fails the test instead of treating the router as empty. Every pattern the mux serves must appear in the source inventory, and every source pattern must be a pattern that mux serves. `ServeMux.Handler` must also answer the source pattern with that same string. A route registered through a struct field, a method value, or a helper in another package is on the mux even when the source walk did not record the call, so it fails here as an unlisted route.
+
+A wildcard the filler does not understand (`{name...}`, `{$}`, an empty name) fails instead of matching a different route.
+
+The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount. The root mux is not returned from a constructor, so those five mounts stay a closed source set rather than a walked index.
 
 ## How to add a case
 
@@ -32,13 +38,15 @@ The root mux also registers five composition mounts: `/api`, `/api/`, `/health`,
 3. A public entry needs a reason, and it must agree with `isPublicPath` / `isAuthEndpoint`. The test reads those functions and calls them. Adding a path to one side only fails the build.
 4. An ops entry needs a reason and must not carry household data. The runner requests it and applies `assertNoLeak`. Do not park a household route here.
 5. A real isolation case is an `isolationCases` entry with a `check` function. Drive the HTTP API as one household (`principal.Apply`) and call `assertNoLeak` with the other household. The kind is `foreign-id`, `list-leak`, `write-scope`, or `scoped-collection`.
-6. A route that leaves quarantine is deleted from `quarantine` in the same change. Set `maxQuarantined` to the new length. Do not raise that constant.
+6. A route that leaves quarantine is deleted from `quarantine` in the same change. Set `maxQuarantined` to the new length. Do not raise that constant. Raising it requires explicit reviewer sign-off, and it is not an acceptable way to add a route.
 
 Duplicate keys, a key with no route behind it, and a route missing from every list all fail `TestEveryRouteHasIsolationCase`.
 
 ## Quarantine shrinks only
 
 `maxQuarantined` is the current size of `quarantine` (99). The test fails when the list is longer than that ceiling. It also fails when the list is shorter, until the constant is lowered to the new count in the same change, so the ceiling cannot drift back up.
+
+Raising `maxQuarantined` requires explicit reviewer sign-off. A diff that adds a route, a quarantine entry, and a higher ceiling in one change is the only way past the equality check, so the reviewer has to reject that unless the raise is intentional. The comment immediately above the constant says the same thing, and `TestQuarantineCeilingNeedsReviewerSignOff` fails if that sentence is removed. Raising the ceiling is not an acceptable way to add a route.
 
 New routes do not go into quarantine. They need a public allowlist entry, an ops allowlist entry, or a real isolation case. The 99 routes already listed stay there until their checks can pass, which waits on #377. `TestCoverageCheckRejectsUnlistedRoute`, `TestCoverageCheckRejectsDeletedCase`, and `TestCoverageCheckRejectsStaleAndGrowth` lock those failures.
 
@@ -54,6 +62,6 @@ When a later run selects the engine with `STOCKBOT_TEST_DB` (default `sqlite`), 
 
 ## Acting as a household
 
-`principal` is the seam. `Household()` returns the fixture household the call is on behalf of. `Apply` stamps the request.
+`principal` is the seam. `Household()` returns the fixture household the call is on behalf of. `Apply` is where a future scope will stamp the request.
 
-Today the only implementation is `user1Principal`. The process has one account, `user-1`, and no household selector, so `Apply` records that principal and does not send a household id. When #377 adds scope, replace `Apply`. Call sites keep using `principalFor` and `Apply`.
+Today the only implementation is `user1Principal`. The process has one account, `user-1`, and the server has no household selector. `Apply` leaves the request unchanged. It does not set a header: the server would not read one, and an ignored header is not authentication. When #377 adds scope, replace `Apply`. Call sites keep using `principalFor` and `Apply`.
