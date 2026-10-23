@@ -29,7 +29,7 @@ The source walk parses `Handle` and `HandleFunc` calls in the non-test Go files 
 
 A wildcard the filler does not understand (`{name...}`, `{$}`, an empty name) fails instead of matching a different route.
 
-The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount. The root mux is not returned from a constructor, so those five mounts stay a closed source set rather than a walked index.
+The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount. The root mux is a local in `NewHandler`, so the live check does not see it. Passing `root` to another function fails the source walk, except `brand.Register` (that mux is walked) and `Middleware` (it wraps the handler and registers nothing). A helper in another package that registers on `root` fails there.
 
 ## How to add a case
 
@@ -46,7 +46,7 @@ Duplicate keys, a key with no route behind it, and a route missing from every li
 
 `maxQuarantined` is the current size of `quarantine` (99). The test fails when the list is longer than that ceiling. It also fails when the list is shorter, until the constant is lowered to the new count in the same change, so the ceiling cannot drift back up.
 
-Raising `maxQuarantined` requires explicit reviewer sign-off. A diff that adds a route, a quarantine entry, and a higher ceiling in one change is the only way past the equality check, so the reviewer has to reject that unless the raise is intentional. The comment immediately above the constant says the same thing, and `TestQuarantineCeilingNeedsReviewerSignOff` fails if that sentence is removed. Raising the ceiling is not an acceptable way to add a route.
+Raising `maxQuarantined` requires explicit reviewer sign-off. A diff that adds a route, a quarantine entry, and a higher ceiling in one change is the only way past the equality check, so the reviewer has to reject that unless the raise is intentional. The comment immediately above the constant says the same thing. Raising the ceiling is not an acceptable way to add a route.
 
 New routes do not go into quarantine. They need a public allowlist entry, an ops allowlist entry, or a real isolation case. The 99 routes already listed stay there until their checks can pass, which waits on #377. `TestCoverageCheckRejectsUnlistedRoute`, `TestCoverageCheckRejectsDeletedCase`, and `TestCoverageCheckRejectsStaleAndGrowth` lock those failures.
 

@@ -39,6 +39,11 @@ type cataloguedRoute struct {
 	at       string
 }
 
+// servedRoutes is the pattern list read from the live muxes. The case table
+// takes this type, not the source inventory, so substituting the source
+// list does not compile.
+type servedRoutes []cataloguedRoute
+
 // enumerateRoutes reads route registrations from the server and brand
 // sources. A pattern that is not a string literal or a string constant
 // fails here. A Handle or HandleFunc call whose receiver is not a plain
@@ -183,6 +188,10 @@ func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
+		}
+		if cerr := rejectRootHandoff(fset, call); cerr != nil {
+			err = cerr
+			return false
 		}
 		recvExpr, ok := handleReceiver(call)
 		if !ok {
@@ -422,7 +431,7 @@ func requestForPattern(pattern string) (*http.Request, error) {
 // crossCheckLiveRouter builds the muxes the server builds and checks them
 // in both directions. The returned routes are the patterns those muxes
 // serve, so the coverage check cannot pass on the source list alone.
-func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) ([]cataloguedRoute, error) {
+func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) (servedRoutes, error) {
 	t.Helper()
 	db := setupTestDB(t)
 	apiMux, _, _ := newAPIMux(product.NewCatalog(db), nil, nil, db, nil)
@@ -436,7 +445,7 @@ func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) ([]cataloguedR
 // A route registered through a struct field, a method value, or a helper
 // in another package is still on the mux, so it fails here as an unlisted
 // route when the source walk did not record it.
-func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) ([]cataloguedRoute, error) {
+func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) (servedRoutes, error) {
 	apiServed, err := patternsServed(apiMux)
 	if err != nil {
 		return nil, err
@@ -477,20 +486,44 @@ func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) 
 		}
 	}
 
-	var servedRoutes []cataloguedRoute
+	var matched servedRoutes
 	for _, served := range servedByReceiver {
 		for pattern := range served {
 			route, ok := catalogued[pattern]
 			if !ok {
 				return nil, fmt.Errorf("unlisted route %q is served by the live router and has no inventory entry", pattern)
 			}
-			servedRoutes = append(servedRoutes, route)
+			matched = append(matched, route)
 		}
 	}
-	if len(servedRoutes) != len(routes) {
-		return nil, fmt.Errorf("live router serves %d routes, inventory has %d", len(servedRoutes), len(routes))
+	if len(matched) != len(routes) {
+		return nil, fmt.Errorf("live router serves %d routes, inventory has %d", len(matched), len(routes))
 	}
-	return servedRoutes, nil
+	return matched, nil
+}
+
+// rejectRootHandoff fails when the root mux is handed to a function the
+// inventory does not enumerate. brand.Register's mux is enumerated live.
+// Middleware wraps root and registers nothing. Any other handoff can
+// register routes on root, which is a local in NewHandler, so the live
+// check never sees them.
+func rejectRootHandoff(fset *token.FileSet, call *ast.CallExpr) error {
+	for _, arg := range call.Args {
+		id, ok := arg.(*ast.Ident)
+		if !ok || id.Name != "root" {
+			continue
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "brand" && sel.Sel.Name == "Register" {
+				continue
+			}
+			if sel.Sel.Name == "Middleware" {
+				continue
+			}
+		}
+		return fmt.Errorf("%s: root mux passed to %s; routes it registers bypass the live check", formatPos(fset, call.Pos()), exprLabel(call.Fun))
+	}
+	return nil
 }
 
 // patternsServed lists every pattern registered on mux. ServeMux has no

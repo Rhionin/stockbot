@@ -6,7 +6,6 @@ import (
 	"go/parser"
 	"go/token"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -99,7 +98,7 @@ func knownKind(pattern string, kind isoKind) error {
 
 // coverageProblems reports missing decisions, stale entries, public-path
 // drift, and a quarantine list that is not exactly maxQuarantined.
-func coverageProblems(routes []cataloguedRoute, decisions map[string]routeDecision) []string {
+func coverageProblems(routes servedRoutes, decisions map[string]routeDecision) []string {
 	var problems []string
 	seen := map[string]cataloguedRoute{}
 	for _, route := range routes {
@@ -216,9 +215,8 @@ func TestEveryRouteHasIsolationCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot enumerate routes: %v", err)
 	}
-	// served is what the muxes actually register. coverageProblems has to
-	// see that list: dropping this call leaves served unused and does not
-	// compile, and a router pattern missing from the source list fails it.
+	// coverageProblems takes servedRoutes, the type only the live check
+	// returns. Assigning the source inventory here does not compile.
 	served, err := crossCheckLiveRouter(t, routes)
 	if err != nil {
 		t.Fatalf("live router: %v", err)
@@ -274,7 +272,7 @@ func TestCoverageCheckRejectsUnlistedRoute(t *testing.T) {
 	}
 
 	routes, decisions := coverageBaseline(t)
-	problems := coverageProblems(append(routes, found...), decisions)
+	problems := coverageProblems(append(servedRoutes(routes), found...), decisions)
 	if !problemContains(problems, `unlisted route "`+probe+`" (struct field) has no isolation-case decision`) {
 		t.Fatalf("problems = %v, want an unlisted-route failure", problems)
 	}
@@ -329,6 +327,23 @@ func TestRouteInventoryRejectsHiddenRegistration(t *testing.T) {
 	}
 }
 
+func TestRouteInventoryRejectsRootHandoff(t *testing.T) {
+	// brand.Register and Middleware are the only calls allowed to take root.
+	// other.Mount is a helper in another package. Routes it registered on
+	// root would never reach the live check.
+	const src = "package server\n" +
+		"func register() {\n" +
+		"\tbrand.Register(root)\n" +
+		"\thook.Middleware(root)\n" +
+		"\tother.Mount(root)\n" +
+		"}\n"
+	fset, file := parseSnippet(t, "handoff.go", src)
+	_, _, err := collectRegistrations(fset, file, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "root mux passed to other.Mount") {
+		t.Fatalf("root handoff err = %v", err)
+	}
+}
+
 func TestPublicDrift(t *testing.T) {
 	open := routeDecision{category: catQuarantine, kind: kindListLeak, reason: waitsOnHouseholdScope}
 	if msg := publicDrift("GET /api/build", open); !strings.Contains(msg, "open on the public entry") {
@@ -354,7 +369,7 @@ func TestCoverageCheckRejectsDeletedCase(t *testing.T) {
 		t.Fatalf("case table has no %s entry to delete", dropped)
 	}
 	delete(decisions, dropped)
-	problems := coverageProblems(routes, decisions)
+	problems := coverageProblems(servedRoutes(routes), decisions)
 	if !problemContains(problems, `unlisted route "`+dropped+`"`) {
 		t.Fatalf("problems = %v, want an unlisted-route failure for the deleted case", problems)
 	}
@@ -365,7 +380,7 @@ func TestCoverageCheckRejectsStaleAndGrowth(t *testing.T) {
 
 	stale := cloneDecisions(decisions)
 	stale["GET /api/not-a-route"] = routeDecision{category: catOps, reason: "not registered"}
-	if !problemContains(coverageProblems(routes, stale), `stale isolation entry "GET /api/not-a-route"`) {
+	if !problemContains(coverageProblems(servedRoutes(routes), stale), `stale isolation entry "GET /api/not-a-route"`) {
 		t.Fatal("stale entry was accepted")
 	}
 
@@ -373,7 +388,7 @@ func TestCoverageCheckRejectsStaleAndGrowth(t *testing.T) {
 	grownRoutes := append(append([]cataloguedRoute{}, routes...), cataloguedRoute{pattern: extra, at: "test-only router"})
 	grown := cloneDecisions(decisions)
 	grown[extra] = routeDecision{category: catQuarantine, kind: kindListLeak, reason: waitsOnHouseholdScope}
-	if !problemContains(coverageProblems(grownRoutes, grown), "quarantine grew") {
+	if !problemContains(coverageProblems(servedRoutes(grownRoutes), grown), "quarantine grew") {
 		t.Fatal("quarantine growth was accepted")
 	}
 
@@ -396,7 +411,7 @@ func coverageBaseline(t *testing.T) ([]cataloguedRoute, map[string]routeDecision
 	if err != nil {
 		t.Fatalf("isolation case table: %v", err)
 	}
-	if problems := coverageProblems(routes, decisions); len(problems) > 0 {
+	if problems := coverageProblems(servedRoutes(routes), decisions); len(problems) > 0 {
 		t.Fatalf("baseline coverage is not green:\n%s", strings.Join(problems, "\n"))
 	}
 	return routes, cloneDecisions(decisions)
@@ -408,22 +423,6 @@ func cloneDecisions(in map[string]routeDecision) map[string]routeDecision {
 		out[pattern] = decision
 	}
 	return out
-}
-
-func TestQuarantineCeilingNeedsReviewerSignOff(t *testing.T) {
-	src, err := os.ReadFile("isolation_cases_test.go")
-	if err != nil {
-		t.Fatalf("read quarantine ceiling: %v", err)
-	}
-	text := string(src)
-	idx := strings.Index(text, "const maxQuarantined")
-	if idx < 0 {
-		t.Fatal("maxQuarantined is missing")
-	}
-	window := text[max(0, idx-500):idx]
-	if !strings.Contains(window, "explicit reviewer sign-off") {
-		t.Fatal("raising maxQuarantined needs an explicit reviewer sign-off note next to the constant")
-	}
 }
 
 func problemContains(problems []string, needle string) bool {

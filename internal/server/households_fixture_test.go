@@ -164,17 +164,9 @@ func (r *leakReport) Fatalf(format string, args ...any) {
 
 func TestAssertNoLeakRejectsOtherHousehold(t *testing.T) {
 	fx := newTwoHouseholds(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/products", nil)
-	fx.principalFor(fx.Alder).Apply(req)
-	rec := httptest.NewRecorder()
-	fx.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/products as %s: status %d, body %s", fx.Alder.Name, rec.Code, snippet(rec.Body.Bytes()))
-	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte(fx.Birch.Marker)) {
-		t.Fatalf("GET /api/products as %s did not contain %s marker %q", fx.Alder.Name, fx.Birch.Name, fx.Birch.Marker)
-	}
-
+	// Synthetic body, requested as Alder. This does not read GET /api/products:
+	// that route is quarantined until #377, and asserting today's leak would
+	// fail once products are scoped to one household.
 	body := []byte("requested as " + fx.Alder.Name + " leaked " + fx.Birch.Marker)
 	report := &leakReport{}
 	assertNoLeak(report, body, fx.Birch)
