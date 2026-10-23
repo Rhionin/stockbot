@@ -180,6 +180,69 @@ describe('api error messages', () => {
     expect(report.mock.calls.some((call) => call[1] === 200)).toBe(true);
   });
 
+  it('trims a code and ignores one that is not text', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'full', code: ' no_space ' }),
+      { status: 507, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(listProducts()).rejects.toMatchObject({ code: 'no_space' });
+    expect(serverNoticeText()).toBe('');
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'nope', code: 7 }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+  });
+
+  it('reads a logout code into the sign-in banner', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'off', code: authNotConfigured.code }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(logout()).rejects.toBeInstanceOf(ServerNoticeError);
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+  });
+
+  it('treats an unreadable success body as offline and an unreadable error body as sign-in unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('read failed')),
+    }) as Response));
+    await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('<html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    }))));
+    await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+
+    notifyApiSuccess();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('not-json', { status: 400 }))));
+    await expect(getSession()).resolves.toEqual({
+      required: true,
+      username: '',
+      error: 'Sign-in is unavailable right now.',
+    });
+    expect(offlineBannerActive()).toBe(false);
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: () => Promise.reject(new TypeError('read failed')),
+    }) as Response));
+    await expect(getSession()).resolves.toEqual({
+      required: true,
+      username: '',
+      error: 'Sign-in is unavailable right now.',
+    });
+    expect(offlineBannerActive()).toBe(false);
+  });
+
   it('clears the banner when session, login, and logout succeed', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);

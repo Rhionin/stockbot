@@ -15,10 +15,13 @@ import {
   networkErrorResult,
   NO_SPACE_SENTENCE,
   nothingOnHandPill,
+  applyHttpResponse,
   notifyApiSuccess,
   OFFLINE_SENTENCE,
   offlineBannerActive,
+  raiseAuthNotConfiguredBanner,
   raiseOfflineBanner,
+  serverNoticeText,
   shelfHasNothingOnHand,
   UnreachableError,
   unreachableFrom,
@@ -392,5 +395,20 @@ describe('offline banner', () => {
     expect(offlineBannerActive()).toBe(true);
     notifyApiSuccess();
     expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('clears the sign-in notice on success too', () => {
+    raiseAuthNotConfiguredBanner();
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+    notifyApiSuccess();
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('trims the code before choosing the banner', () => {
+    expect(applyHttpResponse(503, `  ${CODE_AUTH_NOT_CONFIGURED}  `)).toBe('auth');
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+    expect(applyHttpResponse(503, '   ')).toBe('offline');
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+    notifyApiSuccess();
   });
 });
