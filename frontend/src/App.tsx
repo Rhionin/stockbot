@@ -58,7 +58,7 @@ function SignedInApp() {
             </div>
           </AppShell.Header>
           <AppShell.Main>
-            {pathname !== '/' && <ServerNoticeBanner />}
+            {pathname !== '/' && <ServerNoticeBanner shell />}
             <div className="page-frame">
               <Routes>
                 <Route path="/" element={<ScanQueuePage />} />

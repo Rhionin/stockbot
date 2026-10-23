@@ -22,7 +22,11 @@ export function ServerNoticeBanner({ topInset = 0, text = '' }: { topInset?: num
       accessibilityLiveRegion="polite"
       style={[styles.banner, { marginTop: topInset, marginHorizontal: SERVER_NOTICE_INSET }]}
     >
-      <View style={styles.icon} accessibilityElementsHidden>
+      <View
+        style={styles.icon}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
         <Text style={styles.iconMark}>!</Text>
       </View>
       <Text style={styles.sentence}>{shown}</Text>
