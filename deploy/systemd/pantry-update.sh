@@ -195,6 +195,8 @@ if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
 fi
 chmod 755 "$PANTRY_DIR/deploy-trigger"
 
+# stockbot-backup waits on this same file (flock -w 900) so a backup does not
+# snapshot while an update recreates the container.
 exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
 if ! flock -n 9; then
   echo "pantry update: another update is running; waiting so this trigger is not dropped"

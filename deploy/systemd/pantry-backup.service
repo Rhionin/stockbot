@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up the pantry database
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+WorkingDirectory=/opt/pantry
+Environment=BACKUP_REASON=nightly
+EnvironmentFile=-/run/pantry-backup.env
+ExecStart=/opt/pantry/systemd/pantry-backup.sh

@@ -1,0 +1,402 @@
+package backup
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/Rhionin/stockbot/internal/buildinfo"
+)
+
+const (
+	retentionAge = 14 * 24 * time.Hour
+	overAgeLimit = 15 * 24 * time.Hour
+	staleAfter   = 26 * time.Hour
+)
+
+// Runner performs one backup or a stale check.
+type Runner struct {
+	DBPath            string
+	StageDir          string
+	TmpfsLimit        int64
+	Reason            string
+	Recipients        string
+	Store             ObjectStore
+	Now               func() time.Time
+	Sleep             func(time.Duration)
+	BusyTimeout       time.Duration
+	BusyRetries       int
+	BusyRetryWait     time.Duration
+	UploadRetries     int
+	UploadRetryWait   time.Duration
+	ImageDigest       string
+	ToolVersion       string
+	PrunePremigration bool
+	IncludeSecrets    bool
+	SecretsPaths      []string
+	HealthURL         string
+	Health            HealthPinger
+	AfterSnapshot     func(path string) error
+}
+
+// Run snapshots, verifies, encrypts, uploads, sweeps, and checks freshness.
+func (r *Runner) Run(ctx context.Context) (Manifest, error) {
+	started := r.now()
+	manifest, err := r.run(ctx, started)
+	if err != nil {
+		r.ping(ctx, false, "class="+AlertClass(err))
+		return Manifest{}, err
+	}
+	line := fmt.Sprintf("bytes=%d duration=%s rows=%d", manifest.CiphertextSize, time.Duration(manifest.DurationMS)*time.Millisecond, manifest.RowTotal)
+	r.ping(ctx, true, line)
+	fmt.Printf("backup ok key=%s integrity=%s rows=%d staging=%s at=%s\n",
+		manifest.ObjectKey, manifest.Integrity, manifest.RowTotal, manifest.Staging, denver(r.now()))
+	return manifest, nil
+}
+
+func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
+	if r.Store == nil {
+		return Manifest{}, errClass(ExitPreflight, "preflight", "the backup destination is not configured")
+	}
+	if r.DBPath == "" {
+		return Manifest{}, errClass(ExitPreflight, "preflight", "the database path is missing")
+	}
+	dbBytes, err := databaseBytes(r.DBPath)
+	if err != nil {
+		return Manifest{}, err
+	}
+	dataKey, manifestKey, err := objectNames(started, r.Reason)
+	if err != nil {
+		return Manifest{}, err
+	}
+	limit := resolveTmpfsLimit(r.StageDir, r.TmpfsLimit)
+	plan := ChooseStage(r.DBPath, r.StageDir, dbBytes, limit)
+	log.Print(stageLog(plan))
+	// A killed run can leave a plaintext copy on the data volume.
+	plan.Cleanup()
+	if err := prepareStage(plan); err != nil {
+		return Manifest{}, err
+	}
+	defer plan.Cleanup()
+
+	snap := plan.Dir + "/snap.db"
+	if err := Snapshot(r.DBPath, snap, SnapshotOptions{
+		BusyTimeout: r.busyTimeout(),
+		Retries:     r.BusyRetries,
+		RetryWait:   r.retryWait(),
+		Sleep:       r.sleep,
+	}); err != nil {
+		return Manifest{}, err
+	}
+	if r.AfterSnapshot != nil {
+		if err := r.AfterSnapshot(snap); err != nil {
+			return Manifest{}, err
+		}
+	}
+	info, err := Inspect(snap)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if info.ForeignKeyCheck == "warning" {
+		log.Print("backup snapshot: foreign key check reported rows; the copy was still uploaded")
+	}
+
+	body, sum, err := r.ciphertext(snap)
+	if err != nil {
+		return Manifest{}, err
+	}
+	// Drop the plaintext as soon as the ciphertext exists. The deferred
+	// cleanup is the backstop when this line is not reached.
+	_ = os.Remove(snap)
+
+	if err := r.putVerified(ctx, dataKey, body, sum); err != nil {
+		return Manifest{}, err
+	}
+
+	manifest := Manifest{
+		ObjectKey:        dataKey,
+		CiphertextSHA256: hex.EncodeToString(sum),
+		CiphertextSize:   int64(len(body)),
+		PlaintextSHA256:  info.PlaintextSHA256,
+		PlaintextSize:    info.PlaintextSize,
+		Integrity:        info.Integrity,
+		ForeignKeyCheck:  info.ForeignKeyCheck,
+		Tables:           info.Tables,
+		LastMigration:    info.LastMigration,
+		ToolVersion:      r.version(),
+		ImageDigest:      r.ImageDigest,
+		DurationMS:       r.now().Sub(started).Milliseconds(),
+		Reason:           r.Reason,
+		CreatedAt:        started.UTC().Format(time.RFC3339),
+		PageCount:        info.PageCount,
+		PageSize:         info.PageSize,
+		RowTotal:         info.RowTotal,
+		Staging:          plan.Kind,
+	}
+	raw, err := manifest.marshal()
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := r.putVerified(ctx, manifestKey, raw, nil); err != nil {
+		return Manifest{}, err
+	}
+	if err := r.archiveSecrets(ctx, started); err != nil {
+		return Manifest{}, err
+	}
+	if err := r.sweep(ctx); err != nil {
+		return Manifest{}, err
+	}
+	if err := r.CheckStale(ctx); err != nil {
+		return Manifest{}, err
+	}
+	if r.PrunePremigration {
+		if err := prunePremigration(r.DBPath); err != nil {
+			return Manifest{}, err
+		}
+	}
+	manifest.DurationMS = r.now().Sub(started).Milliseconds()
+	return manifest, nil
+}
+
+func (r *Runner) ciphertext(path string) ([]byte, []byte, error) {
+	// Age output is not deterministic, so the sha256 is known only after the
+	// ciphertext exists. It stays in memory and is not written to a file.
+	var buf bytes.Buffer
+	if err := EncryptFile(path, r.Recipients, &buf); err != nil {
+		return nil, nil, err
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	return buf.Bytes(), sum[:], nil
+}
+
+func (r *Runner) putVerified(ctx context.Context, key string, body, sum []byte) error {
+	if sum == nil {
+		s := sha256.Sum256(body)
+		sum = s[:]
+	}
+	attempts := r.uploadAttempts()
+	wait := r.uploadWait()
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err = r.putOnce(ctx, key, body, sum)
+		if err == nil {
+			return nil
+		}
+		if attempt+1 < attempts {
+			r.sleep(wait)
+			wait *= 2
+		}
+	}
+	return err
+}
+
+func (r *Runner) putOnce(ctx context.Context, key string, body, sum []byte) error {
+	if err := r.Store.Put(ctx, Upload{
+		Key:    key,
+		Body:   bytes.NewReader(body),
+		Size:   int64(len(body)),
+		SHA256: append([]byte(nil), sum...),
+	}); err != nil {
+		return err
+	}
+	info, err := r.Store.Head(ctx, key)
+	if err != nil {
+		_ = r.Store.Delete(ctx, key)
+		return err
+	}
+	if info.Size != int64(len(body)) || !sameSHA(info.SHA256, sum) {
+		_ = r.Store.Delete(ctx, key)
+		return errClass(ExitUpload, "upload", "the uploaded backup did not match its size and sha256")
+	}
+	return nil
+}
+
+func (r *Runner) sweep(ctx context.Context) error {
+	now := r.now()
+	cutoff := now.Add(-retentionAge)
+	failed := false
+	for _, prefix := range managedPrefixes {
+		objs, err := r.Store.List(ctx, prefix)
+		if err != nil {
+			return err
+		}
+		for _, obj := range objs {
+			if obj.LastModified.IsZero() || !obj.LastModified.Before(cutoff) {
+				continue
+			}
+			if err := r.Store.Delete(ctx, obj.Key); err != nil {
+				failed = true
+				log.Printf("backup sweep: could not delete an expired object")
+			}
+		}
+	}
+	if err := r.rejectOverAge(ctx, now); err != nil {
+		return err
+	}
+	if failed {
+		return errClass(ExitSweep, "sweep", "could not delete an expired backup")
+	}
+	return nil
+}
+
+func (r *Runner) rejectOverAge(ctx context.Context, now time.Time) error {
+	limit := now.Add(-overAgeLimit)
+	for _, prefix := range managedPrefixes {
+		objs, err := r.Store.List(ctx, prefix)
+		if err != nil {
+			return err
+		}
+		for _, obj := range objs {
+			if !obj.LastModified.IsZero() && obj.LastModified.Before(limit) {
+				return errClass(ExitSweep, "sweep", "a backup older than 15 days is still stored")
+			}
+		}
+	}
+	return nil
+}
+
+// CheckStale fails when the newest database backup is older than about 26
+// hours, or when any managed object is older than 15 days.
+func (r *Runner) CheckStale(ctx context.Context) error {
+	now := r.now()
+	newest, found, err := r.newestDatabase(ctx)
+	if err != nil {
+		return err
+	}
+	if !found || newest.Before(now.Add(-staleAfter)) {
+		return errClass(ExitSweep, "stale", "the newest backup is older than 26 hours")
+	}
+	if err := r.rejectOverAge(ctx, now); err != nil {
+		var coded *Error
+		if errors.As(err, &coded) && coded.Class == "sweep" {
+			return errClass(ExitSweep, "stale", "a backup older than 15 days is still stored")
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) newestDatabase(ctx context.Context) (time.Time, bool, error) {
+	var newest time.Time
+	found := false
+	for _, prefix := range []string{"nightly/", "manual/"} {
+		objs, err := r.Store.List(ctx, prefix)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		for _, obj := range objs {
+			if !isDatabaseObject(obj.Key) {
+				continue
+			}
+			if !found || obj.LastModified.After(newest) {
+				newest = obj.LastModified
+				found = true
+			}
+		}
+	}
+	return newest, found, nil
+}
+
+func isDatabaseObject(key string) bool {
+	return len(key) > len(".pantry.db.gz.age") && key[len(key)-len(".pantry.db.gz.age"):] == ".pantry.db.gz.age"
+}
+
+var managedPrefixes = []string{"nightly/", "manual/", "secrets/"}
+
+func (r *Runner) ping(ctx context.Context, ok bool, body string) {
+	if r.HealthURL == "" {
+		return
+	}
+	pinger := r.Health
+	if pinger == nil {
+		pinger = HTTPPinger{}
+	}
+	if err := pinger.Ping(ctx, r.HealthURL, body, !ok); err != nil {
+		log.Print("healthchecks ping failed")
+	}
+}
+
+func (r *Runner) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func (r *Runner) sleep(d time.Duration) {
+	if r.Sleep != nil {
+		r.Sleep(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+func (r *Runner) busyTimeout() time.Duration {
+	if r.BusyTimeout > 0 {
+		return r.BusyTimeout
+	}
+	return 10 * time.Second
+}
+
+func (r *Runner) retryWait() time.Duration {
+	if r.BusyRetryWait > 0 {
+		return r.BusyRetryWait
+	}
+	return 30 * time.Second
+}
+
+func (r *Runner) uploadAttempts() int {
+	if r.UploadRetries > 0 {
+		return r.UploadRetries
+	}
+	return 3
+}
+
+func (r *Runner) uploadWait() time.Duration {
+	if r.UploadRetryWait > 0 {
+		return r.UploadRetryWait
+	}
+	return time.Second
+}
+
+func (r *Runner) version() string {
+	if r.ToolVersion != "" {
+		return r.ToolVersion
+	}
+	return buildinfo.VisibleVersion()
+}
+
+func prunePremigration(dbPath string) error {
+	dir := dirOf(dbPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return errWrap(ExitSweep, "prune", "could not read the database directory", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if len(name) > len("pantry-pre-") && name[:len("pantry-pre-")] == "pantry-pre-" && len(name) > 3 && name[len(name)-3:] == ".db" {
+			if err := os.Remove(dir + "/" + name); err != nil {
+				return errWrap(ExitSweep, "prune", "could not remove a pre-migration copy", err)
+			}
+		}
+	}
+	return nil
+}
+
+func dirOf(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			if i == 0 {
+				return "/"
+			}
+			return path[:i]
+		}
+	}
+	return "."
+}

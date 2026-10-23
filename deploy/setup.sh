@@ -173,6 +173,9 @@ copy_deploy_files() {
   if [[ -f "${PANTRY_DIR}/systemd/pantry-update.sh" ]]; then
     chmod +x "${PANTRY_DIR}/systemd/pantry-update.sh"
   fi
+  if [[ -f "${PANTRY_DIR}/systemd/pantry-backup.sh" ]]; then
+    chmod +x "${PANTRY_DIR}/systemd/pantry-backup.sh"
+  fi
   if [[ -f "${PANTRY_DIR}/firewall/pantry-lan-only.sh" ]]; then
     chmod +x "${PANTRY_DIR}/firewall/pantry-lan-only.sh"
   fi
@@ -535,6 +538,28 @@ refresh_update_unit() {
   log_success "Refreshed pantry-update units so automatic updates keep the public proxy and the deploy hook"
 }
 
+# refresh_backup_unit recopies the backup units only when the timer is
+# already installed. A first-time setup does not enable the timer: that
+# happens from deploy/backup/install.sh, after the R2 settings exist.
+refresh_backup_unit() {
+  local unit_dir
+  unit_dir=$(systemd_unit_dir)
+  if [[ ! -f "$unit_dir/pantry-backup.timer" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$PANTRY_DIR/systemd/pantry-backup.service" || ! -f "$PANTRY_DIR/systemd/pantry-backup.timer" ]]; then
+    log_warn "backup units not found under $PANTRY_DIR/systemd; leaving the backup timer as it is"
+    return 0
+  fi
+  cp "$PANTRY_DIR/systemd/pantry-backup.service" "$unit_dir/pantry-backup.service"
+  cp "$PANTRY_DIR/systemd/pantry-backup.timer" "$unit_dir/pantry-backup.timer"
+  systemctl daemon-reload
+  if systemctl is-enabled pantry-backup.timer &>/dev/null; then
+    systemctl enable pantry-backup.timer
+  fi
+  log_success "Refreshed pantry-backup units"
+}
+
 # verify_public_sign_in asks Stockbot on the LAN port, with the public-entry
 # header Caddy would add. A password file the container cannot read makes
 # GET /api/session return 503. A visitor who simply has not signed in gets 401.
@@ -814,6 +839,7 @@ cmd_apply() {
   # Recopy the unit itself when it is already installed so a timer keeps the
   # public profile without enabling the timer on a LAN-only box.
   refresh_update_unit
+  refresh_backup_unit
 
   log_info "Waiting for Stockbot to become healthy..."
   local deadline=$((SECONDS + 60))
