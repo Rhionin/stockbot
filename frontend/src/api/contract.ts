@@ -51,6 +51,19 @@ export const DEFAULT_SCAN_USER_ID = 'user-1';
 
 export const SESSION_PATH = '/api/session';
 export const SCANS_PATH = '/api/scans';
+
+// One row of GET /api/scans. onHand is the current shelf count for a linked
+// stock-out. A shelved item and a live item with nothing left are 0, and a
+// removed unit is not counted. The field is omitted when the product is
+// unresolved, this household has no item, or the scan is not a stock-out.
+// Absence is not an empty shelf.
+export interface ScanListEntry {
+  id: string;
+  direction: ScanDirection | null;
+  productId: string | null;
+  status: ScanStatus;
+  onHand?: number;
+}
 export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';
 export const SCANNER_CONFIG_PATH = '/api/scanner/config';
 export const SCANNER_MODE_PATH = '/api/scanner/mode';

@@ -344,7 +344,22 @@ The web **What is it?** picker reads `GET /api/products`. An optional `userId` q
 
 `POST /api/products` and `POST /api/products/overrides` do not carry `onHand`. The scan response does.
 
-`GET /api/scans` does not grow an `onHand` field. The link response is the one the card reads.
+### Scan list
+
+`GET /api/scans` adds `onHand` to each linked stock-out. It is a JSON number: how many units of that scan's household item are on the shelf right now. `0` is sent as `0`.
+
+A shelved item is `0`, even when old instance rows remain. A live item with no unit left is `0`. A removed unit is not counted. Another household's item for the same product is not counted. That `0` is the same shelf a stock-out commit refuses with `409` `none_on_hand` / `Nothing on hand to take out.` A positive count is a shelf that commit can take from.
+
+The field is omitted when the scan is not a stock-out, when `productId` is null, and when this household has no item for that product. Those scans are not an empty shelf. A missing product is still `product_unresolved` on commit, and a known product with no item is still `no_item`.
+
+The count is read in the scan list query. A just-backfilled pair leaves `onHand` at `0`: the stock-in and the stock-out net to nothing on the shelf.
+
+```json
+[
+  { "id": "scan-empty", "direction": "stock_out", "productId": "prod-cream", "onHand": 0 },
+  { "id": "scan-full", "direction": "stock_out", "productId": "prod-full", "onHand": 2 }
+]
+```
 
 ## Link suggestions
 
