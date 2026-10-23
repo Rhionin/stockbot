@@ -407,6 +407,10 @@ export function quantityLocked(
 
 export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
+// The phone still shows this sentence. The web card uses nothingOnHandBody.
+export const NOTHING_ON_HAND_BODY =
+  "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
+
 const NOTHING_ON_HAND_BODY_ONE =
   'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.';
 
