@@ -886,7 +886,7 @@ export function classifyImportDocument(value: unknown): ImportClassification {
   };
 }
 
-/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). O, I, and L are absent on purpose. */
+/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). O, I, and L are aliases, not payload characters. */
 const PAIRING_PAYLOAD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const PAIRING_CHECK = `${PAIRING_PAYLOAD}*~$=U`;
 
@@ -895,16 +895,21 @@ export const PAIRING_CODE_GRAMMAR =
   /^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/;
 
 /**
- * Trim the whitespace the server trims on a scan, including a trailing CR or LF,
- * then uppercase ASCII a-z only. O, I, and L are not rewritten. A non-ASCII
- * letter such as ſ is left as-is, so it does not become S.
+ * Trim the whitespace a scan can carry, including a trailing CR or LF.
+ * A non-ASCII character rejects the value. Then uppercase ASCII a-z only,
+ * and map O to 0 and I or L to 1. Unicode case folding is not used.
+ * Returns null when the value contains a non-ASCII character.
  */
-export function normalizePairingCode(input: string): string {
+export function normalizePairingCode(input: string): string | null {
   const trimmed = input.trim();
   let out = '';
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
-    out += code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : trimmed[i];
+    if (code > 127) return null;
+    let ch = code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : trimmed[i];
+    if (ch === 'O') ch = '0';
+    else if (ch === 'I' || ch === 'L') ch = '1';
+    out += ch;
   }
   return out;
 }
@@ -935,14 +940,16 @@ export function isProductBarcode(input: string): boolean {
   return /^\d{1,14}$/.test(input.trim());
 }
 
-/** Grammar only, including a wrong check character. Scan rejection uses this, not `isPairingCode`. */
+/** Grammar only, after normalization, including a wrong check character. Scan rejection uses this. */
 export function looksLikePairingCode(input: string): boolean {
-  return PAIRING_CODE_GRAMMAR.test(normalizePairingCode(input));
+  const code = normalizePairingCode(input);
+  return code !== null && PAIRING_CODE_GRAMMAR.test(code);
 }
 
+/** Grammar plus the check character. Pairing completion uses this. */
 export function isPairingCode(input: string): boolean {
   const code = normalizePairingCode(input);
-  if (!PAIRING_CODE_GRAMMAR.test(code)) return false;
+  if (code === null || !PAIRING_CODE_GRAMMAR.test(code)) return false;
   const payload = code.slice(4, 8) + code.slice(9, 13);
   return code[14] === pairingCheckCharacter(payload);
 }

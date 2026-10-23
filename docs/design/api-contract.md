@@ -79,7 +79,7 @@ Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own 
 
 CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
 
-The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>`, where `<semver>` is `expo.version` from `app.json`. The server compares that dotted number numerically. A pre-release suffix is ignored. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated. The gate runs before `rate_limited` and `busy` as well, including when nobody is signed in. A request that fails the gate is `426` and is not counted as a login attempt.
+The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>`, where `<semver>` is `expo.version` from `app.json`. The server compares that dotted number numerically. A pre-release suffix is ignored. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated. The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling, including when nobody is signed in. A request that fails the gate is `426` and is not counted as a login attempt.
 
 Both of these rules apply:
 
@@ -106,7 +106,7 @@ These routes do not take a household session. None of them return a household id
 | `GET /privacy` | No session | The privacy page. |
 | `GET /health` | LAN principal while the household password is on | `{"status":"ok"}` and an optional `scanner` object. No household id, name, or item count. It is not on the public no-password list. |
 | `GET /api/sync/snapshot` | Sync token | Pi only. Not a hosted route. Household 1, read-only. |
-| `GET /setup` | No session, LAN listener only, and only while no personal account exists | The one-time setup code, then name, email, and password. Creates the operator as owner of household 1, signs them in, and sets `activeHouseholdId` to household 1. After any personal account exists, `not_found`. The public entry does not serve it. Recover mode is the same LAN page with a fresh code. |
+| `GET /setup` and `POST /setup` | No session | The setup code is 40 bits. On the LAN, while no personal account exists, the page asks for that code, then name, email, and password. It creates the operator as owner of household 1, signs them in, and sets `activeHouseholdId` to household 1. On the public entry, GET and POST return `not_found`. On the LAN, after the first account exists, GET redirects to sign-in and POST returns `not_found`, except in recover mode, which is the same LAN page with a fresh code. |
 
 ## Endpoint index
 
@@ -310,7 +310,7 @@ Creates a household and makes the caller an owner. This is the step after email 
 
 `name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. `restockMode` is optional: `auto`, `ask_restock`, or `ask_hold`, the three values in [#296](https://github.com/Rhionin/stockbot/issues/296). Omitted means `auto`, which is today's behavior. Master has no route for that setting. `PUT /api/restock/household` sets a numeric household target. It is not this mode.
 
-`inviteCode` is optional on the route so a later stage can make it optional without changing the path. In stage 1 it is required, and it must be an open `start_household` invite. A missing `inviteCode` is `403` `invite_required`. An expired or already used code is `invite_expired`. A revoked or unknown code is `not_found`, the same split as invite accept. A code for joining an existing household is `not_found` on this route. The server consumes the code in the same transaction that creates the household and the owner membership. A failed create does not consume the code. Invite-accept limits apply: 10 per 15 minutes per IP, and 5 attempts per code. Over the limit is `rate_limited`. When this household is the person's only one, the session's `activeHouseholdId` is set to it.
+`inviteCode` is optional on the route so a later stage can make it optional without changing the path. In stage 1 it is required, and it must be an open `start_household` invite. A missing `inviteCode` is `403` `invite_required`. An expired or already used code is `invite_expired`. A revoked or unknown code is `not_found`, the same split as invite accept. A code for joining an existing household is `not_found` on this route. The server consumes the code in the same transaction that creates the household and the owner membership. A failed create does not consume the code. When two requests use the same invite, the loser gets `invite_expired`. Invite-accept limits apply: 10 per 15 minutes per IP, and 5 attempts per code. Over the limit is `rate_limited`. When this household is the person's only one, the session's `activeHouseholdId` is set to it.
 
 ### GET /api/household/settings
 
@@ -338,7 +338,7 @@ interface HouseholdSettings {
 
 `restockMode` is the #364 field. `householdPasswordEnabled` and `householdPasswordRestoreUntil` are the stage-1 additions. `householdPasswordEnabled` is true only while household 1's shared password can still sign in. After retire it is false, and `householdPasswordRestoreUntil` is set for 7 days. A household that never had a shared password, stage 3, and every household other than household 1 return `householdPasswordEnabled: false` and omit `householdPasswordRestoreUntil`.
 
-password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`.
+password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`. True means the shared password is on. False with `householdPasswordRestoreUntil` means it is retired and can still be restored. False without that timestamp means it is retired, or this household has no shared password.
 
 PATCH accepts `restockMode` only. A body that includes `householdPasswordEnabled`, `householdPasswordRestoreUntil`, the password, or a hash is `validation`. Changing the switch is the retire and restore routes. Login's `{ "householdPassword": string }` is the sign-in secret for that request. It is not this field, and no response returns it.
 
@@ -605,7 +605,7 @@ The code is in the body so it does not land in an access log as a path. The #364
 | Response | `200` `LoginResponse` with `householdId`, `name`, and `role`. Accept with `account` creates the session: web sets `__Host-stockbot_session`, and Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
 | Errors | `unauthorized`, `validation`, `invite_expired`, `not_found`, `account_exists`, `busy`, `rate_limited` |
 
-A code that is past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
+A code that is past `expiresAt`, or already used, is `invite_expired`. The sentence is "This invite has expired or was already used. Ask for a new one." When two requests use the same invite, the loser gets `invite_expired`. A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`. A signed-in person sends no `account`. Sending a session and `account` together is `validation`. The accept body has no `role`. Sending `role` is `validation`, including a value that matches the invite. Accept cannot raise a `member` invite to `owner` or lower an `owner` invite to `member`.
 
@@ -643,7 +643,7 @@ Starts pairing from a signed-in client. Any member can start a code. Only an own
 | Response | `201` `PairingCode` |
 | Errors | `unauthorized`, `validation`, `not_found`, `busy` |
 
-`expiresAt` is 10 minutes from creation. `qrPayload` is the same code, for the QR. It does not contain a household id the device is expected to send back. The code has at least 40 bits of entropy.
+`expiresAt` is 10 minutes from creation. `qrPayload` is the same code, for the QR. It does not contain a household id the device is expected to send back. Pairing codes are 40 bits.
 
 ```ts
 interface PairingCode {
@@ -656,13 +656,13 @@ interface PairingCode {
 }
 ```
 
-pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. O, I, and L are rejected on purpose. They are not aliases for 0 or 1. U is a check symbol only, not a payload character. The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The symbols `*`, `~`, `$`, and `=` stay in that alphabet. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`.
+pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. U is a check symbol only, not a payload character. O, I, and L are aliases: O maps to 0, and I or L maps to 1. The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The symbols `*`, `~`, `$`, and `=` stay in that alphabet. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`.
 
-Before that compare, the client and the server normalize a scan the same way. Trim the whitespace `strings.TrimSpace` trims, including a trailing CR or LF, then uppercase ASCII `a` through `z` only. A non-ASCII letter is not uppercased, so `ſ` does not become `S`.
+Before that compare, the client and the server normalize a scan the same way. Trim the whitespace `strings.TrimSpace` trims, including a trailing CR or LF. Reject a value that still contains a non-ASCII character. Then uppercase ASCII `a` through `z` only. Never use Unicode case folding, so `ſ` does not become `S`. Then map O to 0 and I or L to 1. The shared vectors are `testdata/pairing-codes.json`.
 
 A product barcode is ASCII digits of length 1 through 14 after that same trim. That includes 6- and 7-digit UPC-E, and GTIN-8, GTIN-12, GTIN-13, and GTIN-14. The server's scan classifier uses this rule: digits only and at most 14 characters is a product, not a QR payload. A pairing code contains letters and hyphens, so it is not one.
 
-The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check after normalization. `isPairingCode` also requires the check character. A code with the right pattern and a bad check character matches `looksLikePairingCode` and fails `isPairingCode`, and the scan is still rejected. `isPairingCode` alone would let that scan through as a product.
+The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check after normalization. A code with the right pattern and a bad check character matches `looksLikePairingCode` and fails `isPairingCode`, and the scan is still rejected. `POST /api/devices/pair/complete` also checks the check character. A pattern match with a bad check is `not_found` there. `isPairingCode` alone would let that scan through as a product.
 
 ### GET /api/devices/pair/{pairingId}
 
@@ -691,7 +691,7 @@ The device calls this with the code and receives the bearer token. Design §6 na
 | Response | `201` `{ "deviceId": string, "token": string, "config"?: DeviceHubConfig, "heartbeatSeconds"?: 60 }` |
 | Errors | `validation`, `not_found`, `rate_limited`. `invite_expired` is not used here |
 
-An unknown, revoked, already used, or expired code is `not_found`. Pairing does not reuse `invite_expired`. `label` is an optional display name. `code` and `label` are the #364 fields. `hub` is the stage-1 addition a scan hub sends. Complete is attempt-limited: 10 per 10 minutes per IP, and 5 attempts per code. Too many tries returns `rate_limited`.
+An unknown, revoked, already used, or expired code is `not_found`. A code that matches the pattern and fails the check character is `not_found` too. Pairing does not reuse `invite_expired`. `label` is an optional display name. `code` and `label` are the #364 fields. `hub` is the stage-1 addition a scan hub sends. Complete is attempt-limited: 10 per 10 minutes per IP, and 5 attempts per code. Too many tries returns `rate_limited`.
 
 The response does not include a household id. The token is bound to that household on the server. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`.
 

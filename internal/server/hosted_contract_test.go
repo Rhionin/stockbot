@@ -249,6 +249,15 @@ func TestHostedAPIContract(t *testing.T) {
 		"CLIENT_HEADER",
 		"reset_expired",
 		"operator-only on the public entry",
+		"Invite codes are 48 bits.",
+		"Pairing codes are 40 bits.",
+		"The setup code is 40 bits.",
+		"O, I, and L are aliases: O maps to 0, and I or L maps to 1.",
+		"testdata/pairing-codes.json",
+		"When two requests use the same invite, the loser gets `invite_expired`.",
+		"The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling",
+		"GET redirects to sign-in and POST returns `not_found`, except in recover mode",
+		"householdPasswordEnabled: boolean",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)
@@ -293,5 +302,109 @@ func TestPiSyncSnapshotFixture(t *testing.T) {
 	}
 	if withUser.Products[0].Name != "Chickpeas" {
 		t.Fatal("adding legacyUserId rejected the Pi snapshot")
+	}
+}
+
+type pairingVector struct {
+	Input      string  `json:"input"`
+	Normalized *string `json:"normalized"`
+	LooksLike  bool    `json:"looksLike"`
+	Pairing    bool    `json:"pairing"`
+	GTIN       bool    `json:"gtin"`
+}
+
+const (
+	pairingPayloadAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	pairingCheckAlphabet   = pairingPayloadAlphabet + "*~$=U"
+)
+
+var (
+	pairingGrammar = regexp.MustCompile(`^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`)
+	productBarcode = regexp.MustCompile(`^\d{1,14}$`)
+)
+
+func normalizePairingCode(input string) (string, bool) {
+	trimmed := strings.TrimSpace(input)
+	var b strings.Builder
+	for _, r := range trimmed {
+		if r > 127 {
+			return "", false
+		}
+		if r >= 'a' && r <= 'z' {
+			r -= 32
+		}
+		switch r {
+		case 'O':
+			r = '0'
+		case 'I', 'L':
+			r = '1'
+		}
+		b.WriteRune(r)
+	}
+	return b.String(), true
+}
+
+func pairingCheckCharacter(payload string) (byte, bool) {
+	var value uint64
+	for i := 0; i < len(payload); i++ {
+		digit := strings.IndexByte(pairingPayloadAlphabet, payload[i])
+		if digit < 0 {
+			return 0, false
+		}
+		value = value*32 + uint64(digit)
+	}
+	return pairingCheckAlphabet[value%37], true
+}
+
+func looksLikePairingCode(input string) bool {
+	code, ok := normalizePairingCode(input)
+	return ok && pairingGrammar.MatchString(code)
+}
+
+func isPairingCode(input string) bool {
+	code, ok := normalizePairingCode(input)
+	if !ok || !pairingGrammar.MatchString(code) {
+		return false
+	}
+	check, ok := pairingCheckCharacter(code[4:8] + code[9:13])
+	return ok && code[14] == check
+}
+
+func isProductBarcode(input string) bool {
+	return productBarcode.MatchString(strings.TrimSpace(input))
+}
+
+func TestPairingCodeFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(contractRepoRoot(t), "testdata", "pairing-codes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []pairingVector
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) == 0 {
+		t.Fatal("pairing fixture is empty")
+	}
+	for _, vector := range vectors {
+		got, ok := normalizePairingCode(vector.Input)
+		switch {
+		case vector.Normalized == nil && ok:
+			t.Fatalf("%q normalized to %q, want reject", vector.Input, got)
+		case vector.Normalized != nil && (!ok || got != *vector.Normalized):
+			t.Fatalf("%q normalized to %q ok=%v, want %q", vector.Input, got, ok, *vector.Normalized)
+		}
+		if looksLikePairingCode(vector.Input) != vector.LooksLike {
+			t.Fatalf("%q looksLike %v, want %v", vector.Input, looksLikePairingCode(vector.Input), vector.LooksLike)
+		}
+		if isPairingCode(vector.Input) != vector.Pairing {
+			t.Fatalf("%q pairing %v, want %v", vector.Input, isPairingCode(vector.Input), vector.Pairing)
+		}
+		if isProductBarcode(vector.Input) != vector.GTIN {
+			t.Fatalf("%q gtin %v, want %v", vector.Input, isProductBarcode(vector.Input), vector.GTIN)
+		}
+		if (isPairingCode(vector.Input) || looksLikePairingCode(vector.Input)) && isProductBarcode(vector.Input) {
+			t.Fatalf("%q is both a pairing code and a product barcode", vector.Input)
+		}
 	}
 }

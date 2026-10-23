@@ -182,7 +182,13 @@ describe('hosted API contract', () => {
     expect(doc).toContain('looksLikePairingCode');
     expect(doc).toContain('pairing-collision: A pairing code cannot collide with a product barcode.');
     expect(doc).toContain('Invite codes are 48 bits.');
-    expect(doc).toContain('O, I, and L are rejected on purpose.');
+    expect(doc).toContain('Pairing codes are 40 bits.');
+    expect(doc).toContain('The setup code is 40 bits.');
+    expect(doc).toContain('O, I, and L are aliases: O maps to 0, and I or L maps to 1.');
+    expect(doc).toContain('testdata/pairing-codes.json');
+    expect(doc).toContain('When two requests use the same invite, the loser gets `invite_expired`.');
+    expect(doc).toContain('The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling');
+    expect(doc).toContain('GET redirects to sign-in and POST returns `not_found`, except in recover mode');
     expect(source).toContain("export const CLIENT_HEADER = 'X-Stockbot-Client'");
     expect(source).toContain("export const AUTH_SESSION_PATH = '/api/auth/session'");
     expect(source).toContain("export const SESSION_COOKIE_NAME = '__Host-stockbot_session'");
