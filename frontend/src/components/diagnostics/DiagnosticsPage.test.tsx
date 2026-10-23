@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { offlineBannerActive, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../api/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, notifyApiSuccess, offlineBannerActive, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../api/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { DiagnosticsPage } from './DiagnosticsPage';
 
@@ -25,6 +25,7 @@ const latency = (maxMs: number, p50Ms: number, p95Ms: number) => ({
 
 describe('DiagnosticsPage', () => {
   afterEach(() => {
+    notifyApiSuccess();
     vi.unstubAllGlobals();
   });
 
@@ -110,6 +111,21 @@ describe('DiagnosticsPage', () => {
 
     expect(await screen.findByText('Full load: not recorded')).toBeInTheDocument();
     expect(screen.getByText('No first-paint API calls yet.')).toBeInTheDocument();
+  });
+
+  it('shows the sign-in banner when auth is not configured', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'off', code: 'auth_not_configured' }, 503)));
+    renderPage();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(AUTH_NOT_CONFIGURED_SENTENCE);
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText('Unable to load diagnostics.')).not.toBeInTheDocument();
+  });
+
+  it('shows the offline banner for a gateway diagnostics page', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>gateway</html>', { status: 503 })));
+    renderPage();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText('Unable to load diagnostics.')).not.toBeInTheDocument();
   });
 
   it('shows an error when the snapshot cannot be loaded', async () => {

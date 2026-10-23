@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { notifyApiSuccess, raiseOfflineBanner } from '../../api/contract';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -199,6 +200,27 @@ describe('InventoryPage', () => {
 
     expect(screen.getByText('Sourdough')).toBeInTheDocument();
     expect(screen.queryByText('1 near expiry')).not.toBeInTheDocument();
+  });
+
+  it('does not call an offline load a search miss', async () => {
+    notifyApiSuccess();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+    render(<MantineProvider env="test"><MemoryRouter><InventoryPage /></MemoryRouter></MantineProvider>);
+    await waitFor(() => expect(screen.queryByLabelText('Loading inventory')).not.toBeInTheDocument());
+    expect(screen.queryByText('No products or groups match.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Your inventory is empty.')).not.toBeInTheDocument();
+  });
+
+  it('does not reload inventory when a normal failure is followed by a cleared banner', async () => {
+    notifyApiSuccess();
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ error: 'Unable to load inventory.' }, 500)));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<MantineProvider env="test"><MemoryRouter><InventoryPage /></MemoryRouter></MantineProvider>);
+    expect(await screen.findByText('Unable to load inventory.')).toBeInTheDocument();
+    const seen = fetchMock.mock.calls.length;
+    raiseOfflineBanner();
+    notifyApiSuccess();
+    expect(fetchMock.mock.calls.length).toBe(seen);
   });
 
   it('closes the event stream connection on unmount', async () => {

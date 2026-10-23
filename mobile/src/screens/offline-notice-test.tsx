@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import type { InventoryItem, ScanEntry } from '../../../frontend/src/types';
@@ -281,6 +281,53 @@ describe('offline notice', () => {
     expect(await screen.findByText('One scan is waiting')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
     expect(screen.queryByText('0 scans are waiting')).toBeNull();
+  });
+
+  it('shows the empty queue after the next client loads', async () => {
+    const failing = createStockbotClient(
+      { serverUrl, password: 'correct-horse' },
+      { fetchImpl: jest.fn(async () => { throw new TypeError('Network request failed'); }) },
+    );
+    const screen = await renderScreen(<QueueScreen client={failing} warning="" />);
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
+
+    const succeeding = createStockbotClient(
+      { serverUrl, password: 'correct-horse' },
+      { fetchImpl: jest.fn(async () => jsonResponse(200, [])) },
+    );
+    await screen.rerender(framed(<QueueScreen client={succeeding} warning="" />));
+    expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
+  });
+
+  it('hides the batch error while the offline banner is up', async () => {
+    const message = 'The pantry rejected that batch.';
+    const pending = [
+      entry(),
+      entry({
+        id: 'scan-2',
+        barcode: '999',
+        productId: 'prod-2',
+        product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+      }),
+    ];
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('batch-commit') && method === 'POST') return jsonResponse(400, { error: message, code: 'validation' });
+      if (url.includes('status=pending')) return jsonResponse(200, pending);
+      if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
+      return jsonResponse(500, { error: 'unexpected' });
+    });
+    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const screen = await renderScreen(<QueueScreen client={client} warning="" />);
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(message)).toBeTruthy();
+    await act(async () => {
+      raiseOfflineBanner();
+    });
+    expect(screen.getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText(message)).toBeNull();
   });
 
   it('hides a partial line while offline', async () => {

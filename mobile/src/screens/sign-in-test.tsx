@@ -366,4 +366,27 @@ describe('auth is not configured', () => {
     }
     expect(JSON.stringify(screen.toJSON())).not.toContain('/setup');
   });
+
+  it('saves the household when Try again from setup reaches the server', async () => {
+    let mode: 'auth' | 'ready' = 'auth';
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      if (mode === 'auth') return jsonResponse(503, { error: AUTH_BANNER, code: authNotConfigured.code });
+      return jsonResponse(200, { required: false });
+    });
+    const screen = await renderScreen(
+      <SessionProvider>
+        <AuthGate />
+      </SessionProvider>,
+    );
+    await fireEvent.changeText(await screen.findByLabelText('Server'), 'https://stockbot.example');
+    await fireEvent.changeText(screen.getByLabelText('Household password'), 'correct-horse');
+    await fireEvent.press(screen.getByLabelText('Connect'));
+    expect(await screen.findByText(SETUP_SENTENCE)).toBeTruthy();
+    expect(mockMemory.has(PASSWORD_KEY)).toBe(false);
+    mode = 'ready';
+    await fireEvent.press(screen.getByLabelText('Try again'));
+    expect(await screen.findByText('In the app')).toBeTruthy();
+    expect(mockMemory.get(SERVER_URL_KEY)).toBe('https://stockbot.example');
+    expect(mockMemory.get(PASSWORD_KEY)).toBe('correct-horse');
+  });
 });
