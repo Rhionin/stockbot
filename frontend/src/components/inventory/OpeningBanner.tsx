@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Group, Text } from '@mantine/core';
 import { completeOnboarding } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 
 export interface OpeningBannerProps {
   onComplete: () => void;
@@ -17,7 +18,7 @@ export const OpeningBanner = ({ onComplete }: OpeningBannerProps) => {
       await completeOnboarding();
       onComplete();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to finish the opening scan.');
+      setError(inlineFailure(requestError, 'Unable to finish the opening scan.') ?? '');
     } finally {
       setSaving(false);
     }

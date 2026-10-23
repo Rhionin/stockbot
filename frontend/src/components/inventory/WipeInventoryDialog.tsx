@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { WIPE_INVENTORY_CONFIRMATION, wipeInventory } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 
 export interface WipeInventoryDialogProps {
   onWiped: () => void;
@@ -32,7 +33,7 @@ export const WipeInventoryDialog = ({ onWiped, phrase = WIPE_INVENTORY_CONFIRMAT
       close();
       onWiped();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to wipe inventory.');
+      setError(inlineFailure(requestError, 'Unable to wipe inventory.') ?? '');
     } finally {
       setSubmitting(false);
     }

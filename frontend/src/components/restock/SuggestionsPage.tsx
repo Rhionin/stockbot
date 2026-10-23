@@ -4,6 +4,7 @@ import { Alert, Anchor, Badge, Button, Checkbox, Group, Loader, Stack, Text, Tit
 import { applyCategorySuggestions, dismissCategorySuggestions, getCategorySuggestions } from '../../api/client';
 import type { SuggestionCard } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
+import { inlineFailure } from '../../api/contract';
 import './restock.css';
 
 export function SuggestionsPage() {
@@ -24,7 +25,7 @@ export function SuggestionsPage() {
       }
       setPicked(initial);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load suggestions.');
+      setError(inlineFailure(requestError, 'Unable to load suggestions.') ?? '');
     } finally {
       setLoading(false);
     }

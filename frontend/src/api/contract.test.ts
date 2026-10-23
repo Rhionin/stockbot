@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  AUTH_NOT_CONFIGURED_SENTENCE,
   BATCH_FAILURE_FALLBACK,
   BODY_TOO_LARGE_SENTENCE,
   BUSY_SENTENCE,
@@ -27,20 +28,28 @@ import {
   INVALID_REPORT_SENTENCE,
   METHOD_NOT_ALLOWED_SENTENCE,
   MISSING_CREDENTIALS_SENTENCE,
+  networkErrorResult,
   NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
   nothingOnHandPill,
+  notifyApiSuccess,
+  OFFLINE_SENTENCE,
+  offlineBannerActive,
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
+  raiseOfflineBanner,
   REPORT_TOO_LARGE_SENTENCE,
   SERVER_ERROR_FALLBACK,
   shelfHasNothingOnHand,
   SIGN_IN_NOT_USED_SENTENCE,
   SIGN_IN_REQUIRED_SENTENCE,
   SYNC_TOKEN_INVALID_SENTENCE,
+  UnreachableError,
+  unreachableFrom,
   UPDATING_SENTENCE,
   UPDATING_STATUS,
+  inlineFailure,
   type BatchCommitResponse,
 } from './contract';
 
@@ -355,6 +364,11 @@ describe('auth_not_configured', () => {
   it('is the sign-in code', () => {
     expect(CODE_AUTH_NOT_CONFIGURED).toBe(authNotConfigured.code);
   });
+
+  it('uses a straight apostrophe in the banner sentence', () => {
+    expect(AUTH_NOT_CONFIGURED_SENTENCE).toBe("Sign-in isn't set up yet.");
+    expect(AUTH_NOT_CONFIGURED_SENTENCE.charCodeAt(AUTH_NOT_CONFIGURED_SENTENCE.indexOf("'"))).toBe(39);
+  });
 });
 
 describe('nothing on hand copy', () => {
@@ -369,5 +383,76 @@ describe('nothing on hand copy', () => {
     { name: 'one on hand', onHand: 1, empty: false },
   ])('$name', ({ onHand, empty }) => {
     expect(shelfHasNothingOnHand(onHand)).toBe(empty);
+  });
+});
+
+const offline = { kind: 'network' as const, message: OFFLINE_SENTENCE };
+
+describe('networkErrorResult', () => {
+  it('uses a straight apostrophe in the one sentence', () => {
+    expect(OFFLINE_SENTENCE).toBe("Can't reach Stockbot. Check your connection and try again.");
+    expect(OFFLINE_SENTENCE.charCodeAt(OFFLINE_SENTENCE.indexOf("'"))).toBe(39);
+  });
+
+  it.each([
+    { name: 'fetch TypeError', error: new TypeError('Failed to fetch') },
+    { name: 'phone network error', error: new TypeError('Network request failed') },
+    { name: 'plain failed to fetch', error: new Error('Failed to fetch') },
+    { name: 'plain network request failed', error: new Error('Network request failed') },
+    { name: 'safari load failed', error: new TypeError('Load failed') },
+    { name: 'abort', error: new DOMException('The operation was aborted.', 'AbortError') },
+    { name: 'timeout', error: new DOMException('The operation was aborted due to timeout', 'TimeoutError') },
+    { name: 'dns', error: Object.assign(new Error('getaddrinfo ENOTFOUND stockbot.example'), { code: 'ENOTFOUND' }) },
+    { name: 'connection refused', error: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) },
+    {
+      name: 'wrapped dns failure',
+      error: new Error('fetch failed', { cause: Object.assign(new Error('getaddrinfo'), { code: 'EAI_AGAIN' }) }),
+    },
+  ])('$name', ({ error }) => {
+    expect(networkErrorResult(error)).toEqual(offline);
+    expect(unreachableFrom(error)).toMatchObject({ name: 'UnreachableError', kind: 'network', message: OFFLINE_SENTENCE });
+  });
+
+  it.each([
+    { name: 'server sentence', error: new Error('Which item is this?') },
+    { name: 'unrelated error', error: new Error('Network error') },
+    { name: 'invalid header', error: new TypeError("Failed to construct 'Headers': Invalid name") },
+    { name: 'type error name only', error: Object.assign(new Error('Illegal invocation'), { name: 'TypeError' }) },
+    { name: 'quota', error: new DOMException('The quota has been exceeded.', 'QuotaExceededError') },
+    { name: 'bad json', error: new SyntaxError('Unexpected token') },
+    { name: 'non-error rejection', error: { statusCode: 500 } },
+    { name: 'null', error: null },
+  ])('$name is not a transport failure', ({ error }) => {
+    expect(networkErrorResult(error)).toBeNull();
+    expect(unreachableFrom(error)).toBeNull();
+  });
+
+  it('returns the same result for an unreachable error', () => {
+    const error = new UnreachableError();
+    expect(error.result).toEqual(offline);
+    expect(networkErrorResult(error)).toBe(error.result);
+    expect(unreachableFrom(error)).toBe(error);
+  });
+});
+
+describe('inlineFailure', () => {
+  it.each([
+    { name: 'unreachable', error: new UnreachableError(), fallback: 'Unable to load history.', message: null },
+    { name: 'server sentence', error: new Error('That scan is no longer pending.'), fallback: 'Unable to load history.', message: 'That scan is no longer pending.' },
+    { name: 'empty message', error: new Error(''), fallback: 'Unable to load history.', message: '' },
+    { name: 'not an error', error: 'down', fallback: 'Unable to load history.', message: 'Unable to load history.' },
+    { name: 'plain network error', error: new Error('Network error'), fallback: 'Unable to load history.', message: 'Network error' },
+  ])('$name', ({ error, fallback, message }) => {
+    expect(inlineFailure(error, fallback)).toBe(message);
+  });
+});
+
+describe('offline banner', () => {
+  it('stays up until a success', () => {
+    expect(offlineBannerActive()).toBe(false);
+    raiseOfflineBanner();
+    expect(offlineBannerActive()).toBe(true);
+    notifyApiSuccess();
+    expect(offlineBannerActive()).toBe(false);
   });
 });

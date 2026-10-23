@@ -3,6 +3,7 @@ import { Button } from '@mantine/core';
 import { updateScanEntry } from '../../api/client';
 import type { ScanEntry } from '../../types';
 import { qrPreview } from './qrPreview';
+import { inlineFailure } from '../../api/contract';
 import './qr-scan.css';
 
 export interface QrScanCardProps {
@@ -32,7 +33,7 @@ export const QrScanCard = ({
       await updateScanEntry(entry.id, { status: 'cancelled' });
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Couldn\'t dismiss that scan.');
+      setError(inlineFailure(requestError, 'Couldn\'t dismiss that scan.') ?? '');
     } finally {
       setDismissing(false);
     }

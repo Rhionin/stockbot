@@ -21,6 +21,7 @@ import { Seesaw } from './Seesaw';
 import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter, type SeesawDraft } from './seesaw';
 import { groupStock } from '../../stockState';
+import { inlineFailure } from '../../api/contract';
 import '../history/history.css';
 
 const closeButton = { 'aria-label': 'Close' };
@@ -152,7 +153,7 @@ export const GroupDetailPage = () => {
       }));
       setDetails(loaded);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load that group.');
+      setError(inlineFailure(requestError, 'Unable to load that group.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -169,7 +170,7 @@ export const GroupDetailPage = () => {
       setGroup(await renameGroup(group.id, name.trim()));
       setRenaming(false);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to rename the group.');
+      setError(inlineFailure(requestError, 'Unable to rename the group.') ?? '');
     }
   };
 
@@ -184,7 +185,7 @@ export const GroupDetailPage = () => {
       }
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to remove that product.');
+      setError(inlineFailure(requestError, 'Unable to remove that product.') ?? '');
     }
   };
 
@@ -195,7 +196,7 @@ export const GroupDetailPage = () => {
       await addGroupMembers(destination, [productId], id);
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to move that product.');
+      setError(inlineFailure(requestError, 'Unable to move that product.') ?? '');
     } finally {
       setMoving('');
     }
@@ -213,7 +214,7 @@ export const GroupDetailPage = () => {
       await setMemberRestock(group.id, productId, noRestock);
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to update that product.');
+      setError(inlineFailure(requestError, 'Unable to update that product.') ?? '');
     }
   };
 

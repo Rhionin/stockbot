@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, isStorageFailureCode, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
+import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, isStorageFailureCode, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, ServerNoticeError, UnreachableError, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
+import { clearOfflineNotice } from './offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -16,6 +17,15 @@ const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
+
+function heldByBanner(error: unknown): boolean {
+  return error instanceof UnreachableError || error instanceof ServerNoticeError;
+}
+
+function storageFailure(error: unknown): { code: string; message: string } | null {
+  if (!(error instanceof ApiError) || !isStorageFailureCode(error.code)) return null;
+  return { code: error.code, message: error.message };
+}
 
 const multipackName = /\d+\s*x\s*\d/i;
 
@@ -337,11 +347,12 @@ export const ScanEntryCard = ({
       onBlocked?.();
       return;
     }
-    if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
-      onStorageFailure?.(requestError.code, requestError.message);
+    const storage = storageFailure(requestError);
+    if (storage !== null) {
+      onStorageFailure?.(storage.code, storage.message);
       return;
     }
-    let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+    let message = inlineFailure(requestError, 'Unable to confirm scan.') ?? '';
     if (requestError instanceof ApiError) {
       const behavior = commitConflictBehavior(requestError.code);
       if (behavior.refreshSuggestions) {
@@ -357,8 +368,9 @@ export const ScanEntryCard = ({
           setLocalInstanceReload((current) => current + 1);
         }
       }
-      message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
+      message = behavior.showMessage ? (inlineFailure(requestError, 'Unable to confirm scan.') ?? '') : '';
     }
+    if (heldByBanner(requestError)) return;
     showCommitSentence(message);
   };
 
@@ -369,6 +381,8 @@ export const ScanEntryCard = ({
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       onConfirmSuccess?.();
       rememberOffer(null, false);
+      clearOfflineNotice();
+      setRemoveError('');
       noteCommitted(committed);
       if (isStockIn && entry.productId !== null) onStocked?.(entry.productId);
       onChanged();
@@ -386,6 +400,8 @@ export const ScanEntryCard = ({
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       onConfirmSuccess?.();
       rememberOffer(null, false);
+      clearOfflineNotice();
+      setRemoveError('');
       noteCommitted(committed);
       if (isStockIn) onStocked?.(productId);
       onChanged();
@@ -401,13 +417,16 @@ export const ScanEntryCard = ({
     setRemoveError('');
     try {
       await updateScanEntry(entry.id, { status: 'cancelled' });
+      clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
-        onStorageFailure?.(requestError.code, requestError.message);
+      const storage = storageFailure(requestError);
+      if (storage !== null) {
+        onStorageFailure?.(storage.code, storage.message);
         return;
       }
-      setRemoveError(requestError instanceof Error ? requestError.message : 'Unable to remove scan.');
+      if (heldByBanner(requestError)) return;
+      setRemoveError(inlineFailure(requestError, 'Unable to remove scan.') ?? '');
     } finally {
       setRemoving(false);
     }
@@ -437,9 +456,16 @@ export const ScanEntryCard = ({
         void persistUnitCount(unitCountRef.current);
         return;
       }
+      setUnitCountError('');
+      clearOfflineNotice();
       onChanged();
-    } catch {
+    } catch (requestError) {
       if (generation !== saveGeneration.current || unitCountRef.current !== draft) return;
+      if (heldByBanner(requestError)) {
+        unitCountRef.current = confirmedCountRef.current;
+        setUnitCountDraft(confirmedCountRef.current);
+        return;
+      }
       setUnitCountError('Unable to update unit count.');
       unitCountRef.current = confirmedCountRef.current;
       setUnitCountDraft(confirmedCountRef.current);
@@ -492,8 +518,14 @@ export const ScanEntryCard = ({
         const expiresAt = expiryDraft === '' ? CLEARED_EXPIRY_ISO : expiryDateToISOString(expiryDraft);
         await updateScanEntry(entry.id, { expiresAt });
         setExpiryCommitted(expiryDraft);
+        setExpiryError('');
+        clearOfflineNotice();
         onChanged();
-      } catch {
+      } catch (requestError) {
+        if (heldByBanner(requestError)) {
+          setExpiryDraft(expiryCommitted);
+          return;
+        }
         setExpiryError('Unable to update expiration date.');
         setExpiryDraft(expiryCommitted);
         return;
@@ -522,8 +554,10 @@ export const ScanEntryCard = ({
       setExpiryDraft('');
       setExpiryCommitted('');
       setExpiryEditorOpen(false);
+      clearOfflineNotice();
       onChanged();
-    } catch {
+    } catch (requestError) {
+      if (heldByBanner(requestError)) return;
       setExpiryError('Unable to update expiration date.');
     }
   };
@@ -534,9 +568,10 @@ export const ScanEntryCard = ({
     setHintError('');
     try {
       await addGroupMembers(hint.groupId, [entry.productId]);
+      clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setHintError(requestError instanceof Error ? requestError.message : 'Unable to add this to the group.');
+      setHintError(inlineFailure(requestError, 'Unable to add this to the group.') ?? '');
     } finally {
       setHintBusy(false);
     }
@@ -548,9 +583,10 @@ export const ScanEntryCard = ({
     setHintError('');
     try {
       await noteGroupFromScan(entry.productId);
+      clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setHintError(requestError instanceof Error ? requestError.message : 'Unable to save that for later.');
+      setHintError(inlineFailure(requestError, 'Unable to save that for later.') ?? '');
     } finally {
       setHintBusy(false);
     }
@@ -572,9 +608,10 @@ export const ScanEntryCard = ({
         unitOfMeasure: entry.product.unitOfMeasure,
         packCount: count,
       });
+      clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setPackError(requestError instanceof Error ? requestError.message : 'Unable to remember the pack.');
+      setPackError(inlineFailure(requestError, 'Unable to remember the pack.') ?? '');
     } finally {
       setPackBusy(false);
     }
