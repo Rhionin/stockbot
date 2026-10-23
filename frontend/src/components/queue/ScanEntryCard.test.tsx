@@ -1394,7 +1394,7 @@ describe('ScanEntryCard provenance badge', () => {
     render(
       <MantineProvider>
         <ScanEntryCard
-          entry={{ ...entry, product: null }}
+          entry={{ ...entry, product: undefined }}
           itemId="item-1"
           selected={false}
           onSelectedChange={vi.fn()}
@@ -1502,7 +1502,7 @@ describe('ScanEntryCard group hint', () => {
     render(
       <MantineProvider>
         <ScanEntryCard
-          entry={{ ...entry, status: 'flagged', direction: null, product: null, productId: null }}
+          entry={{ ...entry, status: 'flagged', direction: null, product: undefined, productId: null }}
           selected={false}
           onSelectedChange={vi.fn()}
           onChanged={vi.fn()}

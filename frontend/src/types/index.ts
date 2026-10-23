@@ -112,17 +112,8 @@ export interface ScanGroupHint {
   name: string;
 }
 
-export interface ScanEntry extends ScanListEntry {
-  userId: string;
-  barcode: string;
-  scannedAt: string; // ISO 8601
-  unitCount: number;
-  expiresAt: string | null;
-  product: ProductSummary | null;
-  groupHint?: ScanGroupHint;
-  committedAt: string | null;
-  createdAt: string;
-}
+// A scan list row is the contract shape, including optional onHand.
+export type ScanEntry = ScanListEntry;
 
 export interface Item {
   id: string;

@@ -3,8 +3,8 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, scanReportsNothingOnHand, skippedNothingOnHandBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
-import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, scanReportsNothingOnHand, skippedNothingOnHandBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '../../api/contract';
+import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
@@ -28,7 +28,7 @@ interface NothingPin {
 const reconcilePins = (
   current: Map<string, NothingPin>,
   items: InventoryItem[],
-  listed: ScanEntry[],
+  listed: ScanListEntry[],
 ): Map<string, NothingPin> => {
   if (current.size === 0) return current;
   const counts = new Map(items.map((item) => [item.item.productId, item.instanceCount]));
@@ -62,7 +62,7 @@ export interface ScanQueuePageProps {
 }
 
 export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePageProps) => {
-  const [entries, setEntries] = useState<ScanEntry[]>([]);
+  const [entries, setEntries] = useState<ScanListEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryReady, setInventoryReady] = useState(false);
   const [pinnedNone, setPinnedNone] = useState<Map<string, NothingPin>>(() => new Map());
@@ -275,7 +275,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     const eventSource = new EventSource('/api/events');
     trackEventSource(eventSource);
     eventSource.addEventListener('scan', (message) => {
-      const scanEntry = JSON.parse((message as MessageEvent).data) as ScanEntry;
+      const scanEntry = JSON.parse((message as MessageEvent).data) as ScanListEntry;
       if (scanEntry.direction === 'stock_in' && scanEntry.productId !== null && scanEntry.status === 'committed') {
         releasePinsRef.current(new Set([scanEntry.productId]));
       }
@@ -364,7 +364,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
 
   const releasePins = useCallback((productIds: ReadonlySet<string>) => {
     if (productIds.size === 0) return;
-    const stocked = (entry: ScanEntry | undefined) => (
+    const stocked = (entry: ScanListEntry | undefined) => (
       entry?.productId !== null && entry?.productId !== undefined && productIds.has(entry.productId)
     );
     setPinnedNone((current) => {

@@ -41,7 +41,6 @@ const flaggedEntry: ScanEntry = {
   expiresAt: null,
   status: 'flagged',
   productId: null,
-  product: null,
   committedAt: null,
   createdAt: '2026-03-20T10:00:00Z',
 };

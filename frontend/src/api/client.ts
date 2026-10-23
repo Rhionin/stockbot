@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { linkSuggestionsPath, readItemId, readOnHand, SERVER_ERROR_FALLBACK, undoPreviewPath, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type UndoPreview } from './contract';
+import { linkSuggestionsPath, readItemId, readOnHand, SERVER_ERROR_FALLBACK, undoPreviewPath, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -26,7 +26,6 @@ import type {
   ProductWriteResult,
   ContributionSettings,
   ScanDirection,
-  ScanEntry,
   ScannerConfig,
   ScanStatus,
   ProvisionReport,
@@ -210,15 +209,15 @@ export function createProductOverride(
 
 // --- Scan queue ---
 
-export function createScanEntry(input: CreateScanEntryInput): Promise<ScanEntry> {
+export function createScanEntry(input: CreateScanEntryInput): Promise<ScanListEntry> {
   return apiFetch(SCANS_PATH, { method: 'POST', body: JSON.stringify(input) });
 }
 
-export function listScanEntries(userId: string, status?: ScanStatus): Promise<ScanEntry[]> {
+export function listScanEntries(userId: string, status?: ScanStatus): Promise<ScanListEntry[]> {
   return apiFetch(scansQuery(userId, status));
 }
 
-export function getScanHistory(userId: string): Promise<ScanEntry[]> {
+export function getScanHistory(userId: string): Promise<ScanListEntry[]> {
   return apiFetch(`/api/scans/history${toQueryString({ userId })}`);
 }
 
@@ -230,11 +229,11 @@ interface UpdateScanEntryInput {
   status?: ScanStatus;
 }
 
-export async function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanEntry> {
+export async function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanListEntry> {
   // productId and status cancelled together is conflicting_fields. Link first, then cancel.
   if (input.productId !== undefined && input.status === 'cancelled') {
     const { status, ...link } = input;
-    await apiFetch<ScanEntry>(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(link) });
+    await apiFetch<ScanListEntry>(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(link) });
     return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
   }
   return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
@@ -248,7 +247,7 @@ export function commitScanEntry(
   id: string,
   instanceId?: string,
   linkProductId?: string,
-): Promise<ScanEntry & CommitScanResponse> {
+): Promise<ScanListEntry & CommitScanResponse> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;

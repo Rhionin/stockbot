@@ -19,10 +19,11 @@ import {
   readOnHand,
   SERVER_ERROR_FALLBACK,
   type CommitScanResponse,
+  type ScanListEntry,
 } from '../../api/contract';
 import { offlineMessage } from '../../offline';
 import { dismissUndo, showUndo } from '../restock/undo';
-import type { InventoryItem, PantryLinkSuggestion, ProductSummary, ScanEntry } from '../../types';
+import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
@@ -166,7 +167,7 @@ const expiryDatePart = (expiresAt: string | null): string =>
   expiresAt === null ? '' : expiresAt.substring(0, 10);
 
 export interface ScanEntryCardProps {
-  entry: ScanEntry;
+  entry: ScanListEntry;
   selected: boolean;
   itemId?: string;
   justCaptured?: boolean;
@@ -330,7 +331,7 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
-  const noteCommitted = (committed: ScanEntry & CommitScanResponse) => {
+  const noteCommitted = (committed: ScanListEntry & CommitScanResponse) => {
     const note = formatPartialRemoval(committed);
     if (note !== null) showUndo({ detail: note });
   };

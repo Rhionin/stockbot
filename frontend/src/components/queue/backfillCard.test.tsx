@@ -19,9 +19,9 @@ const entry = (named: boolean): ScanEntry => ({
   expiresAt: null,
   status: 'pending',
   productId: named ? 'prod-sour' : null,
-  product: named
-    ? { id: 'prod-sour', name: 'Sour cream', category: 'Dairy', unitOfMeasure: 'tub' }
-    : null,
+  ...(named
+    ? { product: { id: 'prod-sour', name: 'Sour cream', category: 'Dairy', unitOfMeasure: 'tub' } }
+    : {}),
   committedAt: null,
   createdAt: '2026-10-18T04:00:00.000Z',
 });

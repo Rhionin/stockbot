@@ -224,7 +224,7 @@ const zero = scan({
   product: product('prod-zero', 'Empty oats'),
   onHand: 0,
 });
-const unresolved = scan({ id: 'scan-open', barcode: '444', productId: null, product: null });
+const unresolved = scan({ id: 'scan-open', barcode: '444', productId: null, product: undefined });
 
 describe('nothing on hand queue', () => {
   beforeEach(() => {
@@ -631,7 +631,7 @@ describe('nothing on hand queue', () => {
       productId: 'prod-rice',
       product: product('prod-rice', 'Rice'),
     });
-    const open = scan({ id: 'scan-open', barcode: '444', productId: null, product: null });
+    const open = scan({ id: 'scan-open', barcode: '444', productId: null, product: undefined });
     renderQueue({
       scans: [rice, open],
       inventory: [shelf('rice', 'Rice', 2)],

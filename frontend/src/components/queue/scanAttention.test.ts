@@ -93,7 +93,7 @@ describe('ScanAttention', () => {
       status: 'flagged',
       direction: null,
       productId: null,
-      product: null,
+      product: undefined,
     });
     attention.noteScan(flagged);
     attention.noteScan({ ...flagged, unitCount: 2 });
@@ -114,7 +114,7 @@ describe('ScanAttention', () => {
       status: 'flagged',
       direction: 'stock_in',
       productId: null,
-      product: null,
+      product: undefined,
     }));
     expect(notices[0]?.direction).toBe('stock_in');
   });
@@ -176,7 +176,7 @@ describe('ScanAttention', () => {
       id: 'flag',
       status: 'flagged',
       productId: null,
-      product: null,
+      product: undefined,
       barcode: '333',
     }));
     expect(notices.map((notice) => notice.title)).toEqual(['Scan failed', 'Unrecognized product']);
@@ -214,7 +214,7 @@ describe('ScanAttention', () => {
       id: 'flag',
       status: 'flagged',
       productId: null,
-      product: null,
+      product: undefined,
     }));
     clock.advance(4 * 60 * 1000);
     attention.noteScan(scan({ id: 'flag', status: 'pending', productId: 'product-9' }));
@@ -233,14 +233,14 @@ describe('ScanAttention', () => {
       barcode: 'https://example.com/product/3017620422003',
       status: 'qr',
       productId: null,
-      product: null,
+      product: undefined,
     }));
     attention.noteScan(scan({
       id: 'qr-1',
       barcode: 'https://example.com/again',
       status: 'qr',
       productId: null,
-      product: null,
+      product: undefined,
     }));
     expect(notices.map((notice) => notice.title)).toEqual(['This was a QR code, not the barcode']);
     expect(notices[0]?.body).toBe('example.com. Rescan the barcode.');

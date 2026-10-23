@@ -60,7 +60,7 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     getScannerConfig: jest.fn(),
     setScannerMode: jest.fn(),
     createScan: jest.fn(),
-    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' })]),
+    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' })]),
     commitScan: jest.fn(async () => entry({ status: 'committed' })),
     cancelScan: jest.fn(async () => entry({ status: 'cancelled' })),
     batchCommit: jest.fn(async () => ({ updatedCount: 2, committedIds: ['scan-1', 'scan-2'] })),
@@ -109,7 +109,7 @@ describe('QueueScreen', () => {
     const api = client({
       listPending: jest.fn(async () => [
         entry({ direction: 'stock_out' }),
-        entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' }),
+        entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' }),
       ]),
       batchCommit: jest.fn(async () => ({
         updatedCount: 0,
@@ -1050,7 +1050,7 @@ describe('QueueScreen', () => {
           direction: 'stock_out',
           unitCount: partialCount.requestedCount,
           productId: null,
-          product: null,
+          product: undefined,
         }),
         batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
       ],
@@ -1231,7 +1231,7 @@ describe('QueueScreen', () => {
       barcode: 'scan-open',
       direction: 'stock_out',
       productId: null,
-      product: null,
+      product: undefined,
     });
     const linking = trigger === 'link-fail' || trigger === 'link-ok';
     const blocking = !linking && trigger !== 'confirm-fail' && trigger !== 'confirm-ok' && trigger !== 'batch';
@@ -1806,7 +1806,7 @@ describe('QueueScreen', () => {
       barcode: 'scan-open',
       direction: 'stock_out',
       productId: null,
-      product: null,
+      product: undefined,
     });
     const keptFailure = batchCard('scan-keep', 'Kept oil', 'stock_out', 1);
     const partialCard = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
@@ -2082,7 +2082,7 @@ describe('QueueScreen', () => {
     const api = client({
       listPending: jest.fn(async () => [
         entry({ direction: 'stock_out' }),
-        entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' }),
+        entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' }),
       ]),
       batchCommit: jest.fn(async () => ({
         updatedCount: 1,
@@ -2118,7 +2118,7 @@ describe('QueueScreen', () => {
         direction,
         productId,
         barcode: '999',
-        product: productId === null ? null : { id: productId, name, category: 'Pantry', unitOfMeasure: 'bag' },
+        product: productId === null ? undefined : { id: productId, name, category: 'Pantry', unitOfMeasure: 'bag' },
       })]),
       getInventoryList: jest.fn(async () => (
         count === null || productId === null ? [] : [householdItem(name, productId, count)]
@@ -2572,7 +2572,7 @@ describe('QueueScreen', () => {
   it('a mixed batch stays red until the non-amber card is resolved', async () => {
     const waiting = [
       entry({ direction: 'stock_out' }),
-      entry({ id: 'scan-2', barcode: '999', product: null, productId: null, direction: 'stock_out' }),
+      entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' }),
     ];
     const listPending = jest.fn()
       .mockResolvedValueOnce(waiting)

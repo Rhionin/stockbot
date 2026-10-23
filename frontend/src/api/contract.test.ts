@@ -30,6 +30,7 @@ import {
   skippedNothingOnHandBanner,
   type BackfillCommitResponse,
   type BatchCommitResponse,
+  type ScanListEntry,
   type UndoPreview,
 } from './contract';
 
@@ -324,11 +325,25 @@ describe('nothing on hand copy', () => {
   });
 
   it.each([
-    { name: 'onHand 0', entry: { id: 'scan-empty', direction: 'stock_out' as const, productId: 'prod-cream', status: 'pending' as const, onHand: 0 }, offer: true },
-    { name: 'onHand 3', entry: { id: 'scan-full', direction: 'stock_out' as const, productId: 'prod-full', status: 'pending' as const, onHand: 3 }, offer: false },
-    { name: 'omitted on a stock-out', entry: { id: 'scan-open', direction: 'stock_out' as const, productId: 'prod-open', status: 'pending' as const }, offer: false },
-    { name: 'omitted on a stock-in', entry: { id: 'scan-in', direction: 'stock_in' as const, productId: 'prod-in', status: 'pending' as const }, offer: false },
-  ])('$name', ({ entry, offer }) => {
+    { name: 'onHand 0', onHand: 0 as number | undefined, direction: 'stock_out' as const, offer: true },
+    { name: 'onHand 3', onHand: 3 as number | undefined, direction: 'stock_out' as const, offer: false },
+    { name: 'omitted on a stock-out', onHand: undefined, direction: 'stock_out' as const, offer: false },
+    { name: 'omitted on a stock-in', onHand: undefined, direction: 'stock_in' as const, offer: false },
+  ])('$name', ({ onHand, direction, offer }) => {
+    const entry: ScanListEntry = {
+      id: 'scan-row',
+      userId: 'user-1',
+      barcode: '111',
+      scannedAt: '2026-10-18T16:00:00.000Z',
+      direction,
+      unitCount: 1,
+      expiresAt: null,
+      status: 'pending',
+      productId: 'prod-row',
+      committedAt: null,
+      createdAt: '2026-10-18T16:00:00.000Z',
+      ...(onHand === undefined ? {} : { onHand }),
+    };
     expect(scanReportsNothingOnHand(entry)).toBe(offer);
   });
 
