@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '../../../frontend/src/api/contract';
@@ -111,9 +111,12 @@ function ancestors(node: LaidOut): LaidOut[] {
 
 function expectBannerClearOfPadding(banner: LaidOut) {
   for (const ancestor of ancestors(banner)) {
-    const box = padding(ancestor.props.style);
-    expect(box.horizontal).toBe(0);
-    expect(box.top).toBe(0);
+    const flat = (StyleSheet.flatten(ancestor.props.style as never) ?? {}) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(flat)) {
+      if (!key.startsWith('padding') && !key.startsWith('margin')) continue;
+      // A percent string is an inset, and +4 with -4 does not cancel.
+      expect({ key, value }).toEqual({ key, value: 0 });
+    }
   }
 }
 
@@ -326,6 +329,26 @@ describe('mobile server notice banner', () => {
     expectBannerClearOfPadding(banner);
     const body = paddedAncestor(view.getByText('To confirm'));
     expect(padding(body?.props.style).top).toBe(0);
+  });
+
+  it('treats a percent padding as an inset', async () => {
+    const view = await render(
+      <View style={{ padding: '4%' }}>
+        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
+      </View>,
+    );
+    const banner = view.getByTestId('server-notice-banner');
+    expect(() => expectBannerClearOfPadding(banner)).toThrow();
+  });
+
+  it('rejects offsetting margins', async () => {
+    const view = await render(
+      <View style={{ marginLeft: 4, marginRight: -4 }}>
+        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
+      </View>,
+    );
+    const banner = view.getByTestId('server-notice-banner');
+    expect(() => expectBannerClearOfPadding(banner)).toThrow();
   });
 
   it('hides the exclamation icon from TalkBack', async () => {
