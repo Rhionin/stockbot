@@ -464,7 +464,10 @@ export interface ExportBarcodeOverrideV1 {
 export interface ExportItemV1 {
   id: string;
   productId: string;
-  targetQuantity: number | null;
+  category: string | null;
+  group: string | null;
+  /** Spreadsheet column "stock target" on items.csv. */
+  stockTarget: number | null;
   createdAt: string;
 }
 

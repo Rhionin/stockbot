@@ -6,13 +6,13 @@ This is the cross-stack contract for hosted, multi-household Stockbot. It covers
 
 Source of truth: [`docs/design/multi-tenant-saas.md`](multi-tenant-saas.md) at `d5cc44a` on `cursor/multi-tenant-saas-design-c887` (PR #224). That commit records CJ's decision: Aurora DSQL, and AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only while the client is disconnected.
 
-The copies attached with the T2 request are older than that commit. The uploaded design still recommends polling and has no decision log. The uploaded §3.1 still says the push choice is pending. This contract follows the branch. Where this document marks a rule **proposed**, the design does not state it; those items are repeated under [Open questions](#open-questions).
+The copies attached with the T2 request are older than that commit. The uploaded design still recommends polling and has no decision log. The uploaded §3.1 still says the push choice is pending. This contract follows the branch. Rules PM confirmed are in [Decided by PM](#decided-by-pm). What is still open is under [Open questions](#open-questions).
 
 Issue #338 matches the T2 scope and acceptance criteria in the ticket list. There is no scope difference to resolve.
 
 The Pi keeps SQLite, the SSE stream `GET /api/events`, the `pantry_session` cookie, and the `userId` parameter. None of §3.1 applies to it. `GET /api/config` tells each client which transport to use.
 
-JSON field names are camelCase, matching the API the web client already calls. Design prose uses snake_case for the same ideas (`household_id`, `channel_key`). The camelCase choice is a working assumption; see [Open questions](#open-questions).
+JSON field names are camelCase, matching the API the web client already calls. Design prose uses snake_case for the same ideas (`household_id`, `channel_key`). PM confirmed camelCase in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 ## Tenancy
 
@@ -61,7 +61,7 @@ Cognito owns sign-up, email verification, and password reset. This API does not 
 
 endpoint-count: 36
 
-Paths the design names are unmarked. Paths added so Frontend can call a complete flow are marked **proposed** in the detail sections (login redirect, household list, pairing completion, export and import job polls, `GET /api/config`, and the stock and list changes-since reads).
+Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed them in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 ```text
 endpoint-index
@@ -109,7 +109,7 @@ Routes the current server already serves, and that this contract does not redefi
 
 ### GET /api/auth/login
 
-Web only. **Proposed** path: design §6 names callback, logout, and session.
+Web only. Design §6 names callback, logout, and session. This redirect is the step that starts that callback.
 
 | | |
 |---|---|
@@ -146,7 +146,7 @@ Web only. The Lambda exchanges the Cognito code and sets the session cookie.
 | Response | `204` empty. The web cookie is cleared. |
 | Errors | `unauthorized` |
 
-**Proposed:** the server also calls Cognito `AdminUserGlobalSignOut` for that user, so a refresh token cannot mint a new session. Expo deletes its secure-store tokens after this returns.
+The server also calls Cognito `AdminUserGlobalSignOut` for that user, so a refresh token cannot mint a new session. Expo deletes its secure-store tokens after this returns.
 
 ### GET /api/auth/session
 
@@ -183,11 +183,11 @@ Creates a household and makes the caller an owner. This is the step after email 
 | Response | `201` `{ "id": string, "name": string, "role": "owner" }` |
 | Errors | `unauthorized`, `validation` |
 
-`name` is required, trimmed, and 1–80 characters. **Proposed** length. The restock-mode question (#296) is not this body. After create, the client calls the existing restock setting route with `X-Household-Id`. Whether sign-up must send that choice on this request is open.
+`name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. The restock-mode question (#296) is not this body. After create, the client calls the existing restock setting route with `X-Household-Id`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 ### GET /api/households
 
-**Proposed** path. Design §6 says create, get, rename, delete, and restore. The switcher (T20) needs the list. `GET /api/auth/session` already returns `memberships`. This route is the same list without the user object, so a household switcher does not depend on the session route's other fields.
+Design §6 says create, get, rename, delete, and restore. The switcher (T20) needs the list. `GET /api/auth/session` already returns `memberships`. This route is the same list without the user object, so a household switcher does not depend on the session route's other fields.
 
 | | |
 |---|---|
@@ -219,12 +219,12 @@ interface Household {
 
 ### PATCH /api/households/{id}
 
-Rename. **Proposed** role: owner. Design §5 does not say who may rename.
+Rename. Owner only. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 | | |
 |---|---|
 | Auth | Session |
-| Role | Owner **proposed** |
+| Role | Owner |
 | X-Household-Id | Required, equal to `{id}` |
 | Request | `{ "name": string }` |
 | Response | `200` `Household` |
@@ -243,7 +243,7 @@ Soft-delete. Devices and invites for this household stop working. The row stays 
 | Response | `200` `Household` plus the verbatim sentence below |
 | Errors | `unauthorized`, `forbidden_role`, `validation`, `confirmation_mismatch`, `not_found`, `busy` |
 
-What the caller must type is open. **Proposed:** the current household name, compared case-sensitively after trim.
+The caller types the current household name. The server trims it and compares it case-insensitively. A mismatch is `confirmation_mismatch`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 The success body includes this sentence, verbatim from design §9, as `message`:
 
@@ -262,7 +262,7 @@ Deleting a household rotates `channel_key`, so current subscribers receive nothi
 | | |
 |---|---|
 | Auth | Session |
-| Role | Owner **proposed** (the same role that deletes) |
+| Role | Owner. That includes anyone who was an owner when the household was deleted. |
 | X-Household-Id | Required, equal to `{id}` |
 | Request | Empty body |
 | Response | `200` `Household` with `deletedAt: null` |
@@ -318,7 +318,7 @@ Remove that member. This rotates `channel_key`.
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `last_owner`, `busy` |
 
-Removing the last owner returns `last_owner`. **Proposed:** an owner who is not the last owner may remove themselves.
+Removing the last owner returns `last_owner`. An owner who is not the last owner may remove themselves.
 
 ## Invites
 
@@ -369,7 +369,7 @@ interface InviteSummary {
 }
 ```
 
-The list does not include `code` or `url`. **Proposed:** the raw code is not recoverable after create.
+The list does not include `code` or `url`. The raw code is not recoverable after create.
 
 ### POST /api/invites/{id}/revoke
 
@@ -397,7 +397,7 @@ The caller is signed in (they have just signed up, or they already have an accou
 | Response | `200` `{ "householdId": string, "name": string, "role": "member" }` |
 | Errors | `unauthorized`, `validation`, `invite_expired`, `not_found`, `busy` |
 
-**Proposed** mapping: a code that is past `expiresAt`, or already used, is `invite_expired`. A code that was revoked, or that was never issued, is `not_found`.
+A code that is past `expiresAt`, or already used, is `invite_expired`. A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 The new membership is `member`. The client then sends that `householdId` as `X-Household-Id`. Accepting does not switch any other household.
 
@@ -407,12 +407,12 @@ Pairing code or QR, 10-minute expiry, one household per device. Owners revoke. T
 
 ### POST /api/devices/pair
 
-Starts pairing from a signed-in client. **Proposed** role: member. Design §5 says owners revoke, and does not say who may start a code.
+Starts pairing from a signed-in client. Any member can start a code. Only an owner can revoke. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 | | |
 |---|---|
 | Auth | Session |
-| Role | Member **proposed** |
+| Role | Member |
 | X-Household-Id | Required |
 | Request | Empty body |
 | Response | `201` `{ "code": string, "qrPayload": string, "expiresAt": string }` |
@@ -422,7 +422,7 @@ Starts pairing from a signed-in client. **Proposed** role: member. Design §5 sa
 
 ### POST /api/devices/pair/complete
 
-**Proposed** path. The device calls this with the code and receives the bearer token. Design §6 names `/api/devices/pair` and does not name the device's half of the handshake.
+The device calls this with the code and receives the bearer token. Design §6 names `/api/devices/pair` and does not name the device's half of the handshake. PM confirmed this path.
 
 | | |
 |---|---|
@@ -433,7 +433,7 @@ Starts pairing from a signed-in client. **Proposed** role: member. Design §5 sa
 | Response | `201` `{ "deviceId": string, "token": string }` |
 | Errors | `validation`, `not_found`, `invite_expired` is not used here |
 
-An unknown, revoked, or already used code is `not_found`. A code past its 10 minutes is `not_found` as well. **Proposed:** pairing does not reuse `invite_expired`, so a device cannot tell "expired" from "wrong". `label` is an optional display name, **proposed**.
+An unknown, revoked, already used, or expired code is `not_found`. Pairing does not reuse `invite_expired`. `label` is an optional display name.
 
 The response does not include a household id. The token is bound to that household on the server. `token` is shown once.
 
@@ -493,7 +493,7 @@ interface DeviceScanRequest {
   scannedAt?: string;         // RFC3339. Server time when omitted.
   direction?: 'stock_in' | 'stock_out';
   unitCount?: number;
-  heartbeat?: boolean;        // proposed
+  heartbeat?: boolean;
 }
 
 interface DeviceScanResponse {
@@ -503,9 +503,9 @@ interface DeviceScanResponse {
 }
 ```
 
-Idempotency: a second request with the same device and the same `id` does not create a second scan. It returns `200` with `status: "duplicate"` and the original result. **Proposed:** if the barcode or `unitCount` differs from the stored request, the response is `conflict` and the stored scan is unchanged.
+Idempotency: a second request with the same device and the same `id` does not create a second scan. It returns `200` with `status: "duplicate"` and the original result. If the barcode or `unitCount` differs from the stored request, the response is `conflict` and the stored scan is unchanged.
 
-Heartbeat: every accepted scan updates that device's `lastSeenAt`. **Proposed:** `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`.
+Heartbeat: every accepted scan updates that device's `lastSeenAt`. `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`.
 
 The offline ring of 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`.
 
@@ -547,7 +547,7 @@ Phone camera or a keyboard wedge in the browser. Same body as today's create, wi
 | Response | `200` `{ "cursor": string, "scans": HostedScanEntry[] }`, or `304` when `since` is current |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
-An omitted `status` returns the queue the Scan screen shows today (pending, flagged, and qr). **Proposed:** that default stays. `since` still applies on top of the status filter, and the cursor is for that filter.
+An omitted `status` returns the queue the Scan screen shows today: pending, flagged, and qr. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). `since` still applies on top of that filter, and the cursor is for that filter.
 
 ```ts
 interface HostedScanEntry {
@@ -624,7 +624,7 @@ The HTTP status stays `200` when an item hits `busy` or `no_space`. This lands w
 
 A single commit or stock-out still uses HTTP 503 for `busy` and `no_space`. Only the batch puts those codes on the `200` body.
 
-An id from another household is `not_found` for the whole request. **Proposed:** the request does not partially commit a mix of households, and it does not report the foreign id as a per-item failure.
+An id from another household is `not_found` for the whole request. The request does not partially commit a mix of households, and it does not report the foreign id as a per-item failure.
 
 ### GET /api/inventory
 
@@ -684,7 +684,7 @@ interface ExportDocumentV1 {
 }
 ```
 
-`schemaVersion` other than `1` is `validation`. A top-level key not in this envelope is `validation`. Ids are preserved. Identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Nested fields are the ones on those TypeScript types. `settings` may be an empty object in version 1; its keys are an open question.
+`schemaVersion` other than `1` is `validation`. A top-level key not in this envelope is `validation`. Ids are preserved. Identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Nested fields are the ones on those TypeScript types. `settings` may be an empty object in version 1.
 
 Collections and the identity they preserve:
 
@@ -692,7 +692,7 @@ Collections and the identity they preserve:
 |---|---|---|
 | `products` | product id | Snapshot of name and the current product fields the household displayed. The global catalog is not dumped. |
 | `barcodeOverrides` | barcode | Household overrides only, not global barcodes. |
-| `items` | item id, product id | `userId` is absent. |
+| `items` | item id, product id | `userId` is absent. Each item carries `category`, `group`, and `stockTarget` so `items.csv` can be written from this document. |
 | `itemInstances` | instance id, item id | |
 | `scanEntries` | scan id | Same shape as `HostedScanEntry`. |
 | `shoppingListItems` | shopping-list id, item id | |
@@ -701,9 +701,16 @@ Collections and the identity they preserve:
 | `categories` | category id, item links, targets | |
 | `settings` | the household settings row | Includes the restock-mode choice and the supply default. |
 
-Not in version 1: memberships, invites, device tokens, push subscription secrets, and provider tokens (Kroger and any other OAuth ciphertext). After import, people re-invite, re-pair, and reconnect a store. Whether those belong in a later version is open.
+Not in version 1: memberships, invites, device tokens, push subscription secrets, and provider tokens (Kroger and any other OAuth ciphertext). After import, people re-invite, re-pair, and reconnect a store. PM confirmed those stay out of version 1.
 
-CSV, **proposed:** two objects beside the JSON, `items.csv` (name, barcode, on-hand count, expires) and `shopping-list.csv` (name, quantity). The JSON remains the file the importer reads.
+CSV is two objects beside the JSON. The hosted app does not import the CSV. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
+
+| File | Columns |
+|---|---|
+| `items.csv` | name, barcode, on-hand count, expires, category, group, stock target |
+| `shopping-list.csv` | name, quantity |
+
+`stock target` is the item's `stockTarget`. `category` and `group` are the item's `category` and `group`. An empty value is an empty cell. The JSON remains the file the importer reads.
 
 Equality for the round-trip test is equality of the version 1 collections after import, compared by id.
 
@@ -722,7 +729,7 @@ Owner. Async. `stockbot-jobs` writes the JSON and the CSV to the exports bucket 
 
 ### GET /api/export/{id}
 
-**Proposed** path, the poll for the job `POST /api/export` created. `{id}` is the job id, and the job must belong to `X-Household-Id`.
+The poll for the job `POST /api/export` created. `{id}` is the job id, and the job must belong to `X-Household-Id`.
 
 | | |
 |---|---|
@@ -757,15 +764,15 @@ Owner. The destination household must be empty. Writes run in transactions of at
 | Response | `202` `{ "jobId": string, "importId": string, "status": "pending" }` |
 | Errors | `unauthorized`, `forbidden_role`, `validation`, `household_not_empty`, `not_found`, `busy`, `no_space` |
 
-**Proposed:** empty means the household has no items, scan entries, shopping-list rows, groups, categories, or devices. The owner membership and the settings row created with the household are allowed.
+Empty means the household has no items, scan entries, shopping-list rows, groups, categories, or devices. The owner membership and the settings row created with the household are allowed.
 
 A second POST with the same `importId` and the same household returns `202` with the original job and does not write again. A different `importId` when the household is no longer empty is `household_not_empty`.
 
-**Proposed:** import is asynchronous, same job shape as export, because a Pi database does not fit one Lambda request under the 1,000-row cap. Design §7 calls import a job and calls export async. It does not say the HTTP call itself returns before the write finishes.
+Import is asynchronous, same job shape as export, because a Pi database does not fit one Lambda request under the 1,000-row cap. Design §7 calls import a job and calls export async.
 
 ### GET /api/import/{id}
 
-**Proposed** poll. Same auth as POST. `{id}` is the job id.
+Same auth as POST. `{id}` is the job id.
 
 ```ts
 interface ImportJob {
@@ -775,7 +782,7 @@ interface ImportJob {
 }
 ```
 
-`ready` means the version 1 collections match the file. Counts are not required in the body. **Proposed:** the body stays free of item names.
+`ready` means the version 1 collections match the file. Counts are not required in the body. The body stays free of item names.
 
 The Pi command `stockbot export` writes this same JSON locally. Uploading it is `POST /api/import`. There is no hosted route that reads the Pi's disk.
 
@@ -790,13 +797,13 @@ Deletes the signed-in user: memberships, then the Cognito user (`AdminDeleteUser
 | Auth | Session |
 | Role | Signed in |
 | X-Household-Id | Omit. The check covers every household the user owns. |
-| Request | `{ "confirmation": string }` **proposed** |
+| Request | `{ "confirmation": string }` |
 | Response | `204` |
 | Errors | `unauthorized`, `validation`, `confirmation_mismatch`, `last_owner`, `busy` |
 
 The user cannot delete the account while they are the last owner of any household. They transfer ownership or delete that household first. The code is `last_owner`.
 
-**Proposed** confirmation string: the account email, trimmed, case-insensitive. Design §9 states the last-owner rule and does not say the account delete is typed. Household delete is the one the design calls a typed confirmation.
+The caller types the account email. The server trims it and compares it case-insensitively. A mismatch is `confirmation_mismatch`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
 ## Push
 
@@ -804,7 +811,7 @@ Decided transport: AppSync Events on every visible screen. Polling is the fallba
 
 ### GET /api/config
 
-**Proposed** as a hosted route. Design §3.1 gives it as the example the client uses to pick a transport.
+Design §3.1 gives this as the example the client uses to pick a transport. PM confirmed the route.
 
 | | |
 |---|---|
@@ -847,7 +854,7 @@ The ticket is an HMAC over `{household_id, user_id, channel_key, exp}`, key in S
 
 `/hh/<household_id>/<channel_key>`
 
-- Both segments are at most 50 characters (AppSync's limit). A household id is a UUID (36). **Proposed:** `channel_key` is 32 URL-safe characters.
+- Both segments are at most 50 characters (AppSync's limit). A household id is a UUID (36). `channel_key` is 32 URL-safe characters.
 - `channel_key` lives in `household_settings` and rotates when a member is removed or a device is revoked.
 - Subscribe is allowed only when the channel string equals the ticket's channel. No wildcards and no prefix match.
 - Clients cannot publish. Publish is IAM, from the API and jobs roles, after the final successful commit.
@@ -906,18 +913,18 @@ A batch commit stays HTTP 200. On the first `busy` or `no_space` result the batc
 
 ### Error code registry
 
-The TypeScript union `HostedErrorCode` matches this table. A sentence marked **proposed, PM to confirm** is not in the product today.
+The TypeScript union `HostedErrorCode` matches this table. PM approved the sentences in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). For `validation`, a client shows the field-specific message instead whenever it has one.
 
 | code | HTTP | sentence | notes |
 |---|---|---|---|
 | `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
-| `unauthorized` | 401 | Sign in to continue. | proposed, PM to confirm |
-| `forbidden_role` | 403 | Only an owner can do that. | proposed, PM to confirm |
-| `not_found` | 404 | That isn't available. | proposed, PM to confirm. Also the response for cross-household access. |
-| `conflict` | 409 | That change conflicts with one that just landed. Refresh and try again. | proposed, PM to confirm |
-| `invite_expired` | 409 | This invite has expired. Ask for a new one. | proposed, PM to confirm |
-| `validation` | 400 | Check that and try again. | proposed, PM to confirm |
+| `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
+| `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
+| `not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Rewritten by PM. Also the response for cross-household access. |
+| `conflict` | 409 | Someone else just changed this. Refresh and try again. | Rewritten by PM. |
+| `invite_expired` | 409 | This invite has expired or was already used. Ask for a new one. | Rewritten by PM. |
+| `validation` | 400 | Check what you entered and try again. | Rewritten by PM. Clients show a field-specific message instead when they have one. |
 | `not_pending` | 400 | This scan was already handled. | Existing scan-queue sentence. Unchanged. |
 | `product_unresolved` | 400 | Choose which item this is first. | Existing scan-queue sentence. Unchanged. |
 | `none_on_hand` | 409 | Nothing on hand to take out. | Existing scan-queue sentence. Unchanged. |
@@ -927,42 +934,45 @@ The TypeScript union `HostedErrorCode` matches this table. A sentence marked **p
 | `scan_not_found` | 404 | This scan is no longer in the queue. | Existing scan-queue sentence. Unchanged. |
 | `direction_unset` | 400 | Choose stock in or stock out first. | Existing scan-queue sentence. Unchanged. |
 | `internal` | 500 | Something went wrong. Try again. | Existing sentence, `clientmsg.ServerError`. Code kept on commit and stock-out. |
-| `last_owner` | 409 | You're the last owner. Transfer ownership or delete the household first. | proposed, PM to confirm. Not a code design §6 names. |
-| `household_not_empty` | 409 | This household already has items, so it can't take an import. | proposed, PM to confirm. Not a code design §6 names. |
-| `confirmation_mismatch` | 400 | The confirmation doesn't match. | proposed, PM to confirm. Not a code design §6 names. |
+| `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. |
+| `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. |
+| `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. |
+
+## Decided by PM
+
+Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). PM confirmed every working assumption except the invite host. Where the comment rewrote a rule, that rewrite is the contract.
+
+1. **JSON casing.** CamelCase on the wire. Decided by PM.
+3. **Rename.** Owner. Decided by PM.
+4. **Pairing.** Any member can start pairing. Only an owner can revoke. Decided by PM.
+5. **Restore.** Owner, including anyone who was an owner when the household was deleted. Decided by PM.
+6. **Owner removing themselves.** Allowed when another owner remains. Decided by PM.
+7. **Typed confirmations.** Household delete types the household name. Account delete types the email. Both are compared case-insensitively after trimming. Decided by PM.
+8. **Extra error codes.** `last_owner`, `household_not_empty`, and `confirmation_mismatch` stay, with the sentences in the registry. Decided by PM.
+9. **`conflict`.** A same-second edit that is not last-owner and not a non-empty import uses `conflict` and PM's sentence. Decided by PM.
+10. **Invite errors.** Expired or already used is `invite_expired`. Revoked or never issued is `not_found`. Decided by PM.
+11. **Pairing completion.** `POST /api/devices/pair/complete`, optional `label`, and `not_found` for an expired pairing code. Decided by PM.
+12. **Heartbeat.** `heartbeat: true` on `POST /api/device/scans`, and `lastSeenAt` on every accepted scan. Decided by PM.
+13. **Idempotent scan with a different barcode.** `conflict`. Decided by PM.
+14. **Device scan response.** No household id. Decided by PM.
+15. **Empty household.** No items, scans, shopping-list rows, groups, categories, or devices. The owner row and the initial settings row are allowed. Decided by PM.
+16. **Import HTTP shape.** Async `202` plus `GET /api/import/{id}`. Decided by PM.
+17. **Extra paths.** The login redirect, household list, pairing completion, export and import polls, `GET /api/config`, and the stock and list changes-since reads stay in the index. Decided by PM.
+18. **CSV.** `items.csv` and `shopping-list.csv` only. `items.csv` also has category, group, and stock target. Decided by PM.
+19. **Version 1 leaves out** memberships, invites, device tokens, push subscriptions, and provider tokens. `settings` may be `{}`. Decided by PM.
+20. **Product snapshot.** The export copies the products the household references, not the shared catalog. Decided by PM.
+22. **Hint types.** Only `scans`, `stock`, and `list`. Decided by PM.
+23. **Unrecognized changes-since cursor.** A full `200`. Decided by PM. (The earlier batch question that used this number was already closed with #330.)
+24. **Default scan list** when `status` is omitted: pending, flagged, and qr. Decided by PM. PM's comment calls this #25, which was its number before the #330 edit.
+25. **Foreign id inside a batch.** The whole request is `not_found`. Decided by PM.
+29. **Sign-up restock question.** It stays on the existing restock settings route, called after create. Decided by PM. PM's comment calls this #30.
+30. **Pi auth.** This contract does not change the Pi. Decided by PM for this contract. Which auth the Pi keeps is still design §13.
+31. **Grocy.** Out of scope. Decided by PM. PM's comment calls this #32.
 
 ## Open questions
 
-These are the points the design leaves open. The working assumption used above is stated first so Frontend can mock against it.
-
-1. **JSON casing.** This contract uses camelCase, like the current API. Design prose says `household_id` and `channel_key`. Confirm the wire format before T13.
-2. **Session cookie name.** Not specified. It must not be the Pi's `pantry_session`.
-3. **Who may rename a household.** Assumed owner.
-4. **Who may start pairing.** Assumed any member. Revoke stays owner-only, which the design does say.
-5. **Who may restore.** Assumed owner.
-6. **An owner removing themselves** when another owner remains. Assumed allowed.
-7. **Confirmation strings.** Household delete assumes the household name. Account delete assumes the email, and assumes a typed body even though §9 only requires that for household delete.
-8. **Extra error codes.** `last_owner`, `household_not_empty`, and `confirmation_mismatch` are not in the §6 list. They exist so those three cases can each have a sentence. If PM wants one sentence per named code only, they fold into `conflict` or `validation` and the sentences here change.
-9. **`conflict` vs those codes.** A same-second edit that is not "last owner" and not "household not empty" uses `conflict`. Confirm that split.
-10. **Invite outcomes.** Expired or already used → `invite_expired`. Revoked or unknown → `not_found`. Confirm, including the HTTP status `409` for `invite_expired`.
-11. **Pairing completion path** `POST /api/devices/pair/complete`, the optional `label`, and using `not_found` for an expired pairing code instead of `invite_expired`.
-12. **Heartbeat shape.** Assumed a `heartbeat: true` body on `POST /api/device/scans`, plus `lastSeenAt` on every accepted scan. The design says the scan route has a heartbeat and does not show a body.
-13. **Idempotent scan with a different barcode.** Assumed `conflict`. The design only says the key is `(device_id, id)`.
-14. **Device scan response** does not include a household id. Confirm the device never needs to display or send one.
-15. **Empty household.** Assumed: no items, scans, shopping-list rows, groups, categories, or devices. The owner row and the initial settings row are allowed.
-16. **Import HTTP shape.** Assumed async `202` plus `GET /api/import/{id}`, by analogy with export. §7 says the import is a job. It does not say the POST waits.
-17. **Export and import poll paths** are not named in §6. Nor is `GET /api/auth/login`, `GET /api/households`, or `GET /api/config`.
-18. **CSV columns.** Assumed `items.csv` and `shopping-list.csv` only.
-19. **What version 1 leaves out:** memberships, invites, device tokens, push subscriptions, provider tokens. Confirm those stay out. `settings` may be `{}`; the key list inside it is not in the design.
-20. **Product snapshot.** Assumed the export copies the products the household references, not the shared catalog. Ties to the open catalog question in design §13.
-21. **AppSync URLs** on `GET /api/config`. The client needs the realtime domain. The design doesn't say where it is published.
-22. **Hint types** are only `scans`, `stock`, and `list`. History, restock, and export/import job completion have no hint. Assumed those screens refetch on the type they already show, and that job polls are ordinary GET polls.
-23. **Unrecognized changes-since cursor.** Assumed a full `200`, not `validation`.
-24. **Default scan status filter** when `status` is omitted. Assumed today's queue (pending, flagged, qr).
-25. **Foreign id inside a batch.** Assumed the whole request is `not_found`.
-26. **Invite URL host.** The hosted domain is still TODO(CJ) in design §13. The server builds the URL. The client does not send a host.
-27. **AppSync header JSON key** that carries the live ticket (`authorization` vs another name).
-28. **Reconnect backoff numbers.** The design says exponential backoff with jitter and does not give the delays. The 2 s / 10 s polls and the 300 s `ka` timeout are specified; the backoff schedule is not.
-29. **Sign-up restock question.** Assumed it stays on the existing restock settings route after `POST /api/households`, not in the create body.
-30. **Pi auth.** Design §13 still asks whether the Pi gets this auth or keeps the shared password. This contract does not change the Pi either way.
-31. **Grocy.** Design §13 is open. No Grocy route is added here. A Grocy token, if it stays, is a device-class token for one household and is not a client-supplied tenant.
+1. **Invite URL host** (PM's #27). Still open. It waits on CJ's hosted domain. The server builds the URL. The client does not send a host.
+2. **Session cookie name.** Still open for the Architect. It must not be the Pi's `pantry_session`. PM's comment did not name it.
+3. **AppSync URLs** on `GET /api/config`. Still open for the Architect. The client needs the realtime domain, and the design does not say where it is published.
+4. **AppSync header JSON key** that carries the live ticket. Still open for the Architect.
+5. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays.

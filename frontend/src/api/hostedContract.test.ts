@@ -12,11 +12,16 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const doc = readFileSync(resolve(root, 'docs/design/api-contract.md'), 'utf8');
 const source = readFileSync(resolve(root, 'frontend/src/api/contract.ts'), 'utf8');
 
-// Sentences already shipped, or locked by PR #320. Anything else in the
-// registry is new copy and has to say so.
+// Sentences already shipped, locked by PR #320, or approved by PM on PR #364.
 const existingSentences: Record<string, string> = {
   busy: 'Stockbot is busy right now. Try again in a moment.',
   no_space: "Stockbot is out of storage space, so this wasn't saved.",
+  unauthorized: 'Sign in to continue.',
+  forbidden_role: 'Only an owner can do that.',
+  not_found: "Stockbot couldn't find that. It may have been removed.",
+  conflict: 'Someone else just changed this. Refresh and try again.',
+  invite_expired: 'This invite has expired or was already used. Ask for a new one.',
+  validation: 'Check what you entered and try again.',
   not_pending: 'This scan was already handled.',
   product_unresolved: 'Choose which item this is first.',
   none_on_hand: 'Nothing on hand to take out.',
@@ -26,6 +31,9 @@ const existingSentences: Record<string, string> = {
   scan_not_found: 'This scan is no longer in the queue.',
   direction_unset: 'Choose stock in or stock out first.',
   internal: 'Something went wrong. Try again.',
+  last_owner: "You're the only owner. Make someone else an owner first, or delete the household.",
+  household_not_empty: 'You can only import into an empty household. This one already has items.',
+  confirmation_mismatch: "That doesn't match. Check the spelling and try again.",
 };
 
 interface RegistryRow {
@@ -83,16 +91,13 @@ describe('hosted API contract', () => {
     expect(errorCodes(source).sort()).toEqual([...codes].sort());
   });
 
-  it('keeps existing sentences and marks every new sentence for PM', () => {
+  it('keeps the approved sentences and does not leave them for PM to confirm', () => {
+    expect(doc).not.toContain('proposed, PM to confirm');
     for (const row of registry(doc)) {
-      const existing = existingSentences[row.code];
-      if (existing !== undefined) {
-        expect(row.sentence).toBe(existing);
-      } else {
-        expect(row.notes).toContain('proposed, PM to confirm');
-      }
+      expect(existingSentences[row.code]).toBe(row.sentence);
     }
     expect(doc).toContain('generic-sentence: Something went wrong. Try again.');
+    expect(doc).toContain('stock target');
   });
 
   it('states the tenant rule and the endpoint index count', () => {

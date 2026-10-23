@@ -20,6 +20,12 @@ func existingContractSentences() map[string]string {
 	return map[string]string{
 		"busy":                          "Stockbot is busy right now. Try again in a moment.",
 		"no_space":                      "Stockbot is out of storage space, so this wasn't saved.",
+		"unauthorized":                  "Sign in to continue.",
+		"forbidden_role":                "Only an owner can do that.",
+		"not_found":                     "Stockbot couldn't find that. It may have been removed.",
+		"conflict":                      "Someone else just changed this. Refresh and try again.",
+		"invite_expired":                "This invite has expired or was already used. Ask for a new one.",
+		"validation":                    "Check what you entered and try again.",
 		inventory.CodeNotPending:        inventory.NotPendingMessage,
 		inventory.CodeProductUnresolved: inventory.ProductUnresolvedMessage,
 		inventory.CodeNoneOnHand:        inventory.NoneOnHandMessage,
@@ -29,6 +35,9 @@ func existingContractSentences() map[string]string {
 		inventory.CodeScanNotFound:      inventory.ScanNotFoundMessage,
 		inventory.CodeDirectionUnset:    inventory.DirectionUnsetMessage,
 		inventory.CodeInternal:          inventory.InternalMessage,
+		"last_owner":                    "You're the only owner. Make someone else an owner first, or delete the household.",
+		"household_not_empty":           "You can only import into an empty household. This one already has items.",
+		"confirmation_mismatch":         "That doesn't match. Check the spelling and try again.",
 	}
 }
 
@@ -150,16 +159,16 @@ func TestHostedAPIContract(t *testing.T) {
 	if existing["internal"] != clientmsg.ServerError {
 		t.Fatalf("internal sentence %q is not clientmsg.ServerError %q", existing["internal"], clientmsg.ServerError)
 	}
+	if strings.Contains(doc, "proposed, PM to confirm") {
+		t.Fatal("a sentence is still marked proposed, PM to confirm")
+	}
 	for _, row := range rows {
 		want, ok := existing[row.code]
-		if ok {
-			if row.sentence != want {
-				t.Fatalf("code %s sentence %q, want %q", row.code, row.sentence, want)
-			}
-			continue
+		if !ok {
+			t.Fatalf("code %s has no pinned sentence", row.code)
 		}
-		if !strings.Contains(row.notes, "proposed, PM to confirm") {
-			t.Fatalf("new code %s is missing the PM confirmation mark", row.code)
+		if row.sentence != want {
+			t.Fatalf("code %s sentence %q, want %q", row.code, row.sentence, want)
 		}
 	}
 
