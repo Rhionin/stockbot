@@ -2,7 +2,8 @@
 // refuse getUserMedia on plain HTTP (a phone hitting a home server by IP), so
 // the page explains that instead of prompting.
 
-export const RESCAN_COOLDOWN_MS = 2000;
+export { RESCAN_COOLDOWN_MS, shouldAcceptScan, type PriorScan } from './scanTiming';
+
 export const SCAN_INTERVAL_MS = 250;
 export const CAMERA_START_TIMEOUT_MS = 8000;
 
@@ -13,11 +14,6 @@ export type CameraBlockKind = 'insecure' | 'unavailable' | 'unsupported' | 'came
 export interface CameraBlock {
   kind: CameraBlockKind;
   message: string;
-}
-
-export interface PriorScan {
-  value: string;
-  at: number;
 }
 
 const HTTPS_MESSAGE = 'Camera scanning needs a secure connection (HTTPS). Open this page over HTTPS, or type the barcode instead.';
@@ -54,13 +50,6 @@ export function describeCameraError(error: unknown): string {
     default:
       return 'Camera access was denied or is unavailable.';
   }
-}
-
-// A second read of the same code while it is still in frame is not a new item.
-export function shouldAcceptScan(last: PriorScan | null, value: string, now: number, cooldownMs: number): boolean {
-  if (last === null) return true;
-  if (last.value !== value) return true;
-  return now - last.at > cooldownMs;
 }
 
 function isHardCameraFailure(error: unknown): boolean {
