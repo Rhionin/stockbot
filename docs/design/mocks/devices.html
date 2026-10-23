@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scanners and revocation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,560;6..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <main class="screen">
+    <header class="top">
+      <img src="assets/mark.svg" alt="">
+      <div class="word">Scanners</div>
+      <div class="clock">9:41</div>
+    </header>
+    <div class="body">
+      <h1>Maple Street</h1>
+      <p class="lede">A revoked scanner stops at the next try. Scans already in the pantry stay.</p>
+      <div class="device">
+        <div class="row">
+          <div>
+            <strong>Pantry shelf</strong>
+            <div class="meta">Relay · seen 2 minutes ago</div>
+          </div>
+          <span class="pill">Paired</span>
+        </div>
+      </div>
+      <div class="revoke">
+        <p>Revoke Pantry shelf? It cannot send barcodes until someone pairs it again.</p>
+        <div class="actions">
+          <button class="ghost" type="button">Keep</button>
+          <button class="danger" type="button">Revoke</button>
+        </div>
+      </div>
+      <div class="device revoked">
+        <div class="row">
+          <div>
+            <strong>Garage spare</strong>
+            <div class="meta">Relay · revoked yesterday</div>
+          </div>
+          <span class="pill out">Revoked</span>
+        </div>
+      </div>
+      <p class="quiet">A phone camera, or a Bluetooth scanner typed into this phone, uses your login. It does not appear on this list.</p>
+    </div>
+  </main>
+</body>
+</html>
