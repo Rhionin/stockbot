@@ -69,6 +69,12 @@ describe('resolveStageEnv', () => {
     assert.throws(() => resolveStageEnv(app, 'dev'), /12-digit AWS account ID/);
   });
 
+  it('rejects a 13-digit account id', () => {
+    clearAccountEnv();
+    const app = new App({ context: { devAccount: '1234567890123' } });
+    assert.throws(() => resolveStageEnv(app, 'dev'), /12-digit AWS account ID/);
+  });
+
   it('rejects a non-string context value', () => {
     clearAccountEnv();
     const app = new App({ context: { prodAccount: 123456789012 } });

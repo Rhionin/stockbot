@@ -19,12 +19,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: infra-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cdk:
     name: Install, lint, and synth
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       AWS_EC2_METADATA_DISABLED: 'true'
+      CDK_DISABLE_CLI_TELEMETRY: 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

@@ -2,6 +2,8 @@ module github.com/Rhionin/stockbot
 
 go 1.26.0
 
+ignore ./infra/node_modules
+
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/getsentry/sentry-go v0.50.0
