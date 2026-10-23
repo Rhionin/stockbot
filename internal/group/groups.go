@@ -1237,6 +1237,9 @@ func (g *Groups) preflightName(ctx context.Context, name string) error {
 	return ensureNameFree(ctx, tx, key, "")
 }
 
+// nameConflict reports a duplicate group name. Only SQLITE_CONSTRAINT_UNIQUE
+// (2067) is that conflict. Other constraint codes, such as a foreign key
+// (787) or NOT NULL (1299), stay server errors.
 func nameConflict(err error) error {
 	var driverErr *sqlite.Error
 	if !errors.As(err, &driverErr) || driverErr.Code() != sqliteConstraintUnique {

@@ -141,7 +141,8 @@ func sqliteBusy(err error) bool {
 }
 
 // logNoSpace is the one server line for a no-space 503. Operator alerts
-// match msg and event. The driver text and any SQL stay out of the line.
+// match msg and event. The warning carries no driver text and no SQL.
+// The wrapped message is a second record at debug level.
 func logNoSpace(r *http.Request, err error) {
 	method, route, household := "", "", ""
 	if r != nil {
@@ -159,6 +160,9 @@ func logNoSpace(r *http.Request, err error) {
 		attrs = append(attrs, "sqlite_code", code)
 	}
 	slog.Warn("db_no_space", attrs...)
+	if err != nil {
+		slog.Debug("db_no_space", "driver_message", err.Error())
+	}
 }
 
 func requestRoute(r *http.Request) string {

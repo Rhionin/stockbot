@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -428,7 +429,7 @@ func noSpaceLogLine(t *testing.T, logged string) string {
 	t.Helper()
 	var line string
 	for _, candidate := range strings.Split(logged, "\n") {
-		if strings.Contains(candidate, "msg=db_no_space") {
+		if strings.Contains(candidate, "level=WARN") && strings.Contains(candidate, "msg=db_no_space") {
 			if line != "" {
 				t.Fatalf("more than one no-space line: %s", logged)
 			}
@@ -497,6 +498,107 @@ func TestDuplicateGroupNameDoesNotWaitOnWriteLock(t *testing.T) {
 	if elapsed >= 400*time.Millisecond {
 		t.Fatalf("duplicate waited %s", elapsed)
 	}
+}
+
+func TestClientSentencesAreTheAgreedWords(t *testing.T) {
+	if clientmsg.NoSpace != "Stockbot is out of storage space, so this wasn't saved." {
+		t.Fatalf("no space = %q", clientmsg.NoSpace)
+	}
+	if clientmsg.Busy != "Stockbot is busy right now. Try again in a moment." {
+		t.Fatalf("busy = %q", clientmsg.Busy)
+	}
+}
+
+func TestRenameUniqueConstraintIsConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path, nil)
+	created := serveJSON(handler, http.MethodPost, "/api/groups", `{"name":"Beans"}`)
+	if created.code != http.StatusCreated {
+		t.Fatalf("create = %d %s", created.code, created.body)
+	}
+	var group struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(created.body), &group); err != nil || group.ID == "" {
+		t.Fatalf("id from %s: %v", created.body, err)
+	}
+	// The name check inside the write sees a free name. The update then
+	// hits SQLITE_CONSTRAINT_UNIQUE because this trigger takes the name
+	// after that check. Removing the 2067 mapping turns the response into 500.
+	if _, err := env.DB.Exec(`
+		CREATE TRIGGER force_group_name_taken
+		BEFORE UPDATE OF name_key ON product_groups
+		WHEN NEW.name_key != OLD.name_key
+		BEGIN
+			INSERT INTO product_groups (id, user_id, name, name_key, rule)
+			VALUES ('forced-other', NEW.user_id, NEW.name, NEW.name_key, 'same_as_ran_out');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	renamed := serveJSON(handler, http.MethodPatch, "/api/groups/"+group.ID, `{"name":"Lentils"}`)
+	if renamed.code != http.StatusConflict || !strings.Contains(renamed.body, "already exists") {
+		t.Fatalf("rename = %d %s", renamed.code, renamed.body)
+	}
+
+	if _, err := env.DB.Exec(`DROP TRIGGER force_group_name_taken`); err != nil {
+		t.Fatal(err)
+	}
+	// A NOT NULL failure on the same update is a different constraint code.
+	if _, err := env.DB.Exec(`
+		CREATE TRIGGER force_group_not_null
+		BEFORE UPDATE OF name_key ON product_groups
+		WHEN NEW.name_key != OLD.name_key
+		BEGIN
+			INSERT INTO product_groups (id, user_id, name, name_key, rule)
+			VALUES ('forced-null', 'user-1', NULL, 'unused', 'same_as_ran_out');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	notNull := serveJSON(handler, http.MethodPatch, "/api/groups/"+group.ID, `{"name":"Peas"}`)
+	if notNull.code == http.StatusConflict || notNull.body != genericBody() {
+		t.Fatalf("not null = %d %s", notNull.code, notNull.body)
+	}
+}
+
+func TestNoSpaceDebugKeepsTheDriverText(t *testing.T) {
+	var slogBuf bytes.Buffer
+	oldSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(oldSlog) })
+
+	full := realDriverFull(t)
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, InternalError(fmt.Errorf("stock item Oat Milk: %w", full))
+	})
+	res := serveJSON(handler, http.MethodPost, "/api/scans", `{}`)
+	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
+		t.Fatalf("status = %d %s", res.code, res.body)
+	}
+	warn := noSpaceLogLine(t, slogBuf.String())
+	if strings.Contains(strings.ToLower(warn), "database or disk is full") || strings.Contains(warn, "Oat Milk") || !strings.Contains(warn, "level=WARN") {
+		t.Fatalf("warn = %s", warn)
+	}
+	debug := debugNoSpaceLine(t, slogBuf.String())
+	if !strings.Contains(debug, "level=DEBUG") || !strings.Contains(debug, "driver_message=") || !strings.Contains(debug, "database or disk is full") {
+		t.Fatalf("debug = %s", debug)
+	}
+}
+
+func debugNoSpaceLine(t *testing.T, logged string) string {
+	t.Helper()
+	var line string
+	for _, candidate := range strings.Split(logged, "\n") {
+		if strings.Contains(candidate, "level=DEBUG") && strings.Contains(candidate, "msg=db_no_space") {
+			if line != "" {
+				t.Fatalf("more than one debug line: %s", logged)
+			}
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("no debug line: %s", logged)
+	}
+	return line
 }
 
 func TestConcurrentGroupCreateOneWins(t *testing.T) {
