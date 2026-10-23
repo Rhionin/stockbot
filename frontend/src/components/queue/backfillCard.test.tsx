@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { SERVER_ERROR_FALLBACK } from '../../api/contract';
-import { OFFLINE_SENTENCE } from '../../offline';
+import { clearOfflineBanner, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { ScanEntryCard } from './ScanEntryCard';
 import type { ScanEntry } from '../../types';
 
@@ -285,7 +285,6 @@ const outcomes: Outcome[] = [
     offline: true,
     visible: [OFFLINE_SENTENCE],
     absent: ['Failed to fetch', 'Add it and take it out'],
-    toast: OFFLINE_SENTENCE,
     confirm: true,
     refreshed: false,
   },
@@ -478,7 +477,7 @@ const outcomes: Outcome[] = [
     toast: 'Added and taken out.',
     undoId: 'move-backfill',
     undoReject: true,
-    undoError: SERVER_ERROR_FALLBACK,
+    undoError: OFFLINE_SENTENCE,
     refreshed: true,
     confirm: true,
   },
@@ -507,10 +506,12 @@ const json = (body: unknown, status = 200) =>
 describe('backfill card', () => {
   beforeEach(() => {
     notifications.clean();
+    clearOfflineBanner();
   });
 
   afterEach(() => {
     notifications.clean();
+    clearOfflineBanner();
     vi.unstubAllGlobals();
   });
 
@@ -609,6 +610,7 @@ describe('backfill card', () => {
     render(
       <MantineProvider>
         <Notifications />
+        <ServerNoticeBanner />
         <ScanEntryCard
           entry={entry(named)}
           selected={false}
@@ -704,6 +706,7 @@ describe('backfill card', () => {
         const posted = calls.filter((call) => call.url.endsWith('/commit') && call.method === 'POST');
         expect(posted.at(-1)?.body).toEqual({ backfill: true });
         expect(calls.some((call) => call.url.includes('/history'))).toBe(false);
+        expect(calls.some((call) => call.method === 'PATCH' && call.url === '/api/scans/scan-1')).toBe(false);
       }
       if (row.kind === 'batch') {
         expect(calls.some((call) => call.url.endsWith('/commit') || call.url.includes('batch-commit'))).toBe(false);
@@ -737,8 +740,7 @@ describe('backfill card', () => {
         expect(calls.some((call) => call.method === 'DELETE' && call.url === `/api/moves/${row.undoId}`)).toBe(true);
         expect(inventoryReads()).toBe(beforeInventory);
         if (row.undoError !== undefined) {
-          const details = [...document.querySelectorAll('.restock-toast-detail')];
-          expect(details.some((node) => node.textContent === row.undoError)).toBe(true);
+          expect(screen.getByText(row.undoError)).toBeInTheDocument();
           expect(onChanged.mock.calls.length).toBe(beforeRefresh);
         } else {
           expect(onChanged.mock.calls.length).toBeGreaterThan(beforeRefresh);

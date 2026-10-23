@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -9,6 +9,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '../../../frontend/src/api/contract';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';
 
@@ -44,7 +46,13 @@ export function ConnectionForm({
     try {
       await onSubmit(serverUrl, password);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Stockbot did not answer at that address.');
+      const message = inlineFailure(requestError, '');
+      if (message === null || !(requestError instanceof Error)) {
+        if (message !== null) raiseOfflineBanner();
+        setError('');
+      } else {
+        setError(message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -116,7 +124,22 @@ export function ConnectionForm({
   );
 }
 
+export function ConnectionScreen({ topInset, ...props }: ConnectionFormProps & { topInset: number }) {
+  const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
+  return (
+    <View style={styles.frame}>
+      <ServerNoticeBanner topInset={topInset} />
+      <View style={[styles.frame, { paddingTop: notice === '' ? topInset : 0 }]}>
+        <ConnectionForm {...props} />
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  frame: {
+    flex: 1,
+  },
   screen: {
     flex: 1,
     backgroundColor: colors.paper,

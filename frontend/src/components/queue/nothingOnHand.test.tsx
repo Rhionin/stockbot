@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE, OFFLINE_SENTENCE } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
 
@@ -96,6 +96,7 @@ const renderQueue = (harness: QueueHarness) => {
     })
     : null;
   const commits: string[] = [];
+  let offlineCommits = 0;
   const batches: string[][] = [];
   const batchBodies: Record<string, unknown>[] = [];
   const patches: { id: string; body: unknown }[] = [];
@@ -158,7 +159,10 @@ const renderQueue = (harness: QueueHarness) => {
         }, 409));
       }
       if (id === 'scan-offline') {
-        return Promise.reject(new TypeError('Failed to fetch'));
+        offlineCommits += 1;
+        if (offlineCommits === 1) return Promise.reject(new TypeError('Failed to fetch'));
+        pending = pending.filter((entry) => entry.id !== id);
+        return Promise.resolve(json({ status: 'committed' }));
       }
       pending = pending.filter((entry) => entry.id !== id);
       return Promise.resolve(json({ status: 'committed' }));
@@ -583,9 +587,81 @@ describe('nothing on hand queue', () => {
     expect(screen.queryByRole('article', { name: 'Scan 333' })).not.toBeInTheDocument();
     const banner = document.querySelector('.scan-nothing-skipped');
     expect(banner?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
-      '1 taken out. 1 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
+      '1 taken out. 1 with nothing on hand is still in the queue. Each one has its own Add it and take it out button.',
     );
     expect(within(banner as HTMLElement).getByText('1 taken out.')).toBeVisible();
+  });
+
+  it('scrolls a skipped banner back to the top of the queue', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '333',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 1,
+        committedIds: ['scan-oats'],
+        failedIds: ['scan-rice'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 333' })).toBeInTheDocument();
+    const queue = document.querySelector('.scan-page-queue') as HTMLElement;
+    queue.scrollTop = 240;
+    expect(queue.scrollTop).toBe(240);
+    await confirmBatch(2);
+    await waitFor(() => {
+      const banner = document.querySelector('.scan-nothing-skipped');
+      expect(banner?.textContent?.replace(/\s+/g, ' ').trim()).toContain('1 with nothing on hand is still in the queue.');
+      expect((document.querySelector('.scan-page-queue') as HTMLElement).scrollTop).toBe(0);
+    });
+  });
+
+  it('hides the skipped line while a batch still has a blocking failure', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '333',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const open = scan({ id: 'scan-open', barcode: '444', productId: null, product: undefined });
+    renderQueue({
+      scans: [oats, rice, open],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 1,
+        committedIds: ['scan-oats'],
+        failedIds: ['scan-rice', 'scan-open'],
+        failedReasons: ['Nothing on hand to take out.', 'Choose which item this is first.'],
+        failedCodes: ['none_on_hand', 'product_unresolved'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 333' })).toBeInTheDocument();
+    await confirmBatch(3);
+    await waitFor(() => {
+      const failure = document.querySelector('.scan-batch-banner');
+      expect(failure?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Some scans could not be confirmed.');
+    });
+    expect(document.querySelector('.scan-nothing-skipped')).toBeNull();
+    expect(screen.queryByText(/still in the queue/)).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
   });
 
   it('After a stock-in clears amber from the last none_on_hand card, the banner is gone.', async () => {
@@ -1015,11 +1091,21 @@ describe('nothing on hand queue', () => {
     expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
-    expect((await screen.findByText(BUSY_SENTENCE)).closest('.scan-batch-banner')).not.toBeNull();
+    const busy = await screen.findByText(BUSY_SENTENCE);
+    expect(busy.closest('.scan-batch-banner')).not.toBeNull();
+    expect(busy.closest('.scan-page-queue')).not.toBeNull();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
-    expect(await screen.findByText('Failed to fetch')).toBeInTheDocument();
-    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(BUSY_SENTENCE);
+    const offline = await screen.findByText(OFFLINE_SENTENCE);
+    expect(offline.closest('.scan-page-queue')).not.toBeNull();
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 555' })).not.toBeInTheDocument());
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
 

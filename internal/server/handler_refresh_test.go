@@ -175,6 +175,12 @@ func TestRefreshHandlerFailuresAndOwnership(t *testing.T) {
 				method:         "POST",
 				path:           "/api/products/ext-transport-error/refresh",
 				expectedStatus: http.StatusBadGateway,
+				assertions: []assertion{
+					{path: "$.code", value: "provider_unavailable"},
+					{path: "$.provider", value: "Open Food Facts"},
+					{path: "$.error", value: "Open Food Facts isn't responding. Try again later."},
+				},
+				bodyExcludes: []string{"network timeout", "could not refresh"},
 			},
 			afterRequest: exchanges(httpExchange{
 				method:         "GET",

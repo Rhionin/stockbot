@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
 import type { ProviderInfo } from '../../types';
+import { inlineFailure } from '../../api/contract';
 
 export interface CredentialsDialogProps {
   provider: ProviderInfo | null;
@@ -82,7 +83,7 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       setClientSecret('');
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save credentials.');
+      setError(inlineFailure(requestError, 'Unable to save credentials.') ?? '');
     } finally {
       setPending(false);
     }
@@ -95,7 +96,7 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       await clearProviderCredentials(provider.id);
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to clear credentials.');
+      setError(inlineFailure(requestError, 'Unable to clear credentials.') ?? '');
     } finally {
       setPending(false);
     }

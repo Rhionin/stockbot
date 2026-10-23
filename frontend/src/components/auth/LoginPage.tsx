@@ -1,14 +1,16 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { login } from '../../api/client';
+import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, ServerNoticeError } from '../../api/contract';
 import './LoginPage.css';
 
 export interface LoginPageProps {
   onSignedIn: () => void;
+  onNotConfigured?: () => void;
   initialError?: string;
 }
 
-export const LoginPage = ({ onSignedIn, initialError = '' }: LoginPageProps) => {
+export const LoginPage = ({ onSignedIn, onNotConfigured, initialError = '' }: LoginPageProps) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError);
@@ -22,7 +24,11 @@ export const LoginPage = ({ onSignedIn, initialError = '' }: LoginPageProps) => 
       await login(username, password);
       onSignedIn();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'The username or password is incorrect.');
+      if (requestError instanceof ServerNoticeError && requestError.code === CODE_AUTH_NOT_CONFIGURED) {
+        onNotConfigured?.();
+        return;
+      }
+      setError(inlineFailure(requestError, 'The username or password is incorrect.') ?? '');
     } finally {
       setPending(false);
     }

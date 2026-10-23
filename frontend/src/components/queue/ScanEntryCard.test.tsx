@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ScanEntryCard } from './ScanEntryCard';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
 
@@ -205,6 +212,39 @@ describe('ScanEntryCard approve scan rename', () => {
       expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
     });
     expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByRole('alert')).not.toBeInTheDocument();
+    notifications.clean();
+  });
+
+  it('keeps the sign-in sentence in the banner and off the card', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/inventory/item-1/instances') return Promise.resolve(jsonResponse(instances));
+      if (url === '/api/scans/scan-1/commit') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: "Sign-in isn't set up yet.",
+          code: authNotConfigured.code,
+        }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+      }
+      throw new Error(url);
+    }));
+    notifications.clean();
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ServerNoticeBanner />
+        <ScanEntryCard
+          entry={{ ...entry, direction: 'stock_out' }}
+          itemId="item-1"
+          selected={false}
+          onSelectedChange={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent("Sign-in isn't set up yet.");
+    expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByText("Sign-in isn't set up yet.")).not.toBeInTheDocument();
+    expect(document.querySelector('.restock-toast')).toBeNull();
     notifications.clean();
   });
 
@@ -1216,6 +1256,35 @@ describe('ScanEntryCard stock-in confirmation', () => {
     const addExpiration = screen.getByRole('button', { name: 'Add expiration' });
     expect(addExpiration).toHaveClass('scan-entry-add-expiry');
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
+  });
+
+  it('saves a stepped count before confirm while the stepper delay is still waiting', async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      const body = request?.body === undefined ? undefined : JSON.parse(request.body as string);
+      calls.push({ url, body });
+      if (url === '/api/scans/scan-1' && request?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse({ ...stockIn, unitCount: (body as { unitCount: number }).unitCount }));
+      }
+      if (url.endsWith('/commit') && request?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ...stockIn, status: 'committed', unitCount: 2 }));
+      }
+      throw new Error(`Unexpected ${request?.method ?? 'GET'} request: ${url}`);
+    }));
+
+    renderStockIn();
+    fireEvent.click(screen.getByRole('button', { name: 'Increase unit count' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.url.endsWith('/commit'))).toBe(true);
+    });
+    const patchAt = calls.findIndex((call) => call.url === '/api/scans/scan-1');
+    const commitAt = calls.findIndex((call) => call.url.endsWith('/commit'));
+    expect(calls[patchAt]?.body).toEqual({ unitCount: 2 });
+    expect(patchAt).toBeGreaterThanOrEqual(0);
+    expect(patchAt).toBeLessThan(commitAt);
   });
 
   it('patches the same unit count when the stepper or the field changes it', async () => {

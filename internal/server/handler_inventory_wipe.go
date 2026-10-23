@@ -18,7 +18,7 @@ func (h *InventoryWipeHandler) Handle(req Request[inventoryWipeRequest, struct{}
 		return struct{}{}, nil
 	}
 	if req.Body.Confirmation != supply.WipePhrase {
-		return struct{}{}, BadRequest(err.Error())
+		return struct{}{}, ConfirmationMismatch(err.Error())
 	}
 	return struct{}{}, InternalError(err)
 }

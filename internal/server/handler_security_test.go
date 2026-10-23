@@ -45,11 +45,11 @@ func TestRejectsOversizedJSONBody(t *testing.T) {
 
 func TestWriteErrorHidesServerDetail(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeError(rec, http.StatusInternalServerError, `sql: no such table: products`)
+	writeError(rec, http.StatusInternalServerError, codeInternal, `sql: no such table: products`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if rec.Body.String() != `{"error":"Something went wrong. Try again."}` {
+	if rec.Body.String() != `{"error":"Something went wrong. Try again.","code":"internal"}` {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
 }

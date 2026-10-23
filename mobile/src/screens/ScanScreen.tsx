@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
@@ -6,7 +6,9 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ScanDirection, ScannerConfig } from '../../../frontend/src/types';
 import type { PriorScan } from '../../../frontend/src/components/scanner/scanTiming';
+import { inlineFailure, serverNoticeText, subscribeOfflineBanner } from '../../../frontend/src/api/contract';
 import type { StockbotClient } from '../api/client';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
@@ -19,6 +21,7 @@ export interface ScanScreenProps {
 
 export function ScanScreen({ client, warning }: ScanScreenProps) {
   const insets = useSafeAreaInsets();
+  const pinnedNotice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const [permission, requestPermission] = useCameraPermissions();
   const [config, setConfig] = useState<ScannerConfig | null>(null);
   const [mode, setMode] = useState<ScanDirection>('stock_in');
@@ -47,7 +50,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       if (!active) return;
       configRef.current = null;
       setConfig(null);
-      setSetupError(error instanceof Error ? error.message : 'The scanner setup did not load.');
+      setSetupError(inlineFailure(error, 'The scanner setup did not load.') ?? '');
     });
     return () => {
       active = false;
@@ -64,7 +67,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       setMode(response.mode);
       setNotice(response.mode === 'stock_in' ? 'Switched to putting away' : 'Switched to using up');
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'The scan mode did not change.');
+      setNotice(inlineFailure(error, 'The scan mode did not change.') ?? '');
       setReloadKey((value) => value + 1);
     }
   }
@@ -94,7 +97,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       } catch (error) {
         if (lastRef.current?.at === acceptedAt) lastRef.current = null;
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setNotice(error instanceof Error ? error.message : 'The scan did not save.');
+        setNotice(inlineFailure(error, 'The scan did not save.') ?? '');
       }
     })();
   }, []);
@@ -104,7 +107,8 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
-      <View style={[styles.band, { paddingTop: insets.top + 12 }]}>
+      <ServerNoticeBanner topInset={insets.top} />
+      <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + 12 : 12 }]}>
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />
           <ModeWord mode="stock_out" current={mode} onPress={switchMode} />

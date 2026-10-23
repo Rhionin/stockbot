@@ -6,6 +6,7 @@ import {
 import { ApiError, acceptSuggestion, dismissSuggestion, listSuggestions, rescanSuggestions, skipSuggestion } from '../../api/client';
 import type { GroupSuggestion, GroupTarget, SuggestionMember, TargetConflictMember } from '../../types';
 import { conflictLine, kindPhrase, memberFacts } from './copy';
+import { inlineFailure } from '../../api/contract';
 
 const MemberPhoto = ({ src }: { src?: string }) => {
   const [failed, setFailed] = useState(false);
@@ -73,7 +74,7 @@ export const InboxPage = ({ embedded = false, focusId }: { embedded?: boolean; f
       setCards(rows);
       setIndex((current) => (rows.length === 0 ? 0 : Math.min(current, rows.length - 1)));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load suggestions.');
+      setError(inlineFailure(requestError, 'Unable to load suggestions.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -120,7 +121,7 @@ export const InboxPage = ({ embedded = false, focusId }: { embedded?: boolean; f
         setConflictFor({ cardId: card.id, members: requestError.members });
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : 'Unable to group these products.');
+      setError(inlineFailure(requestError, 'Unable to group these products.') ?? '');
     } finally {
       setSaving(false);
     }
@@ -134,7 +135,7 @@ export const InboxPage = ({ embedded = false, focusId }: { embedded?: boolean; f
       await dismissSuggestion(card.id);
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to dismiss that suggestion.');
+      setError(inlineFailure(requestError, 'Unable to dismiss that suggestion.') ?? '');
     } finally {
       setSaving(false);
     }
@@ -152,7 +153,7 @@ export const InboxPage = ({ embedded = false, focusId }: { embedded?: boolean; f
       }
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to look for groups.');
+      setError(inlineFailure(requestError, 'Unable to look for groups.') ?? '');
     } finally {
       setScanning(false);
     }
@@ -165,7 +166,7 @@ export const InboxPage = ({ embedded = false, focusId }: { embedded?: boolean; f
       await skipSuggestion(card.id);
       setIndex((current) => (cards.length <= 1 ? 0 : (current + 1) % cards.length));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to skip that suggestion.');
+      setError(inlineFailure(requestError, 'Unable to skip that suggestion.') ?? '');
     }
   };
 

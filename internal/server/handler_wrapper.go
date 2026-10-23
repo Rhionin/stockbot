@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"regexp"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/go-json-experiment/json"
 )
 
@@ -45,6 +45,7 @@ type NoContent struct{}
 type errorPayload struct {
 	Error       string `json:"error"`
 	Code        string `json:"code,omitempty"`
+	Provider    string `json:"provider,omitempty"`
 	Members     any    `json:"members,omitempty"`
 	Suggestions any    `json:"suggestions,omitempty"`
 	ItemID      string `json:"itemId,omitempty"`
@@ -63,7 +64,7 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 		var body TBody
 
 		if r.ContentLength > maxJSONBodyBytes {
-			writeError(w, http.StatusBadRequest, "request body is too large")
+			writeError(w, http.StatusBadRequest, codePayloadTooLarge, "request body is too large")
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
@@ -71,15 +72,15 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 		if err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
-				writeError(w, http.StatusBadRequest, "request body is too large")
+				writeError(w, http.StatusBadRequest, codePayloadTooLarge, "request body is too large")
 				return
 			}
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			writeError(w, http.StatusBadRequest, codeValidation, fmt.Sprintf("invalid request body: %v", err))
 			return
 		}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &body); err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+				writeError(w, http.StatusBadRequest, codeValidation, fmt.Sprintf("invalid request body: %v", err))
 				return
 			}
 		}
@@ -87,7 +88,7 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 		pattern := r.Pattern
 		pathParams, err := parsePathParams[TPathParams](r, pattern)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path parameters: %v", err))
+			writeError(w, http.StatusBadRequest, codeValidation, fmt.Sprintf("invalid path parameters: %v", err))
 			return
 		}
 
@@ -157,9 +158,15 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 // writeError writes a JSON error response. A 5xx status keeps the underlying
 // detail in the server log and returns a fixed sentence, so a database or
-// upstream message is not part of the HTTP body.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeStatusError(nil, w, status, errors.New(message))
+// upstream message is not part of the HTTP body. code is the app-facing code.
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeStatusError(nil, w, status, &HTTPError{Code: status, Message: message, ErrorCode: code})
+}
+
+// writeExemptError writes a JSON error with no code. The browser tunnel is
+// the only caller. A code on that body is a contract change.
+func writeExemptError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, errorPayload{Error: message})
 }
 
 // writeHTTPError writes a JSON error. A 409 can include a code, a member list, and suggestions.
@@ -169,8 +176,10 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
 // request when one is available. A classified busy or no-space failure keeps
-// its own sentence. Every other 5xx uses the generic sentence. An unexpected
-// commit failure keeps code internal. Driver text stays in the server log.
+// its own sentence. provider_unavailable keeps its sentence and provider.
+// Every other 5xx uses the generic sentence and code internal. Driver text
+// stays in the server log. A 4xx that did not name a code gets the default
+// for its status. An explicit code, including a commit code, is kept.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
 	// A deadline or cancel is the client hanging up only when this request's
 	// own context is already done. The same error on a live request is a
@@ -188,23 +197,21 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	}
 	var httpErr *HTTPError
 	var code string
+	var provider string
 	var members any
 	var suggestions any
 	var itemID string
 	var onHand *int
-	extra := false
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
 		}
-		if httpErr.ErrorCode != "" || httpErr.Members != nil || httpErr.Suggestions != nil || httpErr.ItemID != "" || httpErr.OnHand != nil {
-			extra = true
-			code = httpErr.ErrorCode
-			members = httpErr.Members
-			suggestions = httpErr.Suggestions
-			itemID = httpErr.ItemID
-			onHand = httpErr.OnHand
-		}
+		code = httpErr.ErrorCode
+		provider = httpErr.Provider
+		members = httpErr.Members
+		suggestions = httpErr.Suggestions
+		itemID = httpErr.ItemID
+		onHand = httpErr.OnHand
 	}
 	if status >= 500 {
 		// A preview copy that cannot be written keeps its own sentence.
@@ -224,32 +231,90 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 				log.Printf("request failed: %s", logged)
 			}
 		}
-		if preview {
+		switch {
+		case preview:
 			message = clientmsg.PreviewNoSpace
-			extra = false
-		} else if sqliteBusy(err) || sqliteNoSpace(err) {
-			message, code, extra = serverClientPayload(err, code)
+			code = codeInternal
+			provider = ""
 			members = nil
 			suggestions = nil
 			itemID = ""
 			onHand = nil
-		} else {
+		case sqliteBusy(err) || sqliteNoSpace(err):
+			message, code, _ = serverClientPayload(err, code)
+			provider = ""
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
+		case code == codeProviderUnavailable:
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
+		default:
 			message = clientmsg.Generic
-			if httpErr != nil && httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != "" {
-				code = httpErr.ErrorCode
-				members = nil
-				suggestions = nil
-				itemID = ""
-				onHand = nil
-				extra = true
-			} else {
-				extra = false
-			}
+			code = codeInternal
+			provider = ""
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
 		}
+	} else if code == "" {
+		code = defaultClientCode(status)
 	}
-	if extra {
-		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions, ItemID: itemID, OnHand: onHand})
-		return
+	writeJSON(w, status, errorPayload{
+		Error:       message,
+		Code:        code,
+		Provider:    provider,
+		Members:     members,
+		Suggestions: suggestions,
+		ItemID:      itemID,
+		OnHand:      onHand,
+	})
+}
+
+// apiErrors turns a router miss on /api into JSON. A matched route, including
+// a trailing-slash redirect, is passed through. /health is not wrapped, so a
+// wrong method there stays the router's plain text.
+func apiErrors(next *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := next.Handler(r); pattern != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		probe := &captureResponse{header: make(http.Header)}
+		next.ServeHTTP(probe, r)
+		if probe.code == http.StatusMethodNotAllowed {
+			if allow := probe.header.Get("Allow"); allow != "" {
+				w.Header().Set("Allow", allow)
+			}
+			writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "Method not allowed.")
+			return
+		}
+		writeError(w, http.StatusNotFound, codeNotFound, "Not found.")
+	})
+}
+
+// captureResponse records a probe of the router's own 404 or 405.
+type captureResponse struct {
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func (c *captureResponse) Header() http.Header { return c.header }
+
+func (c *captureResponse) WriteHeader(status int) {
+	if c.code == 0 {
+		c.code = status
 	}
-	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func (c *captureResponse) Write(p []byte) (int, error) {
+	if c.code == 0 {
+		c.code = http.StatusOK
+	}
+	return c.body.Write(p)
 }

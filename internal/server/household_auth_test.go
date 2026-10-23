@@ -291,7 +291,7 @@ func TestHouseholdAuthRateLimit(t *testing.T) {
 	if _, err := strconv.Atoi(lockedRec.Header().Get("Retry-After")); err != nil {
 		t.Fatalf("Retry-After = %q", lockedRec.Header().Get("Retry-After"))
 	}
-	if !strings.Contains(lockedRec.Body.String(), "Too many sign-in attempts") {
+	if lockedRec.Body.String() != `{"error":"Too many sign-in attempts. Try again later.","code":"rate_limited"}` {
 		t.Fatalf("locked body = %s", lockedRec.Body.String())
 	}
 
@@ -562,7 +562,7 @@ func TestGETLoginIsMethodNotAllowed(t *testing.T) {
 	req.RemoteAddr = "192.168.1.20:4000"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "Method Not Allowed\n" {
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != `{"error":"Method not allowed.","code":"method_not_allowed"}` {
 		t.Fatalf("GET /api/login = %d %q", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("Allow") != "POST" {
@@ -576,7 +576,7 @@ func TestPublicGETLoginRequiresSignIn(t *testing.T) {
 	withPublicEntry(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized || rec.Body.String() != `{"error":"Sign in required."}` {
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != `{"error":"Sign in required.","code":"unauthorized"}` {
 		t.Fatalf("GET /api/login = %d %q", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("Content-Type") != "application/json" {
@@ -613,7 +613,7 @@ func TestLogoutWithoutPasswordFile(t *testing.T) {
 	withPublicEntry(pub)
 	pubRec := httptest.NewRecorder()
 	handler.ServeHTTP(pubRec, pub)
-	if pubRec.Code != http.StatusUnauthorized || pubRec.Body.String() != `{"error":"Sign in required."}` {
+	if pubRec.Code != http.StatusUnauthorized || pubRec.Body.String() != `{"error":"Sign in required.","code":"unauthorized"}` {
 		t.Fatalf("public logout = %d %s", pubRec.Code, pubRec.Body.String())
 	}
 	if pubRec.Header().Get("Set-Cookie") != "" {

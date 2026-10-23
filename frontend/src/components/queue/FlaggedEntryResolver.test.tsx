@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { clearOfflineBanner } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import type { Product, ScanEntry } from '../../types';
 
@@ -15,6 +17,7 @@ HTMLElement.prototype.scrollIntoView = vi.fn();
 // components (e.g. ScanEntryCard) that assert on animated vs reduced-motion
 // behavior; vitest isolates each test file's jsdom environment.
 beforeEach(() => {
+  clearOfflineBanner();
   vi.stubGlobal(
     'matchMedia',
     (query: string) =>
@@ -75,6 +78,7 @@ const renderResolver = (onResolved = vi.fn()) => {
     // env="test" disables Popover hideDetached so the combobox list stays
     // open in jsdom, which reports no layout box for the search field.
     <MantineProvider env="test" theme={{ respectReducedMotion: true }}>
+      <ServerNoticeBanner />
       <FlaggedEntryResolver entry={flaggedEntry} onResolved={onResolved} />
     </MantineProvider>,
   );
@@ -251,7 +255,7 @@ describe('FlaggedEntryResolver', () => {
       name: 'keeps the product when the request never reaches the server',
       status: 0,
       body: {} as unknown,
-      sentence: 'Failed to fetch',
+      sentence: "Can't reach Stockbot. Check your connection and try again.",
       drop: false,
       reject: true,
     },

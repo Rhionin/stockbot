@@ -116,8 +116,25 @@ for (const shot of shots) {
       })
     }
 
+    if (shot.width === 390) {
+      await page.locator('.scan-page-queue').evaluate((node) => {
+        const queue = node as HTMLElement
+        const filler = document.createElement('div')
+        filler.setAttribute('data-scroll-spacer', 'true')
+        filler.style.height = '1600px'
+        queue.append(filler)
+        queue.scrollTop = queue.scrollHeight
+      })
+    }
     await page.getByRole('button', { name: 'Confirm 1 selected scans' }).click()
     await expect(page.locator('.scan-nothing-skipped')).toHaveText(banner)
+    if (shot.width === 390) {
+      await expect(page.locator('.scan-nothing-skipped')).toBeInViewport()
+      const toolbar = await page.locator('.scan-page-tools').boundingBox()
+      const bannerBox = await page.locator('.scan-nothing-skipped').boundingBox()
+      expect(toolbar !== null && bannerBox !== null && bannerBox.y >= toolbar.y + toolbar.height - 1).toBe(true)
+      await page.locator('[data-scroll-spacer]').evaluate((node) => node.remove())
+    }
     await expect(missingCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
     await settle(page)
     await page.screenshot({

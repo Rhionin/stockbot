@@ -3,6 +3,7 @@ import { Button, Group, Stack, Text } from '@mantine/core';
 import { exportShoppingList, resolveUnknownProvision } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '../../types';
 import { provisionQuantity, summarizeNames } from './outcome';
+import { inlineFailure } from '../../api/contract';
 
 export interface ProvisionButtonProps {
   provider: ProviderInfo | null;
@@ -46,7 +47,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
       onFinished();
     } catch (requestError) {
       setReport(null);
-      setError(requestError instanceof Error ? requestError.message : 'These items could not be sent to Kroger.');
+      setError(inlineFailure(requestError, 'These items could not be sent to Kroger.') ?? '');
     } finally {
       setInFlight(false);
     }
@@ -59,7 +60,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
       await resolveUnknownProvision(entryId, provider.id, reachedProvider);
       onFinished();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to record that outcome.');
+      setError(inlineFailure(requestError, 'Unable to record that outcome.') ?? '');
     }
   };
 

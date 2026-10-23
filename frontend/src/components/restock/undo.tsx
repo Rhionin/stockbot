@@ -6,6 +6,8 @@ export interface UndoToast {
   detail: string;
   onUndo?: () => void;
   color?: string;
+  id?: string;
+  autoClose?: number | false;
 }
 
 let toastSerial = 0;
@@ -53,12 +55,12 @@ export function showUndo(
   const toast: UndoToast = typeof titleOrToast === 'string'
     ? { title: titleOrToast, detail: detail ?? '', onUndo }
     : titleOrToast;
-  const id = `restock-${Date.now()}-${toastSerial}`;
+  const id = toast.id ?? `restock-${Date.now()}-${toastSerial}`;
   toastSerial += 1;
   notifications.show({
     id,
     title: toast.title,
-    autoClose: 5000,
+    autoClose: toast.autoClose === undefined ? 5000 : toast.autoClose,
     color: toast.color ?? 'teal',
     classNames: {
       root: 'restock-toast',

@@ -3,7 +3,7 @@ import {
   ActionIcon, Alert, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
+import { inlineFailure, pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -74,7 +74,7 @@ export function LedgerPage() {
         setError('');
       } catch (requestError) {
         if (!active) return;
-        setError(requestError instanceof Error ? requestError.message : 'Unable to load history.');
+        setError(inlineFailure(requestError, 'Unable to load history.') ?? '');
       } finally {
         if (active) setLoading(false);
       }
@@ -109,7 +109,7 @@ export function LedgerPage() {
       setEditing(null);
       await reload();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to change that quantity.');
+      setError(inlineFailure(requestError, 'Unable to change that quantity.') ?? '');
     } finally {
       setPending(false);
     }
@@ -124,7 +124,7 @@ export function LedgerPage() {
       setUndoing(null);
       await reload();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to undo that move.');
+      setError(inlineFailure(requestError, 'Unable to undo that move.') ?? '');
     } finally {
       setPending(false);
     }

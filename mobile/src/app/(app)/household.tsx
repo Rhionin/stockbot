@@ -1,7 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { View } from 'react-native';
-import { ConnectionForm } from '@/screens/ConnectionForm';
+import { ConnectionScreen } from '@/screens/ConnectionForm';
 import { useSession } from '@/session';
 import { colors } from '@/ui/theme';
 
@@ -11,9 +11,10 @@ export default function HouseholdRoute() {
   if (session.status !== 'ready') return null;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.paper, paddingTop: insets.top }}>
+    <View style={{ flex: 1, backgroundColor: colors.paper }}>
       <StatusBar style="dark" />
-      <ConnectionForm
+      <ConnectionScreen
+        topInset={insets.top}
         heading="Household"
         lede="This phone keeps the server address and the household password on the device."
         submitLabel="Save"

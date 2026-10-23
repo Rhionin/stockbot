@@ -130,7 +130,7 @@ func TestLANInstallWithoutPasswordFile(t *testing.T) {
 	login.RemoteAddr = "192.168.1.20:4000"
 	loginRec := httptest.NewRecorder()
 	handler.ServeHTTP(loginRec, login)
-	if loginRec.Code != http.StatusNotFound || loginRec.Body.String() != `{"error":"Sign-in is not used on this address."}` {
+	if loginRec.Code != http.StatusNotFound || loginRec.Body.String() != `{"error":"Sign-in is not used on this address.","code":"not_found"}` {
 		t.Fatalf("LAN login = %d %s", loginRec.Code, loginRec.Body.String())
 	}
 }

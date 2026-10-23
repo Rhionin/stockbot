@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, scanReportsNothingOnHand, skippedNothingOnHandBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '../../api/contract';
+import { clearOfflineNotice } from './offlineNotice';
+import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, scanReportsNothingOnHand, skippedNothingOnHandBanner, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
 import { CameraScanner } from '../scanner/CameraScanner';
@@ -73,6 +75,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [queueLoaded, setQueueLoaded] = useState(false);
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
   const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState<string | null>(null);
@@ -181,6 +184,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
         setBatchTakenOut(0);
       }
       setError('');
+      setQueueLoaded(true);
+      clearOfflineNotice();
       const epoch = inventoryEpoch.current + 1;
       inventoryEpoch.current = epoch;
       inventoryLive.current = [];
@@ -199,7 +204,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           // Keep the last list. An empty stand-in would mark every stock-out as nothing on hand.
         });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load scan queue.');
+      setError(inlineFailure(requestError, 'Unable to load scan queue.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -344,6 +349,13 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     : null;
   const blockingFailures = [...failureById.values()].filter((notice) => notice.code !== CODE_NONE_ON_HAND);
   const skippedBanner = skippedNothingOnHandBanner(batchTakenOut, nothingOnHandIds.size);
+  const queueRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (skippedBanner === null) return;
+    const queue = queueRef.current;
+    if (queue === null) return;
+    queue.scrollTop = 0;
+  }, [skippedBanner]);
 
   const rememberPin = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
@@ -394,8 +406,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     holdLocalMode(mode);
     try {
       await setScannerMode(mode);
+      setScanError('');
+      clearOfflineNotice();
     } catch (requestError) {
-      setScanError(requestError instanceof Error ? requestError.message : 'Unable to switch scanner mode.');
+      setScanError(inlineFailure(requestError, 'Unable to switch scanner mode.') ?? '');
     }
   }, [holdLocalMode]);
 
@@ -462,7 +476,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       await createScanEntry({ barcode, direction: scannerModeRef.current, userId });
       await loadQueue();
     } catch (requestError) {
-      setScanError(requestError instanceof Error ? requestError.message : 'Unable to add the scan.');
+      setScanError(inlineFailure(requestError, 'Unable to add the scan.') ?? '');
     }
   };
 
@@ -553,6 +567,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   // Later refreshes keep the rows on screen. A loader is only for the first
   // paint, when there is nothing to shift under the user's finger.
   const showInitialLoader = loading && entries.length === 0;
+  const offline = useSyncExternalStore(subscribeOfflineBanner, offlineBannerActive, () => false);
 
   return (
     <Stack gap={6} className="scan-page">
@@ -581,17 +596,18 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             {scanError}
           </Alert>
         )}
-        {scannerConnected !== null && !cameraOpen && (
+        {scannerConnected === true && !cameraOpen && (
+          <Text size="xs" className="scan-status scan-status--on">
+            Scanner connected
+          </Text>
+        )}
+        {scannerConnected === false && !cameraOpen && !offline && (
           <Text
             size="xs"
-            className={scannerConnected ? 'scan-status scan-status--on' : 'scan-status scan-status--off'}
+            className="scan-status scan-status--off"
           >
-            {scannerConnected ? 'Scanner connected' : (
-              <>
-                <span>Scanner disconnected</span>
-                {'. You can scan with this device\'s camera instead.'}
-              </>
-            )}
+            <span>Scanner disconnected</span>
+            {'. You can scan with this device\'s camera instead.'}
           </Text>
         )}
         <Tabs
@@ -649,14 +665,12 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           </Group>
         )}
       </div>
-      <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {blockingFailures.length > 0 && (
-          <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
-            <div>{batchFailureBannerText(blockingFailures, confirmedCount)}</div>
-            {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
-          </Alert>
-        )}
-        {blockingFailures.length === 0 && skippedBanner !== null && (
+      <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries" ref={queueRef}>
+        <ServerNoticeBanner
+          text={batchFailureBannerText(blockingFailures, confirmedCount) ?? ''}
+          partial={partialLine ?? ''}
+        />
+        {!offline && blockingFailures.length === 0 && skippedBanner !== null && (
           <Text
             role="status"
             className="scan-batch-banner scan-batch-banner--success scan-nothing-skipped"
@@ -667,7 +681,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           </Text>
         )}
         {/* Amber cards carry their own message. The teal banner is the partial line, and the skipped-batch line above it. */}
-        {blockingFailures.length === 0 && partialLine !== null && (
+        {!offline && blockingFailures.length === 0 && partialLine !== null && (
           <Text
             role="status"
             className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
@@ -682,7 +696,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             {error}
           </Alert>
         )}
-        {!showInitialLoader && error === '' && viewEntries.length === 0 && processingForView.length === 0 && (
+        {queueLoaded && !showInitialLoader && error === '' && viewEntries.length === 0 && processingForView.length === 0 && (
           <Text c="dimmed" size="sm">No pending scans.</Text>
         )}
         {qrEntries.map((entry) => (
