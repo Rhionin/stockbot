@@ -1,0 +1,57 @@
+# CDK synth for the hosted skeleton. Not a required status check: a pull
+# request that does not touch these paths does not run this workflow, and a
+# skipped run must not block merge.
+# Synth only. No AWS credentials and no deploy. The Pi image build and deploy
+# hook stay in ci.yml.
+name: Infra
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cdk:
+    name: Install, lint, and synth
+    runs-on: ubuntu-latest
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: infra/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: Lint
+        working-directory: infra
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: infra
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: infra
+        run: npm test
+
+      - name: Synthesize dev and prod
+        working-directory: infra
+        run: npx cdk synth 'dev/*' 'prod/*' --strict

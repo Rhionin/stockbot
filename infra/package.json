@@ -1,0 +1,36 @@
+{
+  "name": "stockbot-infra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CDK app for hosted Stockbot (dev and prod, us-east-1).",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "cdk": "cdk",
+    "synth": "cdk synth --strict"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.274.0",
+    "cdk-nag": "^3.0.2",
+    "constructs": "^10.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.1",
+    "aws-cdk": "2.1146.1",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-awscdk": "^4.4.4",
+    "prettier": "^3.6.2",
+    "tsx": "^4.23.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}
