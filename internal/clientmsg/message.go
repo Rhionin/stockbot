@@ -14,3 +14,7 @@ const NoSpace = "Stockbot is out of storage space, so this wasn't saved."
 // Generic is the sentence for every other 5xx. It is one constant so the
 // wording can change without hunting through handlers.
 const Generic = "Something went wrong. Try again."
+
+// AuthNotConfigured is the sentence for HTTP 503 when sign-in is required
+// and no household password is configured.
+const AuthNotConfigured = "Sign-in isn't set up yet."

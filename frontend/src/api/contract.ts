@@ -99,6 +99,7 @@ export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
 export const CODE_BUSY = 'busy';
 export const CODE_NO_SPACE = 'no_space';
+export const CODE_AUTH_NOT_CONFIGURED = 'auth_not_configured';
 
 export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
 export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
