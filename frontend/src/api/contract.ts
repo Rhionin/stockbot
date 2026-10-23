@@ -84,6 +84,12 @@ export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
+export const CODE_BUSY = 'busy';
+export const CODE_NO_SPACE = 'no_space';
+
+export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
+export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
+
 // A 5xx response with no JSON error field. A body that includes error still wins.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
@@ -217,6 +223,26 @@ export const NOTHING_ON_HAND_BODY =
   "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
 
 export const CODE_NONE_ON_HAND = 'none_on_hand';
+
+// A lock or a full disk is one banner sentence. The card does not repeat it.
+// Other codes keep the fallback banner and the sentence on the card.
+export function batchCardCommitNotice(code: string, message: string): string {
+  if (code === CODE_NONE_ON_HAND || code === CODE_BUSY || code === CODE_NO_SPACE) return '';
+  return message;
+}
+
+export function batchFailureBannerText(
+  notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
+  committedCount: number,
+): string | null {
+  const blocking = notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+  if (blocking.length === 0) return null;
+  const storage = blocking.find((notice) => notice.code === CODE_BUSY || notice.code === CODE_NO_SPACE);
+  if (storage === undefined) return BATCH_FAILURE_FALLBACK;
+  const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
+  if (count === 0) return storage.message;
+  return `${count} confirmed. ${storage.message}`;
+}
 
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {

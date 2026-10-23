@@ -2,7 +2,14 @@ import type { ReactElement } from 'react';
 import { StyleSheet } from 'react-native';
 import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type BatchCommitResponse } from '../../../frontend/src/api/contract';
+import {
+  BATCH_FAILURE_FALLBACK,
+  BUSY_SENTENCE,
+  NOTHING_ON_HAND_BODY,
+  NOTHING_ON_HAND_TITLE,
+  NO_SPACE_SENTENCE,
+  type BatchCommitResponse,
+} from '../../../frontend/src/api/contract';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
@@ -133,6 +140,144 @@ describe('QueueScreen', () => {
     const stockedOut = failures.find((failure) => failure.code === 'none_on_hand');
     if (stockedOut) {
       expect(within(screen.getByTestId(`scan-${stockedOut.id}`)).queryByLabelText('Search')).toBeNull();
+    }
+  });
+
+  const stocked = (id: string, name: string) => entry({
+    id,
+    barcode: id,
+    direction: 'stock_out',
+    productId: `prod-${id}`,
+    product: { id: `prod-${id}`, name, category: 'Pantry', unitOfMeasure: 'bag' },
+  });
+
+  const otherFailureCodes = [
+    { code: 'instance_gone', message: 'That one was already taken out. Pick another.' },
+    { code: 'not_pending', message: 'This scan was already handled.' },
+    { code: 'product_unresolved', message: 'Choose which item this is first.' },
+    { code: 'no_item', message: 'Which item is this?' },
+    { code: 'link_target_gone', message: "That item isn't available anymore. Pick another." },
+    { code: 'scan_not_found', message: 'This scan is no longer in the queue.' },
+    { code: 'direction_unset', message: 'Choose stock in or stock out first.' },
+    { code: 'internal', message: 'Something went wrong. Try again.' },
+  ] as const;
+
+  it.each([
+    { label: 'busy and nothing committed', code: 'busy', message: BUSY_SENTENCE, committed: 0, banner: BUSY_SENTENCE },
+    { label: 'busy and one committed', code: 'busy', message: BUSY_SENTENCE, committed: 1, banner: `1 confirmed. ${BUSY_SENTENCE}` },
+    { label: 'busy and many committed', code: 'busy', message: BUSY_SENTENCE, committed: 4, banner: `4 confirmed. ${BUSY_SENTENCE}` },
+    { label: 'no_space and nothing committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 0, banner: NO_SPACE_SENTENCE },
+    { label: 'no_space and one committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 1, banner: `1 confirmed. ${NO_SPACE_SENTENCE}` },
+    { label: 'no_space and many committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}` },
+    ...otherFailureCodes.map((row) => ({
+      label: row.code,
+      code: row.code,
+      message: row.message,
+      committed: 2,
+      banner: BATCH_FAILURE_FALLBACK,
+    })),
+  ])('batch $label', async ({ code, message, committed, banner }) => {
+    const failed = [stocked('scan-fail', 'Short loaf')];
+    if (committed === 0) failed.push(stocked('scan-fail-2', 'Second loaf'));
+    const kept = Array.from({ length: committed }, (_, index) => stocked(`scan-ok-${index}`, `Kept ${index}`));
+    const cards = [...kept, ...failed];
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue(failed),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: cards.length,
+        committedIds: kept.map((card) => card.id),
+        failedIds: failed.map((card) => card.id),
+        failedReasons: failed.map(() => message),
+        failedCodes: failed.map(() => code),
+      })),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(api.listPending).toHaveBeenCalledTimes(2));
+
+    expect(screen.getAllByText(banner)).toHaveLength(1);
+    expectBanner(screen, 'failure', [banner]);
+    if (banner !== BATCH_FAILURE_FALLBACK) {
+      expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+    }
+    for (const card of failed) {
+      const row = within(screen.getByTestId(`scan-${card.id}`));
+      if (code === 'busy' || code === 'no_space') {
+        expect(row.queryByText(message)).toBeNull();
+      } else if (code !== 'no_item') {
+        expect(row.getByText(message)).toBeTruthy();
+        expect(row.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+      }
+    }
+  });
+
+  it('a busy card beside amber keeps one red sentence', async () => {
+    const amber = stocked('scan-amber', 'Rice');
+    const busy = stocked('scan-busy', 'Oats');
+    const kept = [stocked('scan-ok-0', 'Kept 0'), stocked('scan-ok-1', 'Kept 1')];
+    const cards = [...kept, amber, busy];
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue([amber, busy]),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 2,
+        committedIds: kept.map((card) => card.id),
+        failedIds: [amber.id, busy.id],
+        failedReasons: [NOTHING_ON_HAND_TITLE, BUSY_SENTENCE],
+        failedCodes: ['none_on_hand', 'busy'],
+      })),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    const banner = `2 confirmed. ${BUSY_SENTENCE}`;
+    expect(await screen.findByText(banner)).toBeTruthy();
+    expect(screen.getAllByText(banner)).toHaveLength(1);
+    expectBanner(screen, 'failure', [banner]);
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+    expect(within(screen.getByTestId('scan-scan-amber')).getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-busy')).queryByText(BUSY_SENTENCE)).toBeNull();
+  });
+
+  it.each([
+    { label: 'nothing to say', partial: false },
+    { label: 'a partial line', partial: true },
+  ])('an amber-only batch with $label shows no failure sentence', async ({ partial }) => {
+    const amber = stocked('scan-amber', 'Rice');
+    const second = stocked('scan-also', 'Beans');
+    const kept = partial ? [stocked('scan-ok-0', 'Tortilla chips')] : [];
+    const cards = [...kept, amber, second];
+    const line = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue([amber, second]),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: kept.length,
+        committedIds: kept.map((card) => card.id),
+        failedIds: [amber.id, second.id],
+        failedReasons: [NOTHING_ON_HAND_TITLE, NOTHING_ON_HAND_TITLE],
+        failedCodes: ['none_on_hand', 'none_on_hand'],
+        ...(partial ? { stockOutCounts: { 'scan-ok-0': { removedCount: 1, requestedCount: 3 } } } : {}),
+      })),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await within(await screen.findByTestId('scan-scan-amber')).findByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+    expect(screen.queryByText(BUSY_SENTENCE)).toBeNull();
+    if (partial) {
+      expectBanner(screen, 'success', [line]);
+    } else {
+      expectBanner(screen, 'gone', []);
     }
   });
 

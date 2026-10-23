@@ -16,6 +16,8 @@ import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../fr
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   BATCH_FAILURE_FALLBACK,
+  batchCardCommitNotice,
+  batchFailureBannerText,
   batchFailureNotices,
   CODE_NONE_ON_HAND,
   confirmSkipsNothingOnHand,
@@ -181,6 +183,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
   const [, setAmberBatchIds] = useState<Set<string>>(() => new Set());
+  const batchBanner = useRef('');
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -192,12 +195,17 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const changed = !sameQueue(shownIds.current, next);
     shownIds.current = new Set(next.map((entry) => entry.id));
     setEntries(next);
-    if (changed) setPartialLine('');
+    if (changed) {
+      setPartialLine('');
+      batchBanner.current = '';
+    }
     setAmberBatchIds((current) => retainAmberBatch(current, next));
     // Same cards are not a queue change. Replacing the mixed-batch sentence
     // here left the partial line as plain text, outside the failure banner.
     setError((current) => (
-      !changed && nextError === '' && current === BATCH_FAILURE_FALLBACK ? current : nextError
+      !changed && nextError === '' && (
+        current === BATCH_FAILURE_FALLBACK || (batchBanner.current !== '' && current === batchBanner.current)
+      ) ? current : nextError
     ));
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
@@ -459,7 +467,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (!pending.some((entry) => entry.id === notice.id)) continue;
         if (notice.code === CODE_NONE_ON_HAND) continue;
         const behavior = commitConflictBehavior(notice.code || undefined);
-        if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
+        const cardNotice = batchCardCommitNotice(notice.code, notice.message);
+        if (behavior.showMessage && cardNotice !== '') nextNotes[notice.id] = cardNotice;
         if (!(behavior.linkOffer || behavior.refreshSuggestions)) continue;
         nextOffers[notice.id] = {
           suggestions: [],
@@ -500,7 +509,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       const blocking = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND && stillThere(notice.id));
       const amberLeft = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id)).map((notice) => notice.id);
       setAmberBatchIds(blocking ? new Set() : new Set(amberLeft));
-      setError(blocking ? BATCH_FAILURE_FALLBACK : '');
+      const banner = batchFailureBannerText(
+        notices.filter((notice) => stillThere(notice.id)),
+        result.committedIds?.length ?? 0,
+      ) ?? '';
+      batchBanner.current = banner;
+      setError(banner);
       setPartialLine(formatPartialRemoval(result, names) ?? '');
       if (amberLeft.length > 0) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
       setLoading(false);

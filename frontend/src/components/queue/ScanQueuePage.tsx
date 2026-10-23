@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, DEFAULT_SCAN_USER_ID, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -76,6 +76,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
+  const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -501,6 +502,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const rememberBatchOutcome = (response: BatchCommitResponse) => {
     const notices = batchFailureNotices(response);
     setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
+    setConfirmedCount(response.committedIds?.length ?? 0);
     const blockedIds = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND).map((notice) => notice.id);
     rememberPin(blockedIds);
     setSelectedIds(notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND).map((notice) => notice.id));
@@ -627,7 +629,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
         {blockingFailures.length > 0 && (
           <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
-            <div>{BATCH_FAILURE_FALLBACK}</div>
+            <div>{batchFailureBannerText(blockingFailures, confirmedCount)}</div>
             {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
           </Alert>
         )}
@@ -688,14 +690,13 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
             >
               {batch.map((entry) => {
                 const notice = failureById.get(entry.id);
-                const blockedNotice = notice?.code === CODE_NONE_ON_HAND;
                 return (
                 <ScanEntryCard
                   key={entry.id}
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
-                  commitNotice={blockedNotice ? '' : (notice?.message ?? '')}
+                  commitNotice={batchCardCommitNotice(notice?.code ?? '', notice?.message ?? '')}
                   commitCode={notice?.code ?? ''}
                   nothingOnHand={nothingOnHandIds.has(entry.id)}
                   cueNothingOnHand={cuedNothing.has(entry.id)}

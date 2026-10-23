@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BATCH_FAILURE_FALLBACK,
+  BUSY_SENTENCE,
+  batchCardCommitNotice,
+  batchFailureBannerText,
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
+  NO_SPACE_SENTENCE,
   nothingOnHandPill,
   shelfHasNothingOnHand,
   type BatchCommitResponse,
@@ -137,6 +142,55 @@ const pillRows: { name: string; count: number; pill: string | null; skip: string
   { name: 'one', count: 1, pill: '1 with nothing on hand', skip: 'Confirm skips the 1 with nothing on hand.' },
   { name: 'two', count: 2, pill: '2 with nothing on hand', skip: 'Confirm skips the 2 with nothing on hand.' },
 ];
+
+const otherFailureCodes = [
+  { code: 'instance_gone', message: 'That one was already taken out. Pick another.' },
+  { code: 'not_pending', message: 'This scan was already handled.' },
+  { code: 'product_unresolved', message: 'Choose which item this is first.' },
+  { code: 'no_item', message: 'Which item is this?' },
+  { code: 'link_target_gone', message: "That item isn't available anymore. Pick another." },
+  { code: 'scan_not_found', message: 'This scan is no longer in the queue.' },
+  { code: 'direction_unset', message: 'Choose stock in or stock out first.' },
+  { code: 'internal', message: 'Something went wrong. Try again.' },
+] as const;
+
+describe('batch failure banner', () => {
+  it.each([
+    { name: 'busy and nothing committed', code: 'busy', message: BUSY_SENTENCE, committed: 0, banner: BUSY_SENTENCE, card: '' },
+    { name: 'busy and one committed', code: 'busy', message: BUSY_SENTENCE, committed: 1, banner: `1 confirmed. ${BUSY_SENTENCE}`, card: '' },
+    { name: 'busy and many committed', code: 'busy', message: BUSY_SENTENCE, committed: 4, banner: `4 confirmed. ${BUSY_SENTENCE}`, card: '' },
+    { name: 'no_space and nothing committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 0, banner: NO_SPACE_SENTENCE, card: '' },
+    { name: 'no_space and one committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 1, banner: `1 confirmed. ${NO_SPACE_SENTENCE}`, card: '' },
+    { name: 'no_space and many committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}`, card: '' },
+    ...otherFailureCodes.map((row) => ({
+      name: row.code,
+      code: row.code,
+      message: row.message,
+      committed: 2,
+      banner: BATCH_FAILURE_FALLBACK,
+      card: row.message,
+    })),
+  ])('$name', ({ code, message, committed, banner, card }) => {
+    const notices = [{ id: 'scan-fail', code, message }];
+    expect(batchFailureBannerText(notices, committed)).toBe(banner);
+    expect(batchCardCommitNotice(code, message)).toBe(card);
+  });
+
+  it('an amber-only batch has no failure banner', () => {
+    expect(batchFailureBannerText([{ code: 'none_on_hand', message: 'Nothing on hand to take out.' }], 1)).toBeNull();
+    expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
+  });
+
+  it('a busy card beside amber uses the busy sentence once', () => {
+    const notices = [
+      { code: 'none_on_hand', message: 'Nothing on hand to take out.' },
+      { code: 'busy', message: BUSY_SENTENCE },
+    ];
+    expect(batchFailureBannerText(notices, 2)).toBe(`2 confirmed. ${BUSY_SENTENCE}`);
+    expect(batchCardCommitNotice('busy', BUSY_SENTENCE)).toBe('');
+    expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
+  });
+});
 
 describe('nothing on hand copy', () => {
   it.each(pillRows)('$name', ({ count, pill, skip }) => {

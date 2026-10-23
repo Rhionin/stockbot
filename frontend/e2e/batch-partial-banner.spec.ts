@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const shotDir = process.env.BATCH_BANNER_SHOTS
@@ -6,6 +6,8 @@ const fallback = 'Some scans could not be confirmed.'
 const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.'
 const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.'
 const failureNote = 'Nothing on hand to take out.'
+const busySentence = 'Stockbot is busy right now. Try again in a moment.'
+const noSpaceSentence = "Stockbot is out of storage space, so this wasn't saved."
 // commit.go wraps a missing unit as this sentence.
 const instanceGone = 'instance "inst-1" not found or already removed: item instance not found'
 
@@ -64,12 +66,43 @@ const seedStockOuts = async (
   })
 }
 
+const batchCommitResponse = (page: Page) => page.waitForResponse((response) => {
+  return response.url().includes('/api/scans/batch-commit') && response.request().method() === 'POST'
+})
+
+// A cancel publishes a scan event, and the queue clears the partial line when
+// any scan event arrives. That event has to land before the batch body, or the
+// line is gone by the time the banner is checked.
+const clearCommittedScans = async (
+  page: Page,
+  route: Route,
+  scans: KnownScan[],
+  committedIds: readonly unknown[],
+) => {
+  const dropping = scans.filter((scan) => committedIds.includes(scan.id))
+  for (const scan of dropping) {
+    const cancelled = await route.fetch({
+      url: new URL(`/api/scans/${scan.id}`, route.request().url()).toString(),
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      postData: JSON.stringify({ status: 'cancelled' }),
+    })
+    if (!cancelled.ok()) throw new Error(`could not clear scan ${scan.id}`)
+  }
+  for (const scan of dropping) {
+    await page.waitForFunction((barcode) => {
+      return [...document.querySelectorAll('article')].every((article) => article.getAttribute('aria-label') !== `Scan ${barcode}`)
+    }, scan.barcode)
+  }
+}
+
 const confirmBatch = async (
   page: Page,
   scans: KnownScan[],
   fulfill: (ids: Map<string, string>) => Record<string, unknown>,
 ) => {
   const ids = new Map(scans.map((scan) => [scan.barcode, scan.id]))
+  const outcome = batchCommitResponse(page)
   await page.route('**/api/scans/batch-commit', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.continue()
@@ -77,16 +110,7 @@ const confirmBatch = async (
     }
     const body = fulfill(ids)
     const committed = Array.isArray(body.committedIds) ? body.committedIds : []
-    for (const id of committed) {
-      if (typeof id !== 'string') continue
-      const cancelled = await route.fetch({
-        url: new URL(`/api/scans/${id}`, route.request().url()).toString(),
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        postData: JSON.stringify({ status: 'cancelled' }),
-      })
-      if (!cancelled.ok()) throw new Error(`could not clear scan ${id}`)
-    }
+    await clearCommittedScans(page, route, scans, committed)
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -98,6 +122,7 @@ const confirmBatch = async (
     await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
   }
   await page.getByRole('button', { name: `Confirm ${scans.length} selected scans` }).click()
+  await outcome
 }
 
 const fitsInViewport = async (locator: Locator) => {
@@ -196,6 +221,23 @@ const expectNoBatchBanner = async (page: Page) => {
   await expect(page.getByText(fallback)).toHaveCount(0)
 }
 
+const expectServerSentence = async (page: Page, sentence: string, failedBarcode: string) => {
+  const failure = failureBanner(page)
+  await expect(failure).toHaveCount(1)
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
+  await expect(page.getByText(fallback)).toHaveCount(0)
+  await expect.poll(() => page.evaluate((expected) => {
+    const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
+    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === expected)
+    return head !== undefined
+      && document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
+      && document.querySelectorAll('.scan-batch-banner--success').length === 0
+  }, sentence)).toBe(true)
+  const missed = page.getByRole('article', { name: `Scan ${failedBarcode}`, exact: true })
+  await expect(missed.getByText(sentence, { exact: true })).toHaveCount(0)
+  await fitsInViewport(failure)
+}
+
 for (const viewport of viewports) {
   test(`the batch banner fits the partial line at ${viewport.width}px`, async ({ page, request }) => {
     test.setTimeout(120_000)
@@ -210,18 +252,13 @@ for (const viewport of viewports) {
     const miss = scans[1]
     if (chips === undefined || miss === undefined) throw new Error('missing seeded scans')
     try {
+      const outcome = batchCommitResponse(page)
       await page.route('**/api/scans/batch-commit', async (route) => {
         if (route.request().method() !== 'POST') {
           await route.continue()
           return
         }
-        const cancelled = await route.fetch({
-          url: new URL(`/api/scans/${chips.id}`, route.request().url()).toString(),
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          postData: JSON.stringify({ status: 'cancelled' }),
-        })
-        if (!cancelled.ok()) throw new Error(`could not clear scan ${chips.id}`)
+        await clearCommittedScans(page, route, scans, [chips.id])
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -242,6 +279,7 @@ for (const viewport of viewports) {
         await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
+      await outcome
       await expectFailureWithPartial(page, wasLine)
       const missed = page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })
       await expect(missed).toContainText(instanceGone)
@@ -255,6 +293,90 @@ for (const viewport of viewports) {
     }
   })
 }
+
+test('the batch banner shows the server sentence', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  const cases = [
+    {
+      name: 'many-busy',
+      items: [
+        { barcode: '330128001', name: 'Kept oats' },
+        { barcode: '330128002', name: 'Kept rice' },
+        { barcode: '330128003', name: 'Stopped loaf' },
+      ],
+      failedBarcode: '330128003',
+      sentence: `2 confirmed. ${busySentence}`,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 3,
+        committedIds: [scans[0]?.id, scans[1]?.id],
+        failedIds: [scans[2]?.id],
+        failedReasons: [busySentence],
+        failedCodes: ['busy'],
+      }),
+    },
+    {
+      name: 'none-busy',
+      items: [
+        { barcode: '330128011', name: 'First wait' },
+        { barcode: '330128012', name: 'Second wait' },
+      ],
+      failedBarcode: '330128011',
+      sentence: busySentence,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => busySentence),
+        failedCodes: scans.map(() => 'busy'),
+      }),
+    },
+    {
+      name: 'one-busy',
+      items: [
+        { barcode: '330128021', name: 'Kept beans' },
+        { barcode: '330128022', name: 'Busy beans' },
+      ],
+      failedBarcode: '330128022',
+      sentence: `1 confirmed. ${busySentence}`,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 1,
+        committedIds: [scans[0]?.id],
+        failedIds: [scans[1]?.id],
+        failedReasons: [busySentence],
+        failedCodes: ['busy'],
+      }),
+    },
+    {
+      name: 'none-space',
+      items: [
+        { barcode: '330128031', name: 'Full disk' },
+        { barcode: '330128032', name: 'Also full' },
+      ],
+      failedBarcode: '330128031',
+      sentence: noSpaceSentence,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => noSpaceSentence),
+        failedCodes: scans.map(() => 'no_space'),
+      }),
+    },
+  ] as const
+  for (const sample of cases) {
+    const scans = await seedStockOuts(page, request, [...sample.items])
+    try {
+      await confirmBatch(page, scans, () => sample.body(scans))
+      await expectServerSentence(page, sample.sentence, sample.failedBarcode)
+    } finally {
+      await page.unroute('**/api/scans/batch-commit')
+      for (const scan of scans) {
+        await cancelScan(request, scan.id).catch(() => undefined)
+      }
+    }
+  }
+})
 
 test.describe('batch banner screenshots', () => {
   test.skip(shotDir === undefined, 'set BATCH_BANNER_SHOTS to save viewport shots')
@@ -329,8 +451,8 @@ test.describe('batch banner screenshots', () => {
             [full.id]: { removedCount: 2, requestedCount: 2 },
           },
         }))
-        await expectNoBatchBanner(page)
         await expect(page.getByText(failureNote)).toBeVisible()
+        await expectNoBatchBanner(page)
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)
         await saveShot(page, `${shotDir}/banner_none_${viewport.width}_${scheme}.png`)
@@ -361,6 +483,102 @@ test.describe('batch banner screenshots', () => {
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
         await cancelScan(request, mixedEmpty.id)
+      }
+    }
+  })
+
+  test('saves the server sentence at both widths and schemes', async ({ page, request }) => {
+    test.setTimeout(300_000)
+    const schemes = ['light', 'dark'] as const
+    const shots = [
+      {
+        slug: 'm2_busy',
+        sentence: `2 confirmed. ${busySentence}`,
+        items: (prefix: string) => [
+          { barcode: `${prefix}41`, name: 'Kept oats' },
+          { barcode: `${prefix}42`, name: 'Kept rice' },
+          { barcode: `${prefix}43`, name: 'Stopped loaf' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 2,
+          committedIds: [scans[0]?.id, scans[1]?.id],
+          failedIds: [scans[2]?.id],
+          failedReasons: [busySentence],
+          failedCodes: ['busy'],
+        }),
+        failedIndex: 2,
+      },
+      {
+        slug: 'm0_busy',
+        sentence: busySentence,
+        items: (prefix: string) => [
+          { barcode: `${prefix}51`, name: 'First wait' },
+          { barcode: `${prefix}52`, name: 'Second wait' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: scans.map((scan) => scan.id),
+          failedReasons: scans.map(() => busySentence),
+          failedCodes: scans.map(() => 'busy'),
+        }),
+        failedIndex: 0,
+      },
+      {
+        slug: 'busy',
+        sentence: `1 confirmed. ${busySentence}`,
+        items: (prefix: string) => [
+          { barcode: `${prefix}61`, name: 'Kept beans' },
+          { barcode: `${prefix}62`, name: 'Busy beans' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 1,
+          committedIds: [scans[0]?.id],
+          failedIds: [scans[1]?.id],
+          failedReasons: [busySentence],
+          failedCodes: ['busy'],
+        }),
+        failedIndex: 1,
+      },
+      {
+        slug: 'no_space',
+        sentence: noSpaceSentence,
+        items: (prefix: string) => [
+          { barcode: `${prefix}71`, name: 'Full disk' },
+          { barcode: `${prefix}72`, name: 'Also full' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: scans.map((scan) => scan.id),
+          failedReasons: scans.map(() => noSpaceSentence),
+          failedCodes: scans.map(() => 'no_space'),
+        }),
+        failedIndex: 0,
+      },
+    ]
+    let serial = 40
+    for (const viewport of viewports) {
+      for (const scheme of schemes) {
+        serial += 1
+        await page.emulateMedia({ colorScheme: scheme })
+        await page.setViewportSize(viewport)
+        const prefix = `${viewport.width}${scheme === 'dark' ? 1 : 0}${serial}`
+        for (const shot of shots) {
+          const scans = await seedStockOuts(page, request, shot.items(prefix))
+          const failed = scans[shot.failedIndex]
+          if (failed === undefined) throw new Error(`missing ${shot.slug} scan`)
+          try {
+            await confirmBatch(page, scans, () => shot.body(scans))
+            await expectServerSentence(page, shot.sentence, failed.barcode)
+            await saveShot(page, `${shotDir}/banner_${shot.slug}_${viewport.width}_${scheme}.png`)
+          } finally {
+            await page.unroute('**/api/scans/batch-commit')
+            for (const scan of scans) {
+              await cancelScan(request, scan.id).catch(() => undefined)
+            }
+          }
+        }
       }
     }
   })
