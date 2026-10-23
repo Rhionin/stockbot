@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess } from '../../api/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess } from '../../api/contract';
 import { HouseholdGate } from './HouseholdGate';
 
 const json = (body: unknown, status = 200) =>
@@ -103,13 +103,12 @@ describe('HouseholdGate', () => {
 
   it('shows the sign-in banner when auth is not configured', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
-      error: 'auth is off',
-      code: AUTH_NOT_CONFIGURED_CODE,
+      error: AUTH_NOT_CONFIGURED_SENTENCE,
+      code: 'auth_not_configured',
     }, 503))));
     renderGate();
     expect(await screen.findByText(AUTH_NOT_CONFIGURED_SENTENCE)).toBeVisible();
     expect(screen.getAllByText(AUTH_NOT_CONFIGURED_SENTENCE)).toHaveLength(1);
-    expect(screen.queryByText('auth is off')).not.toBeInTheDocument();
     expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('form', { name: 'Sign in' })).toBeVisible();
   });

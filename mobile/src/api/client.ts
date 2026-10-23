@@ -16,7 +16,6 @@ import {
   scanCommitPath,
   scansQuery,
   applyHttpResponse,
-  AUTH_NOT_CONFIGURED_CODE,
   AUTH_NOT_CONFIGURED_SENTENCE,
   notifyApiSuccess,
   raiseOfflineBanner,
@@ -110,7 +109,7 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       const disposition = applyHttpResponse(res.status, parsed.code);
       if (disposition === 'offline') throw new UnreachableError();
       if (disposition === 'auth') {
-        throw new ServerNoticeError(AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE);
+        throw new ServerNoticeError('auth_not_configured', AUTH_NOT_CONFIGURED_SENTENCE);
       }
       const message = res.status === 401 ? 'That password was rejected.' : parsed.message;
       throw new ApiError(res.status, message, parsed.code, parsed.suggestions);

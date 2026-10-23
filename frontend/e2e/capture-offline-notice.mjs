@@ -18,6 +18,8 @@ process.env.TZ = 'America/Denver';
 
 const { chromium } = playwright;
 const sentence = "Can't reach Stockbot. Check your connection and try again.";
+const busySentence = 'Stockbot is busy right now. Try again in a moment.';
+const authSentence = "Sign-in isn't set up yet.";
 const repoRoot = join(import.meta.dirname, '..', '..');
 const shotDir = process.env.OFFLINE_SHOT_DIR ?? '/opt/cursor/artifacts';
 const nodeBin = process.env.NODE_BIN ?? process.execPath;
@@ -137,6 +139,30 @@ async function readToast(page, selector) {
   }, { selector, expected: sentence });
 }
 
+async function visibleNotice(page, text) {
+  const locator = page.getByTestId('server-notice-banner').filter({ hasText: text });
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const count = await locator.count();
+    for (let index = 0; index < count; index += 1) {
+      const box = await locator.nth(index).boundingBox();
+      if (box && box.y >= -1 && box.y < 640 && box.height > 8 && box.width > 8) return locator.nth(index);
+    }
+    await delay(200);
+  }
+  throw new Error(`no on-screen notice for ${text}`);
+}
+
+async function waitForNoticeGone(page, text) {
+  await page.waitForFunction((expected) => {
+    return [...document.querySelectorAll('[data-testid="server-notice-banner"]')].every((node) => {
+      const box = node.getBoundingClientRect();
+      const onScreen = box.width > 0 && box.height > 0 && box.top >= -1 && box.top < window.innerHeight;
+      return !onScreen || !node.textContent?.includes(expected);
+    });
+  }, text, { timeout: 15000 });
+}
+
 async function waitForSettledToast(page, selector) {
   const toast = page.locator(selector).filter({ hasText: sentence });
   await toast.waitFor({ state: 'visible', timeout: 15000 });
@@ -208,6 +234,12 @@ async function captureWeb(browser) {
     await card.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.getByText(sentence).waitFor({ state: 'visible' });
     await waitForSettledToast(page, NOTICE_SELECTOR);
+    const bannerBox = await page.getByTestId('server-notice-banner').boundingBox();
+    const tabBox = await page.getByRole('tab', { name: 'Stock in' }).boundingBox();
+    const titleBox = await page.getByRole('heading', { name: 'Scan queue' }).boundingBox();
+    if (!bannerBox || !tabBox || !titleBox || bannerBox.top < tabBox.bottom - 1 || bannerBox.top < titleBox.bottom - 1) {
+      throw new Error(`queue banner is not below the tabs: ${JSON.stringify({ bannerBox, tabBox, titleBox })}`);
+    }
     if (await page.getByText('Failed to fetch').count()) throw new Error('raw fetch text is visible');
     if (await page.locator('.restock-toast').count()) throw new Error('offline notice used a toast');
     await page.screenshot({ path: join(shotDir, shot.file) });
@@ -233,6 +265,97 @@ async function captureWeb(browser) {
     }
     await context.close();
   }
+}
+
+async function captureWebStartup(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'America/Denver',
+    baseURL: webURL,
+  });
+  const page = await context.newPage();
+  await page.route('**/api/session', (route) => route.fulfill({
+    status: 503,
+    contentType: 'text/html',
+    body: '<html>gateway</html>',
+  }));
+  await page.goto(webURL);
+  await page.getByText(sentence).waitFor({ state: 'visible' });
+  const bannerBox = await page.getByTestId('server-notice-banner').boundingBox();
+  const brandBox = await page.locator('.login-brand').boundingBox();
+  if (!bannerBox || !brandBox || bannerBox.bottom > brandBox.top + 1) {
+    throw new Error(`startup banner is not above the wordmark: ${JSON.stringify({ bannerBox, brandBox })}`);
+  }
+  await page.screenshot({ path: join(shotDir, 'web_offline_startup_390_light.png') });
+  console.log('saved web_offline_startup_390_light.png');
+  await context.close();
+}
+
+async function captureWebAuth(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'America/Denver',
+    baseURL: webURL,
+  });
+  const page = await context.newPage();
+  await page.route('**/api/session', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'auth is off', code: 'auth_not_configured' }),
+  }));
+  await page.goto(webURL);
+  await page.getByText(authSentence).waitFor({ state: 'visible' });
+  await page.getByRole('textbox', { name: 'Password' }).waitFor({ state: 'visible' });
+  if (await page.getByText('auth is off').count()) throw new Error('raw auth text is visible');
+  if (await page.getByText(sentence).count()) throw new Error('offline sentence replaced the sign-in notice');
+  await page.screenshot({ path: join(shotDir, 'web_auth_not_configured_390_light.png') });
+  console.log('saved web_auth_not_configured_390_light.png');
+  await context.close();
+}
+
+async function captureWebBusy(browser) {
+  await resetPending();
+  await seedProduct('Busy oats', '37339071');
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'America/Denver',
+    baseURL: webURL,
+  });
+  const page = await context.newPage();
+  await page.goto(webURL);
+  await page.getByRole('textbox', { name: 'Barcode scanner input' }).waitFor({ state: 'visible' });
+  const scanner = page.getByRole('textbox', { name: 'Barcode scanner input' });
+  if (!(await page.getByText('Mode: stock_in').isVisible())) {
+    await scanner.fill('STOCK_IN');
+    await scanner.press('Enter');
+    await page.getByText('Mode: stock_in').waitFor({ state: 'visible' });
+  }
+  await scanner.fill('37339071');
+  await scanner.press('Enter');
+  const card = page.getByRole('article', { name: /^Scan 37339071(,|$)/ });
+  await card.waitFor({ state: 'visible' });
+  await page.route('**/api/scans/**/commit', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: busySentence, code: 'busy' }),
+  }));
+  await card.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await page.getByTestId('server-notice-banner').getByText(busySentence).waitFor({ state: 'visible' });
+  const bannerBox = await page.getByTestId('server-notice-banner').boundingBox();
+  const tabBox = await page.getByRole('tab', { name: 'Stock in' }).boundingBox();
+  if (!bannerBox || !tabBox || bannerBox.top < tabBox.bottom - 1) {
+    throw new Error('busy banner is not below the tabs');
+  }
+  if (await page.locator('.restock-toast').count()) throw new Error('busy notice used a toast');
+  await page.screenshot({ path: join(shotDir, 'web_busy_queue_390_light.png') });
+  console.log('saved web_busy_queue_390_light.png');
+  await context.close();
 }
 
 function patchPhoneCredentials() {
@@ -330,20 +453,28 @@ async function capturePhone(browser) {
       await page.getByText(flow.name, { exact: true }).waitFor({ timeout: 30000 });
       await context.setOffline(true);
       await page.getByRole('button', { name: `Confirm ${flow.name}` }).click();
-      const phoneBanner = page.getByTestId('batch-banner').getByText(sentence);
-      await phoneBanner.waitFor({ state: 'visible' });
-      await waitForSettledToast(page, '[data-testid="batch-banner"]');
+      const phoneBanner = await visibleNotice(page, sentence);
       if (await page.getByText('Network request failed').count()) throw new Error('raw network text is visible');
       if (await page.getByTestId('confirm-toast').count()) throw new Error('offline notice used a toast');
+      const queueHeading = await page.getByText('To confirm', { exact: true }).boundingBox();
+      const queueBanner = await phoneBanner.boundingBox();
+      if (!queueHeading || !queueBanner || queueBanner.bottom > queueHeading.top + 1) {
+        throw new Error('phone queue banner is not above the heading');
+      }
       await page.screenshot({ path: join(shotDir, flow.file) });
       console.log('saved', flow.file);
+      await page.getByRole('tab', { name: 'Scan' }).click();
+      await page.getByLabel('Putting away').waitFor({ state: 'visible', timeout: 15000 });
+      await visibleNotice(page, sentence);
+      await page.screenshot({ path: join(shotDir, 'mobile_offline_scan.png') });
+      console.log('saved mobile_offline_scan.png');
       if (flow.cleared) {
         await context.setOffline(false);
         const pending = await api('/api/scans?userId=user-1&status=pending');
         console.log('pending before refresh', pending.map((row) => row.product?.name ?? row.barcode));
         await page.getByRole('tab', { name: 'Scan' }).click();
         await page.getByRole('tab', { name: 'Queue' }).click();
-        await page.getByTestId('batch-banner').getByText(sentence).waitFor({ state: 'hidden', timeout: 15000 });
+        await waitForNoticeGone(page, sentence);
         await page.getByText(flow.name, { exact: true }).waitFor({ state: 'visible' });
         const visible = await page.locator('body').innerText();
         if (!visible.includes(flow.name)) throw new Error('the scan left the queue when the notice cleared');
@@ -353,6 +484,63 @@ async function capturePhone(browser) {
       }
       await context.close();
     }
+
+    await resetPending();
+    await seedProduct('Busy oats', '37390022');
+    await seedScan('37390022', 'stock_in', false);
+    const busyContext = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      locale: 'en-US',
+      timezoneId: 'America/Denver',
+      deviceScaleFactor: 2,
+    });
+    const busyPage = await busyContext.newPage();
+    await busyPage.goto(`http://localhost:${expoPort}`, { waitUntil: 'networkidle', timeout: 120000 });
+    await busyPage.getByLabel('Connect').waitFor({ timeout: 120000 });
+    await busyPage.getByLabel('Server').fill(`http://127.0.0.1:${proxyPort}`);
+    await busyPage.getByLabel('Household password').fill('shots');
+    await busyPage.getByLabel('Connect').click();
+    await busyPage.getByRole('tab', { name: 'Queue' }).click();
+    await busyPage.getByText('Busy oats', { exact: true }).waitFor({ timeout: 30000 });
+    await busyPage.route('**/api/scans/**/commit', (route) => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: busySentence, code: 'busy' }),
+    }));
+    await busyPage.getByRole('button', { name: 'Confirm Busy oats' }).click();
+    const busyNotice = await visibleNotice(busyPage, busySentence);
+    if (await busyPage.getByTestId('confirm-toast').count()) throw new Error('busy notice used a toast');
+    const busyBanner = await busyNotice.boundingBox();
+    const busyHeading = await busyPage.getByText('To confirm', { exact: true }).boundingBox();
+    if (!busyBanner || !busyHeading || busyBanner.bottom > busyHeading.top + 1) {
+      throw new Error('phone busy banner is not above the heading');
+    }
+    await busyPage.screenshot({ path: join(shotDir, 'mobile_busy_queue.png') });
+    console.log('saved mobile_busy_queue.png');
+    await busyContext.close();
+
+    const authContext = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      locale: 'en-US',
+      timezoneId: 'America/Denver',
+      deviceScaleFactor: 2,
+    });
+    const authPage = await authContext.newPage();
+    await authPage.route('**/api/session', (route) => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'auth is off', code: 'auth_not_configured' }),
+    }));
+    await authPage.goto(`http://localhost:${expoPort}`, { waitUntil: 'networkidle', timeout: 120000 });
+    await authPage.getByLabel('Connect').waitFor({ timeout: 120000 });
+    await authPage.getByLabel('Server').fill(`http://127.0.0.1:${proxyPort}`);
+    await authPage.getByLabel('Household password').fill('shots');
+    await authPage.getByLabel('Connect').click();
+    await visibleNotice(authPage, authSentence);
+    if (await authPage.getByText('auth is off').count()) throw new Error('raw auth text is visible');
+    await authPage.screenshot({ path: join(shotDir, 'mobile_auth_not_configured.png') });
+    console.log('saved mobile_auth_not_configured.png');
+    await authContext.close();
   } finally {
     restore();
   }
@@ -402,7 +590,10 @@ async function main() {
 
   const browser = await chromium.launch({ headless: true });
   try {
+    await captureWebStartup(browser);
+    await captureWebAuth(browser);
     await captureWeb(browser);
+    await captureWebBusy(browser);
     await capturePhone(browser);
   } finally {
     await browser.close();

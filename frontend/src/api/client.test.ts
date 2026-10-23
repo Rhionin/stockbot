@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as telemetry from '../telemetry/client';
 import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
-import { AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from './contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from './contract';
 
 describe('api error messages', () => {
   afterEach(() => {
@@ -91,31 +91,28 @@ describe('api error messages', () => {
   });
 
   it.each([
-    { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.' },
-    { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved." },
-    { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.' },
-    { name: 'coded 500', status: 500, code: 'internal', message: 'Something went wrong. Try again.' },
-  ])('$name clears offline and keeps its own message', async ({ status, code, message }) => {
+    { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.', notice: '' },
+    { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved.", notice: '' },
+    { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.', notice: '' },
+    { name: 'coded 500', status: 500, code: 'internal', message: 'Something went wrong. Try again.', notice: '' },
+    { name: 'auth not configured', status: 503, code: 'auth_not_configured', message: AUTH_NOT_CONFIGURED_SENTENCE, notice: AUTH_NOT_CONFIGURED_SENTENCE },
+  ])('$name clears offline and keeps its own message', async ({ status, code, message, notice }) => {
     raiseOfflineBanner();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
       JSON.stringify({ error: message, code }),
       { status, headers: { 'Content-Type': 'application/json' } },
     ))));
-    await expect(listProducts()).rejects.toMatchObject({ status, code, message });
+    const attempt = listProducts();
+    if (notice !== '') {
+      await expect(attempt).rejects.toBeInstanceOf(ServerNoticeError);
+      await expect(attempt).rejects.toMatchObject({ message: notice });
+      expect(offlineBannerActive()).toBe(false);
+      expect(serverNoticeText()).toBe(notice);
+      return;
+    }
+    await expect(attempt).rejects.toMatchObject({ status, code, message });
     expect(offlineBannerActive()).toBe(false);
     expect(serverNoticeText()).toBe('');
-  });
-
-  it('maps auth_not_configured to the sign-in banner', async () => {
-    raiseOfflineBanner();
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
-      JSON.stringify({ error: 'auth is off', code: AUTH_NOT_CONFIGURED_CODE }),
-      { status: 503, headers: { 'Content-Type': 'application/json' } },
-    ))));
-    await expect(listProducts()).rejects.toBeInstanceOf(ServerNoticeError);
-    await expect(listProducts()).rejects.toMatchObject({ message: AUTH_NOT_CONFIGURED_SENTENCE });
-    expect(offlineBannerActive()).toBe(false);
-    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
   });
 
   it('reads a session failure the same way', async () => {
@@ -134,7 +131,7 @@ describe('api error messages', () => {
     await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
 
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
-      JSON.stringify({ error: 'auth is off', code: AUTH_NOT_CONFIGURED_CODE }),
+      JSON.stringify({ error: AUTH_NOT_CONFIGURED_SENTENCE, code: 'auth_not_configured' }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     ))));
     await expect(getSession()).resolves.toEqual({ required: true, username: '', error: '' });

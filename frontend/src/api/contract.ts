@@ -293,8 +293,8 @@ export function confirmSkipsNothingOnHand(count: number): string | null {
 // Shown when fetch never received a response. Straight apostrophe, one sentence.
 export const OFFLINE_SENTENCE = "Can't reach Stockbot. Check your connection and try again.";
 
-// Stockbot sends this on /api/session and /api/login when sign-in is not set up.
-export const AUTH_NOT_CONFIGURED_CODE = 'auth_not_configured';
+// TODO: switch to CODE_AUTH_NOT_CONFIGURED once #393 lands in this module.
+const AUTH_NOT_CONFIGURED_CODE = 'auth_not_configured';
 
 export const AUTH_NOT_CONFIGURED_SENTENCE = "Sign-in isn't set up yet.";
 
