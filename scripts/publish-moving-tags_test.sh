@@ -66,7 +66,7 @@ if [ "${#SHA}" -ne 40 ] || [ "${#PREFIX}" -ne 40 ] || [ "${PREFIX:0:39}" != "${S
   fail "prefix fixture"
 fi
 
-SPLIT_MSG="The pantry tag move failed. :latest and :master may be partially moved."
+SPLIT_MSG="Moved pantry-grocy-sync :latest and :master to ${SHA}, then the pantry tag move failed. pantry :latest and :master may be partially moved, so the two images may be on different versions."
 
 run_case() {
   local name="$1" expect="$2"
@@ -201,6 +201,8 @@ export FAKE_DOCKER_FAIL_ON=2
 pantry_fail=$(run_case pantry-fail 7)
 grep -F -q "$SPLIT_MSG" "$pantry_fail/summary" || fail "pantry failure omitted the partial-move summary: $(cat "$pantry_fail/summary")"
 grep -F -q "$SPLIT_MSG" "$pantry_fail/stderr" || fail "pantry failure omitted the partial-move log"
+grep -F -q "Moved pantry-grocy-sync :latest and :master to ${SHA}," "$pantry_fail/summary" || fail "pantry failure omitted the sidecar commit"
+grep -F -q "Moved pantry-grocy-sync :latest and :master to ${SHA}," "$pantry_fail/stderr" || fail "pantry failure log omitted the sidecar commit"
 if grep -q '^publish=' "$pantry_fail/output"; then
   fail "pantry failure wrote a publish output"
 fi
