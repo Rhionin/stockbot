@@ -58,10 +58,15 @@ Costs are USD per 730-hour month. They **exclude** the new-account Free Tier cre
 - **Low-traffic month**:
   - ~30 scans/day in total.
   - ~100 page loads/day × ~5 API calls = 500 calls/day.
-  - Live-update polling while a tab is visible: one call every 10 s × ~2 h/day of visible tabs in total = 720 calls/day.
-  - That totals ≈ **1,250 requests/day ≈ 37,500 requests/month**.
-- Lambda: 512 MB × 100 ms average = 0.05 GB-s per request → 37,500 × 0.05 = **1,875 GB-s/month**.
-- DB: **0.2 GB** of data (estimate; household pantries are a few MB each). ~3 SQL statements per request → ~112,500 statements/month.
+  - Other visible screens poll every 10 s, and polling stops in the background: ~2 h/day of visible tabs in total = 720 calls/day.
+  - Base workload (scans, page loads, those 10 s polls): ≈ **1,250 requests/day ≈ 37,500 requests/month**.
+- Lambda, base workload: 512 MB × 100 ms average = 0.05 GB-s per request → 37,500 × 0.05 = **1,875 GB-s/month**.
+- **Scan Queue polling (PM decision 2026-10-22, estimate):** 3 households with the queue visible 1 h/day each. Polling every 2 s is 1,800 requests/h, so 3 × 1,800 × 30 ≈ **162,000 requests/month**.
+  - Lambda: 162,000 × 0.05 GB-s = **8,100 GB-s**. Combined with the base (199,500 requests, 9,975 GB-s) this stays inside the never-expiring free tier (1M requests, 400,000 GB-s), so **$0**.
+  - DSQL: at the conservative 0.5 DPU/request estimate, about **81,000 DPU**. Plus the base 18,750 that is about **99,750**, right at the 100k free tier, so about **$0**.
+  - Scale: at 10 households with the same usage, about 540,000 polls is 270,000 DPU, adding about **$1.40/month** at $8 per 1M DPU.
+  - Aurora Serverless v2: frequent polling keeps the cluster awake while the queue is open, which strengthens the case against option A.
+- DB: **0.2 GB** of data (estimate; household pantries are a few MB each). Base workload: ~3 SQL statements per request → ~112,500 statements/month. Scan Queue polls are a single indexed read; their DPU and read charges are in the bullets above and in §4.
 - Email (verify, invite, reset): ~50/month.
 - Logs: ~0.2 GB/month ingested.
 - **Idle month**: zero user requests. Only scheduled jobs run (a daily product refresh, ~30 invocations/month).
@@ -95,23 +100,25 @@ The Data API lets Lambda stay outside the VPC, so there is no NAT. The cluster i
 - ACU, idle month: 0. Maintenance wakes (≥ 20 min each) and ~30 scheduled jobs that wake the DB: ~30 wakes × (5 min job + 5 min pause delay) ≈ 5 h × 0.5 ACU × 0.12 = **$0.30**
 - ACU, low-traffic month: ~15 active windows/day × (~5 min active + 300 s minimum before pausing) = 150 min/day = 2.5 h/day × 30 = 75 h × 0.5 ACU × 0.12 = **$4.50** (estimate; this assumes the running floor is 0.5 ACU)
 - Worst case if anything keeps a connection or makes regular calls (for example a relay heartbeat or polling that reaches the DB): 730 × 0.5 × 0.12 = **$43.80**
-- Lambda: 37,500 requests and 1,875 GB-s, inside the free tier = **$0.00** (without the free tier: 0.0075 + 0.025 = $0.03)
-- **Idle** = 0.02 + 0.40 + 0.30 + shared 1.51 ≈ **$2.23**. **Low traffic** = 0.02 + 0.10 + 0.40 + 0.04 + 4.50 + 1.51 ≈ **$6.57**. Risk: $45+.
+- Scan Queue polling (estimate): 2 s polls while the queue is open (3 households × 1 h/day) keep the cluster awake for those hours. Any request resumes it, and the 300 s pause timer never elapses during that polling, so this strengthens the case against option A. The ~$6.57 figure is the earlier active-window model; it is not a solid hour of 2 s polling per household.
+- Lambda: base 1,875 GB-s plus Scan Queue 8,100 GB-s = 9,975 GB-s, and 199,500 requests, inside the free tier = **$0.00** (without the free tier the base alone was 0.0075 + 0.025 = $0.03)
+- **Idle** = 0.02 + 0.40 + 0.30 + shared 1.51 ≈ **$2.23**. **Low traffic** = 0.02 + 0.10 + 0.40 + 0.04 + 4.50 + 1.51 ≈ **$6.57**. The Scan Queue polls add no Lambda charge. Risk: $45+, and the queue-open polling pushes toward that case.
 
 ### B. Lambda (arm64, no VPC) + DynamoDB on-demand
 - Writes: ~500 WRU/day × 30 = 15,000 × 0.625/1M = **$0.01**
-- Reads: 37,500 × ~10 RRU = 375,000 × 0.125/1M = **$0.05**
+- Reads, base workload: 37,500 × ~10 RRU = 375,000 × 0.125/1M = **$0.05**
+- Scan Queue polls (estimate): 162,000 × ~10 RRU = 1,620,000 × 0.125/1M = **$0.20**
 - Storage: 0.2 GB, inside the 25 GB free tier = **$0.00**. PITR: 0.2 × 0.20 = **$0.04**
-- Lambda: **$0.00**
-- **Idle** ≈ 0.04 + 1.51 = **$1.55**. **Low traffic** ≈ 0.10 + 1.51 = **$1.61**.
+- Lambda: base plus Scan Queue polling stays inside the free tier = **$0.00**
+- **Idle** ≈ 0.04 + 1.51 = **$1.55**. **Low traffic** ≈ 0.01 + 0.05 + 0.20 + 0.04 + 1.51 = **$1.81**.
 
 ### C. Lambda (arm64, no VPC) + **Aurora DSQL** (single-Region)
-- DPU (estimate): AWS's benchmark is ~700,000 TPC-C transactions per 100k DPU, about 0.14 DPU per transaction. I assume a conservative **0.5 DPU per request**; measure it with CloudWatch `TotalDPU` (namespace `AWS/AuroraDSQL`) in dev: 37,500 × 0.5 = 18,750 DPU, inside the 100k free tier = **$0.00**. Requests would have to roughly reach 200k/month before this costs anything, and then $8 per 1M DPU.
+- DPU (estimate): AWS's benchmark is ~700,000 TPC-C transactions per 100k DPU, about 0.14 DPU per transaction. I assume a conservative **0.5 DPU per request**; measure it with CloudWatch `TotalDPU` (namespace `AWS/AuroraDSQL`) in dev. Base workload: 37,500 × 0.5 = 18,750 DPU. Scan Queue polling: 162,000 × 0.5 = 81,000 DPU. Combined **99,750 DPU**, right at the 100k free tier, so about **$0.00**.
 - Storage: 0.2 GB, inside the 1 GB free tier = **$0.00**
 - AWS Backup daily, 14-day retention (assuming full copies): 14 × 0.2 GB = 2.8 GB-mo × 0.10 = **$0.28**
 - No secret is needed, because auth uses IAM tokens. No VPC, no NAT, no IPv4.
-- Lambda: **$0.00**
-- **Idle** ≈ 0.28 + 1.51 = **$1.79**. **Low traffic** ≈ **$1.79**. At 10× traffic (375k requests): 187,500 DPU − 100k free = 87,500 × $0.000008 = $0.70 more, so ≈ $2.49.
+- Lambda: base 1,875 GB-s plus Scan Queue 8,100 GB-s = 9,975 GB-s, and 199,500 requests, inside the never-expiring free tier = **$0.00**
+- **Idle** ≈ 0.28 + 1.51 = **$1.79**. **Low traffic** ≈ **$1.79** (the polls add no DSQL or Lambda charge at 3 households). Scale (estimate): 10 households with the queue visible 1 h/day each is about 540,000 polls = 270,000 DPU, adding about **$1.40/month** at $8 per 1M DPU (270,000 − 100,000 free ≈ 170,000 × $0.000008 ≈ $1.36).
 
 ### D. Lightsail 1 GB ($7, IPv4 included) running today's Go server + SQLite + Litestream → S3
 - Instance: **$7.00**
@@ -130,10 +137,10 @@ The Data API lets Lambda stay outside the VPC, so there is no NAT. The cluster i
 
 | Option | Idle month | Low-traffic month | Fixed-cost traps | Code rework (opinion) |
 |---|---|---|---|---|
-| A. Lambda + Aurora SLv2 (0 ACU) + Data API | ~$2.23 | ~$6.57 (up to ~$45 if it never pauses) | Data API secret; anything that keeps it awake; RDS Proxy disables pause | Postgres port + Lambda statelessness; 15–30 s first-request resume |
-| B. Lambda + DynamoDB | ~$1.55 | ~$1.61 | none | **Full data-layer rewrite** + Lambda statelessness; SQLite export becomes a translator |
-| **C. Lambda + Aurora DSQL** | **~$1.79** | **~$1.79** | backups only | Postgres port with DSQL limits (OCC retries, 3,000-row transactions, no triggers or PL/pgSQL) + Lambda statelessness |
+| A. Lambda + Aurora SLv2 (0 ACU) + Data API | ~$2.23 | ~$6.57 (up to ~$45 if it never pauses) | Data API secret; 2 s Scan Queue polling keeps it awake while the queue is open; RDS Proxy disables pause | Postgres port + Lambda statelessness; 15–30 s first-request resume |
+| B. Lambda + DynamoDB | ~$1.55 | ~$1.81 | none | **Full data-layer rewrite** + Lambda statelessness; JSON/CSV export is a translator |
+| **C. Lambda + Aurora DSQL** | **~$1.79** | **~$1.79** | backups only | Postgres port with DSQL limits (OCC retries, 3,000-row transactions, no triggers or PL/pgSQL) + Lambda statelessness. Scan Queue polling is inside the 100k DPU free tier at 3 households (estimate) |
 | D. Lightsail + SQLite + Litestream | ~$8.52 | ~$8.62 | instance always on | Smallest: multi-tenant work only; keeps SSE and timers |
 | E. Fargate + ALB + RDS t4g.micro | ~$50.14 | ~$50.14 | ALB + IPv4 + always-on DB | Postgres port only |
 
-Lambda statelessness rework (A, B, C) means replacing the in-memory state: the SSE broadcaster `/api/events` becomes polling; the push-attention timers become EventBridge Scheduler one-time schedules; the scanner-mode idle timer becomes a stored expiry; the background product refresh becomes a scheduled Lambda; the telemetry registry and login rate limiter become DB rows. Rough estimate (opinion): about 1–2 weeks of one engineer. See [multi-tenant-saas.md](multi-tenant-saas.md).
+Lambda statelessness rework (A, B, C) means replacing the in-memory state: the SSE broadcaster `/api/events` becomes polling (2 s while the Scan Queue is visible, 10 s on other visible screens, off in the background); the push-attention timers become EventBridge Scheduler one-time schedules; the scanner-mode idle timer becomes a stored expiry; the background product refresh becomes a scheduled Lambda; the telemetry registry and login rate limiter become DB rows. Rough estimate (opinion): about 1–2 weeks of one engineer. See [multi-tenant-saas.md](multi-tenant-saas.md).
