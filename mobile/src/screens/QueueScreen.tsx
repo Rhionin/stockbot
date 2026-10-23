@@ -172,7 +172,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, true>>({});
   const [partialLine, setPartialLine] = useState('');
+  const refreshGeneration = useRef(0);
   const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
@@ -194,11 +197,17 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setEntries(next);
     if (changed) setPartialLine('');
     setAmberBatchIds((current) => retainAmberBatch(current, next));
-    // Same cards are not a queue change. Replacing the mixed-batch sentence
-    // here left the partial line as plain text, outside the failure banner.
-    setError((current) => (
-      !changed && nextError === '' && current === BATCH_FAILURE_FALLBACK ? current : nextError
-    ));
+    // The red sentence follows the failed cards still pending. A load error
+    // lives in its own state, so a refresh cannot replace that sentence.
+    setError(nextError);
+    setLoadError('');
+    setFailureBannerIds((current) => {
+      const kept: Record<string, true> = {};
+      for (const entry of next) {
+        if (current[entry.id] === true) kept[entry.id] = true;
+      }
+      return kept;
+    });
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
@@ -216,16 +225,20 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }, [client]);
 
   const refresh = useCallback(async (keepError = '', surfaceError = true) => {
+    const generation = refreshGeneration.current + 1;
+    refreshGeneration.current = generation;
     setRefreshing(true);
     try {
       const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
+      if (refreshGeneration.current !== generation) return;
       storeHousehold(rows, next);
       applyEntries(next, keepError);
     } catch (requestError) {
+      if (refreshGeneration.current !== generation) return;
       setRefreshing(false);
       setLoading(false);
       if (surfaceError) {
-        setError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+        setLoadError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
       }
     }
   }, [applyEntries, client, loadHousehold, storeHousehold]);
@@ -238,11 +251,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       shownIds.current = new Set(next.map((entry) => entry.id));
       setEntries(next);
       setError('');
+      setLoadError('');
       setLoading(false);
     }).catch((requestError: unknown) => {
       if (!active) return;
       setLoading(false);
-      setError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+      setLoadError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
     });
     return () => {
       active = false;
@@ -288,6 +302,15 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   function clearNote(id: string) {
     setNotes((current) => {
       if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function clearFailure(id: string) {
+    setFailureBannerIds((current) => {
+      if (current[id] !== true) return current;
       const next = { ...current };
       delete next[id];
       return next;
@@ -346,6 +369,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
+    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
@@ -403,6 +427,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
+    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
@@ -435,8 +460,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmAll() {
     const confirmable = entries.filter((entry) => !isNothingOnHand(entry, household, pins));
     if (confirmable.length === 0) return;
+    refreshGeneration.current += 1;
+    setRefreshing(false);
     setBusyId('all');
     setError('');
+    setFailureBannerIds({});
     setPartialLine('');
     setToast('');
     try {
@@ -499,9 +527,18 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       const stillThere = (noticeId: string) => pending.some((entry) => entry.id === noticeId);
       const blocking = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND && stillThere(notice.id));
       const amberLeft = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id)).map((notice) => notice.id);
+      const pendingFailures: Record<string, true> = {};
+      for (const notice of notices) {
+        if (notice.code === CODE_NONE_ON_HAND) continue;
+        if (stillThere(notice.id)) pendingFailures[notice.id] = true;
+      }
+      setFailureBannerIds(pendingFailures);
       setAmberBatchIds(blocking ? new Set() : new Set(amberLeft));
+      // Red only while a non-amber failure is still open. A card that already
+      // left, including one beside an amber card, does not keep the sentence.
       setError(blocking ? BATCH_FAILURE_FALLBACK : '');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
+      setLoadError('');
       if (amberLeft.length > 0) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
       setLoading(false);
       setRefreshing(false);
@@ -514,9 +551,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
+  const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
+  const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   // The amber batch flag can stay set. It never paints a banner by itself.
-  const successBanner = error === '' && !failedPending && partialLine !== '';
+  const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
   const confirmAllVisible = entries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
@@ -530,18 +569,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
-      {(error !== '' || partialLine !== '') && (
+      {(batchHead !== '' || partialLine !== '') && (
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
           style={successBanner ? styles.successBanner : undefined}
         >
-          {error !== '' && <Text style={styles.error}>{error}</Text>}
+          {batchHead !== '' && <Text style={styles.error}>{batchHead}</Text>}
           {partialLine !== '' && (
             <Text style={successBanner ? styles.bannerBody : styles.partialLine}>{partialLine}</Text>
           )}
         </View>
       )}
+      {loadError !== '' && <Text testID="queue-load-error" style={styles.error}>{loadError}</Text>}
 
       {loading ? (
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
@@ -550,7 +590,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           data={entries}
           keyExtractor={(entry) => entry.id}
           refreshControl={(
-            <RefreshControl refreshing={refreshing} onRefresh={() => { void refresh(); }} tintColor={colors.shelfDeep} />
+            <RefreshControl
+              refreshing={refreshing}
+              enabled={busyId !== 'all'}
+              onRefresh={() => { if (busyId !== 'all') void refresh(); }}
+              tintColor={colors.shelfDeep}
+            />
           )}
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={<Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
