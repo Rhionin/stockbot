@@ -298,8 +298,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
-  // A finished confirm drops the lock and disk notices, and the card just
-  // confirmed. Item-specific codes stay until that card is resolved.
+  // A confirm that succeeds drops the lock and disk notices, and the card just
+  // confirmed. Item-specific codes stay until that card is resolved. A confirm
+  // that fails leaves the banner up.
   function retireSingleConfirm(id: string) {
     setFailureBannerIds((current) => {
       const next = failuresAfterConfirm(Object.values(current), id);
@@ -360,11 +361,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
-    retireSingleConfirm(id);
     setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id);
+      retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       setPartialLine('');
@@ -417,11 +418,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
-    retireSingleConfirm(id);
     setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id, productId);
+      retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       setPartialLine('');
