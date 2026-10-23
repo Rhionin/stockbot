@@ -1034,6 +1034,8 @@ sudo docker logs pantry-grocy-sync --tail=40
 
 `sudo ./setup.sh` leaves `pantry-grocy-sync` stopped even when all three values are in `/opt/pantry/.env`. A plain `docker compose up` does not start it. Profile `grocy` does not start it. The update timer does not recreate it. Image pulls leave the stopped sidecar and its volume alone until profile `grocy-sync` is started.
 
+Deploys log `Found orphan containers` for `pantry-grocy-sync`. That warning is expected. Do not run `--remove-orphans`. It would delete the stopped container. The named volume stays either way.
+
 The sidecar is limited to 64 MB. It has no published ports. It joins the Compose project network (hostname `pantry`) and the existing network `pantry_cf-tunnel` (hostname `grocy`). That second network only hands out dynamic addresses from `10.77.77.4/30`, and Grocy already uses one. If `up` says the pool is exhausted, another container is holding the remaining address. Do not pin this service to `10.77.77.2` or `10.77.77.3`.
 
 The first reconcile creates a Grocy location named Pantry, a quantity unit named Piece, products, barcodes, current stock, and a shopping list named Pantry. Grocy's own default shopping list is left alone. After that it repeats every five minutes, and sooner when Stockbot's event stream reports a change.

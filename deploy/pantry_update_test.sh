@@ -1079,47 +1079,31 @@ have "$LAST_OUT" "KiB free" "low disk names the free space"
 lack "$LAST_SEQUENCE" " up -d" "low disk does not start containers"
 unset PANTRY_UPDATE_MIN_FREE_KIB
 
-# Pantry and grocy-sync both change. grocy-sync exits after a healthy pantry
-# check, so only the sidecar digest is rejected.
-grocy=$(mktemp -d)
-prepare_pantry "$grocy"
-write_images "$grocy/images.tsv" \
+# pantry-grocy-sync is no longer a compose service. A stopped container, and
+# a restarting one, stay where they are: the deploy does not name them.
+orphan=$(mktemp -d)
+prepare_pantry "$orphan"
+cp "$ROOT/deploy/docker-compose.yml" "$ROOT/deploy/docker-compose.grocy.yml" "$orphan/"
+printf '%s\n' GROCY_URL=http://grocy:80 GROCY_API_KEY=invented-key PANTRY_SYNC_TOKEN=invented-token >> "$orphan/.env"
+write_images "$orphan/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$grocy/images.tsv"
-printf '%s\n' $'grocy-sync\texited\t0' > "$grocy/status.tsv"
-STUB_STATUS_TSV="$grocy/status.tsv"
+printf '%s\n' $'grocy-sync\texited\t0' $'grocy\trestarting\t2' > "$orphan/status.tsv"
+STUB_STATUS_TSV="$orphan/status.tsv"
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-run_update "$grocy"
-[[ "$LAST_RC" -ne 0 ]] || fail "grocy-sync exit should fail the deploy: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is not running" "grocy-sync exit is reported"
-have "$LAST_OUT" "pantry update: healthy, running commit ${NEW_COMMIT}" "pantry passed health before the sidecar check"
-have "$(cat "$grocy/.update-rejected-digest")" $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy' "grocy-sync exit rejects the grocy digest"
-lack "$(cat "$grocy/.update-rejected-digest")" "newpantry" "grocy-sync exit does not reject the healthy pantry digest"
+run_update "$orphan"
+[[ "$LAST_RC" -eq 0 ]] || fail "orphaned grocy-sync should be ignored: $LAST_OUT"
+have "$LAST_OUT" "healthy, running commit ${NEW_COMMIT}" "an orphaned sidecar still deploys pantry"
+lack "$LAST_OUT" "grocy-sync" "an orphaned grocy-sync is not reported"
+lack "$LAST_OUT" "grocy is" "an orphaned grocy container is not reported"
+lack "$LAST_DOCKER" "grocy" "an orphaned grocy container is not named in a docker command"
+lack "$LAST_DOCKER" "--remove-orphans" "an orphaned grocy-sync is not removed"
+if grep -qE '(^| )(down|volume rm|volume prune)( |$)' <<<"$LAST_DOCKER"; then
+  fail "an orphaned grocy-sync must not take the stack down or remove volumes"
+fi
+[[ ! -e "$orphan/.update-rejected-digest" ]] || fail "an orphaned grocy-sync recorded a digest: $(cat "$orphan/.update-rejected-digest")"
 unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
-
-# compose up fails because grocy-sync is not running. Pantry's health check
-# still passed, so its digest is not rejected either.
-grocy_up=$(mktemp -d)
-prepare_pantry "$grocy_up"
-write_images "$grocy_up/images.tsv" \
-  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$grocy_up/images.tsv"
-printf '%s\n' $'grocy-sync\texited\t0' > "$grocy_up/status.tsv"
-STUB_STATUS_TSV="$grocy_up/status.tsv"
-printf '%s\n' $'pantry\tsha256:newpantry' > "$grocy_up/live.tsv"
-STUB_LIVE_IMAGE_TSV="$grocy_up/live.tsv"
-STUB_UP_RC=1
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-run_update "$grocy_up"
-[[ "$LAST_RC" -ne 0 ]] || fail "grocy-sync up failure should fail the deploy: $LAST_OUT"
-have "$LAST_OUT" "docker compose up failed" "grocy-sync up failure is reported"
-have "$(cat "$grocy_up/.update-rejected-digest")" "newgrocy" "grocy-sync up failure rejects the grocy digest"
-lack "$(cat "$grocy_up/.update-rejected-digest")" "newpantry" "grocy-sync up failure does not reject the healthy pantry digest"
-unset STUB_STATUS_TSV STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY STUB_LIVE_IMAGE_TSV
 
 # A sidecar that is running at first and then crash-loops is caught on the
 # settle re-check. Pantry already passed health, so only caddy is rejected.
@@ -1243,29 +1227,6 @@ have "$LAST_DOCKER" "--pull never" "unhealthy rollback health still starts the p
 have "$(cat "$rollback_unhealthy/.update-rejected-digest")" "ghcr.io/rhionin/pantry@sha256:newpantry" "unhealthy rollback health still records the digest"
 unset STUB_HEALTH_RC STUB_BUILD_RC STUB_ROLLBACK_HEALTH_RC
 
-# grocy-sync was already restarting and its image did not change. Three runs
-# must keep the new pantry image instead of rolling it back with nothing recorded.
-stale=$(mktemp -d)
-prepare_pantry "$stale"
-write_images "$stale/images.tsv" \
-  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$stale/images.tsv"
-printf '%s\n' $'grocy-sync\trestarting\t4' > "$stale/status.tsv"
-STUB_STATUS_TSV="$stale/status.tsv"
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-stale_try=0
-while [[ "$stale_try" -lt 3 ]]; do
-  stale_try=$((stale_try + 1))
-  run_update "$stale"
-  [[ "$LAST_RC" -eq 0 ]] || fail "already-unhealthy grocy-sync run ${stale_try} exited $LAST_RC: $LAST_OUT"
-  have "$LAST_OUT" "was already restarting and its image did not change" "run ${stale_try} warns about grocy-sync"
-  lack "$LAST_DOCKER" "--pull never" "run ${stale_try} does not roll back"
-  [[ ! -e "$stale/.update-rejected-digest" ]] || fail "run ${stale_try} recorded a digest: $(cat "$stale/.update-rejected-digest")"
-done
-unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
-
 # compose up fails and the new pantry never becomes healthy. The forward
 # health check is one poll, not the configured timeout, and every changed
 # digest is rejected because pantry is unverified.
@@ -1274,7 +1235,6 @@ prepare_pantry "$unpinned"
 write_images "$unpinned/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:newcaddy caddy@sha256:newcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$unpinned/images.tsv"
 STUB_UP_RC=1
 STUB_HEALTH_RC=1
 STUB_BUILD_RC=1
@@ -1284,7 +1244,7 @@ run_update "$unpinned"
 [[ "$LAST_RC" -ne 0 ]] || fail "unpinned up failure should exit non-zero: $LAST_OUT"
 have "$LAST_OUT" "health check timed out after 0s" "up failure does not wait out the health timeout"
 have "$(cat "$unpinned/.update-rejected-digest")" "newpantry" "unpinned up failure rejects pantry"
-have "$(cat "$unpinned/.update-rejected-digest")" "newgrocy" "unpinned up failure rejects grocy-sync"
+lack "$(cat "$unpinned/.update-rejected-digest")" "grocy" "unpinned up failure does not reject an orphaned sidecar"
 rollback_line=$(line_of "$LAST_SEQUENCE" "--pull never")
 forward_health=$(printf '%s\n' "$LAST_SEQUENCE" | awk -v n="$rollback_line" 'NR < n && /\/health/ { c++ } END { print c+0 }')
 [[ "$forward_health" -eq 1 ]] || fail "up failure waited through ${forward_health} health polls"
@@ -1297,8 +1257,7 @@ prepare_pantry "$spill"
 write_images "$spill/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:newcaddy caddy@sha256:newcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$spill/images.tsv"
-printf '%s\n' $'pantry\tsha256:newpantry' $'caddy\tsha256:newcaddy' $'grocy-sync\tsha256:newgrocy' > "$spill/live.tsv"
+printf '%s\n' $'pantry\tsha256:newpantry' $'caddy\tsha256:newcaddy' > "$spill/live.tsv"
 STUB_LIVE_IMAGE_TSV="$spill/live.tsv"
 STUB_UP_RC=1
 STUB_HEALTH_BODY='{"status":"ok"}'
@@ -1309,39 +1268,6 @@ have "$LAST_OUT" "every changed service is healthy; not rolling back" "a healthy
 lack "$LAST_DOCKER" "--pull never" "a healthy up failure does not re-pin"
 [[ ! -e "$spill/.update-rejected-digest" ]] || fail "healthy up failure recorded a digest: $(cat "$spill/.update-rejected-digest")"
 unset STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY STUB_LIVE_IMAGE_TSV
-
-# grocy-sync alone changes and stays up.
-grocy_ok=$(mktemp -d)
-prepare_pantry "$grocy_ok"
-write_images "$grocy_ok/images.tsv" \
-  sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$grocy_ok/images.tsv"
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${OLD_COMMIT}\"}"
-run_update "$grocy_ok"
-[[ "$LAST_RC" -eq 0 ]] || fail "grocy-only success exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "healthy, running commit ${OLD_COMMIT}" "grocy-only success keeps pantry"
-[[ ! -e "$grocy_ok/.update-rejected-digest" ]] || fail "grocy-only success recorded a digest"
-unset STUB_HEALTH_BODY STUB_BUILD_BODY
-
-# grocy-sync alone changes and exits. Only that digest is rejected.
-grocy_bad=$(mktemp -d)
-prepare_pantry "$grocy_bad"
-write_images "$grocy_bad/images.tsv" \
-  sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$grocy_bad/images.tsv"
-printf '%s\n' $'grocy-sync\texited\t0' > "$grocy_bad/status.tsv"
-STUB_STATUS_TSV="$grocy_bad/status.tsv"
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${OLD_COMMIT}\"}"
-run_update "$grocy_bad"
-[[ "$LAST_RC" -ne 0 ]] || fail "grocy-only failure should exit non-zero: $LAST_OUT"
-have "$(cat "$grocy_bad/.update-rejected-digest")" "newgrocy" "grocy-only failure rejects grocy-sync"
-lack "$(cat "$grocy_bad/.update-rejected-digest")" "oldpantry" "grocy-only failure does not reject pantry"
-lack "$(cat "$grocy_bad/.update-rejected-digest")" "newpantry" "grocy-only failure does not invent a pantry digest"
-unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # An unchanged cloudflared restart during settle does not roll back.
 flap=$(mktemp -d)
@@ -1561,29 +1487,6 @@ have "$(cat "$tunnel_commit/.update-rejected-digest")" "newtunnel" "tunnel commi
 lack "$(cat "$tunnel_commit/.update-rejected-digest")" "newpantry" "tunnel commit mismatch does not reject a healthy pantry"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY STUB_TUNNEL_BODY
 
-# grocy-sync was running, its image did not change, and it is restarting
-# right after up. Pantry is new and healthy and must not be rejected.
-grocy_now=$(mktemp -d)
-prepare_pantry "$grocy_now"
-write_images "$grocy_now/images.tsv" \
-  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$grocy_now/images.tsv"
-STUB_BUMP_SERVICE="grocy-sync"
-STUB_BUMP_ON_CALL=2
-STUB_BUMP_STATUS=restarting
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-run_update "$grocy_now"
-[[ "$LAST_RC" -eq 0 ]] || fail "grocy-sync restart after up exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is restarting and its image did not change; not rolling back" "a post-up restart of an unchanged sidecar is a warning"
-lack "$LAST_DOCKER" "--pull never" "a post-up restart of an unchanged sidecar does not roll back"
-[[ ! -e "$grocy_now/.update-rejected-digest" ]] || fail "post-up grocy-sync restart recorded a digest: $(cat "$grocy_now/.update-rejected-digest")"
-run_update "$grocy_now"
-[[ "$LAST_RC" -eq 0 ]] || fail "second grocy-sync restart exited $LAST_RC: $LAST_OUT"
-lack "$LAST_OUT" "skipping rejected" "a post-up grocy-sync restart does not reject pantry for the next run"
-unset STUB_BUMP_SERVICE STUB_BUMP_ON_CALL STUB_BUMP_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
-
 # Deleting a rejected digest also drops its skip warning, so the next skip warns.
 warned=$(mktemp -d)
 prepare_pantry "$warned"
@@ -1605,46 +1508,6 @@ run_update "$warned"
 [[ "$LAST_RC" -eq 0 ]] || fail "cleared rejection should deploy: $LAST_OUT"
 lack "$(cat "$warned/.update-skip-warned")" "newpantry" "a digest that is no longer rejected is dropped from the warning file"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
-
-# up fails because an unchanged grocy-sync has exited. Pantry is new and healthy.
-grocy_keep=$(mktemp -d)
-prepare_pantry "$grocy_keep"
-write_images "$grocy_keep/images.tsv" \
-  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$grocy_keep/images.tsv"
-printf '%s\n' $'grocy-sync\texited\t0' > "$grocy_keep/status.tsv"
-printf '%s\n' $'pantry\tsha256:newpantry' > "$grocy_keep/live.tsv"
-STUB_STATUS_TSV="$grocy_keep/status.tsv"
-STUB_LIVE_IMAGE_TSV="$grocy_keep/live.tsv"
-STUB_UP_RC=1
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-run_update "$grocy_keep"
-[[ "$LAST_RC" -eq 0 ]] || fail "unchanged grocy-sync up failure exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "<4>pantry update: warning: grocy-sync is exited and its image did not change; not rolling back" "unchanged grocy-sync down is a journal warning"
-have "$LAST_OUT" "every changed service is healthy; not rolling back" "unchanged grocy-sync down keeps the new pantry"
-lack "$LAST_DOCKER" "--pull never" "unchanged grocy-sync down does not roll back"
-[[ ! -e "$grocy_keep/.update-rejected-digest" ]] || fail "unchanged grocy-sync down recorded a digest"
-have "$(cat "$grocy_keep/.update-sidecar-warn")" "grocy-sync" "a down sidecar is marked for the next run"
-# The next minute's images match. The sidecar is still down, so the warning repeats.
-cat > "$grocy_keep/images.tsv" << EOF
-pantry	ghcr.io/rhionin/pantry:latest	sha256:newpantry	ghcr.io/rhionin/pantry@sha256:newpantry	sha256:newpantry	ghcr.io/rhionin/pantry@sha256:newpantry	${NEW_COMMIT}	${OLD_COMMIT}
-caddy	caddy:2.11.7-alpine	sha256:runcaddy	caddy@sha256:oldcaddy	sha256:runcaddy	caddy@sha256:oldcaddy		
-grocy-sync	ghcr.io/rhionin/pantry-grocy-sync:latest	sha256:rungrocy	ghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy	sha256:rungrocy	ghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy	
-EOF
-STUB_UP_RC=0
-run_update "$grocy_keep"
-[[ "$LAST_RC" -eq 0 ]] || fail "sidecar recheck exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "images unchanged" "the recheck runs on an unchanged pull"
-have "$LAST_OUT" "<4>pantry update: warning: grocy-sync is exited and its image did not change; not rolling back" "a sidecar that stays down warns again"
-have "$(cat "$grocy_keep/.update-sidecar-warn")" "grocy-sync" "a sidecar that stays down keeps its marker"
-printf '%s\n' $'grocy-sync\trunning\t0' > "$grocy_keep/status.tsv"
-run_update "$grocy_keep"
-[[ "$LAST_RC" -eq 0 ]] || fail "sidecar recovery exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is running again" "a recovered sidecar is cleared"
-[[ ! -e "$grocy_keep/.update-sidecar-warn" ]] || fail "a recovered sidecar left a marker: $(cat "$grocy_keep/.update-sidecar-warn")"
-unset STUB_STATUS_TSV STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY STUB_LIVE_IMAGE_TSV
 
 # up fails because an unchanged caddy has exited. The probe was already failing.
 caddy_keep=$(mktemp -d)
@@ -1908,27 +1771,6 @@ lack "$LAST_OUT" "rejecting pantry" "an empty 200 before does not reject the new
 [[ ! -e "$tunnel_empty/.update-rejected-digest" ]] || fail "empty tunnel 200 recorded a digest: $(cat "$tunnel_empty/.update-rejected-digest")"
 unset STUB_TUNNEL_OLD_RC STUB_TUNNEL_OLD_STATUS STUB_TUNNEL_OLD_BODY STUB_TUNNEL_RC STUB_TUNNEL_STATUS STUB_TUNNEL_BODY STUB_HEALTH_BODY STUB_BUILD_BODY
 
-# up fails before a changed grocy-sync is recreated. The old container is
-# still running, so it is not the new image.
-stale_grocy=$(mktemp -d)
-prepare_pantry "$stale_grocy"
-write_images "$stale_grocy/images.tsv" \
-  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
-  sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$stale_grocy/images.tsv"
-printf '%s\n' $'pantry\tsha256:newpantry' > "$stale_grocy/live.tsv"
-STUB_LIVE_IMAGE_TSV="$stale_grocy/live.tsv"
-STUB_UP_RC=1
-STUB_HEALTH_BODY='{"status":"ok"}'
-STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
-run_update "$stale_grocy"
-[[ "$LAST_RC" -ne 0 ]] || fail "stale grocy-sync should exit non-zero: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is still running the previous image" "a stale changed container is not healthy"
-have "$LAST_DOCKER" "--pull never" "a stale changed container rolls back"
-have "$(cat "$stale_grocy/.update-rejected-digest")" "newgrocy" "a stale grocy-sync is rejected"
-lack "$(cat "$stale_grocy/.update-rejected-digest")" "newpantry" "a stale grocy-sync does not reject the new pantry"
-unset STUB_LIVE_IMAGE_TSV STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY
-
 # A marker for a service that is no longer in compose is dropped.
 marker_off=$(mktemp -d)
 prepare_pantry "$marker_off"
@@ -1948,11 +1790,11 @@ prepare_pantry "$marker_cr"
 write_images "$marker_cr/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$marker_cr/images.tsv"
-printf '%s\r\n' grocy-sync > "$marker_cr/.update-sidecar-warn"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_cr/images.tsv"
+printf '%s\r\n' cloudflared > "$marker_cr/.update-sidecar-warn"
 run_update "$marker_cr"
 [[ "$LAST_RC" -eq 0 ]] || fail "crlf marker exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is running again" "a CR-terminated marker matches the running container"
+have "$LAST_OUT" "cloudflared is running again" "a CR-terminated marker matches the running container"
 [[ ! -e "$marker_cr/.update-sidecar-warn" ]] || fail "a recovered CR marker stayed: $(cat "$marker_cr/.update-sidecar-warn")"
 
 # A deploy clears a sidecar marker once that container is running.
@@ -1961,13 +1803,13 @@ prepare_pantry "$marker_clear"
 write_images "$marker_clear/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$marker_clear/images.tsv"
-printf '%s\n' grocy-sync > "$marker_clear/.update-sidecar-warn"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_clear/images.tsv"
+printf '%s\n' cloudflared > "$marker_clear/.update-sidecar-warn"
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 run_update "$marker_clear"
 [[ "$LAST_RC" -eq 0 ]] || fail "deploy marker clear exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is running again" "a deploy clears a sidecar that is running"
+have "$LAST_OUT" "cloudflared is running again" "a deploy clears a sidecar that is running"
 [[ ! -e "$marker_clear/.update-sidecar-warn" ]] || fail "a running sidecar kept its marker: $(cat "$marker_clear/.update-sidecar-warn")"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
 
@@ -1977,12 +1819,12 @@ prepare_pantry "$marker_park"
 write_images "$marker_park/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$marker_park/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_park/images.tsv"
 printf '%s\n' $'pantry\tghcr.io/rhionin/pantry@sha256:newpantry' > "$marker_park/.update-rejected-digest"
-printf '%s\n' grocy-sync > "$marker_park/.update-sidecar-warn"
+printf '%s\n' cloudflared > "$marker_park/.update-sidecar-warn"
 run_update "$marker_park"
 [[ "$LAST_RC" -eq 0 ]] || fail "park-path recheck exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "grocy-sync is running again" "the park path rechecks a sidecar marker"
+have "$LAST_OUT" "cloudflared is running again" "the park path rechecks a sidecar marker"
 [[ ! -e "$marker_park/.update-sidecar-warn" ]] || fail "the park path left a sidecar marker: $(cat "$marker_park/.update-sidecar-warn")"
 
 # Pantry's image did not change. A regressed proxy must not reject it.
@@ -1992,8 +1834,8 @@ public_env "$proxy_grocy"
 write_images "$proxy_grocy/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:newgrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:newgrocy\t' >> "$proxy_grocy/images.tsv"
-printf '%s\n' $'grocy-sync\tsha256:newgrocy' > "$proxy_grocy/live.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$proxy_grocy/images.tsv"
+printf '%s\n' $'cloudflared\tsha256:newcloud' > "$proxy_grocy/live.tsv"
 STUB_LIVE_IMAGE_TSV="$proxy_grocy/live.tsv"
 STUB_CADDY_OLD_RC=0
 STUB_CADDY_RC=22
@@ -2176,9 +2018,9 @@ public_env "$marker_deploy_clear"
 write_images "$marker_deploy_clear/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'grocy-sync\tghcr.io/rhionin/pantry-grocy-sync:latest\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\tsha256:rungrocy\tghcr.io/rhionin/pantry-grocy-sync@sha256:oldgrocy\t' >> "$marker_deploy_clear/images.tsv"
-printf '%s\n' caddy grocy-sync > "$marker_deploy_clear/.update-sidecar-warn"
-printf '%s\n' $'grocy-sync\texited\t0' > "$marker_deploy_clear/status.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_deploy_clear/images.tsv"
+printf '%s\n' caddy cloudflared > "$marker_deploy_clear/.update-sidecar-warn"
+printf '%s\n' $'cloudflared\texited\t0' > "$marker_deploy_clear/status.tsv"
 STUB_STATUS_TSV="$marker_deploy_clear/status.tsv"
 STUB_CADDY_RC=0
 STUB_HEALTH_BODY='{"status":"ok"}'
@@ -2188,7 +2030,7 @@ run_update "$marker_deploy_clear"
 lack "$LAST_OUT" "images unchanged" "a passing deploy probe clears the proxy without waiting for the next minute"
 lack "$LAST_OUT" "caddy is running again" "a passing deploy probe does not clear caddy for being running"
 lack "$LAST_OUT" "caddy probe passed" "the deploy clear is not the unchanged-minute probe"
-have "$(cat "$marker_deploy_clear/.update-sidecar-warn")" "grocy-sync" "a deploy that clears the proxy keeps the down sidecar"
+have "$(cat "$marker_deploy_clear/.update-sidecar-warn")" "cloudflared" "a deploy that clears the proxy keeps the down sidecar"
 lack "$(cat "$marker_deploy_clear/.update-sidecar-warn")" "caddy" "a passing deploy probe drops the proxy marker"
 unset STUB_STATUS_TSV STUB_CADDY_RC STUB_HEALTH_BODY STUB_BUILD_BODY
 
@@ -2342,5 +2184,40 @@ have "$lock_out" "another update is running" "a held lock is waited on"
 lack "$lock_out" "pantry update: lock acquired" "the waiter does not pass the lock while it is held"
 rm -rf "$lock_work"
 
-rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$grocy" "$grocy_up" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$stale" "$unpinned" "$spill" "$grocy_ok" "$grocy_bad" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$grocy_now" "$warned" "$grocy_keep" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$stale_grocy" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
+# Grocy credentials must not change what the updater asks docker to do.
+# A deploy with GROCY_* + PANTRY_SYNC_TOKEN set (and docker-compose.grocy.yml
+# present, as setup.sh leaves it) must issue the same docker argv as one
+# without them: no pull/up of grocy-sync, no orphan removal, no volume removal.
+for grocy_mode in lan tunnel; do
+  grocy_off=$(mktemp -d); grocy_on=$(mktemp -d)
+  for grocy_dir in "$grocy_off" "$grocy_on"; do
+    prepare_pantry "$grocy_dir"
+    [[ "$grocy_mode" == tunnel ]] && public_env "$grocy_dir" test-tunnel-token
+    cp "$ROOT/deploy/docker-compose.yml" "$ROOT/deploy/docker-compose.tunnel.yml" "$ROOT/deploy/docker-compose.grocy.yml" "$grocy_dir/"
+    write_images "$grocy_dir/images.tsv" sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry sha256:runcaddy caddy@sha256:oldcaddy
+  done
+  printf '%s\n' GROCY_URL=http://grocy:80 GROCY_API_KEY=invented-key PANTRY_SYNC_TOKEN=invented-token >> "$grocy_on/.env"
+  cp "$grocy_on/.env" "$grocy_on/.env.orig"
+  STUB_HEALTH_BODY='{"status":"ok"}' STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}" run_update "$grocy_off"
+  [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode update without Grocy failed: $LAST_OUT"
+  grocy_off_docker=${LAST_DOCKER//$grocy_off/<pantry>}
+  grocy_off_docker=${grocy_off_docker//$(basename "$grocy_off")/<proj>}
+  STUB_HEALTH_BODY='{"status":"ok"}' STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}" run_update "$grocy_on"
+  [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode update with Grocy failed: $LAST_OUT"
+  grocy_on_docker=${LAST_DOCKER//$grocy_on/<pantry>}
+  grocy_on_docker=${grocy_on_docker//$(basename "$grocy_on")/<proj>}
+  have "$grocy_on_docker" " up -d" "$grocy_mode update with Grocy still recreates the stack"
+  lack "$grocy_on_docker" "docker-compose.grocy.yml" "$grocy_mode update with Grocy must not load the sidecar file"
+  lack "$grocy_on_docker" "--profile grocy" "$grocy_mode update with Grocy must not select a grocy profile"
+  lack "$grocy_on_docker" "--remove-orphans" "$grocy_mode update must not remove orphans (pantry-grocy-sync)"
+  if grep -qE '(^| )(down|volume rm|volume prune)( |$)' <<<"$grocy_on_docker"; then
+    fail "$grocy_mode update with Grocy must not take the stack down or remove volumes"
+  fi
+  [[ "$grocy_on_docker" == "$grocy_off_docker" ]] \
+    || fail "$grocy_mode update docker argv changed with Grocy credentials:"$'\n'"$(diff <(printf '%s\n' "$grocy_off_docker") <(printf '%s\n' "$grocy_on_docker"))"
+  rm -rf "$grocy_off" "$grocy_on"
+done
+unset STUB_HEALTH_BODY STUB_BUILD_BODY
+
+rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

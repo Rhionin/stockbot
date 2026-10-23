@@ -954,6 +954,46 @@ grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile 
 [[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
 [[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
 
+# Grocy credentials must not change what setup.sh asks docker to do.
+# With GROCY_URL, GROCY_API_KEY, and PANTRY_SYNC_TOKEN filled, setup must
+# issue the exact docker argv it issues without them: no
+# docker-compose.grocy.yml, no grocy profile, and never an orphan or volume cleanup.
+grocy_mode_env() {
+  local dir="$1" mode="$2"
+  if [[ "$mode" == tunnel ]]; then
+    write_env "$dir" "PUBLIC_HOST=stockbot.example" "ACME_EMAIL=" "BASIC_AUTH_USER=pantry" \
+      "BASIC_AUTH_PASSWORD=" "HOST_PORT=8080" "PUBLISH_MODE=" "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
+    printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$dir/auth.caddy"
+  else
+    write_env "$dir" "PANTRY_IMAGE_TAG=latest" "HOST_PORT=9090" "PUBLIC_HOST=" "ACME_EMAIL=" \
+      "BASIC_AUTH_USER=pantry" "BASIC_AUTH_PASSWORD=" "SCANNER_DEVICE=/dev/input/pantry-scanner"
+  fi
+}
+for grocy_mode in lan tunnel; do
+  grocy_off=$(mktemp -d); grocy_on=$(mktemp -d)
+  grocy_mode_env "$grocy_off" "$grocy_mode"
+  grocy_mode_env "$grocy_on" "$grocy_mode"
+  printf '%s\n' GROCY_URL=http://grocy:80 GROCY_API_KEY=invented-key PANTRY_SYNC_TOKEN=invented-token >> "$grocy_on/.env"
+  run_setup "$grocy_off"
+  [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode setup without Grocy failed: $LAST_OUT"
+  grocy_off_docker=${LAST_DOCKER//$grocy_off/<pantry>}
+  grocy_off_docker=${grocy_off_docker//$(basename "$grocy_off")/<proj>}
+  run_setup "$grocy_on"
+  [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode setup with Grocy failed: $LAST_OUT"
+  grocy_on_docker=${LAST_DOCKER//$grocy_on/<pantry>}
+  grocy_on_docker=${grocy_on_docker//$(basename "$grocy_on")/<proj>}
+  have "$grocy_on_docker" " up -d" "$grocy_mode setup with Grocy still starts the stack"
+  lack "$grocy_on_docker" "docker-compose.grocy.yml" "$grocy_mode setup with Grocy must not load the sidecar file"
+  lack "$grocy_on_docker" "--profile grocy" "$grocy_mode setup with Grocy must not select a grocy profile"
+  lack "$grocy_on_docker" "--remove-orphans" "$grocy_mode setup must not remove orphans (pantry-grocy-sync)"
+  if grep -qE '(^| )(down|volume rm|volume prune)( |$)' <<<"$grocy_on_docker"; then
+    fail "$grocy_mode setup with Grocy must not take the stack down or remove volumes"
+  fi
+  [[ "$grocy_on_docker" == "$grocy_off_docker" ]] \
+    || fail "$grocy_mode setup docker argv changed with Grocy credentials:"$'\n'"$(diff <(printf '%s\n' "$grocy_off_docker") <(printf '%s\n' "$grocy_on_docker"))"
+  rm -rf "$grocy_off" "$grocy_on"
+done
+
 rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
 rm -f /tmp/pantry-chown-fail.out /tmp/pantry-chown-skip.out
 echo "setup_apply_test ok"
