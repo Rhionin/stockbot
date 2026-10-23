@@ -40,11 +40,12 @@ That is still true when the body includes `direction`, `unitCount`, or
 arrays. Empty fields are omitted: an empty `committedIds`, `failedIds`,
 `failedReasons`, `failedCodes`, or `stockOutCounts` is left out of the JSON.
 
-Known exception, tracked in
-https://github.com/Rhionin/stockbot/issues/370: a batch confirm that sends
-`direction`, `unitCount`, or `expiresAt` and includes an unknown scan id
-returns 500 for the whole request. It does not return 200 with that id
-reported as `scan_not_found`. Remove this note when #370 is fixed.
+An unknown scan id is `scan_not_found` on a confirm and on an update-only
+request. The other ids are updated, and a confirm commits them, as they
+would be without the unknown id. When an update-only write cannot start
+because the database is locked or full, every id in that request gets
+`busy` or `no_space`, including an unknown id. Nothing is read after that
+write fails.
 
 `committedIds` means committed, or confirmed as already committed, by this
 request. An id this request did not read is not in that list.
@@ -61,11 +62,16 @@ no names. It is one line for the batch, not one line per item.
 The batch stops on the first `busy` or `no_space` result. That item and every
 item not yet tried get the same code and the same sentence. This includes an
 id that was already committed by something else: the request does not read it
-to check. Items this request did not commit stay as they were (pending,
-flagged, or already committed), so a retry is safe. A retry lists an id that
-was already committed in `committedIds`. Items this request committed before
-the stop stay committed and are listed in `committedIds`. Other per-item
-failures do not stop the batch.
+to check. The status of an item this request did not commit stays pending,
+flagged, or already committed, so a retry does not commit it twice. On a
+confirm, an item not yet tried is not written. A retry lists an id that was
+already committed in `committedIds`. Items this request committed before the
+stop stay committed and are listed in `committedIds`. On a full disk a field
+edit can still persist on the card whose stock commit then failed. On an
+update-only request the field write is one transaction before those per-id
+reads. If that write succeeds and a later read is `busy` or `no_space`, that
+id and the later ids get that code even though their fields were already
+saved. Other per-item failures do not stop the batch.
 
 A client shows that sentence once. When some items were committed first, the
 line leads with the committed count and "confirmed.", then the sentence. Two
