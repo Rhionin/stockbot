@@ -2,6 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
+import { SERVER_ERROR_FALLBACK, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -14,7 +15,6 @@ import {
   type SuggestionCard,
 } from '../restock/types';
 import type {
-  BatchCommitResponse,
   BuildInfo,
   InventoryItem,
   ItemInstance,
@@ -114,7 +114,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     if (res.status === 401) {
       onUnauthorized?.();
     }
-    let message = res.statusText;
+    let message = res.status >= 500 ? SERVER_ERROR_FALLBACK : res.statusText;
     try {
       const body = (await res.json()) as {
         error?: string;
@@ -129,7 +129,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       throw new ApiError(res.status, message, body.code ?? '', body.members ?? [], body.suggestions ?? []);
     } catch (err) {
       if (err instanceof ApiError) throw err;
-      // Response body was not JSON; fall back to statusText.
+      // Not JSON. A 5xx already uses the shared sentence; other statuses keep statusText.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
     throw new ApiError(res.status, message);
@@ -218,7 +218,11 @@ export function updateScanEntry(id: string, input: UpdateScanEntryInput): Promis
   return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
 }
 
-export function commitScanEntry(id: string, instanceId?: string, linkProductId?: string): Promise<ScanEntry> {
+export function commitScanEntry(
+  id: string,
+  instanceId?: string,
+  linkProductId?: string,
+): Promise<ScanEntry & CommitScanResponse> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;
@@ -249,8 +253,8 @@ export function getScannerConfig(): Promise<ScannerConfig> {
 
 // --- Inventory ---
 
-export function getInventoryList(query?: string): Promise<InventoryItem[]> {
-  return apiFetch(inventoryListPath(query));
+export function getInventoryList(query?: string, userId?: string): Promise<InventoryItem[]> {
+  return apiFetch(inventoryListPath(query, userId));
 }
 
 export function listItemInstances(itemId: string): Promise<ItemInstanceWithStatus[]> {

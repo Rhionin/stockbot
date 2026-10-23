@@ -101,7 +101,11 @@ func InitSentry(settings SentrySettings) error {
 		BeforeBreadcrumb: func(crumb *sentry.Breadcrumb, _ *sentry.BreadcrumbHint) *sentry.Breadcrumb {
 			return scrubSentryBreadcrumb(crumb)
 		},
-		Transport: sentryTestTransport,
+		// Drop every 404 transaction, including a real route such as
+		// GET /api/gone, not only unmatched paths. Set explicitly so a
+		// future SDK default cannot start sending that noise from the Pi.
+		TraceIgnoreStatusCodes: [][]int{{404}},
+		Transport:              sentryTestTransport,
 	}
 	err := sentry.Init(options)
 	if err != nil {

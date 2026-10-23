@@ -8,6 +8,7 @@ export interface StockOutInstanceSelectorProps {
   itemId: string;
   value: string;
   onChange: (instanceId: string) => void;
+  reloadKey?: number;
 }
 
 const formatInstanceLabel = (instance: ItemInstanceWithStatus): string =>
@@ -19,6 +20,7 @@ export const StockOutInstanceSelector = ({
   itemId,
   value,
   onChange,
+  reloadKey = 0,
 }: StockOutInstanceSelectorProps) => {
   const [instances, setInstances] = useState<ItemInstanceWithStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +28,10 @@ export const StockOutInstanceSelector = ({
 
   useEffect(() => {
     let active = true;
+    // A later reload replaces a unit the household already took out.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    setError('');
     void listItemInstances(itemId)
       .then((result) => {
         if (active) setInstances(sortInstancesUseOldestFirst(result));
@@ -41,7 +47,7 @@ export const StockOutInstanceSelector = ({
     return () => {
       active = false;
     };
-  }, [itemId]);
+  }, [itemId, reloadKey]);
 
   if (loading) return <Loader size="sm" aria-label="Loading item instances" />;
   if (error !== '') return <Alert color="red">{error}</Alert>;

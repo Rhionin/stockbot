@@ -252,8 +252,55 @@
   padding: 8px 10px;
 }
 
+/* Keep the 440px toast, and never wider than the viewport minus both side margins. */
+.mantine-Notifications-root {
+  box-sizing: border-box;
+  max-width: min(var(--notifications-container-width), calc(100vw - var(--mantine-spacing-md) * 2));
+}
+
+.mantine-Notifications-root > * {
+  max-width: 100%;
+  min-width: 0;
+}
+
 .restock-toast {
-  border-left: 4px solid var(--mantine-color-teal-6);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border-left: 4px solid var(--notification-color, var(--mantine-color-teal-6));
+}
+
+.restock-toast-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.restock-toast-title,
+.restock-toast-description {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: unset;
+}
+
+.restock-toast-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+}
+
+.restock-toast-detail {
+  flex: 1 1 12em;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.restock-toast-close {
+  flex: none;
 }
 
 :where([data-mantine-color-scheme='dark']) .restock-settings .mantine-Button-root[data-variant='subtle'],

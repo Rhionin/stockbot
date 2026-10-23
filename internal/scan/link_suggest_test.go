@@ -28,3 +28,23 @@ func TestRankLinkCandidatesSuffixBeforeName(t *testing.T) {
 		t.Fatalf("third = %#v, want the name match after every suffix", got[2])
 	}
 }
+
+func TestRankLinkCandidatesNameTieBreaksAlphabetically(t *testing.T) {
+	// "Canned Pear Juice" shares both tokens (score 0.8). The other three share
+	// only "pear" (score 0.5). Equal scores sort by name.
+	got := rankLinkCandidates("999000111222", "Pear Juice", "prod-scanned", []linkCandidate{
+		{ItemID: "item-jam", ProductID: "prod-jam", Name: "Pear Jam", OnHand: 1},
+		{ItemID: "item-apple", ProductID: "prod-apple", Name: "Apple Pear", OnHand: 2},
+		{ItemID: "item-canned", ProductID: "prod-canned", Name: "Canned Pear Juice", OnHand: 4},
+		{ItemID: "item-butter", ProductID: "prod-butter", Name: "Pear Butter", OnHand: 3},
+	})
+	want := []string{"Canned Pear Juice", "Apple Pear", "Pear Butter", "Pear Jam"}
+	if len(got) != len(want) {
+		t.Fatalf("suggestions = %#v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i].Name != name {
+			t.Fatalf("suggestion %d = %q, want %q in %#v", i, got[i].Name, name, got)
+		}
+	}
+}
