@@ -1,5 +1,5 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH } from '../../../frontend/src/api/contract';
-import { ApiError, basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, UnreachableError } from '../../../frontend/src/api/contract';
+import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
 
@@ -53,13 +53,26 @@ describe('createStockbotClient', () => {
     expect(onUnauthorized).toHaveBeenCalled();
   });
 
-  it('says when the server cannot be reached', async () => {
+  it.each([
+    { name: 'network request failed', error: new TypeError('Network request failed') },
+    { name: 'abort', error: Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }) },
+    { name: 'timeout', error: Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }) },
+    { name: 'dns', error: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) },
+  ])('$name maps to the offline sentence', async ({ error }) => {
+    const { client } = clientWith(jest.fn(async () => {
+      throw error;
+    }));
+
+    await expect(client.getSession()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(client.getSession()).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
+  });
+
+  it('leaves a non-transport failure unchanged', async () => {
     const { client } = clientWith(jest.fn(async () => {
       throw new Error('offline');
     }));
 
-    await expect(client.getSession()).rejects.toBeInstanceOf(ApiError);
-    await expect(client.getSession()).rejects.toThrow(/did not answer/i);
+    await expect(client.getSession()).rejects.toThrow('offline');
   });
 
   it('posts a scan, lists pending scans, and commits them for the shared household user', async () => {

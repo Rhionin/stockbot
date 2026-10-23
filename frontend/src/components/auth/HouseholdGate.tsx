@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { OFFLINE_SENTENCE } from '../../api/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { HouseholdSessionContext } from './householdSession';
 import { LoginPage } from './LoginPage';
@@ -23,7 +24,7 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     }).catch(() => {
       if (cancelled) return;
       setRequired(true);
-      setError('Stockbot could not be reached.');
+      setError(OFFLINE_SENTENCE);
       setPhase('login');
     });
     return () => {

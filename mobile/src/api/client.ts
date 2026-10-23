@@ -16,6 +16,7 @@ import {
   scanCommitPath,
   scansQuery,
   SERVER_ERROR_FALLBACK,
+  unreachableFrom,
 } from '../../../frontend/src/api/contract';
 import type {
   InventoryItem,
@@ -86,8 +87,10 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     let res: Response;
     try {
       res = await fetchImpl(`${credentials.serverUrl}${path}`, { ...init, headers });
-    } catch {
-      throw new ApiError(0, 'Stockbot did not answer at that address.');
+    } catch (error) {
+      const unreachable = unreachableFrom(error);
+      if (unreachable !== null) throw unreachable;
+      throw error;
     }
 
     if (!res.ok) {

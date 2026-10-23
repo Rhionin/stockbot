@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, listProducts } from './client';
-import { SERVER_ERROR_FALLBACK } from './contract';
+import { ApiError, commitScanEntry, listProducts } from './client';
+import { OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, UnreachableError } from './contract';
 
 describe('api error messages', () => {
   afterEach(() => {
@@ -40,5 +40,32 @@ describe('api error messages', () => {
     const attempt = listProducts();
     await expect(attempt).rejects.toBeInstanceOf(ApiError);
     await expect(attempt).rejects.toMatchObject({ status, message });
+  });
+
+  it.each([
+    { name: 'failed to fetch', error: new TypeError('Failed to fetch') },
+    { name: 'abort', error: new DOMException('The operation was aborted.', 'AbortError') },
+    { name: 'timeout', error: new DOMException('The operation was aborted due to timeout', 'TimeoutError') },
+    { name: 'dns', error: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) },
+  ])('$name', async ({ error }) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(error)));
+
+    const attempt = listProducts();
+    await expect(attempt).rejects.toBeInstanceOf(UnreachableError);
+    await expect(attempt).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
+    expect(OFFLINE_SENTENCE).not.toBe('Failed to fetch');
+  });
+
+  it('keeps a 409 body', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'That scan is no longer pending.', code: 'not_pending' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    ))));
+
+    await expect(commitScanEntry('scan-1')).rejects.toMatchObject({
+      status: 409,
+      message: 'That scan is no longer pending.',
+      code: 'not_pending',
+    });
   });
 });

@@ -233,3 +233,94 @@ export function confirmSkipsNothingOnHand(count: number): string | null {
   if (!Number.isInteger(count) || count < 1) return null;
   return `Confirm skips the ${count} with nothing on hand.`;
 }
+
+// Shown when fetch never received a response. Straight apostrophe, one sentence.
+export const OFFLINE_SENTENCE = "Can't reach Stockbot. Check your connection and try again.";
+
+export interface NetworkErrorResult {
+  kind: 'network';
+  message: typeof OFFLINE_SENTENCE;
+}
+
+// The typed failure both clients throw. message is OFFLINE_SENTENCE.
+export class UnreachableError extends Error {
+  readonly kind = 'network' as const;
+  readonly result: NetworkErrorResult;
+
+  constructor() {
+    super(OFFLINE_SENTENCE);
+    this.name = 'UnreachableError';
+    this.result = { kind: 'network', message: OFFLINE_SENTENCE };
+  }
+}
+
+// Browser and device names for a request that ended before any HTTP response.
+const TRANSPORT_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError', 'TypeError']);
+
+// The raw strings those runtimes put on the error. Matched only here.
+const TRANSPORT_MESSAGES = new Set([
+  'Failed to fetch',
+  'Network request failed',
+  'Load failed',
+  'NetworkError when attempting to fetch resource.',
+  'The Internet connection appears to be offline.',
+  'The operation was aborted.',
+  'The user aborted a request.',
+  'Aborted',
+]);
+
+const TRANSPORT_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'ABORT_ERR',
+]);
+
+function stringField(error: object, key: string): string {
+  if (!(key in error)) return '';
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : '';
+}
+
+// True for a fetch TypeError, an abort or timeout, or a DNS / connection failure.
+function isTransportFailure(error: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return TRANSPORT_NAMES.has(error.name);
+  }
+  if (error instanceof TypeError) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  if (TRANSPORT_NAMES.has(stringField(error, 'name'))) return true;
+  if (TRANSPORT_CODES.has(stringField(error, 'code'))) return true;
+  if (TRANSPORT_MESSAGES.has(stringField(error, 'message'))) return true;
+  if ('cause' in error && error.cause !== undefined && error.cause !== error) {
+    return isTransportFailure(error.cause);
+  }
+  return false;
+}
+
+export function networkErrorResult(error: unknown): NetworkErrorResult | null {
+  if (error instanceof UnreachableError) return error.result;
+  if (!isTransportFailure(error)) return null;
+  return { kind: 'network', message: OFFLINE_SENTENCE };
+}
+
+// The sentence when this error is the shared network failure, otherwise null.
+export function offlineSentence(error: unknown): string | null {
+  return error instanceof UnreachableError ? OFFLINE_SENTENCE : null;
+}
+
+export function unreachableFrom(error: unknown): UnreachableError | null {
+  if (error instanceof UnreachableError) return error;
+  if (networkErrorResult(error) === null) return null;
+  return new UnreachableError();
+}

@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';
 
@@ -44,7 +45,7 @@ export function ConnectionForm({
     try {
       await onSubmit(serverUrl, password);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Stockbot did not answer at that address.');
+      setError(requestError instanceof Error ? requestError.message : OFFLINE_SENTENCE);
     } finally {
       setSubmitting(false);
     }

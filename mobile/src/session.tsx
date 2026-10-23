@@ -1,4 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { OFFLINE_SENTENCE } from '../../frontend/src/api/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
@@ -67,7 +68,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             setState({ status: 'signedOut', error: error.message });
             return;
           }
-          const warning = error instanceof Error ? error.message : 'Stockbot did not answer at that address.';
+          const warning = error instanceof Error ? error.message : OFFLINE_SENTENCE;
           setState({
             status: 'ready',
             serverUrl: saved.serverUrl,

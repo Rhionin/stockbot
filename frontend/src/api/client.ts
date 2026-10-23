@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -105,9 +105,11 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: 'same-origin' });
-  } catch (err) {
+  } catch (error) {
     reportApiResult(route, 0, performance.now() - started, started);
-    throw err;
+    const unreachable = unreachableFrom(error);
+    if (unreachable !== null) throw unreachable;
+    throw error;
   }
 
   if (!res.ok) {
@@ -569,8 +571,18 @@ export function getBuildInfo(): Promise<BuildInfo> {
 
 // getSession uses fetch directly so a 401 can mean "show the login page"
 // without also tripping the signed-in handler.
+async function fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${BASE_URL}${path}`, init);
+  } catch (error) {
+    const unreachable = unreachableFrom(error);
+    if (unreachable !== null) throw unreachable;
+    throw error;
+  }
+}
+
 export async function getSession(): Promise<HouseholdSession> {
-  const res = await fetch(`${BASE_URL}${SESSION_PATH}`, { credentials: 'same-origin' });
+  const res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
   if (res.status === 401) {
     return { required: true, username: '', error: '' };
   }
@@ -590,7 +602,7 @@ export async function getSession(): Promise<HouseholdSession> {
 }
 
 export async function login(username: string, password: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/login`, {
+  const res = await fetchResponse('/api/login', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -609,7 +621,7 @@ export async function login(username: string, password: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/logout`, { method: 'POST', credentials: 'same-origin' });
+  const res = await fetchResponse('/api/logout', { method: 'POST', credentials: 'same-origin' });
   if (!res.ok) {
     throw new ApiError(res.status, 'Could not sign out.');
   }

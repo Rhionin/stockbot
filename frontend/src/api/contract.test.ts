@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
+  networkErrorResult,
   nothingOnHandPill,
+  OFFLINE_SENTENCE,
   shelfHasNothingOnHand,
+  UnreachableError,
+  unreachableFrom,
   type BatchCommitResponse,
 } from './contract';
 
@@ -150,5 +154,50 @@ describe('nothing on hand copy', () => {
     { name: 'one on hand', onHand: 1, empty: false },
   ])('$name', ({ onHand, empty }) => {
     expect(shelfHasNothingOnHand(onHand)).toBe(empty);
+  });
+});
+
+const offline = { kind: 'network' as const, message: OFFLINE_SENTENCE };
+
+describe('networkErrorResult', () => {
+  it('uses a straight apostrophe in the one sentence', () => {
+    expect(OFFLINE_SENTENCE).toBe("Can't reach Stockbot. Check your connection and try again.");
+    expect(OFFLINE_SENTENCE.charCodeAt(OFFLINE_SENTENCE.indexOf("'"))).toBe(39);
+  });
+
+  it.each([
+    { name: 'fetch TypeError', error: new TypeError('Failed to fetch') },
+    { name: 'phone network error', error: new TypeError('Network request failed') },
+    { name: 'plain failed to fetch', error: new Error('Failed to fetch') },
+    { name: 'plain network request failed', error: new Error('Network request failed') },
+    { name: 'safari load failed', error: new TypeError('Load failed') },
+    { name: 'abort', error: new DOMException('The operation was aborted.', 'AbortError') },
+    { name: 'timeout', error: new DOMException('The operation was aborted due to timeout', 'TimeoutError') },
+    { name: 'dns', error: Object.assign(new Error('getaddrinfo ENOTFOUND stockbot.example'), { code: 'ENOTFOUND' }) },
+    { name: 'connection refused', error: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) },
+    {
+      name: 'wrapped dns failure',
+      error: new Error('fetch failed', { cause: Object.assign(new Error('getaddrinfo'), { code: 'EAI_AGAIN' }) }),
+    },
+  ])('$name', ({ error }) => {
+    expect(networkErrorResult(error)).toEqual(offline);
+    expect(unreachableFrom(error)).toMatchObject({ name: 'UnreachableError', kind: 'network', message: OFFLINE_SENTENCE });
+  });
+
+  it.each([
+    { name: 'server sentence', error: new Error('Which item is this?') },
+    { name: 'unrelated error', error: new Error('Network error') },
+    { name: 'non-error rejection', error: { statusCode: 500 } },
+    { name: 'null', error: null },
+  ])('$name is not a transport failure', ({ error }) => {
+    expect(networkErrorResult(error)).toBeNull();
+    expect(unreachableFrom(error)).toBeNull();
+  });
+
+  it('returns the same result for an unreachable error', () => {
+    const error = new UnreachableError();
+    expect(error.result).toEqual(offline);
+    expect(networkErrorResult(error)).toBe(error.result);
+    expect(unreachableFrom(error)).toBe(error);
   });
 });

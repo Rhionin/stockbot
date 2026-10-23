@@ -3,6 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { clearOfflineNotice } from './offlineNotice';
 import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
@@ -174,6 +175,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       });
       if (!keepPartialLine) setPartialLine(null);
       setError('');
+      clearOfflineNotice();
       const epoch = inventoryEpoch.current + 1;
       inventoryEpoch.current = epoch;
       inventoryLive.current = [];
@@ -390,6 +392,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     holdLocalMode(mode);
     try {
       await setScannerMode(mode);
+      setScanError('');
+      clearOfflineNotice();
     } catch (requestError) {
       setScanError(requestError instanceof Error ? requestError.message : 'Unable to switch scanner mode.');
     }
