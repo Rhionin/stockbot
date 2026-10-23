@@ -308,7 +308,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await previewSettled
   await expect.poll(() => seenPreview.path).toBe('/api/moves/move-cream-in/preview')
   await expect(plain.getByText(pairBody)).toBeVisible()
-  await expect(plain.getByText(hideLine)).toHaveCount(0)
+  await expect(plain.getByText(hideLine)).toBeHidden()
   await expect(plain.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled()
   await shoot(page, testInfo, 'undo-confirm-plain')
 
