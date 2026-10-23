@@ -69,7 +69,7 @@ Cognito owns sign-up, email verification, and password reset. This API does not 
 
 ## Endpoint index
 
-endpoint-count: 37
+endpoint-count: 39
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -80,6 +80,8 @@ GET /api/auth/callback
 POST /api/auth/logout
 GET /api/auth/session
 POST /api/households
+GET /api/household/settings
+PATCH /api/household/settings
 GET /api/households
 GET /api/households/{id}
 PATCH /api/households/{id}
@@ -190,11 +192,27 @@ Creates a household and makes the caller an owner. This is the step after email 
 | Auth | Session |
 | Role | Signed in |
 | X-Household-Id | Omit |
-| Request | `{ "name": string }` |
+| Request | `{ "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold" }` |
 | Response | `201` `{ "id": string, "name": string, "role": "owner" }` |
 | Errors | `unauthorized`, `validation` |
 
-`name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. The restock-mode question (#296) is not this body. After create, the client calls the existing restock setting route with `X-Household-Id`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
+`name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. `restockMode` is optional: `auto`, `ask_restock`, or `ask_hold`, the three values in [#296](https://github.com/Rhionin/stockbot/issues/296). Omitted means `auto`, which is today's behavior. Master has no route for that setting. `PUT /api/restock/household` sets a numeric household target. It is not this mode.
+
+### GET /api/household/settings
+
+### PATCH /api/household/settings
+
+Proposed. These two routes are the household restock mode from #296. They supersede the earlier assumption that sign-up would call an existing restock route.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required |
+| GET response | `200` `{ "restockMode": "auto" \| "ask_restock" \| "ask_hold" }` |
+| PATCH request | `{ "restockMode": "auto" \| "ask_restock" \| "ask_hold" }` |
+| PATCH response | `200` the same object |
+| Errors | `unauthorized`, `validation`, `not_found`, `busy` |
 
 ### GET /api/households
 
@@ -318,7 +336,7 @@ Demoting the last owner returns `last_owner` and changes nothing.
 
 ### DELETE /api/households/{id}/members/{userId}
 
-Remove that member. This rotates `channel_key`.
+Remove that member. The server publishes a `rekey` hint on the current channel, then rotates `channel_key`.
 
 | | |
 |---|---|
@@ -474,7 +492,7 @@ The token and the token hash are not in this response.
 
 ### DELETE /api/devices/{id}
 
-Revoke. Owners only. This rotates `channel_key`.
+Revoke. Owners only. The server publishes a `rekey` hint on the current channel, then rotates `channel_key`.
 
 | | |
 |---|---|
@@ -532,7 +550,7 @@ cursor-invariant: any committed write that changes a scope's result set (includi
 
 The cursor is an opaque string, at most 128 ASCII characters, with no item names and no barcodes. The client sends it back as `since` and does not parse it. The server encodes household, scope, and version. The version is a counter per `(household, scope)`, bumped in the same transaction as the write. It is per scope, not per status filter. The scopes are `scans`, `stock`, and `list`.
 
-An omitted `since` is a full read of that scope's current rows, `200`, with `changed: true`. A `since` equal to the current cursor is `200` `{ "cursor": string, "changed": false }`. The collection is omitted. There is no `304`: a client fetch can turn a `304` into a cached `200`. A `since` the server does not recognize, including one from another household or another scope, is a full read, `200` with `changed: true`, not an error.
+An omitted `since` is a full read of that scope's current rows, `200`, with `changed: true` and the collection. A `since` equal to the current cursor is `200` `{ "cursor": string, "changed": false }` and `Cache-Control: no-store`. The collection is omitted. There is no `304`: a client fetch can turn a `304` into a cached `200`. A `since` the server does not recognize, including one from another household or another scope, is a full read, `200` with `changed: true`, not an error.
 
 When `changed` is true, the body is the full current set for that scope, not a patch. Rows that disappeared are absent. The client replaces its list. Changes-since applies to the scan queue (pending, flagged, and qr), to inventory, and to the shopping list. Committed and cancelled scans are not this cursor.
 
@@ -553,7 +571,7 @@ Phone camera or a keyboard wedge in the browser. Same body as today's create, wi
 | Response | `201` `HostedScanEntry`. A replay of the same `id` is `200` with the original entry. |
 | Errors | `unauthorized`, `validation`, `not_found`, `conflict`, `busy`, `no_space` |
 
-`barcode` is required. `id`, when present, is a client UUID. The server dedupes it on `(household, user, id)`, the same way a device scan dedupes on `(device, id)`. A replay returns the original result and does not create a second scan. A replay whose barcode or `unitCount` differs is `conflict`, and the stored scan is unchanged. An omitted `direction` still takes the household's scanner mode, as it does today. `unitCount`, when present, is an integer from 1 through 999. Anything else is `validation`.
+`barcode` is required. `id`, when present, is a client UUID. It stays optional: the Pi web app on plain HTTP has no `crypto.randomUUID`. The server dedupes it on `(household, user, id)`, the same way a device scan dedupes on `(device, id)`. A replay of the same body returns the original result and does not create a second scan. A replay whose body differs is `409` `conflict`, and the stored scan is unchanged. An omitted `direction` still takes the household's scanner mode, as it does today. `unitCount`, when present, is an integer from 1 through 999. Anything else is `validation`.
 
 ### GET /api/scans
 
@@ -561,12 +579,12 @@ Phone camera or a keyboard wedge in the browser. Same body as today's create, wi
 |---|---|
 | X-Household-Id | Required |
 | Request | Query `since` (scope cursor) for the queue, or `status` plus `limit` and `before` for history. `status` is `pending`, `flagged`, `committed`, `cancelled`, or `qr`. `userId` is not a query parameter. |
-| Response | Queue: `200` `ScanChanges` (`cursor`, `changed`, and `scans` when `changed` is true). History: `200` `ScanHistoryPage`. |
+| Response | Queue: `200` `ScanChanges`. Unchanged sends `Cache-Control: no-store`. History: `200` `ScanHistoryPage`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
 An omitted `status` returns the queue the Scan screen shows today: pending, flagged, and qr. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). `since` applies to that queue. The cursor is the `scans` scope cursor, not a cursor per status.
 
-`committed` and `cancelled` are history. They are paginated with `limit` (default 50, maximum 100) and `before` (an opaque cursor for the next older page, not the scope cursor). The page is newest first. `before` is null on the last page. `since` on a history status, or `before` on a queue status, is `validation`.
+`committed` and `cancelled` are history. `since` does not apply to that paging. They are paginated with `limit` (default 50, maximum 100) and `before` (the previous page's `nextBefore`). The page is newest first. The body returns `nextBefore: string | null`, null on the last page. `since` on a history status, or `before` on a queue status, is `validation`.
 
 ```ts
 interface HostedScanEntry {
@@ -626,7 +644,7 @@ A committed retry stays in `committedIds` and is not a `not_pending` failure. Ba
 
 ### POST /api/scans/batch-commit
 
-Today's body: `scanEntryIds`, optional `direction`, `unitCount`, `expiresAt`, and `commit`. `scanEntryIds` holds at most 100 ids. `unitCount`, when present, is an integer from 1 through 999. Over either cap is `validation`, and nothing is written.
+Today's body: `scanEntryIds`, optional `direction`, `unitCount`, `expiresAt`, and `commit`. `scanEntryIds` holds at most 100 ids. Over that cap is `validation`, and nothing is written. `unitCount`, when present, is an integer from 1 through 999. Over that cap is `validation` too.
 
 | | |
 |---|---|
@@ -655,7 +673,7 @@ Changes-since for hint type `stock`. The items are today's inventory JSON with `
 | Role | Member |
 | X-Household-Id | Required |
 | Request | Query `since`, and today's `q` |
-| Response | `200` `{ "cursor": string, "changed": boolean, "items"?: InventoryItem[] }`. `items` is omitted when `changed` is false. |
+| Response | `200` `InventoryChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
 ### GET /api/shopping-list
@@ -668,7 +686,7 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 | Role | Member |
 | X-Household-Id | Required |
 | Request | Query `since` |
-| Response | `200` `{ "cursor": string, "changed": boolean, "items"?: ShoppingListEntry[] }`. `items` is omitted when `changed` is false. |
+| Response | `200` `ShoppingListChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
 Mutations of inventory and the shopping list stay on their current paths, with `userId` removed. After the final commit, a write that touches several scopes publishes one hint per scope. Publish batches at most 5 events, which is AppSync's limit per publish call. These three scopes fit in one batch.
@@ -677,7 +695,7 @@ Mutations of inventory and the shopping list stay on their current paths, with `
 
 The canonical file is JSON, `schemaVersion` 1. CSV is a spreadsheet view of the same export, not an import format. The hosted app imports the JSON only. The export is not a SQLite file.
 
-A household id inside the file is not a tenant. Import writes into the household named by `X-Household-Id`. `legacyUserId` on a Pi export is recorded so the job can map `user-1` onto that household. Any other legacy user id is `validation`.
+A household id inside the file is not a tenant. Import writes into the household named by `X-Household-Id`. `legacyUserId` is optional. When it is present it is recorded so the job can map that Pi user onto the destination household. When it is absent, the Pi's single user is `user-1`. Any other legacy user id is `validation`.
 
 ### Document, schema version 1
 
@@ -690,6 +708,7 @@ interface ExportDocumentV1 {
   exportedAt: string;    // RFC3339
   source: 'hosted' | 'pi';
   householdName: string; // display only
+  legacyUserId?: string; // optional. Absent on a Pi snapshot means user-1.
   products: ExportProductV1[];
   barcodeOverrides: ExportBarcodeOverrideV1[];
   items: ExportItemV1[];
@@ -703,7 +722,7 @@ interface ExportDocumentV1 {
 }
 ```
 
-`schemaVersion` other than `1` is `validation`. A top-level key not in this envelope is `validation`. Item, instance, scan, shopping-list, stock-move, group, and category ids are preserved. Identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Before inserting, the job advances those identity sequences above the file's max ids. Product ids in the file are not inserted into the shared catalog. Nested fields are the ones on those TypeScript types.
+A hosted file has `schemaVersion` 1. Any other `schemaVersion` is `validation`. A top-level key the importer does not know is not a failure. The job ignores it and lists the key in `warnings`. Item, instance, scan, shopping-list, stock-move, group, and category ids are preserved. Identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Before inserting, the job advances those identity sequences above the file's max ids. Product ids in the file are not inserted into the shared catalog. Nested fields are the ones on those TypeScript types.
 
 `ExportSettingsV1` is an allowlist: `restockMode` and `supplyDefault`. It is not an open set of keys. `channel_key` is never in the file. Import overwrites those two settings and leaves the destination household's `channel_key` alone.
 
@@ -785,7 +804,9 @@ Owner. First step of import. Returns a presigned S3 PUT URL. The object key is u
 | Response | `201` `{ "uploadUrl": string, "key": string, "maxBytes": 33554432 }` |
 | Errors | `unauthorized`, `forbidden_role`, `validation`, `not_found`, `payload_too_large`, `busy` |
 
-`contentLength` above `maxBytes` is `413` `payload_too_large`, and no URL is issued. The presigned PUT is limited to that same size. The client PUTs the `ExportDocumentV1` JSON to `uploadUrl`, then starts the job.
+`contentLength` above `maxBytes` is `413` `payload_too_large`, and no URL is issued. The presigned PUT is limited to that same size. The client PUTs the JSON to `uploadUrl`, then starts the job.
+
+Infrastructure: the imports bucket needs CORS that allows `PUT` from the hosted origin. Network Engineer owns that bucket policy. This contract does not create the bucket.
 
 ### POST /api/import
 
@@ -803,6 +824,8 @@ Owner. Starts the job for an object already uploaded. The destination household 
 Empty means zero rows in every household-owned table that version 1 import writes: items, item instances, scans, shopping list, stock moves, groups, categories, and barcode overrides. Memberships, invites, devices, and the settings row are allowed. The check runs on this POST and again when the job starts. Import overwrites the allowlisted settings.
 
 The stored object over `maxBytes` is `payload_too_large`. A `key` outside `imports/`, or one this household did not upload, is `not_found`.
+
+When the uploaded file contains `importId`, it must equal the `importId` in this request. A mismatch is `validation`, and no job starts. A Pi snapshot has no `importId`. The request's `importId` is then the idempotency key for that file.
 
 A POST while the same `importId` is `pending` or `running` returns `202` with that job and does not start a second writer. A POST of a `ready` job returns that job and does not write again. Re-POSTing a `failed` job with the same `importId` resumes it: the job inserts only the rows that are missing by preserved id, and it rematches products by barcode. A different `importId` when the household is no longer empty is `household_not_empty`.
 
@@ -826,12 +849,28 @@ interface ImportJob {
   jobId: string;
   importId: string;
   status: 'pending' | 'running' | 'ready' | 'failed';
+  warnings: string[]; // unknown keys the job ignored. Empty when there were none.
 }
 ```
 
 `ready` means the version 1 collections match the file under the remap rules. Counts are not required in the body. The body stays free of item names.
 
-The Pi command `stockbot export` writes this same JSON locally. The client uploads it with `POST /api/household/import/uploads`, then starts the job with `POST /api/import`. There is no hosted route that reads the Pi's disk.
+Master does not implement `stockbot export`. The JSON the Pi actually serves for household data is `GET /api/sync/snapshot` (`syncsnap.Snapshot`). That route stays on the Pi. It is not a hosted route. The client uploads that JSON with `POST /api/household/import/uploads`, then starts the job with `POST /api/import`. There is no hosted route that reads the Pi's disk.
+
+A snapshot has no `schemaVersion` and no `importId`. Missing `schemaVersion` is this Pi shape, not `validation`. Its top-level keys are `generatedAt`, `products`, `groups`, `instances`, `removals`, `moves`, and `shoppingList`. `legacyUserId` may be added and is optional. Any other top-level key is a warning.
+
+How that snapshot differs from `ExportDocumentV1`:
+
+| Pi snapshot | Hosted document |
+|---|---|
+| `products` carry `barcodes`, plus `netBaseValue`, `netDimension`, `packCount`, `targetQuantity`, `groupId`, and `noRestock` | `products` carry `barcodes`. Target, group, and restock live on items, groups, and settings |
+| `groups` use `memberIds`, `rule`, `pinnedProductId`, `windowMonths`, `quantityBase`, and `dimension` | `groups` use `productIds` |
+| `instances` point at `productId`. Removed units are `removals` | `itemInstances` point at `itemId` and keep `removedAt` on the same row |
+| `moves` omit `scanEntryId` and `createdAt` | `stockMoves` keep both |
+| `shoppingList` points at `productId` and omits purchased lines | `shoppingListItems` point at `itemId` |
+| `generatedAt` | `exportedAt` |
+
+The importer maps the snapshot into the version 1 rows. A field the mapping does not store is dropped. That is not a validation failure. A top-level key outside the snapshot or the hosted envelope is listed in `warnings` and is not written. The synthetic fixture `frontend/src/api/fixtures/pi-sync-snapshot.json` is that snapshot shape with made-up rows. The contract tests accept it, including with `legacyUserId` omitted.
 
 ## Account deletion
 
@@ -901,8 +940,8 @@ The ticket is an HMAC over `{household_id, user_id, channel_key, exp}`, key in S
 
 `/hh/<household_id>/<channel_key>`
 
-- Both segments are at most 50 characters (AppSync's limit). A household id is a UUID (36). `channel_key` is 32 lowercase hex characters (`[0-9a-f]`). AppSync channel segments allow only `[A-Za-z0-9-]`, so the key stays inside that set and does not change case.
-- `channel_key` lives in `household_settings` and rotates when a member is removed or a device is revoked.
+- Both segments are at most 50 characters (AppSync's limit). A household id is a UUID (36). `channel_key` is 32 lowercase hex characters (`[0-9a-f]`). AppSync channel segments allow only `[A-Za-z0-9-]`, so the key stays inside that set and does not change case. Frontend Builder confirmed the same 32 lowercase hex characters.
+- `channel_key` lives in `household_settings`. Removing a member or revoking a device publishes a `rekey` hint on the old channel, then rotates the key. A client that receives `rekey` calls `GET /api/config`, then `POST /api/live/ticket`, then subscribes to the new channel.
 - Subscribe is allowed only when the channel string equals the ticket's channel. No wildcards and no prefix match.
 - Clients cannot publish. Publish is IAM, from the API and jobs roles, after the final successful commit.
 - A failed publish does not fail the write. The client catches up on resync.
@@ -910,13 +949,12 @@ The ticket is an HMAC over `{household_id, user_id, channel_key, exp}`, key in S
 ### Hint
 
 ```ts
-interface LiveHint {
-  type: 'scans' | 'stock' | 'list';
-  cursor: string;
-}
+type LiveHint =
+  | { type: 'scans' | 'stock' | 'list'; cursor: string }
+  | { type: 'rekey' };
 ```
 
-The JSON is under 1 KB. It has no item names, barcodes, quantities, or emails. A client that receives a hint refetches the matching changes-since route. The refetch is what enforces tenancy.
+The JSON is under 1 KB. It has no item names, barcodes, quantities, or emails. A client that receives `scans`, `stock`, or `list` refetches the matching changes-since route. The refetch is what enforces tenancy. A client that receives `rekey` does not refetch those lists. It loads `GET /api/config` and subscribes again, as the channel section says.
 
 Publish covers scan ingest, confirm, edit, stock changes, list changes, and `stockbot-jobs` writes that change those three. A write that touches several scopes publishes one hint per scope, in batches of at most 5 events. Job completion for export and import is not one of these types. The client learns that a job finished by polling `GET /api/export/{id}` or `GET /api/import/{id}`.
 
@@ -932,11 +970,11 @@ interface LiveFallbackRules {
 ```
 
 - Connect only while a screen is visible. Web uses the Page Visibility API. Expo uses `AppState` plus focus. Hide or background closes the socket. Nothing runs in the background.
-- On every connect, including a reconnect: `POST /api/live/ticket`, then one changes-since fetch, then subscribe.
+- On every connect, including a reconnect: `POST /api/live/ticket`, then subscribe, then the full fetch on `subscribe_success`.
 - The server sends `ka` about every 60 s. If none arrives within 300 s, the client closes the socket.
 - While the socket is disconnected, and the screen is still visible: poll every 2 s on the Scan Queue and every 10 s on any other visible screen. Do not poll while the socket is up.
 - Reconnect backs off exponentially with jitter. An expired ticket is refreshed with a new `POST /api/live/ticket` and is not shown as an error.
-- The client connects with the subprotocols `aws-appsync-event-ws` and `header-<base64url>`. The base64url value is the encoding of `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}`, with no `Bearer` prefix. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, again with no `Bearer` prefix. This is the [AppSync Events WebSocket protocol](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html).
+- The client connects with the subprotocols `aws-appsync-event-ws` and `header-<base64url>`. The value is base64url of `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}` with no `=` padding and no `Bearer` prefix. `host` is the AppSync HTTP domain, the same host as `LiveConfig.appsync.httpUrl`, not the realtime domain. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, again with no `Bearer` prefix. This is the [AppSync Events WebSocket protocol](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html).
 
 ## Error model
 
@@ -952,7 +990,13 @@ A scan commit may also include `members` or `suggestions`, as today's 409 bodies
 
 generic-sentence: Something went wrong. Try again.
 
-That sentence is `clientmsg.ServerError` on master. PR #320 (open, not merged) calls the same sentence `clientmsg.Generic` and uses it for every 5xx that is not `busy` or `no_space`. A 5xx body then has no `code`, except a commit or stock-out that already uses `internal`.
+That sentence is `clientmsg.ServerError` on master. On the Pi, `writeStatusError` returns a generic 5xx as `{"error":"Something went wrong. Try again."}` with no `code`, except a commit or stock-out that already sets `code` to `internal`. The Pi stays that way. The hosted API requires the code on every 5xx that is not `busy` or `no_space`:
+
+```json
+{"error":"Something went wrong. Try again.","code":"internal"}
+```
+
+`code` stays required on `HostedErrorBody`.
 
 `busy` and `no_space` use the sentences PR #320 locks. On the hosted API, `busy` is also the response when an optimistic-concurrency conflict retries until the attempt budget is exhausted (design §6, T12). `no_space` is the response when the write cannot be stored. Neither body includes `Retry-After`. A single commit or stock-out returns those as HTTP 503.
 
@@ -980,7 +1024,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `link_target_gone` | 409 | That item isn't available anymore. Pick another. | Existing scan-queue sentence. Unchanged. |
 | `scan_not_found` | 404 | This scan is no longer in the queue. | Existing scan-queue sentence. Unchanged. |
 | `direction_unset` | 400 | Choose stock in or stock out first. | Existing scan-queue sentence. Unchanged. |
-| `internal` | 500 | Something went wrong. Try again. | Existing sentence, `clientmsg.ServerError`. Code kept on commit and stock-out. |
+| `internal` | 500 | Something went wrong. Try again. | Existing sentence, `clientmsg.ServerError`. The Pi omits `code` on a generic 5xx and keeps it on commit and stock-out. Hosted sends `code` `internal` on every such 5xx. |
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
@@ -1010,11 +1054,11 @@ Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbo
 18. **CSV.** `items.csv` and `shopping-list.csv` only. `items.csv` also has category, group, and stock target. Decided by PM.
 19. **Version 1 leaves out** memberships, invites, device tokens, push subscriptions, and provider tokens. Decided by PM. The Architect added `usage_daily` and `channel_key`, and made settings an allowlist.
 20. **Product snapshot.** The export copies the products the household references, not the shared catalog. Decided by PM. The Architect added barcodes, the remap rule, and the round-trip comparison.
-22. **Hint types.** Only `scans`, `stock`, and `list`. Decided by PM.
-23. **Unrecognized changes-since cursor.** A full `200`. Decided by PM. (The earlier batch question that used this number was already closed with #330.) Architect confirmed this, including a cursor from another household or scope. An unchanged cursor is `200` with `changed: false`, not `304`.
+22. **Hint types.** `scans`, `stock`, and `list`. Decided by PM. Frontend Builder added `rekey` for a channel rotation.
+23. **Unrecognized changes-since cursor.** A full `200`. Decided by PM. (The earlier batch question that used this number was already closed with #330.) Architect confirmed this, including a cursor from another household or scope. An unchanged cursor is `200` with `changed: false` and `Cache-Control: no-store`, not `304`.
 24. **Default scan list** when `status` is omitted: pending, flagged, and qr. Decided by PM. PM's comment calls this #25, which was its number before the #330 edit.
 25. **Foreign id inside a batch.** The whole request is `not_found`. Decided by PM. The Architect added the single scoped SELECT and the identical response for a missing id.
-29. **Sign-up restock question.** It stays on the existing restock settings route, called after create. Decided by PM. PM's comment calls this #30.
+29. **Sign-up restock question.** PM said to call the existing restock route after create. PM's comment calls this #30. Master has no route for the #296 mode. Frontend Builder replaced that assumption: optional `restockMode` on `POST /api/households`, and proposed `GET`/`PATCH /api/household/settings`.
 31. **Grocy.** Out of scope. Decided by PM. PM's comment calls this #32.
 
 ## Decided by Architect
@@ -1027,7 +1071,24 @@ Numbers are the open-question numbers from the `e584250` contract, which is the 
 20. **Referenced products.** Export only products the household references, and each product carries its barcodes. Import matches by barcode or creates a product and remaps. It does not insert into the shared catalog under the file's ids. Item, scan, and move ids stay preserved. The round-trip test compares products by barcode set plus name, not by id.
 24. **Unknown or expired cursor.** A full `200`.
 26. **Foreign id in a batch.** The whole request is `not_found`. Every id is validated in one scoped SELECT before any write. A foreign id and a missing id get the same response, and the response never says which id failed.
-28. **AppSync header.** The connection subprotocol is `header-<base64url>` plus `aws-appsync-event-ws`. The base64url payload is `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}`. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, with no `Bearer` prefix. `LiveConfig.appsync` is required when `live` is `push`. Protocol: https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
+28. **AppSync header.** The connection subprotocol is `header-<base64url>` plus `aws-appsync-event-ws`. The base64url payload is `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}`, with no `=` padding. `host` is the HTTP domain. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, with no `Bearer` prefix. `LiveConfig.appsync` is required when `live` is `push`. Protocol: https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
+
+## Decided by Frontend Builder
+
+From the review on PR #364. Where one of these refines an earlier ruling, the text in the body is this decision.
+
+1. **5xx body.** Hosted 5xx that is not `busy` or `no_space` is `{"error":"Something went wrong. Try again.","code":"internal"}`. The Pi's generic 5xx still omits `code`.
+2. **`rekey`.** Member removal and device revoke publish `rekey` on the old channel before rotating `channel_key`. The client reloads `GET /api/config` and subscribes again.
+3. **`channel_key`.** 32 lowercase hex characters, the same rule as the Architect.
+4. **Reconnect.** Subscribe first. The full fetch runs on `subscribe_success`.
+5. **Restock mode.** Master has no #296 route. `POST /api/households` takes optional `restockMode`. `GET` and `PATCH /api/household/settings` are proposed.
+6. **Pi import.** `legacyUserId` is optional. Unknown top-level keys are warnings, not `validation`. The fixture is the Pi's `GET /api/sync/snapshot` JSON with synthetic rows.
+7. **Unchanged poll.** `200` with `changed: false` and `Cache-Control: no-store`. The changes-since types are a union of the changed and unchanged cases.
+8. **Batch cap.** More than 100 `scanEntryIds` is `validation`.
+9. **Reused scan id.** A different body is `409` `conflict`. `id` stays optional.
+10. **History page.** The body returns `nextBefore`. `since` does not apply to committed or cancelled paging.
+11. **AppSync header.** base64url without padding. `host` is the HTTP domain.
+12. **Presigned import.** The imports bucket needs CORS for the hosted origin. Network Engineer owns that. Job start checks that a file `importId` matches the request.
 
 ## Open questions
 

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { HostedErrorCode, LiveHint } from './contract';
+import { classifyImportDocument, type HostedErrorCode, type LiveHint } from './contract';
 
 // Pins the union to a real member so a deleted code fails typecheck.
 const sampleCode: HostedErrorCode = 'busy';
@@ -115,5 +115,26 @@ describe('hosted API contract', () => {
     const count = doc.match(/^endpoint-count: (\d+)$/m);
     expect(count).not.toBeNull();
     expect(Number(count?.[1])).toBe(paths.length);
+  });
+
+  it('accepts a synthetic Pi sync snapshot, with legacyUserId optional', () => {
+    const fixture = JSON.parse(readFileSync(resolve(root, 'frontend/src/api/fixtures/pi-sync-snapshot.json'), 'utf8')) as Record<string, unknown>;
+    expect(fixture).not.toHaveProperty('legacyUserId');
+    expect(fixture).not.toHaveProperty('schemaVersion');
+    const accepted = classifyImportDocument(fixture);
+    expect(accepted).toEqual({ ok: true, kind: 'pi', warnings: [] });
+    expect((fixture.products as { name: string; barcodes: string[] }[])[0]).toMatchObject({
+      name: 'Chickpeas',
+      barcodes: ['000111222333'],
+    });
+
+    const withUser = classifyImportDocument({ ...fixture, legacyUserId: 'user-1' });
+    expect(withUser).toEqual({ ok: true, kind: 'pi', warnings: [] });
+
+    const withUnknown = classifyImportDocument({ ...fixture, pushSubscriptions: [] });
+    expect(withUnknown.ok).toBe(true);
+    expect(withUnknown.warnings).toEqual(['pushSubscriptions']);
+
+    expect(classifyImportDocument({ ...fixture, schemaVersion: 2 }).ok).toBe(false);
   });
 });

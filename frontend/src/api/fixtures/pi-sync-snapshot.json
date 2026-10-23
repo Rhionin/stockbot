@@ -1,0 +1,90 @@
+{
+  "generatedAt": "2026-04-01T12:00:00Z",
+  "products": [
+    {
+      "id": "p-chick",
+      "name": "Chickpeas",
+      "category": "Canned",
+      "unitOfMeasure": "can",
+      "netBaseValue": 400,
+      "netDimension": "mass",
+      "packCount": 6,
+      "barcodes": [
+        "000111222333"
+      ],
+      "targetQuantity": 4,
+      "groupId": "g1"
+    },
+    {
+      "id": "p-zest",
+      "name": "Zucchini",
+      "category": "Veg",
+      "unitOfMeasure": "bunch",
+      "netDimension": "volume",
+      "barcodes": [],
+      "noRestock": true
+    }
+  ],
+  "groups": [
+    {
+      "id": "g1",
+      "name": "Beans",
+      "rule": "same_as_ran_out",
+      "windowMonths": 2,
+      "memberIds": [
+        "p-chick"
+      ]
+    },
+    {
+      "id": "g2",
+      "name": "Zest",
+      "rule": "favorite",
+      "pinnedProductId": "p-zest",
+      "quantityBase": 500,
+      "dimension": "volume",
+      "memberIds": [
+        "p-zest"
+      ]
+    }
+  ],
+  "instances": [
+    {
+      "id": "inst-1",
+      "productId": "p-chick",
+      "stockInAt": "2026-01-02T15:04:05Z",
+      "expiresAt": "2026-06-01T00:00:00Z",
+      "stockMoveId": "move-in"
+    }
+  ],
+  "removals": [
+    {
+      "instanceId": "inst-old",
+      "productId": "p-chick",
+      "reason": "expired",
+      "stockMoveId": "move-in",
+      "removedByMoveId": "move-out",
+      "stockInAt": "2026-01-02T15:04:05Z",
+      "expiresAt": "2026-06-01T00:00:00Z"
+    }
+  ],
+  "moves": [
+    {
+      "id": "move-in",
+      "itemId": "item-chick",
+      "productId": "p-chick",
+      "direction": "in",
+      "quantity": 2,
+      "at": "2026-01-02T15:04:05Z",
+      "source": "manual"
+    }
+  ],
+  "shoppingList": [
+    {
+      "id": "line-open",
+      "productId": "p-chick",
+      "groupId": "g1",
+      "quantity": 2,
+      "source": "auto"
+    }
+  ]
+}

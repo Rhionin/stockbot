@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
 
 // Sentences the server already returns. busy and no_space are the words PR #320
@@ -204,5 +206,45 @@ func TestHostedAPIContract(t *testing.T) {
 	}
 	if count != len(paths) {
 		t.Fatalf("endpoint-count %d, index has %d", count, len(paths))
+	}
+}
+
+func TestPiSyncSnapshotFixture(t *testing.T) {
+	root := contractRepoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "frontend", "src", "api", "fixtures", "pi-sync-snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap syncsnap.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Products) == 0 || snap.Products[0].Name != "Chickpeas" || len(snap.Products[0].Barcodes) != 1 || snap.Products[0].Barcodes[0] != "000111222333" {
+		t.Fatalf("fixture is not the Pi snapshot shape: %+v", snap.Products)
+	}
+	if len(snap.Groups) == 0 || len(snap.Instances) == 0 || len(snap.Moves) == 0 || len(snap.ShoppingList) == 0 || len(snap.Removals) == 0 {
+		t.Fatal("fixture is missing a Pi snapshot collection")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc["legacyUserId"]; ok {
+		t.Fatal("legacyUserId is optional and the fixture omits it")
+	}
+	if _, ok := doc["schemaVersion"]; ok {
+		t.Fatal("a Pi snapshot has no schemaVersion")
+	}
+	doc["legacyUserId"] = "user-1"
+	again, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withUser syncsnap.Snapshot
+	if err := json.Unmarshal(again, &withUser); err != nil {
+		t.Fatal(err)
+	}
+	if withUser.Products[0].Name != "Chickpeas" {
+		t.Fatal("adding legacyUserId rejected the Pi snapshot")
 	}
 }

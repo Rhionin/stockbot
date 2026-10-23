@@ -430,17 +430,14 @@ export interface HostedScanEntry {
   createdAt: string;
 }
 
-export interface ScanChanges {
-  cursor: string;
-  changed: boolean;
-  /** Present when changed is true. The full queue, not a patch. */
-  scans?: HostedScanEntry[];
-}
+export type ScanChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; scans: HostedScanEntry[] };
 
-/** Committed and cancelled history. `before` is not the scope cursor. */
+/** Committed and cancelled history. `since` does not apply. `nextBefore` is the next `before` query. */
 export interface ScanHistoryPage {
   scans: HostedScanEntry[];
-  before: string | null;
+  nextBefore: string | null;
 }
 
 export interface CommitScanRequest {
@@ -452,16 +449,24 @@ export interface HostedInventoryItem extends Omit<InventoryItem, 'item'> {
   item: Omit<Item, 'userId'>;
 }
 
-export interface InventoryChanges {
-  cursor: string;
-  changed: boolean;
-  items?: HostedInventoryItem[];
+export type InventoryChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; items: HostedInventoryItem[] };
+
+export type ShoppingListChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; items: ShoppingListEntry[] };
+
+export type RestockMode = 'auto' | 'ask_restock' | 'ask_hold';
+
+export interface CreateHouseholdRequest {
+  name: string;
+  restockMode?: RestockMode;
 }
 
-export interface ShoppingListChanges {
-  cursor: string;
-  changed: boolean;
-  items?: ShoppingListEntry[];
+/** Proposed. GET and PATCH /api/household/settings. */
+export interface HouseholdSettings {
+  restockMode: RestockMode;
 }
 
 export interface ExportProductV1 {
@@ -533,7 +538,7 @@ export interface ExportCategoryV1 {
 
 /** Allowlist. channel_key is never a field. */
 export interface ExportSettingsV1 {
-  restockMode?: string;
+  restockMode?: RestockMode;
   supplyDefault?: string;
 }
 
@@ -557,6 +562,8 @@ export interface ExportDocumentV1 {
   exportedAt: string;
   source: 'hosted' | 'pi';
   householdName: string;
+  /** Optional. Absent on a Pi snapshot means the Pi user user-1. */
+  legacyUserId?: string;
   products: ExportProductV1[];
   barcodeOverrides: ExportBarcodeOverrideV1[];
   items: ExportItemV1[];
@@ -609,6 +616,7 @@ export interface ImportJob {
   jobId: string;
   importId: string;
   status: ImportJobStatus;
+  warnings: string[];
 }
 
 export interface DeleteAccountRequest {
@@ -627,16 +635,91 @@ export interface LiveTicket {
   expiresAt: string;
 }
 
-export type LiveHintType = 'scans' | 'stock' | 'list';
+export type LiveHintType = 'scans' | 'stock' | 'list' | 'rekey';
 
-export interface LiveHint {
-  type: LiveHintType;
-  cursor: string;
-}
+export type LiveHint =
+  | { type: 'scans' | 'stock' | 'list'; cursor: string }
+  | { type: 'rekey' };
 
 export interface LiveFallbackRules {
   scanQueuePollMs: 2000;
   otherVisiblePollMs: 10000;
   connectionTimeoutMs: 300000;
   ticketMaxTtlSec: 900;
+}
+
+/** JSON from the Pi's GET /api/sync/snapshot. Synthetic rows live in fixtures/pi-sync-snapshot.json. */
+export interface PiSyncSnapshot {
+  generatedAt: string;
+  products: unknown[];
+  groups: unknown[];
+  instances: unknown[];
+  removals: unknown[];
+  moves: unknown[];
+  shoppingList: unknown[];
+  legacyUserId?: string;
+}
+
+export interface ImportClassification {
+  ok: boolean;
+  kind: 'hosted' | 'pi';
+  warnings: string[];
+}
+
+const hostedImportKeys = new Set([
+  'schemaVersion',
+  'importId',
+  'exportedAt',
+  'source',
+  'householdName',
+  'legacyUserId',
+  'products',
+  'barcodeOverrides',
+  'items',
+  'itemInstances',
+  'scanEntries',
+  'shoppingListItems',
+  'stockMoves',
+  'groups',
+  'categories',
+  'settings',
+]);
+
+const piImportKeys = new Set([
+  'generatedAt',
+  'products',
+  'groups',
+  'instances',
+  'removals',
+  'moves',
+  'shoppingList',
+  'legacyUserId',
+]);
+
+const piArrays = ['products', 'groups', 'instances', 'removals', 'moves', 'shoppingList'] as const;
+
+// Unknown top-level keys are warnings. A missing legacyUserId is valid.
+// A schemaVersion other than 1 is not. A missing schemaVersion is the Pi snapshot.
+export function classifyImportDocument(value: unknown): ImportClassification {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, kind: 'pi', warnings: [] };
+  }
+  const doc = value as Record<string, unknown>;
+  const keys = Object.keys(doc);
+  if ('schemaVersion' in doc) {
+    if (doc.schemaVersion !== 1) return { ok: false, kind: 'hosted', warnings: [] };
+    return {
+      ok: typeof doc.importId === 'string' && doc.importId !== '',
+      kind: 'hosted',
+      warnings: keys.filter((key) => !hostedImportKeys.has(key)).sort(),
+    };
+  }
+  const arrays = piArrays.every((key) => Array.isArray(doc[key]));
+  const legacy = doc.legacyUserId;
+  const legacyOk = legacy === undefined || typeof legacy === 'string';
+  return {
+    ok: arrays && typeof doc.generatedAt === 'string' && legacyOk,
+    kind: 'pi',
+    warnings: keys.filter((key) => !piImportKeys.has(key)).sort(),
+  };
 }
