@@ -1,7 +1,8 @@
 import { fireEvent, waitFor } from '@testing-library/react-native';
 import * as Haptics from 'expo-haptics';
+import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
 import type { ScanEntry } from '../../../frontend/src/types';
-import type { StockbotClient } from '../api/client';
+import { createStockbotClient, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { ScanScreen } from './ScanScreen';
 
@@ -80,5 +81,21 @@ describe('ScanScreen', () => {
 
     await waitFor(() => expect(api.setScannerMode).toHaveBeenCalledWith('stock_out'));
     expect(await screen.findByText('Switched to using up')).toBeTruthy();
+  });
+
+  it('shows the offline banner when the scanner setup cannot be reached', async () => {
+    const fetchImpl = jest.fn(async () => {
+      throw new TypeError('Network request failed');
+    });
+    const api = createStockbotClient(
+      { serverUrl: 'https://stockbot.example', password: 'correct-horse' },
+      { fetchImpl },
+    );
+    const screen = await renderScreen(<ScanScreen client={api} warning="" />);
+
+    expect(await screen.findByTestId('server-notice-banner')).toBeTruthy();
+    expect(screen.getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('Network request failed')).toBeNull();
+    expect(screen.queryByText('The scanner setup did not load.')).toBeNull();
   });
 });

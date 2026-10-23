@@ -1,21 +1,31 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, raiseOfflineBanner, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '../../frontend/src/api/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
 type SessionState =
   | { status: 'loading' }
   | { status: 'signedOut'; error: string }
+  | { status: 'setup'; serverUrl: string; password: string; saved: boolean }
   | { status: 'ready'; serverUrl: string; password: string; client: StockbotClient; warning: string };
 
 type SessionContextValue = SessionState & {
   signIn: (serverUrl: string, password: string) => Promise<void>;
   signOut: (error?: string) => Promise<void>;
+  recheck: () => Promise<void>;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
+
+  useEffect(() => subscribeApiSuccess(() => {
+    setState((current) => {
+      if (current.status !== 'ready' || current.warning === '') return current;
+      return { ...current, warning: '' };
+    });
+  }), []);
 
   const signOut = useCallback(async (error = '') => {
     await clearCredentials();
@@ -28,13 +38,50 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       { serverUrl: normalized, password },
       { onUnauthorized: () => { void signOut('That password was rejected.'); } },
     );
-    const session = await client.getSession();
-    if (session.error !== '') {
-      throw new Error(session.error);
+    try {
+      const session = await client.getSession();
+      if (session.error !== '') {
+        throw new Error(session.error);
+      }
+      await saveCredentials({ serverUrl: normalized, password });
+      setState({ status: 'ready', serverUrl: normalized, password, client, warning: '' });
+    } catch (error) {
+      if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) {
+        setState({ status: 'setup', serverUrl: normalized, password, saved: false });
+      }
+      throw error;
     }
-    await saveCredentials({ serverUrl: normalized, password });
-    setState({ status: 'ready', serverUrl: normalized, password, client, warning: '' });
   }, [signOut]);
+
+  const recheck = useCallback(async () => {
+    if (state.status !== 'setup') return;
+    const { serverUrl, password, saved } = state;
+    const client = createStockbotClient(
+      { serverUrl, password },
+      { onUnauthorized: () => { void signOut('That password was rejected.'); } },
+    );
+    try {
+      const session = await client.getSession();
+      if (session.error !== '') {
+        setState({ status: 'signedOut', error: session.error });
+        return;
+      }
+      await saveCredentials({ serverUrl, password });
+      setState({ status: 'ready', serverUrl, password, client, warning: '' });
+    } catch (error) {
+      if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) return;
+      if (error instanceof UnreachableError) {
+        if (saved) {
+          setState({ status: 'ready', serverUrl, password, client, warning: '' });
+        } else {
+          setState({ status: 'signedOut', error: '' });
+        }
+        return;
+      }
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return;
+      setState({ status: 'signedOut', error: inlineFailure(error, 'Sign-in is unavailable right now.') ?? '' });
+    }
+  }, [state, signOut]);
 
   useEffect(() => {
     let active = true;
@@ -61,26 +108,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setState({ status: 'ready', serverUrl: saved.serverUrl, password: saved.password, client, warning: '' });
         } catch (error) {
           if (!active) return;
+          if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) {
+            setState({ status: 'setup', serverUrl: saved.serverUrl, password: saved.password, saved: true });
+            return;
+          }
           if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
             await clearCredentials();
             if (!active) return;
-            setState({ status: 'signedOut', error: error.message });
+            setState({ status: 'signedOut', error: inlineFailure(error, 'That password was rejected.') ?? '' });
             return;
           }
-          const warning = error instanceof Error ? error.message : 'Stockbot did not answer at that address.';
+          if (!(error instanceof Error)) raiseOfflineBanner();
           setState({
             status: 'ready',
             serverUrl: saved.serverUrl,
             password: saved.password,
             client,
-            warning,
+            warning: inlineFailure(error, '') ?? '',
           });
         }
       } catch (error) {
         if (!active) return;
         setState({
           status: 'signedOut',
-          error: error instanceof Error ? error.message : 'Saved sign-in could not be read.',
+          error: inlineFailure(error, 'Saved sign-in could not be read.') ?? '',
         });
       }
     })();
@@ -89,7 +140,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [signOut]);
 
-  const value = useMemo(() => ({ ...state, signIn, signOut }), [state, signIn, signOut]);
+  const value = useMemo(() => ({ ...state, signIn, signOut, recheck }), [state, signIn, signOut, recheck]);
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

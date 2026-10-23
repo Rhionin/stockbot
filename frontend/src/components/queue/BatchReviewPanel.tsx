@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import type { BatchCommitResponse } from '../../api/contract';
+import { ServerNoticeError, UnreachableError, type BatchCommitResponse } from '../../api/contract';
+import { clearOfflineNotice } from './offlineNotice';
 
 export interface BatchReviewPanelProps {
   selectedIds: string[];
@@ -22,9 +23,12 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
         scanEntryIds: selectedIds,
         commit: true,
       });
+      clearOfflineNotice();
       onComplete(response);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to confirm selected scans.');
+      if (!(requestError instanceof UnreachableError) && !(requestError instanceof ServerNoticeError)) {
+        setError('Unable to confirm selected scans.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -46,7 +50,7 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
       </Button>
       {error !== '' && (
         <Alert color="red" py={4}>
-          Unable to confirm selected scans.
+          {error}
         </Alert>
       )}
     </Stack>

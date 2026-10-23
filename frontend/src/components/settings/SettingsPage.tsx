@@ -5,6 +5,7 @@ import { ruleLabels } from '../groups/copy';
 import { WipeInventoryDialog } from '../inventory/WipeInventoryDialog';
 import { RestockSettings } from '../restock/RestockSettings';
 import { ScanAlertSetting } from './ScanAlertSetting';
+import { inlineFailure } from '../../api/contract';
 
 export const SettingsPage = () => {
   const [rule, setRule] = useState('same_as_ran_out');
@@ -23,7 +24,7 @@ export const SettingsPage = () => {
       setPhrase(settings.wipePhrase);
       setRule(defaultRule.rule);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load settings.');
+      setError(inlineFailure(requestError, 'Unable to load settings.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -47,7 +48,7 @@ export const SettingsPage = () => {
           if (!value) return;
           setRule(value);
           void setDefaultGroupRule(value).catch((requestError: unknown) => {
-            setError(requestError instanceof Error ? requestError.message : 'Unable to save the default rule.');
+            setError(inlineFailure(requestError, 'Unable to save the default rule.') ?? '');
           });
         }}
         w={280}

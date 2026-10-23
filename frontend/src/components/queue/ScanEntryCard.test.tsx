@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ScanEntryCard } from './ScanEntryCard';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
 
@@ -197,6 +204,39 @@ describe('ScanEntryCard approve scan rename', () => {
       expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
     });
     expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByRole('alert')).not.toBeInTheDocument();
+    notifications.clean();
+  });
+
+  it('keeps the sign-in sentence in the banner and off the card', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/inventory/item-1/instances') return Promise.resolve(jsonResponse(instances));
+      if (url === '/api/scans/scan-1/commit') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: "Sign-in isn't set up yet.",
+          code: authNotConfigured.code,
+        }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+      }
+      throw new Error(url);
+    }));
+    notifications.clean();
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ServerNoticeBanner />
+        <ScanEntryCard
+          entry={{ ...entry, direction: 'stock_out' }}
+          itemId="item-1"
+          selected={false}
+          onSelectedChange={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent("Sign-in isn't set up yet.");
+    expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByText("Sign-in isn't set up yet.")).not.toBeInTheDocument();
+    expect(document.querySelector('.restock-toast')).toBeNull();
     notifications.clean();
   });
 

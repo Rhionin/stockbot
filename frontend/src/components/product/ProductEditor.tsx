@@ -7,6 +7,7 @@ import { NetSizeFields } from './NetSizeFields';
 import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from './netSize';
 import { showShareNotice } from './shareNotice';
 import { SupplyOverride } from './SupplyOverride';
+import { inlineFailure } from '../../api/contract';
 
 export interface ProductEditorProps {
   productId: string;
@@ -59,7 +60,7 @@ export const ProductEditor = ({ productId, onSaved, group = null }: ProductEdito
       })
       .catch((requestError: unknown) => {
         if (active) {
-          setError(requestError instanceof Error ? requestError.message : 'Unable to load product.');
+          setError(inlineFailure(requestError, 'Unable to load product.') ?? '');
         }
       });
     return () => {
@@ -97,7 +98,7 @@ export const ProductEditor = ({ productId, onSaved, group = null }: ProductEdito
       onSaved();
       setOpen(false);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save product.');
+      setError(inlineFailure(requestError, 'Unable to save product.') ?? '');
     } finally {
       setSaving(false);
     }

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE, OFFLINE_SENTENCE } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
 
@@ -96,6 +96,7 @@ const renderQueue = (harness: QueueHarness) => {
     })
     : null;
   const commits: string[] = [];
+  let offlineCommits = 0;
   const batches: string[][] = [];
   const patches: { id: string; body: unknown }[] = [];
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -152,7 +153,10 @@ const renderQueue = (harness: QueueHarness) => {
         }, 409));
       }
       if (id === 'scan-offline') {
-        return Promise.reject(new TypeError('Failed to fetch'));
+        offlineCommits += 1;
+        if (offlineCommits === 1) return Promise.reject(new TypeError('Failed to fetch'));
+        pending = pending.filter((entry) => entry.id !== id);
+        return Promise.resolve(json({ status: 'committed' }));
       }
       pending = pending.filter((entry) => entry.id !== id);
       return Promise.resolve(json({ status: 'committed' }));
@@ -959,11 +963,21 @@ describe('nothing on hand queue', () => {
     expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
-    expect((await screen.findByText(BUSY_SENTENCE)).closest('.scan-batch-banner')).not.toBeNull();
+    const busy = await screen.findByText(BUSY_SENTENCE);
+    expect(busy.closest('.scan-batch-banner')).not.toBeNull();
+    expect(busy.closest('.scan-page-queue')).not.toBeNull();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
-    expect(await screen.findByText('Failed to fetch')).toBeInTheDocument();
-    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(BUSY_SENTENCE);
+    const offline = await screen.findByText(OFFLINE_SENTENCE);
+    expect(offline.closest('.scan-page-queue')).not.toBeNull();
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 555' })).not.toBeInTheDocument());
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
 

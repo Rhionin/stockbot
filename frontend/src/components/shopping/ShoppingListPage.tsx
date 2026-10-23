@@ -47,9 +47,10 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
+import { inlineFailure } from '../../api/contract';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
-  error instanceof Error ? error.message : fallback;
+  inlineFailure(error, fallback) ?? '';
 
 export const ShoppingListPage = () => {
   const [entries, setEntries] = useState<ShoppingListEntry[]>([]);

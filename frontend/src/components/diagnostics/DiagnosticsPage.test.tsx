@@ -1,6 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { offlineBannerActive, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { DiagnosticsPage } from './DiagnosticsPage';
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -9,6 +11,7 @@ const jsonResponse = (body: unknown, status = 200) =>
 const renderPage = () =>
   render(
     <MantineProvider>
+      <ServerNoticeBanner />
       <DiagnosticsPage />
     </MantineProvider>,
   );
@@ -110,8 +113,56 @@ describe('DiagnosticsPage', () => {
   });
 
   it('shows an error when the snapshot cannot be loaded', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'nope' }, 500)));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'nope', code: 'internal' }, 500)));
+    raiseOfflineBanner();
     renderPage();
     expect(await screen.findByText('Unable to load diagnostics.')).toBeInTheDocument();
+    expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+  });
+
+  it('shows the banner when the diagnostics body cannot be read', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('network error')),
+    }) as Response));
+    renderPage();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText('Unable to load diagnostics.')).not.toBeInTheDocument();
+    expect(screen.queryByText('network error')).not.toBeInTheDocument();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+  });
+
+  it('shows the banner for an HTML body and clears it after a later success', async () => {
+    let html = true;
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(html
+      ? new Response('<html>', { status: 200, headers: { 'Content-Type': 'text/html' } })
+      : jsonResponse({
+        pageLoad: {
+          samples: 0,
+          duration: latency(0, 1, 1),
+          ttfb: latency(0, 1, 1),
+          domContentLoaded: latency(0, 1, 1),
+          js: { maxResources: 0, maxTransferBytes: 0, maxEncodedBytes: 0 },
+          css: { maxResources: 0, maxTransferBytes: 0, maxEncodedBytes: 0 },
+          firstPaintApi: [],
+          slowestClientApi: [],
+          slowestHttp: [],
+          dominant: '',
+          note: 'Diagnostics are back.',
+        },
+      }))));
+    const view = renderPage();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText(/SyntaxError/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Unable to load diagnostics.')).not.toBeInTheDocument();
+    expect(offlineBannerActive()).toBe(true);
+    view.unmount();
+
+    html = false;
+    renderPage();
+    expect(await screen.findByText('Diagnostics are back.')).toBeInTheDocument();
+    expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import {
   resetProviderLedger,
 } from '../../api/client';
 import type { ProviderInfo } from '../../types';
+import { inlineFailure } from '../../api/contract';
 
 export interface ProviderPanelProps {
   providers: ProviderInfo[];
@@ -33,7 +34,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
       const { authorizationUrl } = await authorizeProvider(provider.id);
       window.location.assign(authorizationUrl);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to start the connection.');
+      setError(inlineFailure(requestError, 'Unable to start the connection.') ?? '');
       setPending('');
     }
   };
@@ -45,7 +46,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
       await resetProviderLedger(provider.id);
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to forget what was already sent.');
+      setError(inlineFailure(requestError, 'Unable to forget what was already sent.') ?? '');
     } finally {
       setPending('');
     }
