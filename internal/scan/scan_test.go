@@ -1295,8 +1295,9 @@ func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
 	if len(broadcaster.scanEvents) != 1 || broadcaster.scanEvents[0].ID != "scan-evt-a" {
 		t.Fatalf("events = %+v", broadcaster.scanEvents)
 	}
-	if strings.Count(slogBuf.String(), "scan update saved but its event was not sent") != 1 {
-		t.Fatalf("log = %q", slogBuf.String())
+	logged := slogBuf.String()
+	if strings.Count(logged, "scan update saved but its event was not sent") != 1 || !strings.Contains(logged, "err=") || strings.Contains(logged, "user-1") {
+		t.Fatalf("log = %q", logged)
 	}
 }
 

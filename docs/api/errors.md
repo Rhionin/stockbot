@@ -64,15 +64,14 @@ item not yet tried get the same code and the same sentence. This includes an
 id that was already committed by something else: the request does not read it
 to check. The status of an item this request did not commit stays pending,
 flagged, or already committed, so a retry does not commit it twice. On a
-confirm, an item not yet tried is not written. On a full disk a field edit
-can still persist on the card whose stock commit then failed. On an
+confirm, an item not yet tried is not written. A retry lists an id that was
+already committed in `committedIds`. Items this request committed before the
+stop stay committed and are listed in `committedIds`. On a full disk a field
+edit can still persist on the card whose stock commit then failed. On an
 update-only request the field write is one transaction before those per-id
-reads. If that write succeeds and a later read is `busy` or `no_space`, the
-later ids get that code even though their fields were already saved. A retry
-lists an id that
-was already committed in `committedIds`. Items this request committed before
-the stop stay committed and are listed in `committedIds`. Other per-item
-failures do not stop the batch.
+reads. If that write succeeds and a later read is `busy` or `no_space`, that
+id and the later ids get that code even though their fields were already
+saved. Other per-item failures do not stop the batch.
 
 A client shows that sentence once. When some items were committed first, the
 line leads with the committed count and "confirmed.", then the sentence. Two

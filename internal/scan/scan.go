@@ -470,14 +470,10 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 	// The transaction is already committed. A failed re-read here must not
 	// make the caller report the saved update as a failure.
 	if r.Broadcaster != nil {
-		loggedEventRead := false
 		for _, id := range changed {
 			updated, err := r.GetScanEntry(ctx, id)
 			if err != nil {
-				if !loggedEventRead {
-					slog.Warn("scan update saved but its event was not sent")
-					loggedEventRead = true
-				}
+				slog.Warn("scan update saved but its event was not sent", slog.Any("err", err))
 				break
 			}
 			if updated != nil {
