@@ -488,7 +488,20 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 		t.Fatalf("override product = %s", override)
 	}
 	pending := exchangeJSON(t, handler, http.MethodGet, "/api/scans?userId=user-1&status=pending", "", http.StatusOK)
-	if !strings.Contains(string(pending), "scan-new") || strings.Contains(string(pending), `"onHand"`) {
+	var listed []struct {
+		ID     string `json:"id"`
+		OnHand *int   `json:"onHand"`
+	}
+	if err := json.Unmarshal(pending, &listed); err != nil {
+		t.Fatal(err)
+	}
+	var linkedOnHand *int
+	for _, row := range listed {
+		if row.ID == "scan-new" {
+			linkedOnHand = row.OnHand
+		}
+	}
+	if linkedOnHand == nil || *linkedOnHand != 0 {
 		t.Fatalf("pending list = %s", pending)
 	}
 
