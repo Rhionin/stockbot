@@ -125,30 +125,6 @@ func expectBody(t *testing.T, pattern string, body []byte, needle string) {
 	}
 }
 
-func previewMissingMoveNamesNobody(t *testing.T, fx *twoHouseholds) {
-	t.Helper()
-	assertMissingIDNamesNobody(t, fx, http.MethodGet, "/api/moves/no-such-move/preview")
-}
-
-func linkSuggestionsMissingScanNamesNobody(t *testing.T, fx *twoHouseholds) {
-	t.Helper()
-	assertMissingIDNamesNobody(t, fx, http.MethodGet, "/api/scans/no-such-scan/link-suggestions")
-}
-
-func assertMissingIDNamesNobody(t *testing.T, fx *twoHouseholds, method, path string) {
-	t.Helper()
-	req := httptest.NewRequest(method, path, nil)
-	fx.principalFor(fx.Alder).Apply(req)
-	rec := httptest.NewRecorder()
-	fx.Handler.ServeHTTP(rec, req)
-	body := rec.Body.Bytes()
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("%s %s status = %d, body %s", method, path, rec.Code, snippet(body))
-	}
-	assertNoLeak(t, body, fx.Birch)
-	assertNoLeak(t, body, fx.Alder)
-}
-
 func snippet(body []byte) string {
 	if !utf8.Valid(body) {
 		return fmt.Sprintf("%d bytes", len(body))

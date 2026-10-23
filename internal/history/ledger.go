@@ -38,6 +38,11 @@ type LedgerFilter struct {
 	Query     string
 }
 
+// historyListOrder is newest first. Moves that share a timestamp list the
+// stock-in before the stock-out, then the id. A backfill pair is written at
+// one scannedAt, so the id must not decide which move comes first.
+const historyListOrder = "m.at DESC, CASE m.direction WHEN 'in' THEN 0 WHEN 'out' THEN 1 ELSE 2 END, m.id DESC"
+
 // Household lists every stock move, newest first.
 func (j *Journal) Household(ctx context.Context, filter LedgerFilter) (Ledger, error) {
 	direction, err := canonicalDirection(filter.Direction)
@@ -117,7 +122,7 @@ func listHousehold(ctx context.Context, tx *sql.Tx, direction, query string) ([]
 		LEFT JOIN product_group_members gm ON gm.product_id = p.id
 		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.user_id = i.user_id
 		WHERE `+where+`
-		ORDER BY m.at DESC, m.id DESC`, args...)
+		ORDER BY `+historyListOrder, args...)
 	if err != nil {
 		return nil, err
 	}

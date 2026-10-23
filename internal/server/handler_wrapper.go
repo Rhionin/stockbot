@@ -172,6 +172,13 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 // its own sentence. Every other 5xx uses the generic sentence. An unexpected
 // commit failure keeps code internal. Driver text stays in the server log.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
+	// A deadline or cancel is the client hanging up only when this request's
+	// own context is already done. The same error on a live request is a
+	// server failure: it is logged and reported, and the client gets a 500.
+	if r != nil && r.Context().Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		log.Printf("request canceled")
+		return
+	}
 	if status >= 500 {
 		reportServerError(r, err)
 	}
@@ -200,9 +207,11 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if status >= 500 {
-		// A full disk has its own warning line. The driver text is not
-		// copied into the request-failed log.
-		if sqliteNoSpace(err) {
+		// A preview copy that cannot be written keeps its own sentence.
+		// A full disk otherwise has its own warning line. The driver text
+		// is not copied into that warning, or into the response.
+		preview := httpErr != nil && httpErr.Message == clientmsg.PreviewNoSpace
+		if sqliteNoSpace(err) && !preview {
 			logNoSpace(r, err)
 		} else {
 			logged := message
@@ -211,23 +220,27 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			}
 			if errors.Is(err, context.Canceled) {
 				slog.Info("request canceled")
-			} else if !errors.Is(err, context.DeadlineExceeded) {
+			} else {
 				log.Printf("request failed: %s", logged)
 			}
 		}
-		if sqliteBusy(err) || sqliteNoSpace(err) {
+		if preview {
+			message = clientmsg.PreviewNoSpace
+			extra = false
+		} else if sqliteBusy(err) || sqliteNoSpace(err) {
 			message, code, extra = serverClientPayload(err, code)
 			members = nil
 			suggestions = nil
 			itemID = ""
 			onHand = nil
-			extra = true
 		} else {
 			message = clientmsg.Generic
 			if httpErr != nil && httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != "" {
 				code = httpErr.ErrorCode
 				members = nil
 				suggestions = nil
+				itemID = ""
+				onHand = nil
 				extra = true
 			} else {
 				extra = false

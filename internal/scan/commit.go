@@ -17,9 +17,10 @@ var (
 	ErrItemNotFound = errors.New("item not found")
 	// ErrNoneOnHand means a stock-out found no unit on the shelf.
 	ErrNoneOnHand = errors.New("nothing on hand")
-	// ErrLinkTargetGone means linkProductId names a product this household does not stock,
-	// including one whose item was wiped.
-	ErrLinkTargetGone = errors.New("link target is gone")
+	// ErrLinkNotStocked means linkProductId names a product this household does not stock,
+	// including one whose item was wiped. ErrLinkTargetGone is the same refusal.
+	ErrLinkNotStocked = errors.New("link target is not stocked")
+	ErrLinkTargetGone = ErrLinkNotStocked
 	// ErrScanNotFound means the queue has no scan with that id.
 	ErrScanNotFound = errors.New("scan not found")
 	// ErrNotPending means the scan was already committed or cancelled.
@@ -48,6 +49,14 @@ type UnitsOnHandError struct {
 }
 
 func (e *UnitsOnHandError) Error() string { return "units on hand" }
+
+// openScanCheck is requireOpenScan. The rows-affected test replaces it so a
+// commit can reach the pending update with a scan that check would reject.
+var openScanCheck = requireOpenScan
+
+// backfillMoveRead is nil in production. Tests set it to fail one of the
+// move-id reads after the pair is written.
+var backfillMoveRead func(direction string)
 
 // CommitStockIn commits a stock-in scan entry by creating one item instance
 // per unit and marking the scan entry as committed. A remembered pack count
@@ -82,6 +91,12 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	defer tx.Rollback()
 
+	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
+	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
+		return err
+	}
 	if err := claimPendingScan(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return err
 	}
@@ -134,74 +149,6 @@ func (r *Queue) now() time.Time {
 		return r.Now()
 	}
 	return time.Now().UTC()
-}
-
-// claimScan takes the write lock before the status is read. A deferred
-// transaction that selects first keeps that snapshot, and a second commit
-// then fails the later update instead of seeing the row already committed.
-func claimScan(ctx context.Context, tx *sql.Tx, id string) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE scan_entries SET status = status WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("lock scan: %w", err)
-	}
-	return nil
-}
-
-// openScanCheck is requireOpenScan. The rows-affected test replaces it so a
-// commit can reach markScanCommitted with a scan that check would reject.
-var openScanCheck = requireOpenScan
-
-// backfillMoveRead is nil in production. Tests set it to fail one of the
-// move-id reads after the pair is written.
-var backfillMoveRead func(direction string)
-
-// requireOpenScan rejects a scan that was committed or cancelled after the
-// caller read it. Two commits can both pass the handler's check; the
-// transaction has to look again before it writes.
-func requireOpenScan(ctx context.Context, tx *sql.Tx, id string) error {
-	var status string
-	err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
-	if err == sql.ErrNoRows {
-		return ErrScanNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("read scan: %w", err)
-	}
-	if status != string(Pending) && status != string(Flagged) {
-		return ErrNotPending
-	}
-	return nil
-}
-
-// markScanCommitted moves a pending or flagged scan to committed.
-// A second commit updates zero rows and leaves the first commit's writes
-// to roll back.
-func markScanCommitted(ctx context.Context, tx *sql.Tx, id string, at time.Time, productID string) error {
-	var res sql.Result
-	var err error
-	if productID != "" {
-		res, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET product_id = ?, status = ?, committed_at = ?
-			WHERE id = ? AND status IN ('pending', 'flagged')`,
-			productID, string(Committed), at, id)
-	} else {
-		res, err = tx.ExecContext(ctx, `
-			UPDATE scan_entries
-			SET status = ?, committed_at = ?
-			WHERE id = ? AND status IN ('pending', 'flagged')`,
-			string(Committed), at, id)
-	}
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
-	}
-	if n != 1 {
-		return ErrNotPending
-	}
-	return nil
 }
 
 // trackRestock reports whether a movement is past the opening snapshot.
@@ -603,6 +550,34 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 	return itemID, nil
 }
 
+// claimScan takes the write lock before the status is read. A deferred
+// transaction that selects first keeps that snapshot, and a second commit
+// then fails the later update instead of seeing the row already committed.
+func claimScan(ctx context.Context, tx *sql.Tx, id string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE scan_entries SET status = status WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("lock scan: %w", err)
+	}
+	return nil
+}
+
+// requireOpenScan rejects a scan that was committed or cancelled after the
+// caller read it. Two commits can both pass the handler's check; the
+// transaction has to look again before it writes.
+func requireOpenScan(ctx context.Context, tx *sql.Tx, id string) error {
+	var status string
+	err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
+	if err == sql.ErrNoRows {
+		return ErrScanNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read scan: %w", err)
+	}
+	if status != string(Pending) && status != string(Flagged) {
+		return ErrNotPending
+	}
+	return nil
+}
+
 // claimPendingScan marks the scan committed only while it is still pending.
 // Zero rows means another commit already took it. The caller rolls the
 // transaction back, so this attempt adds or removes no stock.
@@ -729,7 +704,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 
 	// linkProductId for a missing or wiped product is not a stock-out of this barcode.
 	if linkProductID != "" && (err == sql.ErrNoRows || (err == nil && shelved != 0)) {
-		return 0, ErrLinkTargetGone
+		return 0, ErrLinkNotStocked
 	}
 	// A wipe keeps the item row, so the barcode is still linked. That stock-out
 	// is an empty shelf and does not rank other items.
@@ -775,6 +750,13 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 			}
 			return 0, r.publishLinkedScan(ctx, scanEntry.ID, &EmptyShelfLink{ItemID: itemID})
 		}
+	}
+
+	if err := claimPendingScan(ctx, tx, scanEntry.ID, time.Now().UTC(), linkProductID); err != nil {
+		return 0, err
+	}
+
+	if linkProductID != "" {
 		if err := linkBarcode(ctx, tx, scanEntry.Barcode, linkProductID, scanEntry.UserID); err != nil {
 			return 0, err
 		}
@@ -786,13 +768,6 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		return 0, err
 	}
 	if err := recordStockOutCounts(ctx, tx, scanEntry.ID, removed, scanEntry.UnitCount); err != nil {
-		return 0, err
-	}
-	productID := ""
-	if linkProductID != "" {
-		productID = linkProductID
-	}
-	if err := markScanCommitted(ctx, tx, scanEntry.ID, time.Now().UTC(), productID); err != nil {
 		return 0, err
 	}
 
@@ -821,6 +796,89 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 	}
 
 	return removed, nil
+}
+
+// ResolveFlaggedEntry resolves a flagged scan entry by associating it with a product.
+// This function creates a user_override barcode mapping and transitions the scan entry
+// from flagged to pending status.
+//
+// This function handles the complete flagged entry resolution flow:
+// 1. Validates the scan entry exists and has status 'flagged'
+// 2. Creates a product override (barcodes row with source='user_override')
+// 3. Sets the product_id on the scan entry
+// 4. Transitions the scan entry status from 'flagged' to 'pending'
+//
+// All operations are performed within a transaction to ensure atomicity.
+func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var userID, barcode, status string
+	err = tx.QueryRowContext(ctx, `
+		SELECT user_id, barcode, status FROM scan_entries WHERE id = ?`,
+		scanEntryID,
+	).Scan(&userID, &barcode, &status)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("scan entry %q not found", scanEntryID)
+	}
+	if err != nil {
+		return fmt.Errorf("query scan entry: %w", err)
+	}
+
+	if status != string(Flagged) {
+		return fmt.Errorf("scan entry %q has status %q, expected %q", scanEntryID, status, Flagged)
+	}
+
+	var productExists bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT 1 FROM products WHERE id = ?`,
+		productID,
+	).Scan(&productExists)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("product %q not found", productID)
+	}
+	if err != nil {
+		return fmt.Errorf("verify product: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO barcodes (barcode, product_id, source, user_id)
+		VALUES (?, ?, 'user_override', ?)
+		ON CONFLICT(barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
+		barcode,
+		productID,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("create barcode override: %w", err)
+	}
+
+	pendingStatus := Pending
+	err = r.updateScanEntryInTx(ctx, tx, scanEntryID, nil, nil, nil, &productID, &pendingStatus)
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	if r.Broadcaster != nil {
+		resolved, err := r.GetScanEntry(ctx, scanEntryID)
+		if err != nil {
+			return err
+		}
+		if resolved != nil {
+			r.Broadcaster.PublishScanEvent(*resolved)
+		}
+	}
+
+	return nil
 }
 
 // BackfillResult is the pair one backfill commit wrote.
@@ -944,22 +1002,26 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (Backf
 	}
 	if err := history.AttachStockOut(ctx, tx, history.OutNote{
 		ItemID: itemID, ProductID: *scanEntry.ProductID, At: at, Source: "scan",
-		ScanEntryID: &scanID, Tracked: usage, Quantity: units, InstanceIDs: ids,
+		ScanEntryID: &scanID, Tracked: usage, InstanceIDs: ids,
 		ConsumptionIDs: consumptionIDs,
 	}); err != nil {
 		return BackfillResult{}, fmt.Errorf("record stock-out: %w", err)
 	}
 
-	if err := markScanCommitted(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
+	if err := claimPendingScan(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
+		return BackfillResult{}, err
+	}
+	if err := recordStockOutCounts(ctx, tx, scanEntry.ID, units, scanEntry.UnitCount); err != nil {
 		return BackfillResult{}, err
 	}
 	var stockInID, stockOutID string
 	if backfillMoveRead != nil {
 		backfillMoveRead("in")
 	}
+	// source backfill is this pair's stock-in, so the direction is not a second filter.
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM stock_moves
-		WHERE scan_entry_id = ? AND direction = 'in' AND source = 'backfill'`,
+		WHERE scan_entry_id = ? AND source = 'backfill'`,
 		scanEntry.ID).Scan(&stockInID); err != nil {
 		return BackfillResult{}, fmt.Errorf("read backfill stock-in: %w", err)
 	}
@@ -1116,88 +1178,5 @@ func (r *Queue) publishCommitted(ctx context.Context, scanID, itemID string) err
 	if invItem != nil {
 		r.Broadcaster.PublishInventoryEvent(*invItem)
 	}
-	return nil
-}
-
-// ResolveFlaggedEntry resolves a flagged scan entry by associating it with a product.
-// This function creates a user_override barcode mapping and transitions the scan entry
-// from flagged to pending status.
-//
-// This function handles the complete flagged entry resolution flow:
-// 1. Validates the scan entry exists and has status 'flagged'
-// 2. Creates a product override (barcodes row with source='user_override')
-// 3. Sets the product_id on the scan entry
-// 4. Transitions the scan entry status from 'flagged' to 'pending'
-//
-// All operations are performed within a transaction to ensure atomicity.
-func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	var userID, barcode, status string
-	err = tx.QueryRowContext(ctx, `
-		SELECT user_id, barcode, status FROM scan_entries WHERE id = ?`,
-		scanEntryID,
-	).Scan(&userID, &barcode, &status)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("scan entry %q not found", scanEntryID)
-	}
-	if err != nil {
-		return fmt.Errorf("query scan entry: %w", err)
-	}
-
-	if status != string(Flagged) {
-		return fmt.Errorf("scan entry %q has status %q, expected %q", scanEntryID, status, Flagged)
-	}
-
-	var productExists bool
-	err = tx.QueryRowContext(ctx, `
-		SELECT 1 FROM products WHERE id = ?`,
-		productID,
-	).Scan(&productExists)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("product %q not found", productID)
-	}
-	if err != nil {
-		return fmt.Errorf("verify product: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO barcodes (barcode, product_id, source, user_id)
-		VALUES (?, ?, 'user_override', ?)
-		ON CONFLICT(barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
-		barcode,
-		productID,
-		userID,
-	)
-	if err != nil {
-		return fmt.Errorf("create barcode override: %w", err)
-	}
-
-	pendingStatus := Pending
-	err = r.updateScanEntryInTx(ctx, tx, scanEntryID, nil, nil, nil, &productID, &pendingStatus)
-	if err != nil {
-		return fmt.Errorf("update scan entry: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	if r.Broadcaster != nil {
-		resolved, err := r.GetScanEntry(ctx, scanEntryID)
-		if err != nil {
-			return err
-		}
-		if resolved != nil {
-			r.Broadcaster.PublishScanEvent(*resolved)
-		}
-	}
-
 	return nil
 }

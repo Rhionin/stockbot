@@ -23,7 +23,7 @@ type ScanCommitHandler struct {
 
 // commitScanResponse is the committed scan. Every successful stock-out 200
 // also carries removedCount (units that left the shelf) and requestedCount
-// (the scan's unit count). Stock-in omits both.
+// (the scan's unit count). Stock-in omits both. A link also sets onHand.
 type commitScanResponse struct {
 	scan.ScanEntry
 	RemovedCount   *int `json:"removedCount,omitempty"`

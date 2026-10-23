@@ -32,7 +32,7 @@ func TestRepairMatchesSuffixedScannedAt(t *testing.T) {
 			('inst-out', 'item', ?, ?, 'manual')`,
 		suffixed, manualAt, suffixed)
 
-	view, err := NewJournal(db).Product(t.Context(), "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
+	view, err := NewJournal(db).Product(t.Context(), householdUser, "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}

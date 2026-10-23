@@ -128,9 +128,9 @@ An empty body is a normal commit, not a backfill.
 
 `POST /api/scans/batch-commit` **ignores** `backfill`.
 
-The batch body is still `scanEntryIds`, an optional shared `direction` / `unitCount` / `expiresAt`, and `commit`. A `backfill` field on that body is dropped. Each id is committed or failed exactly as it is today. A stock-out with nothing on hand fails that id with `none_on_hand` and `Nothing on hand to take out.`, and nothing is stocked in.
+The batch body is still `scanEntryIds`, an optional shared `direction` / `unitCount` / `expiresAt`, and `commit`. A `backfill` field on that body is dropped. Each id is its own result. Committed scans are listed in `committedIds`. A committed stock-out is also in `stockOutCounts`, keyed by scan id, with `removedCount` (units that left the shelf) and `requestedCount` (that card's unit count). A failure is parallel `failedIds`, `failedReasons`, and `failedCodes`. A stock-out with nothing on hand fails that id with `none_on_hand` and `Nothing on hand to take out.`, and nothing is stocked in. A busy database or a full disk stops the rest of the batch with that sentence.
 
-Ignore, rather than reject the whole batch. The flag is per card. One batch flag cannot mean "backfill every id" without stocking in items the household did not confirm, and it cannot mean "backfill some of them" because the body has no per-id flag. Rejecting the field would turn a batch that happens to send it into a 400 and commit nothing. Ignoring it keeps today's batch result and still never backfills.
+Ignore, rather than reject the whole batch. The flag is per card. One batch flag cannot mean "backfill every id" without stocking in items the household did not confirm, and it cannot mean "backfill some of them" because the body has no per-id flag. Rejecting the field would turn a batch that happens to send it into a 400 and commit nothing. Ignoring it keeps the normal per-item result and still never backfills.
 
 ## Undo
 
@@ -154,7 +154,11 @@ The pair is the exception to the usual stock-in undo rule. A normal stock-in who
 
 `GET /api/moves/{id}/preview`
 
-Read-only. It does not change the shelf, the scan, or any move. It answers what `DELETE /api/moves/{id}` would do, using the same re-shelve decision the undo commits. `{id}` is either move of a backfill pair, or any other history move.
+It changes nothing. It does not take the pantry write lock, and it does not update `history_repair`. It answers what `DELETE /api/moves/{id}` would do, using the same undo, including the same re-shelve decision. `{id}` is either move of a backfill pair, or any other history move.
+
+History corrections use the household `user-1`. The `userId` query is that household only when it is omitted, or sent once as exactly `user-1`. An empty value, a different case, surrounding spaces, a repeated `userId`, a malformed query (`userId=user-2;x`, `userId=%ZZ`), or any other household is the same `404` as a missing move: `That move is no longer in the history.` The body has no item id, product id, name, or on-hand count, and nothing is changed. A move that belongs to another household is that same `404`. Signed-in households come later.
+
+The preview is advisory. `DELETE /api/moves/{id}` checks the shelf again when it commits. A stock change that lands between the preview and the delete can change the result. The preview does not return a version token.
 
 `200`:
 
@@ -176,7 +180,7 @@ Read-only. It does not change the shelf, the scan, or any move. It answers what 
 
 `effects` is one entry per product the undo would change. A backfill pair is one product, so the list has one entry. `itemId` and `productId` identify that product. `name` is the product's display name. `stockInMoveId` and `stockOutMoveId` are the moves the undo would remove. A backfill sets both. A stock-in that is not half of a pair sets `stockInMoveId` and omits `stockOutMoveId`. A stock-out that is not half of a pair sets `stockOutMoveId` and omits `stockInMoveId`. `onHand` is how many units would be on hand after the undo. `0` is sent as `0`. `reshelvesOnUndo` is true only when this pair brought a wiped item back and the undo would leave no live unit. A unit that was stocked in later and then used up does not count as live. A unit still on the shelf keeps `reshelvesOnUndo` false. An item that was never shelved stays false even when `onHand` would be 0.
 
-When the move cannot be undone, the preview returns the same status and `error` as `DELETE /api/moves/{id}` and writes nothing. A missing move is `404` `That move is no longer in the history.` A stock-in whose units were already used is `409` `1 of these was already used. Undo that use first.`
+When the move cannot be undone, the preview returns the same status and `error` as `DELETE /api/moves/{id}` and changes nothing. A missing move is `404` `That move is no longer in the history.` A stock-in whose units were already used is `409` `1 of these was already used. Undo that use first.` A use whose units are no longer recorded is `409` `This use can't be undone because those units are no longer recorded.` When the preview copy cannot be written because the disk is full, or the data volume does not have enough free space for the database, its journal, and a reserve, the response is `503` `There isn't enough space to preview that right now. Please try again.` Nothing is changed.
 
 ## Add as a new item
 

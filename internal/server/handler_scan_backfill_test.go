@@ -566,6 +566,75 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 	})
 }
 
+func TestBatchRetryOfABackfillReportsTheStockOutCounts(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	at := time.Date(2026, 5, 8, 9, 30, 0, 0, time.UTC)
+	seedShelfItem(env, "prod-retry", "Retry Cream", "item-retry")
+	seedScanAt(env, "scan-retry", "prod-retry", scan.StockOut, 2, at)
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-retry/commit", `{"backfill":true}`, http.StatusOK)
+
+	body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
+		`{"scanEntryIds":["scan-retry"],"commit":true,"backfill":true}`, http.StatusOK)
+	var got struct {
+		CommittedIDs   []string `json:"committedIds"`
+		FailedIDs      []string `json:"failedIds"`
+		StockOutCounts map[string]struct {
+			RemovedCount   int `json:"removedCount"`
+			RequestedCount int `json:"requestedCount"`
+		} `json:"stockOutCounts"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	counts := got.StockOutCounts["scan-retry"]
+	if len(got.FailedIDs) != 0 || len(got.CommittedIDs) != 1 || got.CommittedIDs[0] != "scan-retry" ||
+		counts.RemovedCount != 2 || counts.RequestedCount != 2 {
+		t.Fatalf("batch retry = %+v", got)
+	}
+	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM stock_moves WHERE item_id = 'item-retry'`); n != 2 {
+		t.Fatalf("moves = %d, want the original pair", n)
+	}
+	view := productHistory(env, handler, "item-retry")
+	if view.OnHand != 0 {
+		t.Fatalf("on hand = %v", view.OnHand)
+	}
+}
+
+func TestBackfillHistoryListsTheStockInBeforeTheStockOut(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	at := time.Date(2026, 5, 9, 16, 0, 0, 0, time.UTC)
+	seedShelfItem(env, "prod-order", "Ordered Cream", "item-order")
+	seedScanAt(env, "scan-order", "prod-order", scan.StockOut, 1, at)
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-order/commit", `{"backfill":true}`, http.StatusOK)
+
+	// id DESC would list pair-out first. The shared timestamp must not.
+	if _, err := env.DB.Exec(`UPDATE stock_moves SET id = 'pair-in' WHERE scan_entry_id = 'scan-order' AND source = 'backfill'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`UPDATE stock_moves SET id = 'pair-out' WHERE scan_entry_id = 'scan-order' AND direction = 'out'`); err != nil {
+		t.Fatal(err)
+	}
+
+	view := productHistory(env, handler, "item-order")
+	if len(view.Moves) != 2 || view.Moves[0].ID != "pair-in" || view.Moves[0].Direction != "in" ||
+		view.Moves[1].ID != "pair-out" || view.Moves[1].Direction != "out" || view.Moves[0].At != view.Moves[1].At {
+		t.Fatalf("item history = %+v", view.Moves)
+	}
+
+	ledger := exchangeJSON(t, handler, http.MethodGet, "/api/history", "", http.StatusOK)
+	var household struct {
+		Moves []historyMove `json:"moves"`
+	}
+	if err := json.Unmarshal(ledger, &household); err != nil {
+		t.Fatal(err)
+	}
+	if len(household.Moves) < 2 || household.Moves[0].ID != "pair-in" || household.Moves[1].ID != "pair-out" {
+		t.Fatalf("household history = %+v", household.Moves)
+	}
+}
+
 func TestBatchCommitIgnoresBackfill(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	finishOpening(env)
@@ -604,19 +673,35 @@ func TestBatchCommitIgnoresBackfill(t *testing.T) {
 			}
 		}
 		seedScanAt(env, "scan-batch-full", "prod-batch-full", scan.StockOut, 2, at)
-		exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
+		body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
 			`{"scanEntryIds":["scan-batch-full"],"commit":true,"backfill":true}`, http.StatusOK)
+		var got struct {
+			CommittedIDs   []string `json:"committedIds"`
+			FailedIDs      []string `json:"failedIds"`
+			StockOutCounts map[string]struct {
+				RemovedCount   int `json:"removedCount"`
+				RequestedCount int `json:"requestedCount"`
+			} `json:"stockOutCounts"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		counts := got.StockOutCounts["scan-batch-full"]
+		if len(got.FailedIDs) != 0 || len(got.CommittedIDs) != 1 || got.CommittedIDs[0] != "scan-batch-full" ||
+			counts.RemovedCount != 2 || counts.RequestedCount != 2 {
+			t.Fatalf("batch = %+v", got)
+		}
 		view := productHistory(env, handler, "item-batch-full")
-		var taken, backfills int
+		var outs, backfills int
 		for _, move := range view.Moves {
 			if move.Source == "backfill" {
 				backfills++
 			}
 			if move.Direction == "out" && move.Source == "scan" && move.Quantity == 2 {
-				taken++
+				outs++
 			}
 		}
-		if view.OnHand != 1 || taken != 1 || backfills != 0 {
+		if view.OnHand != 1 || outs != 1 || backfills != 0 {
 			t.Fatalf("batch history = %+v", view)
 		}
 	})

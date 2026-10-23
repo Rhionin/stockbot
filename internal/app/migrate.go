@@ -34,7 +34,9 @@ func RunMigrations(db *sql.DB) error {
 	// Leftover snapshot temps can hold credentials from a killed migration.
 	// Removing them does not depend on a migration still being pending.
 	if path, err := sqliteMainPath(db); err == nil && path != "" && path != ":memory:" {
-		removeSnapshotTemps(filepath.Dir(path))
+		dir := filepath.Dir(path)
+		removeSnapshotTemps(dir)
+		removePreviewDirs(dir)
 	}
 
 	entries, err := fs.ReadDir(migrationsFS, "migrations")

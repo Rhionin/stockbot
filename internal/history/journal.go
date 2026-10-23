@@ -19,8 +19,8 @@ func NewJournal(db *sql.DB) *Journal {
 	return &Journal{db: db}
 }
 
-// Product is the history of one inventory item.
-func (j *Journal) Product(ctx context.Context, itemID string, now time.Time) (View, error) {
+// Product is the history of one inventory item in this household.
+func (j *Journal) Product(ctx context.Context, userID, itemID string, now time.Time) (View, error) {
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
@@ -29,7 +29,7 @@ func (j *Journal) Product(ctx context.Context, itemID string, now time.Time) (Vi
 	if err := ensure(ctx, tx); err != nil {
 		return View{}, err
 	}
-	view, err := productView(ctx, tx, itemID, now)
+	view, err := productView(ctx, tx, userID, itemID, now)
 	if err != nil {
 		return View{}, err
 	}
@@ -59,7 +59,7 @@ func (j *Journal) Group(ctx context.Context, groupID string, now time.Time) (Vie
 	return view, nil
 }
 
-func productView(ctx context.Context, tx *sql.Tx, itemID string, now time.Time) (View, error) {
+func productView(ctx context.Context, tx *sql.Tx, userID, itemID string, now time.Time) (View, error) {
 	var name, unit, dimension string
 	var base sql.NullFloat64
 	var pack sql.NullInt64
@@ -67,7 +67,7 @@ func productView(ctx context.Context, tx *sql.Tx, itemID string, now time.Time) 
 		SELECT p.name, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.id = ? AND i.user_id = ?`, itemID, householdUser).Scan(&name, &unit, &base, &dimension, &pack)
+		WHERE i.id = ? AND i.user_id = ?`, itemID, userID).Scan(&name, &unit, &base, &dimension, &pack)
 	if err == sql.ErrNoRows {
 		return View{}, &NotFoundError{Message: "That product was not found."}
 	}
@@ -209,7 +209,7 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 		FROM stock_moves m
 		JOIN products p ON p.id = m.product_id
 		WHERE m.item_id IN (` + placeholders(len(itemIDs)) + `)
-		ORDER BY m.at DESC, m.id DESC
+		ORDER BY ` + historyListOrder + `
 		LIMIT ?`
 	args := append(idsAsArgs(itemIDs), trailLimit)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -230,12 +230,15 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 	return moves, rows.Err()
 }
 
-func loadMove(ctx context.Context, tx *sql.Tx, id string) (moveRow, error) {
+func loadMove(ctx context.Context, tx *sql.Tx, userID, id string) (moveRow, error) {
 	var move moveRow
 	var tracked, unshelved int
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved
-		FROM stock_moves WHERE id = ?`, id).Scan(
+		SELECT m.id, m.item_id, m.product_id, m.direction, m.quantity, m.at, m.source,
+			m.scan_entry_id, m.tracked, m.unshelved
+		FROM stock_moves m
+		JOIN items i ON i.id = m.item_id
+		WHERE m.id = ? AND i.user_id = ?`, id, userID).Scan(
 		&move.ID, &move.ItemID, &move.ProductID, &move.Direction, &move.Quantity, &move.At,
 		&move.Source, &move.ScanEntryID, &tracked, &unshelved,
 	)

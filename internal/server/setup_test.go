@@ -57,7 +57,7 @@ func setupTestWithDB(t *testing.T) (http.Handler, testEnv) {
 
 func setupTestWithContributor(t *testing.T, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {
 	t.Helper()
-	return setupTestOnDSN(t, ":memory:", contributor, extra...)
+	return setupOnDB(t, setupTestDB(t), contributor, extra...)
 }
 
 func setupTestOnDSN(t *testing.T, dsn string, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {

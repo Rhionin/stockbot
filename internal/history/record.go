@@ -34,7 +34,6 @@ type OutNote struct {
 	Tracked        bool
 	InstanceID     string
 	InstanceIDs    []string
-	Quantity       int
 	ConsumptionID  string
 	ConsumptionIDs []string
 }
@@ -94,10 +93,6 @@ func AttachStockOut(ctx context.Context, tx *sql.Tx, note OutNote) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	quantity := note.Quantity
-	if quantity < 1 {
-		quantity = len(ids)
-	}
 	consumptionIDs := note.ConsumptionIDs
 	if len(consumptionIDs) == 0 && note.ConsumptionID != "" {
 		consumptionIDs = []string{note.ConsumptionID}
@@ -110,7 +105,7 @@ func AttachStockOut(ctx context.Context, tx *sql.Tx, note OutNote) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked)
 		VALUES (?, ?, ?, 'out', ?, ?, ?, ?, ?)`,
-		id, note.ItemID, note.ProductID, quantity, note.At, note.Source, nullableString(note.ScanEntryID), tracked,
+		id, note.ItemID, note.ProductID, len(ids), note.At, note.Source, nullableString(note.ScanEntryID), tracked,
 	); err != nil {
 		return err
 	}

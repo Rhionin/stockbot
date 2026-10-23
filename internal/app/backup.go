@@ -7,9 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// PreviewDirPrefix is the directory name prefix of a throwaway undo preview.
+// The directory sits beside the pantry file. Startup removes leftovers.
+const PreviewDirPrefix = ".stockbot-preview-"
 
 // shoppingChangeMigration is the first migration that changes live shopping rows.
 const shoppingChangeMigration = "012_shopping_list_group.sql"
@@ -149,6 +154,30 @@ func writeSnapshot(db *sql.DB, spec snapshotSpec) error {
 // snapshotCopyHook runs after VACUUM INTO and before the temp is chmodded.
 // Tests use it to read the mode the copy itself created.
 var snapshotCopyHook func(temp string) error
+
+// previewLockName is held inside a preview directory for as long as that
+// copy is in use. Startup skips a directory whose lock is still held.
+const previewLockName = "preview.lock"
+
+func removePreviewDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		// ReadDir does not return "." or "..". A plain file, or a directory
+		// whose name is not exactly this prefix, is left alone.
+		if name == "." || name == ".." || !entry.IsDir() || !strings.HasPrefix(name, PreviewDirPrefix) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if previewDirBusy(path) {
+			continue
+		}
+		_ = os.RemoveAll(path)
+	}
+}
 
 func removeSnapshotTemps(dir string) {
 	for _, prefix := range []string{"pantry-pre-groups", "pantry-pre-restock", "pantry-pre-targets"} {

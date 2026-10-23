@@ -24,6 +24,9 @@ type batchCommitRequest struct {
 	UnitCount    *int                `json:"unitCount,omitempty"`
 	ExpiresAt    *time.Time          `json:"expiresAt,omitempty"`
 	Commit       bool                `json:"commit"`
+	// Backfill is accepted and ignored. One batch flag cannot choose a
+	// backfill for some cards and a normal commit for the others.
+	Backfill bool `json:"backfill,omitempty"`
 }
 
 // stockOutCount is one committed stock-out. removedCount is how many units

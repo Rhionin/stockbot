@@ -11,6 +11,10 @@ const Busy = "Stockbot is busy right now. Try again in a moment."
 // the disk is full.
 const NoSpace = "Stockbot is out of storage space, so this wasn't saved."
 
+// PreviewNoSpace is the sentence when a preview copy cannot be written
+// because the data volume is full. The client can retry.
+const PreviewNoSpace = "There isn't enough space to preview that right now. Please try again."
+
 // Generic is the sentence for every other 5xx. It is one constant so the
 // wording can change without hunting through handlers.
 const Generic = "Something went wrong. Try again."

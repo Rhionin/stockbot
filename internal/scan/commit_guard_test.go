@@ -115,6 +115,55 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 	})
 }
 
+func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
+	at := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+
+	t.Run("scan update", func(t *testing.T) {
+		queue, db := newTestQueueInternal(t)
+		db.SetMaxOpenConns(1)
+		entry := pendingBackfill(t, db, queue, "scan-update", at)
+		if _, err := db.Exec(`
+			CREATE TRIGGER fail_scan_update BEFORE UPDATE ON scan_entries
+			WHEN NEW.status = 'committed' AND OLD.status != 'committed'
+			BEGIN
+				SELECT RAISE(ABORT, 'injected scan update failure');
+			END`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := queue.CommitBackfill(context.Background(), entry)
+		if err == nil || !strings.Contains(err.Error(), "update scan entry") {
+			t.Fatalf("err = %v", err)
+		}
+		assertBackfillRolledBack(t, db, entry.ID)
+	})
+
+	t.Run("commit", func(t *testing.T) {
+		queue, db := newTestQueueInternal(t)
+		db.SetMaxOpenConns(1)
+		entry := pendingBackfill(t, db, queue, "scan-commit", at)
+		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			CREATE TABLE commit_parent (id TEXT PRIMARY KEY);
+			CREATE TABLE commit_child (
+				id INTEGER PRIMARY KEY,
+				parent_id TEXT REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED
+			);
+			CREATE TRIGGER fail_backfill_commit AFTER UPDATE ON scan_entries
+			BEGIN
+				INSERT INTO commit_child (parent_id) VALUES ('missing');
+			END`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := queue.CommitBackfill(context.Background(), entry)
+		if err == nil || !strings.Contains(err.Error(), "commit transaction") {
+			t.Fatalf("err = %v", err)
+		}
+		assertBackfillRolledBack(t, db, entry.ID)
+	})
+}
+
 func pendingBackfill(t *testing.T, db *sql.DB, queue *Queue, scanID string, at time.Time) *ScanEntry {
 	t.Helper()
 	productID := "prod-" + scanID
