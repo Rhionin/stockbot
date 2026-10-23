@@ -323,8 +323,8 @@ func (q linkGoneQueue) BatchUpdateScanEntries(context.Context, []string, *scan.S
 	return nil
 }
 func (q linkGoneQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return nil }
-func (q linkGoneQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) error {
-	return scan.ErrLinkNotStocked
+func (q linkGoneQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+	return 0, scan.ErrLinkNotStocked
 }
 
 func assertScanStillPending(t *testing.T, handler http.Handler, id string) {
@@ -348,10 +348,10 @@ func (q dbErrorQueue) BatchUpdateScanEntries(context.Context, []string, *scan.Sc
 	return q.err
 }
 func (q dbErrorQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return q.err }
-func (q dbErrorQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) error {
-	return q.err
+func (q dbErrorQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+	return 0, q.err
 }
-func (q dbErrorQueue) CommitStockOutLink(context.Context, *scan.ScanEntry, *string, string) error {
-	return q.err
+func (q dbErrorQueue) CommitStockOutLink(context.Context, *scan.ScanEntry, *string, string) (int, error) {
+	return 0, q.err
 }
 func (q dbErrorQueue) StockOut(context.Context, string, time.Time) error { return q.err }
