@@ -1,418 +1,256 @@
-# Design: multi-tenant SaaS Stockbot
+# Stockbot for more than one household: technical design (AWS, serverless)
 
-Proposal for review. This document and the mocks under `docs/design/mocks/` are the whole deliverable. It does not change the running app, and it does not open the implementation tickets listed at the end.
+Status: draft for review. It reworks the PR #224 design doc, which assumed a Hetzner VM + Postgres + RLS.
+Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labeled **(opinion)**. "PM req" means a requirement stated by PM in PR #224 review. Anything PM has not specified is marked **TODO(PM)**. Cost arithmetic is in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md).
 
-Issue: [#221](https://github.com/Rhionin/stockbot/issues/221). The ESP32 spike is [#222](https://github.com/Rhionin/stockbot/issues/222). As of 16 October 2026 that spike is open and has no findings branch or pull request, so this design does not depend on a board choice. It leaves a device contract the spike can implement against.
+## 1. Context and decisions
 
-Households will include people who are not CJ. From the first hosted household onward, a member does not SSH anywhere, does not edit an `.env`, does not hold a Cloudflare token, and does not install Docker. The server they talk to is the one Stockbot runs. Updates to the web app ship by deploying that server. Updates to an always-on scanner ship as firmware the device downloads.
+- Today: one Go binary (stdlib `net/http`, routes in `internal/server/server.go`) with an embedded React/Vite SPA, and SQLite via modernc at `/data/pantry.db` with `SetMaxOpenConns(1)`. It runs on a Pi behind a Cloudflare tunnel and Caddy.
+  - Auth is one shared bcrypt password (from Caddy's basic-auth file) plus a stateless HMAC cookie `pantry_session` (180 days). Login is only enforced when Caddy sets `X-Pantry-Entry: public`; LAN `:8080` is unauthenticated.
+  - The literal tenant `user-1` (`HEADLESS_USER_ID`) appears in about 20 non-test Go files. The web client sends `userId=user-1` (`frontend/src/api/contract.ts`).
+  - Migration 019 already names `household_id` as the tenant key, and most tables carry `user_id`/`household_id`.
+  - There are no automated backups.
+- CJ decisions (2026-10-22):
+  1. New households run on a hosted cloud service with its **own origin**. `stockbot.rhionin.com` stays on the Pi for CJ's house, with a one-time `pantry.db` import later.
+  2. **AWS**, infrastructure in **CDK**.
+  3. A **serverless DB**, low cost, tiny traffic.
+- Ground rules: simple, low cost, serverless. Avoid fixed-cost traps: NAT, public IPv4, Aurora minimums, ALB, Logs, KMS, Secrets Manager (PM req).
 
-## Decisions
+## 2. Options, costs, tradeoffs
 
-| Area | Recommendation |
-| --- | --- |
-| Tenant | The household is the tenant. People have their own logins and a membership (owner or member). |
-| Isolation | One PostgreSQL database, `household_id` on every tenant row, row-level security as a backstop. Not a schema per household. |
-| CJ's data | One-time import of the Pi's `pantry.db` into one hosted household. Push subscriptions are not imported. |
-| Free scan path | The phone camera already in the web app. A Bluetooth HID scanner paired to that phone is the same path, still free. |
-| Always-on scanner | Optional, later, paid. ESP32-class relay from #222, or the existing Pi forwarding scans. Both use one device-token API. |
-| Device auth | Short-lived pairing code and QR shown in the app. Device stores a household-scoped token. Revocation is a row the server checks on every request. |
-| Device OTA | Device polls. Two firmware slots. Rollback if the new image never proves it can reach the server. |
-| Hosting | One small ARM VM in the EU running the existing Go server and Postgres. New hostname, not `stockbot.rhionin.com`. |
-| Cost | About €6.50/month excl. VAT for the box and an IPv4, fixed. Marginal cost of one more idle household is cents. Estimates, sourced below. |
-| Free tier | Camera, Bluetooth wedge, Web Push, invites, history. No always-on relay. |
-| Paid tier | A relay with OTA, once the hardware exists. Suggested price $4/month per household. Not a cost figure. |
-| Push | One VAPID key for the hosted origin. Subscriptions and the 5-minute batch are per household. |
-| The Pi | Keep it as the advanced self-host path. Do not charge for it, and do not make it the way a new household starts. |
+Full arithmetic and citations are in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md). Summary (USD/month, us-east-1):
 
-## How Stockbot works today
+| Option | Idle | Low traffic | Main tradeoff |
+|---|---|---|---|
+| A. Lambda + Aurora Serverless v2 (min 0 ACU) + Data API | ~$2.23 | ~$6.57 (≈$45 if it never pauses) | Full Postgres, but a 15–30 s first request after a pause, and any steady traffic keeps it awake |
+| B. Lambda + DynamoDB on-demand | ~$1.55 | ~$1.61 | Cheapest, but a full rewrite of a relational app; SQLite export becomes a translator |
+| **C. Lambda + Aurora DSQL** | **~$1.79** | **~$1.79** | True scale-to-zero with no resume delay, no VPC. Postgres subset (see §2.1) |
+| D. Lightsail $7 + SQLite + Litestream | ~$8.52 | ~$8.62 | Least code change, but not a serverless DB (conflicts with decision 3) |
+| E. Fargate + ALB + RDS t4g.micro | ~$50 | ~$50 | Least Lambda rework, but fixed costs dominate |
 
-Stockbot is a Go server (`cmd/server`) and a React UI built into the image. On the Pi it is one container, `pantry`, from `deploy/docker-compose.yml`. Data is a single SQLite file (`DB_PATH`, default `/data/pantry.db`, driver `modernc.org/sqlite`). There is no users table. Inventory, scans, and the shopping list are stamped with the string `user_id`, and the process default is `HEADLESS_USER_ID=user-1` (`cmd/server/main.go`). The Grocy snapshot says the same thing in code: one household, `user-1` (`internal/syncsnap/snapshot.go`).
+Verified Aurora Serverless v2 auto-pause facts (https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html):
+- Pausing is enabled with `MinCapacity = 0` and needs PG 16.3+/15.7+/14.12+/13.15+.
+- `SecondsUntilAutoPause` ranges from 300 s to 86,400 s.
+- Resume takes about 15 s, or 30 s or more after a pause longer than 24 h.
+- While paused, compute costs $0 and storage is still billed.
+- Pausing is prevented by user connections, RDS Proxy, logical replication, global database, and zero-ETL.
+- Any connection attempt resumes the DB, including Data API calls and even attempts with bad credentials.
+- Maintenance wakes it.
 
-That string is not the login. The public site has one shared password. `deploy/README.md` hashes it into a Caddy basic-auth file and copies the hash to `/opt/pantry/auth/household`. `internal/server/household_auth.go` checks that hash, then sets an HttpOnly `pantry_session` cookie for 180 days. The username in the password file (the docs use `pantry`) and the data key `user-1` are unrelated. Anyone with the password can change the pantry. Port 8080 on the LAN does not ask for the password.
+Data API: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.html
 
-The documented appliance is 64-bit Raspberry Pi OS on arm64 (Pi 3B+, 4, 5, or newer). The live box this design is replacing as the default is a Pi 3B with 1 GB of RAM. The published image is `linux/arm64` only (`.github/workflows/ci.yml`).
+### 2.1 Aurora DSQL vs the existing schema
 
-The public name `https://stockbot.rhionin.com` reaches that Pi through a remotely managed Cloudflare tunnel (`pantry-pi`) defined in `deploy/docker-compose.tunnel.yml`. `pantry.rhionin.com` redirects while the legacy host is set. The tunnel token, the Dynu DNS client, and the `.env` all sit on hardware CJ administers.
+Sources:
+- https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html
+- https://docs.aws.amazon.com/aurora-dsql/latest/userguide/sequences-identity-columns.html
 
-Scans enter in three ways already:
+| DSQL property | Stockbot today | Impact |
+|---|---|---|
+| Foreign keys supported | FKs in migrations | OK |
+| Sequences / identity columns supported (choose CACHE size) | `INTEGER PRIMARY KEY` rowids | Use `bigint GENERATED BY DEFAULT AS IDENTITY` so the import can keep its IDs, or use UUIDs **(opinion: identity BY DEFAULT keeps the export round-trippable)** |
+| No triggers, no PL/pgSQL | `CREATE TRIGGER` in 019_restock_targets.sql and 020_shelve_wiped_items.sql | Move the trigger logic into Go store functions |
+| No temp tables, no TRUNCATE | to be checked during porting | Rewrite as needed |
+| Repeatable Read + optimistic concurrency (serialization errors) | single writer (`SetMaxOpenConns(1)`) | Add a retry wrapper around every write transaction |
+| ≤ 3,000 modified rows per transaction | Pi import, household hard delete, backfill migrations | Batch the import and erasure in chunks of 1,000 rows or fewer |
+| DDL and DML in separate transactions, one DDL per transaction, `CREATE INDEX ASYNC` | 21 embedded migrations run at startup (duplicate 006/007 prefixes) | A new PG migration set with a runner that applies one DDL per transaction, executed from a CDK custom resource or CI step rather than at Lambda startup |
+| Extensions very limited; no RLS (see §4); C collation; UTC; one `postgres` database | uses no SQLite FTS or virtual tables | Case-insensitive search uses `lower()` indexes |
+| IAM token auth, public endpoint, connections ≤ 1 h | — | Lambda signs a token (`dsql:DbConnect`) at connect time; no VPC, no secret |
+| Backups through AWS Backup | none today | Add a daily plan |
 
-1. A HID barcode scanner on the Pi. `SCAN_INPUT=device` reads evdev at `/dev/input/pantry-scanner` (`deploy/scan-input.md`, `internal/scanlistener`). The Symcode (ASIN B01M264K5L) pairs as a keyboard. A udev rule matches Bluetooth HID the same way it matches USB. The listener retries a missing device; the container still serves the UI with no scanner attached.
-2. The phone camera. `frontend/src/components/scanner/CameraScanner.tsx` captures frames in the browser (native detector, then ZXing) and hands the barcode to the same `onScan` path as the hardware scanner. The camera stays off until someone asks for it.
-3. A keyboard wedge in the page. `BarcodeInputField.tsx` focuses a hidden field and treats a burst of digits plus Enter as a barcode. A Bluetooth scanner paired to the phone behaves as that keyboard, as long as the page is open and the field is focused.
+SQLite-specific SQL (`INSERT OR …`, `ON CONFLICT`, `strftime`, `datetime(`, `json_extract`, `AUTOINCREMENT`) appears in 17 files under `internal/`. Porting it is needed for A, C, and E alike. DSQL adds the retry and batching work on top.
 
-Direction comes from control barcodes (`STOCK_IN` / `STOCK_OUT` by default) or from the on-screen toggle. The scanner itself does not know stock-in from stock-out.
+## 3. Recommended architecture (Option C)
 
-Web Push is one VAPID keypair in the Pi's `.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`). `push_subscriptions` is keyed only by endpoint. There is no household and no user on the row (`internal/app/migrations/015_push_subscriptions.sql`). `Sender.Notify` loads every subscription and delivers the same notice (`internal/push/send.go`). A stock-in batch and a stock-out batch each wait `BatchSettle` (5 minutes). When the timer fires, `stillPending` drops scans that are no longer waiting, and the notice goes out only if at least one remains (`internal/push/attention.go`). The open batch is stored in `scan_alert_schedule` with primary key `direction`, so the process can have only one stock-in wait and one stock-out wait (`017_scan_alert_schedule.sql`). Firefox for Android is the tight pipe: Mozilla's autopush bridge rejects an encrypted record that blows the FCM 4096-byte data map, so plaintext is capped at 2500 bytes and the record is sized to the payload (`internal/push/payload.go`, `send.go`).
+**Lambda arm64 (Go, `provided.al2023`) outside any VPC, behind CloudFront (flat-rate Free plan) → Lambda Function URL with OAC; Aurora DSQL single-Region; S3 for the SPA and exports; Cognito Essentials + SES for identity; EventBridge Scheduler for timers; CloudWatch → SNS email for the operator; AWS Budgets.**
 
-Product rows and global barcodes are a shared catalog (Open Food Facts, cached; `PRODUCT_CACHE_TTL` defaults to 720h). A household override is a `barcodes` row with `source = user_override`. Retailer OAuth tokens and developer-app secrets live in SQLite in the clear (`provider_connections`, `provider_app_credentials`). The comment on that migration says the database file is the secret store, which is true for one household's Pi and false once strangers share a server.
-
-Grocy is optional and one-way. The `grocy` compose profile runs a sidecar with a 64 MB limit. It pulls a snapshot with `PANTRY_SYNC_TOKEN` and writes to a Grocy the household already runs (`deploy/docker-compose.grocy.yml`).
-
-The in-process event broadcaster is how open tabs see a scan immediately. Push exists so a closed tab still hears about it. Both assume one process and one pantry.
+Why: it is the only option where the DB is serverless, truly scales to zero with no resume pause, and needs no VPC, NAT, public IPv4, ALB, or DB secret. It stays Postgres-compatible, so the SQL port is mechanical, unlike the DynamoDB rewrite. It costs ≈ $2/month at the expected traffic.
 
 ```mermaid
 flowchart LR
-  phone["Phone browser<br/>session cookie"]
-  wedge["Bluetooth HID<br/>typed into the page"]
-  relay["Always-on relay<br/>device token"]
-  api["Go server<br/>one process"]
-  db[("Postgres<br/>household_id + RLS")]
-  push["Browser push service<br/>FCM, autopush, APNs"]
-  phone --> api
-  wedge --> phone
-  relay --> api
-  api --> db
-  api --> push
+  subgraph Clients
+    W[Browser SPA]
+    M[Expo app - PR 230]
+    R[ESP32 relay / paired scanner]
+  end
+  W & M & R -->|HTTPS| CF[CloudFront Free plan + WAF rate rule]
+  CF -->|/ assets| S3[(S3 SPA bucket, OAC)]
+  CF -->|/api/*| FURL[Lambda Function URL, OAC]
+  FURL --> API[Lambda: stockbot-api Go arm64]
+  API -->|IAM token| DSQL[(Aurora DSQL)]
+  API --> COG[Cognito user pool - Essentials]
+  COG --> SES[SES]
+  API -->|one-time schedules| SCH[EventBridge Scheduler]
+  SCH --> JOB[Lambda: stockbot-jobs push/refresh/erasure]
+  JOB --> DSQL
+  JOB -->|Web Push| PUSH[Push services]
+  API & JOB -->|decrypt tokens| KMS[KMS CMK]
+  API & JOB --> SSM[SSM SecureString platform secrets]
+  API --> EXP[(S3 exports bucket, 7-day expiry)]
+  DSQL --> BK[AWS Backup daily, 14-day retention]
+  API & JOB --> CW[CloudWatch Logs/metrics] --> AL[Alarms] --> SNS[SNS email to CJ]
+  BUD[AWS Budgets] --> SNS
 ```
 
-## Tenant model
-
-### Options
-
-**Row-level `household_id` in one database.** Every tenant-owned table carries the household. The request's household comes from the session or the device token, never from the client body. Postgres row-level security rejects a query that forgot the filter.
-
-**A schema per household.** Migrations, connection pooling, and backups multiply by the number of households. A free tier of many small pantries pays that cost on every deploy. Cross-household product cache and a global barcode catalog become awkward on purpose.
-
-**A database per household.** Stronger isolation, and a fair choice for a handful of large paying teams. It is a poor fit for a free pantry: idle databases still cost connections and backup jobs, and the Pi's SQLite file already shows that one household's data is small.
-
-### Recommendation
-
-Row-level `household_id` in one Postgres database, with row-level security enabled for the application role. The application still sets the household on every query. RLS is the backstop for the day a query forgets, which is the failure mode that matters once strangers share the server. [Postgres RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) applies policies to ordinary queries from that role. The role must not be a superuser, and it must not own the tables, or the policies do not bind.
-
-Schema-per-tenant and database-per-tenant stay off the table unless a later household has a legal requirement this design does not have.
-
-### People, memberships, invites
-
-Add three tables the appliance does not have:
-
-- `users` — email, password hash, created time.
-- `households` — name, plan (`free` or `relay`), created time.
-- `memberships` — user, household, role `owner` or `member`.
-
-Signup creates the user, the household, and an owner membership. Invite creates a single-use token, emailed, valid for 7 days. Accepting it creates a member membership and sets that person's password. The owner can remove a member. Removal deletes that member's push subscriptions and sessions. It does not delete scans or stock.
-
-Any member can scan, change the pantry, pair a scanner, and revoke a scanner. A household that invited someone trusts them with the kitchen. Only the owner can invite, remove a member, export, or delete the household.
-
-v1 UI assumes one membership per person. The table still allows a second household later without a rewrite. There is no shared household password on the hosted origin.
-
-The daily session stays a long cookie, on the order of the 180 days the Pi uses today. People open Stockbot with groceries in their hands. Email is for the invite and for password reset, not for every visit.
-
-### What is shared, and what is a household's
-
-Shared, and not stamped with a household: the global product catalog and global barcodes, and the cached "this barcode missed" rows. Those come from Open Food Facts and contain no member identity.
-
-Stamped with `household_id`: items and the `user_id` that is really a household today, item instances, scan entries, shopping rows, groups and their members, suggestions, stock moves, consumption, supply overrides, brand preferences, deals, cart skips, provider connections, and household settings. `user_override` barcodes become household overrides.
-
-Stamped with both household and user: push subscriptions, and audit-worthy actions where it is cheap (who paired a device, who revoked it). Stock moves do not need an actor in v1.
-
-`provider_app_credentials` holds a retailer developer-app secret per `user_id` today. On the hosted service that secret is Stockbot's, in the server environment, not something a household pastes. Household rows keep OAuth tokens only. If a retailer will not let one developer app act for many households, cart linking stays on the self-hosted path until it will. Confirm that before building hosted cart linking. Tokens that do land in Postgres are encrypted by the application (AES-GCM, key in the environment) before self-serve signup. RLS still applies to those rows.
-
-`app_settings` is global today. Split household settings out of it. Do not put one household's contribution opt-in on a row every household reads.
-
-### Appliance and hosted, one schema
-
-The Pi keeps SQLite. Hosted uses Postgres. Business logic stays in one place; a thin dialect boundary covers placeholders (`?` versus `$1`), the few datetime expressions that differ, and the migration files. RLS policies exist only in the Postgres migrations.
-
-Do not run Postgres on the 1 GB Pi. Do not fork the product into two codebases.
-
-The first schema change adds `households` and `household_id` to the SQLite migrations, backfills one local household, and points today's `user-1` rows at it. The appliance keeps the shared password and `HEADLESS_USER_ID`. Hosted mode refuses to boot without real accounts.
-
-SQLite on the VM is acceptable only for an invite-only dry run that CJ controls. It has no RLS. Self-serve signup waits on Postgres.
-
-### Tests
-
-The project's API tests are the right check. Two households, through HTTP: neither can read or write the other's scans, inventory, shopping list, groups, history, or push subscription. A device token for one household posting a barcode must land in that household only. Direct database checks are a last resort; the leak that matters is the one an HTTP client can see.
-
-## Scan input
-
-Three ways to scan. The first two are the free product. The third is optional hardware.
-
-### 1. Phone camera, the free default
-
-Already built. The browser decodes the barcode and the signed-in session posts it. No device token, no pairing, no pantry gadget that has to stay powered. This is what a new household uses on the day they sign up.
-
-Limits to say in the product, not to paper over: the camera works when the page is open and the person has granted it. iOS Safari can do this. An always-on pantry scanner is a different product, below.
-
-### 2. Bluetooth scanner paired to the phone or tablet
-
-The Symcode is a HID keyboard. Paired to a phone, it types into `BarcodeInputField` the same way it types into evdev on the Pi. The phone must be awake, the Stockbot page open, and that field focused. The component already focuses itself without scrolling, and it ignores password-manager autofill.
-
-This stays free. It does not create a device row. The session is the credential. Android Chrome is the combination to support. iOS keyboard-wedge behavior is inconsistent enough that the free-tier promise is the camera, with the wedge documented as "works when the phone treats the scanner as a keyboard."
-
-A household can keep the Symcode they already own. They pair it to a phone instead of to the Pi.
-
-### 3. Always-on relay
-
-A small device in the pantry accepts the Symcode (or its USB dongle) and POSTs barcodes when the phones are in a drawer. #222 is the hardware spike: which radio the Symcode actually speaks, whether a classic ESP32 (BR/EDR + BLE) or a BLE-only chip (S3, C3, C6) can host it, and whether USB host on an S2/S3 plus the dongle is the reliable path. This design does not pick a chip. It does pick the shape:
-
-- The relay is optional. The free tier is useful with zero relays.
-- It speaks the device API below. It does not join the household's Wi-Fi and also get an SSH account.
-- Until #222 names a board, do not buy parts and do not write firmware in the SaaS tickets.
-- The same API accepts a forwarder mode on the existing Pi, so CJ's Symcode can keep scanning after the data moves, without waiting on the ESP32.
-
-Control barcodes pass through unchanged. The relay does not decide stock-in versus stock-out. The server already does, from `STOCK_IN` / `STOCK_OUT` and the household's current mode.
-
-## Device auth
-
-Phones do not use this. A logged-in member's camera or wedge is enough. Device auth is for a box that scans while nobody is looking at a session.
-
-### Pairing
-
-A member opens Scanners and asks for a code. The server stores a single-use grant: random code, hashed at rest, 10-minute expiry, bound to that household.
-
-The app shows the code in clear text and as a QR. Both are the same grant. The QR encodes `https://app.stockbot.rhionin.com/pair?code=K7MP-Q4R2` (the code in the mock is an example). A headless ESP32 cannot scan the phone's screen, so the person types the code into the device's setup page. The QR is for a setup page that can open the camera, and for a second phone.
-
-Wi-Fi onboarding is the device's captive portal, which #222 investigates. Stockbot does not learn the household's Wi-Fi password. The device, once on the network, calls `POST /api/device/pair` with the code, a name the person chose, and a board id. The response is a token shown once: 32 random bytes. The server stores only a hash. The device stores the token in its own flash.
-
-### Requests after pairing
-
-`Authorization: Bearer` on:
-
-- `POST /api/device/scans` — `{ "id", "barcode", "scanned_at" }`. `id` is the device's id for that scan, stable across retries.
-- `POST /api/device/heartbeat` — firmware version, board id, buffer depth. The response may include an OTA offer.
-
-The token resolves to a household. A revoked or unknown token is 401. The server never accepts a household id from the body.
-
-### Revocation
-
-The member revokes from the scanner list. The row gets `revoked_at`. The next request fails, including a retry of a buffered scan. The device treats 401 as "unpaired" and stops retrying that token (an LED or the setup portal is #222's problem; the server's job is the 401). Scans already committed stay in the pantry. Pairing again mints a new token. There is no long-lived JWT to chase down; the row is the revocation list.
-
-### Offline buffer
-
-The device keeps a ring of scans in flash while Wi-Fi is down. Cap it (500 is enough for a shopping trip and a long outage; older than that, drop the oldest and count the drop in the next heartbeat). Each entry is the same body the POST would send, including `id`.
-
-On reconnect, send in order, with backoff. The server's unique key is `(device_id, id)`. A retry of a scan already stored returns success and does not create a second queue card.
-
-`scanned_at` is the device clock. If it is more than 24 hours off the server, store the server's receive time and keep the device time beside it. A scanner must not silently rewrite last month's history because its clock was unset.
-
-The phone paths do not get this buffer in v1. If the phone is offline, the scan fails visibly and the person retries. A service-worker queue is a later improvement, not a requirement for the free tier.
-
-## Device OTA
-
-Firmware updates come from the server. Nobody ships a binary to a household by hand.
-
-The device polls heartbeat. It does not listen for a push. When the offered version is newer for that board id, it downloads the image over HTTPS, checks the size and SHA-256 from the manifest, writes it to the inactive OTA slot, and reboots.
-
-Use the ESP-IDF layout: two app slots plus otadata, and `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`. After reboot the new image is pending. It must confirm itself with `esp_ota_mark_app_valid_cancel_rollback` only after it has joined Wi-Fi and completed a heartbeat. If it reboots first, or it marks itself invalid, the bootloader returns to the previous image. Espressif's guide describes that state machine: one attempt to boot, then rollback if the app never confirms. [OTA and rollback](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html).
-
-Confirm after a short soak (on the order of ten minutes of successful heartbeats), not on the first instruction of `main`. An image that crashes before the confirm rolls back. An image that confirms and breaks an hour later does not; the fix is a newer image. Pulling a bad manifest stops devices that have not updated yet. It does not rewind a device that already confirmed.
-
-Sign images. HTTPS plus a hash stops a casual swap. Secure boot is a #222 decision, because it depends on flash size and on whether the board can store a key. The server refuses to offer an image whose board id does not match the device.
-
-Roll out to one device first (CJ's), then the rest. The manifest is per board and per channel. Households do not pick a firmware file.
-
-The Pi appliance does not use this. It keeps today's image pull: GitHub Actions posts to `/api/deploy-hook`, the host unit pulls `ghcr.io/rhionin/pantry`. That hook is an appliance feature. The hosted origin does not expose it to households.
-
-## Hosting and cost
-
-### Where it runs
-
-One always-on Linux VM in the EU, the existing Go binary, Caddy for HTTPS, PostgreSQL on the same machine. One process. The broadcaster and the batch scheduler already assume that. A second app instance would race the "claim this batch" delete in `attention.go`. Split the process only when the box is actually busy.
-
-Hostname: `https://app.stockbot.rhionin.com`. Leave `stockbot.rhionin.com` on the Pi. Cookies, the service worker, and VAPID subscriptions are scoped to the origin. Pointing the SaaS at the Pi's name would log people into the wrong server and would strand or collide push subscriptions.
-
-Do not rewrite the server onto Cloudflare Workers to chase a cheap database. The application is Go, SQLite-shaped SQL, and a large API test suite. Workers plus D1 would be a second product. The Workers Paid plan is $5/month and D1's included reads are large ([Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)), and that price is not worth a rewrite before there are households.
-
-Do not start on Fly Managed Postgres. The Basic plan is $38/month before storage ([Fly resource pricing](https://docs.fly.io/about/pricing)). That is several times the VM that can run both the app and Postgres at this size.
-
-Neon’s free plan is $0 and includes 100 CU-hours and 1 GB per project, and compute suspends after 5 minutes of idle ([Neon plans](https://neon.com/docs/introduction/plans)). Suspension makes the first scan after a quiet afternoon wait on a cold database. Skip it for production. A warm Postgres on the VM is the point.
-
-### The box
-
-Prefer Hetzner’s ARM cost-optimized plan **CAX11**: 2 Ampere vCPU, 4 GB RAM, 40 GB NVMe, 20 TB included traffic at EU locations ([cost-optimized plans](https://www.hetzner.com/cloud/cost-optimized/)). The published Stockbot image is already `linux/arm64`. After the 15 June 2026 adjustment, CAX11 in Germany or Finland is **€5.99/month excl. IPv4 and VAT** ($6.99 in Hetzner’s dollar column) ([price adjustment](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/)).
-
-A primary IPv4 is extra: **€0.50/month excl. VAT** ($0.60). Primary IPv6 is free ([primary IPs](https://docs.hetzner.com/cloud/servers/primary-ips/overview/)).
-
-CX23 is the x86 plan at €5.49/month excl. IPv4 ($6.49) on that same price table, with 2 vCPU, 4 GB, and 40 GB. It needs an `linux/amd64` image this repo does not publish yet. On 16 October 2026 the cost-optimized page showed CX23 as not orderable. Treat availability as something to recheck in the console. CX33 is the next x86 step on the price table at €8.49/month excl. IPv4 ($9.99).
-
-4 GB is the comparison that matters against the Pi’s 1 GB: the app, Postgres, and Caddy fit, and the workload is short writes plus a cached product lookup.
-
-### Estimate, fixed
-
-These are list prices checked on 16 October 2026, excluding VAT. A private customer in a VAT country pays VAT on top. They are estimates in the sense that Hetzner can change a plan or be out of stock; the figures below are the published ones, not a measured invoice.
-
-| Line | Estimate | Source |
-| --- | --- | --- |
-| CAX11, DE/FI | €5.99/month excl. IPv4 | [Hetzner price adjustment, 15 June 2026](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/) |
-| Primary IPv4 | €0.50/month | [Primary IPs](https://docs.hetzner.com/cloud/servers/primary-ips/overview/) |
-| Transactional email | $0 while under 3,000/month and 100/day | [Resend pricing](https://resend.com/pricing) |
-| Web Push | $0 | Browser services. Apple’s Web Push does not require the Apple Developer Program ([Apple](https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers)) |
-| Open Food Facts | $0 | Already the lookup path; cache default 720h |
-| Backups | well under €1/month at this size | Estimate. A household is megabytes, not a media library. `pg_dump` to object storage. |
-
-**Fixed platform, about €6.50/month excl. VAT** (CAX11 plus IPv4), on the order of **$7.60** using Hetzner’s dollar column ($6.99 + $0.60). Traffic at pantry volume does not approach 20 TB.
-
-### Estimate, per household
-
-Almost all of the cost is the box, whether one household uses it or fifty.
-
-- One household: the whole ~€6.50. That is what the free tier costs CJ until someone pays for a relay or the project is shut off.
-- Fifty idle households on the same box: about €0.13 each. This is arithmetic on the list price, not a load test.
-- Two hundred is still a reasonable planning guess for one 4 GB box, because a scan is a small write and product lookups are cached. Move when RAM or CPU says so, not at a household count invented here.
-
-The paid relay does not change the hosting math in a meaningful way. A heartbeat and a barcode POST are smaller than a person loading the UI. The $4 price below is a product price, to pay for the fixed box and for supporting hardware, not a pass-through of cloud cost.
-
-### Free and paid
-
-**Free, no card.** One household, up to 8 members, phone camera, Bluetooth wedge into the signed-in phone, Web Push, product lookup, shopping list, history kept the way it is today. Zero always-on relays. History is not the thing to paywall. People will not trust a pantry that forgets.
-
-**Paid relay, later.** Suggested **$4 per household per month** (or about $36/year), including one relay and its OTA updates. A second relay can be an add-on once more than one household asks. Do not sell this until #222 has a board and a device can actually stay paired. Until that day, the free column is the whole product.
-
-Grocy sync stays on the self-hosted path. The sidecar needs a Grocy URL and API key and a puller next to that Grocy. Hosted v1 does not run a sidecar per household.
-
-## Push and notifications
-
-Keep the behavior households already have. Change who can receive it.
-
-One VAPID keypair for `app.stockbot.rhionin.com`, in the server environment, not in the image and not per household. Subscriptions are bound to that origin. The Pi keeps its own keys and its own origin. Importing `push_subscriptions` into the hosted database would not work: the endpoint is for the old origin, and the row has no user.
-
-Add `household_id` and `user_id` to `push_subscriptions`. `Notify` sends only to subscriptions for the household that owned the scan. Removing a member deletes their rows. A 404 or 410 from the push service still deletes the row, as today.
-
-`scan_alert_schedule`’s primary key becomes `(household_id, direction)`. The in-memory batches in `attention` key the same way. Today’s single stock-in row would either mix two households’ scans into one notice or drop one of them.
-
-The quiet period stays 5 minutes. `stillPending` stays. One notice per direction per household, fanned out to every subscribed member of that household, which is the same “all of this pantry’s browsers” rule as the Pi, scoped correctly.
-
-The payload caps stay: 2500 bytes of plaintext, record sized to the payload, so Firefox for Android does not get a 413 from autopush. Titles stay short. The URL stays a path on the hosted origin. Do not put one household’s product names into another household’s push. The tag on the notice should include the household id so two households’ stock-in alerts do not replace each other in the same browser, in the case where one person is ever in two households.
-
-iOS is a known gap, not a bug to hide. Web Push on iPhone and iPad works for a Home Screen web app, not for a tab, from iOS 16.4 ([WebKit](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)). The current product’s promise is Chrome and Firefox, desktop and Android. v1 of hosted keeps that promise. iPhone users can still scan with the camera in the browser. Alerts on iPhone wait until someone adds the site to the Home Screen and the manifest’s display mode is standalone, which is a later polish ticket, not a launch blocker.
-
-## The self-hosted Pi
-
-**Keep it.** Do not deprecate it, and do not turn it into a paid plan.
-
-The deploy docs, the tunnel, the udev rule, the image publish, and the deploy hook are a working appliance. CJ’s pantry runs on it. Charging for self-host would mean supporting strangers’ routers, SSH, `.env` files, and Cloudflare accounts, which is the setup this SaaS exists to avoid. Deprecating it throws away the appliance and forces a migration on day one.
-
-What “keep” means in practice:
-
-- New households sign up on `app.stockbot.rhionin.com`. The README’s Pi path stays, labeled advanced self-host.
-- Appliance mode remains one SQLite file, one local household, the shared password, the tunnel if the operator wants it.
-- Schema migrations that add `household_id` backfill that single local household, so `setup.sh` and the image pull keep working.
-- Hosted-only features (invites, device OTA, a public signup) are not requirements for the Pi.
-- The image keeps publishing for arm64. The deploy hook keeps updating CJ’s Pi.
-- Grocy sync stays documented here, not in the hosted app.
-
-A Pi forwarder is a migration aid, not a fourth product. With a device token and a URL, the existing evdev listener POSTs barcodes to the hosted ingest instead of writing the local queue. CJ can move the data, keep the Symcode on the Pi, and turn the local site off once the hosted pantry looks right. Other households do not need this.
-
-## Strangers, from the first hosted household
-
-Even while the only member is CJ, the hosted server follows these rules, so the second household is not a redesign:
-
-- No SSH, no customer `.env`, no customer Cloudflare account, no customer Docker.
-- A member sees one household. Queries take the household from the session or the device token.
-- Retailer tokens are encrypted. The retailer developer secret, if hosted cart linking happens, is Stockbot’s env var.
-- Auth failures stay rate-limited. The Pi’s gate is 5 failures in 15 minutes (`household_auth.go`). Hosted applies a limit per account and per address, and a separate limit on invites and on device scan posts, so one token cannot flood Open Food Facts.
-- Public unauthenticated routes shrink. `/brand/logo.png`, `/terms`, and `/privacy` stay public, because retailer apps and people need them. `/api/telemetry` and `/api/build` become operator-only on the hosted origin. `/api/deploy-hook` is not on that origin. Port 8080 without a login does not exist there.
-- The owner can export the household (the Grocy snapshot shape is close) and can delete it. Deleting removes memberships, devices, push subscriptions, and tenant rows. It does not delete global catalog rows other households use.
-- Backups of the VM are CJ’s to restore. They are not a feature households operate.
-
-## Moving CJ’s pantry
-
-1. Copy `pantry.db` with SQLite’s backup API so the copy is consistent. Leave the Pi running.
-2. Create the hosted household and CJ’s owner login.
-3. Import rows whose `user_id` is `user-1` (and child rows that point at them: instances, moves, groups) onto that `household_id`. Insert global products and barcodes if the hosted catalog does not have them yet. Household barcode overrides stay overrides.
-4. Do not import `push_subscriptions`, the VAPID keys, the shared password, `PANTRY_SYNC_TOKEN`, or the deploy-hook secret. CJ turns scan alerts back on in the hosted origin. The Pi’s alerts keep working until the Pi stops sending them.
-5. Check the hosted pantry through the HTTP API: item counts, pending scans, shopping lines. Compare to the Pi. Do not declare the import done from a row count alone if the API disagrees.
-6. Point the Symcode at a phone, or turn on the Pi forwarder with a device token. Keep the Pi’s copy until a week of hosted use looks right.
-7. Leave `stockbot.rhionin.com` on the tunnel until CJ decides the Pi no longer needs a public name. The hosted app never takes that name.
-
-## Mocks
-
-Static screens for the four new flows. They use the locked mark (`frontend/public/mark.svg`: food can, metal rims, four corner sights) and the locked colors: teal `#0D9488` for primary and Full, amber `#F59E0B` for Low, `#EF4444` for Out.
-
-| Flow | Screen |
-| --- | --- |
-| Household signup | [signup.html](mocks/signup.html) · [signup.png](mocks/signup.png) |
-| Invite | [invite.html](mocks/invite.html) · [invite.png](mocks/invite.png) |
-| Phone camera | [camera-scan.html](mocks/camera-scan.html) · [camera-scan.png](mocks/camera-scan.png) |
-| Pairing code and QR | [pair-device.html](mocks/pair-device.html) · [pair-device.png](mocks/pair-device.png) |
-| Revocation | [devices.html](mocks/devices.html) · [devices.png](mocks/devices.png) |
-
-The pairing QR encodes `https://app.stockbot.rhionin.com/pair?code=K7MP-Q4R2`. The code is illustrative.
-
-A phone camera and a Bluetooth wedge never show up on the scanner list. The devices mock says so, because that split is the thing a reviewer has to see.
-
-## Implementation tickets
-
-For approval. Not opened as GitHub issues. Order is the order to build. A ticket can start when everything it depends on is done.
-
-1. **Add a household key to the appliance schema**
-   Scope: `households` table, `household_id` on tenant tables, backfill one local household from `user-1`. Queries take a household. The Pi still boots, still uses the shared password, and still scans.
-   Depends on: none.
-
-2. **Accounts and memberships in hosted mode**
-   Scope: users, owner/member memberships, email and password, long session cookie, password reset by email. Hosted mode will not start on the shared household password. Appliance mode is unchanged.
-   Depends on: 1.
-
-3. **Invites**
-   Scope: single-use invite, 7-day expiry, email via the transactional provider, accept joins the household. Owner can remove a member, which deletes that member’s sessions and push subscriptions.
-   Depends on: 2.
-
-4. **Cross-household API tests**
-   Scope: two households, HTTP only, covering scans, inventory, shopping, groups, history, and push. A device token’s barcode lands in the right household. This is the test that has to stay green for every later ticket.
-   Depends on: 1. Full push and device cases land as those tickets do.
-
-5. **Postgres and row-level security for the hosted server**
-   Scope: Postgres migrations, the dialect boundary, RLS policies using a session household id, application role that is not table owner. Encrypt retailer tokens. Appliance stays on SQLite.
-   Depends on: 1 and 4.
-
-6. **Stand up the hosted origin**
-   Scope: `app.stockbot.rhionin.com`, the ARM VM, Caddy, backups, one VAPID keypair, secrets in the environment. No deploy hook. Telemetry and `/api/build` are operator-only.
-   Depends on: 2 and 5.
-
-7. **Import the Pi pantry**
-   Scope: one-off importer from a SQLite backup, map `user-1` to CJ’s household, skip push subscriptions and secrets, verify through the HTTP API.
-   Depends on: 5 and 6.
-
-8. **Scope Web Push by household**
-   Scope: subscription rows gain household and user. Schedule primary key becomes `(household_id, direction)`. Fan-out and the in-memory batches follow. Keep the 5-minute settle, `stillPending`, and the autopush size caps.
-   Depends on: 1 and 2.
-
-9. **Make the phone the default scanner on the hosted app**
-   Scope: camera and Bluetooth wedge on a signed-in session, empty states for a household with no Pi and no relay. No device token on these paths.
-   Depends on: 2.
-
-10. **Pair and revoke a device**
-    Scope: 10-minute code and QR, hashed device token, household taken from the grant, revocation row, scanner list. Phones do not appear on the list.
-    Depends on: 2.
-
-11. **Device scan ingest and the offline contract**
-    Scope: `POST /api/device/scans` with idempotency, control barcodes handled by the existing server logic, clock-skew rule, heartbeat that reports buffer depth. Document the 500-scan ring the firmware must keep. No firmware in this ticket.
-    Depends on: 10.
-
-12. **Export and delete a household**
-    Scope: owner can download the household’s data and can delete the household’s tenant rows, memberships, devices, and push subscriptions. Global catalog rows stay.
-    Depends on: 2 and 5.
-
-13. **Free-tier limits**
-    Scope: enforce 8 members and zero relays on the free plan. A relay requires the paid flag. Camera, wedge, push, and history stay free.
-    Depends on: 3 and 10.
-
-14. **Open self-serve signup**
-    Scope: anyone can create a household, under the rate limits. This is the ticket that makes strangers real.
-    Depends on: 3, 4, 5, 6, 8, 9, and 12.
-
-15. **Pi scan forwarder**
-    Scope: appliance mode that POSTs evdev barcodes to the hosted ingest with a device token, so the Symcode on the Pi survives the import. Off by default.
-    Depends on: 7 and 11.
-
-16. **OTA manifest**
-    Scope: firmware channel per board, version, SHA-256, staged rollout, heartbeat offers the image. Rollback rules are the ESP-IDF ones in this document. No device firmware until #222 names a board.
-    Depends on: 11 and the findings from #222.
-
-Tickets 15 and 16 are not on the path to self-serve signup. Ticket 15 is how CJ’s scanner moves. Ticket 16 waits on the spike.
-
-## Sources
-
-Prices and platform facts were checked on 16 October 2026. Plan prices exclude VAT. Per-household figures that divide the VM price are estimates, not measurements.
-
-- Hetzner price adjustment, 15 June 2026, including CAX11 at €5.99 / $6.99 per month excl. IPv4 in Germany and Finland: <https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/>
-- Hetzner CAX11 shape (2 Ampere vCPU, 4 GB RAM, 40 GB, 20 TB included at EU locations): <https://www.hetzner.com/cloud/cost-optimized/>
-- Hetzner primary IPv4 at €0.50 / $0.60 per month excl. VAT, primary IPv6 free: <https://docs.hetzner.com/cloud/servers/primary-ips/overview/>
-- Fly.io Managed Postgres Basic at $38/month: <https://docs.fly.io/about/pricing>
-- Neon free plan (100 CU-hours, 1 GB, suspend after 5 idle minutes): <https://neon.com/docs/introduction/plans>
-- Cloudflare Workers and the included D1 allotment: <https://developers.cloudflare.com/workers/platform/pricing/> and <https://developers.cloudflare.com/d1/platform/pricing/>
-- Resend free tier, 3,000 emails/month and 100/day: <https://resend.com/pricing>
-- ESP-IDF OTA rollback: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html>
-- Postgres row-level security: <https://www.postgresql.org/docs/current/ddl-rowsecurity.html>
-- Web Push on iOS Home Screen web apps: <https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/>
-- Apple Web Push without an Apple Developer Program membership: <https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers>
+Lambda rework for in-memory state (needed for A, B, and C):
+
+| Today (in process) | Hosted |
+|---|---|
+| SSE broadcaster `/api/events` | Poll `GET /api/changes?since=` every 10 s while the tab is visible **(opinion: cheapest; API GW WebSockets is an upgrade path)** |
+| Push-alert timers (`internal/push/attention.go`, 5-minute settle, 2,500 B batching) | Create a one-time EventBridge Scheduler entry per household batch window, named for idempotency, which invokes `stockbot-jobs` |
+| Scanner-mode idle timer | Store `mode_expires_at`; evaluate it lazily on read |
+| Background product refresh | Daily scheduled Lambda; the catalog is shared |
+| Telemetry registry | CloudWatch EMF metrics + a `device_heartbeats` row |
+| Login rate limiter | Handled by Cognito; the WAF rate rule protects the API |
+| `internal/scanlistener` (/dev/input) | Stays Pi-only. Hosted ingest is phone camera, keyboard wedge in the browser, or relay `POST /api/device/scans` |
+
+Effort estimate (opinion): 1–2 weeks for statelessness plus 1–2 weeks for the SQL port and DSQL constraints.
+
+## 4. Tenancy isolation
+
+- The tenant is the **household** (PM req). Every household-owned row carries `household_id uuid NOT NULL`, and every index and PK starts with it. Migration 019's naming carries over.
+- Install-global tables get re-scoped:
+  - `app_settings` and scanner mode → `household_settings`.
+  - `push_subscriptions` gains `household_id` + `user_id`.
+  - `scan_alert_schedule` PK becomes `(household_id, direction)`.
+  - `provider_connections` gains `household_id`.
+- `products` and global barcodes stay a **shared catalog** (open question §13). Per-household overrides live in household tables.
+- **Enforcement is in the app layer, not RLS.** DSQL's documented `ALTER TABLE` syntax has no `ENABLE ROW LEVEL SECURITY` action (https://docs.aws.amazon.com/aurora-dsql/latest/userguide/alter-table-syntax-support.html, accessed 2026-10-22), so Postgres RLS isn't available on DSQL. The Data API path in option A would also complicate RLS.
+  - The store layer takes a `Tenant{HouseholdID}` value derived only from the verified session. There are no "unscoped" query helpers.
+  - Repo-wide lint: a test fails on any SQL string touching a tenant table without `household_id =`.
+  - `user-1`/`HEADLESS_USER_ID` and the client's `userId` parameter are deleted. The server ignores any client-sent tenant.
+- Isolation tests:
+  - A table-driven test creates households H1 and H2 and calls every route with H1's token against H2's IDs, expecting 404 (not 403, so existence doesn't leak).
+  - A fuzz test runs over route params.
+  - A device token from H1 posts scans that land only in H1.
+  - Export of H1 contains zero H2 rows.
+  - These run in CI against DSQL-compatible Postgres plus a nightly run against a staging DSQL.
+- If DynamoDB were chosen instead (not recommended): PK = `HH#<id>`, SK = `<ENTITY>#<id>`, GSI1 for barcodes, and IAM `dynamodb:LeadingKeys` is not usable because users aren't IAM principals, so isolation would still be app-layer.
+
+## 5. Auth
+
+- **Cognito user pool, Essentials tier** (10k MAU free; email OTP, passkeys, managed login, refresh token rotation; https://aws.amazon.com/cognito/pricing/). Email must go through SES: Cognito's default email sender is limited to **50 emails per day per AWS account**, which can't be raised and resets at 09:00 UTC (https://docs.aws.amazon.com/cognito/latest/developerguide/quotas.html, accessed 2026-10-22).
+- Alternative: custom auth in Go (bcrypt + email codes via SES). It is cheaper only in principle, and owning reset, verification, and token security costs more **(opinion)**.
+- Signup (PM req): email only → verify the email (code) → set the household name → the #296 restock-mode question (auto or ask first) → phone-camera scanning. People must be verified before they can invite.
+  - Implemented with Cognito managed login or SDK flows. A post-confirmation Lambda trigger creates the `users` row. The household is created by an explicit API call after verification.
+- Password reset uses Cognito's forgot-password flow.
+- Roles (PM req):
+  - Members scan, confirm, edit, manage the list, and invite.
+  - Owners also remove members, change roles, revoke devices, export, and delete the household.
+  - Multiple owners are allowed, never zero. Enforce this in the same transaction (count owners `FOR UPDATE`-equivalent; under DSQL OCC a concurrent demote conflicts and retries) plus a DB check in the store.
+  - Membership is many-to-many: `memberships(household_id, user_id, role)`. The switcher UI comes later; tokens carry the user, and the active household is sent as `X-Household-Id` and validated against memberships.
+- Invites (PM req; mock `docs/design/mocks/invite.html`):
+  - Link or code, 7-day expiry, single use, revocable by any member.
+  - `invites(household_id, code_hash, email?, created_by, expires_at, used_at, revoked_at)`.
+  - Accepting signs the person up or in, then attaches the membership.
+  - Invite email via SES.
+- Tokens:
+  - **Web:** a server-side BFF cookie. The Lambda exchanges the Cognito code (PKCE) and sets an HttpOnly, Secure, SameSite=Lax cookie with a session ID. Refresh tokens are stored encrypted server-side or kept in the cookie, and CSRF is covered by SameSite plus an origin check. This replaces the `pantry_session` HMAC cookie **(opinion)**.
+  - **Mobile (Expo, PR #230):** Cognito auth-code + PKCE via the system browser. Access and refresh tokens go in the secure store, sent as `Authorization: Bearer`. PR #230's Basic auth as user `pantry` must be replaced before it ships against hosted.
+  - **Devices:** keep the PR #224 design: pairing code or QR (10-minute expiry), a hashed per-device bearer token bound to one household (PM req: one household per device), list and revoke under ⋯ (owners revoke), heartbeat, a 500-scan offline ring, OTA rollback.
+  - **Grocy sidecar:** its bearer token becomes a per-household device-class token, if Grocy stays (open question).
+
+## 6. API contract changes
+
+- Remove `userId` from all requests (`frontend/src/api/contract.ts`). The tenant comes from the session plus `X-Household-Id`.
+- New endpoints:
+  - `/api/auth/*` (callback, logout, session)
+  - `/api/households` (create, get, rename, delete with typed confirmation, restore)
+  - `/api/households/{id}/members` (list, change role, remove)
+  - `/api/invites` (create, list, revoke, accept)
+  - `/api/devices/pair`, `/api/devices`, `DELETE /api/devices/{id}`
+  - `/api/export` (async → S3 presigned link)
+  - `/api/changes?since=` (replaces SSE on hosted)
+  - `/api/me` (delete account)
+- Keep `POST /api/device/scans` with idempotency key `(device_id, id)` and heartbeat.
+- Errors: households see plain messages (PM req), for example "Something went wrong saving that scan, try again." Codes and internal detail go only to logs and alarms.
+- Usage counting (PM req: no limits now, but count): `usage_daily(household_id, day, scans, active_devices, members)`, incremented in the scan transaction. Devices and members are counted from their tables.
+
+## 7. Data migration
+
+- **Schema**: a new `migrations/pg/` set (DSQL-safe: one DDL per transaction, `CREATE INDEX ASYNC`, no triggers). SQLite migrations stay for the Pi. Run the PG migrations from a CDK custom-resource Lambda (`stockbot-migrate`) on deploy, with a `schema_migrations` table. They never run on request-path cold start.
+- **Pi import (one time, CJ's house; PM req)**:
+  1. CJ runs `stockbot export --household-name …` on the Pi. It produces the portable export (below) locally. No DB copy leaves CJ's machine except through the import upload.
+  2. CJ signs up on hosted, creates the household, and uploads the file via `/api/import` (owner only, empty household only).
+  3. The job maps `user-1` to the new `household_id`, preserves IDs (identity BY DEFAULT), inserts in ≤ 1,000-row transactions, then resets the sequences.
+  4. The import is idempotent per `(household_id, import_id)`.
+- **Export** (PM req: any time, ideally re-importable `pantry.db`):
+  - The `stockbot-jobs` Lambda builds a SQLite file with modernc (pure Go, runs in Lambda). It applies the **Pi's** SQLite migrations, writes the household's rows with `household_id` → `user-1`, uploads to the exports bucket (SSE-KMS, 7-day expiration), and returns a presigned URL.
+  - This keeps exports importable into a self-hosted Pi. The cost is maintaining a PG→SQLite mapping for every schema change; a CI round-trip test covers it.
+
+## 8. CDK outline (TypeScript)
+
+One CDK app with environments `dev` and `prod`, in separate AWS accounts if possible **(opinion; at minimum separate stacks with a stage prefix)**.
+
+| Stack | Constructs |
+|---|---|
+| `Edge` | `cloudfront.Distribution` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; ACM cert in us-east-1; WAF WebACL (rate-based rule); optional Route 53 records (or a CNAME at Cloudflare) |
+| `Data` | `dsql.CfnCluster` (L1, `deletionProtectionEnabled: true`); AWS Backup plan (daily, 14-day retention); exports bucket (block public access, SSE-KMS, lifecycle 7 days, noncurrent 1 day); KMS CMK |
+| `Identity` | `cognito.UserPool` (Essentials feature plan, email sign-in, SES email config), `UserPoolClient`s (web BFF confidential client, Expo public PKCE client), managed login domain, post-confirmation trigger; SES identity for the sending domain |
+| `App` | `lambda.Function` api + jobs + migrate (Go arm64, `provided.al2023`), `FunctionUrl` (auth IAM for OAC); EventBridge Scheduler group + role; SSM parameters (names only; values set out-of-band); migrate custom resource |
+| `Ops` | Log groups (30-day retention), metric filters, alarms, SNS topic (email to CJ), `budgets.CfnBudget` (for example $10/month actual + forecast) |
+
+Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
+
+## 9. Security
+
+- IAM least privilege:
+  - api Lambda: `dsql:DbConnect` (not `DbConnectAdmin`) on the cluster ARN; `kms:Decrypt`/`Encrypt` on the CMK with an encryption context of `household_id`; `ssm:GetParameter` on `/stockbot/<stage>/*`; `scheduler:CreateSchedule` on its group plus `iam:PassRole` for the scheduler role only; `s3:PutObject`/`GetObject` on `exports/*`; `cognito-idp:AdminUserGlobalSignOut`/`AdminDeleteUser` on the pool.
+  - migrate Lambda: the only role with `DbConnectAdmin`.
+  - jobs Lambda: similar to api, scoped down.
+- Secrets:
+  - **Platform** secrets in SSM SecureString: Kroger app credentials (one set, open question §13), VAPID private key (one per install/stage), Sentry DSN, Open*Facts contribution creds, retailer API key.
+  - **Per-household** secrets: Kroger OAuth tokens, which are plaintext in `provider_connections` today. Envelope-encrypt them with the KMS CMK (`encryption context = household_id`) and store the ciphertext in DSQL.
+- Encryption at rest: DSQL, S3, and Backup encrypt by default; the CMK is used for tokens and exports.
+- Backups: none today. The hosted plan is AWS Backup for DSQL, daily, 14-day retention, with deletion protection on the cluster. The Pi keeps its own pre-migration backups; TODO(PM): Pi backup is out of scope.
+- Deletion and erasure (PM req):
+  - Typed confirmation leads to a soft delete (`deleted_at`; hidden, devices and invites disabled), restorable for **30 days**.
+  - On day 30 a scheduled job hard-deletes the household's rows in ≤ 1,000-row transactions and deletes its exports.
+  - Daily backups roll off after **14 days**. Exports expire in 7 days, and noncurrent versions go 1 day after.
+  - Logs hold only IDs, never item names, with 30-day retention.
+  - **Stated window: permanently erased from all live data on day 30, and from all backups by day 44 after the delete request.**
+  - Account deletion: allowed unless the user is the last owner of any household, who must first transfer ownership or delete the household. The user's Cognito user and memberships are removed.
+
+## 10. Ops
+
+- Logs: structured JSON, 30-day retention, no household content (item names) in logs (PM req: no household data anywhere).
+- Alarms → SNS email to CJ (PM req for #313 and #320):
+  - a `no_space` / storage-error metric filter;
+  - a DB-busy, serialization-retry-exhausted, or connection-error metric filter;
+  - Lambda errors and throttles;
+  - 5xx rate on the Function URL;
+  - DSQL DPU per day above the threshold (metric `TotalDPU`, namespace `AWS/AuroraDSQL`, dimension cluster ID, Sum; https://docs.aws.amazon.com/aurora-dsql/latest/userguide/cloudwatch-monitoring.html). `OccConflicts` and `QueryTimeouts` from the same page feed the DB-busy alarm;
+  - an import or export job failure.
+  - Households only see plain messages.
+- AWS Budgets: a $10/month budget with 50/80/100% actual and forecast notifications to the same email. It is free.
+- Sentry: keep using it via its DSN in SSM.
+
+## 11. Scan ingest (hosted)
+
+- Free tier (PM req): phone camera (`CameraScanner.tsx`) and a phone-paired scanner.
+- Keyboard-wedge USB or Bluetooth scanners work in the browser (`BarcodeInputField.tsx`) on any host with a focused tab.
+- Paid: an always-on ESP32 relay (#222/#223) using device tokens.
+- The Symcode 2.4 GHz USB dongle needs a host. Keep both USB-wedge-on-a-non-Pi-host and Bluetooth open; the product answer is **TODO(PM)**.
+- `internal/scanlistener` (evdev) remains Pi-only.
+
+## 12. Rollout plan
+
+1. Port SQL to PG + DSQL constraints behind the store interface. CI runs both SQLite (the Pi) and PG.
+2. Add multi-tenancy (`household_id` everywhere, remove `user-1`) with isolation tests, in SQLite first so the Pi gets it too.
+3. Make the server stateless for Lambda (polling, Scheduler, lazy timers) behind a `HOSTED=1` mode. The Pi keeps SSE and in-process timers.
+4. CDK `dev` deploy; Cognito, invites, devices; nightly isolation tests against dev DSQL.
+5. Export and import round-trip test; test the erasure job.
+6. Invite-only beta with one test household; alarms and budget live.
+7. Second household onboard. Later, an optional import of CJ's house (CJ's decision says the Pi stays).
+8. Update the Expo app (PR #230) to Cognito PKCE before any store release.
+
+## 13. Open questions
+
+- Keep Grocy sync on hosted, or Pi-only? TODO(PM)
+- Kroger: do the developer app terms allow one app credential to serve many households? If not, per-household app creds. Legal/terms TODO.
+- Is the product/barcode catalog global across households (shared Open Food Facts enrichment and user-contributed names)? Privacy implication: a user-entered product name could leak across households. TODO(PM)
+- USB dongle host vs Bluetooth: TODO(PM).
+- Paid tier billing provider and limits: TODO(PM).
+- Hosted domain name and whether DNS stays on Cloudflare: TODO(CJ).
+- Live updates: is 10 s polling acceptable, or are WebSockets needed? TODO(PM)
+- Pi self-host: does it get the new auth, or keep the shared password? TODO(PM)
