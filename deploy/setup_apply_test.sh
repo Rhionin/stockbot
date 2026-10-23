@@ -710,6 +710,15 @@ write_env "$mode_dir" "PUBLIC_HOST=pantry.example.com" "CLOUDFLARE_TUNNEL_TOKEN=
 got=$(publish_mode_from_env tunnel)
 [[ "$got" == tunnel ]] || fail "--tunnel request, got $got"
 
+# Filled Grocy credentials must not attach the sidecar. Profile grocy does
+# not include grocy-sync, and setup must not select profile grocy-sync.
+write_env "$mode_dir" \
+  "GROCY_URL=http://grocy:80" \
+  "GROCY_API_KEY=secret" \
+  "PANTRY_SYNC_TOKEN=tok"
+suffix=$(grocy_compose_suffix)
+[[ -z "$suffix" ]] || fail "grocy credentials must leave grocy-sync stopped, got: $suffix"
+
 # A secret the operator set is left alone.
 custom=$(mktemp -d)
 write_env "$custom" \
