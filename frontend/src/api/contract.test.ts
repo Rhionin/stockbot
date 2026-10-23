@@ -1,16 +1,40 @@
 import { describe, expect, it } from 'vitest';
 import {
   BATCH_FAILURE_FALLBACK,
+  BODY_TOO_LARGE_SENTENCE,
   BUSY_SENTENCE,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
+  CODE_BODY_TOO_LARGE,
+  CODE_INTERNAL,
+  CODE_INVALID_CREDENTIALS,
+  CODE_MISSING_CREDENTIALS,
+  CODE_PROVIDER_UNAVAILABLE,
+  CODE_SIGN_IN_NOT_USED,
+  CODE_SIGN_IN_REQUIRED,
+  CODE_TOO_MANY_ATTEMPTS,
+  CODE_UPDATING,
   failuresAfterConfirm,
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
+  INVALID_BODY_PREFIX,
+  INVALID_CREDENTIALS_SENTENCE,
+  INVALID_PATH_PREFIX,
+  METHOD_NOT_ALLOWED_SENTENCE,
+  MISSING_CREDENTIALS_SENTENCE,
+  NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
   nothingOnHandPill,
+  PROVIDER_FIELD,
+  PROVIDER_UNAVAILABLE_SENTENCE,
+  SERVER_ERROR_FALLBACK,
   shelfHasNothingOnHand,
+  SIGN_IN_NOT_USED_SENTENCE,
+  SIGN_IN_REQUIRED_SENTENCE,
+  TOO_MANY_ATTEMPTS_SENTENCE,
+  UPDATING_SENTENCE,
+  UPDATING_STATUS,
   type BatchCommitResponse,
 } from './contract';
 
@@ -279,6 +303,41 @@ describe('batch failure banner', () => {
     expect(batchFailureBannerText(notices, 2)).toBe(`2 confirmed. ${BUSY_SENTENCE}`);
     expect(batchCardCommitNotice('busy', BUSY_SENTENCE)).toBe('');
     expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
+  });
+});
+
+describe('app-facing error codes', () => {
+  it('names the updating and provider responses', () => {
+    expect(CODE_UPDATING).toBe('updating');
+    expect(UPDATING_SENTENCE).toBe('Updating. Try again in a minute.');
+    expect(UPDATING_STATUS).toBe('migrating');
+    expect(CODE_PROVIDER_UNAVAILABLE).toBe('provider_unavailable');
+    expect(PROVIDER_FIELD).toBe('provider');
+    expect(PROVIDER_UNAVAILABLE_SENTENCE).toBe("{provider} isn't responding. Try again later.");
+  });
+
+  it('keeps the sign-in sentences', () => {
+    expect(CODE_SIGN_IN_REQUIRED).toBe('sign_in_required');
+    expect(SIGN_IN_REQUIRED_SENTENCE).toBe('Sign in required.');
+    expect(CODE_SIGN_IN_NOT_USED).toBe('sign_in_not_used');
+    expect(SIGN_IN_NOT_USED_SENTENCE).toBe('Sign-in is not used on this address.');
+    expect(CODE_MISSING_CREDENTIALS).toBe('missing_credentials');
+    expect(MISSING_CREDENTIALS_SENTENCE).toBe('Enter your username and password.');
+    expect(CODE_INVALID_CREDENTIALS).toBe('invalid_credentials');
+    expect(INVALID_CREDENTIALS_SENTENCE).toBe('The username or password is incorrect.');
+    expect(CODE_TOO_MANY_ATTEMPTS).toBe('too_many_attempts');
+    expect(TOO_MANY_ATTEMPTS_SENTENCE).toBe('Too many sign-in attempts. Try again later.');
+  });
+
+  it('keeps the validation and router sentences', () => {
+    expect(CODE_BODY_TOO_LARGE).toBe('body_too_large');
+    expect(BODY_TOO_LARGE_SENTENCE).toBe('request body is too large');
+    expect(INVALID_BODY_PREFIX).toBe('invalid request body: ');
+    expect(INVALID_PATH_PREFIX).toBe('invalid path parameters: ');
+    expect(NOT_FOUND_SENTENCE).toBe('Not found.');
+    expect(METHOD_NOT_ALLOWED_SENTENCE).toBe('Method not allowed.');
+    expect(CODE_INTERNAL).toBe('internal');
+    expect(SERVER_ERROR_FALLBACK).toBe('Something went wrong. Try again.');
   });
 });
 

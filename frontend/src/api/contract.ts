@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { ScanDirection, ScanStatus } from '../types';
+import type { PantryLinkSuggestion, ScanDirection, ScanStatus, TargetConflictMember } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -89,6 +89,77 @@ export const CODE_NO_SPACE = 'no_space';
 
 export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
 export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
+
+// Codes for #395. Handlers do not send the new ones yet. auth_not_configured
+// belongs to #393 and is not declared here. The sentences and extra fields
+// are specified in docs/api/errors.md.
+
+export const CODE_UPDATING = 'updating';
+export const UPDATING_SENTENCE = 'Updating. Try again in a minute.';
+export const UPDATING_STATUS = 'migrating';
+
+export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
+export const PROVIDER_FIELD = 'provider';
+export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
+
+export const CODE_SIGN_IN_REQUIRED = 'sign_in_required';
+export const SIGN_IN_REQUIRED_SENTENCE = 'Sign in required.';
+
+export const CODE_SIGN_IN_NOT_USED = 'sign_in_not_used';
+export const SIGN_IN_NOT_USED_SENTENCE = 'Sign-in is not used on this address.';
+
+export const CODE_MISSING_CREDENTIALS = 'missing_credentials';
+export const MISSING_CREDENTIALS_SENTENCE = 'Enter your username and password.';
+
+export const CODE_INVALID_CREDENTIALS = 'invalid_credentials';
+export const INVALID_CREDENTIALS_SENTENCE = 'The username or password is incorrect.';
+
+export const CODE_TOO_MANY_ATTEMPTS = 'too_many_attempts';
+export const TOO_MANY_ATTEMPTS_SENTENCE = 'Too many sign-in attempts. Try again later.';
+
+export const CODE_BODY_TOO_LARGE = 'body_too_large';
+export const BODY_TOO_LARGE_SENTENCE = 'request body is too large';
+
+export const CODE_INVALID_BODY = 'invalid_body';
+export const INVALID_BODY_PREFIX = 'invalid request body: ';
+
+export const CODE_INVALID_PATH = 'invalid_path';
+export const INVALID_PATH_PREFIX = 'invalid path parameters: ';
+
+export const CODE_INVALID_REQUEST = 'invalid_request';
+export const CODE_UNPROCESSABLE = 'unprocessable';
+export const CODE_NOT_FOUND = 'not_found';
+export const NOT_FOUND_SENTENCE = 'Not found.';
+export const CODE_CONFLICT = 'conflict';
+export const CODE_METHOD_NOT_ALLOWED = 'method_not_allowed';
+export const METHOD_NOT_ALLOWED_SENTENCE = 'Method not allowed.';
+
+// Unexpected server failure, including a commit that already uses this code.
+// The sentence is SERVER_ERROR_FALLBACK.
+export const CODE_INTERNAL = 'internal';
+
+export const CODE_SYNC_TOKEN_INVALID = 'sync_token_invalid';
+export const SYNC_TOKEN_INVALID_SENTENCE = 'The sync token is not valid.';
+
+export const CODE_SYNC_READ_ONLY = 'sync_read_only';
+export const SYNC_READ_ONLY_SENTENCE = 'This token only reads the sync snapshot.';
+
+export const CODE_INVALID_REPORT = 'invalid_report';
+export const INVALID_REPORT_SENTENCE = 'invalid report';
+
+export const CODE_REPORT_TOO_LARGE = 'report_too_large';
+export const REPORT_TOO_LARGE_SENTENCE = 'report is too large';
+
+// JSON body of an error the web or mobile app reads. `provider` is the
+// display name on provider_unavailable. `status` is "migrating" on updating.
+export interface ApiErrorJSON {
+  error: string;
+  code: string;
+  provider?: string;
+  status?: string;
+  members?: TargetConflictMember[] | { groupId: string };
+  suggestions?: PantryLinkSuggestion[];
+}
 
 // A 5xx response with no JSON error field. A body that includes error still wins.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
