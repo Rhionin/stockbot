@@ -416,6 +416,7 @@ export interface AcceptInviteRequest {
 export interface AcceptInviteResponse extends LoginResponse {
   householdId: string;
   name: string;
+  /** `member` for join_household. `owner` for start_household. */
   role: 'member' | 'owner';
 }
 
@@ -430,9 +431,12 @@ export interface PairingCode {
   code: string;
   qrPayload: string;
   expiresAt: string;
+  /** Poll id for GET /api/devices/pair/{pairingId}. */
   pairingId: string;
-  barcodeValue: string;
-  qrValue: string;
+  /** Same text as `code`, drawn as Code 128. Omit when the client reuses `code`. */
+  barcodeValue?: string;
+  /** Same text as `qrPayload`, drawn as QR. Omit when the client reuses `qrPayload`. */
+  qrValue?: string;
 }
 
 export interface PairingLookup {
@@ -873,13 +877,28 @@ export function classifyImportDocument(value: unknown): ImportClassification {
   };
 }
 
-/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). */
+/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). O, I, and L are absent on purpose. */
 const PAIRING_PAYLOAD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const PAIRING_CHECK = `${PAIRING_PAYLOAD}*~$=U`;
 
-/** SBP-XXXX-XXXX-C. Letters and hyphens, so it cannot be a digits-only GTIN. */
+/** SBP-XXXX-XXXX-C. Anchors reject a prefix or a trailing suffix. Letters and hyphens, so it cannot be a digits-only barcode. */
 export const PAIRING_CODE_GRAMMAR =
   /^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/;
+
+/**
+ * Trim the whitespace the server trims on a scan, including a trailing CR or LF,
+ * then uppercase ASCII a-z only. O, I, and L are not rewritten. A non-ASCII
+ * letter such as ſ is left as-is, so it does not become S.
+ */
+export function normalizePairingCode(input: string): string {
+  const trimmed = input.trim();
+  let out = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    out += code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : trimmed[i];
+  }
+  return out;
+}
 
 export function pairingCheckCharacter(payload: string): string {
   let value = 0n;
@@ -899,24 +918,22 @@ export function formatPairingCode(payload: string): string {
   return `SBP-${payload.slice(0, 4)}-${payload.slice(4, 8)}-${check}`;
 }
 
-/** GTIN-8, GTIN-12, GTIN-13, or GTIN-14. Digits only. */
+/**
+ * A product barcode, matching the server scan classifier: ASCII digits, length
+ * 1 through 14, after the same trim. That includes 6- and 7-digit UPC-E.
+ */
 export function isProductBarcode(input: string): boolean {
-  return /^(?:\d{8}|\d{12}|\d{13}|\d{14})$/.test(input);
+  return /^\d{1,14}$/.test(input.trim());
 }
 
 /** Grammar only, including a wrong check character. Scan rejection uses this, not `isPairingCode`. */
 export function looksLikePairingCode(input: string): boolean {
-  return PAIRING_CODE_GRAMMAR.test(input.toUpperCase());
+  return PAIRING_CODE_GRAMMAR.test(normalizePairingCode(input));
 }
 
 export function isPairingCode(input: string): boolean {
-  const code = input.toUpperCase();
-  if (!looksLikePairingCode(code)) return false;
+  const code = normalizePairingCode(input);
+  if (!PAIRING_CODE_GRAMMAR.test(code)) return false;
   const payload = code.slice(4, 8) + code.slice(9, 13);
   return code[14] === pairingCheckCharacter(payload);
-}
-
-/** A valid pairing code is never a product barcode. The grammars do not overlap. */
-export function pairingCodeCollidesWithBarcode(input: string): boolean {
-  return isPairingCode(input) && isProductBarcode(input);
 }

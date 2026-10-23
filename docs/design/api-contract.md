@@ -20,11 +20,11 @@ JSON field names are camelCase, matching the API the web client already calls. D
 
 tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token, except the householdId body on POST /api/auth/session/household, which sets the session's active household after a membership check; nothing else selects a tenant.
 
-The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token, and that client still sends `X-Household-Id` on each data request. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call.
+The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token, and that client still sends `X-Household-Id` on each data request. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call. A device route reads that token's household. If the call also sends `X-Household-Id` and the header names a different household, the response is `404` `not_found`.
 
-`X-Household-Id` is optional on session routes. When it is omitted, the session's `activeHouseholdId` is the household for that request. At login and at reset, `activeHouseholdId` is the last-used household if the person is still a member, else their only membership, else null. Invite accept sets it to the household on the invite. Setup sets it when the person has exactly one household. After the person is removed, `activeHouseholdId` becomes null, and a request that still sends the old header is `404` `not_found`. The header accepts any household the person belongs to, including one that differs from the stored id. The stored id is only the default. No header and no active household is `400` `validation`. A household the caller does not belong to, or an unknown household, is `404` `not_found`. `GET /api/events` and a same-origin export download use the session and do not require the header. The download's household is the one stored on the export job.
+`X-Household-Id` is optional on session routes. When it is omitted, the session's `activeHouseholdId` is the household for that request. At login and at reset, `activeHouseholdId` is the last-used household if the person is still a member, else their only membership, else null. Invite accept sets it to the household on the invite. Setup sets it when the person has exactly one household. After the person is removed, `activeHouseholdId` becomes null, and a request that still sends the old header is `404` `not_found`. The header accepts any household the person belongs to, including one that differs from the stored id. The stored id is only the default. A route table that marks `X-Household-Id` required means the call needs a household. The header may be omitted when `activeHouseholdId` is set. No header and no active household is `400` `validation`. A household the caller does not belong to, or an unknown household, is `404` `not_found`. `GET /api/events` and a same-origin export download use the session and do not require the header. The download's household is the one stored on the export job.
 
-activeHouseholdId order, for a personal session: a present `X-Household-Id` is the household for that request, and it must be one of the caller's memberships. If the header is omitted, the server uses the `activeHouseholdId` stored on the session, which must still be a membership. The header wins when both are present. The stored id is not a client-supplied tenant on the data request. `POST /api/auth/session/household` is what writes it, and its `householdId` body is the one exception to the tenant rule. A header that is not a membership is `404` `not_found`. A missing header with no stored `activeHouseholdId` is `400` `validation`.
+activeHouseholdId order, for a personal session: a present `X-Household-Id` is the household for that request, and it must be one of the caller's memberships. If the header is omitted, the server uses the `activeHouseholdId` stored on the session, which must still be a membership. The header wins when both are present. Sending `X-Household-Id` does not change the stored `activeHouseholdId`. The next request that omits the header uses the stored id again. The stored id is not a client-supplied tenant on the data request. `POST /api/auth/session/household` is what writes it, and its `householdId` body is the one exception to the tenant rule. A header that is not a membership is `404` `not_found`. A missing header with no stored `activeHouseholdId` is `400` `validation`.
 
 `userId` is removed from every hosted request: query, body, and path, except the path segment on the member routes below, which names the member being changed and is not a tenant. userId-removed: If a client still sends userId, the server ignores it and does not treat it as the tenant.
 
@@ -79,7 +79,7 @@ Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own 
 
 CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
 
-The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>`, where `<semver>` is `expo.version` from `app.json`. The server compares that dotted number numerically. A pre-release suffix is ignored. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated.
+The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>`, where `<semver>` is `expo.version` from `app.json`. The server compares that dotted number numerically. A pre-release suffix is ignored. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated. The gate runs before `rate_limited` and `busy` as well, including when nobody is signed in. A request that fails the gate is `426` and is not counted as a login attempt.
 
 Both of these rules apply:
 
@@ -92,9 +92,25 @@ LAN `:8080`, while the household password is on: people get the LAN principal. T
 
 `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. A caller who is not the operator, including a household-password, LAN, or device principal, gets `not_found`. `POST /api/telemetry/client` stays a public write. Its response has no household activity and no process-wide counts. The changeover counts (household-password sessions and Basic requests in the last 7 days) are part of the operator-only GET. Both telemetry routes stay exempt from the version gate.
 
+These routes do not take a household session. None of them return a household id, name, item, or count, except `GET /api/telemetry`, which is operator-only.
+
+| Path | Who | What |
+|---|---|---|
+| `GET /api/build` | No session | `{ "commit": string, "committedAt"?: string, "builtAt"?: string, "version": string, "subject"?: string }`. Stays available on the LAN after retirement. Never `426`. |
+| `GET /api/telemetry` | Operator on the public entry | Process-wide counts. Anyone else gets `not_found`. Exempt from the version gate. |
+| `POST /api/telemetry/client` | No session | Public write. The response has no household activity and no process-wide counts. Exempt from the version gate. |
+| `POST /api/sentry-tunnel` | No session | Forwards an allowlisted client envelope. The response has no household data. |
+| `POST /api/deploy-hook` | No session | Accepted only when the HMAC signature and timestamp check. The response has no household data. |
+| `GET /brand/logo.png` | No session | The brand mark. |
+| `GET /terms` | No session | The terms page. |
+| `GET /privacy` | No session | The privacy page. |
+| `GET /health` | LAN principal while the household password is on | `{"status":"ok"}` and an optional `scanner` object. No household id, name, or item count. It is not on the public no-password list. |
+| `GET /api/sync/snapshot` | Sync token | Pi only. Not a hosted route. Household 1, read-only. |
+| `GET /setup` | No session, LAN listener only, and only while no personal account exists | The one-time setup code, then name, email, and password. Creates the operator as owner of household 1, signs them in, and sets `activeHouseholdId` to household 1. After any personal account exists, `not_found`. The public entry does not serve it. Recover mode is the same LAN page with a fresh code. |
+
 ## Endpoint index
 
-endpoint-count: 52
+endpoint-count: 57
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -152,6 +168,11 @@ DELETE /api/me
 GET /api/events
 POST /api/live/ticket
 GET /api/config
+GET /api/build
+GET /api/telemetry
+POST /api/telemetry/client
+POST /api/sentry-tunnel
+POST /api/deploy-hook
 ```
 
 Routes the current server already serves, and that this contract does not redefine, keep today's JSON. On the hosted API they drop `userId`. The household is the validated `X-Household-Id` or, when that header is omitted, the session's `activeHouseholdId`. That includes history, restock, groups, providers, settings, and the shopping-list mutations. Their field list stays the one the handlers use today.
@@ -511,7 +532,7 @@ interface InviteCreated {
 }
 ```
 
-The code has at least 40 bits of entropy. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. Stage 1 ignores `email`: it does not store it and it does not send mail, so `email` in the response is null. Stage 3, when `email` is present, sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
+Invite codes are 48 bits. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. Stage 1 ignores `email`: it does not store it and it does not send mail, so `email` in the response is null. Stage 3, when `email` is present, sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
 
 ### GET /api/invites
 
@@ -580,11 +601,11 @@ A code that is past `expiresAt`, or already used, is `invite_expired`. The sente
 
 Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`. When `account.email` already belongs to a user, the response is `409` `account_exists` and no membership is created. That person signs in and accepts with `{ "code" }` only. Login does not return `account_exists`. A signed-in person sends no `account`. Sending a session and `account` together is `validation`.
 
-`join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership. Invite links are `<APP_BASE_URL>/invite/<code>`. Caddy and the app redact that code from logs.
+`role` on the accept response is `member` for `join_household` and `owner` for `start_household`. `join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership. Invite links are `<APP_BASE_URL>/invite/<code>`. Caddy and the app redact that code from logs.
 
 ### POST /api/operator/household-invites
 
-Operator only. Creates a `start_household` invite. Same code rules as `POST /api/invites`: single use, 7 days, at least 40 bits, stored hashed.
+Operator only. Creates a `start_household` invite. Same code rules as `POST /api/invites`: single use, 7 days, 48 bits, stored hashed.
 
 | | |
 |---|---|
@@ -621,13 +642,19 @@ interface PairingCode {
   code: string;          // #364 field. SBP-XXXX-XXXX-C
   qrPayload: string;     // #364 field. Same text as code.
   expiresAt: string;
-  pairingId: string;     // poll id for GET /api/devices/pair/{pairingId}
-  barcodeValue: string;  // same text as code, drawn as Code 128
-  qrValue: string;       // same text as qrPayload, drawn as QR
+  pairingId: string;      // poll id for GET /api/devices/pair/{pairingId}
+  barcodeValue?: string;  // same text as code, drawn as Code 128. Optional.
+  qrValue?: string;       // same text as qrPayload, drawn as QR. Optional.
 }
 ```
 
-pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no I, L, O, or U). The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`. A product barcode (GTIN-8, GTIN-12, GTIN-13, or GTIN-14) is digits only. A payload that contains letters and hyphens cannot be one. The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check. `isPairingCode` also requires the check character. A bad check still matches `looksLikePairingCode`, so the scan is rejected. `isPairingCode` alone would let that scan through as a product.
+pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. O, I, and L are rejected on purpose. They are not aliases for 0 or 1. U is a check symbol only, not a payload character. The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The symbols `*`, `~`, `$`, and `=` stay in that alphabet. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`.
+
+Before that compare, the client and the server normalize a scan the same way. Trim the whitespace `strings.TrimSpace` trims, including a trailing CR or LF, then uppercase ASCII `a` through `z` only. A non-ASCII letter is not uppercased, so `ſ` does not become `S`.
+
+A product barcode is ASCII digits of length 1 through 14 after that same trim. That includes 6- and 7-digit UPC-E, and GTIN-8, GTIN-12, GTIN-13, and GTIN-14. The server's scan classifier uses this rule: digits only and at most 14 characters is a product, not a QR payload. A pairing code contains letters and hyphens, so it is not one.
+
+The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check after normalization. `isPairingCode` also requires the check character. A code with the right pattern and a bad check character matches `looksLikePairingCode` and fails `isPairingCode`, and the scan is still rejected. `isPairingCode` alone would let that scan through as a product.
 
 ### GET /api/devices/pair/{pairingId}
 
@@ -1213,7 +1240,7 @@ The frame is `id`, `event`, and `data`. Stage-1 hints use the event name `hint`.
 | `hint` | `{"type":"list","cursor":"<cursor>"}` |
 | `hint` | `{"type":"devices"}` |
 
-`rekey` never appears on the Pi stream. Stage 3 publishes `rekey` on AppSync before rotating `channel_key`. Household 1 also keeps the event names it already receives: `scan`, `inventory`, `scanner_mode`, `scan_processing`, and `scan_processing_failed`, each with the JSON it carries today. A principal may hold at most 10 streams. Removing a member closes that member's streams for the household. Retiring the household password closes the household-password streams after commit.
+`rekey` never appears on the Pi stream. Stage 3 publishes `rekey` on AppSync before rotating `channel_key`. Household 1 also keeps the event names it already receives: `scan`, `inventory`, `scanner_mode`, `scan_processing`, and `scan_processing_failed`, each with the JSON it carries today. A principal may hold at most 10 streams. Removing a member closes that member's streams for the household. Retiring the household password closes the household-password streams after commit. After that retirement, `GET /api/events` on the LAN is `401`. Sign-in is required.
 
 ### GET /api/config
 
@@ -1470,5 +1497,6 @@ Review of this contract at `6de8179`, from the client:
 ## Open questions
 
 2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
+3. **Pairing check symbols.** `*`, `~`, `$`, and `=` stay in the check alphabet. They are awkward to type on some keyboards. Pairing codes are carried as Code 128 and QR, so a person does not type them. Left open in case a later ruling wants a keyboard-safe alphabet.
 
 PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. The Architect accepted the two plan-vs-#374 differences that were still open (one `unauthorized` code, and both scan bodies on one route). They are under [Decided by Architect](#decided-by-architect). Open question 7, household create, stays closed on PM's `invite_required` ruling. An expired or used reset code stays `reset_expired`.
