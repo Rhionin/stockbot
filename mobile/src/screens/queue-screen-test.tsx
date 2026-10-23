@@ -391,6 +391,36 @@ describe('QueueScreen', () => {
     expect(screen.getByText('Rice')).toBeTruthy();
   });
 
+  it('a busy retry keeps the item sentence on the card', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const api = client({
+      listPending: jest.fn(async () => cards),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: [oats.id, rice.id],
+        failedReasons: ['This scan was already handled.', 'Choose which item this is first.'],
+        failedCodes: ['not_pending', 'product_unresolved'],
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(503, 'The pantry database is locked.', 'busy');
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-a')).getByText('This scan was already handled.')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(await screen.findByText('The pantry database is locked.')).toBeTruthy();
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(within(screen.getByTestId('scan-scan-a')).getByText('This scan was already handled.')).toBeTruthy();
+    expect(within(screen.getByTestId('batch-banner')).queryByText('This scan was already handled.')).toBeNull();
+    expect(within(screen.getByTestId('scan-scan-b')).getByText('Choose which item this is first.')).toBeTruthy();
+  });
+
   it.each([
     { name: 'a successful link clears a busy notice', code: 'busy', banner: BUSY_SENTENCE, outcome: 'ok' },
     { name: 'a successful link clears a no_space notice', code: 'no_space', banner: NO_SPACE_SENTENCE, outcome: 'ok' },

@@ -20,6 +20,7 @@ import {
   batchFailureNotices,
   CODE_NONE_ON_HAND,
   failuresAfterConfirm,
+  isStorageFailureCode,
   type BatchFailureNotice,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
@@ -344,7 +345,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? requestError.message : '');
-    clearNote(id);
+    // A lock or a full disk is the banner. The card keeps the item sentence.
+    if (!isStorageFailureCode(requestError.code)) clearNote(id);
     if (behavior.refreshSuggestions) {
       storeHousehold(await loadHousehold(), entries);
       showOffer(id, offers[id]?.suggestions ?? [], true);
