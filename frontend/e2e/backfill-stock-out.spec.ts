@@ -1,5 +1,18 @@
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
-import { resetToStockIn, scanBarcode, setScannerMode } from './helpers'
+import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
+
+const reviewDir = process.env.REVIEW_SHOTS
+if (reviewDir !== undefined) mkdirSync(reviewDir, { recursive: true })
+
+const saveReview = async (page: Page, name: string) => {
+  if (reviewDir === undefined) return
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe('light')
+  await page.screenshot({ path: join(reviewDir, name), fullPage: true })
+}
 
 const barcode = '2940000002941'
 const sentence = 'Nothing on hand to take out.'
@@ -292,6 +305,8 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await expect(confirm.getByText(hideLine)).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Undo', exact: true })).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible()
+  await settleUndoModal(page)
+  await saveReview(page, 'undo-390-light.png')
   await shoot(page, testInfo, 'undo-confirm')
 
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click()
@@ -319,4 +334,61 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   if (leftover !== undefined) {
     await request.patch(`/api/scans/${leftover.id}`, { data: { status: 'cancelled' } })
   }
+})
+
+test('an offline backfill shows the connection sentence', async ({ page, request }) => {
+  test.setTimeout(90_000)
+  const emptyBarcode = '2940000003891'
+  const offlineLine = "Can't reach Stockbot. Check your connection and try again."
+  await createKnownProduct(request, {
+    barcode: emptyBarcode,
+    name: 'Offline cream',
+    category: 'Dairy',
+    unitOfMeasure: 'tub',
+  })
+  const pending = await request.get('/api/scans?userId=user-1&status=pending')
+  expect(pending.ok()).toBe(true)
+  const rows = await pending.json() as { id: string }[]
+  for (const row of rows) {
+    const cancelled = await request.patch(`/api/scans/${row.id}`, { data: { status: 'cancelled' } })
+    expect(cancelled.ok()).toBe(true)
+  }
+  const stock = async (direction: 'stock_in' | 'stock_out') => {
+    const created = await request.post('/api/scans', {
+      data: { barcode: emptyBarcode, direction, userId: 'user-1' },
+    })
+    expect(created.ok(), await created.text()).toBe(true)
+    const body = await created.json() as { id: string }
+    const committed = await request.post(`/api/scans/${body.id}/commit`, { data: {} })
+    expect(committed.ok(), await committed.text()).toBe(true)
+  }
+  await stock('stock_in')
+  await stock('stock_out')
+
+  await page.route((url) => url.pathname.endsWith('/commit'), async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    const body = route.request().postDataJSON() as { backfill?: boolean } | null
+    if (body?.backfill === true) {
+      await route.abort('failed')
+      return
+    }
+    await route.continue()
+  })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.goto('/')
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe('light')
+  await resetToStockIn(page)
+  await setScannerMode(page, 'stock_out')
+  const card = await scanBarcode(page, emptyBarcode)
+  await expect(card.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
+  await card.getByRole('button', { name: 'Add it and take it out' }).click()
+  await expect(page.getByText(offlineLine)).toBeVisible()
+  await expect(page.getByText('Failed to fetch')).toHaveCount(0)
+  await expect(page.getByText('Added and taken out.')).toHaveCount(0)
+  await saveReview(page, 'offline-390-light.png')
 })

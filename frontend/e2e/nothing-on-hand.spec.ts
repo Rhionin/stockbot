@@ -5,7 +5,15 @@ import { expect, test, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const shotDir = process.env.NOTHING_ON_HAND_SHOTS ?? join(tmpdir(), 'nothing-on-hand')
+const reviewDir = process.env.REVIEW_SHOTS
 mkdirSync(shotDir, { recursive: true })
+if (reviewDir !== undefined) mkdirSync(reviewDir, { recursive: true })
+
+const keepReview = (slug: 'offer' | 'banner' | 'toast', width: number, scheme: string): boolean => {
+  if (scheme === 'dark') return slug === 'offer' && width === 390
+  if (slug === 'offer') return width === 390 || width === 1280
+  return width === 390 || width === 1280
+}
 
 const title = 'Nothing on hand to take out.'
 const skipTwo = 'Confirm skips the 2 with nothing on hand.'
@@ -101,6 +109,12 @@ for (const shot of shots) {
       path: `${shotDir}/queue-${shot.width}-${shot.scheme}.png`,
       fullPage: true,
     })
+    if (reviewDir !== undefined && keepReview('offer', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `offer-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
 
     await page.getByRole('button', { name: 'Confirm 1 selected scans' }).click()
     await expect(page.locator('.scan-nothing-skipped')).toHaveText(banner)
@@ -110,6 +124,12 @@ for (const shot of shots) {
       path: `${shotDir}/banner-${shot.width}-${shot.scheme}.png`,
       fullPage: true,
     })
+    if (reviewDir !== undefined && keepReview('banner', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `banner-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
 
     await missingCard.getByRole('button', { name: 'Add it and take it out' }).click()
     await expect(page.locator('.restock-toast').filter({ hasText: added })).toBeVisible()
@@ -118,5 +138,11 @@ for (const shot of shots) {
       path: `${shotDir}/toast-${shot.width}-${shot.scheme}.png`,
       fullPage: true,
     })
+    if (reviewDir !== undefined && keepReview('toast', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `toast-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
   })
 }
