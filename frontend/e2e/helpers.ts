@@ -50,9 +50,9 @@ export const scanBarcode = async (page: Page, barcode: string): Promise<Locator>
   await scannerInput.fill(barcode)
   await scannerInput.press('Enter')
 
-  // exact: the in-flight placeholder is "Scan <barcode> processing", and a
-  // substring match would return that card before the real row exists.
-  const scanCard = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
+  // The in-flight placeholder is "Scan <barcode> processing". A nothing-on-hand
+  // card appends its title after a comma. Neither should match the other.
+  const scanCard = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
   await expect(scanCard).toBeVisible()
   return scanCard
 }

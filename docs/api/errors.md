@@ -58,9 +58,9 @@ committed items and a lock read:
 Every other 5xx uses the generic sentence
 `Something went wrong. Try again.` The body has no `code`, except an
 unexpected commit or stock-out failure, which keeps code `internal` with
-that same sentence. A lock or a full disk on a single request is still the
-503 above. A batch commit reports those same codes on each affected item and
-stays HTTP 200.
+that same sentence. A lock or a full disk on a single commit or stock-out
+is still the 503 above. A batch commit stays HTTP 200 and reports those
+same codes on each affected item.
 
 The generic sentence does not replace the busy sentence or the no-space sentence.
 

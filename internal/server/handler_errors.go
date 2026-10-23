@@ -167,9 +167,27 @@ func logNoSpace(r *http.Request, err error) {
 		attrs = append(attrs, "sqlite_code", code)
 	}
 	slog.Warn("db_no_space", attrs...)
-	if err != nil {
-		slog.Debug("db_no_space", "driver_message", err.Error())
+	if msg := noSpaceDriverMessage(err); msg != "" {
+		slog.Debug("db_no_space", "driver_message", msg)
 	}
+}
+
+// noSpaceDriverMessage is the driver text for the debug record.
+// HTTPError.Error returns the client sentence once Message is set, which is
+// what a commit or stock-out failure does, so the debug line uses the wrapped cause.
+func noSpaceDriverMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.Err != nil {
+		return httpErr.Err.Error()
+	}
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) {
+		return driverErr.Error()
+	}
+	return err.Error()
 }
 
 func requestRoute(r *http.Request) string {
