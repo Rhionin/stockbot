@@ -267,6 +267,8 @@ export type HostedErrorCode =
   | 'confirmation_mismatch'
   | 'rate_limited'
   | 'payload_too_large'
+  | 'device_revoked'
+  | 'upgrade_required'
   ;
 
 export interface HostedErrorBody {
@@ -277,8 +279,40 @@ export interface HostedErrorBody {
 }
 
 export interface AuthSession {
-  user: { id: string; email: string };
+  /** Null when nobody is signed in, and on a household-password session. */
+  user: { id: string; email: string; name: string } | null;
+  /** #364 list. `householdId` is the membership id. */
   memberships: { householdId: string; name: string; role: HouseholdRole }[];
+  /** Same memberships, with `id` instead of `householdId`. */
+  households: { id: string; name: string; role: HouseholdRole }[];
+  activeHouseholdId: string | null;
+  operator: boolean;
+}
+
+export interface LoginRequest {
+  email?: string;
+  password?: string;
+  /** Only while household 1's shared password is on. */
+  householdPassword?: string;
+}
+
+/** Web sets the session cookie. Expo also receives `token` (`sbs_…`). */
+export interface LoginResponse extends AuthSession {
+  token?: string;
+}
+
+export interface SwitchHouseholdRequest {
+  householdId: string;
+}
+
+export interface ResetPasswordRequest {
+  code: string;
+  password: string;
+}
+
+export interface ResetLinkCreated {
+  url: string;
+  expiresAt: string;
 }
 
 export interface Household {
@@ -356,29 +390,59 @@ export interface InviteListResponse {
 
 export interface AcceptInviteRequest {
   code: string;
+  account?: { name: string; email: string; password: string };
+  household?: { name: string; restockMode?: RestockMode };
 }
 
 export interface AcceptInviteResponse {
   householdId: string;
   name: string;
-  role: 'member';
+  role: 'member' | 'owner';
+}
+
+export interface InvitePreview {
+  kind: 'start_household' | 'join_household';
+  householdName?: string;
+  invitedBy?: string;
+  expiresAt: string;
 }
 
 export interface PairingCode {
   code: string;
   qrPayload: string;
   expiresAt: string;
+  pairingId: string;
+  barcodeValue: string;
+  qrValue: string;
+}
+
+export interface PairingLookup {
+  pairingId: string;
+  status: 'pending' | 'complete' | 'expired';
+  expiresAt: string;
+  deviceId?: string;
 }
 
 export interface CompletePairingRequest {
   code: string;
   label?: string;
+  hub?: { kind: 'pi_hub' | 'box_hub'; version: string; bootId: string };
+}
+
+export interface DeviceHubConfig {
+  controlBarcodes: { stockIn: string; stockOut: string };
+  idleSeconds: number;
+  configVersion: number;
 }
 
 export interface CompletePairingResponse {
   deviceId: string;
   token: string;
+  config?: DeviceHubConfig;
+  heartbeatSeconds?: 60;
 }
+
+export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct';
 
 export interface Device {
   id: string;
@@ -386,6 +450,13 @@ export interface Device {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  kind: DeviceKind;
+  /** Server-computed: lastSeenAt is within 300 seconds. */
+  online: boolean;
+}
+
+export interface RenameDeviceRequest {
+  label: string;
 }
 
 export interface DeviceListResponse {
@@ -405,6 +476,46 @@ export interface DeviceScanResponse {
   id: string;
   status: 'accepted' | 'duplicate';
   cursor: string;
+}
+
+/** Stage 1 batch on POST /api/device/scans. A single DeviceScanRequest remains a batch of one. */
+export interface DeviceScanBatchRequest {
+  scans: {
+    id: string;
+    barcode?: string;
+    scannedAt?: string;
+    direction?: ScanDirection;
+    unitCount?: number;
+    ageMs?: number;
+    bootId?: string;
+  }[];
+  droppedCount?: number;
+}
+
+export interface DeviceScanBatchResponse {
+  results: { id: string; status: 'created' | 'duplicate' | 'conflict' }[];
+  config: DeviceHubConfig;
+}
+
+export interface DeviceHeartbeatRequest {
+  version: string;
+  bootId: string;
+  uptimeS: number;
+  queued: number;
+  droppedCount?: number;
+  clockSynced: boolean;
+}
+
+export interface DeviceHeartbeatResponse {
+  serverTime: string;
+  config: DeviceHubConfig;
+  heartbeatSeconds: 60;
+  rotateToken: boolean;
+  update?: { version: string; url: string; sha256: string; sig: string };
+}
+
+export interface RotatedDeviceToken {
+  token: string;
 }
 
 export interface HostedCreateScanRequest {
@@ -465,9 +576,11 @@ export interface CreateHouseholdRequest {
   restockMode?: RestockMode;
 }
 
-/** Proposed. GET and PATCH /api/household/settings. */
+/** GET and PATCH /api/household/settings. Stage 3 returns householdPassword null. */
 export interface HouseholdSettings {
   restockMode: RestockMode;
+  householdPassword: 'on' | 'off' | null;
+  householdPasswordRestoreUntil?: string;
 }
 
 export interface ExportProductV1 {
@@ -627,8 +740,8 @@ export interface DeleteAccountRequest {
 export type LiveTransport = 'sse' | 'poll' | 'push';
 
 export type LiveConfig =
-  | { live: 'sse' | 'poll' }
-  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string } };
+  | { live: 'sse' | 'poll'; minClientVersion: { expo: string } }
+  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string } };
 
 export interface LiveTicket {
   ticket: string;
@@ -636,11 +749,12 @@ export interface LiveTicket {
   expiresAt: string;
 }
 
-export type LiveHintType = 'scans' | 'stock' | 'list' | 'rekey';
+export type LiveHintType = 'scans' | 'stock' | 'list' | 'rekey' | 'devices';
 
 export type LiveHint =
   | { type: 'scans' | 'stock' | 'list'; cursor: string }
-  | { type: 'rekey' };
+  | { type: 'rekey' }
+  | { type: 'devices' };
 
 export interface LiveFallbackRules {
   scanQueuePollMs: 2000;
@@ -723,4 +837,47 @@ export function classifyImportDocument(value: unknown): ImportClassification {
     kind: 'pi',
     warnings: keys.filter((key) => !piImportKeys.has(key)).sort(),
   };
+}
+
+/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). */
+const PAIRING_PAYLOAD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const PAIRING_CHECK = `${PAIRING_PAYLOAD}*~$=U`;
+
+/** SBP-XXXX-XXXX-C. Letters and hyphens, so it cannot be a digits-only GTIN. */
+export const PAIRING_CODE_GRAMMAR =
+  /^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/;
+
+export function pairingCheckCharacter(payload: string): string {
+  let value = 0n;
+  for (const ch of payload) {
+    const digit = PAIRING_PAYLOAD.indexOf(ch);
+    if (digit < 0) {
+      throw new Error('pairing payload is not Crockford base32');
+    }
+    value = value * 32n + BigInt(digit);
+  }
+  return PAIRING_CHECK[Number(value % 37n)] ?? '';
+}
+
+/** `payload` is 8 Crockford characters, without the SBP prefix or hyphens. */
+export function formatPairingCode(payload: string): string {
+  const check = pairingCheckCharacter(payload);
+  return `SBP-${payload.slice(0, 4)}-${payload.slice(4, 8)}-${check}`;
+}
+
+/** GTIN-8, GTIN-12, GTIN-13, or GTIN-14. Digits only. */
+export function isProductBarcode(input: string): boolean {
+  return /^(?:\d{8}|\d{12}|\d{13}|\d{14})$/.test(input);
+}
+
+export function isPairingCode(input: string): boolean {
+  const code = input.toUpperCase();
+  if (!PAIRING_CODE_GRAMMAR.test(code)) return false;
+  const payload = code.slice(4, 8) + code.slice(9, 13);
+  return code[14] === pairingCheckCharacter(payload);
+}
+
+/** A valid pairing code is never a product barcode. The grammars do not overlap. */
+export function pairingCodeCollidesWithBarcode(input: string): boolean {
+  return isPairingCode(input) && isProductBarcode(input);
 }

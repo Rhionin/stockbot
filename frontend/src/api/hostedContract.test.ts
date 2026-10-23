@@ -2,7 +2,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { classifyImportDocument, type HostedErrorCode, type LiveHint } from './contract';
+import {
+  classifyImportDocument,
+  formatPairingCode,
+  isPairingCode,
+  isProductBarcode,
+  pairingCodeCollidesWithBarcode,
+  type HostedErrorCode,
+  type LiveHint,
+} from './contract';
 
 // Pins the union to a real member so a deleted code fails typecheck.
 const sampleCode: HostedErrorCode = 'busy';
@@ -36,6 +44,8 @@ const existingSentences: Record<string, string> = {
   confirmation_mismatch: "That doesn't match. Check the spelling and try again.",
   rate_limited: 'Too many tries. Wait a moment and try again.',
   payload_too_large: 'That file is too large to import.',
+  device_revoked: 'This scanner was disconnected.',
+  upgrade_required: 'Update Stockbot to keep using it.',
 };
 
 interface RegistryRow {
@@ -141,5 +151,39 @@ describe('hosted API contract', () => {
     expect(withUnknown.warnings).toEqual(['pushSubscriptions']);
 
     expect(classifyImportDocument({ ...fixture, schemaVersion: 2 }).ok).toBe(false);
+  });
+
+  it('keeps the #364 device-scan and invite fields and adds the stage-1 auth routes', () => {
+    expect(source).toContain('heartbeat?: boolean');
+    expect(source).toContain("status: 'accepted' | 'duplicate'");
+    expect(source).toContain("status: 'open' | 'revoked' | 'used' | 'expired'");
+    expect(source).toContain('householdPassword: \'on\' | \'off\' | null');
+    expect(source).toContain('minClientVersion: { expo: string }');
+    expect(source).toContain("type: 'devices'");
+    expect(doc).toContain('__Host-stockbot_session');
+    expect(doc).toContain('POST /api/auth/login');
+    expect(doc).toContain('POST /api/auth/reset');
+    expect(doc).toContain('POST /api/household/household-password/retire');
+    expect(doc).toContain('householdPassword: null');
+    expect(doc).toContain('not_found');
+  });
+
+  it('rejects a pairing code as a product barcode', () => {
+    expect(doc).toContain(
+      'pairing-collision: A pairing code cannot collide with a product barcode.',
+    );
+    const barcodes = ['000111222333', '036000291452', '12345670', '1234567890123'];
+    for (const barcode of barcodes) {
+      expect(isProductBarcode(barcode)).toBe(true);
+      expect(isPairingCode(barcode)).toBe(false);
+      expect(pairingCodeCollidesWithBarcode(barcode)).toBe(false);
+    }
+    const code = formatPairingCode('0123ABCD');
+    expect(code).toMatch(/^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/);
+    expect(isPairingCode(code)).toBe(true);
+    expect(isProductBarcode(code)).toBe(false);
+    expect(pairingCodeCollidesWithBarcode(code)).toBe(false);
+    const broken = `${code.slice(0, -1)}${code.endsWith('0') ? '1' : '0'}`;
+    expect(isPairingCode(broken)).toBe(false);
   });
 });

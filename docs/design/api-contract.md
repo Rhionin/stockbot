@@ -1,8 +1,10 @@
 # Hosted API contract
 
-Status: draft for review by Frontend Builder and Architect. Issue [#338](https://github.com/Rhionin/stockbot/issues/338).
+Status: stage-1 amendment (S1) for review. Issue [#374](https://github.com/Rhionin/stockbot/issues/374), which absorbs [#338](https://github.com/Rhionin/stockbot/issues/338).
 
-This is the cross-stack contract for hosted, multi-household Stockbot. It covers the endpoints in design §6, the push rules in design §3.1, and the export document in design §7. It is docs and TypeScript types only. It does not change the running server, and it does not change the Pi.
+This is the cross-stack contract for hosted, multi-household Stockbot. It covers the endpoints in design §6, the push rules in design §3.1, and the export document in design §7. It is docs and TypeScript types only. It does not change the running server.
+
+S1 amends this document for stage 1 on the Pi. It does not replace it. Invites, devices, device scans, the error registry, and export version 1 keep the shapes below. Auth routes gain local email and password sign-in. Fields added for stage 1 are called out in place. Stage 3 material stays: Cognito login and callback, SES, AppSync, presigned import upload, DSQL identity columns, and optimistic-concurrency retries. Pi-only additions say what stage 3 returns.
 
 Source of truth: [`docs/design/multi-tenant-saas.md`](multi-tenant-saas.md) at `d5cc44a` on `cursor/multi-tenant-saas-design-c887` (PR #224). That commit records CJ's decision: Aurora DSQL, and AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only while the client is disconnected.
 
@@ -10,7 +12,7 @@ The copies attached with the T2 request are older than that commit. The uploaded
 
 Issue #338 matches the T2 scope and acceptance criteria in the ticket list. There is no scope difference to resolve.
 
-The Pi keeps SQLite, the SSE stream `GET /api/events`, the `pantry_session` cookie, and the `userId` parameter. None of §3.1 applies to it. `GET /api/config` tells each client which transport to use.
+Stage 3 push is AppSync. The Pi keeps SQLite and the SSE stream `GET /api/events`. Stage 1 on that Pi uses the local auth in [Stage 1 auth](#stage-1-auth). `pantry_session` exists only during household 1's changeover, then it is retired. `GET /api/config` tells each client which transport to use, and it carries `minClientVersion.expo`.
 
 JSON field names are camelCase, matching the API the web client already calls. Design prose uses snake_case for the same ideas (`household_id`, `channel_key`). PM confirmed camelCase in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
@@ -18,7 +20,7 @@ JSON field names are camelCase, matching the API the web client already calls. D
 
 tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token; nothing else selects a tenant.
 
-The signed-in user comes from the server session. Web sends the BFF cookie. Expo sends `Authorization: Bearer` with the Cognito access token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call.
+The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call. The session stores `activeHouseholdId`. `POST /api/auth/session/household` sets that stored choice. Data routes still require `X-Household-Id`, and the server checks membership again.
 
 `userId` is removed from every hosted request: query, body, and path, except the path segment on the member routes below, which names the member being changed and is not a tenant. userId-removed: If a client still sends userId, the server ignores it and does not treat it as the tenant.
 
@@ -47,12 +49,14 @@ Proposed: restore does not revive device tokens. The owner re-pairs each device 
 | Caller | How they authenticate | Household |
 |---|---|---|
 | Web | HttpOnly, Secure, SameSite=Lax session cookie. The browser does not hold a Cognito token. | `X-Household-Id` |
-| Expo | `Authorization: Bearer` Cognito access token, from the system browser PKCE flow. Tokens stay in the device secure store. | `X-Household-Id` |
-| Device | `Authorization: Bearer` device token, returned once at pairing. | Bound to the token. One household per device. |
+| Expo, stage 1 | `Authorization: Bearer sbs_…` opaque session token, from `POST /api/auth/login`. Tokens stay in the device secure store. | Same as web |
+| Expo, stage 3 | `Authorization: Bearer` Cognito access token, from the system browser PKCE flow. Tokens stay in the device secure store. | `X-Household-Id` |
+| Device | `Authorization: Bearer sbd_…` device token, returned once at pairing and stored hashed. | Bound to the token. One household per device. |
+| Household password | Only during household 1's changeover. `{ "householdPassword": string }` on login, or the existing `pantry_session` cookie. Member of household 1. Ignores `X-Household-Id`. | Household 1 |
 
-Web cookie calls that change state also require an `Origin` equal to `APP_BASE_URL` (design §5). Expo bearer calls do not use that cookie. `APP_BASE_URL` is per-stage config. Production is `https://app.stockbot.rhionin.com`. The server reads the variable. This contract does not hardcode the host.
+Web cookie calls that change state also require an `Origin` equal to `APP_BASE_URL` (design §5). Bearer calls do not use that cookie. `APP_BASE_URL` is per-stage config. Production is `https://app.stockbot.rhionin.com`. The server reads the variable. This contract does not hardcode the host.
 
-The cookie's name is not specified here. It replaces `pantry_session` on the hosted origin. `pantry_session` stays the Pi cookie.
+Session cookie, decided by CJ on 2026-10-23 (§11.3): the name is `__Host-stockbot_session` (`SESSION_COOKIE_NAME`). Attributes are `HttpOnly; Secure; SameSite=Lax; Path=/`. It is host-only, so it has no `Domain`. Expo does not use the cookie. Expo sends `Authorization: Bearer sbs_…`. The token is 32 random bytes, base64url, prefixed `sbs_`. Only the SHA-256 is stored. Lifetime is a 30-day sliding window and a 180-day absolute cap. At the cap the response is `unauthorized`. Logout revokes this session. Password reset revokes all of that user's sessions, then signs them in. Removing a member ends that member's access on the next request: a session whose active household was the one they left must choose again. `pantry_session` is the household-password cookie during the changeover only. Retirement replaces its signing key, so every `pantry_session` fails at once. Personal sessions do not use that key.
 
 Roles, from design §5:
 
@@ -65,23 +69,36 @@ A household has at least one owner. The check locks the owner rows with `SELECT 
 
 The server retries a transaction that fails with a serialization error, from the start, inside a bounded attempt budget. Calls that leave the database run only after that transaction has committed: the SES invite email, Cognito `AdminUserGlobalSignOut` on logout, Cognito `AdminDeleteUser` on account deletion, and EventBridge Scheduler create. `DELETE /api/me` commits the database step first, then calls `AdminDeleteUser` from a job that retries on its own. A failure of that job does not restore the memberships.
 
-Cognito owns sign-up, email verification, and password reset. This API does not take passwords. A session exists only after the email is verified. The post-confirmation trigger creates the `users` row. The household is created by `POST /api/households` after that.
+Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own forgot-password. Stage 1 does take passwords, on the routes in [Stage 1 auth](#stage-1-auth). A stage-3 session exists only after the email is verified. The post-confirmation trigger creates the `users` row. The household is created by `POST /api/households` after that. Stage 1 creates the first household by accepting a `start_household` invite. `POST /api/households` is unchanged.
+
+### Stage 1 auth
+
+CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
+
+`GET /api/config` includes `minClientVersion.expo`. An Expo request whose `X-Stockbot-Client: expo/<version>` is below that minimum gets `426` `upgrade_required`. The sentence is "Update Stockbot to keep using it."
+
+Pi-only additions, outside the stage-3 AWS behavior: `householdPassword` and `householdPasswordRestoreUntil` on `GET /api/household/settings`, and `POST /api/household/household-password/retire` and `POST /api/household/household-password/restore`. Stage 3 returns `householdPassword: null` and `not_found` for those two routes. Households other than household 1 also return `householdPassword: null` and `not_found` for the routes, including in stage 1.
 
 ## Endpoint index
 
-endpoint-count: 39
+endpoint-count: 51
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
 ```text
 endpoint-index
 GET /api/auth/login
+POST /api/auth/login
 GET /api/auth/callback
 POST /api/auth/logout
 GET /api/auth/session
+POST /api/auth/session/household
+POST /api/auth/reset
 POST /api/households
 GET /api/household/settings
 PATCH /api/household/settings
+POST /api/household/household-password/retire
+POST /api/household/household-password/restore
 GET /api/households
 GET /api/households/{id}
 PATCH /api/households/{id}
@@ -90,15 +107,22 @@ POST /api/households/{id}/restore
 GET /api/households/{id}/members
 PATCH /api/households/{id}/members/{userId}
 DELETE /api/households/{id}/members/{userId}
+POST /api/households/{id}/members/{userId}/reset-link
 POST /api/invites
 GET /api/invites
 POST /api/invites/{id}/revoke
+POST /api/invites/preview
 POST /api/invites/accept
+POST /api/operator/household-invites
 POST /api/devices/pair
+GET /api/devices/pair/{pairingId}
 POST /api/devices/pair/complete
 GET /api/devices
+PATCH /api/devices/{id}
 DELETE /api/devices/{id}
 POST /api/device/scans
+POST /api/device/heartbeat
+POST /api/device/token/rotate
 POST /api/scans
 GET /api/scans
 PATCH /api/scans/{id}
@@ -122,7 +146,7 @@ Routes the current server already serves, and that this contract does not redefi
 
 ### GET /api/auth/login
 
-Web only. Design §6 names callback, logout, and session. This redirect is the step that starts that callback.
+Stage 3. Web only. Design §6 names callback, logout, and session. This redirect is the step that starts that callback. Stage 1 sign-in is `POST /api/auth/login`.
 
 | | |
 |---|---|
@@ -135,9 +159,26 @@ Web only. Design §6 names callback, logout, and session. This redirect is the s
 
 Expo does not call this. Expo runs PKCE in the system browser and stores the tokens itself.
 
+### POST /api/auth/login
+
+Stage 1. Email and password. The household-password form exists only while household 1's household password is on.
+
+| | |
+|---|---|
+| Auth | None |
+| Role | None |
+| X-Household-Id | Omit |
+| Request | `{ "email": string, "password": string }` or, during the changeover, `{ "householdPassword": string }` |
+| Response | `200` `AuthSession`. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`) in the body. |
+| Errors | `unauthorized`, `validation`, `rate_limited` |
+
+Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`.
+
+Limits: 5 failures per 15 minutes per client IP, and 10 failures per 15 minutes per normalised email. Over the limit is `429` `rate_limited` with `Retry-After`. The body is still the registry sentence and does not say which field was wrong.
+
 ### GET /api/auth/callback
 
-Web only. The Lambda exchanges the Cognito code and sets the session cookie.
+Stage 3. Web only. The Lambda exchanges the Cognito code and sets the session cookie.
 
 | | |
 |---|---|
@@ -159,27 +200,62 @@ Web only. The Lambda exchanges the Cognito code and sets the session cookie.
 | Response | `204` empty. The web cookie is cleared. |
 | Errors | `unauthorized` |
 
-After the session row is deleted and the transaction commits, the server calls Cognito `AdminUserGlobalSignOut` for that user, so a refresh token cannot mint a new session. That call is not inside the transaction. Expo deletes its secure-store tokens after this returns.
+Stage 1 revokes this session row and clears the cookie. Stage 3, after that row is deleted and the transaction commits, calls Cognito `AdminUserGlobalSignOut` for that user, so a refresh token cannot mint a new session. That call is not inside the transaction. Expo deletes its secure-store tokens after this returns.
 
 ### GET /api/auth/session
 
 | | |
 |---|---|
-| Auth | Session (cookie or bearer) |
-| Role | Signed in |
+| Auth | Optional. A missing cookie and a missing bearer is a signed-out session, not an error. |
+| Role | None |
 | X-Household-Id | Omit |
 | Request | None |
 | Response | `200` `AuthSession` |
-| Errors | `unauthorized` |
+| Errors | `unauthorized` when a cookie or bearer is present and is expired, revoked, or unknown |
 
 ```ts
 interface AuthSession {
-  user: { id: string; email: string };
+  user: { id: string; email: string; name: string } | null;
   memberships: { householdId: string; name: string; role: 'owner' | 'member' }[];
+  households: { id: string; name: string; role: 'owner' | 'member' }[];
+  activeHouseholdId: string | null;
+  operator: boolean;
 }
 ```
 
-`memberships` is every household this user belongs to, including one that is soft-deleted and still inside the 30-day restore window. It is the switcher list. It is not a tenant the client can override: a later call still has to send `X-Household-Id`, and the server checks membership again.
+`user` is null when nobody is signed in. Then `memberships` and `households` are empty, `activeHouseholdId` is null, and `operator` is false. A household-password session has `user: null`, `operator: false`, `activeHouseholdId` set to household 1, and one membership with role `member`.
+
+`memberships` is the #364 list. `households` is the same list with `id` in place of `householdId`. Both include a household that is soft-deleted and still inside the 30-day restore window. Neither is a tenant the client can override: a later call still has to send `X-Household-Id`, and the server checks membership again. `name` on `user` is the person's display name. `operator` is a flag, not a household role, and it does not grant another household's data.
+
+### POST /api/auth/session/household
+
+Sets the session's `activeHouseholdId`. The client then sends that id as `X-Household-Id`.
+
+| | |
+|---|---|
+| Auth | Session (a personal account, not a household-password session) |
+| Role | Signed in |
+| X-Household-Id | Omit |
+| Request | `{ "householdId": string }` |
+| Response | `200` `AuthSession` |
+| Errors | `unauthorized`, `not_found` |
+
+A household the user does not belong to, including one that does not exist, is `not_found`.
+
+### POST /api/auth/reset
+
+Sets a new password from a reset link. The link is single use and expires 24 hours after it was issued.
+
+| | |
+|---|---|
+| Auth | None. The code is the credential. |
+| Role | None |
+| X-Household-Id | Omit |
+| Request | `{ "code": string, "password": string }` |
+| Response | `200` `AuthSession`. This signs the person in and revokes their other sessions. |
+| Errors | `validation`, `invite_expired`, `not_found`, `rate_limited` |
+
+Password rules match login. A code past its expiry, or already used, is `invite_expired`. A code that was never issued is `not_found`. Limits match invite accept: 10 per 15 minutes per IP, and 5 attempts per code. The server builds the link that created this code as `<APP_BASE_URL>/reset/<code>`.
 
 ## Households, members, and roles
 
@@ -209,10 +285,37 @@ Proposed. These two routes are the household restock mode from #296. They supers
 | Auth | Session |
 | Role | Member |
 | X-Household-Id | Required |
-| GET response | `200` `{ "restockMode": "auto" \| "ask_restock" \| "ask_hold" }` |
+| GET response | `200` `HouseholdSettings` |
 | PATCH request | `{ "restockMode": "auto" \| "ask_restock" \| "ask_hold" }` |
-| PATCH response | `200` the same object |
+| PATCH response | `200` `HouseholdSettings` |
 | Errors | `unauthorized`, `validation`, `not_found`, `busy` |
+
+```ts
+interface HouseholdSettings {
+  restockMode: 'auto' | 'ask_restock' | 'ask_hold';
+  householdPassword: 'on' | 'off' | null;
+  householdPasswordRestoreUntil?: string; // RFC3339, only while a retired password can be restored
+}
+```
+
+`restockMode` is the #364 field. `householdPassword` and `householdPasswordRestoreUntil` are the stage-1 additions. `on` means household 1's shared password still signs in. `off` means it was retired and `householdPasswordRestoreUntil` is set for 7 days. `null` means this household never had one. Stage 3 returns `householdPassword: null` and omits `householdPasswordRestoreUntil`. PATCH does not accept those two fields. Changing the password state is the retire and restore routes.
+
+### POST /api/household/household-password/retire
+
+### POST /api/household/household-password/restore
+
+Owner actions for household 1 during stage 1. Retire turns the shared password off, replaces its session key, and revokes sessions that came from that password. Personal sessions stay. Restore, before `householdPasswordRestoreUntil`, turns the same password back on. The new session key stays, so old `pantry_session` cookies stay dead.
+
+| | |
+|---|---|
+| Auth | Session (personal account) |
+| Role | Owner of household 1 |
+| X-Household-Id | Required, and it must be household 1 |
+| Request | Empty body |
+| Response | `200` `HouseholdSettings` |
+| Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
+
+Any other household, and every caller in stage 3, gets `not_found`. Restore after the 7 days is `not_found`.
 
 ### GET /api/households
 
@@ -347,7 +450,22 @@ Remove that member. The server publishes a `rekey` hint on the current channel, 
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `last_owner`, `busy` |
 
-Removing the last owner returns `last_owner`. An owner who is not the last owner may remove themselves.
+Removing the last owner returns `last_owner`. An owner who is not the last owner may remove themselves. Removal ends that person's access immediately. Their sessions whose active household was this one must choose again. Their other sessions stay, without this household.
+
+### POST /api/households/{id}/members/{userId}/reset-link
+
+Owner, for a member of this household. The operator can make one for anyone, including an owner, by calling it with that household's id. The link is single use and expires in 24 hours. Stage 1 does not email it. The owner copies `url`.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Owner of `{id}`, or operator |
+| X-Household-Id | Required, equal to `{id}` |
+| Request | Empty body |
+| Response | `201` `{ "url": string, "expiresAt": string }` |
+| Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
+
+`url` is `<APP_BASE_URL>/reset/<code>`. A member who is not an owner and not the operator gets `forbidden_role`. A user who is not in this household is `not_found`. Using the link is `POST /api/auth/reset`, which revokes that user's other sessions.
 
 ## Invites
 
@@ -376,7 +494,7 @@ interface InviteCreated {
 }
 ```
 
-The code has at least 40 bits of entropy. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. When `email` is present, the server sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
+The code has at least 40 bits of entropy. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. Stage 1 ignores `email`: it does not store it and it does not send mail, so `email` in the response is null. Stage 3, when `email` is present, sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
 
 ### GET /api/invites
 
@@ -398,7 +516,7 @@ interface InviteSummary {
 }
 ```
 
-The list does not include `code` or `url`. The raw code is not recoverable after create.
+The list does not include `code` or `url`. The raw code is not recoverable after create. `status` stays `open`, `revoked`, `used`, or `expired`. Stage-1 copy may say "cancelled" for a revoked invite. The JSON value remains `revoked`.
 
 ### POST /api/invites/{id}/revoke
 
@@ -413,24 +531,54 @@ The list does not include `code` or `url`. The raw code is not recoverable after
 
 A wrong household, an unknown id, or an invite that is already used returns `not_found`.
 
-### POST /api/invites/accept
+### POST /api/invites/preview
 
-The caller is signed in (they have just signed up, or they already have an account). The code is in the body so it does not land in an access log as a path.
+The code is in the body so it does not land in an access log as a path. No session required.
 
 | | |
 |---|---|
-| Auth | Session |
-| Role | Signed in |
-| X-Household-Id | Omit. The invite names the household. |
+| Auth | None |
+| Role | None |
+| X-Household-Id | Omit |
 | Request | `{ "code": string }` |
-| Response | `200` `{ "householdId": string, "name": string, "role": "member" }` |
+| Response | `200` `{ "kind": "start_household" \| "join_household", "householdName"?: string, "invitedBy"?: string, "expiresAt": string }` |
+| Errors | `validation`, `invite_expired`, `not_found`, `rate_limited` |
+
+`join_household` includes `householdName`. `start_household` omits it. `invitedBy` is a display name. A code past `expiresAt`, or already used, is `invite_expired`. A revoked or never issued code is `not_found`. Limits: 10 per 15 minutes per IP, and 5 attempts per code.
+
+### POST /api/invites/accept
+
+The code is in the body so it does not land in an access log as a path. The #364 body is `{ "code": string }` from a signed-in caller. Stage 1 also accepts an account, and a household name when the invite starts a household.
+
+| | |
+|---|---|
+| Auth | Session, or none when `account` is present |
+| Role | Signed in, or none when creating the account |
+| X-Household-Id | Omit. The invite names the household. |
+| Request | `{ "code": string, "account"?: { "name": string, "email": string, "password": string }, "household"?: { "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold" } }` |
+| Response | `200` `{ "householdId": string, "name": string, "role": "member" \| "owner" }` |
 | Errors | `unauthorized`, `validation`, `invite_expired`, `not_found`, `busy`, `rate_limited` |
 
 A code that is past `expiresAt`, or already used, is `invite_expired`. A code that was revoked, or that was never issued, is `not_found`. Decided by PM in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445).
 
-Accept is attempt-limited. Too many tries returns `rate_limited`.
+Accept is attempt-limited. Too many tries returns `rate_limited`. The same limits as preview apply, and login's password rules apply to `account.password`.
 
-The new membership is `member`. The client then sends that `householdId` as `X-Household-Id`. Accepting does not switch any other household.
+`join_household` adds a `member`. `household` is omitted. A signed-in caller sends `{ "code" }` only. A new person sends `account` and no session. `start_household` creates the household, makes the person `owner`, and requires `household.name`. `restockMode` is optional and defaults to `auto`. The operator is the only one who can create that invite. The client then sends `householdId` as `X-Household-Id`. Accepting sets this session's `activeHouseholdId` to that household. It does not remove any other membership.
+
+### POST /api/operator/household-invites
+
+Operator only. Creates a `start_household` invite. Same code rules as `POST /api/invites`: single use, 7 days, at least 40 bits, stored hashed.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Operator. This is not a household role. |
+| X-Household-Id | Omit |
+| Request | Empty body. `email`, if sent, is ignored in stage 1. |
+| Response | `201` `InviteCreated` |
+| Errors | `unauthorized`, `not_found`, `busy` |
+
+A signed-in caller who is not the operator gets `not_found`. Stage 3 may also email the link through SES. The accept path is `POST /api/invites/accept`.
 
 ## Devices
 
@@ -446,10 +594,37 @@ Starts pairing from a signed-in client. Any member can start a code. Only an own
 | Role | Member |
 | X-Household-Id | Required |
 | Request | Empty body |
-| Response | `201` `{ "code": string, "qrPayload": string, "expiresAt": string }` |
+| Response | `201` `PairingCode` |
 | Errors | `unauthorized`, `validation`, `not_found`, `busy` |
 
 `expiresAt` is 10 minutes from creation. `qrPayload` is the same code, for the QR. It does not contain a household id the device is expected to send back. The code has at least 40 bits of entropy.
+
+```ts
+interface PairingCode {
+  code: string;          // #364 field. SBP-XXXX-XXXX-C
+  qrPayload: string;     // #364 field. Same text as code.
+  expiresAt: string;
+  pairingId: string;     // poll id for GET /api/devices/pair/{pairingId}
+  barcodeValue: string;  // same text as code, drawn as Code 128
+  qrValue: string;       // same text as qrPayload, drawn as QR
+}
+```
+
+pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no I, L, O, or U). The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`. A product barcode (GTIN-8, GTIN-12, GTIN-13, or GTIN-14) is digits only. A payload that contains letters and hyphens cannot be one. The client and the server reject a scan that matches the pattern. It is never created as a product. `isPairingCode` in `frontend/src/api/contract.ts` checks the pattern and the check character.
+
+### GET /api/devices/pair/{pairingId}
+
+The signed-in client polls this while the hub scans the code. The token is not in this response. The hub receives the token from `POST /api/devices/pair/complete`.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required. The pairing must belong to that household. |
+| Response | `200` `{ "pairingId": string, "status": "pending" \| "complete" \| "expired", "expiresAt": string, "deviceId"?: string }` |
+| Errors | `unauthorized`, `validation`, `not_found` |
+
+`deviceId` is present when `status` is `complete`. An unknown pairing, or one for another household, is `not_found`.
 
 ### POST /api/devices/pair/complete
 
@@ -460,13 +635,13 @@ The device calls this with the code and receives the bearer token. Design §6 na
 | Auth | None. The code is the credential. |
 | Role | None |
 | X-Household-Id | Omit. The code is bound to the household that created it. |
-| Request | `{ "code": string, "label"?: string }` |
-| Response | `201` `{ "deviceId": string, "token": string }` |
+| Request | `{ "code": string, "label"?: string, "hub"?: { "kind": "pi_hub" \| "box_hub", "version": string, "bootId": string } }` |
+| Response | `201` `{ "deviceId": string, "token": string, "config"?: DeviceHubConfig, "heartbeatSeconds"?: 60 }` |
 | Errors | `validation`, `not_found`, `rate_limited`. `invite_expired` is not used here |
 
-An unknown, revoked, already used, or expired code is `not_found`. Pairing does not reuse `invite_expired`. `label` is an optional display name. Complete is attempt-limited. Too many tries returns `rate_limited`.
+An unknown, revoked, already used, or expired code is `not_found`. Pairing does not reuse `invite_expired`. `label` is an optional display name. `code` and `label` are the #364 fields. `hub` is the stage-1 addition a scan hub sends. Complete is attempt-limited: 10 per 10 minutes per IP, and 5 attempts per code. Too many tries returns `rate_limited`.
 
-The response does not include a household id. The token is bound to that household on the server. `token` is shown once.
+The response does not include a household id. The token is bound to that household on the server. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`.
 
 ### GET /api/devices
 
@@ -485,10 +660,27 @@ interface Device {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  kind: 'pi_hub' | 'box_hub' | 'direct';
+  online: boolean;
 }
 ```
 
-The token and the token hash are not in this response.
+`id`, `label`, `createdAt`, `lastSeenAt`, and `revokedAt` are the #364 fields. `kind` and `online` are the stage-1 additions. `online` is true when `lastSeenAt` is within 300 seconds of now. The server decides, so web and mobile agree. `direct` is the scanner on this server. It belongs to household 1, and it cannot be paired, renamed, revoked, or moved: those routes return `not_found` for it. The token and the token hash are not in this response.
+
+### PATCH /api/devices/{id}
+
+Rename. Any member. The #364 list fields are otherwise unchanged.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required. `{id}` must be a device of that household. |
+| Request | `{ "label": string }` |
+| Response | `200` `Device` |
+| Errors | `unauthorized`, `validation`, `not_found`, `busy` |
+
+`label` is trimmed, 1–80 characters. The direct scanner is `not_found`.
 
 ### DELETE /api/devices/{id}
 
@@ -502,7 +694,7 @@ Revoke. Owners only. The server publishes a `rekey` hint on the current channel,
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
 
-A device in another household is `not_found`.
+A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token. Disconnecting a hub discards scans it has not sent. The confirm uses the last `queued` count from heartbeat.
 
 ### POST /api/device/scans
 
@@ -542,6 +734,62 @@ The offline ring of 500 scans is device firmware. It is not a request field. Eac
 
 A committed scan publishes one `scans` hint after the final commit, on this device's household channel only.
 
+The #364 body above stays valid. One `DeviceScanRequest` is a batch of one. Stage 1 hubs may instead send `DeviceScanBatchRequest` on this same route. Stage 3 accepts that batch too. The single-object body and `DeviceScanResponse` stay as written.
+
+```ts
+interface DeviceScanBatchRequest {
+  scans: {
+    id: string;
+    barcode?: string;
+    scannedAt?: string;
+    direction?: 'stock_in' | 'stock_out';
+    unitCount?: number;
+    ageMs?: number;
+    bootId?: string;
+  }[];
+  droppedCount?: number;
+}
+
+interface DeviceScanBatchResponse {
+  results: { id: string; status: 'created' | 'duplicate' | 'conflict' }[];
+  config: DeviceHubConfig;
+}
+```
+
+A batch has at most 50 scans and a body of at most 64 KB. `barcode` is at most 64 printable ASCII characters. Over either limit is `validation`. The batch is one transaction. A per-item `conflict` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode and direction. `created` is a new scan. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
+
+`DeviceHubConfig` is `{ controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, configVersion: number }`.
+
+### POST /api/device/heartbeat
+
+The hub reports liveness. A flush also counts as contact. This does not remove `heartbeat: true` on `POST /api/device/scans`.
+
+| | |
+|---|---|
+| Auth | Device bearer |
+| Role | Device |
+| X-Household-Id | Omit |
+| Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean }` |
+| Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: { "version": string, "url": string, "sha256": string, "sig": string } }` |
+| Errors | `unauthorized`, `device_revoked`, `validation` |
+
+`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent.
+
+### POST /api/device/token/rotate
+
+The hub calls this about every 30 days, or when heartbeat returns `rotateToken: true`.
+
+| | |
+|---|---|
+| Auth | Device bearer |
+| Role | Device |
+| X-Household-Id | Omit |
+| Request | Empty body |
+| Response | `200` `{ "token": string }` |
+| Errors | `unauthorized`, `device_revoked`, `busy` |
+
+`token` is shown once and stored hashed, same format as pairing. The previous token stays valid until the new token is used, or for 24 hours, whichever comes first.
+
 ## Scans and changes-since
 
 Hosted scan routes are the current scan routes without `userId`. The household is `X-Household-Id`. Role for every scan route below: member. Auth: session.
@@ -559,6 +807,7 @@ When `changed` is true, the body is the full current set for that scope, not a p
 | `scans` | `GET /api/scans?since=<cursor>` |
 | `stock` | `GET /api/inventory?since=<cursor>` |
 | `list` | `GET /api/shopping-list?since=<cursor>` |
+| `devices` | `GET /api/devices` |
 
 ### POST /api/scans
 
@@ -916,11 +1165,11 @@ Design §3.1 gives this as the example the client uses to pick a transport. PM c
 
 ```ts
 type LiveConfig =
-  | { live: 'sse' | 'poll' }
-  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string } };
+  | { live: 'sse' | 'poll'; minClientVersion: { expo: string } }
+  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string } };
 ```
 
-The Pi returns `{ "live": "sse" }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain.
+The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string } }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. A lower `X-Stockbot-Client` gets `426` `upgrade_required`. Stage 3 returns the same field.
 
 ### POST /api/live/ticket
 
@@ -958,10 +1207,11 @@ The ticket is an HMAC over `{household_id, user_id, channel_key, exp}`, key in S
 ```ts
 type LiveHint =
   | { type: 'scans' | 'stock' | 'list'; cursor: string }
-  | { type: 'rekey' };
+  | { type: 'rekey' }
+  | { type: 'devices' };
 ```
 
-The JSON is under 1 KB. It has no item names, barcodes, quantities, or emails. A client that receives `scans`, `stock`, or `list` refetches the matching changes-since route. The refetch is what enforces tenancy. A client that receives `rekey` does not refetch those lists. It loads `GET /api/config` and subscribes again, as the channel section says.
+The JSON is under 1 KB. It has no item names, barcodes, quantities, or emails. A client that receives `scans`, `stock`, or `list` refetches the matching changes-since route. The refetch is what enforces tenancy. A client that receives `rekey` does not refetch those lists. It loads `GET /api/config` and subscribes again, as the channel section says. A client that receives `devices` refetches `GET /api/devices`. `devices` has no cursor. `scans`, `stock`, `list`, and `rekey` are unchanged.
 
 Publish covers scan ingest, confirm, edit, stock changes, list changes, and `stockbot-jobs` writes that change those three. A write that touches several scopes publishes one hint per scope, in batches of at most 5 events. Job completion for export and import is not one of these types. The client learns that a job finished by polling `GET /api/export/{id}` or `GET /api/import/{id}`.
 
@@ -1035,8 +1285,10 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
-| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on `POST /api/invites/accept` and `POST /api/devices/pair/complete`. |
+| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, and pairing complete. Login also sends `Retry-After`. |
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. |
+| `device_revoked` | 401 | This scanner was disconnected. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
+| `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo client older than `minClientVersion.expo`. Decided with the stage-1 auth answers. |
 
 ## Decided by PM
 
@@ -1061,7 +1313,7 @@ Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbo
 18. **CSV.** `items.csv` and `shopping-list.csv` only. `items.csv` also has category, group, and stock target. Decided by PM.
 19. **Version 1 leaves out** memberships, invites, device tokens, push subscriptions, and provider tokens. Decided by PM. The Architect added `usage_daily` and `channel_key`, and made settings an allowlist.
 20. **Product snapshot.** The export copies the products the household references, not the shared catalog. Decided by PM. The Architect added barcodes, the remap rule, and the round-trip comparison.
-22. **Hint types.** `scans`, `stock`, and `list`. Decided by PM. Frontend Builder added `rekey` for a channel rotation.
+22. **Hint types.** `scans`, `stock`, and `list`. Decided by PM. Frontend Builder added `rekey` for a channel rotation. Stage 1 adds `devices` for a device list change. The earlier three and `rekey` are unchanged.
 23. **Unrecognized changes-since cursor.** A full `200`. Decided by PM. (The earlier batch question that used this number was already closed with #330.) Architect confirmed this, including a cursor from another household or scope. An unchanged cursor is `200` with `changed: false` and `Cache-Control: no-store`, not `304`.
 24. **Default scan list** when `status` is omitted: pending, flagged, and qr. Decided by PM. PM's comment calls this #25, which was its number before the #330 edit.
 25. **Foreign id inside a batch.** The whole request is `not_found`. Decided by PM. The Architect added the single scoped SELECT and the identical response for a missing id.
@@ -1099,10 +1351,19 @@ From the review on PR #364. Where one of these refines an earlier ruling, the te
 
 ## Decided by CJ
 
-27. **Invite URL host.** Decided by CJ, via Network Engineer, on 2026-10-22. This replaces the open domain note in design §13. The hosted app and invite URLs use `APP_BASE_URL`. Production is `https://app.stockbot.rhionin.com`. Invite links are `<APP_BASE_URL>/invite/<code>`. SES sends from `stockbot.rhionin.com`, with MAIL FROM at `mail.stockbot.rhionin.com`. The host is stage config, not a hardcoded string, because dev will get its own host later. The client does not send a host.
+27. **Invite URL host.** Decided by CJ, via Network Engineer, on 2026-10-22. This replaces the open domain note in design §13. The hosted app and invite URLs use `APP_BASE_URL`. Production is `https://app.stockbot.rhionin.com`. Invite links are `<APP_BASE_URL>/invite/<code>`. SES sends from `stockbot.rhionin.com`, with MAIL FROM at `mail.stockbot.rhionin.com`. The host is stage config, not a hardcoded string, because dev will get its own host later. The client does not send a host. Stage 1 does not send mail. Those SES domains stay the stage-3 sender.
+31. **Pi auth.** Decided by CJ on 2026-10-23. Everyone uses a personal email and password. The shared household password is only for household 1's changeover, then it is retired. Sessions are this server's opaque tokens: cookie `__Host-stockbot_session` or bearer `sbs_`. See [Stage 1 auth](#stage-1-auth).
+1. **Session cookie name.** Decided by CJ on 2026-10-23. `__Host-stockbot_session`, or bearer `sbs_` for Expo. See [Auth and roles](#auth-and-roles).
 
 ## Open questions
 
-1. **Session cookie name.** Still open for the Architect. It must not be the Pi's `pantry_session`. PM's comment did not name it.
-2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays.
-3. **Pi auth** (question 31 on the reviewed contract). This contract does not change the Pi. Which auth the Pi keeps is PM's decision. It is not a T2 blocker.
+2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
+
+Where the stage-1 plan and #374 disagree, this contract follows #374 and keeps the #364 shape. These are the leftovers:
+
+4. **Invite status word.** The plan and the stage-1 requirements say `cancelled`. #364's `InviteSummary.status` is `revoked`, and #374 says to keep that shape. The wire value stays `revoked`.
+5. **Device scan body.** The plan replaces the single scan with a batch. #374 says to keep the #364 device-scan shape. Both bodies are accepted. One `DeviceScanRequest` is a batch of one.
+6. **Login and unknown-device codes.** The plan names `device_unauthorized` for a bad device token. The requirements do not name a login code. #374 adds `device_revoked` and `upgrade_required` only. A failed login, unknown email or wrong password, is `unauthorized` with that registry sentence, and the body is the same either way. An unknown device token is `unauthorized`. `device_revoked` is only after an owner revokes the device.
+7. **Creating a household.** The requirements say stage 1 has no household create except a `start_household` invite. #374 says non-auth shapes stay, so `POST /api/households` is unchanged. The invite is the stage-1 path that is written down. Whether stage 1 rejects the create route is still open.
+8. **Reset link path.** The plan does not name the path. This contract uses `<APP_BASE_URL>/reset/<code>`, parallel to the invite link.
+9. **`device_revoked` sentence.** #374 names the code and not the sentence. The registry uses "This scanner was disconnected." PM can replace that sentence.

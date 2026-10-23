@@ -42,6 +42,8 @@ func existingContractSentences() map[string]string {
 		"confirmation_mismatch":         "That doesn't match. Check the spelling and try again.",
 		"rate_limited":                  "Too many tries. Wait a moment and try again.",
 		"payload_too_large":             "That file is too large to import.",
+		"device_revoked":                "This scanner was disconnected.",
+		"upgrade_required":              "Update Stockbot to keep using it.",
 	}
 }
 
@@ -219,6 +221,21 @@ func TestHostedAPIContract(t *testing.T) {
 	}
 	if count != len(paths) {
 		t.Fatalf("endpoint-count %d, index has %d", count, len(paths))
+	}
+	for _, phrase := range []string{
+		"__Host-stockbot_session",
+		"Bearer sbs_",
+		"upgrade_required",
+		"householdPassword: null",
+		"pairing-collision: A pairing code cannot collide with a product barcode.",
+		"SBP-XXXX-XXXX-C",
+		"POST /api/auth/login",
+		"POST /api/device/heartbeat",
+		"POST /api/device/token/rotate",
+	} {
+		if !strings.Contains(doc, phrase) {
+			t.Fatalf("contract missing %q", phrase)
+		}
 	}
 }
 
