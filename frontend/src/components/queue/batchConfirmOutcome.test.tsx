@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { notifications, Notifications } from '@mantine/notifications';
 import { SERVER_ERROR_FALLBACK } from '../../api/contract';
+import { showUndo } from '../restock/undo';
 import { ScanQueuePage } from './ScanQueuePage';
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
@@ -155,7 +157,7 @@ const pendingEntries = (which: PendingSet): ScanEntry[] => {
 
 interface OutcomeCase {
   name: string;
-  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'confirm-milk-more';
+  action: 'batch' | 'confirm-milk' | 'confirm-milk-instance' | 'more-milk' | 'batch-then-milk' | 'confirm-milk-more';
   pendingAfter: PendingSet;
   commit?: { status: number; body: unknown; empty?: boolean };
   batch?: unknown;
@@ -185,10 +187,13 @@ interface OutcomeCase {
     toggle?: boolean;
   };
   hideMore?: string;
+  openMore?: boolean;
   household?: unknown;
   catalog?: unknown;
   stillSelected?: boolean;
   fixed?: boolean;
+  toast?: string;
+  keepsUndo?: boolean;
 }
 
 const committedMilk = { ...milk, status: 'committed' };
@@ -263,7 +268,7 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '222',
   },
   {
-    name: 'instance_gone shows the server message and drops the removed unit',
+    name: 'instance_gone shows the server message once in the toast and drops the removed unit',
     action: 'confirm-milk-instance',
     pendingAfter: 'both',
     commit: {
@@ -271,12 +276,13 @@ const cases: OutcomeCase[] = [
       body: { error: 'That one was already taken out. Pick another.', code: 'instance_gone' },
     },
     instancesAfter: [keptInstance],
-    visible: ['That one was already taken out. Pick another.'],
-    absent: [goneLabel],
+    visible: ['That one was already taken out. Pick another.', keptLabel],
+    absent: [goneLabel, 'No inventory item is available for this product.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'That one was already taken out. Pick another.' },
+    cardWithoutAlert: '111',
     instanceFetches: 2,
+    toast: 'That one was already taken out. Pick another.',
     noSearchOn: ['111'],
   },
   {
@@ -291,8 +297,22 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+    cardWithoutAlert: '111',
     instanceFetches: 1,
+    toast: 'Nothing on hand to take out.',
+    noSearchOn: ['111'],
+  },
+  {
+    name: 'a failed single commit shows the server sentence in the toast',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.'],
+    absent: [],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardWithoutAlert: '111',
+    toast: 'Nothing on hand to take out.',
     noSearchOn: ['111'],
   },
   {
@@ -304,7 +324,8 @@ const cases: OutcomeCase[] = [
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Choose a different product.' },
+    cardWithoutAlert: '111',
+    toast: 'Choose a different product.',
     noSearchOn: ['111'],
     instanceFetches: 0,
   },
@@ -317,8 +338,9 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: SERVER_ERROR_FALLBACK },
+    cardWithoutAlert: '111',
     instanceFetches: 1,
+    toast: SERVER_ERROR_FALLBACK,
     noSearchOn: ['111'],
   },
   {
@@ -354,31 +376,73 @@ const cases: OutcomeCase[] = [
     unlinked: 'suggestions',
   },
   {
-    name: 'removedCount alone, one unit, uses singular grammar',
+    name: 'a short shelf shows the partial note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 1 } },
+    // testdata/contract/scan-commit-partial.json body from 3afbe09.
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 1,
+        requestedCount: 3,
+      },
+    },
     visible: ['Only 1 was on hand, so 1 was taken out.'],
     absent: ['Only 1 were on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
-    fixed: true,
+    toast: 'Only 1 was on hand, so 1 was taken out.',
+    keepsUndo: true,
   },
   {
-    name: 'removedCount of several uses plural grammar',
+    name: 'several units short uses the plural sentence',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 2 } },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 2,
+        requestedCount: 3,
+      },
+    },
     visible: ['Only 2 were on hand, so 2 were taken out.'],
     absent: ['Only 2 was on hand'],
     pendingBarcodes: ['222'],
     goneBarcodes: ['111'],
+    toast: 'Only 2 were on hand, so 2 were taken out.',
   },
   {
-    name: 'removedCount equal to the card count adds no notice',
+    name: 'equal removed and requested counts show no note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: { ...committedMilk, removedCount: 4 } },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_out',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+        removedCount: 3,
+        requestedCount: 3,
+      },
+    },
     visible: [],
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
@@ -386,10 +450,21 @@ const cases: OutcomeCase[] = [
     quiet: true,
   },
   {
-    name: 'a missing removedCount behaves as a normal confirm',
+    name: 'a stock-in commit without the count fields shows no note',
     action: 'confirm-milk',
     pendingAfter: 'oats',
-    commit: { status: 200, body: committedMilk },
+    commit: {
+      status: 200,
+      body: {
+        id: 'scan-partial',
+        userId: 'user-1',
+        barcode: 'scan-partial',
+        direction: 'stock_in',
+        unitCount: 3,
+        status: 'committed',
+        productId: 'prod-partial',
+      },
+    },
     visible: [],
     absent: ['was taken out', 'were taken out'],
     pendingBarcodes: ['222'],
@@ -511,8 +586,9 @@ const cases: OutcomeCase[] = [
     absent: ['No close match found.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: 'Choose which item this is first.' },
+    cardWithoutAlert: '111',
     unlinked: 'search',
+    toast: 'Choose which item this is first.',
   },
   {
     name: 'batch product_unresolved opens search only on that card',
@@ -579,7 +655,8 @@ const cases: OutcomeCase[] = [
     absent: ['Stale Oats', 'No close match found.', 'No inventory item is available'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardReason: { barcode: '111', text: "That item isn't available anymore. Pick another." },
+    cardWithoutAlert: '111',
+    toast: "That item isn't available anymore. Pick another.",
     instanceFetches: 0,
     hideMore: '111',
   },
@@ -612,6 +689,8 @@ const cases: OutcomeCase[] = [
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     hideMore: '111',
+    cardWithoutAlert: '111',
+    toast: "That item isn't available anymore. Pick another.",
   },
   {
     name: 'More stays hidden while the link card is open',
@@ -624,6 +703,37 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
     hideMore: '111',
     cardWithoutAlert: '111',
+  },
+  {
+    name: 'a wiped product confirms nothing on hand only in the toast',
+    action: 'confirm-milk',
+    pendingAfter: 'both',
+    openMore: true,
+    household: [householdItem('oats', 'Oats', 1)],
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.'],
+    absent: ['No inventory item is available'],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    toast: 'Nothing on hand to take out.',
+  },
+  {
+    name: 'a single confirm replaces the batch reason so the sentence shows once',
+    action: 'batch-then-milk',
+    pendingAfter: 'both',
+    batch: {
+      updatedCount: 2,
+      failedIds: ['scan-milk', 'scan-oats'],
+      failedReasons: ['Nothing on hand to take out.', 'Already confirmed by someone else.'],
+    },
+    commit: { status: 409, body: { error: 'Nothing on hand to take out.', code: 'none_on_hand' } },
+    visible: ['Nothing on hand to take out.', 'Already confirmed by someone else.', fallback],
+    absent: [],
+    pendingBarcodes: ['111', '222'],
+    goneBarcodes: [],
+    cardWithoutAlert: '111',
+    cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
+    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'a stock-out with no household item says nothing is on hand',
@@ -648,8 +758,8 @@ const cases: OutcomeCase[] = [
     absent: ['No inventory item is available'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardOnce: { barcode: '111', text: 'Nothing on hand to take out.' },
-    cardReason: { barcode: '111', text: 'Nothing on hand to take out.' },
+    cardWithoutAlert: '111',
+    toast: 'Nothing on hand to take out.',
   },
   {
     name: 'an empty search lists household items, including zero on hand',
@@ -723,7 +833,7 @@ const cases: OutcomeCase[] = [
     pendingAfter: 'none',
     batch: { updatedCount: 2, committedIds: ['scan-milk', 'scan-oats'] },
     visible: [],
-    absent: [fallback],
+    absent: [fallback, 'was taken out', 'were taken out'],
     pendingBarcodes: [],
     goneBarcodes: ['111', '222'],
     quiet: true,
@@ -733,10 +843,12 @@ const cases: OutcomeCase[] = [
 describe('scan commit outcomes', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
+    notifications.clean();
     vi.stubGlobal('EventSource', FakeEventSource);
   });
 
   afterEach(() => {
+    notifications.clean();
     vi.unstubAllGlobals();
   });
 
@@ -795,7 +907,12 @@ describe('scan commit outcomes', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<MantineProvider><ScanQueuePage /></MantineProvider>);
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanQueuePage />
+      </MantineProvider>,
+    );
 
     const milkCard = row.cards
       ? null
@@ -811,16 +928,31 @@ describe('scan commit outcomes', () => {
       fireEvent.click(await within(milkCard).findByRole('radio', { name: goneLabel }));
     }
 
-    if (row.action === 'batch') {
+    if (row.keepsUndo) {
+      showUndo('Stopped restocking', 'Oats stay on the list.', () => {});
+      expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    }
+
+    if (row.action === 'batch' || row.action === 'batch-then-milk') {
       const count = (row.cards ?? [milk, oats]).length;
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: `Confirm ${count} selected scans` }));
+    }
+    if (row.action === 'batch-then-milk' && milkCard) {
+      await waitFor(() => {
+        expect(within(milkCard).getByRole('alert')).toHaveTextContent('Nothing on hand to take out.');
+      });
+      fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     } else if (row.action === 'more-milk' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
     } else if (row.action === 'confirm-milk-more' && milkCard) {
       fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
-    } else if (milkCard) {
+    } else if (row.action !== 'batch' && milkCard) {
+      if (row.openMore) {
+        fireEvent.click(within(milkCard).getByRole('button', { name: 'More' }));
+        expect(within(milkCard).getByText('Nothing on hand to take out.')).toBeInTheDocument();
+      }
       fireEvent.click(within(milkCard).getByRole('button', { name: 'Confirm' }));
     }
 
@@ -906,6 +1038,18 @@ describe('scan commit outcomes', () => {
         for (const notice of pinned) {
           expect(notice).toHaveStyle({ flexShrink: '0' });
         }
+      }
+      if (row.toast !== undefined) {
+        const leaves = screen.getAllByText(row.toast).filter((node) => node.childElementCount === 0);
+        expect(leaves).toHaveLength(1);
+        expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
+        expect(leaves[0]?.textContent).toBe(row.toast);
+        for (const article of screen.queryAllByRole('article')) {
+          expect(within(article).queryByText(row.toast)).not.toBeInTheDocument();
+        }
+      }
+      if (row.keepsUndo) {
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
       }
       if (row.stillSelected) {
         expect(screen.getByRole('button', { name: `Confirm ${row.pendingBarcodes.length} selected scans` })).toBeInTheDocument();

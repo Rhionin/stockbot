@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { notifications, Notifications } from '@mantine/notifications';
 import { ScanEntryCard } from './ScanEntryCard';
 import { formatExpiryDate } from './queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
@@ -165,8 +166,10 @@ describe('ScanEntryCard approve scan rename', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    notifications.clean();
     render(
       <MantineProvider>
+        <Notifications />
         <ScanEntryCard
           entry={{ ...entry, direction: 'stock_out' }}
           itemId="item-1"
@@ -181,10 +184,12 @@ describe('ScanEntryCard approve scan rename', () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      const errorAlert = screen.getByRole('alert');
-      expect(errorAlert).toBeInTheDocument();
-      expect(errorAlert).toHaveTextContent('Network error');
+      const leaves = screen.getAllByText('Network error').filter((node) => node.childElementCount === 0);
+      expect(leaves).toHaveLength(1);
+      expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
     });
+    expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByRole('alert')).not.toBeInTheDocument();
+    notifications.clean();
   });
 
   it('shows fallback error message "Unable to confirm scan." when error is not an Error instance', async () => {
@@ -196,8 +201,10 @@ describe('ScanEntryCard approve scan rename', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    notifications.clean();
     render(
       <MantineProvider>
+        <Notifications />
         <ScanEntryCard
           entry={{ ...entry, direction: 'stock_out' }}
           itemId="item-1"
@@ -212,10 +219,12 @@ describe('ScanEntryCard approve scan rename', () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      const errorAlert = screen.getByRole('alert');
-      expect(errorAlert).toBeInTheDocument();
-      expect(errorAlert).toHaveTextContent('Unable to confirm scan.');
+      const leaves = screen.getAllByText('Unable to confirm scan.').filter((node) => node.childElementCount === 0);
+      expect(leaves).toHaveLength(1);
+      expect(leaves[0]?.closest('.restock-toast')).not.toBeNull();
     });
+    expect(within(screen.getByRole('article', { name: 'Scan 123' })).queryByRole('alert')).not.toBeInTheDocument();
+    notifications.clean();
   });
 });
 

@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK } from './contract';
+import { SERVER_ERROR_FALLBACK, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -222,7 +222,7 @@ export function commitScanEntry(
   id: string,
   instanceId?: string,
   linkProductId?: string,
-): Promise<ScanEntry> {
+): Promise<ScanEntry & CommitScanResponse> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;

@@ -145,6 +145,9 @@ code {
      chaining to the shell, which has no room to move. */
   overscroll-behavior: contain;
   touch-action: pan-y;
+  /* Matches the fixed restock toast (its height plus the offset from the
+     viewport edge) so the last card can scroll out from under it. */
+  padding-bottom: var(--scan-toast-clearance, 0px);
 }
 
 /* The shell main is also a scrollport. On a phone a touch over the queue

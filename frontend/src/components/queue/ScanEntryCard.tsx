@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH } from '../../api/contract';
+import { commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, type CommitScanResponse } from '../../api/contract';
+import { showUndo } from '../restock/undo';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -12,6 +13,8 @@ import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './que
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 
+const NOTHING_ON_HAND = 'Nothing on hand to take out.';
+
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
@@ -19,7 +22,6 @@ const UNIT_COUNT_SAVE_DELAY_MS = 200;
 const multipackName = /\d+\s*x\s*\d/i;
 
 const LINK_OFFER_HEADING = 'Which item is this?';
-const NOTHING_ON_HAND = 'Nothing on hand to take out.';
 
 const LinkProductSearch = ({
   busy,
@@ -152,7 +154,7 @@ export interface ScanEntryCardProps {
   commitCode?: string;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
-  onCommitNote?: (note: string) => void;
+  onConfirmStart?: () => void;
 }
 
 export const ScanEntryCard = ({
@@ -164,12 +166,12 @@ export const ScanEntryCard = ({
   commitCode = '',
   onSelectedChange,
   onChanged,
-  onCommitNote,
+  onConfirmStart,
 }: ScanEntryCardProps) => {
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
-  const [approveError, setApproveError] = useState('');
   const [approving, setApproving] = useState(false);
+  const [toastedSentence, setToastedSentence] = useState('');
   const [localOffer, setLocalOffer] = useState<{
     code: string;
     offer: PantryLinkSuggestion[] | null;
@@ -270,8 +272,15 @@ export const ScanEntryCard = ({
     minute: '2-digit',
   });
 
-  const noteCommitted = (committed: ScanEntry) => {
-    onCommitNote?.(formatPartialRemoval(entry.unitCount, committed) ?? '');
+  const noteCommitted = (committed: ScanEntry & CommitScanResponse) => {
+    const note = formatPartialRemoval(committed);
+    if (note !== null) showUndo({ detail: note });
+  };
+
+  const showCommitSentence = (message: string) => {
+    if (message === '') return;
+    setToastedSentence(message);
+    showUndo({ detail: message, color: 'red' });
   };
 
   const rememberOffer = (offer: PantryLinkSuggestion[] | null, hideEmpty: boolean) => {
@@ -298,43 +307,40 @@ export const ScanEntryCard = ({
     setInstancePickerOpen(false);
   };
 
-  // Returns true when the failure was shown and the scan stays pending.
-  const showCommitFailure = async (requestError: unknown, linkedProductId?: string): Promise<boolean> => {
-    if (!(requestError instanceof ApiError)) return false;
-    const behavior = commitConflictBehavior(requestError.code);
-    if (behavior.refreshSuggestions) {
-      setApproveError(requestError.message || 'Unable to confirm scan.');
-      if (linkedProductId !== undefined) dropGoneTarget(linkedProductId);
-      return true;
+  // Card state stays here (picker, link offer, search). The sentence itself
+  // is published once, at the end, and only into the toast.
+  const showCommitFailure = async (requestError: unknown, linkedProductId?: string): Promise<void> => {
+    let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+    if (requestError instanceof ApiError) {
+      const behavior = commitConflictBehavior(requestError.code);
+      if (behavior.refreshSuggestions) {
+        if (linkedProductId !== undefined) dropGoneTarget(linkedProductId);
+      } else if (behavior.linkOffer) {
+        setInstancePickerOpen(false);
+        rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
+      } else {
+        rememberOffer(null, false);
+        if (behavior.refreshInstances) {
+          setInstancePickerOpen(true);
+          setInstanceId('');
+          setLocalInstanceReload((current) => current + 1);
+        }
+      }
+      message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
     }
-    if (behavior.linkOffer) {
-      setInstancePickerOpen(false);
-      rememberOffer(behavior.hideEmptyMatch ? [] : requestError.suggestions, behavior.hideEmptyMatch);
-      setApproveError(behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '');
-      return true;
-    }
-    rememberOffer(null, false);
-    if (behavior.refreshInstances) {
-      setInstancePickerOpen(true);
-      setInstanceId('');
-      setLocalInstanceReload((current) => current + 1);
-    }
-    setApproveError(requestError.message || 'Unable to confirm scan.');
-    return true;
+    showCommitSentence(message);
   };
 
   const handleApprove = async () => {
     setApproving(true);
-    setApproveError('');
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!await showCommitFailure(requestError)) {
-        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
-      }
+      await showCommitFailure(requestError);
     } finally {
       setApproving(false);
     }
@@ -342,16 +348,14 @@ export const ScanEntryCard = ({
 
   const linkSuggestion = async (productId: string) => {
     setApproving(true);
-    setApproveError('');
+    onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
       rememberOffer(null, false);
       noteCommitted(committed);
       onChanged();
     } catch (requestError) {
-      if (!await showCommitFailure(requestError, productId)) {
-        setApproveError(requestError instanceof Error ? requestError.message : 'Unable to confirm scan.');
-      }
+      await showCommitFailure(requestError, productId);
     } finally {
       setApproving(false);
     }
@@ -747,7 +751,7 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && (approveError || commitNotice) !== NOTHING_ON_HAND && (
+      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && toastedSentence !== NOTHING_ON_HAND && (
         <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
       )}
 
@@ -819,8 +823,8 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {(approveError || commitNotice) !== '' && (
-        <Alert color="red" py={4} mt={4}>{approveError || commitNotice}</Alert>
+      {commitNotice !== '' && (
+        <Alert color="red" py={4} mt={4}>{commitNotice}</Alert>
       )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
       {hintError !== '' && <Alert color="red" py={4} mt={4}>{hintError}</Alert>}
