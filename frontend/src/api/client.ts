@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -142,15 +142,25 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
   // not an empty 204 body, but callers of those endpoints don't need the value.
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (error) {
+    reportApiResult(route, res.status, performance.now() - started, started);
+    throw unreadableResponse(error);
+  }
   reportApiResult(route, res.status, performance.now() - started, started);
   if (text === '') {
     notifyApiSuccess();
     return undefined as T;
   }
-  const body = JSON.parse(text) as T;
-  notifyApiSuccess();
-  return body;
+  try {
+    const body = JSON.parse(text) as T;
+    notifyApiSuccess();
+    return body;
+  } catch (error) {
+    throw unreadableResponse(error);
+  }
 }
 
 // --- Products ---
@@ -598,11 +608,21 @@ export async function getSession(): Promise<HouseholdSession> {
   if (res.status === 401) {
     return { required: true, username: '', error: '' };
   }
-  let body: { required?: boolean; username?: string; error?: string };
+  let text: string;
   try {
-    body = (await res.json()) as { required?: boolean; username?: string; error?: string };
-  } catch {
-    body = {};
+    text = await res.text();
+  } catch (error) {
+    if (!res.ok) return { required: true, username: '', error: 'Sign-in is unavailable right now.' };
+    throw unreadableResponse(error);
+  }
+  let body: { required?: boolean; username?: string; error?: string } = {};
+  if (text !== '') {
+    try {
+      body = JSON.parse(text) as { required?: boolean; username?: string; error?: string };
+    } catch (error) {
+      if (!res.ok) return { required: true, username: '', error: 'Sign-in is unavailable right now.' };
+      throw unreadableResponse(error);
+    }
   }
   if (!res.ok) {
     return { required: true, username: '', error: body.error || 'Sign-in is unavailable right now.' };

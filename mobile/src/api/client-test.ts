@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, offlineBannerActive, raiseOfflineBanner, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -98,6 +98,40 @@ describe('createStockbotClient', () => {
     } finally {
       stop();
     }
+  });
+
+  it('leaves the offline banner up when the response is an error', async () => {
+    raiseOfflineBanner();
+    const { client } = clientWith(jest.fn(async () => jsonResponse(500, { error: 'nope' })));
+    await expect(client.getSession()).rejects.toMatchObject({ status: 500 });
+    expect(offlineBannerActive()).toBe(true);
+  });
+
+  it('clears the banner after a session is read', async () => {
+    raiseOfflineBanner();
+    const { client } = clientWith(jest.fn(async () => jsonResponse(200, { required: false })));
+    await client.getSession();
+    expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('treats an HTML success and a failed body read as unreachable', async () => {
+    const html = clientWith(jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<html>',
+    }) as unknown as Response));
+    await expect(html.client.getSession()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(html.client.getSession()).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
+    expect(offlineBannerActive()).toBe(true);
+
+    const dropped = clientWith(jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new TypeError('Network request failed'); },
+    }) as unknown as Response));
+    await expect(dropped.client.listPending()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(dropped.client.listPending()).rejects.not.toMatchObject({ message: 'Network request failed' });
+    expect(offlineBannerActive()).toBe(true);
   });
 
   it('posts a scan, lists pending scans, and commits them for the shared household user', async () => {

@@ -260,14 +260,19 @@ describe('offline notice', () => {
   });
 
   it('replaces a batch failure banner and leaves the card failure in place', async () => {
-    const pending = [scan('scan-milk', '111'), scan('scan-oats', '222')];
     const itemFailure = 'That scan is no longer pending.';
+    let pending = [scan('scan-milk', '111'), scan('scan-oats', '222')];
     let offline = false;
+    let resolved = false;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url.includes('batch-commit') && method === 'POST') {
         if (offline) return Promise.reject(new TypeError('Failed to fetch'));
+        if (resolved) {
+          pending = [];
+          return Promise.resolve(json({ updatedCount: 2, committedIds: ['scan-milk', 'scan-oats'], failedIds: [] }));
+        }
         return Promise.resolve(json({
           updatedCount: 0,
           committedIds: [],
@@ -318,5 +323,16 @@ describe('offline notice', () => {
     await getInventoryList();
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument());
     expect(screen.getByText(BATCH_FAILURE_FALLBACK)).toBeInTheDocument();
+
+    offline = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 1 selected scans' }));
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).not.toBeInTheDocument();
+
+    offline = false;
+    resolved = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 1 selected scans' }));
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument());
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).not.toBeInTheDocument();
   });
 });

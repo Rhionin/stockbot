@@ -19,6 +19,7 @@ import {
   raiseOfflineBanner,
   SERVER_ERROR_FALLBACK,
   unreachableFrom,
+  unreadableResponse,
 } from '../../../frontend/src/api/contract';
 import type {
   InventoryItem,
@@ -105,7 +106,12 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       throw new ApiError(res.status, message, parsed.code, parsed.suggestions);
     }
 
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (error) {
+      throw unreadableResponse(error);
+    }
     if (text === '') {
       notifyApiSuccess();
       return undefined as T;
@@ -113,8 +119,8 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     let body: T;
     try {
       body = JSON.parse(text) as T;
-    } catch {
-      throw new ApiError(res.status, 'Stockbot sent a response that could not be read.');
+    } catch (error) {
+      throw unreadableResponse(error);
     }
     notifyApiSuccess();
     return body;

@@ -4,7 +4,7 @@ import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, offlineBannerActive, offlineSentence, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { inlineFailure, BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, offlineBannerActive, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -194,7 +194,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           // Keep the last list. An empty stand-in would mark every stock-out as nothing on hand.
         });
     } catch (requestError) {
-      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to load scan queue.'));
+      setError(inlineFailure(requestError, 'Unable to load scan queue.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -395,7 +395,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       setScanError('');
       clearOfflineNotice();
     } catch (requestError) {
-      setScanError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to switch scanner mode.'));
+      setScanError(inlineFailure(requestError, 'Unable to switch scanner mode.') ?? '');
     }
   }, [holdLocalMode]);
 
@@ -461,7 +461,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       await createScanEntry({ barcode, direction: scannerModeRef.current, userId });
       await loadQueue();
     } catch (requestError) {
-      setScanError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to add the scan.'));
+      setScanError(inlineFailure(requestError, 'Unable to add the scan.') ?? '');
     }
   };
 
@@ -550,17 +550,18 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             {scanError}
           </Alert>
         )}
-        {scannerConnected !== null && !cameraOpen && (
+        {scannerConnected === true && !cameraOpen && (
+          <Text size="xs" className="scan-status scan-status--on">
+            Scanner connected
+          </Text>
+        )}
+        {scannerConnected === false && !cameraOpen && !offline && (
           <Text
             size="xs"
-            className={scannerConnected ? 'scan-status scan-status--on' : 'scan-status scan-status--off'}
+            className="scan-status scan-status--off"
           >
-            {scannerConnected ? 'Scanner connected' : (
-              <>
-                <span>Scanner disconnected</span>
-                {'. You can scan with this device\'s camera instead.'}
-              </>
-            )}
+            <span>Scanner disconnected</span>
+            {'. You can scan with this device\'s camera instead.'}
           </Text>
         )}
         <Tabs

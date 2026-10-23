@@ -6,11 +6,12 @@ import {
   nothingOnHandPill,
   notifyApiSuccess,
   OFFLINE_SENTENCE,
+  offlineBannerActive,
   raiseOfflineBanner,
-  serverStateBanner,
   shelfHasNothingOnHand,
   UnreachableError,
   unreachableFrom,
+  inlineFailure,
   type BatchCommitResponse,
 } from './contract';
 
@@ -209,19 +210,24 @@ describe('networkErrorResult', () => {
   });
 });
 
-const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
-const NO_SPACE_SENTENCE = "Stockbot is out of storage space, so this wasn't saved.";
+describe('inlineFailure', () => {
+  it.each([
+    { name: 'unreachable', error: new UnreachableError(), fallback: 'Unable to load history.', message: null },
+    { name: 'server sentence', error: new Error('That scan is no longer pending.'), fallback: 'Unable to load history.', message: 'That scan is no longer pending.' },
+    { name: 'empty message', error: new Error(''), fallback: 'Unable to load history.', message: '' },
+    { name: 'not an error', error: 'down', fallback: 'Unable to load history.', message: 'Unable to load history.' },
+    { name: 'plain network error', error: new Error('Network error'), fallback: 'Unable to load history.', message: 'Network error' },
+  ])('$name', ({ error, fallback, message }) => {
+    expect(inlineFailure(error, fallback)).toBe(message);
+  });
+});
 
-describe('serverStateBanner', () => {
-  it('lets offline replace busy and no_space until a success', () => {
-    expect(serverStateBanner(BUSY_SENTENCE)).toBe(BUSY_SENTENCE);
-    expect(serverStateBanner(null)).toBeNull();
+describe('offline banner', () => {
+  it('stays up until a success', () => {
+    expect(offlineBannerActive()).toBe(false);
     raiseOfflineBanner();
-    expect(serverStateBanner(BUSY_SENTENCE)).toBe(OFFLINE_SENTENCE);
-    expect(serverStateBanner(NO_SPACE_SENTENCE)).toBe(OFFLINE_SENTENCE);
-    expect(serverStateBanner(null)).toBe(OFFLINE_SENTENCE);
+    expect(offlineBannerActive()).toBe(true);
     notifyApiSuccess();
-    expect(serverStateBanner(BUSY_SENTENCE)).toBe(BUSY_SENTENCE);
-    expect(serverStateBanner(NO_SPACE_SENTENCE)).toBe(NO_SPACE_SENTENCE);
+    expect(offlineBannerActive()).toBe(false);
   });
 });

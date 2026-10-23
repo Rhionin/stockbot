@@ -2,7 +2,7 @@ import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
-import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import { QueueScreen } from './QueueScreen';
 import { basicAuthorization, HOUSEHOLD_USERNAME } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
@@ -198,5 +198,74 @@ describe('session sign-in', () => {
     await fireEvent.press(screen.getByLabelText('Reload'));
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
     expect(screen.getByText('no-warning')).toBeTruthy();
+  });
+
+  it('shows the connection banner for an unreachable submit', async () => {
+    const screen = await renderScreen(
+      <ConnectionForm
+        heading="Connect"
+        lede="The phone keeps this Stockbot."
+        submitLabel="Connect now"
+        onSubmit={async () => {
+          raiseOfflineBanner();
+          throw new UnreachableError();
+        }}
+      />,
+    );
+    await fireEvent.press(await screen.findByLabelText('Connect now'));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+  });
+
+  it('shows the raw message when connect fails for another reason', async () => {
+    const screen = await renderScreen(
+      <ConnectionForm
+        heading="Connect"
+        lede="The phone keeps this Stockbot."
+        submitLabel="Connect now"
+        onSubmit={async () => {
+          throw new Error('Network error');
+        }}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText('Connect now'));
+    expect(await screen.findByText('Network error')).toBeTruthy();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull();
+  });
+
+  it('clears a startup warning that is not the offline sentence', async () => {
+    mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
+    mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    let sessionCalls = 0;
+    jest.mocked(globalThis.fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/session') && sessionCalls === 0) {
+        sessionCalls += 1;
+        throw new Error('offline');
+      }
+      return jsonResponse(200, []);
+    });
+
+    function Probe() {
+      const session = useSession();
+      if (session.status === 'loading') return <Text>Loading</Text>;
+      if (session.status !== 'ready') return <Text>Signed out</Text>;
+      return (
+        <>
+          <Text>{session.warning === '' ? 'no-warning' : session.warning}</Text>
+          <Pressable accessibilityLabel="Reload" onPress={() => { void session.client.listPending(); }} />
+        </>
+      );
+    }
+
+    const screen = await renderScreen(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>,
+    );
+    expect(await screen.findByText('Stockbot did not answer at that address.')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Reload'));
+    await waitFor(() => expect(screen.getByText('no-warning')).toBeTruthy());
+    expect(screen.queryByText('Stockbot did not answer at that address.')).toBeNull();
   });
 });

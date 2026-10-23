@@ -5,6 +5,7 @@ import { addGroupMembers, ApiError, createGroup } from '../../api/client';
 import type { GroupSuggestion, GroupTarget, ProductGroup, TargetConflictMember } from '../../types';
 import { TargetConflictPrompt } from '../groups/TargetConflictPrompt';
 import { suggestedDestinations } from './shelf';
+import { inlineFailure } from '../../api/contract';
 
 export interface AddToGroupSheetProps {
   opened: boolean;
@@ -73,7 +74,7 @@ export function AddToGroupSheet({
         setConflict({ group, members: requestError.members });
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : 'Unable to update that group.');
+      setError(inlineFailure(requestError, 'Unable to update that group.') ?? '');
     } finally {
       setSaving(false);
     }
@@ -89,7 +90,7 @@ export function AddToGroupSheet({
       onChanged();
       navigate(`/groups/${created.id}`);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to create the group.');
+      setError(inlineFailure(requestError, 'Unable to create the group.') ?? '');
       setSaving(false);
     }
   };

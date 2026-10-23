@@ -1,5 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { OFFLINE_SENTENCE, raiseOfflineBanner, subscribeApiSuccess } from '../../frontend/src/api/contract';
+import { inlineFailure, raiseOfflineBanner, subscribeApiSuccess } from '../../frontend/src/api/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
@@ -20,7 +20,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => subscribeApiSuccess(() => {
     setState((current) => {
-      if (current.status !== 'ready' || current.warning !== OFFLINE_SENTENCE) return current;
+      if (current.status !== 'ready' || current.warning === '') return current;
       return { ...current, warning: '' };
     });
   }), []);
@@ -72,33 +72,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
             await clearCredentials();
             if (!active) return;
-            setState({ status: 'signedOut', error: error.message });
+            setState({ status: 'signedOut', error: inlineFailure(error, 'That password was rejected.') ?? '' });
             return;
           }
-          if (!(error instanceof Error) || error.message === OFFLINE_SENTENCE) {
-            if (!(error instanceof Error)) raiseOfflineBanner();
-            setState({
-              status: 'ready',
-              serverUrl: saved.serverUrl,
-              password: saved.password,
-              client,
-              warning: '',
-            });
-            return;
-          }
+          if (!(error instanceof Error)) raiseOfflineBanner();
           setState({
             status: 'ready',
             serverUrl: saved.serverUrl,
             password: saved.password,
             client,
-            warning: error.message,
+            warning: inlineFailure(error, '') ?? '',
           });
         }
       } catch (error) {
         if (!active) return;
         setState({
           status: 'signedOut',
-          error: error instanceof Error ? error.message : 'Saved sign-in could not be read.',
+          error: inlineFailure(error, 'Saved sign-in could not be read.') ?? '',
         });
       }
     })();

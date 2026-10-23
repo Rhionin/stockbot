@@ -9,7 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { offlineSentence, raiseOfflineBanner } from '../../../frontend/src/api/contract';
+import { inlineFailure, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';
@@ -46,11 +46,12 @@ export function ConnectionForm({
     try {
       await onSubmit(serverUrl, password);
     } catch (requestError) {
-      if (offlineSentence(requestError) !== null || !(requestError instanceof Error)) {
-        if (offlineSentence(requestError) === null) raiseOfflineBanner();
+      const message = inlineFailure(requestError, '');
+      if (message === null || !(requestError instanceof Error)) {
+        if (message !== null) raiseOfflineBanner();
         setError('');
       } else {
-        setError(requestError.message);
+        setError(message);
       }
     } finally {
       setSubmitting(false);

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { login } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 import './LoginPage.css';
 
 export interface LoginPageProps {
@@ -22,7 +23,7 @@ export const LoginPage = ({ onSignedIn, initialError = '' }: LoginPageProps) => 
       await login(username, password);
       onSignedIn();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'The username or password is incorrect.');
+      setError(inlineFailure(requestError, 'The username or password is incorrect.') ?? '');
     } finally {
       setPending(false);
     }

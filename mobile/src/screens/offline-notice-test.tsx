@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
+import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import type { InventoryItem, ScanEntry } from '../../../frontend/src/types';
 import { createStockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
@@ -206,6 +206,7 @@ describe('offline notice', () => {
       product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
     });
     let offline = false;
+    let pending = [entry(), oats];
     const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -220,9 +221,10 @@ describe('offline notice', () => {
       }
       if (url.endsWith('/commit') && method === 'POST') {
         if (offline) throw new TypeError('Network request failed');
+        pending = [];
         return jsonResponse(200, { ...oats, status: 'committed' });
       }
-      if (url.includes('status=pending')) return jsonResponse(200, [entry(), oats]);
+      if (url.includes('status=pending')) return jsonResponse(200, pending);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
@@ -240,5 +242,58 @@ describe('offline notice', () => {
     expect(within(screen.getByTestId('scan-scan-1')).getByText(itemFailure)).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expect(screen.queryByText('Network request failed')).toBeNull();
+
+    offline = false;
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+  });
+
+  it('does not show an empty queue when the load failed offline', async () => {
+    const fetchImpl = jest.fn(async () => {
+      throw new TypeError('Network request failed');
+    });
+    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const screen = await renderScreen(<QueueScreen client={client} warning="" />);
+
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('0 scans are waiting')).toBeNull();
+    expect(screen.queryByText('The queue did not load.')).toBeNull();
+    expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
+  });
+
+  it('hides a partial line while offline', async () => {
+    const partial = 'Only 1 of 3 Oat milk was on hand, so 1 was taken out.';
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('batch-commit') && method === 'POST') {
+        return jsonResponse(200, {
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: [],
+          stockOutCounts: { 'scan-1': { removedCount: 1, requestedCount: 3 } },
+        });
+      }
+      if (url.includes('status=pending')) {
+        return jsonResponse(200, [entry({ direction: 'stock_out' }), entry({
+          id: 'scan-2',
+          barcode: '999',
+          productId: 'prod-2',
+          product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+        })]);
+      }
+      if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
+      return jsonResponse(500, { error: `unexpected ${method} ${url}` });
+    });
+    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const screen = await renderScreen(<QueueScreen client={client} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(partial)).toBeTruthy();
+    raiseOfflineBanner();
+    await waitFor(() => expect(screen.queryByText(partial)).toBeNull());
+    expect(within(screen.getByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('The queue did not load.')).toBeNull();
   });
 });

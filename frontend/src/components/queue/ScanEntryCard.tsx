@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
+import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 import { clearOfflineNotice, isUnreachable } from './offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
@@ -334,7 +334,7 @@ export const ScanEntryCard = ({
       onBlocked?.();
       return;
     }
-    let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
+    let message = inlineFailure(requestError, 'Unable to confirm scan.') ?? '';
     if (requestError instanceof ApiError) {
       const behavior = commitConflictBehavior(requestError.code);
       if (behavior.refreshSuggestions) {
@@ -350,7 +350,7 @@ export const ScanEntryCard = ({
           setLocalInstanceReload((current) => current + 1);
         }
       }
-      message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
+      message = behavior.showMessage ? (inlineFailure(requestError, 'Unable to confirm scan.') ?? '') : '';
     }
     if (isUnreachable(requestError)) return;
     showCommitSentence(message);
@@ -401,7 +401,7 @@ export const ScanEntryCard = ({
       onChanged();
     } catch (requestError) {
       if (isUnreachable(requestError)) return;
-      setRemoveError(requestError instanceof Error ? requestError.message : 'Unable to remove scan.');
+      setRemoveError(inlineFailure(requestError, 'Unable to remove scan.') ?? '');
     } finally {
       setRemoving(false);
     }
@@ -546,7 +546,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setHintError(requestError instanceof Error ? requestError.message : 'Unable to add this to the group.');
+      setHintError(inlineFailure(requestError, 'Unable to add this to the group.') ?? '');
     } finally {
       setHintBusy(false);
     }
@@ -561,7 +561,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setHintError(requestError instanceof Error ? requestError.message : 'Unable to save that for later.');
+      setHintError(inlineFailure(requestError, 'Unable to save that for later.') ?? '');
     } finally {
       setHintBusy(false);
     }
@@ -586,7 +586,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setPackError(requestError instanceof Error ? requestError.message : 'Unable to remember the pack.');
+      setPackError(inlineFailure(requestError, 'Unable to remember the pack.') ?? '');
     } finally {
       setPackBusy(false);
     }

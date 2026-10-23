@@ -6,7 +6,7 @@ import {
   addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
 } from '../../api/client';
-import { offlineSentence } from '../../api/contract';
+import { inlineFailure } from '../../api/contract';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
@@ -84,6 +84,7 @@ export const InventoryPage = () => {
   const [checked, setChecked] = useState<string[]>([]);
   const [sheet, setSheet] = useState<{ productId: string; name: string; fromGroupId?: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [offlineLoad, setOfflineLoad] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -113,8 +114,11 @@ export const InventoryPage = () => {
       setGroups(groupsForShelf(listed, items));
       setSuggestions(asSuggestions(cards));
       setCatalog(asCatalog(products));
+      setOfflineLoad(false);
     } catch (requestError) {
-      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to load inventory.'));
+      const message = inlineFailure(requestError, 'Unable to load inventory.');
+      setOfflineLoad(message === null);
+      setError(message ?? '');
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -150,7 +154,7 @@ export const InventoryPage = () => {
       if (created.length === 0) setNotice('No new groups found');
       await loadInventory(true);
     } catch (requestError) {
-      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to look for groups.'));
+      setError(inlineFailure(requestError, 'Unable to look for groups.') ?? '');
     } finally {
       setScanning(false);
     }
@@ -236,7 +240,7 @@ export const InventoryPage = () => {
       const created = await createGroup(name, [productId]);
       navigate(`/groups/${created.id}`);
     } catch (requestError) {
-      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to create the group.'));
+      setError(inlineFailure(requestError, 'Unable to create the group.') ?? '');
     }
   };
 
@@ -309,7 +313,7 @@ export const InventoryPage = () => {
     );
   };
 
-  const empty = !loading && error === '' && inventoryItems.length === 0 && groups.length === 0;
+  const empty = !loading && !offlineLoad && error === '' && inventoryItems.length === 0 && groups.length === 0;
 
   return (
     <Stack gap="sm" className="page-wide bin-page shelf-page">
@@ -358,7 +362,7 @@ export const InventoryPage = () => {
       {loading && <Loader aria-label="Loading inventory" />}
       {error !== '' && <Alert color="red" py="xs">{error}</Alert>}
       {empty && <Text c="dimmed">Your inventory is empty.</Text>}
-      {!loading && error === '' && !empty && rows.length === 0 && (
+      {!loading && !offlineLoad && error === '' && !empty && rows.length === 0 && (
         <Text c="dimmed">No products or groups match.</Text>
       )}
       {filter === 'categories' && restock && (

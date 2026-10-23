@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, commitScanEntry, listProducts } from './client';
-import { OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, UnreachableError } from './contract';
+import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
+import { OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, UnreachableError, offlineBannerActive, raiseOfflineBanner } from './contract';
 
 describe('api error messages', () => {
   afterEach(() => {
@@ -73,5 +73,55 @@ describe('api error messages', () => {
       message: 'That scan is no longer pending.',
       code: 'not_pending',
     });
+  });
+
+  it('leaves the offline banner up when the response is an error', async () => {
+    raiseOfflineBanner();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'Something went wrong. Try again.' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    ))));
+
+    await expect(listProducts()).rejects.toBeInstanceOf(ApiError);
+    expect(offlineBannerActive()).toBe(true);
+  });
+
+  it('clears the banner when session, login, and logout succeed', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/session')) return Promise.resolve(new Response(JSON.stringify({ required: false }), { status: 200 }));
+      if (url.endsWith('/api/login')) return Promise.resolve(new Response('{}', { status: 200 }));
+      if (url.endsWith('/api/logout')) return Promise.resolve(new Response('{}', { status: 200 }));
+      return Promise.reject(new Error(url));
+    }));
+
+    raiseOfflineBanner();
+    await getSession();
+    expect(offlineBannerActive()).toBe(false);
+    raiseOfflineBanner();
+    await login('pantry', 'secret');
+    expect(offlineBannerActive()).toBe(false);
+    raiseOfflineBanner();
+    await logout();
+    expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('treats an HTML success and a failed body read as unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      '<html><body>portal</body></html>',
+      { status: 200, headers: { 'Content-Type': 'text/html' } },
+    ))));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(listProducts()).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
+    expect(offlineBannerActive()).toBe(true);
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('network error')),
+    }) as Response));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(listProducts()).rejects.not.toMatchObject({ message: 'network error' });
+    expect(offlineBannerActive()).toBe(true);
   });
 });

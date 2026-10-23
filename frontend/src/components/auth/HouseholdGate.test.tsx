@@ -46,9 +46,27 @@ describe('HouseholdGate', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(error)));
     renderGate();
     expect(await screen.findByText(message)).toBeVisible();
-    if (message !== OFFLINE_SENTENCE) {
+    if (message === OFFLINE_SENTENCE) {
+      expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+    } else {
       expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+      expect(screen.getByRole('form', { name: 'Sign in' })).toBeVisible();
     }
+  });
+
+  it('retries a household with no password instead of showing sign-in', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(() => {
+      calls += 1;
+      if (calls === 1) return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.resolve(json({ required: false }));
+    }));
+    renderGate();
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
+    expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Scan Queue' }, { timeout: 3000 })).toBeVisible();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
   it('opens the app after a successful sign-in', async () => {

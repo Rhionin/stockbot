@@ -3,6 +3,7 @@ import { Alert, Loader, Radio, Stack, Text } from '@mantine/core';
 import { listItemInstances } from '../../api/client';
 import type { ItemInstanceWithStatus } from '../../types';
 import { formatExpiryDate, sortInstancesUseOldestFirst } from './queueUtils';
+import { inlineFailure } from '../../api/contract';
 
 export interface StockOutInstanceSelectorProps {
   itemId: string;
@@ -38,7 +39,7 @@ export const StockOutInstanceSelector = ({
       })
       .catch((requestError: unknown) => {
         if (active) {
-          setError(requestError instanceof Error ? requestError.message : 'Unable to load instances.');
+          setError(inlineFailure(requestError, 'Unable to load instances.') ?? '');
         }
       })
       .finally(() => {

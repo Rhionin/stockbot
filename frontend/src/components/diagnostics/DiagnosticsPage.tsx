@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Stack, Table, Text, Title } from '@mantine/core';
+import { inlineFailure, notifyApiSuccess, raiseOfflineBanner, unreachableFrom, unreadableResponse } from '../../api/contract';
 
 interface LatencySnapshot {
   count: number;
@@ -108,20 +109,47 @@ const RouteTable = ({ rows, empty }: { rows: RouteTiming[]; empty: string }) => 
 export const DiagnosticsPage = () => {
   const [snapshot, setSnapshot] = useState<TelemetrySnapshot | null>(null);
   const [error, setError] = useState('');
+  const [pending, setPending] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/telemetry')
-      .then(async (res) => {
+    void (async () => {
+      try {
+        let res: Response;
+        try {
+          res = await fetch('/api/telemetry');
+        } catch (error) {
+          const unreachable = unreachableFrom(error);
+          if (unreachable !== null) {
+            raiseOfflineBanner();
+            throw unreachable;
+          }
+          throw error;
+        }
         if (!res.ok) throw new Error('Unable to load diagnostics.');
-        return res.json() as Promise<TelemetrySnapshot>;
-      })
-      .then((body) => {
-        if (!cancelled) setSnapshot(body);
-      })
-      .catch(() => {
-        if (!cancelled) setError('Unable to load diagnostics.');
-      });
+        let text: string;
+        try {
+          text = await res.text();
+        } catch (error) {
+          throw unreadableResponse(error);
+        }
+        let body: TelemetrySnapshot;
+        try {
+          body = JSON.parse(text) as TelemetrySnapshot;
+        } catch (error) {
+          throw unreadableResponse(error);
+        }
+        if (cancelled) return;
+        notifyApiSuccess();
+        setError('');
+        setPending(false);
+        setSnapshot(body);
+      } catch (error) {
+        if (cancelled) return;
+        setPending(false);
+        setError(inlineFailure(error, 'Unable to load diagnostics.') ?? '');
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -137,7 +165,7 @@ export const DiagnosticsPage = () => {
         Timings from this Stockbot. Barcodes and product names are left out.
       </Text>
       {error !== '' && <Text c="red">{error}</Text>}
-      {snapshot === null && error === '' && <Text c="dimmed">Loading diagnostics.</Text>}
+      {snapshot === null && error === '' && pending && <Text c="dimmed">Loading diagnostics.</Text>}
       {pageLoad !== undefined && (
         <Stack gap="xs">
           <Text>{pageLoad.note}</Text>

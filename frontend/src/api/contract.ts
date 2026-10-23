@@ -320,6 +320,14 @@ export function offlineSentence(error: unknown): string | null {
   return error instanceof UnreachableError ? OFFLINE_SENTENCE : null;
 }
 
+// Card and inline alerts stay quiet for an unreachable server. The banner is
+// that notice. Any other error keeps its message, or the caller's fallback.
+export function inlineFailure(error: unknown, fallback: string): string | null {
+  if (error instanceof UnreachableError) return null;
+  if (error instanceof Error) return error.message;
+  return fallback;
+}
+
 export function unreachableFrom(error: unknown): UnreachableError | null {
   if (error instanceof UnreachableError) return error;
   if (networkErrorResult(error) === null) return null;
@@ -355,9 +363,17 @@ function publishOfflineBanner(next: boolean): void {
   for (const listener of offlineBannerListeners) listener();
 }
 
-// A transport failure raises this. The next response that arrives clears it.
+// Sets the shared banner. notifyApiSuccess clears it after a response is read
+// successfully. An error response leaves the banner up.
 export function raiseOfflineBanner(): void {
   publishOfflineBanner(true);
+}
+
+// A body that cannot be read, or a success that is not JSON, is not a Stockbot
+// response. Throw this instead of the raw SyntaxError or TypeError.
+export function unreadableResponse(error: unknown): UnreachableError {
+  raiseOfflineBanner();
+  return unreachableFrom(error) ?? new UnreachableError();
 }
 
 export function clearOfflineBanner(): void {
@@ -369,13 +385,4 @@ export function subscribeOfflineBanner(listener: () => void): () => void {
   return () => {
     offlineBannerListeners.delete(listener);
   };
-}
-
-// Offline is the same kind of server-state notice as busy and no_space, and it
-// wins while it is up. `other` is the banner those notices would show. A later
-// success clears offline, so a new server report can show busy or no_space again.
-export function serverStateBanner(other: string | null): string | null {
-  if (offlineBanner) return OFFLINE_SENTENCE;
-  if (other === null || other === '') return null;
-  return other;
 }

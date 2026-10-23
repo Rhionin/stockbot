@@ -14,30 +14,12 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
-import {
-  BATCH_FAILURE_FALLBACK,
-  batchFailureNotices,
-  CODE_NONE_ON_HAND,
-  OFFLINE_SENTENCE,
-  offlineBannerActive,
-  offlineSentence,
-  raiseOfflineBanner,
-  subscribeOfflineBanner,
-  confirmSkipsNothingOnHand,
-  commitConflictBehavior,
-  formatPartialRemoval,
-  NOTHING_ON_HAND_BODY,
-  NOTHING_ON_HAND_TITLE,
-  nothingOnHandPill,
-  NO_CLOSE_MATCH,
-  shelfHasNothingOnHand,
-} from '../../../frontend/src/api/contract';
+import { inlineFailure, BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, OFFLINE_SENTENCE, offlineBannerActive, subscribeOfflineBanner, confirmSkipsNothingOnHand, commitConflictBehavior, formatPartialRemoval, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, nothingOnHandPill, NO_CLOSE_MATCH, shelfHasNothingOnHand } from '../../../frontend/src/api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
 function besideBanner(error: unknown, fallback: string): string {
-  if (offlineSentence(error) !== null) return '';
-  return error instanceof Error ? error.message : fallback;
+  return inlineFailure(error, fallback) ?? '';
 }
 
 const LINK_OFFER_HEADING = 'Which item is this?';
@@ -170,6 +152,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [queueUnloaded, setQueueUnloaded] = useState(false);
   const [failureBannerIds, setFailureBannerIds] = useState<Record<string, true>>({});
   const [partialLine, setPartialLine] = useState('');
   const refreshGeneration = useRef(0);
@@ -182,9 +165,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [excluded, setExcluded] = useState<Record<string, string>>({});
 
   const offline = useSyncExternalStore(subscribeOfflineBanner, offlineBannerActive, () => false);
-  useEffect(() => {
-    if (warning === OFFLINE_SENTENCE) raiseOfflineBanner();
-  }, [warning]);
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -201,6 +181,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     // lives in its own state, so a refresh cannot replace that sentence.
     setError(nextError);
     setLoadError('');
+    setQueueUnloaded(false);
     setFailureBannerIds((current) => {
       const kept: Record<string, true> = {};
       for (const entry of next) {
@@ -252,11 +233,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setEntries(next);
       setError('');
       setLoadError('');
+      setQueueUnloaded(false);
       setLoading(false);
     }).catch((requestError: unknown) => {
       if (!active) return;
       setLoading(false);
-      setLoadError(besideBanner(requestError, 'The queue did not load.'));
+      const message = inlineFailure(requestError, 'The queue did not load.');
+      if (message === null) setQueueUnloaded(true);
+      setLoadError(message ?? '');
     });
     return () => {
       active = false;
@@ -351,7 +335,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
-    setToast(behavior.showMessage ? requestError.message : '');
+    setToast(behavior.showMessage ? (inlineFailure(requestError, '') ?? '') : '');
     clearNote(id);
     if (behavior.refreshSuggestions) {
       storeHousehold(await loadHousehold(), entries);
@@ -439,7 +423,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
-        setToast(requestError.message);
+        setToast(inlineFailure(requestError, '') ?? '');
         clearNote(id);
         setExcluded((current) => ({ ...current, [id]: productId }));
         storeHousehold(await loadHousehold(), entries);
@@ -551,8 +535,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
   const batchHead = offline ? OFFLINE_SENTENCE : (failureBanner ? BATCH_FAILURE_FALLBACK : error);
+  const shownPartial = offline ? '' : partialLine;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
-  const successBanner = batchHead === '' && !failedPending && partialLine !== '';
+  const successBanner = batchHead === '' && !failedPending && shownPartial !== '';
   const pill = nothingOnHandPill(blockedCount);
   const confirmAllVisible = entries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
@@ -563,18 +548,22 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     <View style={[styles.screen, { paddingTop: insets.top + 18 }]}>
       <StatusBar style="dark" />
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
-      <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
+      {loading ? (
+        <Text style={styles.count}>Checking the queue</Text>
+      ) : queueUnloaded ? null : (
+        <Text style={styles.count}>{waiting}</Text>
+      )}
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
-      {warning !== '' && warning !== OFFLINE_SENTENCE && <Text style={styles.warning}>{warning}</Text>}
-      {(batchHead !== '' || partialLine !== '') && (
+      {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
+      {(batchHead !== '' || shownPartial !== '') && (
         <View
           testID="batch-banner"
           accessibilityLiveRegion="polite"
           style={successBanner ? styles.successBanner : undefined}
         >
           {batchHead !== '' && <Text style={styles.error}>{batchHead}</Text>}
-          {partialLine !== '' && (
-            <Text style={successBanner ? styles.bannerBody : styles.partialLine}>{partialLine}</Text>
+          {shownPartial !== '' && (
+            <Text style={successBanner ? styles.bannerBody : styles.partialLine}>{shownPartial}</Text>
           )}
         </View>
       )}
@@ -595,7 +584,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
             />
           )}
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
-          ListEmptyComponent={<Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
+          ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item }) => {
             const blocked = isNothingOnHand(item, household, pins);
             const label = item.product?.name || item.barcode;

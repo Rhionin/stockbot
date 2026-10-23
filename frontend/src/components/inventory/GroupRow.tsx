@@ -8,6 +8,7 @@ import { ItemInstanceList } from './ItemInstanceList';
 import { ProductPhoto } from './ProductPhoto';
 import type { ShelfGroupRow, ShelfMember } from './shelf';
 import { groupStock } from '../../stockState';
+import { inlineFailure } from '../../api/contract';
 
 export interface GroupRowProps {
   row: ShelfGroupRow;
@@ -58,7 +59,7 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
       await setMemberRestock(row.id, member.productId, noRestock);
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to update that product.');
+      setError(inlineFailure(requestError, 'Unable to update that product.') ?? '');
     }
   };
 
@@ -68,7 +69,7 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
       await removeGroupMember(row.id, member.productId);
       onChanged();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to remove that product.');
+      setError(inlineFailure(requestError, 'Unable to remove that product.') ?? '');
     }
   };
 
