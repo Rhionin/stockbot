@@ -263,6 +263,20 @@ func TestHostedAPIContract(t *testing.T) {
 		"Required in stage 3 only. The Pi takes the household from the job row.",
 		"Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR.",
 		"typed `*`, `~`, `$`, and `=` are allowed",
+		"The LAN listener never offers personal sign-in, whether or not the household password is on.",
+		"invite accept with `account`, and `POST /api/households` return `404` `not_found`",
+		"`Authorization: Bearer sbs_…` on `:8080` returns `401` `unauthorized` and is never honored.",
+		"Session cookies are never set and never honored on the LAN.",
+		"lan-client: Expo must use `appBaseUrl` for personal sign-in. LAN URLs are unsupported for people after retirement. Clients never show Sign in on a LAN URL.",
+		`"appBaseUrl": string`,
+		"The 11th stream is `429` `rate_limited`.",
+		"When the stream errors, the client refetches `GET /api/auth/session`.",
+		"only that person's sessions whose active household was the removed one have `activeHouseholdId` set to null",
+		"Accept returns `token` only when `account` is sent.",
+		"household-start: A person who is already signed in starts another household here, with `inviteCode`.",
+		"A missing part compares as 0, so `1.0` equals `1.0.0`.",
+		"A new Expo build sends `X-Stockbot-Client` on every request, including `GET /api/events`.",
+		"expo-401: Expo clears its stored `sbs_` token on any `401`, except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, `POST /api/invites/accept`, and `POST /setup`.",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)

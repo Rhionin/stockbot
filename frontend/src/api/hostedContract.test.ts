@@ -4,6 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   classifyImportDocument,
+  CONFIG_PATH,
+  EVENTS_PATH,
+  EXPO_CLIENT_PREFIX,
+  LIVE_HINT_EVENT,
+  UPGRADE_REQUIRED_SENTENCE,
+  expoClientHeader,
   type AcceptInviteRequest,
   type HostedErrorCode,
   type HouseholdSettings,
@@ -195,7 +201,28 @@ describe('hosted API contract', () => {
     expect(doc).toContain('Required in stage 3 only. The Pi takes the household from the job row.');
     expect(doc).toContain('Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR.');
     expect(doc).toContain('typed `*`, `~`, `$`, and `=` are allowed');
+    expect(doc).toContain('The LAN listener never offers personal sign-in, whether or not the household password is on.');
+    expect(doc).toContain('invite accept with `account`, and `POST /api/households` return `404` `not_found`');
+    expect(doc).toContain('`Authorization: Bearer sbs_…` on `:8080` returns `401` `unauthorized` and is never honored.');
+    expect(doc).toContain('Session cookies are never set and never honored on the LAN.');
+    expect(doc).toContain('lan-client: Expo must use `appBaseUrl` for personal sign-in. LAN URLs are unsupported for people after retirement. Clients never show Sign in on a LAN URL.');
+    expect(doc).toContain('"appBaseUrl": string');
+    expect(doc).toContain('The 11th stream is `429` `rate_limited`.');
+    expect(doc).toContain('When the stream errors, the client refetches `GET /api/auth/session`.');
+    expect(doc).toContain('only that person\'s sessions whose active household was the removed one have `activeHouseholdId` set to null');
+    expect(doc).toContain('Accept returns `token` only when `account` is sent.');
+    expect(doc).toContain('household-start: A person who is already signed in starts another household here, with `inviteCode`.');
+    expect(doc).toContain('A missing part compares as 0, so `1.0` equals `1.0.0`.');
+    expect(doc).toContain('A new Expo build sends `X-Stockbot-Client` on every request, including `GET /api/events`.');
+    expect(doc).toContain('expo-401: Expo clears its stored `sbs_` token on any `401`, except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, `POST /api/invites/accept`, and `POST /setup`.');
     expect(source).toContain("export const CLIENT_HEADER = 'X-Stockbot-Client'");
+    expect(EXPO_CLIENT_PREFIX).toBe('expo/');
+    expect(expoClientHeader('1.0.0')).toBe('expo/1.0.0');
+    expect(UPGRADE_REQUIRED_SENTENCE).toBe(existingSentences.upgrade_required);
+    expect(EVENTS_PATH).toBe('/api/events');
+    expect(LIVE_HINT_EVENT).toBe('hint');
+    expect(CONFIG_PATH).toBe('/api/config');
+    expect(source).toContain('appBaseUrl: string');
     expect(source).toContain("export const AUTH_SESSION_PATH = '/api/auth/session'");
     expect(source).toContain("export const SESSION_COOKIE_NAME = '__Host-stockbot_session'");
     expect(source).toContain('householdPasswordSignIn: boolean');

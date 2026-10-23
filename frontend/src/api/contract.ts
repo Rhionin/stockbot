@@ -54,6 +54,15 @@ export const AUTH_SESSION_PATH = '/api/auth/session';
 /** Default `SESSION_COOKIE_NAME`. Host-only, Secure, so it is not set on plain-HTTP LAN. */
 export const SESSION_COOKIE_NAME = '__Host-stockbot_session';
 export const CLIENT_HEADER = 'X-Stockbot-Client';
+export const EXPO_CLIENT_PREFIX = 'expo/';
+export const UPGRADE_REQUIRED_SENTENCE = 'Update Stockbot to keep using it.';
+export const EVENTS_PATH = '/api/events';
+export const LIVE_HINT_EVENT = 'hint';
+export const CONFIG_PATH = '/api/config';
+
+export function expoClientHeader(version: string): string {
+  return `${EXPO_CLIENT_PREFIX}${version}`;
+}
 export const SCANS_PATH = '/api/scans';
 export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';
 export const SCANNER_CONFIG_PATH = '/api/scanner/config';
@@ -418,7 +427,7 @@ export interface AcceptInviteRequest {
   household?: { name: string; restockMode?: RestockMode };
 }
 
-/** LoginResponse plus the #364 accept fields. Accept with `account` creates the session. */
+/** LoginResponse plus the #364 accept fields. `token` is set only when `account` was sent. */
 export interface AcceptInviteResponse extends LoginResponse {
   householdId: string;
   name: string;
@@ -782,12 +791,18 @@ export interface DeleteAccountRequest {
 export type LiveTransport = 'sse' | 'poll' | 'push';
 
 export type LiveConfig =
-  | { live: 'sse' | 'poll'; minClientVersion: { expo: string }; householdPasswordSignIn: boolean }
+  | {
+      live: 'sse' | 'poll';
+      minClientVersion: { expo: string };
+      householdPasswordSignIn: boolean;
+      appBaseUrl: string;
+    }
   | {
       live: 'push';
       appsync: { httpUrl: string; realtimeUrl: string };
       minClientVersion: { expo: string };
       householdPasswordSignIn: boolean;
+      appBaseUrl: string;
     };
 
 export interface LiveTicket {
