@@ -327,7 +327,10 @@ describe('QueueScreen', () => {
     expect(await screen.findByText(BUSY_SENTENCE)).toBeTruthy();
     expectBanner(screen, 'failure', [BUSY_SENTENCE]);
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
-    expect(await screen.findByText('The pantry database is locked.')).toBeTruthy();
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalled());
+    expect(screen.queryByText('The pantry database is locked.')).toBeNull();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.getAllByText(BUSY_SENTENCE)).toHaveLength(1);
     expectBanner(screen, 'failure', [BUSY_SENTENCE]);
     expect(screen.getByText('Oats')).toBeTruthy();
     expect(screen.getByText('Rice')).toBeTruthy();
@@ -385,7 +388,10 @@ describe('QueueScreen', () => {
     expect(await screen.findByText("Stockbot is out of storage space, so this wasn't saved.")).toBeTruthy();
     expectBanner(screen, 'failure', ["Stockbot is out of storage space, so this wasn't saved."]);
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
-    expect(await screen.findByText('The pantry disk is full.')).toBeTruthy();
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalled());
+    expect(screen.queryByText('The pantry disk is full.')).toBeNull();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.getAllByText("Stockbot is out of storage space, so this wasn't saved.")).toHaveLength(1);
     expectBanner(screen, 'failure', ["Stockbot is out of storage space, so this wasn't saved."]);
     expect(screen.getByText('Oats')).toBeTruthy();
     expect(screen.getByText('Rice')).toBeTruthy();
@@ -414,7 +420,9 @@ describe('QueueScreen', () => {
     expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-a')).getByText('This scan was already handled.')).toBeTruthy();
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
-    expect(await screen.findByText('The pantry database is locked.')).toBeTruthy();
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalled());
+    expect(screen.queryByText('The pantry database is locked.')).toBeNull();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
     expect(within(screen.getByTestId('scan-scan-a')).getByText('This scan was already handled.')).toBeTruthy();
     expect(within(screen.getByTestId('batch-banner')).queryByText('This scan was already handled.')).toBeNull();
@@ -469,11 +477,63 @@ describe('QueueScreen', () => {
       expect(screen.getByText('Rice')).toBeTruthy();
       return;
     }
-    const failure = outcome === 'offline' ? 'offline' : 'The pantry disk is full.';
-    expect(await screen.findByText(failure)).toBeTruthy();
+    if (outcome === 'offline') {
+      expect(await screen.findByText('offline')).toBeTruthy();
+    } else {
+      await waitFor(() => expect(api.commitScan).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText('The pantry disk is full.')).toBeNull();
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
+      expect(screen.getAllByText(banner)).toHaveLength(1);
+    }
     expectBanner(screen, 'failure', [banner]);
     expect(screen.getByText('Oats')).toBeTruthy();
     expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
+  it.each([
+    { name: 'a first busy confirm is only the banner', status: 503, code: 'busy', sentence: BUSY_SENTENCE },
+    { name: 'a first no_space confirm is only the banner', status: 507, code: 'no_space', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ status, code, sentence }) => {
+    const oats = stocked('scan-a', 'Oats');
+    const api = client({
+      listPending: jest.fn(async () => [oats]),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(status, sentence, code);
+      }),
+      getInventoryList: jest.fn(async () => [householdItem('Oats', oats.productId ?? '', 2)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm Oats'));
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalledWith('scan-a'));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expectBanner(screen, 'failure', [sentence]);
+    expect(within(screen.getByTestId('scan-scan-a')).queryByText(sentence)).toBeNull();
+    expect(screen.getByText('Oats')).toBeTruthy();
+  });
+
+  it.each([
+    { name: 'a busy remove is only the banner', status: 503, code: 'busy', sentence: BUSY_SENTENCE },
+    { name: 'a no_space remove is only the banner', status: 507, code: 'no_space', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ status, code, sentence }) => {
+    const oats = stocked('scan-a', 'Oats');
+    const api = client({
+      listPending: jest.fn(async () => [oats]),
+      cancelScan: jest.fn(async () => {
+        throw new ApiError(status, sentence, code);
+      }),
+      getInventoryList: jest.fn(async () => [householdItem('Oats', oats.productId ?? '', 0)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Remove Oats'));
+    await waitFor(() => expect(api.cancelScan).toHaveBeenCalledWith('scan-a'));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expectBanner(screen, 'failure', [sentence]);
+    expect(within(screen.getByTestId('scan-scan-a')).queryByText(sentence)).toBeNull();
+    expect(screen.getByText('Oats')).toBeTruthy();
   });
 
   it.each([

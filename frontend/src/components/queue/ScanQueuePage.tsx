@@ -518,6 +518,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     });
   };
 
+  // A lock or a full disk from one card is the banner, including the first time.
+  // A notice already on that card stays.
+  const noteStorageFailure = (entryId: string, code: string, message: string) => {
+    setFailureById((current) => {
+      if (current.has(entryId)) return current;
+      const next = new Map(current);
+      next.set(entryId, { id: entryId, code, message });
+      return next;
+    });
+  };
+
   const setEntrySelected = (entryId: string, selected: boolean) => {
     setSelectedIds((current) =>
       selected ? [...new Set([...current, entryId])] : current.filter((id) => id !== entryId),
@@ -699,6 +710,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
                   onConfirmStart={beginSingleConfirm}
                   onConfirmSuccess={() => finishSingleConfirm(entry.id)}
                   onBlocked={() => rememberPin([entry.id])}
+                  onStorageFailure={(code, message) => noteStorageFailure(entry.id, code, message)}
                   onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}
                   userId={userId}

@@ -302,6 +302,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   // A confirm that succeeds drops the lock and disk notices, and the card just
   // confirmed. Item-specific codes stay until that card is resolved. A confirm
   // that fails leaves the banner up.
+  // A lock or a full disk is the banner, including the first time one card fails.
+  // A notice already on that card stays, and nothing about it is toasted.
+  function noteStorageFailure(id: string, code: string, message: string) {
+    setToast('');
+    setFailureBannerIds((current) => {
+      if (current[id] !== undefined) return current;
+      return { ...current, [id]: { id, code, message } };
+    });
+  }
+
   function retireSingleConfirm(id: string) {
     setFailureBannerIds((current) => {
       const next = failuresAfterConfirm(Object.values(current), id);
@@ -342,11 +352,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       return;
     }
+    if (isStorageFailureCode(requestError.code)) {
+      noteStorageFailure(id, requestError.code, requestError.message);
+      return;
+    }
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? requestError.message : '');
-    // A lock or a full disk is the banner. The card keeps the item sentence.
-    if (!isStorageFailureCode(requestError.code)) clearNote(id);
+    clearNote(id);
     if (behavior.refreshSuggestions) {
       storeHousehold(await loadHousehold(), entries);
       showOffer(id, offers[id]?.suggestions ?? [], true);
@@ -410,6 +423,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       await refresh('', false);
     } catch (requestError) {
+      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+        noteStorageFailure(id, requestError.code, requestError.message);
+        return;
+      }
       setToast(requestError instanceof Error ? requestError.message : 'That scan could not be removed.');
     } finally {
       setBusyId('');
@@ -432,7 +449,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (committed.direction === 'stock_in' && committed.productId) releasePins(committed.productId);
       await refresh();
     } catch (requestError) {
-      if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
+      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+        noteStorageFailure(id, requestError.code, requestError.message);
+      } else if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
         setToast(requestError.message);
         clearNote(id);
         setExcluded((current) => ({ ...current, [id]: productId }));

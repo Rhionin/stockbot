@@ -130,17 +130,17 @@ const renderQueue = (harness: QueueHarness) => {
         pending = pending.filter((entry) => entry.id !== id);
         return Promise.resolve(json({ ...scan({ id, direction: 'stock_in', status: 'committed' }) }));
       }
-      if (id === 'scan-busy-fail') {
-        return Promise.resolve(json({ error: 'The pantry database is locked.', code: 'busy' }, 503));
+      if (id === 'scan-busy-fail' || id === 'scan-busy-first') {
+        return Promise.resolve(json({ error: BUSY_SENTENCE, code: 'busy' }, 503));
       }
-      if (id === 'scan-nospace-fail') {
-        return Promise.resolve(json({ error: 'The pantry disk is full.', code: 'no_space' }, 507));
+      if (id === 'scan-nospace-fail' || id === 'scan-nospace-first') {
+        return Promise.resolve(json({ error: NO_SPACE_SENTENCE, code: 'no_space' }, 507));
       }
       if (id === 'scan-link-ok' || id === 'scan-link-fail') {
         const body = JSON.parse(String(init?.body ?? '{}')) as { linkProductId?: string };
         if (typeof body.linkProductId === 'string' && body.linkProductId !== '') {
           if (id === 'scan-link-fail') {
-            return Promise.resolve(json({ error: 'The pantry disk is full.', code: 'no_space' }, 507));
+            return Promise.resolve(json({ error: NO_SPACE_SENTENCE, code: 'no_space' }, 507));
           }
           pending = pending.filter((entry) => entry.id !== id);
           return Promise.resolve(json({ status: 'committed' }));
@@ -161,6 +161,12 @@ const renderQueue = (harness: QueueHarness) => {
       const id = url.split('/').at(-1) ?? '';
       const body = JSON.parse(String(init?.body ?? '{}')) as { status?: string; unitCount?: number };
       patches.push({ id, body });
+      if (id === 'scan-busy-remove') {
+        return Promise.resolve(json({ error: BUSY_SENTENCE, code: 'busy' }, 503));
+      }
+      if (id === 'scan-nospace-remove') {
+        return Promise.resolve(json({ error: NO_SPACE_SENTENCE, code: 'no_space' }, 507));
+      }
       if (body.status === 'cancelled') pending = pending.filter((entry) => entry.id !== id);
       return Promise.resolve(json({ status: body.status ?? 'pending' }));
     }
@@ -865,7 +871,7 @@ describe('nothing on hand queue', () => {
       productId: 'prod-rice',
       product: product('prod-rice', 'Rice'),
     });
-    renderQueue({
+    const { commits } = renderQueue({
       scans: [oats, rice],
       inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
       batchResult: {
@@ -881,7 +887,9 @@ describe('nothing on hand queue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
     expect((await screen.findByText(BUSY_SENTENCE)).closest('.scan-batch-banner')).not.toBeNull();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
-    expect(await screen.findByText('The pantry database is locked.')).toBeInTheDocument();
+    await waitFor(() => expect(commits).toContain('scan-busy-fail'));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.getAllByText(BUSY_SENTENCE)).toHaveLength(1);
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(BUSY_SENTENCE);
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
@@ -900,7 +908,7 @@ describe('nothing on hand queue', () => {
       productId: 'prod-rice',
       product: product('prod-rice', 'Rice'),
     });
-    renderQueue({
+    const { commits } = renderQueue({
       scans: [oats, rice],
       inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
       batchResult: {
@@ -916,7 +924,9 @@ describe('nothing on hand queue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
     expect((await screen.findByText(NO_SPACE_SENTENCE)).closest('.scan-batch-banner')).not.toBeNull();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
-    expect(await screen.findByText('The pantry disk is full.')).toBeInTheDocument();
+    await waitFor(() => expect(commits).toContain('scan-nospace-fail'));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.getAllByText(NO_SPACE_SENTENCE)).toHaveLength(1);
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(NO_SPACE_SENTENCE);
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
@@ -975,7 +985,7 @@ describe('nothing on hand queue', () => {
       productId: 'prod-rice',
       product: product('prod-rice', 'Rice'),
     });
-    renderQueue({
+    const { commits } = renderQueue({
       scans: [oats, rice],
       inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
       batchResult: {
@@ -1000,10 +1010,60 @@ describe('nothing on hand queue', () => {
       expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
       return;
     }
-    expect(await screen.findByText('The pantry disk is full.')).toBeInTheDocument();
+    await waitFor(() => expect(commits.filter((commit) => commit === id)).toHaveLength(2));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.getAllByText(banner)).toHaveLength(1);
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(banner);
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText(banner)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+  });
+
+  it.each([
+    { name: 'a first busy confirm is only the banner', id: 'scan-busy-first', sentence: BUSY_SENTENCE },
+    { name: 'a first no_space confirm is only the banner', id: 'scan-nospace-first', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ id, sentence }) => {
+    const oats = scan({
+      id,
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const { commits } = renderQueue({
+      scans: [oats],
+      inventory: [shelf('oats', 'Oats', 2)],
+    });
+    const card = await screen.findByRole('article', { name: 'Scan 555' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(commits).toContain(id));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(sentence);
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText(sentence)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { name: 'a busy remove is only the banner', id: 'scan-busy-remove', sentence: BUSY_SENTENCE },
+    { name: 'a no_space remove is only the banner', id: 'scan-nospace-remove', sentence: NO_SPACE_SENTENCE },
+  ])('$name', async ({ id, sentence }) => {
+    const oats = scan({
+      id,
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const { patches } = renderQueue({
+      scans: [oats],
+      inventory: [shelf('oats', 'Oats', 2)],
+    });
+    const card = await screen.findByRole('article', { name: 'Scan 555' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(patches.map((patch) => patch.id)).toContain(id));
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(sentence);
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText(sentence)).not.toBeInTheDocument();
   });
 
   it('a batch response with no committedIds key has no confirmed prefix', async () => {
