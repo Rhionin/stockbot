@@ -6,7 +6,7 @@ set -e
 # A cached go test run, or several packages writing one profile at once, can
 # report a different total. Do not ratchet from that result. -p 1 keeps the
 # merged profile to a single writer.
-COVERAGE_THRESHOLD=82.0
+COVERAGE_THRESHOLD=83.0
 
 # Colors for output
 RED='\033[0;31m'
