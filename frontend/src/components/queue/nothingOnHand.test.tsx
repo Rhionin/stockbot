@@ -676,6 +676,46 @@ describe('nothing on hand queue', () => {
     }
   });
 
+  it.each([
+    { name: 'busy empty message', code: 'busy', message: '', committed: 0, banner: BUSY_SENTENCE },
+    { name: 'busy blank message', code: 'busy', message: '   ', committed: 0, banner: BUSY_SENTENCE },
+    { name: 'busy empty message and one committed', code: 'busy', message: '', committed: 1, banner: `1 confirmed. ${BUSY_SENTENCE}` },
+    { name: 'no_space empty message', code: 'no_space', message: '', committed: 0, banner: NO_SPACE_SENTENCE },
+    { name: 'no_space blank message', code: 'no_space', message: ' \n ', committed: 0, banner: NO_SPACE_SENTENCE },
+    { name: 'no_space blank message and many committed', code: 'no_space', message: '  ', committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}` },
+  ])('$name fills the banner from the storage sentence', async ({ code, message, committed, banner }) => {
+    const failed = scan({
+      id: 'scan-fail',
+      barcode: '444',
+      productId: 'prod-fail',
+      product: product('prod-fail', 'Short loaf'),
+    });
+    const committedScans = Array.from({ length: committed }, (_, index) => scan({
+      id: `scan-ok-${index}`,
+      barcode: `80${index}`,
+      productId: `prod-ok-${index}`,
+      product: product(`prod-ok-${index}`, `Kept ${index}`),
+    }));
+    const scans = [...committedScans, failed];
+    renderQueue({
+      scans,
+      inventory: scans.map((entry, index) => shelf(`row-${index}`, entry.product?.name ?? 'Item', 2)),
+      batchResult: {
+        updatedCount: scans.length,
+        committedIds: committedScans.map((entry) => entry.id),
+        failedIds: [failed.id],
+        failedReasons: [message],
+        failedCodes: [code],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 444' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: `Confirm ${scans.length} selected scans` }));
+    const bannerNode = await screen.findByText(banner);
+    expect(bannerNode.closest('.scan-batch-banner')).not.toBeNull();
+    expect(within(screen.getByRole('article', { name: 'Scan 444' })).queryByText(banner)).not.toBeInTheDocument();
+  });
+
   it('a busy card beside amber keeps one red sentence', async () => {
     const amber = scan({
       id: 'scan-amber',

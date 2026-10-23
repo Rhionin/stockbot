@@ -239,9 +239,12 @@ export function batchFailureBannerText(
   if (blocking.length === 0) return null;
   const storage = blocking.find((notice) => notice.code === CODE_BUSY || notice.code === CODE_NO_SPACE);
   if (storage === undefined) return BATCH_FAILURE_FALLBACK;
+  const sentence = storage.message.trim() === ''
+    ? (storage.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE)
+    : storage.message;
   const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
-  if (count === 0) return storage.message;
-  return `${count} confirmed. ${storage.message}`;
+  if (count === 0) return sentence;
+  return `${count} confirmed. ${sentence}`;
 }
 
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.

@@ -215,6 +215,89 @@ describe('QueueScreen', () => {
     }
   });
 
+  it.each([
+    { label: 'busy empty message', code: 'busy', message: '', committed: 0, banner: BUSY_SENTENCE },
+    { label: 'busy blank message', code: 'busy', message: '   ', committed: 0, banner: BUSY_SENTENCE },
+    { label: 'busy empty message and one committed', code: 'busy', message: '', committed: 1, banner: `1 confirmed. ${BUSY_SENTENCE}` },
+    { label: 'no_space empty message', code: 'no_space', message: '', committed: 0, banner: NO_SPACE_SENTENCE },
+    { label: 'no_space blank message', code: 'no_space', message: ' \n ', committed: 0, banner: NO_SPACE_SENTENCE },
+    { label: 'no_space blank message and many committed', code: 'no_space', message: '  ', committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}` },
+  ])('batch $label fills the banner from the storage sentence', async ({ code, message, committed, banner }) => {
+    const failed = [stocked('scan-fail', 'Short loaf')];
+    if (committed === 0) failed.push(stocked('scan-fail-2', 'Second loaf'));
+    const kept = Array.from({ length: committed }, (_, index) => stocked(`scan-ok-${index}`, `Kept ${index}`));
+    const cards = [...kept, ...failed];
+    const api = client({
+      listPending: jest.fn()
+        .mockResolvedValueOnce(cards)
+        .mockResolvedValue(failed),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: cards.length,
+        committedIds: kept.map((card) => card.id),
+        failedIds: failed.map((card) => card.id),
+        failedReasons: failed.map(() => message),
+        failedCodes: failed.map(() => code),
+      })),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(banner)).toBeTruthy();
+    expect(screen.getAllByText(banner)).toHaveLength(1);
+    expectBanner(screen, 'failure', [banner]);
+    for (const card of failed) {
+      expect(within(screen.getByTestId(`scan-${card.id}`)).queryByText(banner)).toBeNull();
+    }
+  });
+
+  it('a busy batch keeps its sentence when the same cards refresh', async () => {
+    const failed = [stocked('scan-a', 'Rice'), stocked('scan-b', 'Oats')];
+    const listPending = jest.fn(async () => failed);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: failed.map((card) => card.id),
+        failedReasons: failed.map(() => BUSY_SENTENCE),
+        failedCodes: failed.map(() => 'busy'),
+      })),
+      getInventoryList: jest.fn(async () => failed.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(BUSY_SENTENCE)).toBeTruthy();
+    await reloadQueue(screen);
+    await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
+    expect(screen.getAllByText(BUSY_SENTENCE)).toHaveLength(1);
+    expectBanner(screen, 'failure', [BUSY_SENTENCE]);
+  });
+
+  it('a failed id missing from the next listing shows no sentence', async () => {
+    const cards = [stocked('scan-a', 'Rice'), stocked('scan-b', 'Oats')];
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(cards)
+      .mockResolvedValue([]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: cards.map((card) => card.id),
+        failedReasons: cards.map(() => BUSY_SENTENCE),
+        failedCodes: cards.map(() => 'busy'),
+      })),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    await waitFor(() => expect(screen.queryByText('Rice')).toBeNull());
+    expect(screen.queryByText(BUSY_SENTENCE)).toBeNull();
+    expect(screen.queryByText('confirmed.')).toBeNull();
+    expectBanner(screen, 'gone', []);
+  });
+
   it('a busy card beside amber keeps one red sentence', async () => {
     const amber = stocked('scan-amber', 'Rice');
     const busy = stocked('scan-busy', 'Oats');

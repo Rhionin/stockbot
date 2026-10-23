@@ -181,6 +181,33 @@ describe('batch failure banner', () => {
     expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
   });
 
+  it.each([
+    { name: 'busy empty message', code: 'busy', message: '', committed: 0, banner: BUSY_SENTENCE },
+    { name: 'busy blank message', code: 'busy', message: '   ', committed: 0, banner: BUSY_SENTENCE },
+    { name: 'busy empty message and one committed', code: 'busy', message: '', committed: 1, banner: `1 confirmed. ${BUSY_SENTENCE}` },
+    { name: 'no_space empty message', code: 'no_space', message: '', committed: 0, banner: NO_SPACE_SENTENCE },
+    { name: 'no_space blank message', code: 'no_space', message: ' \n ', committed: 0, banner: NO_SPACE_SENTENCE },
+    { name: 'no_space blank message and many committed', code: 'no_space', message: '  ', committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}` },
+  ])('$name falls back to the storage sentence', ({ code, message, committed, banner }) => {
+    expect(batchFailureBannerText([{ code, message }], committed)).toBe(banner);
+    expect(batchCardCommitNotice(code, message)).toBe('');
+  });
+
+  it('a stopped batch omits committedIds and has no confirmed prefix', () => {
+    const body: BatchCommitResponse = {
+      updatedCount: 0,
+      failedIds: ['scan-fail'],
+      failedReasons: [BUSY_SENTENCE],
+      failedCodes: ['busy'],
+    };
+    expect(body.committedIds).toBeUndefined();
+    const banner = batchFailureBannerText(
+      [{ code: 'busy', message: BUSY_SENTENCE }],
+      body.committedIds?.length ?? 0,
+    );
+    expect(banner).toBe(BUSY_SENTENCE);
+  });
+
   it('a busy card beside amber uses the busy sentence once', () => {
     const notices = [
       { code: 'none_on_hand', message: 'Nothing on hand to take out.' },
