@@ -1011,13 +1011,17 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (Backf
 	if err := claimPendingScan(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return BackfillResult{}, err
 	}
+	if err := recordStockOutCounts(ctx, tx, scanEntry.ID, units, scanEntry.UnitCount); err != nil {
+		return BackfillResult{}, err
+	}
 	var stockInID, stockOutID string
 	if backfillMoveRead != nil {
 		backfillMoveRead("in")
 	}
+	// source backfill is this pair's stock-in, so the direction is not a second filter.
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM stock_moves
-		WHERE scan_entry_id = ? AND direction = 'in' AND source = 'backfill'`,
+		WHERE scan_entry_id = ? AND source = 'backfill'`,
 		scanEntry.ID).Scan(&stockInID); err != nil {
 		return BackfillResult{}, fmt.Errorf("read backfill stock-in: %w", err)
 	}

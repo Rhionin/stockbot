@@ -209,7 +209,7 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 		FROM stock_moves m
 		JOIN products p ON p.id = m.product_id
 		WHERE m.item_id IN (` + placeholders(len(itemIDs)) + `)
-		ORDER BY m.at DESC, m.id DESC
+		ORDER BY ` + historyListOrder + `
 		LIMIT ?`
 	args := append(idsAsArgs(itemIDs), trailLimit)
 	rows, err := tx.QueryContext(ctx, query, args...)
