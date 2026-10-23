@@ -90,9 +90,9 @@ export const CODE_NO_SPACE = 'no_space';
 export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
 export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
 
-// Codes for #395. Handlers do not send the new ones yet. auth_not_configured
-// belongs to #393 and is not declared here. The sentences and extra fields
-// are specified in docs/api/errors.md.
+// Codes for #395. The server sends these on the routes in docs/api/errors.md.
+// auth_not_configured belongs to #393 and is not declared here. The sentences
+// and extra fields are specified in docs/api/errors.md.
 
 export const CODE_UPDATING = 'updating';
 export const UPDATING_SENTENCE = 'Updating. Try again in a minute.';

@@ -289,7 +289,7 @@ func TestHouseholdAuthRateLimit(t *testing.T) {
 	if _, err := strconv.Atoi(lockedRec.Header().Get("Retry-After")); err != nil {
 		t.Fatalf("Retry-After = %q", lockedRec.Header().Get("Retry-After"))
 	}
-	if !strings.Contains(lockedRec.Body.String(), "Too many sign-in attempts") {
+	if lockedRec.Body.String() != `{"error":"Too many sign-in attempts. Try again later.","code":"rate_limited"}` {
 		t.Fatalf("locked body = %s", lockedRec.Body.String())
 	}
 

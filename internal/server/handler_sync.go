@@ -18,11 +18,11 @@ type syncSnapshotHandler struct {
 
 func (h *syncSnapshotHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.Token == "" {
-		writeError(w, http.StatusNotFound, "Not found.")
+		writeError(w, http.StatusNotFound, codeNotFound, "Not found.")
 		return
 	}
 	if !tokenMatches(bearerToken(r), h.Token) {
-		writeError(w, http.StatusUnauthorized, "The sync token is not valid.")
+		writeError(w, http.StatusUnauthorized, codeUnauthorized, "The sync token is not valid.")
 		return
 	}
 	snap, err := syncsnap.Build(r.Context(), h.DB, time.Now())

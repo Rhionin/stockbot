@@ -114,9 +114,8 @@ busy 503.
 ## Codes on every app-facing error
 
 Every error on a route the web or mobile app calls carries `code`.
-The sections below are that contract. Handlers still return the bodies
-they return today; a later change sends these codes. A sentence that
-already exists stays word for word. A new sentence does not name the app.
+The sections below are that contract. Handlers send these codes.
+A sentence that already exists stays word for word. A new sentence does not name the app.
 
 The body is JSON, `Content-Type: application/json`:
 
@@ -135,7 +134,7 @@ uses the hosted name `rate_limited`.
 A 502, 503, 504, or 530 that this server did not produce still has no
 `code`. The client keeps treating that as offline.
 
-A later change adds a test that fails when any `/api` route returns an
+`TestAPIJSONErrorsCarryACode` fails when any `/api` route returns an
 error with no `code`, other than the exemptions at the end of this page.
 
 ## 503 updating
@@ -155,8 +154,7 @@ stays the build JSON with status 200 (`cmd/server/boot.go`). The same
 server-state notice, shown in the same banner as `busy`. Offline
 replaces it, and the next successful request clears it.
 
-Today that response is `{"status":"migrating"}` with no `code`
-(`cmd/server/boot.go`).
+The boot gate writes that body (`cmd/server/boot.go`).
 
 ## 502 provider unavailable
 
@@ -180,8 +178,8 @@ action was taken, and not in the banner.
 
 A product lookup that fails because an upstream database did not answer
 stays 500 `internal` (`internal/server/handler_lookup.go`). It is not a
-502 today. Today both 502s are rewritten to the generic sentence with no
-`code`. This contract replaces that body for these two routes only.
+502. These two routes send the provider body. Any other 502 stays the
+generic sentence and code `internal`.
 
 ## Sign-in
 
@@ -215,9 +213,9 @@ The status stays 400. These responses do not include `field`.
 
 | Status | Code | Sentence | File:line |
 | --- | --- | --- | --- |
-| 400 | `payload_too_large` | `request body is too large` | `internal/server/handler_wrapper.go:64`, `:72` |
-| 400 | `validation` | `invalid request body: ` plus the parser text | `:75`, `:80` |
-| 400 | `validation` | `invalid path parameters: ` plus the parser text | `:88` |
+| 400 | `payload_too_large` | `request body is too large` | `internal/server/handler_wrapper.go:65`, `:73` |
+| 400 | `validation` | `invalid request body: ` plus the parser text | `:76`, `:81` |
+| 400 | `validation` | `invalid path parameters: ` plus the parser text | `:89` |
 
 A handler that checks an empty path id after the parser succeeds is
 `validation` as well, in the next section.
@@ -382,9 +380,8 @@ stays 409 `in_group` with `members.groupId`
 ## 405 method not allowed
 
 A known `/api` path called with the wrong method is HTTP 405
-`method_not_allowed`. The sentence is `Method not allowed.` Today the
-router writes plain text. This contract is JSON. The hosted contract
-has no 405 code, so this name stays.
+`method_not_allowed`. The sentence is `Method not allowed.` The body is
+JSON. The hosted contract has no 405 code, so this name stays.
 
 ## 500 internal
 
@@ -395,7 +392,7 @@ stock-out the server did not expect, and these two:
 
 | Route | File:line | When |
 | --- | --- | --- |
-| `GET /api/events` | `handler_events.go:48` | The response cannot stream. Today this is plain text. The contract is the JSON above. |
+| `GET /api/events` | `handler_events.go:48` | The response cannot stream. The body is the JSON above. |
 | `GET /api/sync/snapshot` | `handler_sync.go:30` | The snapshot cannot be built. |
 
 A credential store that is missing (`handler_provider_credentials.go:131`)

@@ -234,7 +234,7 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 	if err != nil {
 		// Do not include err: a provider body is where tokens live.
 		log.Printf("provider %s authorization code exchange failed", providerID)
-		return SeeOther{}, BadGateway(fmt.Sprintf("%s rejected the authorization code", provider.DisplayName()))
+		return SeeOther{}, ProviderUnavailable(provider.DisplayName())
 	}
 
 	expiresAt := tokenSet.ReceiptAt.Add(tokenSet.ExpiresIn)

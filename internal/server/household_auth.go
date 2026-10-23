@@ -145,7 +145,7 @@ func (a *HouseholdAuth) Middleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			writeAuthError(w, http.StatusUnauthorized, "Sign in required.")
+			writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "Sign in required.")
 			return
 		}
 		if isAuthEndpoint(r) {
@@ -164,7 +164,7 @@ func (a *HouseholdAuth) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			a.limiter.fail(a.nowTime(), key)
-			writeAuthError(w, http.StatusUnauthorized, "Sign in required.")
+			writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "Sign in required.")
 			return
 		}
 		// A session cookie is not a sign-in attempt. An address that is
@@ -177,7 +177,7 @@ func (a *HouseholdAuth) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		writeAuthError(w, http.StatusUnauthorized, "Sign in required.")
+		writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "Sign in required.")
 	})
 }
 
@@ -188,7 +188,7 @@ func (a *HouseholdAuth) ServeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a == nil || !a.Configured {
-		writeAuthError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
+		writeExemptError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
 		return
 	}
 	if user, pass, ok := basicCredentials(r); ok {
@@ -203,24 +203,24 @@ func (a *HouseholdAuth) ServeSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.limiter.fail(a.nowTime(), key)
-		writeAuthError(w, http.StatusUnauthorized, "Sign in required.")
+		writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "Sign in required.")
 		return
 	}
 	if user, ok := a.sessionUser(r); ok {
 		writeJSON(w, http.StatusOK, map[string]any{"required": true, "username": user})
 		return
 	}
-	writeAuthError(w, http.StatusUnauthorized, "Sign in required.")
+	writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "Sign in required.")
 }
 
 // ServeLogin checks the household password and sets the session cookie.
 func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	if a == nil || !a.enforced(r) {
-		writeAuthError(w, http.StatusNotFound, "Sign-in is not used on this address.")
+		writeAuthError(w, http.StatusNotFound, codeNotFound, "Sign-in is not used on this address.")
 		return
 	}
 	if !a.Configured {
-		writeAuthError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
+		writeExemptError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now.")
 		return
 	}
 	var body struct {
@@ -229,7 +229,7 @@ func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.UnmarshalRead(r.Body, &body); err != nil {
-		writeAuthError(w, http.StatusBadRequest, "Enter your username and password.")
+		writeAuthError(w, http.StatusBadRequest, codeValidation, "Enter your username and password.")
 		return
 	}
 	key := clientKey(r)
@@ -239,7 +239,7 @@ func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.passwordMatches(body.Username, body.Password) {
 		a.limiter.fail(a.nowTime(), key)
-		writeAuthError(w, http.StatusUnauthorized, "The username or password is incorrect.")
+		writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "The username or password is incorrect.")
 		return
 	}
 	a.limiter.reset(key)
@@ -348,8 +348,8 @@ func requestHTTPS(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
-func writeAuthError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
+func writeAuthError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorPayload{Error: message, Code: code})
 }
 
 func writeLimited(w http.ResponseWriter, retry time.Duration) {
@@ -358,7 +358,7 @@ func writeLimited(w http.ResponseWriter, retry time.Duration) {
 		secs = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeAuthError(w, http.StatusTooManyRequests, "Too many sign-in attempts. Try again later.")
+	writeAuthError(w, http.StatusTooManyRequests, codeRateLimited, "Too many sign-in attempts. Try again later.")
 }
 
 func isAuthEndpoint(r *http.Request) bool {
