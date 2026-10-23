@@ -31,7 +31,7 @@ interface Call {
   body?: unknown;
 }
 
-type Kind = 'define' | 'add' | 'link' | 'backfill' | 'batch' | 'suggest' | 'patch';
+type Kind = 'define' | 'add' | 'link' | 'backfill' | 'none' | 'batch' | 'suggest' | 'patch';
 
 interface Outcome {
   name: string;
@@ -144,8 +144,7 @@ const outcomes: Outcome[] = [
     body: noneOnHand,
     visible: ['Nothing on hand to take out.', 'Add it and take it out'],
     absent: ['Which item is this?', 'Add as a new item'],
-    toast: 'Nothing on hand to take out.',
-    refreshed: true,
+    refreshed: false,
   },
   {
     name: 'linking an item that has units takes it out',
@@ -279,11 +278,20 @@ const outcomes: Outcome[] = [
     refreshed: false,
   },
   {
-    name: 'a batch none_on_hand card does not offer backfill',
+    name: 'a batch never offers or claims a backfill',
     kind: 'batch',
-    visible: ['Nothing on hand to take out.'],
-    absent: ['Add it and take it out', 'Add as a new item'],
-    confirm: true,
+    visible: [],
+    absent: ['Add it and take it out', 'Added and taken out.', 'Nothing on hand to take out.'],
+  },
+  {
+    name: 'none_on_hand maps to the card with the backfill offer',
+    kind: 'none',
+    visible: [
+      'Nothing on hand to take out.',
+      'Add it and take it out',
+      "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.",
+    ],
+    absent: ['Added and taken out.', 'No inventory item is available for this product.', 'Not in your pantry'],
   },
   {
     name: 'a shelved item is on hand 0 and offers backfill',
@@ -505,8 +513,8 @@ describe('backfill card', () => {
       calls.push({ method, url, body });
       if (url.endsWith('/commit') && method === 'POST') {
         commits += 1;
-        if (row.kind === 'backfill' && commits === 1) {
-          return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand' }, 409));
+        if ((row.kind === 'backfill' || row.kind === 'none') && commits === 1) {
+          return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand', itemId: 'item-sour', onHand: 0 }, 409));
         }
         if ((row.kind === 'define' || row.kind === 'add' || row.kind === 'link' || row.kind === 'patch' || row.kind === 'suggest') && commits === 1) {
           return Promise.resolve(json({
@@ -584,7 +592,7 @@ describe('backfill card', () => {
       return Promise.resolve(json([]));
     }));
 
-    const named = row.kind === 'backfill' || row.kind === 'batch' || row.name.includes('own product');
+    const named = row.kind === 'backfill' || row.kind === 'none' || row.kind === 'batch' || row.name.includes('own product');
     render(
       <MantineProvider>
         <Notifications />
@@ -592,7 +600,6 @@ describe('backfill card', () => {
           entry={entry(named)}
           selected={false}
           itemId={named ? 'item-sour' : undefined}
-          commitNotice={row.kind === 'batch' ? 'Nothing on hand to take out.' : ''}
           commitCode={row.kind === 'batch' ? 'none_on_hand' : ''}
           onSelectedChange={vi.fn()}
           onChanged={onChanged}
@@ -601,12 +608,14 @@ describe('backfill card', () => {
     );
 
     let refreshBefore = 0;
-    if (row.kind === 'backfill') {
+    if (row.kind === 'backfill' || row.kind === 'none') {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
       await screen.findByRole('button', { name: 'Add it and take it out' });
-      notifications.clean();
-      refreshBefore = onChanged.mock.calls.length;
-      fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
+      if (row.kind === 'backfill') {
+        notifications.clean();
+        refreshBefore = onChanged.mock.calls.length;
+        fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
+      }
     } else if (row.kind === 'define' || row.kind === 'add' || row.kind === 'link' || row.kind === 'patch' || row.kind === 'suggest') {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
       const offer = await screen.findByRole('region', { name: 'Which item is this?' });
@@ -650,6 +659,7 @@ describe('backfill card', () => {
         expect(onChanged.mock.calls.length).toBe(refreshBefore);
       }
       if (row.kind !== 'backfill' && row.refreshed) expect(onChanged).toHaveBeenCalled();
+      if (row.kind === 'link' && row.refreshed === false) expect(onChanged).not.toHaveBeenCalled();
       if (row.kind === 'add') {
         const created = row.typedName ?? row.lookupName;
         const product = calls.find((call) => call.url === '/api/products' && call.method === 'POST');
@@ -683,11 +693,27 @@ describe('backfill card', () => {
         expect(calls.some((call) => call.url.includes('/history'))).toBe(false);
       }
       if (row.kind === 'batch') {
-        expect(calls.some((call) => call.url.endsWith('/commit'))).toBe(false);
+        expect(calls.some((call) => call.url.endsWith('/commit') || call.url.includes('batch-commit'))).toBe(false);
+        expect(calls.some((call) => {
+          const written = call.body as { backfill?: boolean } | undefined;
+          return written?.backfill === true;
+        })).toBe(false);
+        expect(screen.queryByRole('button', { name: 'Add it and take it out' })).not.toBeInTheDocument();
+        expect(screen.queryByText('Added and taken out.')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+      }
+      if (row.kind === 'none') {
+        const posted = calls.filter((call) => call.url.endsWith('/commit') && call.method === 'POST');
+        expect(posted).toHaveLength(1);
+        expect(posted[0]?.body).toEqual({});
+        expect(document.querySelector('.restock-toast')).toBeNull();
+        expect(screen.getByRole('article', { name: `Scan ${barcode}` })).toHaveClass('scan-entry-card--nothing');
+        expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
       }
     });
 
-    expect(screen.getByRole('article', { name: `Scan ${barcode}` })).toBeInTheDocument();
+    const articleName = row.kind === 'batch' ? new RegExp(`^Scan ${barcode}`) : `Scan ${barcode}`;
+    expect(screen.getByRole('article', { name: articleName })).toBeInTheDocument();
 
     if (row.undoId !== undefined) {
       const inventoryReads = () => calls.filter((call) => call.method === 'GET' && (call.url === '/api/inventory' || call.url.startsWith('/api/inventory?'))).length;
@@ -849,9 +875,8 @@ describe('backfill card', () => {
       target: { value: 'Sour cream' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
-    await waitFor(() => {
-      expect(document.querySelector('.restock-toast-detail')?.textContent).toBe('Nothing on hand to take out.');
-    });
+    expect(await screen.findByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
+    expect(document.querySelector('.restock-toast')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Add it and take it out' }));
     await waitFor(() => {
       const details = [...document.querySelectorAll('.restock-toast-detail')].map((node) => node.textContent);

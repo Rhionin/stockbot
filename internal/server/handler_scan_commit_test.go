@@ -46,6 +46,8 @@ func TestScanCommitStockIn(t *testing.T) {
 					{path: "$.status", value: "committed"},
 					{path: "$.id", value: "scan-1"},
 					{path: "$.code", absent: true},
+					{path: "$.removedCount", absent: true},
+					{path: "$.requestedCount", absent: true},
 				},
 				bodyExcludes: []string{"no_item", "Not in your pantry", "Nothing on hand to take out."},
 			},
@@ -297,6 +299,11 @@ func TestScanCommitStockOut(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-out-1/commit",
 				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.status", value: "committed"},
+					{path: "$.removedCount", value: float64(1)},
+					{path: "$.requestedCount", value: float64(1)},
+				},
 			},
 			afterRequest: exchanges(httpExchange{
 				method:         "GET",
@@ -1133,6 +1140,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					{path: "$.productId", value: "prod-pears"},
 					{path: "$.barcode", value: "011110828385"},
 					{path: "$.onHand", value: float64(2)},
+					{path: "$.removedCount", value: float64(1)},
+					{path: "$.requestedCount", value: float64(1)},
 				},
 			},
 			afterRequest: exchanges(

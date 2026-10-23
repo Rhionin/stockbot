@@ -281,7 +281,7 @@ func (h *ProviderDisconnectHandler) Handle(req Request[struct{}, ProviderDisconn
 
 	// Disconnect the provider
 	if err := h.ConnectionDir.Disconnect(req.Context, string(providerID)); err != nil {
-		return Created{}, InternalError(fmt.Errorf("failed to disconnect: %v", err))
+		return Created{}, InternalError(fmt.Errorf("failed to disconnect: %w", err))
 	}
 
 	return Created{Value: struct{}{}}, nil
@@ -330,7 +330,7 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 	if caps.Auth != cart.AuthNone {
 		conn, err := h.ConnectionDir.Read(req.Context, string(providerID))
 		if err != nil {
-			return nil, InternalError(fmt.Errorf("failed to read connection: %v", err))
+			return nil, InternalError(fmt.Errorf("failed to read connection: %w", err))
 		}
 		if conn == nil {
 			return nil, Conflict(fmt.Sprintf("provider %q is not connected", providerID))
@@ -343,7 +343,7 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 	// Get ledger entries
 	ledgerMap, err := h.Ledger.ListForProvider(req.Context, providerID)
 	if err != nil {
-		return nil, InternalError(fmt.Errorf("failed to read ledger: %v", err))
+		return nil, InternalError(fmt.Errorf("failed to read ledger: %w", err))
 	}
 
 	// Convert to response format
@@ -391,7 +391,7 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 	if caps.Auth != cart.AuthNone {
 		conn, err := h.ConnectionDir.Read(req.Context, string(providerID))
 		if err != nil {
-			return Created{}, InternalError(fmt.Errorf("failed to read connection: %v", err))
+			return Created{}, InternalError(fmt.Errorf("failed to read connection: %w", err))
 		}
 		if conn == nil {
 			return Created{}, Conflict(fmt.Sprintf("provider %q is not connected", providerID))
@@ -403,7 +403,7 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 
 	// Reset ledger
 	if err := h.Ledger.ResetForProvider(req.Context, providerID); err != nil {
-		return Created{}, InternalError(fmt.Errorf("failed to reset ledger: %v", err))
+		return Created{}, InternalError(fmt.Errorf("failed to reset ledger: %w", err))
 	}
 	// A new cart is a new trip. Checked-off lines from the previous trip
 	// no longer block the next list.

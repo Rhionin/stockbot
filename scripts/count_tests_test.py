@@ -178,6 +178,44 @@ class CountTestsTest(unittest.TestCase):
         self.assertNotIn("mobile/app.ts", web["files"])
         self.assertNotIn("density", web)
 
+    def test_mobile_tests_follow_the_mobile_jest_test_match(self) -> None:
+        # The mobile app names Jest tests client-test.ts, not client.test.ts.
+        repo = self.repo()
+        repo.write(
+            "mobile/package.json",
+            json.dumps({"jest": {"preset": "jest-expo", "testMatch": ["**/*-test.ts", "**/*-test.tsx"]}}),
+        )
+        repo.write("mobile/src/api/client.ts", "export const get = 1\nexport const put = 2\n")
+        repo.write(
+            "mobile/src/api/client-test.ts",
+            'it("gets", () => { expect(1).toBe(1) })\ntest("puts", () => { expect(2).toBe(2) })\n',
+        )
+        repo.write("mobile/src/screens/sign-in-test.tsx", 'it("signs in", () => { expect(1).toBe(1) })\n')
+        repo.write("mobile/src/screens/latest.tsx", "export const Latest = 1\n")
+
+        mobile = repo.report()["mobile"]
+        self.assertEqual(sorted(mobile["files"]), ["mobile/src/api/client.ts", "mobile/src/screens/latest.tsx"])
+        self.assertEqual(mobile["prod_files"], 2)
+        self.assertEqual(mobile["prod_loc"], 3)
+        self.assertEqual(mobile["test_files"], 2)
+        self.assertEqual(mobile["test_loc"], 3)
+        self.assertEqual(mobile["test_cases_static"], 3)
+        self.assertEqual(mobile["assertions"], 3)
+
+    def test_mobile_test_regex_and_unreadable_jest_config(self) -> None:
+        repo = self.repo()
+        repo.write("mobile/package.json", json.dumps({"jest": {"testRegex": "/src/.*_spec\\.ts$"}}))
+        repo.write("mobile/src/a.ts", "export const a = 1\n")
+        repo.write("mobile/src/a_spec.ts", 'it("a", () => { expect(1).toBe(1) })\n')
+        mobile = repo.report()["mobile"]
+        self.assertEqual(list(mobile["files"]), ["mobile/src/a.ts"])
+        self.assertEqual(mobile["test_files"], 1)
+
+        repo.write("mobile/jest.config.js", "module.exports = {}\n")
+        proc = run("report", "--repo", str(repo.root))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("jest.config.js", proc.stderr)
+
     def test_signal_counts_follow_the_agreed_spellings(self) -> None:
         repo = self.repo()
         repo.write(
@@ -614,6 +652,33 @@ def synthetic_report(go_test: int, go_covered: int, web_test: int, web_covered: 
             "density": density(test_total, covered_total),
         },
     }
+
+
+class CollectMetricsScriptTest(unittest.TestCase):
+    """The metrics collector must follow the locked vitest and fail without web coverage."""
+
+    def test_coverage_provider_tracks_lockfile_and_missing_coverage_fails(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "scripts" / "collect-test-metrics.sh").read_text()
+        workflow = (root / ".github" / "workflows" / "test-metrics.yml").read_text()
+        lock = json.loads((root / "frontend" / "package-lock.json").read_text())
+        declared = json.loads((root / "frontend" / "package.json").read_text())["devDependencies"]["vitest"]
+
+        locked = lock["packages"]["node_modules/vitest"]["version"]
+        self.assertEqual(locked, declared)
+        self.assertRegex(locked, r"^\d+\.\d+\.\d+")
+        # A hardcoded provider version is what drifted behind vitest 5.0.5.
+        self.assertNotRegex(script, r"@vitest/coverage-v8@\d")
+        self.assertIn("packages['node_modules/vitest'].version", script)
+        install_lines = [
+            line
+            for line in script.splitlines()
+            if "npm install" in line and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(install_lines, ['  elif ! npm install --no-save "@vitest/coverage-v8@${vitest_version}"; then'])
+        self.assertIn("web coverage was not produced", script)
+        self.assertEqual(workflow.count("Web coverage was not produced"), 2)
+        self.assertEqual(workflow.count("exit 1"), 2)
 
 
 if __name__ == "__main__":

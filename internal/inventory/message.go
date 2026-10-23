@@ -1,5 +1,7 @@
 package inventory
 
+import "github.com/Rhionin/stockbot/internal/clientmsg"
+
 // NoneOnHandMessage is the sentence when a stock-out finds no unit on the shelf.
 // Scan commit and manual stock-out share this wording.
 const NoneOnHandMessage = "Nothing on hand to take out."
@@ -36,8 +38,9 @@ const UnitsOnHandMessage = "You already have some on hand, so there's nothing to
 const NotStockOutMessage = "This only works when taking something out."
 
 // InternalMessage is the sentence for an unexpected failure. The server logs
-// the real error and does not send it to the household.
-const InternalMessage = "Something went wrong. Try again."
+// the real error and does not send it to the household. It is the same
+// sentence every generic 5xx uses.
+const InternalMessage = clientmsg.Generic
 
 // ConflictingFieldsMessage is the sentence when one scan update asks for two
 // changes that cannot happen together.

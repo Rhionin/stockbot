@@ -583,7 +583,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 			entryID = created.ID
 
 			queue.Broadcaster = broadcaster
-			if err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
@@ -748,12 +748,14 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				scan.StockOut,
 			}).Draw(rt, "direction")
 			err = queue.UpdateScanEntry(ctx, unknownID, &direction, nil, nil, nil, nil)
-		case 2: // BatchUpdateScanEntries with an unknown ID in the batch
+		case 2: // BatchUpdateScanEntries when the context is already canceled
 			direction := rapid.SampledFrom([]scan.ScanDirection{
 				scan.StockIn,
 				scan.StockOut,
 			}).Draw(rt, "direction")
-			err = queue.BatchUpdateScanEntries(ctx, []string{unknownID}, &direction, nil, nil)
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			err = queue.BatchUpdateScanEntries(canceled, []string{unknownID}, &direction, nil, nil)
 		case 3: // ResolveFlaggedEntry, one of its documented error conditions
 			switch rapid.IntRange(0, 2).Draw(rt, "resolveFlaggedErrorCondition") {
 			case 0: // scan entry not found
@@ -856,7 +858,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				broadcaster.scanEvents = nil
 				entry = created
 			}
-			err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, entry, instanceID)
 		}
 
 		if err == nil {
@@ -910,7 +912,7 @@ func TestRealtimeProperty7_QueuePublishesInventoryEventOnSuccess(t *testing.T) {
 
 			queue.Broadcaster = broadcaster
 			queue.Pantry = pantry
-			if err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
@@ -1023,7 +1025,7 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 				broadcaster.inventoryEvents = nil
 				entry = created
 			}
-			err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, entry, instanceID)
 		}
 
 		if err == nil {

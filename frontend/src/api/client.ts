@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { linkSuggestionsPath, readItemId, readOnHand, scanCommitPath, SERVER_ERROR_FALLBACK, undoPreviewPath, type BackfillCommitRequest, type BackfillCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type UndoPreview } from './contract';
+import { linkSuggestionsPath, readItemId, readOnHand, SERVER_ERROR_FALLBACK, undoPreviewPath, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type UndoPreview } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -15,7 +15,6 @@ import {
   type SuggestionCard,
 } from '../restock/types';
 import type {
-  BatchCommitResponse,
   BuildInfo,
   InventoryItem,
   ItemInstance,
@@ -44,6 +43,23 @@ import type {
   PantryLinkSuggestion,
   TargetConflictMember,
 } from '../types';
+import {
+  BATCH_COMMIT_PATH,
+  type BatchCommitInput,
+  type CreateScanEntryInput,
+  type HouseholdSession,
+  SCANNER_CONFIG_PATH,
+  SCANNER_MODE_PATH,
+  SCANS_PATH,
+  SESSION_PATH,
+  type SetScannerModeResponse,
+  inventoryListPath,
+  scanCommitPath,
+  scansQuery,
+  toQueryString,
+} from './contract';
+
+export { DEFAULT_SCAN_USER_ID, type HouseholdSession } from './contract';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -142,14 +158,6 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
-function toQueryString(params: Record<string, string | undefined>): string {
-  const entries = Object.entries(params).filter(
-    (entry): entry is [string, string] => entry[1] !== undefined,
-  );
-  if (entries.length === 0) return '';
-  return `?${new URLSearchParams(entries).toString()}`;
-}
-
 // --- Products ---
 
 export function lookupProduct(barcode: string): Promise<LookupResult> {
@@ -202,20 +210,12 @@ export function createProductOverride(
 
 // --- Scan queue ---
 
-interface CreateScanEntryInput {
-  barcode: string;
-  direction?: ScanDirection;
-  unitCount?: number;
-  expiresAt?: string;
-  userId: string;
-}
-
 export function createScanEntry(input: CreateScanEntryInput): Promise<ScanEntry> {
-  return apiFetch('/api/scans', { method: 'POST', body: JSON.stringify(input) });
+  return apiFetch(SCANS_PATH, { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function listScanEntries(userId: string, status?: ScanStatus): Promise<ScanEntry[]> {
-  return apiFetch(`/api/scans${toQueryString({ userId, status })}`);
+  return apiFetch(scansQuery(userId, status));
 }
 
 export function getScanHistory(userId: string): Promise<ScanEntry[]> {
@@ -267,41 +267,29 @@ export function commitBackfill(id: string): Promise<BackfillCommitResponse> {
   });
 }
 
-interface BatchCommitInput {
-  scanEntryIds: string[];
-  direction?: ScanDirection;
-  unitCount?: number;
-  expiresAt?: string;
-  commit: boolean;
-}
-
 export function batchCommitScanEntries(input: BatchCommitInput): Promise<BatchCommitResponse> {
-  return apiFetch('/api/scans/batch-commit', { method: 'POST', body: JSON.stringify(input) });
+  return apiFetch(BATCH_COMMIT_PATH, { method: 'POST', body: JSON.stringify(input) });
 }
 
 // --- Scanner mode and config ---
-
-interface SetScannerModeResponse {
-  mode: ScanDirection;
-}
 
 // Switches the shared scanner mode and triggers a 'scanner_mode' SSE event so
 // every connected browser converges on the same direction (matches the
 // headless listener behavior). See internal/server/handler_scanner.go.
 export function setScannerMode(mode: ScanDirection): Promise<SetScannerModeResponse> {
-  return apiFetch('/api/scanner/mode', { method: 'POST', body: JSON.stringify({ mode }) });
+  return apiFetch(SCANNER_MODE_PATH, { method: 'POST', body: JSON.stringify({ mode }) });
 }
 
 // Returns the reserved control-barcode strings the backend classifies against
 // (defaults 'STOCK_IN'/'STOCK_OUT'), so the browser matches the exact values.
 export function getScannerConfig(): Promise<ScannerConfig> {
-  return apiFetch('/api/scanner/config');
+  return apiFetch(SCANNER_CONFIG_PATH);
 }
 
 // --- Inventory ---
 
-export function getInventoryList(query?: string): Promise<InventoryItem[]> {
-  return apiFetch(`/api/inventory${toQueryString({ q: query })}`);
+export function getInventoryList(query?: string, userId?: string): Promise<InventoryItem[]> {
+  return apiFetch(inventoryListPath(query, userId));
 }
 
 export function listItemInstances(itemId: string): Promise<ItemInstanceWithStatus[]> {
@@ -342,6 +330,8 @@ export function setMoveQuantity(id: string, quantity: number): Promise<HistoryVi
   return apiFetch(`/api/moves/${id}`, { method: 'PATCH', body: JSON.stringify({ quantity }) });
 }
 
+// 200 is the item history view after the move is gone. Either id of a
+// backfill pair removes both moves.
 export function undoMove(id: string): Promise<HistoryView> {
   return apiFetch(`/api/moves/${id}`, { method: 'DELETE' });
 }
@@ -618,16 +608,10 @@ export function getBuildInfo(): Promise<BuildInfo> {
   return apiFetch('/api/build');
 }
 
-export interface HouseholdSession {
-  required: boolean;
-  username: string;
-  error: string;
-}
-
 // getSession uses fetch directly so a 401 can mean "show the login page"
 // without also tripping the signed-in handler.
 export async function getSession(): Promise<HouseholdSession> {
-  const res = await fetch(`${BASE_URL}/api/session`, { credentials: 'same-origin' });
+  const res = await fetch(`${BASE_URL}${SESSION_PATH}`, { credentials: 'same-origin' });
   if (res.status === 401) {
     return { required: true, username: '', error: '' };
   }

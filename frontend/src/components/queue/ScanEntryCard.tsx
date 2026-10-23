@@ -12,7 +12,10 @@ import {
   CODE_SCAN_NOT_FOUND,
   commitConflictBehavior,
   formatPartialRemoval,
+  isStorageFailureCode,
   NO_CLOSE_MATCH,
+  NOTHING_ON_HAND_BODY,
+  NOTHING_ON_HAND_TITLE,
   readOnHand,
   SERVER_ERROR_FALLBACK,
   type CommitScanResponse,
@@ -28,8 +31,6 @@ import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './que
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 
-const NOTHING_ON_HAND = 'Nothing on hand to take out.';
-
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
@@ -42,11 +43,13 @@ const LinkProductSearch = ({
   busy,
   reloadKey,
   excludeProductId,
+  userId,
   onPick,
 }: {
   busy: boolean;
   reloadKey: number;
   excludeProductId: string;
+  userId?: string;
   onPick: (productId: string, name: string) => void;
 }) => {
   const searchId = useId();
@@ -86,7 +89,7 @@ const LinkProductSearch = ({
 
   useEffect(() => {
     let active = true;
-    void getInventoryList()
+    void getInventoryList(undefined, userId)
       .then((loaded) => {
         if (active) setItems(loaded);
       })
@@ -96,7 +99,7 @@ const LinkProductSearch = ({
     return () => {
       active = false;
     };
-  }, [reloadKey]);
+  }, [reloadKey, userId]);
 
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -168,9 +171,16 @@ export interface ScanEntryCardProps {
   justCaptured?: boolean;
   commitNotice?: string;
   commitCode?: string;
+  nothingOnHand?: boolean;
+  cueNothingOnHand?: boolean;
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onConfirmStart?: () => void;
+  onConfirmSuccess?: () => void;
+  onBlocked?: () => void;
+  onStorageFailure?: (code: string, message: string) => void;
+  onStocked?: (productId: string) => void;
+  userId?: string;
 }
 
 export const ScanEntryCard = ({
@@ -180,14 +190,22 @@ export const ScanEntryCard = ({
   justCaptured = false,
   commitNotice = '',
   commitCode = '',
+  nothingOnHand = false,
+  cueNothingOnHand = false,
   onSelectedChange,
   onChanged,
   onConfirmStart,
+  onConfirmSuccess,
+  onBlocked,
+  onStorageFailure,
+  onStocked,
+  userId,
 }: ScanEntryCardProps) => {
+  const blockedBodyId = useId();
+  const articleRef = useRef<HTMLElement>(null);
   const [instanceId, setInstanceId] = useState('');
   const [localInstanceReload, setLocalInstanceReload] = useState(0);
   const [approving, setApproving] = useState(false);
-  const [toastedSentence, setToastedSentence] = useState('');
   const [localOffer, setLocalOffer] = useState<{
     code: string;
     offer: PantryLinkSuggestion[] | null;
@@ -266,11 +284,26 @@ export const ScanEntryCard = ({
   const isStockOut = entry.direction === 'stock_out';
   // Pending confirmation is a list row. Flagged review stays a card.
   const flatRow = entry.status === 'pending';
+  const [sawNothing, setSawNothing] = useState(nothingOnHand);
+  if (nothingOnHand && !sawNothing) setSawNothing(true);
+  if (sawNothing && !nothingOnHand && offerBackfill) {
+    setSawNothing(false);
+    setOfferBackfill(false);
+  }
+  const blocked = nothingOnHand || offerBackfill;
+  useLayoutEffect(() => {
+    if (!cueNothingOnHand) return;
+    articleRef.current?.focus();
+  }, [cueNothingOnHand]);
+  const articleLabel = nothingOnHand
+    ? `Scan ${entry.barcode}, ${NOTHING_ON_HAND_TITLE}`
+    : `Scan ${entry.barcode}`;
 
   const changeIndicatorClass = [
     'scan-entry-card',
     flatRow ? 'scan-entry-row' : undefined,
-    !showChangeIndicator
+    blocked ? 'scan-entry-card--nothing' : undefined,
+    blocked || !showChangeIndicator
       ? undefined
       : prefersReducedMotion()
         ? 'scan-entry-card--changed-static'
@@ -301,7 +334,6 @@ export const ScanEntryCard = ({
 
   const showCommitSentence = (message: string) => {
     if (message === '') return;
-    setToastedSentence(message);
     sentenceToastId.current = showUndo({ detail: message, color: 'red' });
   };
 
@@ -376,17 +408,20 @@ export const ScanEntryCard = ({
     }
   };
 
-  // Card state stays here (picker, link offer, search). The sentence itself
-  // is published once, at the end, and only into the toast.
+  // Card state stays here (picker, link offer, search). A lock or a full disk
+  // is the banner. Nothing-on-hand becomes the amber backfill card, not a toast.
   const showCommitFailure = async (requestError: unknown, linkedProductId?: string, linkedName = ''): Promise<void> => {
+    if (requestError instanceof ApiError && requestError.code === CODE_NONE_ON_HAND && isStockOut) {
+      showBackfillCard(linkedName);
+      onBlocked?.();
+      return;
+    }
+    if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+      onStorageFailure?.(requestError.code, requestError.message);
+      return;
+    }
     let message = requestError instanceof Error ? requestError.message : 'Unable to confirm scan.';
     if (requestError instanceof ApiError) {
-      if (requestError.code === CODE_NONE_ON_HAND && isStockOut) {
-        showBackfillCard(linkedName);
-        showCommitSentence(requestError.message);
-        onChanged();
-        return;
-      }
       const behavior = commitConflictBehavior(requestError.code);
       if (behavior.refreshSuggestions) {
         if (linkedProductId !== undefined) dropGoneTarget(linkedProductId);
@@ -414,8 +449,10 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       noteCommitted(committed);
+      if (isStockIn && entry.productId !== null) onStocked?.(entry.productId);
       onChanged();
     } catch (requestError) {
       await showCommitFailure(requestError, undefined, entry.product?.name ?? addedName);
@@ -429,8 +466,10 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       noteCommitted(committed);
+      if (isStockIn) onStocked?.(productId);
       onChanged();
     } catch (requestError) {
       await showCommitFailure(requestError, productId, itemName);
@@ -458,7 +497,7 @@ export const ScanEntryCard = ({
       setAddedName(name);
       if (readOnHand(updated) === 0) {
         showBackfillCard(name);
-        showCommitSentence(NOTHING_ON_HAND);
+        onBlocked?.();
       } else {
         rememberOffer(null, false);
       }
@@ -501,6 +540,15 @@ export const ScanEntryCard = ({
   const handleBackfill = async () => {
     setApproving(true);
     try {
+      if (itemId === undefined && entry.productId !== null) {
+        const linked = await updateScanEntry(entry.id, { productId: entry.productId, status: 'pending' });
+        const onHand = readOnHand(linked);
+        if (onHand !== undefined && onHand > 0) {
+          setOfferBackfill(false);
+          onChanged();
+          return;
+        }
+      }
       const result = await commitBackfill(entry.id);
       const moveId = result.backfill.stockInMoveId;
       dismissUndo(sentenceToastId.current);
@@ -536,6 +584,10 @@ export const ScanEntryCard = ({
       await updateScanEntry(entry.id, { status: 'cancelled' });
       onChanged();
     } catch (requestError) {
+      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+        onStorageFailure?.(requestError.code, requestError.message);
+        return;
+      }
       setRemoveError(requestError instanceof Error ? requestError.message : 'Unable to remove scan.');
     } finally {
       setRemoving(false);
@@ -717,7 +769,9 @@ export const ScanEntryCard = ({
             <Checkbox
               size="xs"
               aria-label="Select scan for batch approval"
-              checked={selected}
+              aria-describedby={blocked ? blockedBodyId : undefined}
+              checked={blocked ? false : selected}
+              disabled={blocked}
               onChange={(event) => onSelectedChange(event.currentTarget.checked)}
             />
           )}
@@ -776,6 +830,16 @@ export const ScanEntryCard = ({
         </div>
       </div>
 
+      {blocked && (
+        <div className="scan-nothing">
+          <span className="scan-nothing-mark" aria-hidden="true">!</span>
+          <div className="scan-nothing-copy">
+            <p className="scan-nothing-title" role={cueNothingOnHand ? 'status' : undefined}>{NOTHING_ON_HAND_TITLE}</p>
+            <p className="scan-nothing-body" id={blockedBodyId}>{NOTHING_ON_HAND_BODY}</p>
+          </div>
+        </div>
+      )}
+
       {entry.status === 'pending' && (
         <Group
           className={flatRow ? 'scan-entry-actions scan-entry-row-controls' : 'scan-entry-actions'}
@@ -789,7 +853,7 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Decrease unit count"
-              disabled={!isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
+              disabled={blocked || !isValidUnitCount(Number(unitCountDraft)) || Number(unitCountDraft) <= 1}
               onClick={() => adjustUnitCount(-1)}
             >
               <span aria-hidden="true">−</span>
@@ -802,6 +866,7 @@ export const ScanEntryCard = ({
               step={1}
               allowDecimal={false}
               value={unitCountDraft}
+              disabled={blocked}
               onChange={handleUnitCountChange}
               onBlur={handleUnitCountBlur}
               onKeyDown={handleUnitCountKeyDown}
@@ -811,14 +876,35 @@ export const ScanEntryCard = ({
               type="button"
               className="scan-entry-stepper-btn"
               aria-label="Increase unit count"
+              disabled={blocked}
               onClick={() => adjustUnitCount(1)}
             >
               <span aria-hidden="true">+</span>
             </button>
           </div>
           {entry.direction !== null && (
-            <Group gap={4} wrap="nowrap">
-              {!offerBackfill && (
+            blocked ? (
+              <Group gap={4} wrap="nowrap">
+                <div className="scan-entry-action-slot scan-entry-blocked-action">
+                  <Button
+                    size="compact-xs"
+                    loading={approving}
+                    onClick={() => void handleBackfill()}
+                  >
+                    {ADD_IT_AND_TAKE_IT_OUT}
+                  </Button>
+                </div>
+                <button
+                  type="button"
+                  className="scan-entry-more"
+                  aria-expanded={instancePickerOpen}
+                  onClick={() => setInstancePickerOpen((open) => !open)}
+                >
+                  More
+                </button>
+              </Group>
+            ) : (
+              <Group gap={4} wrap="nowrap">
                 <Button
                   size="compact-xs"
                   loading={approving}
@@ -826,17 +912,17 @@ export const ScanEntryCard = ({
                 >
                   Confirm
                 </Button>
-              )}
-              <Button
-                size="compact-xs"
-                variant="light"
-                color="red"
-                loading={removing}
-                onClick={() => void handleRemove()}
-              >
-                Remove
-              </Button>
-            </Group>
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color="red"
+                  loading={removing}
+                  onClick={() => void handleRemove()}
+                >
+                  Remove
+                </Button>
+              </Group>
+            )
           )}
           {isStockIn && (
             <div className="scan-entry-expiry-slot">
@@ -883,7 +969,7 @@ export const ScanEntryCard = ({
               )}
             </div>
           )}
-          {isStockOut && linkOffer === null && (
+          {isStockOut && linkOffer === null && !blocked && (
             <button
               type="button"
               className="scan-entry-more"
@@ -911,7 +997,20 @@ export const ScanEntryCard = ({
         </Stack>
       )}
 
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId !== undefined && (
+      {instancePickerOpen && blocked && (
+        <Group justify="flex-end" mt={4}>
+          <Button
+            size="compact-xs"
+            variant="light"
+            color="red"
+            loading={removing}
+            onClick={() => void handleRemove()}
+          >
+            Remove
+          </Button>
+        </Group>
+      )}
+      {instancePickerOpen && isStockOut && linkOffer === null && !blocked && itemId !== undefined && (
         <div className="scan-entry-extra">
           <StockOutInstanceSelector
             itemId={itemId}
@@ -921,10 +1020,6 @@ export const ScanEntryCard = ({
           />
         </div>
       )}
-      {instancePickerOpen && isStockOut && linkOffer === null && itemId === undefined && toastedSentence !== NOTHING_ON_HAND && (
-        <Text c="dimmed" size="sm" mt={4}>{NOTHING_ON_HAND}</Text>
-      )}
-
       {entry.status === 'flagged' && (
         <Group justify="flex-end" mt={4}>
           <Button size="compact-xs" onClick={() => setWhatOpen(true)}>
@@ -983,6 +1078,7 @@ export const ScanEntryCard = ({
             busy={approving}
             reloadKey={householdReload}
             excludeProductId={excludedProductId}
+            userId={userId}
             onPick={(productId, name) => void linkSuggestion(productId, name)}
           />
           {isStockOut && (
@@ -1015,22 +1111,7 @@ export const ScanEntryCard = ({
         </div>
       )}
 
-      {offerBackfill && isStockOut && (
-        <div className="scan-link-offer" role="region" aria-labelledby={`backfill-offer-${entry.id}`}>
-          <p id={`backfill-offer-${entry.id}`} className="scan-link-offer-title">{NOTHING_ON_HAND}</p>
-          <div className="scan-link-offer-actions">
-            <Button
-              size="compact-xs"
-              loading={approving}
-              onClick={() => void handleBackfill()}
-            >
-              {ADD_IT_AND_TAKE_IT_OUT}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {commitNotice !== '' && (
+      {commitNotice !== '' && commitCode !== CODE_NONE_ON_HAND && (
         <Alert color="red" py={4} mt={4}>{commitNotice}</Alert>
       )}
       {removeError !== '' && <Alert color="red" py={4} mt={4}>{removeError}</Alert>}
@@ -1041,14 +1122,14 @@ export const ScanEntryCard = ({
 
   if (flatRow) {
     return (
-      <article className={changeIndicatorClass} aria-label={`Scan ${entry.barcode}`}>
+      <article ref={articleRef} tabIndex={-1} className={changeIndicatorClass} aria-label={articleLabel}>
         {queueItem}
       </article>
     );
   }
 
   return (
-    <Card component="article" withBorder padding="xs" radius="md" className={changeIndicatorClass} aria-label={`Scan ${entry.barcode}`}>
+    <Card component="article" withBorder padding="xs" radius="md" className={changeIndicatorClass} aria-label={articleLabel}>
       {queueItem}
     </Card>
   );

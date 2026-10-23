@@ -17,12 +17,30 @@ export interface CreateScanEntryInput {
   userId: string;
 }
 
+// `backfill` on this body is accepted and ignored. Omitting it is the request
+// this client sends. The response never includes the backfill pair.
 export interface BatchCommitInput {
   scanEntryIds: string[];
   direction?: ScanDirection;
   unitCount?: number;
   expiresAt?: string;
   commit: boolean;
+}
+
+export interface StockOutCount {
+  removedCount: number;
+  requestedCount: number;
+}
+
+export interface BatchCommitResponse {
+  updatedCount: number;
+  committedIds?: string[];
+  failedIds?: string[];
+  failedReasons?: string[];
+  failedCodes?: string[];
+  // One entry per committed stock-out, including a full removal. Omitted when
+  // the batch commits no stock-out. Stock-ins and failed cards are absent.
+  stockOutCounts?: Record<string, StockOutCount>;
 }
 
 export interface SetScannerModeResponse {
@@ -55,12 +73,27 @@ export function toQueryString(params: Record<string, string | undefined>): strin
   return `?${new URLSearchParams(entries).toString()}`;
 }
 
-// Commit outcomes for the web queue. Appended after the shared routes so a
-// merge with the Expo client keeps that half of the file and adds this half.
+// Household items, including rows at zero. The inventory page and the link
+// card both use this. It is not the product catalog.
+export function inventoryListPath(query?: string, userId?: string): string {
+  return `/api/inventory${toQueryString({ q: query, userId })}`;
+}
+
+// Commit outcomes for the web queue and the phone. Appended after the shared
+// routes so both apps import this module and neither keeps a second copy.
 
 export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
+
+export const CODE_BUSY = 'busy';
+export const CODE_NO_SPACE = 'no_space';
+
+export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
+export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
+
+// A 5xx response with no JSON error field. A body that includes error still wins.
+export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
 // Both counts ride on every successful stock-out commit. Stock-in omits them.
 export const REMOVED_COUNT_FIELD = 'removedCount';
@@ -130,27 +163,67 @@ export function batchFailureNotices(response: {
   });
 }
 
-// The short-shelf note only when fewer units left than the card asked for.
-// Equal counts, a stock-in body, and a batch body (no counts) say nothing.
-export function formatPartialRemoval(body: CommitScanResponse | null | undefined): string | null {
+function countField(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  return value;
+}
+
+// A batch names the one short card. Several short cards, or one short card
+// with no name, use the count sentence. One card stays singular. Equal counts
+// and a missing map say nothing.
+function batchPartialLine(
+  counts: Record<string, StockOutCount>,
+  names: Readonly<Record<string, string>> | undefined,
+): string | null {
+  const partials: { removed: number; requested: number; name: string | null }[] = [];
+  for (const [id, value] of Object.entries(counts)) {
+    if (value === null || typeof value !== 'object') continue;
+    const entry = value as unknown as Record<string, unknown>;
+    const removed = countField(entry[REMOVED_COUNT_FIELD]);
+    const requested = countField(entry[REQUESTED_COUNT_FIELD]);
+    if (removed === null || requested === null) continue;
+    if (removed < 1 || removed >= requested) continue;
+    const rawName = names?.[id];
+    partials.push({
+      removed,
+      requested,
+      name: rawName !== undefined && rawName !== '' ? rawName : null,
+    });
+  }
+  if (partials.length === 0) return null;
+  const only = partials.length === 1 ? partials[0] : undefined;
+  if (only !== undefined && only.name !== null) {
+    const verb = only.removed === 1 ? 'was' : 'were';
+    return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
+  }
+  const noun = partials.length === 1 ? 'card' : 'cards';
+  return `${partials.length} ${noun} had fewer on hand than scanned, so only what was on hand was taken out.`;
+}
+
+// Fewer units left than the card asked for. A single confirm keeps the short
+// sentence. A batch with stockOutCounts adds the item, or a count of cards.
+export function formatPartialRemoval(
+  body: CommitScanResponse | BatchCommitResponse | null | undefined,
+  names?: Readonly<Record<string, string>>,
+): string | null {
   if (body === null || body === undefined) return null;
+  if ('stockOutCounts' in body && body.stockOutCounts !== undefined) {
+    return batchPartialLine(body.stockOutCounts, names);
+  }
   const record = body as Record<string, unknown>;
-  const removedCount = record[REMOVED_COUNT_FIELD];
-  const requestedCount = record[REQUESTED_COUNT_FIELD];
-  if (typeof removedCount !== 'number' || !Number.isInteger(removedCount)) return null;
-  if (typeof requestedCount !== 'number' || !Number.isInteger(requestedCount)) return null;
+  const removedCount = countField(record[REMOVED_COUNT_FIELD]);
+  const requestedCount = countField(record[REQUESTED_COUNT_FIELD]);
+  if (removedCount === null || requestedCount === null) return null;
   if (removedCount < 1 || removedCount >= requestedCount) return null;
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }
 
-// A 5xx with no JSON error field: a migration 503, a proxy 502/504, or empty
-// HTTP/2 status text. Appended so the Expo client can show the same sentence.
-export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
-
 // Backfill on a stock-out. Appended for the web queue; the phone shares this
 // file and does not have to send backfill until it grows the same card.
-// Batch commit has no backfill field. The server ignores it there.
+// Batch commit accepts `backfill` and ignores it. This client does not send
+// the field. A batch never backfills, and its body is committedIds,
+// stockOutCounts, and the parallel failedIds / failedReasons / failedCodes.
 
 export const CODE_NONE_ON_HAND = 'none_on_hand';
 export const CODE_UNITS_ON_HAND = 'units_on_hand';
@@ -172,12 +245,15 @@ export interface BackfillCommitRequest {
   backfill: true;
 }
 
-// The pair created by this commit. DELETE /api/moves/{id} accepts either id.
+// stockInMoveId is the stock-in (source backfill). stockOutMoveId is the
+// stock-out (source scan). DELETE /api/moves/{id} accepts either id and
+// removes the pair. The delete body is the item history view, not this pair.
 export interface BackfillPairMoves {
   stockInMoveId: string;
   stockOutMoveId: string;
 }
 
+// Every field is present on a successful backfill commit.
 export interface BackfillCommitResponse {
   removed: number;
   backfilled: number;
@@ -314,4 +390,75 @@ export function quantityLocked(
     && other.at === move.at
     && move.source === 'scan'
     && move.direction === 'out');
+}
+
+export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
+
+export const NOTHING_ON_HAND_BODY =
+  "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
+
+// A lock or a full disk is the banner sentence. The card does not repeat it.
+// Amber never does. An item failure stays on its card.
+export function batchCardCommitNotice(code: string, message: string): string {
+  if (code === CODE_NONE_ON_HAND || code === CODE_BUSY || code === CODE_NO_SPACE) return '';
+  return message;
+}
+
+export function isStorageFailureCode(code: string): boolean {
+  return code === CODE_BUSY || code === CODE_NO_SPACE;
+}
+
+// A confirm that finishes, batch or single, drops the lock and disk notices.
+// The card just confirmed drops with them. Item-specific codes stay until that
+// card is resolved. Amber is not in this set.
+export function failuresAfterConfirm<T extends { code: string }>(
+  notices: readonly T[],
+  confirmedId: string,
+): T[] {
+  return notices.filter((notice) => {
+    const id = 'id' in notice && typeof notice.id === 'string' ? notice.id : undefined;
+    if (id === confirmedId) return false;
+    return !isStorageFailureCode(notice.code);
+  });
+}
+
+function storageSentence(notice: Pick<BatchFailureNotice, 'code' | 'message'>): string {
+  const message = notice.message.trim();
+  if (message !== '') return message;
+  return notice.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE;
+}
+
+// While an item failure remains, the banner is the fallback, whether or not
+// those codes match. The item sentence stays on the card. A lock or a full
+// disk is the banner only when no item failure is left, with the confirmed
+// count when some scans saved.
+export function batchFailureBannerText(
+  notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
+  committedCount: number,
+): string | null {
+  const blocking = notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+  if (blocking.length === 0) return null;
+  if (blocking.some((notice) => !isStorageFailureCode(notice.code))) return BATCH_FAILURE_FALLBACK;
+  const storage = blocking.find((notice) => isStorageFailureCode(notice.code));
+  if (storage === undefined) return null;
+  const sentence = storageSentence(storage);
+  const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
+  if (count === 0) return sentence;
+  return `${count} confirmed. ${sentence}`;
+}
+
+// A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
+export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
+  return onHand !== undefined && onHand <= 0;
+}
+
+export function nothingOnHandPill(count: number): string | null {
+  if (!Number.isInteger(count) || count < 1) return null;
+  return `${count} with nothing on hand`;
+}
+
+// The count is the digit, including 1.
+export function confirmSkipsNothingOnHand(count: number): string | null {
+  if (!Number.isInteger(count) || count < 1) return null;
+  return `Confirm skips the ${count} with nothing on hand.`;
 }

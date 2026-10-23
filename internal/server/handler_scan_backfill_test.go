@@ -607,16 +607,16 @@ func TestBatchCommitIgnoresBackfill(t *testing.T) {
 		exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
 			`{"scanEntryIds":["scan-batch-full"],"commit":true,"backfill":true}`, http.StatusOK)
 		view := productHistory(env, handler, "item-batch-full")
-		var outs, backfills int
+		var taken, backfills int
 		for _, move := range view.Moves {
 			if move.Source == "backfill" {
 				backfills++
 			}
-			if move.Direction == "out" && move.Source == "scan" && move.Quantity == 1 {
-				outs++
+			if move.Direction == "out" && move.Source == "scan" && move.Quantity == 2 {
+				taken++
 			}
 		}
-		if view.OnHand != 2 || outs != 1 || backfills != 0 {
+		if view.OnHand != 1 || taken != 1 || backfills != 0 {
 			t.Fatalf("batch history = %+v", view)
 		}
 	})

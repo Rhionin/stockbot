@@ -57,11 +57,12 @@ func (e *UnitsOnHandError) Error() string { return "units on hand" }
 // (if set).
 //
 // This function handles the complete stock-in flow:
-// 1. Ensures an item exists for the user+product combination
-// 2. Creates N item instances with the scan entry's timestamps
-// 3. Marks the scan entry as committed
+// 1. Claims the scan while it is still pending
+// 2. Ensures an item exists for the user+product combination
+// 3. Creates N item instances with the scan entry's timestamps
 //
 // All operations are performed within a transaction to ensure atomicity.
+// A scan another commit already took returns ErrNotPending and adds nothing.
 func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	if scanEntry.Direction == nil || *scanEntry.Direction != StockIn {
 		return fmt.Errorf("scan entry direction must be stock_in, got %v", scanEntry.Direction)
@@ -81,10 +82,7 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	defer tx.Rollback()
 
-	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
-		return err
-	}
-	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
+	if err := claimPendingScan(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return err
 	}
 
@@ -101,10 +99,6 @@ func (r *Queue) CommitStockIn(ctx context.Context, scanEntry *ScanEntry) error {
 	}
 	scanID := scanEntry.ID
 	if _, err := r.recordStockInTx(ctx, tx, itemID, *scanEntry.ProductID, scanEntry.ScannedAt, scanEntry.ExpiresAt, units, "scan", &scanID); err != nil {
-		return err
-	}
-
-	if err := markScanCommitted(ctx, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return err
 	}
 
@@ -292,65 +286,58 @@ func (r *Queue) recordStockInTx(ctx context.Context, tx *sql.Tx, itemID, product
 }
 
 // recordStockOutTx removes one on-hand unit. A nil instanceID selects the
-// earliest expiration, with undated units last — the same unit a scan-out
-// commits. After opening, the removal is one consumption row. During opening
-// the unit was already here, so it is not usage.
+// earliest expiration, then the earliest acquired, with undated units last —
+// the same unit a one-count scan-out commits. After opening, the removal is
+// one consumption row. During opening the unit was already here, so it is not usage.
 func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string, instanceID *string, at time.Time, scanEntryID *string) error {
-	var selected string
-	if instanceID != nil {
-		selected = *instanceID
-		var exists int
-		err := tx.QueryRowContext(ctx, `
-			SELECT 1 FROM item_instances
-			WHERE id = ? AND item_id = ? AND removed_at IS NULL`,
-			selected, itemID,
-		).Scan(&exists)
-		if err == sql.ErrNoRows {
-			return r.namedInstanceUnavailable(ctx, tx, itemID)
-		}
-		if err != nil {
-			return fmt.Errorf("verify instance: %w", err)
-		}
-	} else {
-		err := tx.QueryRowContext(ctx, `
-			SELECT id FROM item_instances
-			WHERE item_id = ? AND removed_at IS NULL
-			ORDER BY expires_at ASC NULLS LAST
-			LIMIT 1`,
-			itemID,
-		).Scan(&selected)
-		if err == sql.ErrNoRows {
-			return ErrNoneOnHand
-		}
-		if err != nil {
-			return fmt.Errorf("select instance: %w", err)
-		}
-	}
+	_, err := r.removeStockOutUnitsTx(ctx, tx, itemID, instanceID, 1, at, scanEntryID)
+	return err
+}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE item_instances
-		SET removed_at = ?, removal_reason = 'consumed'
-		WHERE id = ?`,
-		at, selected,
-	); err != nil {
-		return fmt.Errorf("remove instance: %w", err)
+// removeStockOutUnitsTx removes up to units on-hand units and records them
+// as one stock move. A named instance goes first. Any further units, and
+// every unit when none is named, are earliest expiry first. The same expiry,
+// and undated units after every dated one, go earliest acquired first, then
+// lowest id.
+// When the shelf has some but fewer than units, every remaining unit is
+// removed and the returned count is how many left. An empty shelf returns
+// ErrNoneOnHand and removes nothing. A named instance that is not on the
+// shelf is the same refusal as a one-unit pick.
+func (r *Queue) removeStockOutUnitsTx(ctx context.Context, tx *sql.Tx, itemID string, instanceID *string, units int, at time.Time, scanEntryID *string) (int, error) {
+	if units < 1 {
+		return 0, fmt.Errorf("unit count must be at least 1, got %d", units)
+	}
+	ids, err := r.stockOutInstanceIDs(ctx, tx, itemID, instanceID, units)
+	if err != nil {
+		return 0, err
 	}
 
 	usage, err := r.trackRestock(ctx, tx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var productID string
 	if err := tx.QueryRowContext(ctx, `SELECT product_id FROM items WHERE id = ?`, itemID).Scan(&productID); err != nil {
-		return fmt.Errorf("find item: %w", err)
+		return 0, fmt.Errorf("find item: %w", err)
 	}
 	source := "manual"
 	if scanEntryID != nil && *scanEntryID != "" {
 		source = "scan"
 	}
-	consumptionID := ""
-	if usage {
-		consumptionID = uuid.NewString()
+	consumptionIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE item_instances
+			SET removed_at = ?, removal_reason = 'consumed'
+			WHERE id = ?`,
+			at, id,
+		); err != nil {
+			return 0, fmt.Errorf("remove instance: %w", err)
+		}
+		if !usage {
+			continue
+		}
+		consumptionID := uuid.NewString()
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO consumption_events (id, item_id, consumed_at, scan_entry_id)
 			VALUES (?, ?, ?, ?)`,
@@ -359,16 +346,86 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 			at,
 			nullableString(scanEntryID),
 		); err != nil {
-			return fmt.Errorf("create consumption event: %w", err)
+			return 0, fmt.Errorf("create consumption event: %w", err)
 		}
+		consumptionIDs = append(consumptionIDs, consumptionID)
 	}
 	if err := history.AttachStockOut(ctx, tx, history.OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: source, ScanEntryID: scanEntryID,
-		Tracked: usage, InstanceID: selected, ConsumptionID: consumptionID,
+		Tracked: usage, InstanceIDs: ids, ConsumptionIDs: consumptionIDs,
 	}); err != nil {
-		return fmt.Errorf("record stock-out: %w", err)
+		return 0, fmt.Errorf("record stock-out: %w", err)
 	}
-	return nil
+	return len(ids), nil
+}
+
+// stockOutOrder is earliest expiry first. Units with the same expiry, and
+// undated units after every dated one, go earliest acquired first, then lowest id.
+const stockOutOrder = " ORDER BY expires_at ASC NULLS LAST, stock_in_at ASC, id ASC"
+
+// stockOutInstanceIDs chooses which on-hand units a stock-out takes.
+// The named unit is first when one was picked, and it is excluded from the
+// rest so a named unit that is also the earliest is not selected twice.
+// The rest follow stockOutOrder.
+func (r *Queue) stockOutInstanceIDs(ctx context.Context, tx *sql.Tx, itemID string, instanceID *string, units int) ([]string, error) {
+	if instanceID != nil {
+		var exists int
+		err := tx.QueryRowContext(ctx, `
+			SELECT 1 FROM item_instances
+			WHERE id = ? AND item_id = ? AND removed_at IS NULL`,
+			*instanceID, itemID,
+		).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return nil, r.namedInstanceUnavailable(ctx, tx, itemID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("verify instance: %w", err)
+		}
+		ids := []string{*instanceID}
+		if units == 1 {
+			return ids, nil
+		}
+		more, err := instanceIDs(ctx, tx, `
+			SELECT id FROM item_instances
+			WHERE item_id = ? AND removed_at IS NULL AND id != ?`+stockOutOrder+`
+			LIMIT ?`, itemID, *instanceID, units-1)
+		if err != nil {
+			return nil, err
+		}
+		return append(ids, more...), nil
+	}
+
+	ids, err := instanceIDs(ctx, tx, `
+		SELECT id FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`+stockOutOrder+`
+		LIMIT ?`, itemID, units)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrNoneOnHand
+	}
+	return ids, nil
+}
+
+func instanceIDs(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select instance: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("select instance: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("select instance: %w", err)
+	}
+	return ids, nil
 }
 
 // namedInstanceUnavailable distinguishes a stale pick from an empty shelf.
@@ -546,12 +603,66 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 	return itemID, nil
 }
 
-// CommitStockOut commits a stock-out scan entry by removing one item instance
-// from the inventory and marking the scan entry as committed.
+// claimPendingScan marks the scan committed only while it is still pending.
+// Zero rows means another commit already took it. The caller rolls the
+// transaction back, so this attempt adds or removes no stock.
+func claimPendingScan(ctx context.Context, tx *sql.Tx, id string, committedAt time.Time, linkProductID string) error {
+	var (
+		res sql.Result
+		err error
+	)
+	if linkProductID != "" {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET product_id = ?, status = ?, committed_at = ?
+			WHERE id = ? AND status = 'pending'`,
+			linkProductID, string(Committed), committedAt, id,
+		)
+	} else {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE scan_entries
+			SET status = ?, committed_at = ?
+			WHERE id = ? AND status = 'pending'`,
+			string(Committed), committedAt, id,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
+	}
+	if n == 0 {
+		return ErrNotPending
+	}
+	return nil
+}
+
+// recordStockOutCounts stores the figures a stock-out commit actually produced.
+// A later batch retry reports these instead of removing stock again.
+func recordStockOutCounts(ctx context.Context, tx *sql.Tx, id string, removed, requested int) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE scan_entries
+		SET removed_count = ?, requested_count = ?
+		WHERE id = ?`,
+		removed, requested, id,
+	)
+	if err != nil {
+		return fmt.Errorf("record stock-out counts: %w", err)
+	}
+	return nil
+}
+
+// CommitStockOut commits a stock-out scan entry by removing up to its unit
+// count and marking the scan entry as committed. The returned count is how
+// many units left the shelf. When fewer than the unit count are on hand and
+// at least one is, that count is smaller and the commit still succeeds.
 //
-// If instanceID is nil, the function selects the use-oldest-first instance
-// (ORDER BY expires_at ASC NULLS LAST) to remove. If instanceID is provided,
-// that specific instance is removed.
+// If instanceID is nil, units come off earliest expiry first. The same expiry,
+// and undated units after every dated one, go earliest acquired first, then
+// lowest id. If instanceID is set, that unit goes first and the rest follow
+// the same order, excluding the named unit.
 //
 // A missing household item returns *NoItemError and changes nothing.
 // A shelved item is still linked and returns ErrNoneOnHand without ranking links.
@@ -564,41 +675,43 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // CommitStockOutLink is the explicit choice that adds the scanned barcode
 // and decrements that product when a unit is on hand. Nothing is linked on its own.
 //
-// All operations are performed within a transaction to ensure atomicity.
-func (r *Queue) CommitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string) error {
+// All of the units leave in one transaction. The scan is claimed while it is
+// still pending, before any unit is removed. A second commit of that scan
+// returns ErrNotPending and leaves the shelf unchanged.
+func (r *Queue) CommitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string) (int, error) {
 	return r.commitStockOut(ctx, scanEntry, instanceID, "")
 }
 
 // CommitStockOutLink adds the scanned barcode to linkProductID, keeps that
 // product's existing barcodes, and commits the stock-out against the household
-// item for linkProductID.
-func (r *Queue) CommitStockOutLink(ctx context.Context, scanEntry *ScanEntry, instanceID *string, linkProductID string) error {
+// item for linkProductID. The count is how many units left the shelf.
+func (r *Queue) CommitStockOutLink(ctx context.Context, scanEntry *ScanEntry, instanceID *string, linkProductID string) (int, error) {
 	if linkProductID == "" {
-		return fmt.Errorf("link product id is required")
+		return 0, fmt.Errorf("link product id is required")
 	}
 	return r.commitStockOut(ctx, scanEntry, instanceID, linkProductID)
 }
 
-func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string, linkProductID string) error {
+func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instanceID *string, linkProductID string) (int, error) {
 	if scanEntry.Direction == nil || *scanEntry.Direction != StockOut {
-		return fmt.Errorf("scan entry direction must be stock_out, got %v", scanEntry.Direction)
+		return 0, fmt.Errorf("scan entry direction must be stock_out, got %v", scanEntry.Direction)
 	}
 
 	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
-		return fmt.Errorf("scan entry must have a product_id")
+		return 0, fmt.Errorf("scan entry must have a product_id")
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return 0, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	if err := claimScan(ctx, tx, scanEntry.ID); err != nil {
-		return err
+		return 0, err
 	}
 	if err := openScanCheck(ctx, tx, scanEntry.ID); err != nil {
-		return err
+		return 0, err
 	}
 
 	targetProductID := *scanEntry.ProductID
@@ -616,12 +729,12 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 
 	// linkProductId for a missing or wiped product is not a stock-out of this barcode.
 	if linkProductID != "" && (err == sql.ErrNoRows || (err == nil && shelved != 0)) {
-		return ErrLinkTargetGone
+		return 0, ErrLinkTargetGone
 	}
 	// A wipe keeps the item row, so the barcode is still linked. That stock-out
 	// is an empty shelf and does not rank other items.
 	if err == nil && shelved != 0 {
-		return ErrNoneOnHand
+		return 0, ErrNoneOnHand
 	}
 	if err == sql.ErrNoRows {
 		// Same connection as the open transaction. A second query on r.db
@@ -629,12 +742,12 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		// empty :memory: database from the pool.
 		suggestions, sugErr := r.suggestLinks(ctx, tx, scanEntry)
 		if sugErr != nil {
-			return sugErr
+			return 0, sugErr
 		}
-		return &NoItemError{Suggestions: suggestions}
+		return 0, &NoItemError{Suggestions: suggestions}
 	}
 	if err != nil {
-		return fmt.Errorf("find item: %w", err)
+		return 0, fmt.Errorf("find item: %w", err)
 	}
 
 	if linkProductID != "" {
@@ -642,7 +755,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM item_instances
 			WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil {
-			return fmt.Errorf("count on hand: %w", err)
+			return 0, fmt.Errorf("count on hand: %w", err)
 		}
 		if onHand == 0 {
 			// Nothing can be taken out, so the stock-out must not run in this
@@ -650,47 +763,47 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 			// first; a later stock-out failure cannot roll that link back, and
 			// a failure here rolls both writes back.
 			if err := linkBarcode(ctx, tx, scanEntry.Barcode, linkProductID, scanEntry.UserID); err != nil {
-				return err
+				return 0, err
 			}
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE scan_entries SET product_id = ? WHERE id = ?`,
 				linkProductID, scanEntry.ID); err != nil {
-				return fmt.Errorf("link scan: %w", err)
+				return 0, fmt.Errorf("link scan: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit transaction: %w", err)
+				return 0, fmt.Errorf("commit transaction: %w", err)
 			}
-			return r.publishLinkedScan(ctx, scanEntry.ID, &EmptyShelfLink{ItemID: itemID})
+			return 0, r.publishLinkedScan(ctx, scanEntry.ID, &EmptyShelfLink{ItemID: itemID})
 		}
-	}
-
-	if linkProductID != "" {
 		if err := linkBarcode(ctx, tx, scanEntry.Barcode, linkProductID, scanEntry.UserID); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	scanID := scanEntry.ID
-	if err := r.recordStockOutTx(ctx, tx, itemID, instanceID, scanEntry.ScannedAt, &scanID); err != nil {
-		return err
+	removed, err := r.removeStockOutUnitsTx(ctx, tx, itemID, instanceID, scanEntry.UnitCount, scanEntry.ScannedAt, &scanID)
+	if err != nil {
+		return 0, err
 	}
-
+	if err := recordStockOutCounts(ctx, tx, scanEntry.ID, removed, scanEntry.UnitCount); err != nil {
+		return 0, err
+	}
 	productID := ""
 	if linkProductID != "" {
 		productID = linkProductID
 	}
 	if err := markScanCommitted(ctx, tx, scanEntry.ID, time.Now().UTC(), productID); err != nil {
-		return err
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	if r.Broadcaster != nil {
 		committed, err := r.GetScanEntry(ctx, scanEntry.ID)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if committed != nil {
 			r.Broadcaster.PublishScanEvent(*committed)
@@ -699,7 +812,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		if r.Pantry != nil {
 			invItem, err := r.Pantry.GetInventoryItem(ctx, itemID, time.Now(), inventory.DefaultWarningDays)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			if invItem != nil {
 				r.Broadcaster.PublishInventoryEvent(*invItem)
@@ -707,7 +820,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		}
 	}
 
-	return nil
+	return removed, nil
 }
 
 // BackfillResult is the pair one backfill commit wrote.

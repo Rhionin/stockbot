@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { contrastRatio, flatten, parseHex, readableLightShade, readableShade, towardContrast } from './contrast'
 
@@ -66,5 +68,27 @@ describe('contrast', () => {
 
   it.each(rejectedHex)('rejects %s', (color) => {
     expect(() => parseHex(color)).toThrow(/expected a hex color/)
+  })
+})
+
+const nothingOnHandCss = readFileSync(join(process.cwd(), 'src/index.css'), 'utf8')
+
+// Ink is body text (4.5). The border is a UI boundary (3). Page colors are
+// white and Mantine dark[7], the surfaces the skip line sits on.
+const nothingOnHandPairs: readonly [string, string, number][] = [
+  ['#92400e', '#fffbeb', 4.5],
+  ['#92400e', '#ffffff', 4.5],
+  ['#fde68a', '#2c2116', 4.5],
+  ['#fde68a', '#1A1B1E', 4.5],
+  ['#b45309', '#fffbeb', 3],
+  ['#b45309', '#ffffff', 3],
+  ['#fbbf24', '#2c2116', 3],
+  ['#fbbf24', '#1A1B1E', 3],
+]
+
+describe('nothing on hand amber', () => {
+  it.each(nothingOnHandPairs)('%s on %s clears %s', (ink, paper, minimum) => {
+    expect(nothingOnHandCss).toContain(ink)
+    expect(contrastRatio(ink, paper)).toBeGreaterThanOrEqual(minimum)
   })
 })

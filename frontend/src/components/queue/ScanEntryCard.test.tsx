@@ -58,12 +58,13 @@ describe('ScanEntryCard stock-out review', () => {
     expect(screen.getByRole('button', { name: 'More', expanded: false })).toBeInTheDocument();
   });
 
-  it('says nothing is on hand when this product is not in the household', () => {
+  it('shows the amber nothing-on-hand card with backfill and a disabled checkbox', () => {
     vi.stubGlobal('fetch', vi.fn());
     render(
       <MantineProvider>
         <ScanEntryCard
           entry={entry}
+          nothingOnHand
           selected={false}
           onSelectedChange={vi.fn()}
           onChanged={vi.fn()}
@@ -71,10 +72,20 @@ describe('ScanEntryCard stock-out review', () => {
       </MantineProvider>,
     );
 
-    expect(screen.queryByText('Nothing on hand to take out.')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    expect(screen.getByText('Nothing on hand to take out.')).toBeInTheDocument();
+    const card = screen.getByRole('article', { name: 'Scan 123, Nothing on hand to take out.' });
+    expect(card).toHaveClass('scan-entry-card--nothing');
+    expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
+    expect(within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.")).toBeInTheDocument();
+    expect(within(card).getByText('!')).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'More' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'More' }));
+    expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+    const checkbox = within(card).getByRole('checkbox', { name: 'Select scan for batch approval' });
+    expect(checkbox).toBeDisabled();
+    expect(checkbox).toHaveAttribute('aria-describedby', within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.").id);
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 

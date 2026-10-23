@@ -48,7 +48,7 @@ describe('ScanQueuePage scan alerts', () => {
     vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({
           stockInBarcode: 'STOCK_IN',
@@ -78,7 +78,7 @@ describe('ScanQueuePage scan alerts', () => {
         return Promise.resolve(jsonResponse({ mode: body.mode }));
       }
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({
           stockInBarcode: 'STOCK_IN',
@@ -110,7 +110,7 @@ describe('ScanQueuePage scan alerts', () => {
         return Promise.resolve(jsonResponse({ mode: body.mode }));
       }
       if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(jsonResponse([]));
-      if (url === '/api/inventory' || url === '/api/products') return Promise.resolve(jsonResponse([]));
+      if ((url === '/api/inventory' || url.startsWith('/api/inventory?')) || url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/api/scanner/config')) {
         return Promise.resolve(jsonResponse({
           stockInBarcode: 'STOCK_IN',
