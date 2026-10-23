@@ -31,7 +31,7 @@ func syncGate(token string, next http.Handler) http.Handler {
 		}
 		if token == "" {
 			if isSyncSnapshot(r) {
-				writeError(w, http.StatusNotFound, "Not found.")
+				writeError(w, http.StatusNotFound, codeNotFound, "Not found.")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -43,11 +43,11 @@ func syncGate(token string, next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			writeError(w, http.StatusForbidden, "This token only reads the sync snapshot.")
+			writeError(w, http.StatusForbidden, codeSyncReadOnly, "This token only reads the sync snapshot.")
 			return
 		}
 		if isSyncSnapshot(r) {
-			writeError(w, http.StatusUnauthorized, "The sync token is not valid.")
+			writeError(w, http.StatusUnauthorized, codeUnauthorized, "The sync token is not valid.")
 			return
 		}
 		next.ServeHTTP(w, r)

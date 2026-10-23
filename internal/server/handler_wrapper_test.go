@@ -27,7 +27,7 @@ func TestWrappedHandlerGenericServerError(t *testing.T) {
 			name:   "bad gateway",
 			err:    BadGateway("could not refresh product from Open Food Facts"),
 			status: http.StatusBadGateway,
-			body:   `{"error":"Something went wrong. Try again."}`,
+			body:   `{"error":"Something went wrong. Try again.","code":"internal"}`,
 		},
 	}
 	for _, tc := range cases {
