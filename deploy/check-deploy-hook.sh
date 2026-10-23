@@ -48,8 +48,13 @@ have scripts/publish-moving-tags.sh 'pantry-grocy-sync:latest' "tip guard moves 
 have .github/workflows/release.yml 'publish_image: skip' "Release does not publish :latest and :master"
 have deploy/README.md 'deploy-master' "README documents the master publish queue"
 have deploy/README.md 'queue: max' "README documents the waiting queue"
-have deploy/README.md 'Re-run the master workflow' "README documents re-running the tip"
-have deploy/README.md 'cancelled' "README says a cancelled waiting job is not a failure"
+have deploy/README.md "If the tip's run did not publish, re-run it." "README documents re-running the tip when that run did not publish"
+have deploy/README.md 'Re-run only a master run from after #329' "README says to re-run only master runs from after the tip guard"
+have deploy/README.md 'when that queue is already full' "README limits a cancelled waiting job to a full queue"
+# The notice stores the tip in ${tip}; the quotes keep that literal.
+# shellcheck disable=SC2016
+have scripts/publish-moving-tags.sh 'If ${tip}'"'"'s run did not publish, re-run it.' "stale skip names the tip run"
+have .github/actionlint.yaml 'unexpected key "queue" for "concurrency" section' "actionlint ignores the unrecognized concurrency queue key"
 if grep -q 'git fetch' scripts/publish-moving-tags.sh .github/workflows/ci.yml; then
   fail "tip guard still fetches master"
 fi

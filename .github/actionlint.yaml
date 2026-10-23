@@ -1,0 +1,9 @@
+# actionlint 1.7.12 does not recognize the concurrency queue key and reports
+# it as a syntax error. GitHub accepts queue: max on jobs.<job_id>.concurrency.
+# The pattern is that false positive only; any other unexpected key still fails.
+# Remove this when a release includes https://github.com/rhysd/actionlint/pull/654
+# (https://github.com/rhysd/actionlint/issues/657).
+paths:
+  .github/workflows/ci.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"'

@@ -28,19 +28,36 @@ fi
 
 if [ "${tip}" != "${sha}" ]; then
   echo "publish=false" >> "$output"
-  record "${sha} is not the tip of master (${tip}). Pushed the immutable tag only; leaving :latest and :master unchanged and skipping the deploy hook. Re-run the master workflow for ${tip}."
+  record "${sha} is not the tip of master (${tip}). Pushed the immutable tag only; leaving :latest and :master unchanged and skipping the deploy hook. If ${tip}'s run did not publish, re-run it."
   exit 0
 fi
 
-# Sidecar first. A failure on the pantry move then leaves pantry on the previous tip.
+# Sidecar first. A failure on the pantry move then leaves pantry on the
+# previous tip while the sidecar has already moved. The step still fails;
+# the summary has to name that split, because nothing else does.
+sidecar_moved=0
+on_publish_error() {
+  local code=$?
+  local msg
+  trap - ERR
+  if [ "$sidecar_moved" -eq 1 ]; then
+    msg="Moved pantry-grocy-sync :latest and :master to ${sha}, then failed to move pantry :latest and :master. The two images are on different versions."
+    printf '%s\n' "$msg" >> "$summary"
+    printf '%s\n' "$msg" >&2
+  fi
+  exit "$code"
+}
+trap on_publish_error ERR
 docker buildx imagetools create \
   --tag "ghcr.io/rhionin/pantry-grocy-sync:latest" \
   --tag "ghcr.io/rhionin/pantry-grocy-sync:master" \
   "ghcr.io/rhionin/pantry-grocy-sync:${sha}"
+sidecar_moved=1
 docker buildx imagetools create \
   --tag "ghcr.io/rhionin/pantry:latest" \
   --tag "ghcr.io/rhionin/pantry:master" \
   "ghcr.io/rhionin/pantry:${sha}"
+trap - ERR
 
 echo "publish=true" >> "$output"
 record "Moved :latest and :master to ${sha}, the tip of master."

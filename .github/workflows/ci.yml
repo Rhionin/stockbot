@@ -232,6 +232,8 @@ jobs:
     # cancel-in-progress is false: the build that has started finishes and
     # still pushes its immutable sha tag. Pull requests and the Release
     # skip use a unique group so they do not queue behind production.
+    # actionlint 1.7.12 rejects queue; .github/actionlint.yaml ignores that
+    # one message so a later actionlint run still accepts this file.
     concurrency:
       group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.publish_image != 'skip' && 'deploy-master' || format('image-{0}', github.run_id) }}
       cancel-in-progress: false
