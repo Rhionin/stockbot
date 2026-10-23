@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { ScanDirection, ScanStatus } from '../types';
+import type { InventoryItem, Item, ProductSummary, ScanDirection, ScanStatus, ShoppingListEntry } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -232,4 +232,359 @@ export function nothingOnHandPill(count: number): string | null {
 export function confirmSkipsNothingOnHand(count: number): string | null {
   if (!Number.isInteger(count) || count < 1) return null;
   return `Confirm skips the ${count} with nothing on hand.`;
+}
+
+// Hosted multi-household contract (docs/design/api-contract.md).
+// Types only. The Pi client still uses the helpers above, including userId,
+// until the hosted routes exist. Nothing here selects a tenant except the
+// X-Household-Id header, which the server checks against membership.
+
+export type HouseholdHeaderName = 'X-Household-Id';
+
+export type HouseholdRole = 'owner' | 'member';
+
+export type HostedErrorCode =
+  | 'busy'
+  | 'no_space'
+  | 'unauthorized'
+  | 'forbidden_role'
+  | 'not_found'
+  | 'conflict'
+  | 'invite_expired'
+  | 'validation'
+  | 'not_pending'
+  | 'product_unresolved'
+  | 'none_on_hand'
+  | 'instance_gone'
+  | 'no_item'
+  | 'link_target_gone'
+  | 'scan_not_found'
+  | 'direction_unset'
+  | 'internal'
+  | 'last_owner'
+  | 'household_not_empty'
+  | 'confirmation_mismatch'
+  ;
+
+export interface HostedErrorBody {
+  error: string;
+  code: HostedErrorCode;
+  members?: unknown;
+  suggestions?: unknown;
+}
+
+export interface AuthSession {
+  user: { id: string; email: string };
+  memberships: { householdId: string; name: string; role: HouseholdRole }[];
+}
+
+export interface Household {
+  id: string;
+  name: string;
+  role: HouseholdRole;
+  deletedAt: string | null;
+  purgeAt: string | null;
+}
+
+export interface HouseholdDeleted extends Household {
+  message: 'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.';
+}
+
+export interface CreateHouseholdRequest {
+  name: string;
+}
+
+export interface CreateHouseholdResponse {
+  id: string;
+  name: string;
+  role: 'owner';
+}
+
+export interface RenameHouseholdRequest {
+  name: string;
+}
+
+export interface DeleteHouseholdRequest {
+  confirmation: string;
+}
+
+export interface HouseholdListResponse {
+  households: AuthSession['memberships'];
+}
+
+export interface Member {
+  userId: string;
+  email: string;
+  role: HouseholdRole;
+}
+
+export interface MemberListResponse {
+  members: Member[];
+}
+
+export interface ChangeRoleRequest {
+  role: HouseholdRole;
+}
+
+export interface InviteCreateRequest {
+  email?: string;
+}
+
+export interface InviteCreated {
+  id: string;
+  code: string;
+  url: string;
+  email: string | null;
+  expiresAt: string;
+}
+
+export interface InviteSummary {
+  id: string;
+  email: string | null;
+  createdBy: string;
+  expiresAt: string;
+  status: 'open' | 'revoked' | 'used' | 'expired';
+}
+
+export interface InviteListResponse {
+  invites: InviteSummary[];
+}
+
+export interface AcceptInviteRequest {
+  code: string;
+}
+
+export interface AcceptInviteResponse {
+  householdId: string;
+  name: string;
+  role: 'member';
+}
+
+export interface PairingCode {
+  code: string;
+  qrPayload: string;
+  expiresAt: string;
+}
+
+export interface CompletePairingRequest {
+  code: string;
+  label?: string;
+}
+
+export interface CompletePairingResponse {
+  deviceId: string;
+  token: string;
+}
+
+export interface Device {
+  id: string;
+  label: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface DeviceListResponse {
+  devices: Device[];
+}
+
+export interface DeviceScanRequest {
+  id: string;
+  barcode?: string;
+  scannedAt?: string;
+  direction?: ScanDirection;
+  unitCount?: number;
+  heartbeat?: boolean;
+}
+
+export interface DeviceScanResponse {
+  id: string;
+  status: 'accepted' | 'duplicate';
+  cursor: string;
+}
+
+export interface HostedCreateScanRequest {
+  barcode: string;
+  direction?: ScanDirection;
+  unitCount?: number;
+  expiresAt?: string;
+}
+
+export interface HostedScanEntry {
+  id: string;
+  barcode: string;
+  scannedAt: string;
+  direction: ScanDirection | null;
+  unitCount: number;
+  expiresAt: string | null;
+  status: ScanStatus;
+  productId: string | null;
+  product: ProductSummary | null;
+  groupHint?: { groupId?: string; name: string };
+  committedAt: string | null;
+  createdAt: string;
+}
+
+export interface ScanChanges {
+  cursor: string;
+  scans: HostedScanEntry[];
+}
+
+export interface CommitScanRequest {
+  instanceId?: string;
+  linkProductId?: string;
+}
+
+export interface HostedInventoryItem extends Omit<InventoryItem, 'item'> {
+  item: Omit<Item, 'userId'>;
+}
+
+export interface InventoryChanges {
+  cursor: string;
+  items: HostedInventoryItem[];
+}
+
+export interface ShoppingListChanges {
+  cursor: string;
+  items: ShoppingListEntry[];
+}
+
+export interface ExportProductV1 {
+  id: string;
+  name: string;
+  category: string;
+  unitOfMeasure: string;
+}
+
+export interface ExportBarcodeOverrideV1 {
+  barcode: string;
+  productId: string;
+}
+
+export interface ExportItemV1 {
+  id: string;
+  productId: string;
+  targetQuantity: number | null;
+  createdAt: string;
+}
+
+export interface ExportItemInstanceV1 {
+  id: string;
+  itemId: string;
+  stockInAt: string;
+  expiresAt: string | null;
+  removedAt: string | null;
+  removalReason: 'consumed' | 'expired' | 'manual' | null;
+  createdAt: string;
+}
+
+export interface ExportShoppingListItemV1 {
+  id: string;
+  itemId: string;
+  quantity: number;
+  source: 'manual' | 'auto';
+  purchasedAt: string | null;
+  createdAt: string;
+}
+
+export interface ExportStockMoveV1 {
+  id: string;
+  itemId: string;
+  productId: string;
+  direction: 'in' | 'out';
+  quantity: number;
+  at: string;
+  source: 'scan' | 'manual';
+  scanEntryId: string | null;
+  createdAt: string;
+}
+
+export interface ExportGroupV1 {
+  id: string;
+  name: string;
+  productIds: string[];
+}
+
+export interface ExportCategoryV1 {
+  id: string;
+  name: string;
+  itemIds: string[];
+}
+
+/** Version 1 allows an empty object. Keys are an open question in the contract. */
+export interface ExportSettingsV1 {
+  [key: string]: string | number | boolean | null;
+}
+
+export interface ExportDocumentV1 {
+  schemaVersion: 1;
+  importId: string;
+  exportedAt: string;
+  source: 'hosted' | 'pi';
+  householdName: string;
+  products: ExportProductV1[];
+  barcodeOverrides: ExportBarcodeOverrideV1[];
+  items: ExportItemV1[];
+  itemInstances: ExportItemInstanceV1[];
+  scanEntries: HostedScanEntry[];
+  shoppingListItems: ExportShoppingListItemV1[];
+  stockMoves: ExportStockMoveV1[];
+  groups: ExportGroupV1[];
+  categories: ExportCategoryV1[];
+  settings: ExportSettingsV1;
+}
+
+export interface ExportJobCreated {
+  jobId: string;
+  status: 'pending';
+}
+
+export interface ExportJob {
+  jobId: string;
+  status: 'pending' | 'ready' | 'failed';
+  jsonUrl: string | null;
+  csvUrl: string | null;
+  expiresAt: string | null;
+}
+
+export interface ImportJobCreated {
+  jobId: string;
+  importId: string;
+  status: 'pending';
+}
+
+export interface ImportJob {
+  jobId: string;
+  importId: string;
+  status: 'pending' | 'ready' | 'failed';
+}
+
+export interface DeleteAccountRequest {
+  confirmation: string;
+}
+
+export type LiveTransport = 'sse' | 'poll' | 'push';
+
+export type LiveConfig =
+  | { live: 'sse' | 'poll' }
+  | { live: 'push'; appsync?: { httpUrl: string; realtimeUrl: string } };
+
+export interface LiveTicket {
+  ticket: string;
+  channel: `/hh/${string}/${string}`;
+  expiresAt: string;
+}
+
+export type LiveHintType = 'scans' | 'stock' | 'list';
+
+export interface LiveHint {
+  type: LiveHintType;
+  cursor: string;
+}
+
+export interface LiveFallbackRules {
+  scanQueuePollMs: 2000;
+  otherVisiblePollMs: 10000;
+  connectionTimeoutMs: 300000;
+  ticketMaxTtlSec: 900;
 }
