@@ -180,22 +180,22 @@ const expectSuccessBanner = async (page: Page, line: string) => {
   await fitsInViewport(banner)
 }
 
-const expectFailureWithPartial = async (page: Page, line: string) => {
+const expectFailureWithPartial = async (page: Page, line: string, head = fallback) => {
   const failure = failureBanner(page)
   const partial = failure.locator('.scan-batch-partial')
   await expect(failure).toHaveCount(1)
-  await expect(failure).toContainText(fallback)
+  await expect(failure).toContainText(head)
   await expect(partial).toHaveCount(1)
   await expect(partial).toHaveText(line)
   await expect(partial).not.toHaveAttribute('role', 'alert')
   await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
   await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
-  await expect.poll(() => page.evaluate((sentence) => {
+  await expect.poll(() => page.evaluate(({ sentence, headText }) => {
     const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
     const note = alert?.querySelector('.scan-batch-partial')
-    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === 'Some scans could not be confirmed.')
-    if (alert === null || alert === undefined || note === null || note === undefined || head === undefined) return false
-    const follows = (head.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const headNode = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === headText)
+    if (alert === null || alert === undefined || note === null || note === undefined || headNode === undefined) return false
+    const follows = (headNode.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
     const oneAlert = document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
     return alert.contains(note)
       && note.textContent === sentence
@@ -203,7 +203,7 @@ const expectFailureWithPartial = async (page: Page, line: string) => {
       && note.getAttribute('role') !== 'alert'
       && oneAlert
       && document.querySelectorAll('.scan-batch-banner--success').length === 0
-  }, line)).toBe(true)
+  }, { sentence: line, headText: head })).toBe(true)
   await fitsInViewport(failure)
   await fitsInViewport(partial)
 }
@@ -280,7 +280,7 @@ for (const viewport of viewports) {
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
       await outcome
-      await expectFailureWithPartial(page, wasLine)
+      await expectFailureWithPartial(page, wasLine, instanceGone)
       const missed = page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })
       await expect(missed).toContainText(instanceGone)
       await expect(missed.getByText(failureNote)).toHaveCount(0)

@@ -225,10 +225,46 @@ export const NOTHING_ON_HAND_BODY =
 export const CODE_NONE_ON_HAND = 'none_on_hand';
 
 // A lock or a full disk is one banner sentence. The card does not repeat it.
-// Other codes keep the fallback banner and the sentence on the card.
+// Amber never does. One other code uses that code's sentence. Mixed codes use
+// the fallback, and the card keeps its own sentence.
 export function batchCardCommitNotice(code: string, message: string): string {
   if (code === CODE_NONE_ON_HAND || code === CODE_BUSY || code === CODE_NO_SPACE) return '';
   return message;
+}
+
+export function isStorageFailureCode(code: string): boolean {
+  return code === CODE_BUSY || code === CODE_NO_SPACE;
+}
+
+// A confirm that finishes, batch or single, drops the lock and disk notices.
+// The card just confirmed drops with them. Item-specific codes stay until that
+// card is resolved. Amber is not in this set.
+export function failuresAfterConfirm<T extends { code: string }>(
+  notices: readonly T[],
+  confirmedId: string,
+): T[] {
+  return notices.filter((notice) => {
+    const id = 'id' in notice && typeof notice.id === 'string' ? notice.id : undefined;
+    if (id === confirmedId) return false;
+    return !isStorageFailureCode(notice.code);
+  });
+}
+
+function storageSentence(notice: Pick<BatchFailureNotice, 'code' | 'message'>): string {
+  const message = notice.message.trim();
+  if (message !== '') return message;
+  return notice.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE;
+}
+
+// One shared non-blank code has one sentence: the server text. A blank code,
+// a blank message, or two codes use the fallback instead.
+function sharedCodeSentence(
+  notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
+): string | null {
+  const code = notices[0]?.code ?? '';
+  if (code === '') return null;
+  if (notices.some((notice) => notice.code !== code)) return null;
+  return notices.map((notice) => notice.message.trim()).find((text) => text !== '') ?? null;
 }
 
 export function batchFailureBannerText(
@@ -237,14 +273,14 @@ export function batchFailureBannerText(
 ): string | null {
   const blocking = notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND);
   if (blocking.length === 0) return null;
-  const storage = blocking.find((notice) => notice.code === CODE_BUSY || notice.code === CODE_NO_SPACE);
-  if (storage === undefined) return BATCH_FAILURE_FALLBACK;
-  const sentence = storage.message.trim() === ''
-    ? (storage.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE)
-    : storage.message;
-  const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
-  if (count === 0) return sentence;
-  return `${count} confirmed. ${sentence}`;
+  const storage = blocking.find((notice) => isStorageFailureCode(notice.code));
+  if (storage !== undefined) {
+    const sentence = storageSentence(storage);
+    const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
+    if (count === 0) return sentence;
+    return `${count} confirmed. ${sentence}`;
+  }
+  return sharedCodeSentence(blocking) ?? BATCH_FAILURE_FALLBACK;
 }
 
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.

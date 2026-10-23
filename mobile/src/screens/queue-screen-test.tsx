@@ -122,8 +122,15 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
 
-    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
+    const blocking = failures.filter((failure) => failure.code !== '' && failure.code !== 'none_on_hand');
+    const shared = blocking.length === 1 ? blocking[0]?.reason : undefined;
+    const banner = shared !== undefined && shared !== '' ? shared : BATCH_FAILURE_FALLBACK;
+    expectBanner(screen, 'failure', [banner]);
+    if (banner === BATCH_FAILURE_FALLBACK) {
+      expect(screen.getAllByText(BATCH_FAILURE_FALLBACK)).toHaveLength(1);
+    } else {
+      expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+    }
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
     for (const failure of failures) {
       const card = within(screen.getByTestId(`scan-${failure.id}`));
@@ -174,7 +181,7 @@ describe('QueueScreen', () => {
       code: row.code,
       message: row.message,
       committed: 2,
-      banner: BATCH_FAILURE_FALLBACK,
+      banner: row.message,
     })),
   ])('batch $label', async ({ code, message, committed, banner }) => {
     const failed = [stocked('scan-fail', 'Short loaf')];
@@ -199,8 +206,8 @@ describe('QueueScreen', () => {
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(api.listPending).toHaveBeenCalledTimes(2));
 
-    expect(screen.getAllByText(banner)).toHaveLength(1);
     expectBanner(screen, 'failure', [banner]);
+    if (banner !== message) expect(screen.getAllByText(banner)).toHaveLength(1);
     if (banner !== BATCH_FAILURE_FALLBACK) {
       expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
     }
@@ -568,6 +575,7 @@ describe('QueueScreen', () => {
   const partialCount = batchContract.body.stockOutCounts['scan-batch-partial'];
   const batchResponse = (body: BatchCommitResponse): BatchCommitResponse => body;
   const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.';
+  const shelfConflict = 'That scan conflicts with the shelf.';
   const wereLine = 'Only 2 of 5 Tortilla chips were on hand, so 2 were taken out.';
   const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.';
   const oneCardLine = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
@@ -883,6 +891,8 @@ describe('QueueScreen', () => {
     if (blocking && !linking) {
       expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
       expectBanner(screen, 'success', [wasLine]);
+    } else if (linking) {
+      expectBanner(screen, 'failure', ['Choose which item this is first.', wasLine]);
     } else {
       expect(screen.getByText('Some scans could not be confirmed.')).toBeTruthy();
     }
@@ -1027,7 +1037,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'failure', [shelfConflict, wasLine]);
 
     await reloadQueue(screen);
     if (refresh === 'fetch-error') {
@@ -1037,14 +1047,13 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(loadError.props.style);
       const color = flat && typeof flat === 'object' && 'color' in flat ? flat.color : undefined;
       expect(color).toBe(colors.danger);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'failure', [shelfConflict, wasLine]);
       await reloadQueue(screen);
       await waitFor(() => expect(listPending).toHaveBeenCalledTimes(4));
       expect(screen.queryByText('The queue did not load.')).toBeNull();
       expect(screen.queryByTestId('queue-load-error')).toBeNull();
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'failure', [shelfConflict, wasLine]);
       expect(screen.getByText('Batch Empty')).toBeTruthy();
       return;
     }
@@ -1054,14 +1063,13 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     if (refresh === 'same') {
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'failure', [shelfConflict, wasLine]);
       return;
     }
     expect(screen.getByText('New rice')).toBeTruthy();
     expect(screen.queryByText(wasLine)).toBeNull();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
+    expectBanner(screen, 'failure', [shelfConflict]);
   });
 
   it('a successful confirm-all clears a queue load error', async () => {
@@ -1176,15 +1184,13 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(screen.queryByText('Tortilla chips')).toBeNull());
     if (kind === 'stale') {
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'failure', [shelfConflict, wasLine]);
       await act(async () => { releaseRefresh([chips, failed]); });
       expect(screen.queryByText('Tortilla chips')).toBeNull();
       expect(screen.getByText('Batch Empty')).toBeTruthy();
-      expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
       expect(screen.getAllByText(wasLine)).toHaveLength(1);
-      expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+      expectBanner(screen, 'failure', [shelfConflict, wasLine]);
       return;
     }
     expect(screen.queryByText('Batch In')).toBeNull();
@@ -1249,16 +1255,15 @@ describe('QueueScreen', () => {
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
     await fireEvent.press(screen.getByLabelText('Confirm all'));
     await waitFor(() => expect(screen.getByText(wasLine)).toBeTruthy());
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'failure', [shelfConflict, wasLine]);
 
     await act(async () => { rejectRefresh('offline'); });
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByTestId('queue-load-error')).toBeNull();
     expect(screen.queryByText('Tortilla chips')).toBeNull();
     expect(screen.getByText('Batch Empty')).toBeTruthy();
-    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
     expect(screen.getAllByText(wasLine)).toHaveLength(1);
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'failure', [shelfConflict, wasLine]);
   });
 
   it('a failed retry of the only failed card clears the red sentence', async () => {
@@ -1501,7 +1506,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(2));
-    expectBanner(screen, 'failure', ['Some scans could not be confirmed.', wasLine]);
+    expectBanner(screen, 'failure', [shelfConflict, wasLine]);
     expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
 
     await fireEvent.press(screen.getByLabelText('Confirm Kept oil'));
@@ -1684,7 +1689,8 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
 
-    expect(await screen.findByText('Choose which item this is first.')).toBeTruthy();
+    expectBanner(screen, 'failure', ['Choose which item this is first.']);
+    expect(within(screen.getByTestId('scan-scan-1')).getByText('Choose which item this is first.')).toBeTruthy();
     expect(screen.getByText('Which item is this?')).toBeTruthy();
     expect(screen.getByLabelText('Search')).toBeTruthy();
     expect(screen.queryByText('No close match found.')).toBeNull();
@@ -2180,12 +2186,14 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
-    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expectBanner(screen, 'failure', ['Choose which item this is first.']);
+    expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
     expect(screen.getByText('Nothing on hand to take out.')).toBeTruthy();
-    expect(screen.getByText('Choose which item this is first.')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-2')).getByText('Choose which item this is first.')).toBeTruthy();
 
     await fireEvent.press(screen.getByLabelText('Confirm 999'));
-    await waitFor(() => expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('Choose which item this is first.')).toBeNull());
+    expectBanner(screen, 'gone', []);
   });
 
   it('does not turn every stock-out amber when inventory is malformed', async () => {

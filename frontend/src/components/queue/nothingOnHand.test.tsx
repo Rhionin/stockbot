@@ -561,11 +561,12 @@ describe('nothing on hand queue', () => {
     await confirmBatch(2);
     await waitFor(() => {
       const failure = document.querySelector('.scan-batch-banner');
-      expect(failure?.textContent).toContain('Some scans could not be confirmed.');
+      expect(failure?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Choose which item this is first.');
       expect(failure?.className).not.toContain('scan-batch-banner--success');
     });
+    expect(screen.queryByText('Some scans could not be confirmed.')).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
-    expect(screen.getByText('Choose which item this is first.')).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: 'Scan 444' })).getByText('Choose which item this is first.')).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 444' })).getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 444' })).not.toBeInTheDocument());
     expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
@@ -637,7 +638,7 @@ describe('nothing on hand queue', () => {
     { name: 'no_space and nothing committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 0, banner: NO_SPACE_SENTENCE, onCard: false },
     { name: 'no_space and one committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 1, banner: `1 confirmed. ${NO_SPACE_SENTENCE}`, onCard: false },
     { name: 'no_space and many committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}`, onCard: false },
-    { name: 'instance_gone keeps the card sentence', code: 'instance_gone', message: 'That one was already taken out. Pick another.', committed: 1, banner: BATCH_FAILURE_FALLBACK, onCard: true },
+    { name: 'instance_gone keeps the card sentence', code: 'instance_gone', message: 'That one was already taken out. Pick another.', committed: 1, banner: 'That one was already taken out. Pick another.', onCard: true },
   ])('$name', async ({ code, message, committed, banner, onCard }) => {
     const failed = scan({
       id: 'scan-fail',
@@ -666,8 +667,9 @@ describe('nothing on hand queue', () => {
     expect(await screen.findByRole('article', { name: 'Scan 444' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
     fireEvent.click(screen.getByRole('button', { name: `Confirm ${scans.length} selected scans` }));
-    const bannerNode = await screen.findByText(banner);
-    expect(bannerNode.closest('.scan-batch-banner')).not.toBeNull();
+    await waitFor(() => {
+      expect(document.querySelector('.scan-batch-banner')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(banner);
+    });
     const card = screen.getByRole('article', { name: 'Scan 444' });
     if (onCard) {
       expect(within(card).getByText(message)).toBeInTheDocument();
@@ -859,5 +861,82 @@ describe('nothing on hand queue', () => {
     const banner = await screen.findByText('Stockbot is busy right now. Try again in a moment.');
     expect(banner.closest('.scan-batch-banner')?.textContent).toBe('Stockbot is busy right now. Try again in a moment.');
     expect(screen.queryByText('confirmed.', { exact: false })).not.toBeInTheDocument();
+  });
+
+  const bannerText = () => document.querySelector('.scan-batch-banner')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+  it.each([
+    {
+      name: 'all busy then a single confirm',
+      failures: [
+        { id: 'scan-a', barcode: '701', name: 'Oats', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', barcode: '702', name: 'Rice', code: 'busy', message: BUSY_SENTENCE },
+      ],
+      confirmBarcode: '701',
+      banner: '',
+    },
+    {
+      name: 'busy plus no_item then a single confirm of another card',
+      failures: [
+        { id: 'scan-a', barcode: '701', name: 'Oats', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', barcode: '702', name: 'Rice', code: 'no_item', message: 'Which item is this?' },
+      ],
+      confirmBarcode: '701',
+      banner: 'Which item is this?',
+    },
+    {
+      name: 'busy plus no_item plus not_pending',
+      failures: [
+        { id: 'scan-a', barcode: '701', name: 'Oats', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', barcode: '702', name: 'Rice', code: 'no_item', message: 'Which item is this?' },
+        { id: 'scan-c', barcode: '703', name: 'Beans', code: 'not_pending', message: 'This scan was already handled.' },
+      ],
+      confirmBarcode: '701',
+      banner: 'Some scans could not be confirmed.',
+    },
+    {
+      name: 'resolving the last failure',
+      failures: [
+        { id: 'scan-a', barcode: '701', name: 'Oats', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', barcode: '702', name: 'Rice', code: 'no_item', message: 'Which item is this?' },
+      ],
+      confirmBarcode: '702',
+      banner: '',
+    },
+  ])('$name', async ({ failures, confirmBarcode, banner }) => {
+    const scans = failures.map((failure) => scan({
+      id: failure.id,
+      barcode: failure.barcode,
+      direction: 'stock_out',
+      productId: `prod-${failure.id}`,
+      product: product(`prod-${failure.id}`, failure.name),
+    }));
+    renderQueue({
+      scans,
+      inventory: scans.map((entry) => shelf(entry.id, entry.product?.name ?? 'Item', 2)),
+      batchResult: {
+        updatedCount: scans.length,
+        committedIds: [],
+        failedIds: failures.map((failure) => failure.id),
+        failedReasons: failures.map((failure) => failure.message),
+        failedCodes: failures.map((failure) => failure.code),
+      },
+    });
+    expect(await screen.findByRole('article', { name: `Scan ${failures[0]?.barcode}` })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: `Confirm ${scans.length} selected scans` }));
+    await waitFor(() => expect(document.querySelector('.scan-batch-banner')).not.toBeNull());
+    fireEvent.click(within(screen.getByRole('article', { name: `Scan ${confirmBarcode}` })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => {
+      if (banner === '') {
+        expect(document.querySelector('.scan-batch-banner')).toBeNull();
+      } else {
+        expect(bannerText()).toBe(banner);
+      }
+    });
+    if (banner === '') {
+      expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
+      expect(screen.queryByText(NO_SPACE_SENTENCE)).not.toBeInTheDocument();
+    }
   });
 });

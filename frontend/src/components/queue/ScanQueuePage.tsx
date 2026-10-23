@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_BUSY, CODE_NONE_ON_HAND, CODE_NO_SPACE, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -501,20 +501,15 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     void loadQueue(true);
   };
 
-  // A busy or no_space banner is one sentence for the whole stop. Confirming
-  // one card on its own makes that sentence out of date, so every storage
-  // notice comes down together. Other failure codes stay on their cards.
+  // A finished confirm, including this card on its own, makes a lock or a full
+  // disk out of date. Those notices come down together. Item-specific codes
+  // stay until that card is resolved.
   const beginSingleConfirm = (entryId: string) => {
     setPartialLine(null);
     setFailureById((current) => {
-      let changed = false;
-      const next = new Map(current);
-      if (next.delete(entryId)) changed = true;
-      for (const [id, notice] of current) {
-        if (notice.code !== CODE_BUSY && notice.code !== CODE_NO_SPACE) continue;
-        if (next.delete(id)) changed = true;
-      }
-      return changed ? next : current;
+      const next = failuresAfterConfirm([...current.values()], entryId);
+      if (next.length === current.size) return current;
+      return new Map(next.map((notice) => [notice.id, notice]));
     });
   };
 

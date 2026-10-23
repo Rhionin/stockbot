@@ -5,6 +5,7 @@ import {
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
+  failuresAfterConfirm,
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
   NO_SPACE_SENTENCE,
@@ -168,7 +169,7 @@ describe('batch failure banner', () => {
       code: row.code,
       message: row.message,
       committed: 2,
-      banner: BATCH_FAILURE_FALLBACK,
+      banner: row.message,
       card: row.message,
     })),
   ])('$name', ({ code, message, committed, banner, card }) => {
@@ -208,6 +209,47 @@ describe('batch failure banner', () => {
     ]);
     expect(batchFailureBannerText(notices, body.committedIds?.length ?? 0)).toBe('The pantry database is locked.');
     expect(batchCardCommitNotice('busy', 'The pantry database is locked.')).toBe('');
+  });
+
+  it.each([
+    {
+      name: 'all busy then a confirm leaves nothing to say',
+      before: [
+        { id: 'scan-a', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', code: 'busy', message: BUSY_SENTENCE },
+      ],
+      confirmedId: 'scan-a',
+      banner: null,
+    },
+    {
+      name: 'busy plus no_item leaves that sentence',
+      before: [
+        { id: 'scan-a', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', code: 'no_item', message: 'Which item is this?' },
+      ],
+      confirmedId: 'scan-a',
+      banner: 'Which item is this?',
+    },
+    {
+      name: 'busy plus no_item plus not_pending falls back',
+      before: [
+        { id: 'scan-a', code: 'busy', message: BUSY_SENTENCE },
+        { id: 'scan-b', code: 'no_item', message: 'Which item is this?' },
+        { id: 'scan-c', code: 'not_pending', message: 'This scan was already handled.' },
+      ],
+      confirmedId: 'scan-a',
+      banner: BATCH_FAILURE_FALLBACK,
+    },
+    {
+      name: 'the last item-specific failure leaves no banner',
+      before: [{ id: 'scan-b', code: 'no_item', message: 'Which item is this?' }],
+      confirmedId: 'scan-b',
+      banner: null,
+    },
+  ])('$name', ({ before, confirmedId, banner }) => {
+    expect(batchFailureBannerText(before, 0)).not.toBeNull();
+    const after = failuresAfterConfirm(before, confirmedId);
+    expect(batchFailureBannerText(after, 0)).toBe(banner);
   });
 
   it('a busy card beside amber uses the busy sentence once', () => {
