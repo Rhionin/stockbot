@@ -203,7 +203,15 @@ describe('hosted API contract', () => {
     expect(doc).toContain('testdata/pairing-codes.json');
     expect(doc).toContain('When two requests use the same invite, the loser gets `invite_expired`.');
     expect(doc).toContain('The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling');
-    expect(doc).toContain('On success, and on a GET after the first account exists, they send the user to sign-in at `APP_BASE_URL` (a link or a 302).');
+    expect(doc).toContain('On the LAN, after the first account exists, GET sends the user to sign-in at `APP_BASE_URL` and POST returns `not_found`, except in recover mode, where GET serves the page and a successful POST sends the user to sign-in at `APP_BASE_URL`.');
+    expect(doc).not.toContain('On success, and on a GET after the first account exists');
+    expect(doc).toContain('No session on the LAN. A session on the public entry');
+    expect(doc).toContain('The saved-origin fallback applies only when `entry` is absent from `GET /api/config`: a saved http: origin, or one matching no public hostname, means LAN.');
+    expect(doc).not.toContain('differs from `appBaseUrl`');
+    expect(doc).toContain('On the LAN: the LAN principal while the household password is on.');
+    expect(doc).toContain('on the LAN after retirement, unauthorized even with no cookie or bearer; Bearer sbs_ on the LAN is always unauthorized.');
+    expect(doc).toContain('`unauthorized`, `validation`, `rate_limited`, `busy`. On the LAN, `404` `not_found`');
+    expect(doc).toContain('`validation`, `reset_expired`, `not_found`, `rate_limited`, `busy`. On the LAN, `404` `not_found`');
     expect(doc).toContain('Setup and recover mode create the operator as owner of household 1 and set no session.');
     expect(doc).not.toContain('Setup sets it when the person has exactly one household');
     expect(doc).not.toContain('signs them in, and sets `activeHouseholdId`');

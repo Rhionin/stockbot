@@ -92,7 +92,7 @@ LAN `:8080`, while the household password is on: people get the LAN principal. T
 
 lan-client: Expo must use `appBaseUrl` for personal sign-in. LAN URLs are unsupported for people after retirement. Clients never show Sign in on a LAN URL. While the household password is on, Expo on a LAN URL may keep using the shared household-1 access, and should offer to move to `appBaseUrl`. After retirement, the LAN `401` means moving to `appBaseUrl`. `GET /api/auth/session` on the LAN after retirement returns `401` `unauthorized`, under the same rule, and this rule then sends the client to `appBaseUrl`.
 
-LAN detection: `GET /api/config` returns `entry` `"lan"` or `"public"`, set by the listener that served the request. Clients use `entry` as the exact signal. As a fallback, a saved origin that differs from `appBaseUrl` means LAN. Expo sends sign-in and its `sbs_` token only to `appBaseUrl`, never to a LAN origin. Dev and test servers must set `APP_BASE_URL`, or dev builds would point at prod.
+LAN detection: clients fetch `entry` from `GET /api/config` first. `GET /api/config` returns `entry` `"lan"` or `"public"`, set by the listener that served the request. Clients use `entry` as the exact signal. The saved-origin fallback applies only when `entry` is absent from `GET /api/config`: a saved http: origin, or one matching no public hostname, means LAN. Expo sends sign-in and its `sbs_` token only to `appBaseUrl`, never to a LAN origin. Dev and test servers must set `APP_BASE_URL`, or dev builds would point at prod.
 
 `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. On that entry, a caller who is not the operator, including a household-password or device principal, gets `not_found`. On the LAN, `GET /api/telemetry` is open only while the household password is on. After retirement it follows the LAN `401` rule, and the operator reads it on the public entry. The LAN response never includes the changeover counts. PM's ruling is the public entry only. `POST /api/telemetry/client` stays a public write on both entries and stays open on the LAN. Its response has no household activity and no process-wide counts. The changeover counts (household-password sessions and Basic requests in the last 7 days) are part of the operator-only GET on the public entry. `GET /api/config` and `GET /health` stay open on the LAN. Both telemetry routes stay exempt from the version gate.
 
@@ -108,9 +108,9 @@ These routes do not select a household from the client. A row that names a sessi
 | `GET /brand/logo.png` | No session | The brand mark. |
 | `GET /terms` | No session | The terms page. |
 | `GET /privacy` | No session | The privacy page. |
-| `GET /health` | No session. Stays open on the LAN | `{"status":"ok"}` and an optional `scanner` object. No household id, name, or item count. It stays open on the LAN after retirement. It is not on the public no-password list. |
+| `GET /health` | No session on the LAN. A session on the public entry | `{"status":"ok"}` and an optional `scanner` object. No household id, name, or item count. It stays open on the LAN after retirement. It is not on the public no-password list. |
 | `GET /api/sync/snapshot` | Sync token | Pi only. Not a hosted route. Household 1, read-only. |
-| `GET /setup` and `POST /setup` | No session | The setup code is 40 bits. On the LAN, while no personal account exists, the page asks for that code, then name, email, and password. Setup and recover mode create the operator as owner of household 1 and set no session. On success, and on a GET after the first account exists, they send the user to sign-in at `APP_BASE_URL` (a link or a 302). On the public entry, GET and POST return `not_found`. On the LAN, after the first account exists, POST returns `not_found`, except in recover mode, which is the same LAN page with a fresh code. |
+| `GET /setup` and `POST /setup` | No session | The setup code is 40 bits. On the LAN, while no personal account exists, the page asks for that code, then name, email, and password. Setup and recover mode create the operator as owner of household 1 and set no session. On the public entry, GET and POST return `not_found`. On the LAN, after the first account exists, GET sends the user to sign-in at `APP_BASE_URL` and POST returns `not_found`, except in recover mode, where GET serves the page and a successful POST sends the user to sign-in at `APP_BASE_URL`. |
 | `GET /api/config` | No session | `LiveConfig`, including `appBaseUrl` and `entry` (`"lan"` or `"public"`). Both entries. Stays open on the LAN after retirement, so a LAN-URL phone can learn `appBaseUrl`. Never `426`. |
 | `POST /api/auth/login` | No session on the public entry | Email and password, or `{ "householdPassword" }` while that password is on. On the LAN this route is `404` `not_found`. |
 | `GET /api/auth/session` | Optional session | No cookie and no bearer is a signed-out session. On the LAN, while the household password is on, this is the LAN principal. After retirement it returns `401` `unauthorized`, and the lan-client rule sends the client to `appBaseUrl`. `Bearer sbs_…` on the LAN is `401` `unauthorized`. |
@@ -219,7 +219,7 @@ Stage 1. Email and password. The household-password form exists only while house
 | X-Household-Id | Omit |
 | Request | `{ "email": string, "password": string }` or, during the changeover, `{ "householdPassword": string }` |
 | Response | `200` `LoginResponse`. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
-| Errors | `unauthorized`, `validation`, `rate_limited`, `busy` |
+| Errors | `unauthorized`, `validation`, `rate_limited`, `busy`. On the LAN, `404` `not_found` |
 
 Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. expo-401: Expo clears its stored `sbs_` token on any `401`, except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, and `POST /api/invites/accept`. A `401` on those routes is a failed sign-in and does not clear the token. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`. At login, `activeHouseholdId` is the last-used household if the person is still a member, else their only membership, else null. Reset uses the same rule. A wait of more than 2 seconds for the argon2id semaphore is `busy`. Reset and invite accept use that same semaphore.
 
@@ -255,12 +255,12 @@ Stage 1 revokes this session row and clears the cookie. Stage 3, after that row 
 
 | | |
 |---|---|
-| Auth | Optional. A missing cookie and a missing bearer is a signed-out session, not an error. |
+| Auth | Optional. A missing cookie and a missing bearer is a signed-out session, not an error. On the LAN: the LAN principal while the household password is on. |
 | Role | None |
 | X-Household-Id | Omit |
 | Request | None |
 | Response | `200` `AuthSession` |
-| Errors | `unauthorized` when a cookie or bearer is present and is expired, revoked, or unknown |
+| Errors | `unauthorized` when a cookie or bearer is present and is expired, revoked, or unknown; on the LAN after retirement, unauthorized even with no cookie or bearer; Bearer sbs_ on the LAN is always unauthorized. |
 
 ```ts
 interface AuthSession {
@@ -303,7 +303,7 @@ Sets a new password from a reset link. The link is single use and expires 24 hou
 | X-Household-Id | Omit |
 | Request | `{ "code": string, "password": string }` |
 | Response | `200` `LoginResponse`. This signs the person in and revokes their other sessions. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
-| Errors | `validation`, `reset_expired`, `not_found`, `rate_limited`, `busy` |
+| Errors | `validation`, `reset_expired`, `not_found`, `rate_limited`, `busy`. On the LAN, `404` `not_found` |
 
 Password rules match login. A code past its expiry, or already used, is `reset_expired`, sentence "This reset link has expired or was already used. Ask for a new one." A revoked or unknown code is `not_found`. Invite links do not use `reset_expired`. Limits match invite accept: 10 per 15 minutes per IP, and 5 attempts per code. The server builds the link that created this code as `<APP_BASE_URL>/reset/<code>`. Caddy and the app redact that code from logs. The path is not a fragment.
 
