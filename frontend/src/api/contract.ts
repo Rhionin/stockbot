@@ -252,6 +252,7 @@ export type HostedErrorCode =
   | 'not_found'
   | 'conflict'
   | 'invite_expired'
+  | 'invite_required'
   | 'validation'
   | 'not_pending'
   | 'product_unresolved'
@@ -574,6 +575,8 @@ export type RestockMode = 'auto' | 'ask_restock' | 'ask_hold';
 export interface CreateHouseholdRequest {
   name: string;
   restockMode?: RestockMode;
+  /** Stage 1 requires a start_household code. Later stages may omit it. */
+  inviteCode?: string;
 }
 
 /** GET and PATCH /api/household/settings. Stage 3 returns householdPassword null. */

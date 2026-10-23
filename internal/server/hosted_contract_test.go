@@ -42,7 +42,8 @@ func existingContractSentences() map[string]string {
 		"confirmation_mismatch":         "That doesn't match. Check the spelling and try again.",
 		"rate_limited":                  "Too many tries. Wait a moment and try again.",
 		"payload_too_large":             "That file is too large to import.",
-		"device_revoked":                "This scanner was disconnected.",
+		"invite_required":               "You need an invite to start a household.",
+		"device_revoked":                "This device was disconnected. Pair it again to keep using it.",
 		"upgrade_required":              "Update Stockbot to keep using it.",
 	}
 }

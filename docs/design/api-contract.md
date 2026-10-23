@@ -69,7 +69,7 @@ A household has at least one owner. The check locks the owner rows with `SELECT 
 
 The server retries a transaction that fails with a serialization error, from the start, inside a bounded attempt budget. Calls that leave the database run only after that transaction has committed: the SES invite email, Cognito `AdminUserGlobalSignOut` on logout, Cognito `AdminDeleteUser` on account deletion, and EventBridge Scheduler create. `DELETE /api/me` commits the database step first, then calls `AdminDeleteUser` from a job that retries on its own. A failure of that job does not restore the memberships.
 
-Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own forgot-password. Stage 1 does take passwords, on the routes in [Stage 1 auth](#stage-1-auth). A stage-3 session exists only after the email is verified. The post-confirmation trigger creates the `users` row. The household is created by `POST /api/households` after that. Stage 1 creates the first household by accepting a `start_household` invite. `POST /api/households` is unchanged.
+Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own forgot-password. Stage 1 does take passwords, on the routes in [Stage 1 auth](#stage-1-auth). A stage-3 session exists only after the email is verified. The post-confirmation trigger creates the `users` row. The household is created by `POST /api/households` after that. Stage 1 uses the same route and requires a `start_household` `inviteCode`. Later stages may omit that code without a new route.
 
 ### Stage 1 auth
 
@@ -268,11 +268,13 @@ Creates a household and makes the caller an owner. This is the step after email 
 | Auth | Session |
 | Role | Signed in |
 | X-Household-Id | Omit |
-| Request | `{ "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold" }` |
+| Request | `{ "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold", "inviteCode"?: string }` |
 | Response | `201` `{ "id": string, "name": string, "role": "owner" }` |
-| Errors | `unauthorized`, `validation` |
+| Errors | `unauthorized`, `validation`, `invite_required`, `invite_expired`, `not_found` |
 
 `name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. `restockMode` is optional: `auto`, `ask_restock`, or `ask_hold`, the three values in [#296](https://github.com/Rhionin/stockbot/issues/296). Omitted means `auto`, which is today's behavior. Master has no route for that setting. `PUT /api/restock/household` sets a numeric household target. It is not this mode.
+
+`inviteCode` is optional on the route so a later stage can make it optional without changing the path. In stage 1 it is required, and it must be an open `start_household` invite. A missing `inviteCode` is `403` `invite_required`. An expired or already used code is `invite_expired`. A revoked or unknown code is `not_found`, the same split as invite accept. A code for joining an existing household is `not_found` on this route.
 
 ### GET /api/household/settings
 
@@ -516,7 +518,7 @@ interface InviteSummary {
 }
 ```
 
-The list does not include `code` or `url`. The raw code is not recoverable after create. `status` stays `open`, `revoked`, `used`, or `expired`. Stage-1 copy may say "cancelled" for a revoked invite. The JSON value remains `revoked`.
+The list does not include `code` or `url`. The raw code is not recoverable after create. `status` stays `open`, `revoked`, `used`, or `expired`. Clients label `revoked` as Cancelled.
 
 ### POST /api/invites/{id}/revoke
 
@@ -1287,7 +1289,8 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, and pairing complete. Login also sends `Retry-After`. |
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. |
-| `device_revoked` | 401 | This scanner was disconnected. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
+| `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
+| `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
 | `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo client older than `minClientVersion.expo`. Decided with the stage-1 auth answers. |
 
 ## Decided by PM
@@ -1319,6 +1322,13 @@ Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbo
 25. **Foreign id inside a batch.** The whole request is `not_found`. Decided by PM. The Architect added the single scoped SELECT and the identical response for a missing id.
 29. **Sign-up restock question.** PM said to call the existing restock route after create. PM's comment calls this #30. Master has no route for the #296 mode. Frontend Builder replaced that assumption: optional `restockMode` on `POST /api/households`, and proposed `GET`/`PATCH /api/household/settings`.
 31. **Grocy.** Out of scope. Decided by PM. PM's comment calls this #32.
+
+Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
+
+- **Invite status.** The wire value stays `revoked`. Clients label it Cancelled.
+- **Start a household.** `POST /api/households` takes optional `inviteCode`. Stage 1 requires a `start_household` code. Missing is `invite_required`. Expired or used is `invite_expired`. Revoked or unknown is `not_found`. A later stage may omit the code on this same route.
+- **Reset link.** `<APP_BASE_URL>/reset/<code>` stands.
+- **`device_revoked`.** The sentence is "This device was disconnected. Pair it again to keep using it."
 
 ## Decided by Architect
 
@@ -1359,11 +1369,7 @@ From the review on PR #364. Where one of these refines an earlier ruling, the te
 
 2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
 
-Where the stage-1 plan and #374 disagree, this contract follows #374 and keeps the #364 shape. These are the leftovers:
+PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. These two plan-vs-#374 differences are still open:
 
-4. **Invite status word.** The plan and the stage-1 requirements say `cancelled`. #364's `InviteSummary.status` is `revoked`, and #374 says to keep that shape. The wire value stays `revoked`.
 5. **Device scan body.** The plan replaces the single scan with a batch. #374 says to keep the #364 device-scan shape. Both bodies are accepted. One `DeviceScanRequest` is a batch of one.
-6. **Login and unknown-device codes.** The plan names `device_unauthorized` for a bad device token. The requirements do not name a login code. #374 adds `device_revoked` and `upgrade_required` only. A failed login, unknown email or wrong password, is `unauthorized` with that registry sentence, and the body is the same either way. An unknown device token is `unauthorized`. `device_revoked` is only after an owner revokes the device.
-7. **Creating a household.** The requirements say stage 1 has no household create except a `start_household` invite. #374 says non-auth shapes stay, so `POST /api/households` is unchanged. The invite is the stage-1 path that is written down. Whether stage 1 rejects the create route is still open.
-8. **Reset link path.** The plan does not name the path. This contract uses `<APP_BASE_URL>/reset/<code>`, parallel to the invite link.
-9. **`device_revoked` sentence.** #374 names the code and not the sentence. The registry uses "This scanner was disconnected." PM can replace that sentence.
+6. **Login and unknown-device codes.** The plan names `device_unauthorized` for a bad device token. The requirements do not name a login code. A failed login, unknown email or wrong password, is `unauthorized` with that registry sentence, and the body is the same either way. An unknown device token is `unauthorized`. `device_revoked` is only after an owner revokes the device.
