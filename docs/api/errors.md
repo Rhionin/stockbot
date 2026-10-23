@@ -32,12 +32,35 @@ Each of these responses also writes one warning log line. The message is
 `household_id` when the server knows the household. The line has no SQL and
 no names. Operator alerts for #224 match that line. This does not add an alert.
 
+## Batch commit
+
+`POST /api/scans/batch-commit` stays HTTP 200 when an item cannot be saved.
+`failedIds`, `failedReasons`, and `failedCodes` stay parallel arrays.
+
+A locked database is code `busy` and the busy sentence above. A full disk is
+code `no_space` and the no-space sentence above. A full disk writes one
+`db_no_space` warning for the whole batch, with the same attributes as the
+503 above, not one line per item.
+
+The batch stops on the first `busy` or `no_space` result. That item and every
+item not yet tried get the same code and the same sentence. They stay open
+(pending or flagged, unchanged), so a retry is safe. Items already committed
+stay committed and are listed in `committedIds`. Other per-item failures do
+not stop the batch.
+
+A client shows that sentence once. When some items were committed first, the
+line leads with the committed count and "confirmed.", then the sentence. Two
+committed items and a lock read:
+`2 confirmed. Stockbot is busy right now. Try again in a moment.`
+
 ## Other 5xx
 
 Every other 5xx uses the generic sentence
 `Something went wrong. Try again.` The body has no `code`, except an
 unexpected commit or stock-out failure, which keeps code `internal` with
-that same sentence. A lock or a full disk is still the 503 above.
+that same sentence. A lock or a full disk on a single request is still the
+503 above. A batch commit reports those same codes on each affected item and
+stays HTTP 200.
 
 The generic sentence does not replace the busy sentence or the no-space sentence.
 

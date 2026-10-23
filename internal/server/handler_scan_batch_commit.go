@@ -47,6 +47,16 @@ type batchCommitResponse struct {
 	StockOutCounts map[string]stockOutCount `json:"stockOutCounts,omitempty"`
 }
 
+// batchStopsOnStorageFailure is the product decision for a busy or full
+// database in one batch commit. The item that failed and every item not yet
+// tried share that code and sentence and are not written. Items already
+// committed stay committed. Other per-item failures do not stop the batch.
+const batchStopsOnStorageFailure = true
+
+func batchStopsEarly(code string) bool {
+	return batchStopsOnStorageFailure && (code == busyErrorCode || code == noSpaceErrorCode)
+}
+
 func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}]) (batchCommitResponse, error) {
 	if len(req.Body.ScanEntryIDs) == 0 {
 		return batchCommitResponse{}, BadRequest("scanEntryIds is required")
@@ -86,15 +96,32 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		failedReasons := []string{}
 		failedCodes := []string{}
 		var stockOutCounts map[string]stockOutCount
+		var haltMessage, haltCode string
+		loggedNoSpace := false
+		failItem := func(id string, err error) {
+			message, code := explainCommitFailure(err)
+			if code == noSpaceErrorCode && !loggedNoSpace {
+				logNoSpace(req.RawRequest, err)
+				loggedNoSpace = true
+			}
+			recordCommitResult(&failedIDs, &failedReasons, &failedCodes, id, message, code)
+			if batchStopsEarly(code) {
+				haltMessage, haltCode = message, code
+			}
+		}
 
 		for _, id := range req.Body.ScanEntryIDs {
+			if haltCode != "" {
+				recordCommitResult(&failedIDs, &failedReasons, &failedCodes, id, haltMessage, haltCode)
+				continue
+			}
 			entry, err := h.Queue.GetScanEntry(req.Context, id)
 			if err != nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, err)
+				failItem(id, err)
 				continue
 			}
 			if entry == nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrScanNotFound)
+				failItem(id, scan.ErrScanNotFound)
 				continue
 			}
 			if entry.Status == scan.Committed {
@@ -112,15 +139,15 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				continue
 			}
 			if entry.Status != scan.Pending {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrNotPending)
+				failItem(id, scan.ErrNotPending)
 				continue
 			}
 			if entry.Direction == nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrDirectionUnset)
+				failItem(id, scan.ErrDirectionUnset)
 				continue
 			}
 			if entry.ProductID == nil || *entry.ProductID == "" {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrProductUnresolved)
+				failItem(id, scan.ErrProductUnresolved)
 				continue
 			}
 
@@ -133,7 +160,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			}
 
 			if commitErr != nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, commitErr)
+				failItem(id, commitErr)
 				continue
 			}
 			committedIDs = append(committedIDs, id)
@@ -172,8 +199,7 @@ func uniqueInOrder(ids []string) []string {
 	return unique
 }
 
-func recordCommitFailure(ids, reasons, codes *[]string, id string, err error) {
-	message, code := explainCommitFailure(err)
+func recordCommitResult(ids, reasons, codes *[]string, id, message, code string) {
 	*ids = append(*ids, id)
 	*reasons = append(*reasons, message)
 	*codes = append(*codes, code)

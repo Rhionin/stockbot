@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -351,6 +353,54 @@ func TestSentryTraceSamplerSkipsHealthAndEvents(t *testing.T) {
 		if got := sentryTracesSampler(ctx); got != tc.want {
 			t.Errorf("%q sample = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestCanceledRequestIsNotReported(t *testing.T) {
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	var slogBuf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	canceled := true
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		if canceled {
+			return struct{}{}, fmt.Errorf("select pantry row oat milk: %w", context.Canceled)
+		}
+		return struct{}{}, errors.New("disk full")
+	})
+	res := serveJSON(handler, http.MethodGet, "/api/inventory", "")
+	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, "Something went wrong") {
+		t.Fatalf("status = %d %s", res.code, res.body)
+	}
+	if strings.Contains(res.body, "oat milk") || strings.Contains(strings.ToLower(res.body), "context canceled") {
+		t.Fatalf("body = %s", res.body)
+	}
+	if events := tr.errors(); len(events) != 0 {
+		t.Fatalf("canceled request was reported: %+v", events)
+	}
+	logged := slogBuf.String()
+	if !strings.Contains(logged, "level=INFO") || !strings.Contains(logged, "request canceled") {
+		t.Fatalf("log = %q", logged)
+	}
+	if strings.Contains(strings.ToLower(logged), "oat milk") || strings.Contains(logged, "level=ERROR") {
+		t.Fatalf("log = %q", logged)
+	}
+
+	canceled = false
+	slogBuf.Reset()
+	res = serveJSON(handler, http.MethodGet, "/api/inventory", "")
+	if res.code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s", res.code, res.body)
+	}
+	events := tr.errors()
+	if len(events) != 1 || len(events[0].Exception) == 0 {
+		t.Fatalf("events = %+v", events)
 	}
 }
 

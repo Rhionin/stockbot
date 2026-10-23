@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 
@@ -202,7 +203,9 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			if httpErr != nil && httpErr.Err != nil {
 				logged = httpErr.Err.Error()
 			}
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) {
+				slog.Info("request canceled")
+			} else if !errors.Is(err, context.DeadlineExceeded) {
 				log.Printf("request failed: %s", logged)
 			}
 		}

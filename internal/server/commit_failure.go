@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -39,10 +40,17 @@ func knownCommitFailure(err error) (message, code string, ok bool) {
 }
 
 // explainCommitFailure is the sentence and code for one batch entry.
-// An unrecognized error is logged and replaced with the internal sentence.
+// A lock or a full disk uses the same classifier as a single commit.
+// Any other unrecognized error is logged and replaced with the internal sentence.
 func explainCommitFailure(err error) (message, code string) {
 	if message, code, ok := knownCommitFailure(err); ok {
 		return message, code
+	}
+	if sqliteBusy(err) {
+		return clientmsg.Busy, busyErrorCode
+	}
+	if sqliteNoSpace(err) {
+		return clientmsg.NoSpace, noSpaceErrorCode
 	}
 	log.Printf("scan commit failed: %s", err)
 	return inventory.InternalMessage, inventory.CodeInternal
