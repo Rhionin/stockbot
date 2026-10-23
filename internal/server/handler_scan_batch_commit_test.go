@@ -256,6 +256,95 @@ func TestScanBatchCommit(t *testing.T) {
 			},
 		},
 		{
+			name: "an update-only request reports an unknown id per item",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-upd-mix", "Update Peas")
+				insertPendingScanUnits(env, "scan-upd-a", "prod-upd-mix", scan.StockIn, 1)
+				insertPendingScanUnits(env, "scan-upd-b", "prod-upd-mix", scan.StockIn, 1)
+			},
+			httpExchange: httpExchange{
+				method: "POST",
+				path:   "/api/scans/batch-commit",
+				body:   `{"scanEntryIds":["scan-upd-a","missing-upd","scan-upd-b"],"direction":"stock_out","unitCount":3,"expiresAt":"2027-03-04T00:00:00Z","commit":false}`,
+				// A 500 here is the bug: the unknown id used to fail the whole update.
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.updatedCount", value: float64(3)},
+					{path: "$.committedIds", absent: true},
+					{path: "$.failedIds[0]", value: "missing-upd"},
+					{path: "$.failedReasons[0]", value: "This scan is no longer in the queue."},
+					{path: "$.failedCodes[0]", value: "scan_not_found"},
+					{path: "$.failedIds[1]", absent: true},
+					{path: "$.error", absent: true},
+				},
+				bodyExcludes: []string{"Something went wrong"},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					bodyContains:   []string{"scan-upd-a", "scan-upd-b"},
+					assertions: []assertion{
+						{path: "$[0].direction", value: "stock_out"},
+						{path: "$[0].unitCount", value: float64(3)},
+						{path: "$[0].expiresAt", value: "2027-03-04T00:00:00Z"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[1].direction", value: "stock_out"},
+						{path: "$[1].unitCount", value: float64(3)},
+						{path: "$[1].expiresAt", value: "2027-03-04T00:00:00Z"},
+						{path: "$[1].status", value: "pending"},
+						{path: "$[2]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$", value: []any{}}},
+				},
+			),
+		},
+		{
+			name: "expiresAt alone is applied on confirm",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-expiry", "Expiry Peas")
+				insertPendingScanUnits(env, "scan-expiry", "prod-expiry", scan.StockIn, 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-expiry"],"expiresAt":"2026-11-15T00:00:00Z","commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.updatedCount", value: float64(1)},
+					{path: "$.committedIds[0]", value: "scan-expiry"},
+					{path: "$.failedIds", absent: true},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(1)}},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "committed"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-expiry"},
+						{path: "$[0].unitCount", value: float64(1)},
+						{path: "$[0].expiresAt", value: "2026-11-15T00:00:00Z"},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
+		},
+		{
 			name: "scans that cannot commit stay on the queue",
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-gap", "Gap")

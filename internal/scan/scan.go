@@ -429,8 +429,9 @@ func (r *Queue) CommitScanEntry(ctx context.Context, id string) error {
 }
 
 // BatchUpdateScanEntries applies the same direction, unit_count, and expires_at
-// to multiple scan entries identified by their IDs. A committed scan is left
-// as it was: a retry must not rewrite the card that already committed.
+// to multiple scan entries identified by their IDs. A missing id is skipped so
+// the other ids still update. A committed scan is left as it was: a retry must
+// not rewrite the card that already committed.
 func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direction *ScanDirection, unitCount *int, expiresAt *time.Time) error {
 	if len(ids) == 0 {
 		return nil
@@ -447,7 +448,7 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 		var status string
 		err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("BatchUpdateScanEntries: scan entry %q not found", id)
+			continue
 		}
 		if err != nil {
 			return fmt.Errorf("BatchUpdateScanEntries: %w", err)

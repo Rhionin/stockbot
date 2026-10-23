@@ -1196,6 +1196,53 @@ func TestUpdateScanEntry_UnknownID_NoPublish(t *testing.T) {
 	}
 }
 
+func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
+	queue, _ := newTestQueue(t)
+	ctx := context.Background()
+	now := time.Now()
+	if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		ID: "scan-keep", UserID: "user-1", Barcode: "1",
+		ScannedAt: now, UnitCount: 1, Status: scan.Pending,
+	}); err != nil {
+		t.Fatalf("CreateScanEntry: %v", err)
+	}
+
+	broadcaster := &fakeBroadcaster{}
+	queue.Broadcaster = broadcaster
+	expires := time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)
+	count := 3
+	direction := scan.StockOut
+	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-upd", "scan-keep"}, &direction, &count, &expires); err != nil {
+		t.Fatalf("BatchUpdateScanEntries: %v", err)
+	}
+
+	got, err := queue.GetScanEntry(ctx, "scan-keep")
+	if err != nil {
+		t.Fatalf("GetScanEntry: %v", err)
+	}
+	if got == nil || got.Direction == nil || *got.Direction != scan.StockOut || got.UnitCount != 3 || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
+		t.Fatalf("known card = %+v", got)
+	}
+	missing, err := queue.GetScanEntry(ctx, "missing-upd")
+	if err != nil {
+		t.Fatalf("GetScanEntry missing: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("missing card = %+v", missing)
+	}
+	if len(broadcaster.scanEvents) != 1 || broadcaster.scanEvents[0].ID != "scan-keep" {
+		t.Fatalf("events = %+v", broadcaster.scanEvents)
+	}
+
+	broadcaster.scanEvents = nil
+	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-only"}, &direction, nil, nil); err != nil {
+		t.Fatalf("unknown-only batch: %v", err)
+	}
+	if len(broadcaster.scanEvents) != 0 {
+		t.Fatalf("unknown-only events = %+v", broadcaster.scanEvents)
+	}
+}
+
 func TestBatchUpdateScanEntries_PublishesScanEventPerEntry(t *testing.T) {
 	queue, _ := newTestQueue(t)
 	ctx := context.Background()
