@@ -255,9 +255,10 @@ describe('hosted API contract', () => {
     expect(doc).toContain('(d) On `:8081`, a request with no `X-Pantry-Entry` (`GET /api/telemetry`, `POST /api/telemetry/client`, and `GET /api/build`) is public.');
     expect(doc).toContain('(e) Startup with `APP_BASE_URL` set and the public listener disabled fails.');
     expect(doc).toContain('On routers without NAT hairpin, the certificate (non-tunnel) path can hang from home Wi-Fi (see the comments in `deploy/Caddyfile`).');
-    expect(doc).toContain('The client-facing type marks `entry` and `appBaseUrl` optional, because an older server omits them and the client falls back. The Go server always sends both fields.');
+    expect(doc).toContain('The client-facing type marks `entry` and `appBaseUrl` optional, because an older server omits them and the client falls back. The Go server always sends `entry`. It sends `appBaseUrl` only when `APP_BASE_URL` is set and omits the field otherwise (never an empty string), so a LAN-only server follows the absent-`appBaseUrl` rule.');
+    expect(doc).toContain('`appBaseUrl` is omitted when `APP_BASE_URL` is unset.');
+    expect(doc).not.toContain('The Go server always sends both fields.');
     expect(doc).toContain('The hosted push arm types `entry` as `\'public\'`.');
-    expect(doc).not.toContain('The Go server always sends `entry`.');
     expect(doc).toContain('Hosted `LiveConfig` sends `entry` `"public"` only.');
     expect(doc).not.toContain('Setup sets it when the person has exactly one household');
     expect(doc).not.toContain('signs them in, and sets `activeHouseholdId`');
