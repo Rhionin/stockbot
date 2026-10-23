@@ -478,6 +478,186 @@ func TestBatchCommitFieldsUnderLockStayPerItem(t *testing.T) {
 	}
 }
 
+func TestBatchCommitFieldsStopOnBusyWithoutReadingLaterItems(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(500)", nil)
+	mustProduct(env, "prod-field-lock", "Field Lock Peas")
+	insertPendingScanUnits(env, "scan-echo", "prod-field-lock", scan.StockIn, 1)
+	insertPendingScanUnits(env, "scan-a", "prod-field-lock", scan.StockIn, 1)
+	insertPendingScanUnits(env, "scan-b", "prod-field-lock", scan.StockIn, 1)
+	seed := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-echo"}))
+	if seed.code != http.StatusOK {
+		t.Fatalf("seed = %d %s", seed.code, seed.body)
+	}
+
+	ids := []string{"missing-field", "scan-a", "scan-echo", "scan-b"}
+	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	started := time.Now()
+	slogBuf.Reset()
+	res := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	elapsed := time.Since(started)
+	release()
+
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if len(body.CommittedIDs) != 0 || strings.Contains(res.body, "committedIds") {
+		t.Fatalf("committed = %v", body.CommittedIDs)
+	}
+	if !sameIDs(body.FailedIDs, ids) {
+		t.Fatalf("failed = %v", body.FailedIDs)
+	}
+	codes := map[string]string{}
+	for i, id := range body.FailedIDs {
+		codes[id] = body.FailedCodes[i]
+	}
+	if codes["missing-field"] != "scan_not_found" {
+		t.Fatalf("missing = %s", codes["missing-field"])
+	}
+	for _, id := range []string{"scan-a", "scan-echo", "scan-b"} {
+		if codes[id] != "busy" {
+			t.Fatalf("%s = %s", id, codes[id])
+		}
+	}
+	if elapsed >= 2*batchLockWait || strings.Count(slogBuf.String(), "msg=db_busy") != 1 {
+		t.Fatalf("elapsed %s log %s", elapsed, slogBuf.String())
+	}
+	rows := listedScans(t, handler, "pending")
+	if len(rows) != 2 {
+		t.Fatalf("pending = %+v", rows)
+	}
+	for _, row := range rows {
+		if row.UnitCount != 1 {
+			t.Fatalf("card changed under the lock: %+v", row)
+		}
+	}
+
+	slogBuf.Reset()
+	again := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	retried := decodeBatchCommit(t, again)
+	if !sameIDs(retried.CommittedIDs, []string{"scan-a", "scan-echo", "scan-b"}) {
+		t.Fatalf("retry committed = %v body %s", retried.CommittedIDs, again.body)
+	}
+	if len(retried.FailedIDs) != 1 || retried.FailedCodes[0] != "scan_not_found" {
+		t.Fatalf("retry failed = %v %v", retried.FailedIDs, retried.FailedCodes)
+	}
+	if got := inventoryUnits(t, handler); got != 9 {
+		t.Fatalf("inventory after retry = %d, want 9", got)
+	}
+	onceMore := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	repeated := decodeBatchCommit(t, onceMore)
+	if !sameIDs(repeated.CommittedIDs, []string{"scan-a", "scan-echo", "scan-b"}) || len(repeated.FailedIDs) != 1 {
+		t.Fatalf("second retry = %s", onceMore.body)
+	}
+	if got := inventoryUnits(t, handler); got != 9 {
+		t.Fatalf("inventory after a second retry = %d, want 9", got)
+	}
+	if strings.Contains(slogBuf.String(), "db_busy") {
+		t.Fatalf("retry logged db_busy: %s", slogBuf.String())
+	}
+}
+
+func TestBatchCommitFieldsStopOnNoSpaceWithoutReadingLaterItems(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	handler, env := setupTestWithDB(t)
+	mustProduct(env, "prod-field-full", "Field Full Peas")
+	insertPendingScanUnits(env, "scan-kept", "prod-field-full", scan.StockIn, 1)
+	insertPendingScanUnits(env, "scan-echo", "prod-field-full", scan.StockIn, 1)
+	insertPendingScanUnits(env, "scan-full", "prod-field-full", scan.StockIn, 1)
+	seed := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-kept", "scan-echo"}))
+	if seed.code != http.StatusOK {
+		t.Fatalf("seed = %d %s", seed.code, seed.body)
+	}
+	flagged := scan.Flagged
+	in := scan.StockIn
+	productID := "prod-field-full"
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		ID: "scan-flag", UserID: "user-1", Barcode: "scan-flag",
+		ScannedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
+	}); err != nil {
+		t.Fatalf("flagged scan: %v", err)
+	}
+	fillDatabase(t, env)
+	filled := inventoryUnits(t, handler)
+
+	slogBuf.Reset()
+	ids := []string{"scan-kept", "missing-field", "scan-full", "scan-echo", "scan-flag"}
+	res := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if !sameIDs(body.CommittedIDs, []string{"scan-kept"}) {
+		t.Fatalf("committed = %v", body.CommittedIDs)
+	}
+	codes := map[string]string{}
+	for i, id := range body.FailedIDs {
+		codes[id] = body.FailedCodes[i]
+	}
+	if codes["missing-field"] != "scan_not_found" {
+		t.Fatalf("missing = %s body %s", codes["missing-field"], res.body)
+	}
+	for _, id := range []string{"scan-full", "scan-echo", "scan-flag"} {
+		if codes[id] != "no_space" {
+			t.Fatalf("%s = %s", id, codes[id])
+		}
+	}
+	if strings.Count(slogBuf.String(), "msg=db_no_space") != 1 {
+		t.Fatalf("log lines = %q", slogBuf.String())
+	}
+	if got := inventoryUnits(t, handler); got != filled {
+		t.Fatalf("inventory = %d, want %d", got, filled)
+	}
+	assertFlagUnedited := func() {
+		t.Helper()
+		rows := listedScans(t, handler, "flagged")
+		if len(rows) != 1 || rows[0].ID != "scan-flag" || rows[0].UnitCount != 1 || rows[0].ExpiresAt != nil {
+			t.Fatalf("flagged card = %+v", rows)
+		}
+	}
+	assertFlagUnedited()
+
+	if _, err := env.DB.Exec(`PRAGMA max_page_count = 1073741823`); err != nil {
+		t.Fatalf("raise page limit: %v", err)
+	}
+	slogBuf.Reset()
+	again := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	retried := decodeBatchCommit(t, again)
+	if !sameIDs(retried.CommittedIDs, []string{"scan-kept", "scan-full", "scan-echo"}) {
+		t.Fatalf("retry committed = %v body %s", retried.CommittedIDs, again.body)
+	}
+	retryCodes := map[string]string{}
+	for i, id := range retried.FailedIDs {
+		retryCodes[id] = retried.FailedCodes[i]
+	}
+	if retryCodes["missing-field"] != "scan_not_found" || retryCodes["scan-flag"] != "not_pending" {
+		t.Fatalf("retry codes = %v", retryCodes)
+	}
+	if strings.Contains(slogBuf.String(), "db_no_space") {
+		t.Fatalf("retry logged no_space: %s", slogBuf.String())
+	}
+	if got := inventoryUnits(t, handler); got != filled+4 {
+		t.Fatalf("inventory after retry = %d, want %d", got, filled+4)
+	}
+	assertFlagUnedited()
+	onceMore := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	if got := inventoryUnits(t, handler); got != filled+4 {
+		t.Fatalf("inventory after a second retry = %d, want %d body %s", got, filled+4, onceMore.body)
+	}
+	assertFlagUnedited()
+}
+
 func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {
 	var slogBuf strings.Builder
 	old := slog.Default()
@@ -485,8 +665,9 @@ func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 
 	full := realDriverFull(t)
+	queue := &updateFailQueue{t: t, err: full}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: updateFailQueue{t: t, err: full}}).Handle))
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"scan-field-a", "scan-field-b"}
 	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
@@ -499,6 +680,206 @@ func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {
 	}
 	if strings.Contains(res.body, "committedIds") || strings.Count(slogBuf.String(), "msg=db_no_space") != 1 {
 		t.Fatalf("body %s\nlog %s", res.body, slogBuf.String())
+	}
+}
+
+func TestBatchCommitUpdateOnlyLockedDatabaseIsBusy(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(500)", nil)
+	mustProduct(env, "prod-upd-lock", "Update Lock Peas")
+	insertPendingScanUnits(env, "scan-upd-a", "prod-upd-lock", scan.StockIn, 1)
+	insertPendingScanUnits(env, "scan-upd-b", "prod-upd-lock", scan.StockIn, 1)
+
+	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
+	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
+	started := time.Now()
+	slogBuf.Reset()
+	res := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	elapsed := time.Since(started)
+	release()
+
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if body.UpdatedCount != len(ids) || !sameIDs(body.FailedIDs, ids) || len(body.CommittedIDs) != 0 {
+		t.Fatalf("body = %s", res.body)
+	}
+	if !allEqual(body.FailedCodes, "busy") || !allEqual(body.FailedReasons, clientmsg.Busy) {
+		t.Fatalf("codes = %v reasons = %v", body.FailedCodes, body.FailedReasons)
+	}
+	if elapsed < batchLockWait/2 || elapsed >= 2*batchLockWait {
+		t.Fatalf("elapsed %s", elapsed)
+	}
+	if strings.Count(slogBuf.String(), "msg=db_busy") != 1 {
+		t.Fatalf("db_busy lines = %q", slogBuf.String())
+	}
+	rows := listedScans(t, handler, "pending")
+	if len(rows) != 2 {
+		t.Fatalf("pending = %+v", rows)
+	}
+	for _, row := range rows {
+		if row.UnitCount != 1 || row.ExpiresAt != nil {
+			t.Fatalf("card changed under the lock: %+v", row)
+		}
+	}
+	if got := inventoryUnits(t, handler); got != 0 {
+		t.Fatalf("inventory = %d", got)
+	}
+
+	slogBuf.Reset()
+	again := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	retried := decodeBatchCommit(t, again)
+	if again.code != http.StatusOK || len(retried.CommittedIDs) != 0 {
+		t.Fatalf("retry = %d %s", again.code, again.body)
+	}
+	if len(retried.FailedIDs) != 1 || retried.FailedIDs[0] != "missing-upd" || retried.FailedCodes[0] != "scan_not_found" {
+		t.Fatalf("retry failed = %v %v", retried.FailedIDs, retried.FailedCodes)
+	}
+	updated := listedScans(t, handler, "pending")
+	if len(updated) != 2 {
+		t.Fatalf("pending after retry = %+v", updated)
+	}
+	for _, row := range updated {
+		if row.UnitCount != 4 || row.ExpiresAt == nil || *row.ExpiresAt != "2026-12-01T00:00:00Z" {
+			t.Fatalf("retry card = %+v", row)
+		}
+	}
+	if got := inventoryUnits(t, handler); got != 0 {
+		t.Fatalf("inventory after retry = %d", got)
+	}
+	onceMore := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	repeated := decodeBatchCommit(t, onceMore)
+	if len(repeated.FailedIDs) != 1 || repeated.FailedCodes[0] != "scan_not_found" {
+		t.Fatalf("second retry = %s", onceMore.body)
+	}
+	if got := inventoryUnits(t, handler); got != 0 {
+		t.Fatalf("inventory after a second retry = %d", got)
+	}
+	if strings.Contains(slogBuf.String(), "db_busy") {
+		t.Fatalf("retry logged db_busy: %s", slogBuf.String())
+	}
+}
+
+func TestBatchCommitUpdateOnlyFullDiskIsNoSpace(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	queue := &updateOnlyStorageQueue{t: t, err: realDriverFull(t)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
+	slogBuf.Reset()
+	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
+	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if body.UpdatedCount != len(ids) || !sameIDs(body.FailedIDs, ids) || !allEqual(body.FailedCodes, "no_space") || !allEqual(body.FailedReasons, clientmsg.NoSpace) {
+		t.Fatalf("body = %s", res.body)
+	}
+	if strings.Contains(res.body, "committedIds") || strings.Contains(res.body, "scan_not_found") || strings.Count(slogBuf.String(), "msg=db_no_space") != 1 {
+		t.Fatalf("body %s\nlog %s", res.body, slogBuf.String())
+	}
+	if queue.reads != 0 || queue.commits != 0 {
+		t.Fatalf("reads %d commits %d", queue.reads, queue.commits)
+	}
+}
+
+func TestBatchCommitUpdateOnlyReadBusyStopsEarly(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	queue := &updateOnlyReadQueue{t: t, err: realDriverBusy(t)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
+	slogBuf.Reset()
+	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
+	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if !sameIDs(body.FailedIDs, ids) || body.FailedCodes[0] != "scan_not_found" || body.FailedCodes[1] != "busy" || body.FailedCodes[2] != "busy" {
+		t.Fatalf("body = %s", res.body)
+	}
+	if body.FailedReasons[1] != clientmsg.Busy || strings.Count(slogBuf.String(), "msg=db_busy") != 1 {
+		t.Fatalf("reasons %v\nlog %s", body.FailedReasons, slogBuf.String())
+	}
+	if queue.reads != 2 {
+		t.Fatalf("reads %d", queue.reads)
+	}
+}
+
+func TestBatchCommitUpdateOnlyOtherErrorStays500(t *testing.T) {
+	queue := &updateOnlyStorageQueue{t: t, err: errors.New("disk melted")}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
+	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody([]string{"scan-upd-a"}))
+	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, clientmsg.Generic) {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if queue.reads != 0 {
+		t.Fatalf("reads %d", queue.reads)
+	}
+}
+
+func TestBatchCommitRereadAfterUpdateFailsPerItem(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	queue := &rereadQueue{t: t, readErr: errors.New("reread failed")}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
+	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if !sameIDs(body.FailedIDs, []string{"scan-reread", "scan-next"}) || body.FailedCodes[0] != "internal" || body.FailedReasons[0] != clientmsg.Generic || body.FailedCodes[1] != "not_pending" {
+		t.Fatalf("body = %s", res.body)
+	}
+	if queue.commits != 0 || queue.reads["scan-reread"] != 2 || queue.reads["scan-next"] != 1 {
+		t.Fatalf("commits %d reads %v", queue.commits, queue.reads)
+	}
+	if !strings.Contains(logs.String(), "scan commit failed") || strings.Contains(logs.String(), "scan-reread") {
+		t.Fatalf("log %q", logs.String())
+	}
+}
+
+func TestBatchCommitRereadFindsCardGone(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	queue := &rereadQueue{t: t, gone: true}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
+	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	body := decodeBatchCommit(t, res)
+	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
+		t.Fatalf("status %d %s", res.code, res.body)
+	}
+	if !sameIDs(body.FailedIDs, []string{"scan-reread", "scan-next"}) || body.FailedCodes[0] != "scan_not_found" || body.FailedReasons[0] != "This scan is no longer in the queue." || body.FailedCodes[1] != "not_pending" {
+		t.Fatalf("body = %s", res.body)
+	}
+	if queue.commits != 0 || queue.reads["scan-reread"] != 2 || queue.reads["scan-next"] != 1 {
+		t.Fatalf("commits %d reads %v", queue.commits, queue.reads)
+	}
+	if strings.Contains(logs.String(), "scan commit failed") {
+		t.Fatalf("log %q", logs.String())
 	}
 }
 
@@ -544,23 +925,134 @@ func (cancelQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (in
 }
 
 type updateFailQueue struct {
-	t   *testing.T
-	err error
+	t     *testing.T
+	err   error
+	reads int
 }
 
-func (q updateFailQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
-	q.t.Fatal("batch read an item after the update failed")
-	return nil, nil
+func (q *updateFailQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+	q.reads++
+	if q.reads > 1 {
+		q.t.Fatal("batch read an item after the update failed")
+	}
+	direction := scan.StockIn
+	productID := "prod-field"
+	return &scan.ScanEntry{
+		ID: "scan-field-a", Status: scan.Pending, Direction: &direction,
+		ProductID: &productID, UnitCount: 1,
+	}, nil
 }
-func (q updateFailQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q *updateFailQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return q.err
 }
-func (q updateFailQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+func (q *updateFailQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
 	q.t.Fatal("batch committed an item after the update failed")
 	return nil
 }
-func (q updateFailQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q *updateFailQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
 	q.t.Fatal("batch committed an item after the update failed")
+	return 0, nil
+}
+
+type updateOnlyStorageQueue struct {
+	t       *testing.T
+	err     error
+	reads   int
+	commits int
+}
+
+func (q *updateOnlyStorageQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+	q.reads++
+	q.t.Fatal("update-only read an item after the write failed")
+	return nil, nil
+}
+func (q *updateOnlyStorageQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+	return q.err
+}
+func (q *updateOnlyStorageQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+	q.commits++
+	q.t.Fatal("update-only committed an item")
+	return nil
+}
+func (q *updateOnlyStorageQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+	q.commits++
+	q.t.Fatal("update-only committed an item")
+	return 0, nil
+}
+
+type updateOnlyReadQueue struct {
+	t     *testing.T
+	err   error
+	reads int
+}
+
+func (q *updateOnlyReadQueue) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+	q.reads++
+	switch id {
+	case "missing-upd":
+		return nil, nil
+	case "scan-upd-a":
+		return nil, q.err
+	default:
+		q.t.Fatalf("read %s after the batch should have stopped", id)
+		return nil, nil
+	}
+}
+func (q *updateOnlyReadQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+	return nil
+}
+func (q *updateOnlyReadQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+	q.t.Fatal("update-only committed an item")
+	return nil
+}
+func (q *updateOnlyReadQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+	q.t.Fatal("update-only committed an item")
+	return 0, nil
+}
+
+type rereadQueue struct {
+	t       *testing.T
+	readErr error
+	gone    bool
+	reads   map[string]int
+	commits int
+}
+
+func (q *rereadQueue) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+	if q.reads == nil {
+		q.reads = map[string]int{}
+	}
+	q.reads[id]++
+	if id == "scan-reread" && q.reads[id] > 1 {
+		if q.readErr != nil {
+			return nil, q.readErr
+		}
+		if q.gone {
+			return nil, nil
+		}
+		q.t.Fatal("re-read had no failure to return")
+	}
+	if id == "scan-next" {
+		return &scan.ScanEntry{ID: id, Status: scan.Flagged}, nil
+	}
+	direction := scan.StockIn
+	productID := "prod-field"
+	return &scan.ScanEntry{
+		ID: id, Status: scan.Pending, Direction: &direction,
+		ProductID: &productID, UnitCount: 1,
+	}, nil
+}
+func (q *rereadQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+	return nil
+}
+func (q *rereadQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+	q.commits++
+	q.t.Fatal("batch committed an item after the re-read")
+	return nil
+}
+func (q *rereadQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+	q.commits++
+	q.t.Fatal("batch committed an item after the re-read")
 	return 0, nil
 }
 
@@ -578,6 +1070,14 @@ func batchCommitFieldsBody(ids []string) string {
 		quoted[i] = `"` + id + `"`
 	}
 	return `{"scanEntryIds":[` + strings.Join(quoted, ",") + `],"direction":"stock_in","unitCount":4,"expiresAt":"2026-12-01T00:00:00Z","commit":true}`
+}
+
+func batchCommitUpdateBody(ids []string) string {
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = `"` + id + `"`
+	}
+	return `{"scanEntryIds":[` + strings.Join(quoted, ",") + `],"direction":"stock_in","unitCount":4,"expiresAt":"2026-12-01T00:00:00Z","commit":false}`
 }
 
 func busyLogLine(t *testing.T, logged string) string {
@@ -621,6 +1121,7 @@ func listedScans(t *testing.T, handler http.Handler, status string) []struct {
 }
 
 type batchCommitBodyJSON struct {
+	UpdatedCount  int      `json:"updatedCount"`
 	CommittedIDs  []string `json:"committedIds"`
 	FailedIDs     []string `json:"failedIds"`
 	FailedReasons []string `json:"failedReasons"`
