@@ -503,15 +503,15 @@ func TestFailedRunDoesNotCountAsFresh(t *testing.T) {
 func TestIntegrityMismatchRowUploadsNothing(t *testing.T) {
 	path := fixtureDB(t)
 	store := newMemStore(time.Now)
+	setupDone := false
 	runner := &Runner{
 		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "manual",
 		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
 		AfterSnapshot: func(snap string) error {
 			db, err := openWritable(snap)
 			if err != nil {
-				return err
+				t.Fatal(err)
 			}
-			defer db.Close()
 			for _, query := range []string{
 				`CREATE TABLE idx_items (id INTEGER PRIMARY KEY, name TEXT)`,
 				`CREATE INDEX idx_items_name ON idx_items(name)`,
@@ -520,37 +520,51 @@ func TestIntegrityMismatchRowUploadsNothing(t *testing.T) {
 				`UPDATE sqlite_schema SET sql='CREATE INDEX idx_items_name ON idx_items(id)' WHERE name='idx_items_name'`,
 			} {
 				if _, err := db.Exec(query); err != nil {
-					return err
+					_ = db.Close()
+					t.Fatal(err)
 				}
 			}
-			// One indexed row makes integrity_check return a single non-ok
-			// line. A length check would still see one line, so only a
-			// comparison with "ok" refuses the snapshot.
-			rows, err := db.Query(`PRAGMA integrity_check`)
+			// The connection that wrote the schema still has the old index
+			// cached and reports ok. Close it and read the file back.
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			ro, err := openReadOnly(snap)
 			if err != nil {
-				return err
+				t.Fatal(err)
+			}
+			defer ro.Close()
+			rows, err := ro.Query(`PRAGMA integrity_check`)
+			if err != nil {
+				t.Fatal(err)
 			}
 			defer rows.Close()
 			var lines []string
 			for rows.Next() {
 				var line string
 				if err := rows.Scan(&line); err != nil {
-					return err
+					t.Fatal(err)
 				}
 				lines = append(lines, line)
 			}
 			if err := rows.Err(); err != nil {
-				return err
+				t.Fatal(err)
 			}
+			// One non-ok line. A length check still passes, so only
+			// lines[0] != "ok" on the snapshot path can refuse the upload.
 			if len(lines) != 1 || lines[0] == "ok" {
-				return errClass(ExitIntegrity, "integrity", "the integrity fixture did not return one non-ok row")
+				t.Fatalf("integrity fixture = %q", lines)
 			}
+			setupDone = true
 			return nil
 		},
 	}
 	_, err := runner.Run(context.Background())
-	if ExitCode(err) != ExitIntegrity {
-		t.Fatalf("err = %v code %d", err, ExitCode(err))
+	if !setupDone {
+		t.Fatal("integrity fixture did not finish")
+	}
+	if err == nil || ExitCode(err) != ExitIntegrity || !strings.Contains(err.Error(), "the snapshot failed the integrity check") {
+		t.Fatalf("snapshot path did not reject the upload: %v", err)
 	}
 	if store.putCount() != 0 {
 		t.Fatalf("uploaded %d objects", store.putCount())
@@ -760,6 +774,17 @@ func TestStaleBackup(t *testing.T) {
 	runner.Store = exact
 	if err := runner.CheckStale(context.Background()); err != nil {
 		t.Fatal("a backup exactly 26 hours old was treated as stale")
+	}
+
+	// 25 hours old on the server. The Pi clock is 2 hours fast, which would
+	// make this look 27 hours old if the stale check used the Pi.
+	server := now
+	skewed := newMemStore(func() time.Time { return server })
+	skewed.putAt("nightly/young.pantry.db.gz.age", []byte("young"), server.Add(-25*time.Hour))
+	skewed.putAt("nightly/young.manifest.json", []byte("{}"), server.Add(-25*time.Hour))
+	fast := &Runner{Store: skewed, Now: func() time.Time { return server.Add(2 * time.Hour) }}
+	if err := fast.CheckStale(context.Background()); err != nil {
+		t.Fatal("a 25 hour backup was stale because the Pi clock is 2 hours fast")
 	}
 }
 

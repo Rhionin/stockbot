@@ -173,6 +173,29 @@ grep -q '/fail' "$work/curl.log" || fail "invalid config secret did not ping hea
 rm -f "$work/pantry/backup/secrets-paths" "$work/pantry/.env" "$work/pantry/.env.bak" "$work/pantry/.env.example"
 rmdir "$work/pantry/not-a-file"
 
+for kind in symlink broken directory; do
+  rm -rf "$work/pantry/backup/secrets-paths"
+  case "$kind" in
+    symlink)
+      printf '%s\n' "/opt/pantry/auth.caddy" >"$work/real-list"
+      ln -s "$work/real-list" "$work/pantry/backup/secrets-paths"
+      ;;
+    broken)
+      ln -s "$work/missing-list" "$work/pantry/backup/secrets-paths"
+      ;;
+    directory)
+      mkdir "$work/pantry/backup/secrets-paths"
+      ;;
+  esac
+  : >"$work/docker.log"
+  : >"$work/curl.log"
+  rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
+  [[ "$rc" == 40 ]] || fail "$kind secrets list rc=$rc err=$(cat "$work/err")"
+  [[ ! -s "$work/docker.log" ]] || fail "$kind secrets list started a backup"
+  grep -q '/fail' "$work/curl.log" || fail "$kind secrets list did not ping healthchecks"
+done
+rm -rf "$work/pantry/backup/secrets-paths" "$work/real-list"
+
 : >"$work/docker.log"
 : >"$work/curl.log"
 exec 8>"$work/pantry/deploy-trigger/.lock"

@@ -111,14 +111,15 @@ do
   consider_secret "$path"
 done
 shopt -u nullglob
-if [[ -f "$PANTRY_DIR/backup/secrets-paths" ]]; then
-  if [[ -L "$PANTRY_DIR/backup/secrets-paths" ]]; then
-    refuse_secret "the secrets path list is a symlink"
+secrets_list="$PANTRY_DIR/backup/secrets-paths"
+if [[ -L "$secrets_list" || -e "$secrets_list" ]]; then
+  if [[ -L "$secrets_list" || ! -f "$secrets_list" ]]; then
+    refuse_secret "the secrets path list is not a regular file"
   fi
   while IFS= read -r path || [[ -n "$path" ]]; do
     [[ -z "$path" || "$path" == \#* ]] && continue
     consider_configured "$path"
-  done <"$PANTRY_DIR/backup/secrets-paths"
+  done <"$secrets_list"
 fi
 
 remove_secret_stage() {

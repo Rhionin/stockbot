@@ -347,11 +347,16 @@ func (r *Runner) rejectOverAge(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// CheckStale fails when the newest database backup is older than about 26
-// hours, or when any managed object is older than 15 days.
+// CheckStale fails when the newest database backup is older than 26 hours
+// on the backup server's clock, or when any managed object is older than
+// 15 days. The Pi clock is not used: a clock that is a couple of hours
+// fast must not treat a 25-hour-old backup as stale.
 func (r *Runner) CheckStale(ctx context.Context) error {
-	now := r.now()
 	newest, found, err := r.newestDatabase(ctx)
+	if err != nil {
+		return err
+	}
+	now, err := r.serverClock(ctx)
 	if err != nil {
 		return err
 	}
@@ -366,6 +371,25 @@ func (r *Runner) CheckStale(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// serverClock is the time R2 reported. The store learns it from a response
+// Date header, or a test double supplies it directly. The Pi clock is only
+// a fallback when the store has no server time at all.
+func (r *Runner) serverClock(ctx context.Context) (time.Time, error) {
+	type clock interface {
+		ServerNow(context.Context) (time.Time, error)
+	}
+	if src, ok := r.Store.(clock); ok {
+		server, err := src.ServerNow(ctx)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if !server.IsZero() {
+			return server, nil
+		}
+	}
+	return r.now(), nil
 }
 
 func (r *Runner) newestDatabase(ctx context.Context) (time.Time, bool, error) {

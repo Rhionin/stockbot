@@ -117,6 +117,17 @@ func (m *memStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+func (m *memStore) ServerNow(context.Context) (time.Time, error) {
+	if m.now == nil {
+		return time.Time{}, errClass(ExitSweep, "clock", "the backup server time is not known")
+	}
+	server := m.now()
+	if server.IsZero() {
+		return time.Time{}, errClass(ExitSweep, "clock", "the backup server time is not known")
+	}
+	return server, nil
+}
+
 func (m *memStore) putAt(key string, body []byte, at time.Time) {
 	sum := sha256.Sum256(body)
 	m.mu.Lock()

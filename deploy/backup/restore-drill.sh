@@ -51,16 +51,14 @@ for name, value in items:
 }
 
 refuse_identity_env() {
-  local line name value label refuse env_dump
-  env_dump=$(mktemp)
-  if ! env_records >"$env_dump"; then
-    rm -f "$env_dump"
-    echo "could not read the environment" >&2
-    exit 2
-  fi
+  local line name value label refuse saw pipe_rc
+  # Scan the environment in this process. Do not copy it into a file: a
+  # refused private key must not land on disk.
+  shopt -s lastpipe
   label=""
-  refuse=0
-  while IFS= read -r -d '' line || [[ -n "$line" ]]; do
+  saw=0
+  set +e
+  env_records | while IFS= read -r -d '' line || [[ -n "${line:-}" ]]; do
     [[ "$line" == *=* ]] || continue
     name=${line%%=*}
     value=${line#*=}
@@ -80,16 +78,24 @@ refuse_identity_env() {
         ;;
     esac
     if [[ "$refuse" -eq 1 ]]; then
+      saw=1
       break
     fi
-  done <"$env_dump"
-  rm -f "$env_dump"
-  if [[ "$refuse" -eq 1 ]]; then
+  done
+  # EOF makes the read loop exit 1. The producer's status is the failure.
+  pipe_rc=${PIPESTATUS[0]}
+  set -e
+  shopt -u lastpipe
+  if [[ "$saw" -eq 1 ]]; then
     if [[ -n "$label" ]]; then
       echo "refusing to read a private key from the environment variable $label" >&2
     else
       echo "refusing to read a private key from an environment variable" >&2
     fi
+    exit 2
+  fi
+  if [[ "$pipe_rc" -ne 0 ]]; then
+    echo "could not read the environment" >&2
     exit 2
   fi
 }

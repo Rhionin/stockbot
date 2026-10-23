@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -22,6 +23,37 @@ import (
 type S3Store struct {
 	client *s3.Client
 	bucket string
+	clock  *responseClock
+}
+
+// responseClock records the Date header from R2. That is the server time
+// the stale check uses, not the Pi clock.
+type responseClock struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	at   time.Time
+}
+
+func (c *responseClock) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := c.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		if server, perr := http.ParseTime(resp.Header.Get("Date")); perr == nil {
+			c.mu.Lock()
+			c.at = server.UTC()
+			c.mu.Unlock()
+		}
+	}
+	return resp, err
+}
+
+func (c *responseClock) time() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
 }
 
 // NewS3Store builds a path-style client. endpoint is the R2 or test URL.
@@ -35,18 +67,42 @@ func NewS3Store(endpoint, bucket, accessKey, secret string, httpClient *http.Cli
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 2 * time.Minute}
 	}
+	// Copy the client so the caller's transport, including http.DefaultClient,
+	// is not replaced.
+	cloned := *httpClient
+	clock := &responseClock{base: cloned.Transport}
+	cloned.Transport = clock
 	client := s3.New(s3.Options{
 		Region:       "auto",
 		BaseEndpoint: aws.String(endpoint),
 		UsePathStyle: true,
 		Credentials:  credentials.NewStaticCredentialsProvider(accessKey, secret, ""),
-		HTTPClient:   httpClient,
+		HTTPClient:   &cloned,
 		// Only checksums this client sets explicitly. The default chain would
 		// also read environment credentials; this provider does not.
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	})
-	return &S3Store{client: client, bucket: bucket}, nil
+	return &S3Store{client: client, bucket: bucket, clock: clock}, nil
+}
+
+// ServerNow is the Date header from the latest R2 response. A list or head
+// in this process records it. The Pi clock is not consulted.
+func (s *S3Store) ServerNow(ctx context.Context) (time.Time, error) {
+	if s.clock != nil {
+		if server := s.clock.time(); !server.IsZero() {
+			return server, nil
+		}
+	}
+	if _, err := s.List(ctx, "nightly/"); err != nil {
+		return time.Time{}, err
+	}
+	if s.clock != nil {
+		if server := s.clock.time(); !server.IsZero() {
+			return server, nil
+		}
+	}
+	return time.Time{}, errClass(ExitSweep, "clock", "the backup server did not report a time")
 }
 
 func (s *S3Store) Put(ctx context.Context, up Upload) error {

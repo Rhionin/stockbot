@@ -52,8 +52,10 @@ the sweep, a clock that is too far from R2, a delete that did not
 succeed, the stale check, and prune. The job still sends a failure ping
 and exits non-zero. A failure before that verification deletes the
 objects from that run, so an incomplete upload does not count as a fresh
-backup. `stockbot-backup stale` exits non-zero when the newest
-manifest-backed database backup is older than 26 hours. An object
+backup. `stockbot-backup stale` uses the backup server's clock. It
+exits non-zero when the newest manifest-backed database backup is older
+than 26 hours there. A backup that is 25 hours old stays fresh when the
+Pi clock is 2 hours fast. An object
 exactly 14 days old is kept; one a second older is deleted. The same
 strict instant applies at 15 days and at 26 hours.
 
