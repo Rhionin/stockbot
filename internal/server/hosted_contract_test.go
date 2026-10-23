@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
@@ -165,8 +164,11 @@ func TestHostedAPIContract(t *testing.T) {
 	}
 
 	existing := existingContractSentences()
-	if existing["internal"] != clientmsg.ServerError {
-		t.Fatalf("internal sentence %q is not clientmsg.ServerError %q", existing["internal"], clientmsg.ServerError)
+	// Master names this clientmsg.Generic. The branch base still calls it ServerError.
+	// Pin the sentence so the test compiles against either tree.
+	const genericServerSentence = "Something went wrong. Try again."
+	if existing["internal"] != genericServerSentence {
+		t.Fatalf("internal sentence %q is not %q", existing["internal"], genericServerSentence)
 	}
 	if strings.Contains(doc, "proposed, PM to confirm") {
 		t.Fatal("a sentence is still marked proposed, PM to confirm")
@@ -198,8 +200,8 @@ func TestHostedAPIContract(t *testing.T) {
 	if !strings.Contains(doc, generic) {
 		t.Fatal("generic sentence line missing")
 	}
-	if !strings.Contains(generic, clientmsg.ServerError) {
-		t.Fatalf("generic sentence does not match %q", clientmsg.ServerError)
+	if !strings.Contains(generic, genericServerSentence) {
+		t.Fatalf("generic sentence does not match %q", genericServerSentence)
 	}
 
 	const tenant = "tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token, except the householdId body on POST /api/auth/session/household, which sets the session's active household after a membership check; nothing else selects a tenant."
