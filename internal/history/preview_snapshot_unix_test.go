@@ -4,6 +4,7 @@ package history
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -94,7 +95,10 @@ func previewLockHeld(t *testing.T, dir string) bool {
 	}
 	defer file.Close()
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return true
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return true
+		}
+		t.Fatalf("lock preview: %v", err)
 	}
 	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 	return false

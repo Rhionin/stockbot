@@ -410,8 +410,6 @@ func TestBackupStopsWhenTheRequestContextIsCanceled(t *testing.T) {
 	if steps != 1 || !errors.Is(err, context.Canceled) {
 		t.Fatalf("steps = %d, err = %v", steps, err)
 	}
-	previewEachStep = nil
-	previewBackupPages = previousPages
 	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}
