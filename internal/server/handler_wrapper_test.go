@@ -15,16 +15,19 @@ func TestWrappedHandlerGenericServerError(t *testing.T) {
 		name   string
 		err    error
 		status int
+		body   string
 	}{
 		{
 			name:   "plain error",
 			err:    errors.New("sql: database is locked"),
-			status: http.StatusInternalServerError,
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":"Stockbot is busy right now. Try again in a moment.","code":"busy"}`,
 		},
 		{
 			name:   "bad gateway",
 			err:    BadGateway("could not refresh product from Open Food Facts"),
 			status: http.StatusBadGateway,
+			body:   `{"error":"Something went wrong. Try again."}`,
 		},
 	}
 	for _, tc := range cases {
@@ -39,7 +42,7 @@ func TestWrappedHandlerGenericServerError(t *testing.T) {
 			if rec.Code != tc.status {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 			}
-			if rec.Body.String() != `{"error":"Something went wrong. Try again."}` {
+			if rec.Body.String() != tc.body {
 				t.Fatalf("body = %s", rec.Body.String())
 			}
 		})

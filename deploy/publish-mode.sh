@@ -185,20 +185,11 @@ drop_stale_cloudflared() {
   remove_project_container "$cloud_name" >/dev/null
 }
 
-# grocy_compose_suffix prints the extra compose arguments that start
-# grocy-sync. All three values have to be set. An empty result leaves the
-# sidecar out, including on a LAN install that has never used Grocy.
+# grocy_compose_suffix prints no compose arguments. grocy-sync is profile
+# grocy-sync in docker-compose.grocy.yml. Setup and the update timer must
+# not select that profile, and must not select profile grocy expecting the
+# sidecar to come along. The compose file is still copied into PANTRY_DIR.
+# The sidecar volume is left in place.
 grocy_compose_suffix() {
-  local url key token
-  url=$(publish_env_value GROCY_URL)
-  key=$(publish_env_value GROCY_API_KEY)
-  token=$(publish_env_value PANTRY_SYNC_TOKEN)
-  if [[ -z "$url" || -z "$key" || -z "$token" ]]; then
-    return 0
-  fi
-  if [[ ! -f "${PANTRY_DIR}/docker-compose.grocy.yml" ]]; then
-    echo "GROCY_URL is set but ${PANTRY_DIR}/docker-compose.grocy.yml is missing; leaving grocy-sync stopped." >&2
-    return 0
-  fi
-  printf '%s\n' -f "${PANTRY_DIR}/docker-compose.grocy.yml" --profile grocy
+  return 0
 }

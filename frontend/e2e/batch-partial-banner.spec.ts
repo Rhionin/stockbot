@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const shotDir = process.env.BATCH_BANNER_SHOTS
@@ -64,12 +64,43 @@ const seedStockOuts = async (
   })
 }
 
+const batchCommitResponse = (page: Page) => page.waitForResponse((response) => {
+  return response.url().includes('/api/scans/batch-commit') && response.request().method() === 'POST'
+})
+
+// A cancel publishes a scan event, and the queue clears the partial line when
+// any scan event arrives. That event has to land before the batch body, or the
+// line is gone by the time the banner is checked.
+const clearCommittedScans = async (
+  page: Page,
+  route: Route,
+  scans: KnownScan[],
+  committedIds: readonly unknown[],
+) => {
+  const dropping = scans.filter((scan) => committedIds.includes(scan.id))
+  for (const scan of dropping) {
+    const cancelled = await route.fetch({
+      url: new URL(`/api/scans/${scan.id}`, route.request().url()).toString(),
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      postData: JSON.stringify({ status: 'cancelled' }),
+    })
+    if (!cancelled.ok()) throw new Error(`could not clear scan ${scan.id}`)
+  }
+  for (const scan of dropping) {
+    await page.waitForFunction((barcode) => {
+      return [...document.querySelectorAll('article')].every((article) => article.getAttribute('aria-label') !== `Scan ${barcode}`)
+    }, scan.barcode)
+  }
+}
+
 const confirmBatch = async (
   page: Page,
   scans: KnownScan[],
   fulfill: (ids: Map<string, string>) => Record<string, unknown>,
 ) => {
   const ids = new Map(scans.map((scan) => [scan.barcode, scan.id]))
+  const outcome = batchCommitResponse(page)
   await page.route('**/api/scans/batch-commit', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.continue()
@@ -77,16 +108,7 @@ const confirmBatch = async (
     }
     const body = fulfill(ids)
     const committed = Array.isArray(body.committedIds) ? body.committedIds : []
-    for (const id of committed) {
-      if (typeof id !== 'string') continue
-      const cancelled = await route.fetch({
-        url: new URL(`/api/scans/${id}`, route.request().url()).toString(),
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        postData: JSON.stringify({ status: 'cancelled' }),
-      })
-      if (!cancelled.ok()) throw new Error(`could not clear scan ${id}`)
-    }
+    await clearCommittedScans(page, route, scans, committed)
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -98,6 +120,7 @@ const confirmBatch = async (
     await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
   }
   await page.getByRole('button', { name: `Confirm ${scans.length} selected scans` }).click()
+  await outcome
 }
 
 const fitsInViewport = async (locator: Locator) => {
@@ -210,18 +233,13 @@ for (const viewport of viewports) {
     const miss = scans[1]
     if (chips === undefined || miss === undefined) throw new Error('missing seeded scans')
     try {
+      const outcome = batchCommitResponse(page)
       await page.route('**/api/scans/batch-commit', async (route) => {
         if (route.request().method() !== 'POST') {
           await route.continue()
           return
         }
-        const cancelled = await route.fetch({
-          url: new URL(`/api/scans/${chips.id}`, route.request().url()).toString(),
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          postData: JSON.stringify({ status: 'cancelled' }),
-        })
-        if (!cancelled.ok()) throw new Error(`could not clear scan ${chips.id}`)
+        await clearCommittedScans(page, route, scans, [chips.id])
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -242,6 +260,7 @@ for (const viewport of viewports) {
         await card.getByRole('checkbox', { name: 'Select scan for batch approval' }).check()
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
+      await outcome
       await expectFailureWithPartial(page, wasLine)
       const missed = page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })
       await expect(missed).toContainText(instanceGone)
@@ -329,8 +348,8 @@ test.describe('batch banner screenshots', () => {
             [full.id]: { removedCount: 2, requestedCount: 2 },
           },
         }))
-        await expectNoBatchBanner(page)
         await expect(page.getByText(failureNote)).toBeVisible()
+        await expectNoBatchBanner(page)
         await expect(page.getByText(wasLine)).toHaveCount(0)
         await expect(page.getByText(manyLine)).toHaveCount(0)
         await saveShot(page, `${shotDir}/banner_none_${viewport.width}_${scheme}.png`)
