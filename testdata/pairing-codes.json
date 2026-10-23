@@ -13,6 +13,8 @@
   {"input": "\ufeffSBP-0123-ABCD-G", "normalized": null, "looksLike": false, "pairing": false, "gtin": false},
   {"input": "SBP-0123-ABCD-G\ufeff", "normalized": null, "looksLike": false, "pairing": false, "gtin": false},
   {"input": " \ufeffSBP-0123-ABCD-G ", "normalized": null, "looksLike": false, "pairing": false, "gtin": false},
+  {"input": "\u00a0SBP-0123-ABCD-G", "normalized": null, "looksLike": false, "pairing": false, "gtin": false},
+  {"input": "SBP-0123-ABCD-G\u00a0", "normalized": null, "looksLike": false, "pairing": false, "gtin": false},
   {"input": "SBP-0123ABCD-G", "normalized": "SBP-0123ABCD-G", "looksLike": false, "pairing": false, "gtin": false},
   {"input": "SBP-0U23-ABCD-G", "normalized": "SBP-0U23-ABCD-G", "looksLike": false, "pairing": false, "gtin": false},
   {"input": "SBP-0123-ABCD-0", "normalized": "SBP-0123-ABCD-0", "looksLike": true, "pairing": false, "gtin": false},

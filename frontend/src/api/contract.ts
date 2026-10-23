@@ -796,6 +796,7 @@ export type LiveConfig =
       minClientVersion: { expo: string };
       householdPasswordSignIn: boolean;
       appBaseUrl: string;
+      entry: 'lan' | 'public';
     }
   | {
       live: 'push';
@@ -803,6 +804,7 @@ export type LiveConfig =
       minClientVersion: { expo: string };
       householdPasswordSignIn: boolean;
       appBaseUrl: string;
+      entry: 'lan' | 'public';
     };
 
 export interface LiveTicket {

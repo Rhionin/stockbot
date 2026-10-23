@@ -249,7 +249,9 @@ func TestHostedAPIContract(t *testing.T) {
 		"CLIENT_HEADER",
 		"reset_expired",
 		"operator-only on the public entry",
-		"On the LAN it stays open, with no session.",
+		"On the LAN, `GET /api/telemetry` is open only while the household password is on.",
+		"After retirement it follows the LAN `401` rule.",
+		"The LAN response never includes the changeover counts.",
 		"Any `X-Stockbot-Client` value that does not start with `expo/` is web too, the same as a missing header, so there is no version gate.",
 		"The same `426` applies when that Basic request carries a value that does not start with `expo/`.",
 		"S6 (#379) must run the production classifier in `internal/scan/qr.go` against `testdata/pairing-codes.json`.",
@@ -261,7 +263,8 @@ func TestHostedAPIContract(t *testing.T) {
 		"testdata/pairing-codes.json",
 		"When two requests use the same invite, the loser gets `invite_expired`.",
 		"The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling",
-		"GET redirects to sign-in and POST returns `not_found`, except in recover mode",
+		"On success, and on a GET after the first account exists, they send the user to sign-in at `APP_BASE_URL` (a link or a 302).",
+		"Setup and recover mode create the operator as owner of household 1 and set no session.",
 		"householdPasswordEnabled: boolean",
 		"clientmsg.Generic",
 		`"householdPasswordSignIn": boolean`,
@@ -274,14 +277,22 @@ func TestHostedAPIContract(t *testing.T) {
 		"Session cookies are never set and never honored on the LAN.",
 		"lan-client: Expo must use `appBaseUrl` for personal sign-in. LAN URLs are unsupported for people after retirement. Clients never show Sign in on a LAN URL.",
 		`"appBaseUrl": string`,
-		"The 11th stream is `429` `rate_limited`.",
+		"The 11th stream is `429` `rate_limited`, with `Retry-After` in seconds.",
 		"When the stream errors, the client refetches `GET /api/auth/session`.",
 		"only that person's sessions whose active household was the removed one have `activeHouseholdId` set to null",
 		"Accept returns `token` only when `account` is sent.",
 		"household-start: A person who is already signed in starts another household here, with `inviteCode`.",
 		"A missing part compares as 0, so `1.0` equals `1.0.0`.",
 		"A new Expo build sends `X-Stockbot-Client` on every request, including `GET /api/events`.",
-		"expo-401: Expo clears its stored `sbs_` token on any `401`, except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, `POST /api/invites/accept`, and `POST /setup`.",
+		"expo-401: Expo clears its stored `sbs_` token on any `401`, except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, and `POST /api/invites/accept`.",
+		"Sign in at `appBaseUrl`.",
+		"per source IP: 10 per IP, and the 11th from that IP is `429` `rate_limited`",
+		"includes `Retry-After` in seconds, like the other `rate_limited` responses.",
+		"Keeps working on the LAN, where hubs pair against `http://pi:8080`.",
+		"Clients use `entry` as the exact signal.",
+		"Dev and test servers must set `APP_BASE_URL`, or dev builds would point at prod.",
+		"While the household password is on, Expo on a LAN URL may keep using the shared household-1 access, and should offer to move to `appBaseUrl`.",
+		`"entry": "lan" | "public"`,
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)
@@ -289,6 +300,17 @@ func TestHostedAPIContract(t *testing.T) {
 	}
 	if strings.Contains(doc, "clientmsg.ServerError") {
 		t.Fatal("generic 5xx sentence still names clientmsg.ServerError")
+	}
+	for _, gone := range []string{
+		"On the LAN it stays open, with no session.",
+		"Setup sets it when the person has exactly one household",
+		"signs them in, and sets `activeHouseholdId`",
+		"`POST /api/invites/accept`, and `POST /setup`",
+		"Sign-in is required",
+	} {
+		if strings.Contains(doc, gone) {
+			t.Fatalf("contract still says %q", gone)
+		}
 	}
 }
 
@@ -437,5 +459,22 @@ func TestPairingCodeFixture(t *testing.T) {
 		if (isPairingCode(vector.Input) || looksLikePairingCode(vector.Input)) && isProductBarcode(vector.Input) {
 			t.Fatalf("%q is both a pairing code and a product barcode", vector.Input)
 		}
+	}
+	sawNBSP := false
+	for _, vector := range vectors {
+		if !strings.ContainsRune(vector.Input, '\u00a0') {
+			continue
+		}
+		sawNBSP = true
+		got, ok := normalizePairingCode(vector.Input)
+		if ok {
+			t.Fatalf("U+00A0 pad %q normalized to %q", vector.Input, got)
+		}
+		if vector.Normalized != nil || vector.LooksLike || vector.Pairing || vector.GTIN {
+			t.Fatalf("U+00A0 pad %q must be rejected", vector.Input)
+		}
+	}
+	if !sawNBSP {
+		t.Fatal("pairing fixture has no U+00A0 row")
 	}
 }

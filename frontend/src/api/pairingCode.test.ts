@@ -32,6 +32,12 @@ describe('pairing codes', () => {
       expect(isPairingCode(vector.input) && isProductBarcode(vector.input), vector.input).toBe(false);
       expect(looksLikePairingCode(vector.input) && isProductBarcode(vector.input), vector.input).toBe(false);
     }
+    const nbsp = vectors.filter((vector) => vector.input.includes('\u00a0'));
+    expect(nbsp.length).toBeGreaterThan(0);
+    for (const vector of nbsp) {
+      expect(vector.normalized).toBeNull();
+      expect(normalizePairingCode(vector.input)).toBeNull();
+    }
   });
 
   it('formats a payload to the known answer SBP-0123-ABCD-G', () => {
