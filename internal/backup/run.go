@@ -18,6 +18,10 @@ const (
 	retentionAge = 14 * 24 * time.Hour
 	overAgeLimit = 15 * 24 * time.Hour
 	staleAfter   = 26 * time.Hour
+	// maxClockSkew is how far the Pi clock may drift from R2 before a sweep
+	// is refused. The Pi has no RTC. A clock that is days fast would treat a
+	// backup that was just uploaded as already expired.
+	maxClockSkew = 12 * time.Hour
 )
 
 // Runner performs one backup or a stale check.
@@ -43,13 +47,21 @@ type Runner struct {
 	HealthURL         string
 	Health            HealthPinger
 	AfterSnapshot     func(path string) error
+
+	// uploaded is the objects this run has verified. A later failure deletes
+	// them so an incomplete run is not a fresh backup.
+	uploaded []string
 }
 
 // Run snapshots, verifies, encrypts, uploads, sweeps, and checks freshness.
 func (r *Runner) Run(ctx context.Context) (Manifest, error) {
+	r.uploaded = nil
 	started := r.now()
 	manifest, err := r.run(ctx, started)
 	if err != nil {
+		// The ciphertext may already be in R2. Remove it so this run does
+		// not reset the freshness check.
+		r.deleteUploaded(ctx)
 		r.ping(ctx, false, "class="+AlertClass(err))
 		return Manifest{}, err
 	}
@@ -111,13 +123,13 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	// Drop the plaintext as soon as the ciphertext exists. The deferred
-	// cleanup is the backstop when this line is not reached.
-	_ = os.Remove(snap)
 
 	if err := r.putVerified(ctx, dataKey, body, sum); err != nil {
 		return Manifest{}, err
 	}
+	// The plaintext stays until the upload's size and sha256 match.
+	// The deferred cleanup removes it when verification does not succeed.
+	_ = os.Remove(snap)
 
 	manifest := Manifest{
 		ObjectKey:        dataKey,
@@ -149,7 +161,7 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	if err := r.archiveSecrets(ctx, started); err != nil {
 		return Manifest{}, err
 	}
-	if err := r.sweep(ctx); err != nil {
+	if err := r.sweep(ctx, r.uploaded); err != nil {
 		return Manifest{}, err
 	}
 	if err := r.CheckStale(ctx); err != nil {
@@ -214,35 +226,100 @@ func (r *Runner) putOnce(ctx context.Context, key string, body, sum []byte) erro
 		_ = r.Store.Delete(ctx, key)
 		return errClass(ExitUpload, "upload", "the uploaded backup did not match its size and sha256")
 	}
+	r.uploaded = append(r.uploaded, key)
 	return nil
 }
 
-func (r *Runner) sweep(ctx context.Context) error {
-	now := r.now()
-	cutoff := now.Add(-retentionAge)
+func (r *Runner) deleteUploaded(ctx context.Context) {
+	if r.Store == nil {
+		return
+	}
+	for _, key := range r.uploaded {
+		_ = r.Store.Delete(ctx, key)
+	}
+	r.uploaded = nil
+}
+
+// sweep deletes managed objects older than 14 days. uploaded are the objects
+// this run just verified; they are kept even when the Pi clock is wrong.
+// The cutoff is R2's LastModified of those objects, not the Pi clock. A large
+// skew refuses the sweep and deletes nothing.
+func (r *Runner) sweep(ctx context.Context, uploaded []string) error {
+	serverNow, err := r.backupServerTime(ctx, uploaded)
+	if err != nil {
+		return err
+	}
+	skew := serverNow.Sub(r.now())
+	if skew < 0 {
+		skew = -skew
+	}
+	if skew > maxClockSkew {
+		return errClass(ExitSweep, "clock", "the clock is too far from the backup server")
+	}
+	objs, err := r.listManaged(ctx, managedPrefixes)
+	if err != nil {
+		return err
+	}
+	keep := map[string]struct{}{}
+	for _, key := range uploaded {
+		keep[key] = struct{}{}
+	}
+	for _, key := range newestDatabaseKeys(objs) {
+		keep[key] = struct{}{}
+	}
+	cutoff := serverNow.Add(-retentionAge)
 	failed := false
-	for _, prefix := range managedPrefixes {
-		objs, err := r.Store.List(ctx, prefix)
-		if err != nil {
-			return err
+	for _, obj := range objs {
+		if _, protected := keep[obj.Key]; protected {
+			continue
 		}
-		for _, obj := range objs {
-			if obj.LastModified.IsZero() || !obj.LastModified.Before(cutoff) {
-				continue
-			}
-			if err := r.Store.Delete(ctx, obj.Key); err != nil {
-				failed = true
-				log.Printf("backup sweep: could not delete an expired object")
-			}
+		if obj.LastModified.IsZero() || !obj.LastModified.Before(cutoff) {
+			continue
+		}
+		if err := r.Store.Delete(ctx, obj.Key); err != nil {
+			failed = true
+			log.Printf("backup sweep: could not delete an expired object")
 		}
 	}
-	if err := r.rejectOverAge(ctx, now); err != nil {
+	if err := r.rejectOverAge(ctx, serverNow); err != nil {
 		return err
 	}
 	if failed {
 		return errClass(ExitSweep, "sweep", "could not delete an expired backup")
 	}
 	return nil
+}
+
+func (r *Runner) backupServerTime(ctx context.Context, uploaded []string) (time.Time, error) {
+	if len(uploaded) == 0 {
+		return time.Time{}, errClass(ExitSweep, "clock", "the backup server time is not known")
+	}
+	var server time.Time
+	for _, key := range uploaded {
+		info, err := r.Store.Head(ctx, key)
+		if err != nil {
+			return time.Time{}, errWrap(ExitSweep, "clock", "could not read the backup server time", err)
+		}
+		if info.LastModified.After(server) {
+			server = info.LastModified
+		}
+	}
+	if server.IsZero() {
+		return time.Time{}, errClass(ExitSweep, "clock", "the backup server did not report a time")
+	}
+	return server, nil
+}
+
+func (r *Runner) listManaged(ctx context.Context, prefixes []string) ([]ObjectInfo, error) {
+	var all []ObjectInfo
+	for _, prefix := range prefixes {
+		objs, err := r.Store.List(ctx, prefix)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, objs...)
+	}
+	return all, nil
 }
 
 func (r *Runner) rejectOverAge(ctx context.Context, now time.Time) error {
@@ -283,24 +360,71 @@ func (r *Runner) CheckStale(ctx context.Context) error {
 }
 
 func (r *Runner) newestDatabase(ctx context.Context) (time.Time, bool, error) {
-	var newest time.Time
+	objs, err := r.listManaged(ctx, []string{"nightly/", "manual/"})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	best, ok := selectNewestVerified(objs)
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	return best.LastModified, true, nil
+}
+
+// selectNewestVerified picks the newest database object that has its manifest.
+// An upload that stopped before the manifest is not a successful backup.
+func selectNewestVerified(objs []ObjectInfo) (ObjectInfo, bool) {
+	present := make(map[string]struct{}, len(objs))
+	for _, obj := range objs {
+		present[obj.Key] = struct{}{}
+	}
+	var best ObjectInfo
 	found := false
-	for _, prefix := range []string{"nightly/", "manual/"} {
-		objs, err := r.Store.List(ctx, prefix)
-		if err != nil {
-			return time.Time{}, false, err
+	for _, obj := range objs {
+		if !verifiedDatabase(obj.Key, present) {
+			continue
 		}
-		for _, obj := range objs {
-			if !isDatabaseObject(obj.Key) {
-				continue
-			}
-			if !found || obj.LastModified.After(newest) {
-				newest = obj.LastModified
-				found = true
-			}
+		if !found || obj.LastModified.After(best.LastModified) {
+			best = obj
+			found = true
 		}
 	}
-	return newest, found, nil
+	return best, found
+}
+
+func verifiedDatabase(key string, present map[string]struct{}) bool {
+	if !isDatabaseObject(key) {
+		return false
+	}
+	mkey, err := manifestKeyFor(key)
+	if err != nil {
+		return false
+	}
+	_, ok := present[mkey]
+	return ok
+}
+
+// newestDatabaseKeys are the newest database objects. The sweep never deletes
+// them, even when they are the only copy and it is older than 14 days.
+func newestDatabaseKeys(objs []ObjectInfo) []string {
+	var newest time.Time
+	var keys []string
+	found := false
+	for _, obj := range objs {
+		if !isDatabaseObject(obj.Key) {
+			continue
+		}
+		if !found || obj.LastModified.After(newest) {
+			newest = obj.LastModified
+			keys = []string{obj.Key}
+			found = true
+			continue
+		}
+		if obj.LastModified.Equal(newest) {
+			keys = append(keys, obj.Key)
+		}
+	}
+	return keys
 }
 
 func isDatabaseObject(key string) bool {

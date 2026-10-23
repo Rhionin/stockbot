@@ -46,7 +46,7 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	db := fs.String("db", "", "pantry database path")
-	stage := fs.String("stage", "/stage", "tmpfs staging directory")
+	stage := fs.String("stage", DefaultStageDir, "tmpfs staging directory")
 	reason := fs.String("reason", "nightly", "nightly, manual, pre-deploy, or drill")
 	secrets := fs.String("secrets", "/run/secrets/backup/r2.env", "settings file")
 	recipients := fs.String("recipients", "/etc/backup/recipients", "age public keys")

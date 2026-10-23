@@ -98,6 +98,58 @@ func TestS3HeadMismatchFailsTheRun(t *testing.T) {
 	}
 }
 
+func TestS3PutRetriesServiceUnavailable(t *testing.T) {
+	fake := newFakeS3()
+	fake.putStatusLeft = 1
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	store, err := NewS3Store(srv.URL, "pantry-pi-backups", "FILEKEY123", "file-secret-value", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("age-encryption.org/v1\nretry")
+	sum := sha256.Sum256(body)
+	if err := store.Put(context.Background(), Upload{
+		Key: "nightly/retry.pantry.db.gz.age", Body: bytes.NewReader(body), Size: int64(len(body)), SHA256: sum[:],
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.putCalls < 2 {
+		t.Fatalf("put calls = %d", fake.putCalls)
+	}
+}
+
+func TestS3SHAMismatchDeletesAndHeadErrorDeletes(t *testing.T) {
+	run := func(t *testing.T, tweak func(*fakeS3)) {
+		t.Helper()
+		fake := newFakeS3()
+		tweak(fake)
+		srv := httptest.NewServer(fake)
+		defer srv.Close()
+		store, err := NewS3Store(srv.URL, "pantry-pi-backups", "FILEKEY123", "file-secret-value", srv.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		runner := &Runner{
+			DBPath: fixtureDB(t), StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+			Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+			UploadRetries: 1, UploadRetryWait: time.Millisecond,
+		}
+		_, err = runner.Run(context.Background())
+		if ExitCode(err) != ExitUpload {
+			t.Fatalf("err = %v", err)
+		}
+		if fake.deletes == 0 {
+			t.Fatal("object was not deleted")
+		}
+		if len(fake.objs) != 0 {
+			t.Fatalf("objects left: %d", len(fake.objs))
+		}
+	}
+	run(t, func(fake *fakeS3) { fake.badSHA = true })
+	run(t, func(fake *fakeS3) { fake.headStatus = http.StatusForbidden })
+}
+
 func TestS3SweepAndStale(t *testing.T) {
 	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
 	fake := newFakeS3()
@@ -119,20 +171,29 @@ func TestS3SweepAndStale(t *testing.T) {
 		}
 		fake.modified[key] = at
 	}
+	const just = "nightly/just.pantry.db.gz.age"
+	put(just, now)
+	put("nightly/just.manifest.json", now)
 	put("nightly/fresh.pantry.db.gz.age", now.Add(-2*time.Hour))
+	put("nightly/fresh.manifest.json", now.Add(-2*time.Hour))
 	put("nightly/expired.pantry.db.gz.age", now.Add(-14*24*time.Hour-time.Hour))
 	put("secrets/expired.tar.age", now.Add(-20*24*time.Hour))
 	runner := &Runner{Store: store, Now: func() time.Time { return now }}
-	if err := runner.sweep(ctx); err != nil {
+	if err := runner.sweep(ctx, []string{just}); err != nil {
 		t.Fatal(err)
 	}
 	left, err := store.List(ctx, "nightly/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(left) != 1 || left[0].Key != "nightly/fresh.pantry.db.gz.age" {
+	kept := map[string]bool{}
+	for _, obj := range left {
+		kept[obj.Key] = true
+	}
+	if !kept[just] || !kept["nightly/fresh.pantry.db.gz.age"] || kept["nightly/expired.pantry.db.gz.age"] {
 		t.Fatalf("left = %+v", left)
 	}
+	fake.modified[just] = now.Add(-27 * time.Hour)
 	fake.modified["nightly/fresh.pantry.db.gz.age"] = now.Add(-27 * time.Hour)
 	if err := runner.CheckStale(ctx); ExitCode(err) != ExitSweep {
 		t.Fatalf("stale err = %v", err)
@@ -140,7 +201,9 @@ func TestS3SweepAndStale(t *testing.T) {
 	fake.modified["secrets/stuck.tar.age"] = now.Add(-16 * 24 * time.Hour)
 	fake.objs["secrets/stuck.tar.age"] = fakeObj{body: []byte("x"), at: now.Add(-16 * 24 * time.Hour)}
 	fake.failDelete["secrets/stuck.tar.age"] = true
-	if err := runner.sweep(ctx); ExitCode(err) != ExitSweep {
+	fake.modified[just] = now
+	err = runner.sweep(ctx, []string{just})
+	if ExitCode(err) != ExitSweep || !strings.Contains(err.Error(), "15 days") {
 		t.Fatalf("over-age err = %v", err)
 	}
 }
@@ -152,16 +215,20 @@ type fakeObj struct {
 }
 
 type fakeS3 struct {
-	mu         sync.Mutex
-	objs       map[string]fakeObj
-	modified   map[string]time.Time
-	failDelete map[string]bool
-	checksum   string
-	auth       string
-	headers    http.Header
-	badHead    bool
-	deletes    int
-	now        time.Time
+	mu            sync.Mutex
+	objs          map[string]fakeObj
+	modified      map[string]time.Time
+	failDelete    map[string]bool
+	checksum      string
+	auth          string
+	headers       http.Header
+	badHead       bool
+	badSHA        bool
+	headStatus    int
+	putStatusLeft int
+	putCalls      int
+	deletes       int
+	now           time.Time
 }
 
 func newFakeS3() *fakeS3 {
@@ -206,6 +273,17 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeS3) put(w http.ResponseWriter, r *http.Request, key string) {
+	f.mu.Lock()
+	f.putCalls++
+	left := f.putStatusLeft
+	if left > 0 {
+		f.putStatusLeft--
+	}
+	f.mu.Unlock()
+	if left > 0 {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read", http.StatusBadRequest)
@@ -239,15 +317,24 @@ func (f *fakeS3) head(w http.ResponseWriter, key string) {
 	f.mu.Lock()
 	obj, ok := f.objs[key]
 	bad := f.badHead
+	badSHA := f.badSHA
+	status := f.headStatus
 	f.mu.Unlock()
+	if status != 0 {
+		http.Error(w, "unavailable", status)
+		return
+	}
 	if !ok {
 		http.NotFound(w, nil)
 		return
 	}
 	size := len(obj.body)
-	sum := obj.sum
+	sum := append([]byte(nil), obj.sum...)
 	if bad {
 		size++
+	}
+	if badSHA && len(sum) > 0 {
+		sum[0] ^= 0xff
 	}
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
 	w.Header().Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(sum))

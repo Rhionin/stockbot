@@ -41,23 +41,15 @@ func Fetch(store ObjectStore, objectKey, outPath, manifestOut string) error {
 }
 
 func newestKey(ctx context.Context, store ObjectStore) (string, error) {
-	var best ObjectInfo
-	found := false
+	var all []ObjectInfo
 	for _, prefix := range []string{"nightly/", "manual/"} {
 		objs, err := store.List(ctx, prefix)
 		if err != nil {
 			return "", err
 		}
-		for _, obj := range objs {
-			if !isDatabaseObject(obj.Key) {
-				continue
-			}
-			if !found || obj.LastModified.After(best.LastModified) {
-				best = obj
-				found = true
-			}
-		}
+		all = append(all, objs...)
 	}
+	best, found := selectNewestVerified(all)
 	if !found {
 		return "", errClass(ExitPreflight, "preflight", "there is no backup to download")
 	}

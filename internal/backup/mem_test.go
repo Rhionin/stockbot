@@ -19,13 +19,18 @@ type memObj struct {
 }
 
 type memStore struct {
-	mu           sync.Mutex
-	objs         map[string]memObj
-	order        []string
-	headMismatch bool
-	failDelete   map[string]bool
-	deletes      int
-	now          func() time.Time
+	mu              sync.Mutex
+	objs            map[string]memObj
+	order           []string
+	headMismatch    bool
+	shaMismatch     bool
+	failHead        bool
+	failPutContains string
+	failPutLeft     int
+	putAttempts     int
+	failDelete      map[string]bool
+	deletes         int
+	now             func() time.Time
 }
 
 func newMemStore(now func() time.Time) *memStore {
@@ -46,6 +51,14 @@ func (m *memStore) Put(_ context.Context, up Upload) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.putAttempts++
+	if m.failPutLeft > 0 {
+		m.failPutLeft--
+		return errClass(ExitUpload, "upload", "could not upload the backup")
+	}
+	if m.failPutContains != "" && strings.Contains(up.Key, m.failPutContains) {
+		return errClass(ExitUpload, "upload", "could not upload the backup")
+	}
 	m.objs[up.Key] = memObj{body: body, sum: sum[:], at: m.now()}
 	m.order = append(m.order, up.Key)
 	return nil
@@ -58,9 +71,15 @@ func (m *memStore) Head(_ context.Context, key string) (ObjectInfo, error) {
 	if !ok {
 		return ObjectInfo{}, errClass(ExitUpload, "upload", "the uploaded backup is missing")
 	}
+	if m.failHead {
+		return ObjectInfo{}, errClass(ExitUpload, "upload", "could not verify the uploaded backup")
+	}
 	info := ObjectInfo{Key: key, Size: int64(len(obj.body)), LastModified: obj.at, SHA256: append([]byte(nil), obj.sum...)}
 	if m.headMismatch {
 		info.Size++
+	}
+	if m.shaMismatch && len(info.SHA256) > 0 {
+		info.SHA256[0] ^= 0xff
 	}
 	return info, nil
 }

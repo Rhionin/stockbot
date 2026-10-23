@@ -14,8 +14,8 @@ import (
 )
 
 func TestChooseStageFitsInTmpfs(t *testing.T) {
-	plan := ChooseStage("/data/pantry.db", "/stage", 1000, 2500)
-	if plan.Kind != "tmpfs" || plan.Dir != "/stage" || plan.RemoveDir {
+	plan := ChooseStage("/data/pantry.db", DefaultStageDir, 1000, 2500)
+	if plan.Kind != "tmpfs" || plan.Dir != DefaultStageDir || plan.RemoveDir {
 		t.Fatalf("plan = %+v", plan)
 	}
 	if StageNeed(1000) != 2500 {
@@ -24,12 +24,12 @@ func TestChooseStageFitsInTmpfs(t *testing.T) {
 }
 
 func TestChooseStageUsesVolumeWhenHeadroomDoesNotFit(t *testing.T) {
-	plan := ChooseStage("/data/pantry.db", "/stage", 1000, 2499)
+	plan := ChooseStage("/data/pantry.db", DefaultStageDir, 1000, 2499)
 	if plan.Kind != "volume" || plan.Dir != "/data/.backup-staging" || !plan.RemoveDir {
 		t.Fatalf("plan = %+v", plan)
 	}
 	// Equal to the limit still fits.
-	if got := ChooseStage("/data/pantry.db", "/stage", 1000, 2500); got.Kind != "tmpfs" {
+	if got := ChooseStage("/data/pantry.db", DefaultStageDir, 1000, 2500); got.Kind != "tmpfs" {
 		t.Fatalf("boundary = %+v", got)
 	}
 	if got := ChooseStage("/data/pantry.db", "", 1, 1<<30); got.Kind != "volume" {
@@ -412,38 +412,284 @@ func TestHeadMismatchFailsAndDeletes(t *testing.T) {
 	}
 }
 
+func TestHeadSHAMismatchDeletesWithoutSizeChange(t *testing.T) {
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	store.shaMismatch = true
+	runner := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+		UploadRetries: 1, UploadRetryWait: time.Millisecond,
+	}
+	_, err := runner.Run(context.Background())
+	if ExitCode(err) != ExitUpload {
+		t.Fatalf("err = %v", err)
+	}
+	if store.deleteCount() == 0 {
+		t.Fatal("sha256 mismatch was not deleted")
+	}
+	for _, key := range store.keys() {
+		if strings.HasSuffix(key, ".pantry.db.gz.age") {
+			t.Fatalf("sha256 mismatch left %s", key)
+		}
+	}
+}
+
+func TestHeadErrorDeletesTheObject(t *testing.T) {
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	store.failHead = true
+	runner := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+		UploadRetries: 1, UploadRetryWait: time.Millisecond,
+	}
+	_, err := runner.Run(context.Background())
+	if ExitCode(err) != ExitUpload {
+		t.Fatalf("err = %v", err)
+	}
+	if store.deleteCount() == 0 {
+		t.Fatal("object was kept after a HEAD error")
+	}
+	if len(store.keys()) != 0 {
+		t.Fatalf("objects left after HEAD error: %v", store.keys())
+	}
+}
+
+func TestUploadRetriesThenSucceeds(t *testing.T) {
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	store.failPutLeft = 2
+	runner := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+		UploadRetries: 3, UploadRetryWait: time.Millisecond,
+	}
+	if _, err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.putAttempts < 3 {
+		t.Fatalf("put attempts = %d", store.putAttempts)
+	}
+}
+
+func TestFailedRunDoesNotCountAsFresh(t *testing.T) {
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	store.failPutContains = ".manifest.json"
+	runner := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+		UploadRetries: 1, UploadRetryWait: time.Millisecond,
+	}
+	_, err := runner.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected the manifest upload to fail")
+	}
+	for _, key := range store.keys() {
+		if strings.Contains(key, "pantry.db") || strings.HasSuffix(key, ".manifest.json") {
+			t.Fatalf("failed run left %s", key)
+		}
+	}
+	if ExitCode(runner.CheckStale(context.Background())) != ExitSweep {
+		t.Fatal("failed run counted as a fresh backup")
+	}
+	store.putAt("nightly/orphan.pantry.db.gz.age", []byte("orphan"), time.Now())
+	if _, err := newestKey(context.Background(), store); err == nil {
+		t.Fatal("a backup without a manifest was selected")
+	}
+}
+
+func TestIntegrityMismatchRowUploadsNothing(t *testing.T) {
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	runner := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "manual",
+		Recipients: mustRecipient(t), Store: store, BusyTimeout: time.Second,
+		AfterSnapshot: func(snap string) error {
+			db, err := openWritable(snap)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			for _, query := range []string{
+				`CREATE TABLE idx_items (id INTEGER PRIMARY KEY, name TEXT)`,
+				`CREATE INDEX idx_items_name ON idx_items(name)`,
+				`INSERT INTO idx_items (name) VALUES ('a'), ('b')`,
+				`PRAGMA writable_schema=ON`,
+				`UPDATE sqlite_schema SET sql='CREATE INDEX idx_items_name ON idx_items(id)' WHERE name='idx_items_name'`,
+			} {
+				if _, err := db.Exec(query); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	_, err := runner.Run(context.Background())
+	if ExitCode(err) != ExitIntegrity {
+		t.Fatalf("err = %v code %d", err, ExitCode(err))
+	}
+	if store.putCount() != 0 {
+		t.Fatalf("uploaded %d objects", store.putCount())
+	}
+}
+
+func TestStartupCleansLeftoverStage(t *testing.T) {
+	path := fixtureDB(t)
+	stage := t.TempDir()
+	leftover := filepath.Join(stage, "leftover.db")
+	if err := os.WriteFile(leftover, []byte("plaintext-leftover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	runner := &Runner{
+		DBPath: path, StageDir: stage, TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: mustRecipient(t), Store: newMemStore(time.Now), BusyTimeout: time.Second,
+		AfterSnapshot: func(string) error {
+			seen = true
+			if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+				t.Fatalf("tmpfs leftover was still present: %v", err)
+			}
+			return nil
+		},
+	}
+	if _, err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Fatal("snapshot hook did not run")
+	}
+
+	volume := filepath.Join(filepath.Dir(path), ".backup-staging")
+	if err := os.MkdirAll(volume, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	volLeft := filepath.Join(volume, "leftover.db")
+	if err := os.WriteFile(volLeft, []byte("plaintext-leftover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen = false
+	runner.TmpfsLimit = 1
+	runner.Store = newMemStore(time.Now)
+	runner.AfterSnapshot = func(string) error {
+		seen = true
+		if _, err := os.Stat(volLeft); !os.IsNotExist(err) {
+			t.Fatalf("volume leftover was still present: %v", err)
+		}
+		return nil
+	}
+	if _, err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Fatal("volume snapshot hook did not run")
+	}
+}
+
 func TestSweepDeletesOnlyExpired(t *testing.T) {
 	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
 	store := newMemStore(func() time.Time { return now })
+	const just = "nightly/just.pantry.db.gz.age"
+	store.putAt(just, []byte("new"), now)
+	store.putAt("nightly/just.manifest.json", []byte("{}"), now)
 	store.putAt("nightly/fresh.pantry.db.gz.age", []byte("a"), now.Add(-13*24*time.Hour))
-	store.putAt("nightly/old.pantry.db.gz.age", []byte("b"), now.Add(-14*24*time.Hour-time.Hour))
+	store.putAt("nightly/edge-keep.pantry.db.gz.age", []byte("k"), now.Add(-retentionAge))
+	store.putAt("nightly/edge-drop.pantry.db.gz.age", []byte("d"), now.Add(-retentionAge-time.Second))
 	store.putAt("secrets/old.tar.age", []byte("c"), now.Add(-20*24*time.Hour))
-	store.putAt("manual/keep.manual.pantry.db.gz.age", []byte("d"), now.Add(-time.Hour))
+	store.putAt("secrets/edge-keep.tar.age", []byte("e"), now.Add(-retentionAge))
+	store.putAt("manual/keep.manual.pantry.db.gz.age", []byte("m"), now.Add(-time.Hour))
 	runner := &Runner{Store: store, Now: func() time.Time { return now }}
-	if err := runner.sweep(context.Background()); err != nil {
+	if err := runner.sweep(context.Background(), []string{just}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.objs["nightly/fresh.pantry.db.gz.age"]; !ok {
-		t.Fatal("fresh backup deleted")
+	for _, key := range []string{just, "nightly/fresh.pantry.db.gz.age", "nightly/edge-keep.pantry.db.gz.age", "manual/keep.manual.pantry.db.gz.age", "secrets/edge-keep.tar.age"} {
+		if _, ok := store.objs[key]; !ok {
+			t.Fatalf("kept object deleted: %s", key)
+		}
 	}
-	if _, ok := store.objs["manual/keep.manual.pantry.db.gz.age"]; !ok {
-		t.Fatal("recent manual backup deleted")
-	}
-	if _, ok := store.objs["nightly/old.pantry.db.gz.age"]; ok {
-		t.Fatal("14 day backup remains")
+	if _, ok := store.objs["nightly/edge-drop.pantry.db.gz.age"]; ok {
+		t.Fatal("object one second past 14 days remains")
 	}
 	if _, ok := store.objs["secrets/old.tar.age"]; ok {
 		t.Fatal("old secrets object remains")
 	}
 }
 
+func TestSweepKeepsNewestAndRefusesSkewedClock(t *testing.T) {
+	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	store := newMemStore(func() time.Time { return now })
+	const only = "nightly/only.pantry.db.gz.age"
+	const just = "secrets/just.tar.age"
+	store.putAt(just, []byte("s"), now)
+	store.putAt(only, []byte("db"), now.Add(-20*24*time.Hour))
+	store.putAt("nightly/only.manifest.json", []byte("{}"), now.Add(-20*24*time.Hour))
+	runner := &Runner{Store: store, Now: func() time.Time { return now }}
+	err := runner.sweep(context.Background(), []string{just})
+	if ExitCode(err) != ExitSweep || !strings.Contains(err.Error(), "15 days") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := store.objs[only]; !ok {
+		t.Fatal("newest database backup was deleted")
+	}
+	if _, ok := store.objs[just]; !ok {
+		t.Fatal("object just uploaded was deleted")
+	}
+
+	skewed := newMemStore(func() time.Time { return now })
+	const uploaded = "nightly/uploaded.pantry.db.gz.age"
+	skewed.putAt(uploaded, []byte("u"), now)
+	skewed.putAt("nightly/uploaded.manifest.json", []byte("{}"), now)
+	skewed.putAt("nightly/ancient.pantry.db.gz.age", []byte("a"), now.Add(-30*24*time.Hour))
+	fast := &Runner{Store: skewed, Now: func() time.Time { return now.Add(14 * 24 * time.Hour) }}
+	err = fast.sweep(context.Background(), []string{uploaded})
+	if ExitCode(err) != ExitSweep || AlertClass(err) != "clock" {
+		t.Fatalf("skew err = %v class %s", err, AlertClass(err))
+	}
+	if skewed.deleteCount() != 0 {
+		t.Fatal("skewed clock deleted objects")
+	}
+	if _, ok := skewed.objs[uploaded]; !ok {
+		t.Fatal("uploaded object was deleted when the clock was fast")
+	}
+	if _, ok := skewed.objs["nightly/ancient.pantry.db.gz.age"]; !ok {
+		t.Fatal("older backup was deleted when the clock was fast")
+	}
+}
+
+func TestOverAgeBoundary(t *testing.T) {
+	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	const just = "nightly/just.pantry.db.gz.age"
+	exact := newMemStore(func() time.Time { return now })
+	exact.putAt(just, []byte("j"), now)
+	const edge = "secrets/edge.tar.age"
+	exact.putAt(edge, []byte("e"), now.Add(-overAgeLimit))
+	exact.failDelete[edge] = true
+	runner := &Runner{Store: exact, Now: func() time.Time { return now }}
+	err := runner.sweep(context.Background(), []string{just})
+	if err == nil || strings.Contains(err.Error(), "15 days") {
+		t.Fatalf("exactly 15 days was treated as over-age: %v", err)
+	}
+	late := newMemStore(func() time.Time { return now })
+	late.putAt(just, []byte("j"), now)
+	late.putAt(edge, []byte("e"), now.Add(-overAgeLimit-time.Second))
+	late.failDelete[edge] = true
+	runner.Store = late
+	err = runner.sweep(context.Background(), []string{just})
+	if ExitCode(err) != ExitSweep || !strings.Contains(err.Error(), "15 days") {
+		t.Fatalf("one second past 15 days: %v", err)
+	}
+}
+
 func TestOverAgeRemainsExit30(t *testing.T) {
 	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
 	store := newMemStore(func() time.Time { return now })
+	const just = "nightly/just.pantry.db.gz.age"
+	store.putAt(just, []byte("new"), now)
 	store.putAt("nightly/stuck.pantry.db.gz.age", []byte("a"), now.Add(-16*24*time.Hour))
 	store.failDelete["nightly/stuck.pantry.db.gz.age"] = true
 	runner := &Runner{Store: store, Now: func() time.Time { return now }}
-	err := runner.sweep(context.Background())
+	err := runner.sweep(context.Background(), []string{just})
 	if ExitCode(err) != ExitSweep {
 		t.Fatalf("err = %v", err)
 	}
@@ -452,7 +698,13 @@ func TestOverAgeRemainsExit30(t *testing.T) {
 func TestStaleBackup(t *testing.T) {
 	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
 	store := newMemStore(func() time.Time { return now })
-	store.putAt("nightly/old.pantry.db.gz.age", []byte("a"), now.Add(-27*time.Hour))
+	putBackup := func(name string, at time.Time, manifest bool) {
+		store.putAt("nightly/"+name+".pantry.db.gz.age", []byte(name), at)
+		if manifest {
+			store.putAt("nightly/"+name+".manifest.json", []byte("{}"), at)
+		}
+	}
+	putBackup("old", now.Add(-27*time.Hour), true)
 	pings := &recordPinger{}
 	runner := &Runner{Store: store, Now: func() time.Time { return now }, HealthURL: "https://hc.example/ping", Health: pings}
 	err := runner.CheckStale(context.Background())
@@ -463,7 +715,20 @@ func TestStaleBackup(t *testing.T) {
 	if !pings.failed {
 		t.Fatal("stale check did not hit the failure hook")
 	}
-	store.putAt("nightly/new.pantry.db.gz.age", []byte("b"), now.Add(-time.Hour))
+	putBackup("orphan", now.Add(-time.Hour), false)
+	if err := runner.CheckStale(context.Background()); ExitCode(err) != ExitSweep {
+		t.Fatal("a backup without a manifest counted as fresh")
+	}
+	orphanOnly := newMemStore(func() time.Time { return now })
+	orphanOnly.putAt("nightly/orphan.pantry.db.gz.age", []byte("o"), now.Add(-time.Hour))
+	if _, err := newestKey(context.Background(), orphanOnly); err == nil {
+		t.Fatal("fetch selected a backup that has no manifest")
+	}
+	putBackup("edge-stale", now.Add(-staleAfter-time.Second), true)
+	if err := runner.CheckStale(context.Background()); ExitCode(err) != ExitSweep {
+		t.Fatal("a backup one second past 26 hours counted as fresh")
+	}
+	putBackup("edge-fresh", now.Add(-staleAfter+time.Second), true)
 	if err := runner.CheckStale(context.Background()); err != nil {
 		t.Fatal(err)
 	}

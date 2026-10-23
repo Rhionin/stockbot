@@ -3,8 +3,11 @@
 # It does not run on the pantry Pi, a shared machine, or an agent.
 # It does not read the live database and it does not change the Pi.
 #
-# The age identity file is an argument. A private key in an environment
-# variable is refused, and the variable's value is not printed.
+# The age identity is --identity FILE, or --paste-identity, which reads the
+# key into a tmpfs scratch file and deletes that copy when the drill ends.
+# A private key in an environment variable is refused. Only a variable name
+# that is a shell identifier is printed. An identity file outside the scratch
+# directory is not deleted.
 #
 #   deploy/backup/restore-drill.sh --identity /path/to/age-identity.txt \
 #       --file snapshot.pantry.db.gz.age --manifest-file snapshot.manifest.json
@@ -15,36 +18,66 @@
 set -euo pipefail
 
 echo "This restore drill runs only on CJ's own computer."
-echo "It does not run on the pantry Pi, a shared machine, or an agent."
+echo "It does not run on the pantry Pi or on a shared agent box."
 echo "It does not read the live database and it does not change the Pi."
 
+pi_marker="${PANTRY_DRILL_PI_MARKER:-/opt/pantry/docker-compose.yml}"
+if [[ -e "$pi_marker" ]]; then
+  echo "refusing to run on the pantry Pi" >&2
+  exit 2
+fi
+
+env_records() {
+  # GNU env -0 keeps a multi-line value on one record. macOS env has no -0.
+  if env -0 >/dev/null 2>&1; then
+    env -0
+    return
+  fi
+  python3 -c 'import os, sys
+for name, value in os.environ.items():
+    sys.stdout.buffer.write(name.encode() + b"=" + value.encode() + b"\0")'
+}
+
 refuse_identity_env() {
-  local line name value
-  while IFS= read -r line; do
+  local line name value label refuse
+  while IFS= read -r -d '' line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || continue
     name=${line%%=*}
     value=${line#*=}
+    label=""
+    if [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      label=$name
+    fi
+    refuse=0
     case "$name" in
       AGE_IDENTITY|AGE_IDENTITY_FILE|BACKUP_AGE_IDENTITY|BACKUP_IDENTITY|SOPS_AGE_KEY|SOPS_AGE_KEY_FILE)
-        echo "refusing to read a private key from the environment variable $name" >&2
-        exit 2
+        refuse=1
         ;;
     esac
-    case "$value" in
+    case "$name$value" in
       *AGE-SECRET-KEY-*)
-        echo "refusing to read a private key from the environment variable $name" >&2
-        exit 2
+        refuse=1
         ;;
     esac
-  done < <(env)
+    if [[ "$refuse" -eq 1 ]]; then
+      if [[ -n "$label" ]]; then
+        echo "refusing to read a private key from the environment variable $label" >&2
+      else
+        echo "refusing to read a private key from an environment variable" >&2
+      fi
+      exit 2
+    fi
+  done < <(env_records)
 }
 refuse_identity_env
 
 usage() {
-  echo "usage: restore-drill.sh --identity FILE (--bucket-dir DIR | --file CIPHER --manifest-file MANIFEST) [--secrets] [--object KEY]" >&2
+  echo "usage: restore-drill.sh (--identity FILE | --paste-identity) (--bucket-dir DIR | --file CIPHER --manifest-file MANIFEST) [--secrets] [--object KEY]" >&2
   exit 2
 }
 
 identity=""
+paste_identity=0
 bucket_dir=""
 cipher_file=""
 manifest_file=""
@@ -55,6 +88,10 @@ while [[ $# -gt 0 ]]; do
     --identity)
       identity="${2:-}"
       shift 2
+      ;;
+    --paste-identity)
+      paste_identity=1
+      shift
       ;;
     --bucket-dir)
       bucket_dir="${2:-}"
@@ -86,9 +123,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$identity" ]]; then
-  echo "the age identity file path is required (--identity)" >&2
+if [[ -z "$identity" && "$paste_identity" -eq 0 ]]; then
+  echo "the age identity file path is required (--identity or --paste-identity)" >&2
   usage
+fi
+if [[ -n "$identity" && "$paste_identity" -eq 1 ]]; then
+  echo "pass either --identity or --paste-identity" >&2
+  exit 2
 fi
 
 reject_pi_path() {
@@ -101,7 +142,9 @@ reject_pi_path() {
   esac
 }
 
-reject_pi_path "$identity" "the age identity file"
+if [[ -n "$identity" ]]; then
+  reject_pi_path "$identity" "the age identity file"
+fi
 if [[ -n "$bucket_dir" ]]; then
   reject_pi_path "$bucket_dir" "the bucket directory"
 fi
@@ -109,12 +152,68 @@ if [[ -n "$cipher_file" ]]; then
   reject_pi_path "$cipher_file" "the backup file"
 fi
 
-if [[ ! -f "$identity" ]]; then
-  echo "the age identity file is missing" >&2
-  exit 2
+if [[ -z "$cipher_file" && -z "$bucket_dir" ]]; then
+  echo "pass --file and --manifest-file, or --bucket-dir" >&2
+  usage
 fi
-identity=$(readlink -f "$identity" 2>/dev/null || realpath "$identity")
-reject_pi_path "$identity" "the age identity file"
+
+started=$SECONDS
+scratch_parent="${TMPDIR:-/tmp}"
+if [[ -d /dev/shm && -w /dev/shm ]]; then
+  scratch_parent=/dev/shm
+fi
+scratch=$(mktemp -d "$scratch_parent/pantry-restore-drill.XXXXXX")
+chmod 0700 "$scratch"
+cleanup() {
+  if [[ "$paste_identity" -eq 1 && -n "${identity:-}" && -f "$identity" ]]; then
+    case "$identity" in
+      "$scratch"/*)
+        if command -v shred >/dev/null 2>&1; then
+          shred -u "$identity" 2>/dev/null || rm -f "$identity"
+        else
+          rm -f "$identity"
+        fi
+        ;;
+    esac
+  fi
+  rm -rf "$scratch"
+}
+trap cleanup EXIT INT TERM
+
+if [[ "$paste_identity" -eq 1 ]]; then
+  identity="$scratch/age-identity.txt"
+  echo "Paste the age identity, then end input." >&2
+  saved_stty=""
+  if [[ -t 0 ]]; then
+    saved_stty=$(stty -g)
+    stty -echo
+  fi
+  set +e
+  cat >"$identity"
+  paste_status=$?
+  set -e
+  if [[ -n "$saved_stty" ]]; then
+    stty "$saved_stty"
+  fi
+  if [[ "$paste_status" -ne 0 ]]; then
+    echo "could not read the pasted age identity" >&2
+    exit 2
+  fi
+  chmod 0600 "$identity"
+else
+  if [[ ! -f "$identity" ]]; then
+    echo "the age identity file is missing" >&2
+    exit 2
+  fi
+  identity=$(readlink -f "$identity" 2>/dev/null || realpath "$identity")
+  reject_pi_path "$identity" "the age identity file"
+  case "$identity" in
+    "$scratch"|"$scratch"/*)
+      echo "the age identity file must not live in the scratch directory" >&2
+      exit 2
+      ;;
+  esac
+fi
 if [[ ! -f "$identity" ]]; then
   echo "the age identity file is missing" >&2
   exit 2
@@ -131,32 +230,6 @@ if ! grep -q 'AGE-SECRET-KEY-' "$identity"; then
   echo "the identity file is not an age identity" >&2
   exit 2
 fi
-
-if [[ -z "$cipher_file" && -z "$bucket_dir" ]]; then
-  echo "pass --file and --manifest-file, or --bucket-dir" >&2
-  usage
-fi
-
-started=$SECONDS
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/pantry-restore-drill.XXXXXX")
-chmod 0700 "$scratch"
-cleanup() {
-  rm -rf "$scratch"
-}
-trap cleanup EXIT INT TERM
-
-case "$scratch" in
-  "$identity"|"$identity"/*)
-    echo "the age identity file must not live in the scratch directory" >&2
-    exit 2
-    ;;
-esac
-case "$identity" in
-  "$scratch"|"$scratch"/*)
-    echo "the age identity file must not live in the scratch directory" >&2
-    exit 2
-    ;;
-esac
 
 pick_newest() {
   local dir="$1" pattern="$2" newest="" newest_mtime=0 file mtime
@@ -265,34 +338,42 @@ fi
 
 DOCKER="${BACKUP_DRILL_DOCKER:-docker}"
 image="${PANTRY_DRILL_IMAGE:-ghcr.io/rhionin/pantry:latest}"
+probe_image="${PANTRY_DRILL_PROBE_IMAGE:-curlimages/curl:8.11.1}"
 mkdir -p "$scratch/data"
 cp "$scratch/pantry.db" "$scratch/data/pantry.db"
-port=$(python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
-PY
-)
+chmod 0600 "$scratch/data/pantry.db"
+if ! "$DOCKER" image inspect "$probe_image" >/dev/null 2>&1; then
+  echo "the drill probe image is not available locally" >&2
+  exit 1
+fi
 net="pantry-drill-$$"
+# The app stays on an internal network, so published ports would be dropped
+# and the copy cannot reach the internet. A second container on that same
+# network asks for /api/build and /api/products.
 "$DOCKER" network create --internal "$net" >/dev/null
 "$DOCKER" run -d --name "$net" \
   --network "$net" \
   --user "$(id -u):$(id -g)" \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700 \
-  -p "127.0.0.1:${port}:8080" \
   -e DISABLE_EXTERNAL_PRODUCT_LOOKUP=true \
   -e SCAN_INPUT=stdin \
   -e ADDR=:8080 \
   -e DB_PATH=/data/pantry.db \
   -v "$scratch/data:/data" \
   "$image" >/dev/null
+probe_code() {
+  "$DOCKER" run --rm \
+    --network "$net" \
+    --cap-drop ALL \
+    --read-only \
+    "$probe_image" \
+    -sS -o /dev/null -w '%{http_code}' --max-time 2 "$1" 2>/dev/null || true
+}
 smoke_ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  build_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${port}/api/build" || true)
-  products_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${port}/api/products" || true)
+  build_code=$(probe_code "http://${net}:8080/api/build")
+  products_code=$(probe_code "http://${net}:8080/api/products")
   if [[ "$build_code" == 200 && "$products_code" == 200 ]]; then
     smoke_ok=1
     break
@@ -314,7 +395,12 @@ if [[ -e "$scratch" ]]; then
   echo "the scratch directory remains" >&2
   exit 1
 fi
-if [[ ! -f "$identity" ]]; then
+if [[ "$paste_identity" -eq 1 ]]; then
+  if [[ -e "$identity" ]]; then
+    echo "the pasted age identity was not removed" >&2
+    exit 1
+  fi
+elif [[ ! -f "$identity" ]]; then
   echo "the age identity file is missing after the drill" >&2
   exit 1
 fi

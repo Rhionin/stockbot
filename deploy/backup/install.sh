@@ -157,10 +157,14 @@ fi
 self=$(readlink -f "$0" 2>/dev/null || realpath "$0")
 case "$self" in
   /tmp/*)
+    # shred --exact does not pad the file. Padding lets bash read past the
+    # original end and execute the leftover bytes. exit immediately, while
+    # this script is still the one bash has already read.
     if command -v shred >/dev/null 2>&1; then
-      shred -u "$self" || rm -f "$self"
+      shred --exact -u "$self" || rm -f "$self"
     else
       rm -f "$self"
     fi
+    exit 0
     ;;
 esac

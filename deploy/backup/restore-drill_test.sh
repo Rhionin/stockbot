@@ -156,30 +156,15 @@ if [[ "$1" == rm ]]; then
   fi
   exit 0
 fi
+if [[ "$1" == image ]]; then
+  exit 0
+fi
 if [[ "$*" == *" -d "* ]]; then
-  port=$(printf '%s\n' "$*" | sed -n 's/.*127\.0\.0\.1:\([0-9][0-9]*\):8080.*/\1/p')
-  [[ -n "$port" ]] || exit 1
-  python3 - "$port" <<'PY' &
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-port = int(sys.argv[1])
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path in ("/api/build", "/api/products"):
-            body = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_response(404)
-        self.end_headers()
-    def log_message(self, fmt, *args):
-        return
-HTTPServer(("127.0.0.1", port), Handler).serve_forever()
-PY
-  printf '%s\n' "$!" >"${SMOKE_PID:?}"
   printf '%s\n' "drill-container"
+  exit 0
+fi
+if [[ "$*" == *"/api/build"* || "$*" == *"/api/products"* ]]; then
+  printf '200'
   exit 0
 fi
 exit 0
@@ -246,7 +231,78 @@ grep -q 'drill finished in' "$work/out" || fail "elapsed time was not reported"
 [[ -f "$work/cj-age.txt" ]] || fail "identity file outside scratch was deleted"
 log=$(cat "$work/docker.log")
 [[ "$log" == *"network create --internal"* ]] || fail "smoke network was not internal"
+[[ "$log" == *"/api/build"* && "$log" == *"/api/products"* ]] || fail "probe did not ask for the API"
+[[ "$log" == *"-p "* || "$log" == *127.0.0.1:* ]] && fail "smoke published a host port"
 [[ "$log" == *DISABLE_EXTERNAL_PRODUCT_LOOKUP=true* ]] || fail "external lookup was not disabled"
 [[ "$log" == *PANTRY_AUTH_FILE* ]] && fail "smoke set PANTRY_AUTH_FILE"
 [[ "$(cat "$work/out" "$work/err")" != *token-not-a-path* ]] || fail "secrets plaintext was printed"
 [[ "$(cat "$work/out" "$work/err")" != *AGE-SECRET-KEY-* ]] || fail "identity contents were printed"
+
+loose="$work/loose-age.txt"
+cp "$work/cj-age.txt" "$loose"
+chmod 0644 "$loose"
+rc=$(drill --identity "$loose" --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "loose identity rc=$rc"
+grep -q 'readable only by its owner' "$work/err" || fail "loose identity was accepted"
+
+bad_manifest="$work/bad-manifest.json"
+cp "$work/bucket/nightly/2026-10-23T030000Z.manifest.json" "$bad_manifest"
+python3 - "$bad_manifest" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    manifest = json.load(handle)
+manifest["plaintext_sha256"] = "0" * 64
+with open(path, "w") as handle:
+    json.dump(manifest, handle)
+PY
+rc=$(drill --identity "$work/cj-age.txt" \
+  --file "$work/bucket/nightly/2026-10-23T030000Z.pantry.db.gz.age" \
+  --manifest-file "$bad_manifest")
+[[ "$rc" == 1 ]] || fail "sha mismatch rc=$rc err=$(cat "$work/err")"
+grep -q 'sha256 does not match' "$work/err" || fail "sha mismatch was not reported"
+[[ "$(cat "$work/out" "$work/err")" != *oats* ]] || fail "restored rows were printed"
+
+rc=$(SOPS_AGE_KEY='AGE-SECRET-KEY-example' drill --identity "$work/cj-age.txt" --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "SOPS_AGE_KEY rc=$rc"
+grep -q 'environment variable SOPS_AGE_KEY' "$work/err" || fail "SOPS_AGE_KEY was not named"
+[[ "$(cat "$work/out" "$work/err")" != *AGE-SECRET-KEY-example* ]] || fail "SOPS_AGE_KEY value was printed"
+
+multiline=$'# created: synthetic\n# public key: age1fake\nAGE-SECRET-KEY-example'
+rc=$(MYKEY="$multiline" drill --identity "$work/cj-age.txt" --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "multiline identity env rc=$rc err=$(cat "$work/err")"
+grep -q 'environment variable MYKEY' "$work/err" || fail "multiline variable was not named"
+combined=$(cat "$work/out" "$work/err")
+[[ "$combined" != *AGE-SECRET-KEY-example* ]] || fail "multiline private key was printed"
+[[ "$combined" != *age1fake* ]] || fail "multiline public key was printed"
+[[ "$combined" != *synthetic* ]] || fail "multiline comment was printed"
+
+set +e
+env 'AGE-SECRET-KEY-example=x' \
+  DOCKER_LOG="$work/docker.log" \
+  SMOKE_PID="$work/smoke.pid" \
+  PATH="$work/bin:$PATH" \
+  BACKUP_DRILL_DOCKER="$work/bin/docker" \
+  bash "$ROOT/deploy/backup/restore-drill.sh" --identity "$work/cj-age.txt" --bucket-dir "$work/bucket" >"$work/out" 2>"$work/err"
+rc=$?
+set -e
+[[ "$rc" == 2 ]] || fail "invalid identity name rc=$rc err=$(cat "$work/err")"
+[[ "$(cat "$work/out" "$work/err")" != *AGE-SECRET-KEY-example* ]] || fail "invalid environment name was printed"
+grep -q 'an environment variable' "$work/err" || fail "invalid environment name was not refused"
+
+touch "$work/pi-marker"
+rc=$(PANTRY_DRILL_PI_MARKER="$work/pi-marker" drill --identity "$work/cj-age.txt" --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "pi marker rc=$rc"
+grep -q 'refusing to run on the pantry Pi' "$work/err" || fail "pi refusal missing"
+
+rc=$(drill --identity "$work/cj-age.txt" --paste-identity --bucket-dir "$work/bucket")
+[[ "$rc" == 2 ]] || fail "both identity modes rc=$rc"
+
+rc=$(printf '%s\n' "$(cat "$work/cj-age.txt")" | drill --paste-identity --bucket-dir "$work/bucket")
+[[ "$rc" == 0 ]] || fail "paste identity rc=$rc err=$(cat "$work/err") out=$(cat "$work/out")"
+grep -q 'scratch removed' "$work/out" || fail "pasted drill did not remove scratch"
+[[ -f "$work/cj-age.txt" ]] || fail "source identity was deleted after paste"
+[[ "$(cat "$work/out" "$work/err")" != *AGE-SECRET-KEY-* ]] || fail "pasted identity was printed"
+if find /dev/shm /tmp -maxdepth 2 -name 'age-identity.txt' -print 2>/dev/null | grep -q .; then
+  fail "pasted identity file remains"
+fi

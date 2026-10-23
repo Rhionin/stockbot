@@ -33,6 +33,10 @@ func TestCLIRunFetchVerifyAndStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := fixtureDB(t)
+	pre := filepath.Join(filepath.Dir(db), "pantry-pre-groups-keep.db")
+	if err := os.WriteFile(pre, []byte("old-copy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	stdout := captureFD(t, &os.Stdout)
 	code := CLI([]string{
 		"run",
@@ -54,6 +58,9 @@ func TestCLIRunFetchVerifyAndStale(t *testing.T) {
 	}
 	if !strings.Contains(text, "backup ok key=manual/") || !strings.Contains(text, "staging=tmpfs") {
 		t.Fatalf("stdout = %s", text)
+	}
+	if _, err := os.Stat(pre); err != nil {
+		t.Fatal("prune ran without --prune-premigration")
 	}
 	if strings.Contains(text, "Secret Household Name") || strings.Contains(text, "token-value") {
 		t.Fatal("stdout included private data")
@@ -309,6 +316,9 @@ func TestEdgeBranches(t *testing.T) {
 		t.Fatalf("empty bucket stale: %v", err)
 	}
 	if err := fresh.Put(t.Context(), Upload{Key: "nightly/now.pantry.db.gz.age", Body: strings.NewReader("c"), Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Put(t.Context(), Upload{Key: "nightly/now.manifest.json", Body: strings.NewReader("{}"), Size: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&Runner{Store: fresh}).CheckStale(t.Context()); err != nil {

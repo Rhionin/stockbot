@@ -7,7 +7,11 @@ import (
 )
 
 const (
-	// DefaultTmpfsLimit is the /stage tmpfs size in the backup unit.
+	// DefaultStageDir is the RAM-backed staging directory. It is a tmpfs
+	// on the Pi (/run is tmpfs), mounted into the backup container.
+	DefaultStageDir = "/run/stockbot-backup"
+
+	// DefaultTmpfsLimit is the tmpfs size mounted at DefaultStageDir.
 	DefaultTmpfsLimit int64 = 64 << 20
 
 	// stageHeadroomNum/stageHeadroomDen is the room a snapshot needs:

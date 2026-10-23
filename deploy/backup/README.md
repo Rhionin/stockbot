@@ -15,13 +15,14 @@ Pi, a shared machine, or an agent. It never reads the live database.
 
 ## Staging
 
-The snapshot is written to the container's `/stage` tmpfs when the
-database, plus headroom (two and a half times the main file and WAL),
-fits in the 64MiB tmpfs. Otherwise it is written to
-`/data/.backup-staging` on the pantry data volume. That directory is
-removed as soon as the ciphertext exists, again when the process
-returns, and by an EXIT trap in `deploy/systemd/pantry-backup.sh` if the
-container is killed. The log line is `backup staging: tmpfs ...` or
+The snapshot is written to `/run/stockbot-backup` (a 64MiB tmpfs; `/run`
+is tmpfs on the Pi) when the database, plus headroom (two and a half
+times the main file and WAL), fits. Otherwise it is written to
+`/data/.backup-staging` on the pantry data volume. The plaintext file is
+removed once the upload's size and sha256 match. If that check fails, or
+the container is killed, the EXIT trap in `deploy/systemd/pantry-backup.sh`
+removes the staging directory. The next run also removes anything left
+there. The log line is `backup staging: tmpfs ...` or
 `backup staging: volume ...`. A backup is not refused because of size.
 
 ## What is stored
@@ -37,9 +38,20 @@ tool version, the image digest, the duration, and the staging kind. It
 does not record household names, barcodes, or row contents.
 
 Nightly, manual, and secrets objects older than 14 days are deleted.
+The cutoff uses the backup server's clock (the LastModified time of the
+object just uploaded), not the Pi clock. The Pi has no battery-backed
+clock. If that clock is more than 12 hours away from the server, the
+sweep deletes nothing and the job exits 30. The sweep also never deletes
+the object just uploaded or the newest database backup.
+
 If an object older than 15 days remains, or a delete fails, the job
-exits 30. `stockbot-backup stale` exits non-zero when the newest
-database backup is older than about 26 hours.
+exits 30. A database object counts as a backup only when its manifest
+was stored too. If a later step fails, that run's objects are removed,
+so the failed run does not reset the freshness check. `stockbot-backup
+stale` exits non-zero when the newest manifest-backed database backup
+is older than about 26 hours. An object exactly 14 days old is kept; one
+a second older is deleted. The same strict instant applies at 15 days
+and at 26 hours.
 
 ## Credentials
 
@@ -55,19 +67,45 @@ secret access key) and writes the files. Run it on the Pi as root:
 sudo bash deploy/backup/install.sh
 ```
 
-The timer is `03:30` America/Denver, with a 10 minute random delay.
-Re-running setup does not enable the timer on a machine that has never
-had it installed.
+The timer is `OnCalendar=*-*-* 03:30:00 America/Denver`, with a 10 minute
+random delay. That form stays on Denver time across the November DST
+change. Re-running setup does not enable the timer on a machine that has
+never had it installed.
+
+If the backup cannot take the deploy lock, it exits 30 and posts a
+failure to the healthchecks URL. The URL is not printed.
+
+## R2 bucket
+
+Create the bucket on CJ's Cloudflare account. The default name is
+`pantry-pi-backups`. Do not enable replication and do not add a second
+bucket.
+
+Add an R2 lifecycle rule that expires objects 14 days after they are
+uploaded. R2 removes expired objects on its own, usually within a day.
+The nightly sweep above is the second control, for when that rule is slow.
+
+Create the R2 API token so it can reach only this bucket. It is not an
+account-wide token. The install script writes it into the mode `0400`
+settings file and does not put it in the environment.
 
 ## Secrets archive
 
-Off by default. Turn it on with `--with-secrets` or
-`BACKUP_INCLUDE_SECRETS=1` in the settings file, and list paths with
-`--secrets-path` or `BACKUP_SECRETS_PATHS` (comma-separated). The paths
-are tarred, age-encrypted to the same public key, and uploaded under
-`secrets/` with the same 14-day retention. The Pi paths are not
-hard-coded; an empty list skips the archive and the backup still
-succeeds. A missing path or a symlink fails the run.
+The library leaves this off unless `--with-secrets` or
+`BACKUP_INCLUDE_SECRETS=1` is set, with paths from `--secrets-path` or
+`BACKUP_SECRETS_PATHS` (comma-separated). An empty list skips the archive
+and the database backup still succeeds. A missing path or a symlink fails
+that run.
+
+On the Pi, the nightly wrapper turns the archive on when these regular
+files exist: `/opt/pantry/auth.caddy`, `/opt/pantry/.env`, and `.env`
+backups named `.env.bak`, `.env.bak.*`, `.env.backup`, or
+`.env.backup.*`. It copies them onto a tmpfs as mode `0400` for uid
+65532, mounts that directory read-only, and shreds the copy when the
+script exits. `.env.example` and the R2 settings file are not included.
+A symlink in that set fails the wrapper before the backup container
+starts, and a missing `auth.caddy` does not. The archive uses the same
+age public key and the same 14-day retention, under `secrets/`.
 
 ## Pre-migration copies
 
@@ -87,11 +125,20 @@ bash deploy/backup/restore-drill.sh \
   --manifest-file /path/to/snapshot.manifest.json
 ```
 
-`--identity` is the only way to pass the private key. `AGE_IDENTITY`,
-`AGE_IDENTITY_FILE`, `BACKUP_AGE_IDENTITY`, `BACKUP_IDENTITY`,
-`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, and any environment value containing
-`AGE-SECRET-KEY-` are refused. The variable name is printed; the value
-is not.
+`--identity` passes a private-key file that stays on this computer.
+`--paste-identity` reads the key from the terminal into the scratch
+directory (on `/dev/shm` when that is writable) and deletes that copy
+when the drill ends. An identity file outside the scratch directory is
+not deleted. `AGE_IDENTITY`, `AGE_IDENTITY_FILE`, `BACKUP_AGE_IDENTITY`,
+`BACKUP_IDENTITY`, `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, and any
+environment value containing `AGE-SECRET-KEY-` are refused. Only a
+variable name that is a shell identifier is printed. The value is not.
+
+The restored app runs on an internal Docker network, with no published
+port and no route to the internet. A second container on that network
+requests `GET /api/build` and `GET /api/products`. The script refuses to
+start when `/opt/pantry/docker-compose.yml` is present, so it does not
+run on the Pi.
 
 The script checks the plaintext sha256, runs the integrity check,
 compares row counts with the manifest, starts the image against the
