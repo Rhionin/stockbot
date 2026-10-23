@@ -647,6 +647,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
         <ServerNoticeBanner
+          shell
           text={batchFailureBannerText(blockingFailures, confirmedCount) ?? ''}
           partial={partialLine ?? ''}
         />
