@@ -42,6 +42,7 @@ import {
   nothingOnHandBody,
   nothingOnHandPill,
   nothingOnHandStillQueued,
+  applyHttpResponse,
   notifyApiSuccess,
   OFFLINE_SENTENCE,
   offlineBannerActive,
@@ -53,11 +54,13 @@ import {
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
+  raiseAuthNotConfiguredBanner,
   raiseOfflineBanner,
   readOnHand,
   REPORT_TOO_LARGE_SENTENCE,
   scanReportsNothingOnHand,
   SERVER_ERROR_FALLBACK,
+  serverNoticeText,
   shelfHasNothingOnHand,
   SIGN_IN_NOT_USED_SENTENCE,
   SIGN_IN_REQUIRED_SENTENCE,
@@ -739,5 +742,20 @@ describe('offline banner', () => {
     expect(offlineBannerActive()).toBe(true);
     notifyApiSuccess();
     expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('clears the sign-in notice on success too', () => {
+    raiseAuthNotConfiguredBanner();
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+    notifyApiSuccess();
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('trims the code before choosing the banner', () => {
+    expect(applyHttpResponse(503, `  ${CODE_AUTH_NOT_CONFIGURED}  `)).toBe('auth');
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+    expect(applyHttpResponse(503, '   ')).toBe('offline');
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+    notifyApiSuccess();
   });
 });

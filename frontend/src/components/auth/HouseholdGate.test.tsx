@@ -215,6 +215,61 @@ describe('HouseholdGate', () => {
     expect(document.body.innerHTML).not.toContain('/setup');
   });
 
+  it('shows the offline banner above the sign-in form', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/session')) return Promise.resolve(json({ error: 'Sign in required.' }, 401));
+      if (url.endsWith('/api/login') && init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.reject(new Error(url));
+    }));
+    renderGate();
+    fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    const banner = await screen.findByTestId('server-notice-banner');
+    expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
+    const form = screen.getByRole('form', { name: 'Sign in' });
+    expect(form).toBeVisible();
+    expect(form.contains(banner)).toBe(false);
+  });
+
+  it('drops the waiting retry when Try again is pressed', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    let rejectSecond: (error: unknown) => void = () => {};
+    let resolveThird: (response: Response) => void = () => {};
+    let resolveLater: (response: Response) => void = () => {};
+    const auth = () => json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503);
+    vi.stubGlobal('fetch', vi.fn(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(auth());
+      if (calls === 2) return new Promise<Response>((_, reject) => { rejectSecond = reject; });
+      if (calls === 3) return new Promise<Response>((resolve) => { resolveThird = resolve; });
+      return new Promise<Response>((resolve) => { resolveLater = resolve; });
+    }));
+    renderGate();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => {
+      rejectSecond(new TypeError('Failed to fetch'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveThird(auth());
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
+    expect(calls).toBe(3);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(calls).toBe(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls).toBe(4);
+    resolveLater(auth());
+  });
+
   it('opens the app after a successful sign-in', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

@@ -19,6 +19,8 @@ export interface ScanScreenProps {
   warning: string;
 }
 
+export const SCAN_BAND_PADDING_TOP = 12;
+
 export function ScanScreen({ client, warning }: ScanScreenProps) {
   const insets = useSafeAreaInsets();
   const pinnedNotice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
@@ -108,7 +110,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
     <View style={styles.screen}>
       <StatusBar style="light" />
       <ServerNoticeBanner topInset={insets.top} />
-      <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + 12 : 12 }]}>
+      <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />
           <ModeWord mode="stock_out" current={mode} onPress={switchMode} />

@@ -17,6 +17,16 @@
   padding-bottom: calc(var(--mantine-spacing-xs) + env(safe-area-inset-bottom));
 }
 
+/* Phone shell padding is xs. The notice uses the same 20px side inset as
+   the other screens. From sm up the shell padding is the content inset,
+   so the extra margin drops and the banner lines up with the page. */
+@media (min-width: 48em) {
+  .server-notice-shell {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+}
+
 .app-menu-about:not(:has(.app-menu-build:not(:empty))) {
   display: none;
 }
