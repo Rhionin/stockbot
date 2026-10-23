@@ -38,6 +38,8 @@ func existingContractSentences() map[string]string {
 		"last_owner":                    "You're the only owner. Make someone else an owner first, or delete the household.",
 		"household_not_empty":           "You can only import into an empty household. This one already has items.",
 		"confirmation_mismatch":         "That doesn't match. Check the spelling and try again.",
+		"rate_limited":                  "Too many tries. Wait a moment and try again.",
+		"payload_too_large":             "That file is too large to import.",
 	}
 }
 
@@ -180,7 +182,7 @@ func TestHostedAPIContract(t *testing.T) {
 		t.Fatalf("generic sentence does not match %q", clientmsg.ServerError)
 	}
 
-	const tenant = "tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to."
+	const tenant = "tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token; nothing else selects a tenant."
 	if !strings.Contains(doc, tenant) {
 		t.Fatal("tenant rule missing")
 	}

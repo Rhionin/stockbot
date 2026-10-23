@@ -237,7 +237,8 @@ export function confirmSkipsNothingOnHand(count: number): string | null {
 // Hosted multi-household contract (docs/design/api-contract.md).
 // Types only. The Pi client still uses the helpers above, including userId,
 // until the hosted routes exist. Nothing here selects a tenant except the
-// X-Household-Id header, which the server checks against membership.
+// X-Household-Id header, which the server checks against membership, or, for
+// device calls, the household bound to the device token.
 
 export type HouseholdHeaderName = 'X-Household-Id';
 
@@ -264,6 +265,8 @@ export type HostedErrorCode =
   | 'last_owner'
   | 'household_not_empty'
   | 'confirmation_mismatch'
+  | 'rate_limited'
+  | 'payload_too_large'
   ;
 
 export interface HostedErrorBody {
@@ -404,6 +407,8 @@ export interface DeviceScanResponse {
 }
 
 export interface HostedCreateScanRequest {
+  /** Client UUID. Deduped on (household, user, id). A replay returns the original entry. */
+  id?: string;
   barcode: string;
   direction?: ScanDirection;
   unitCount?: number;
@@ -427,7 +432,15 @@ export interface HostedScanEntry {
 
 export interface ScanChanges {
   cursor: string;
+  changed: boolean;
+  /** Present when changed is true. The full queue, not a patch. */
+  scans?: HostedScanEntry[];
+}
+
+/** Committed and cancelled history. `before` is not the scope cursor. */
+export interface ScanHistoryPage {
   scans: HostedScanEntry[];
+  before: string | null;
 }
 
 export interface CommitScanRequest {
@@ -441,19 +454,23 @@ export interface HostedInventoryItem extends Omit<InventoryItem, 'item'> {
 
 export interface InventoryChanges {
   cursor: string;
-  items: HostedInventoryItem[];
+  changed: boolean;
+  items?: HostedInventoryItem[];
 }
 
 export interface ShoppingListChanges {
   cursor: string;
-  items: ShoppingListEntry[];
+  changed: boolean;
+  items?: ShoppingListEntry[];
 }
 
 export interface ExportProductV1 {
+  /** Source id inside the file. Import does not insert this id into the shared catalog. */
   id: string;
   name: string;
   category: string;
   unitOfMeasure: string;
+  barcodes: string[];
 }
 
 export interface ExportBarcodeOverrideV1 {
@@ -514,9 +531,24 @@ export interface ExportCategoryV1 {
   itemIds: string[];
 }
 
-/** Version 1 allows an empty object. Keys are an open question in the contract. */
+/** Allowlist. channel_key is never a field. */
 export interface ExportSettingsV1 {
-  [key: string]: string | number | boolean | null;
+  restockMode?: string;
+  supplyDefault?: string;
+}
+
+/** Flat scan row. productId is the file's product id and is remapped on import. */
+export interface ExportScanEntryV1 {
+  id: string;
+  barcode: string;
+  scannedAt: string;
+  direction: ScanDirection | null;
+  unitCount: number;
+  expiresAt: string | null;
+  status: ScanStatus;
+  productId: string | null;
+  committedAt: string | null;
+  createdAt: string;
 }
 
 export interface ExportDocumentV1 {
@@ -529,7 +561,7 @@ export interface ExportDocumentV1 {
   barcodeOverrides: ExportBarcodeOverrideV1[];
   items: ExportItemV1[];
   itemInstances: ExportItemInstanceV1[];
-  scanEntries: HostedScanEntry[];
+  scanEntries: ExportScanEntryV1[];
   shoppingListItems: ExportShoppingListItemV1[];
   stockMoves: ExportStockMoveV1[];
   groups: ExportGroupV1[];
@@ -550,16 +582,33 @@ export interface ExportJob {
   expiresAt: string | null;
 }
 
+export interface ImportUploadRequest {
+  contentLength: number;
+}
+
+export interface ImportUploadCreated {
+  uploadUrl: string;
+  key: string;
+  maxBytes: 33554432;
+}
+
+export interface StartImportRequest {
+  importId: string;
+  key: string;
+}
+
 export interface ImportJobCreated {
   jobId: string;
   importId: string;
   status: 'pending';
 }
 
+export type ImportJobStatus = 'pending' | 'running' | 'ready' | 'failed';
+
 export interface ImportJob {
   jobId: string;
   importId: string;
-  status: 'pending' | 'ready' | 'failed';
+  status: ImportJobStatus;
 }
 
 export interface DeleteAccountRequest {
@@ -570,7 +619,7 @@ export type LiveTransport = 'sse' | 'poll' | 'push';
 
 export type LiveConfig =
   | { live: 'sse' | 'poll' }
-  | { live: 'push'; appsync?: { httpUrl: string; realtimeUrl: string } };
+  | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string } };
 
 export interface LiveTicket {
   ticket: string;
