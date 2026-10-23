@@ -8,7 +8,7 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68
 	github.com/google/uuid v1.6.0
 	github.com/justinrixx/retryhttp v1.1.1
-	github.com/steinfletcher/apitest v1.6.1
+	github.com/steinfletcher/apitest v1.6.2
 	github.com/steinfletcher/apitest-jsonpath v1.8.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
