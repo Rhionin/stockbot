@@ -6,10 +6,20 @@ const sentence = 'Nothing on hand to take out.'
 const added = 'Added and taken out.'
 const historyLabel = 'Added when taking out'
 
+const backfillCommit = {
+  removed: 2,
+  backfilled: 2,
+  itemId: 'item-sour-cream',
+  backfill: {
+    stockInMoveId: 'move-cream-in',
+    stockOutMoveId: 'move-cream-out',
+  },
+}
+
 const historyMove = {
-  id: 'move-backfill',
+  id: 'move-cream-in',
   direction: 'in',
-  quantity: 1,
+  quantity: 2,
   at: '2026-10-18T16:40:00.000Z',
   source: 'backfill',
   productId: 'prod-sour',
@@ -89,12 +99,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          removed: 1,
-          backfilled: 1,
-          itemId: 'item-sour',
-          backfill: { stockInMoveId: 'move-backfill', stockOutMoveId: 'move-out' },
-        }),
+        body: JSON.stringify(backfillCommit),
       })
       return
     }
@@ -171,29 +176,29 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   let reshelvesOnUndo = true
   const seenPreview: { path?: string } = {}
 
-  await page.route((url) => url.pathname === '/api/items/item-sour/history', async (route) => {
+  await page.route((url) => url.pathname === '/api/items/item-sour-cream/history', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         kind: 'product',
-        id: 'item-sour',
+        id: 'item-sour-cream',
         name: 'Sour cream',
         onHand: 0,
         pace: { known: false, daysLeftKnown: false, sparkline: [] },
-        moves: [historyMove, { ...historyMove, id: 'move-out', direction: 'out', source: 'scan' }],
+        moves: [historyMove, { ...historyMove, id: 'move-cream-out', direction: 'out', source: 'scan' }],
       }),
     })
   })
 
-  await page.route((url) => url.pathname === '/api/moves/move-backfill', async (route) => {
+  await page.route((url) => url.pathname === '/api/moves/move-cream-in', async (route) => {
     if (route.request().method() === 'DELETE') seen.undo = new URL(route.request().url()).pathname
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         kind: 'product',
-        id: 'item-sour',
+        id: 'item-sour-cream',
         name: 'Sour cream',
         onHand: 0,
         pace: { known: false, daysLeftKnown: false, sparkline: [] },
@@ -211,19 +216,19 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   })
 
   // The history rows above are a fixture, so this answers the preview the dialog
-  // requests instead of looking up move-backfill on the server.
-  await page.route((url) => url.pathname === '/api/moves/move-backfill/preview', async (route) => {
+  // requests instead of looking up move-cream-in on the server.
+  await page.route((url) => url.pathname === '/api/moves/move-cream-in/preview', async (route) => {
     seenPreview.path = new URL(route.request().url()).pathname
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         effects: [{
-          itemId: 'item-sour',
+          itemId: 'item-sour-cream',
           productId: 'prod-sour',
           name: 'Sour cream',
-          stockInMoveId: 'move-backfill',
-          stockOutMoveId: 'move-out',
+          stockInMoveId: 'move-cream-in',
+          stockOutMoveId: 'move-cream-out',
           onHand: 0,
           reshelvesOnUndo,
         }],
@@ -245,7 +250,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
 
   await card.getByRole('textbox', { name: 'Product name' }).fill('Sour cream')
   await card.getByRole('button', { name: 'Add as a new item' }).click()
-  await expect(page.locator('.restock-toast').filter({ hasText: sentence })).toBeVisible()
+  await expect(page.locator('.restock-toast').filter({ hasText: sentence })).toHaveCount(0)
   await expect(card.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
   await expect(card.getByText(sentence)).toBeVisible()
   await expect(card.getByRole('region', { name: 'Which item is this?' })).toHaveCount(0)
@@ -266,7 +271,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await shoot(page, testInfo, 'toast')
 
   await toast.getByRole('button', { name: 'Undo' }).click()
-  await expect.poll(() => seen.undo).toBe('/api/moves/move-backfill')
+  await expect.poll(() => seen.undo).toBe('/api/moves/move-cream-in')
 
   await page.clock.runFor(6000)
   await page.getByRole('link', { name: 'History' }).click()
@@ -280,7 +285,7 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const confirm = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
-  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-backfill/preview')
+  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-cream-in/preview')
   await expect(confirm.getByText(pairBody)).toBeVisible()
   await expect(confirm.getByText(hideLine)).toBeVisible()
   await expect(confirm.getByRole('button', { name: 'Undo', exact: true })).toBeVisible()
@@ -294,12 +299,12 @@ test('unknown barcode, stock-out, add as a new item, backfill, toast, undo', asy
   await page.getByRole('link', { name: 'Inventory' }).click()
   await page.getByRole('link', { name: 'History' }).click()
   await expect(page.getByText(historyLabel)).toBeVisible()
-  const previewSettled = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/moves/move-backfill/preview')
+  const previewSettled = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/moves/move-cream-in/preview')
   await page.getByRole('button', { name: /Actions for Sour cream/ }).click()
   await page.getByRole('menuitem', { name: 'Undo this stock in' }).click()
   const plain = page.getByRole('dialog', { name: 'Undo "Add it and take it out"?' })
   await previewSettled
-  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-backfill/preview')
+  await expect.poll(() => seenPreview.path).toBe('/api/moves/move-cream-in/preview')
   await expect(plain.getByText(pairBody)).toBeVisible()
   await expect(plain.getByText(hideLine)).toHaveCount(0)
   await expect(plain.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled()
