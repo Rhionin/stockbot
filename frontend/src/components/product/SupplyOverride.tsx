@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, NativeSelect, NumberInput, Stack } from '@mantine/core';
 import { getSupplyOverride, setSupplyOverride } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 
 type SupplyChoice = 'default' | 'months' | 'quantity';
 
@@ -36,7 +37,7 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
       })
       .catch((requestError: unknown) => {
         if (active) {
-          setError(requestError instanceof Error ? requestError.message : 'Unable to load the supply override.');
+          setError(inlineFailure(requestError, 'Unable to load the supply override.') ?? '');
         }
       });
     return () => {
@@ -57,7 +58,7 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
       }
       await setSupplyOverride(productId, { quantity: units });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save the supply override.');
+      setError(inlineFailure(requestError, 'Unable to save the supply override.') ?? '');
     }
   };
 

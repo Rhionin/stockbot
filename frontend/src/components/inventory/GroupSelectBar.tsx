@@ -3,6 +3,7 @@ import { Button, Group, Select, Stack, Text, TextInput } from '@mantine/core';
 import { addGroupMembers, ApiError, createGroup } from '../../api/client';
 import type { GroupTarget, ProductGroup, TargetConflictMember } from '../../types';
 import { TargetConflictPrompt } from '../groups/TargetConflictPrompt';
+import { inlineFailure } from '../../api/contract';
 
 export interface GroupSelectBarProps {
   productIds: string[];
@@ -38,7 +39,7 @@ export const GroupSelectBar = ({ productIds, groups, onDone }: GroupSelectBarPro
         setConflict(requestError.members);
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : 'Unable to group these products.');
+      setError(inlineFailure(requestError, 'Unable to group these products.') ?? '');
     }
   };
 

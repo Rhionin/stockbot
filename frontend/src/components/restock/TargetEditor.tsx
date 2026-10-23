@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
+import { inlineFailure } from '../../api/contract';
 
 export function TargetEditor({
   opened,
@@ -32,7 +33,7 @@ export function TargetEditor({
       await onSave({ kind, value: next });
       onClose();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save the target.');
+      setError(inlineFailure(requestError, 'Unable to save the target.') ?? '');
     } finally {
       setBusy(false);
     }

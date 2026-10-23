@@ -4,6 +4,7 @@ import { addItemInstance, listItemInstances, stockOutItem } from '../../api/clie
 import type { ExpiryStatus, ItemInstanceWithStatus } from '../../types';
 import { computeExpiryStatus } from '../../utils/expiry';
 import { expiryDateToISOString } from '../queue/queueUtils';
+import { inlineFailure } from '../../api/contract';
 
 export interface ItemInstanceListProps {
   itemId: string;
@@ -55,7 +56,7 @@ export const ItemInstanceList = ({
       setInstances(sortUseOldestFirst(result));
       setEvaluatedAt(new Date());
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load instances.');
+      setError(inlineFailure(requestError, 'Unable to load instances.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -82,7 +83,7 @@ export const ItemInstanceList = ({
       onInventoryChanged();
       await loadInstances();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to stock in.');
+      setError(inlineFailure(requestError, 'Unable to stock in.') ?? '');
     } finally {
       setPending(null);
     }
@@ -97,7 +98,7 @@ export const ItemInstanceList = ({
       onInventoryChanged();
       await loadInstances();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to stock out.');
+      setError(inlineFailure(requestError, 'Unable to stock out.') ?? '');
     } finally {
       setPending(null);
     }

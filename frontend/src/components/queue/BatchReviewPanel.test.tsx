@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { getInventoryList } from '../../api/client';
+import { OFFLINE_SENTENCE } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BatchReviewPanel } from './BatchReviewPanel';
 
 const jsonResponse = (body: unknown) =>
@@ -105,5 +108,54 @@ describe('BatchReviewPanel', () => {
       expect(requestBody.scanEntryIds).not.toContain('stock-in-1');
       expect(requestBody.scanEntryIds).not.toContain('stock-in-2');
     });
+  });
+});
+
+describe('BatchReviewPanel offline sentence', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the sentence until a later request succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+    render(
+      <MantineProvider>
+        <ServerNoticeBanner />
+        <BatchReviewPanel selectedIds={['a', 'b']} onComplete={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(within(screen.getByRole('region', { name: 'Confirm scans' })).queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+
+    let rejectNext: (error: unknown) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((_resolve, reject) => {
+      rejectNext = reject;
+    })));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(screen.getByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    rejectNext(new TypeError('Failed to fetch'));
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Confirm scans' })).queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse([]))));
+    await getInventoryList();
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument());
+  });
+
+  it('does not treat an invalid header as offline', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError("Failed to construct 'Headers': Invalid name"))));
+    render(
+      <MantineProvider>
+        <BatchReviewPanel selectedIds={['a', 'b']} onComplete={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(await screen.findByText('Unable to confirm selected scans.')).toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed to construct 'Headers': Invalid name")).not.toBeInTheDocument();
   });
 });

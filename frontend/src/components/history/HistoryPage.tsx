@@ -9,6 +9,7 @@ import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 import '../groups/groups.css';
+import { inlineFailure } from '../../api/contract';
 import './history.css';
 
 type Filter = 'recent' | 'in' | 'out';
@@ -91,7 +92,7 @@ export function HistoryPage() {
       const next = grouped ? await getGroupHistory(subjectId) : await getItemHistory(subjectId);
       setView(next);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load history.');
+      setError(inlineFailure(requestError, 'Unable to load history.') ?? '');
     } finally {
       setLoading(false);
     }
@@ -118,7 +119,7 @@ export function HistoryPage() {
       setEditing(null);
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to change that quantity.');
+      setError(inlineFailure(requestError, 'Unable to change that quantity.') ?? '');
     } finally {
       setPending(false);
     }
@@ -133,7 +134,7 @@ export function HistoryPage() {
       setUndoing(null);
       await load();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to undo that move.');
+      setError(inlineFailure(requestError, 'Unable to undo that move.') ?? '');
     } finally {
       setPending(false);
     }

@@ -5,6 +5,7 @@ import type { GroupTarget, TargetConflictMember } from '../../types';
 import type { AddCandidate } from './candidates';
 import type { GroupSupply } from './copy';
 import { TargetConflictPrompt } from './TargetConflictPrompt';
+import { inlineFailure } from '../../api/contract';
 
 export interface AddToGroupProps {
   groupId: string;
@@ -51,7 +52,7 @@ export const AddToGroup = ({ groupId, group, candidates, onAdded, showHeading = 
         setConflict(requestError.members);
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : 'Unable to add those products.');
+      setError(inlineFailure(requestError, 'Unable to add those products.') ?? '');
     } finally {
       setAdding(false);
     }
