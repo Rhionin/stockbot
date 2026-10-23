@@ -11,7 +11,7 @@ import HouseholdRoute from '../app/(app)/household';
 import SignInRoute from '../app/sign-in';
 import { SessionProvider } from '../session';
 import { QueueScreen } from '../screens/QueueScreen';
-import { ScanScreen } from '../screens/ScanScreen';
+import { SCAN_BAND_PADDING_TOP, ScanScreen } from '../screens/ScanScreen';
 import { ServerNoticeBanner, SERVER_NOTICE_INSET } from './ServerNoticeBanner';
 
 const mockMemory = new Map<string, string>();
@@ -54,12 +54,48 @@ type LaidOut = {
   children: readonly (LaidOut | string)[];
 };
 
+const HORIZONTAL_KEYS = [
+  'padding',
+  'paddingHorizontal',
+  'paddingLeft',
+  'paddingRight',
+  'paddingStart',
+  'paddingEnd',
+  'paddingInline',
+  'paddingInlineStart',
+  'paddingInlineEnd',
+  'margin',
+  'marginHorizontal',
+  'marginLeft',
+  'marginRight',
+  'marginStart',
+  'marginEnd',
+  'marginInline',
+  'marginInlineStart',
+  'marginInlineEnd',
+] as const;
+
+const TOP_KEYS = [
+  'padding',
+  'paddingVertical',
+  'paddingTop',
+  'paddingBlock',
+  'paddingBlockStart',
+  'margin',
+  'marginVertical',
+  'marginTop',
+  'marginBlock',
+  'marginBlockStart',
+] as const;
+
 function padding(style: unknown) {
+  // Flatten keeps shorthand and logical keys as written, so each one counts.
   const flat = (StyleSheet.flatten(style as never) ?? {}) as Record<string, unknown>;
   const amount = (key: string) => (typeof flat[key] === 'number' ? flat[key] as number : 0);
+  const sum = (keys: readonly string[]) => keys.reduce((total, key) => total + amount(key), 0);
   return {
-    top: amount('paddingTop') + amount('paddingVertical'),
-    horizontal: amount('paddingHorizontal') + amount('paddingLeft') + amount('paddingRight'),
+    top: sum(TOP_KEYS),
+    horizontal: sum(HORIZONTAL_KEYS),
   };
 }
 
@@ -230,7 +266,7 @@ describe('mobile server notice banner', () => {
     if (name === 'scan') {
       const band = paddedAncestor(view.getByText('Putting away'));
       expect(band).toBeTruthy();
-      expect(padding(band?.props.style).top).toBe(12);
+      expect(padding(band?.props.style).top).toBe(SCAN_BAND_PADDING_TOP);
       expect(ancestors(banner)).not.toContain(band);
     }
     if (name === 'queue') {
@@ -290,6 +326,13 @@ describe('mobile server notice banner', () => {
     expectBannerClearOfPadding(banner);
     const body = paddedAncestor(view.getByText('To confirm'));
     expect(padding(body?.props.style).top).toBe(0);
+  });
+
+  it('hides the exclamation icon from TalkBack', async () => {
+    const view = await render(<ServerNoticeBanner text={OFFLINE_SENTENCE} />);
+    const mark = view.getByText('!', { includeHiddenElements: true });
+    expect(mark.parent?.props.accessibilityElementsHidden).toBe(true);
+    expect(mark.parent?.props.importantForAccessibility).toBe('no-hide-descendants');
   });
 
   it('replaces the auth sentence with the queue sentence', async () => {

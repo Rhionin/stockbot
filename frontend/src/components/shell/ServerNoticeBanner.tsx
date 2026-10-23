@@ -28,30 +28,40 @@ function NoticeIcon() {
   );
 }
 
+const shellSide = `max(0px, calc(${NOTICE_SCREEN_PADDING_INLINE}px - var(--mantine-spacing-xs)))`;
+
 // One banner. A server notice (offline, sign-in) wins over the queue's
 // busy or out-of-space sentence, so that spot never shows two banners.
 export function ServerNoticeBanner({
   text = '',
   partial = '',
   inset = false,
+  shell = false,
 }: {
   text?: string;
   partial?: string;
   inset?: boolean;
+  shell?: boolean;
 }) {
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const shown = notice !== '' ? notice : text;
   if (shown === '') return null;
   const detail = notice === '' ? partial : '';
-  const screenInset = inset
-    ? {
-        marginTop: NOTICE_SCREEN_PADDING_TOP,
-        marginRight: NOTICE_SCREEN_PADDING_INLINE,
-        marginLeft: NOTICE_SCREEN_PADDING_INLINE,
-      }
-    : undefined;
+  let className: string | undefined;
+  let screenInset: { marginTop?: number; marginRight: number | string; marginLeft: number | string } | undefined;
+  if (inset) {
+    className = 'server-notice-inset';
+    screenInset = {
+      marginTop: NOTICE_SCREEN_PADDING_TOP,
+      marginRight: NOTICE_SCREEN_PADDING_INLINE,
+      marginLeft: NOTICE_SCREEN_PADDING_INLINE,
+    };
+  } else if (shell) {
+    className = 'server-notice-shell';
+    screenInset = { marginRight: shellSide, marginLeft: shellSide };
+  }
   return (
-    <div data-testid="server-notice-banner" className={inset ? 'server-notice-inset' : undefined} style={screenInset}>
+    <div data-testid="server-notice-banner" className={className} style={screenInset}>
       <Alert
         color="red"
         variant="light"
