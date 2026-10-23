@@ -758,30 +758,9 @@ sudo docker volume inspect pantry-data
 
 ### Backup and Restore
 
-**Backup the database:**
+Nightly backups are encrypted and uploaded from the Pi. Plaintext copies are not written to the home directory. Setup, the timer, and the restore drill are documented in [deploy/backup/README.md](backup/README.md).
 
-```bash
-# Create backup
-sudo docker cp pantry:/data/pantry.db /home/pi/pantry-backup.db
-
-# Or backup while container is stopped
-sudo docker compose down
-sudo docker cp pantry:/data/pantry.db /home/pi/pantry-backup.db
-sudo docker compose up -d
-```
-
-**Restore from backup:**
-
-```bash
-# Stop the container
-sudo docker compose down
-
-# Restore database
-sudo docker cp /home/pi/pantry-backup.db pantry:/data/pantry.db
-
-# Restart
-sudo docker compose up -d
-```
+A disaster restore onto the Pi is a manual step and is not part of the drill. Stop the pantry container, copy the verified database to `/data/pantry.db` as uid 65532, remove any `-wal`, `-shm`, and `-journal` files beside it, start the stack, and check `GET /api/build`. Do that only with an explicit go-ahead. The drill never touches the Pi or the live database.
 
 ### Host Directory Access (Alternative)
 
