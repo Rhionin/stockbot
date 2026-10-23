@@ -378,6 +378,62 @@ test('the batch banner shows the server sentence', async ({ page, request }) => 
   }
 })
 
+test('confirming one card clears the busy banner and shows that card', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  const schemes = shotDir === undefined ? ['light'] as const : ['light', 'dark'] as const
+  for (const scheme of schemes) {
+    await page.emulateMedia({ colorScheme: scheme })
+    await page.setViewportSize({ width: 390, height: 844 })
+    const prefix = scheme === 'dark' ? '33039011' : '33039001'
+    const scans = await seedStockOuts(page, request, [
+      { barcode: `${prefix}1`, name: 'Busy oats' },
+      { barcode: `${prefix}2`, name: 'Busy rice' },
+    ])
+    const confirmed = scans[0]
+    const waiting = scans[1]
+    if (confirmed === undefined || waiting === undefined) throw new Error('missing busy scans')
+    try {
+      await confirmBatch(page, scans, () => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => busySentence),
+        failedCodes: scans.map(() => 'busy'),
+      }))
+      await expectServerSentence(page, busySentence, confirmed.barcode)
+      await page.route(`**/api/scans/${confirmed.id}/commit`, async (route) => {
+        if (route.request().method() !== 'POST') {
+          await route.continue()
+          return
+        }
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: failureNote, code: 'none_on_hand' }),
+        })
+      })
+      const card = page.getByRole('article', { name: `Scan ${confirmed.barcode}`, exact: true })
+      await card.getByRole('button', { name: 'Confirm' }).click()
+      const own = page.getByRole('article', { name: `Scan ${confirmed.barcode}, ${failureNote}` })
+      await expect(own).toBeVisible()
+      await expect(own.getByText(failureNote, { exact: true })).toBeVisible()
+      await expectNoBatchBanner(page)
+      await expect(page.getByText(busySentence)).toHaveCount(0)
+      await expect(page.getByRole('article', { name: `Scan ${waiting.barcode}`, exact: true })).toBeVisible()
+      if (shotDir !== undefined) {
+        await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+        await saveShot(page, `${shotDir}/single_confirm_390_${scheme}.png`)
+      }
+    } finally {
+      await page.unroute('**/api/scans/batch-commit')
+      await page.unroute(`**/api/scans/${confirmed.id}/commit`)
+      for (const scan of scans) {
+        await cancelScan(request, scan.id).catch(() => undefined)
+      }
+    }
+  }
+})
+
 test.describe('batch banner screenshots', () => {
   test.skip(shotDir === undefined, 'set BATCH_BANNER_SHOTS to save viewport shots')
 

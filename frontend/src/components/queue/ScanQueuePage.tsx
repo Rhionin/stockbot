@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, DEFAULT_SCAN_USER_ID, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_BUSY, CODE_NONE_ON_HAND, CODE_NO_SPACE, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -515,12 +515,20 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     void loadQueue(true);
   };
 
-  const clearFailure = (entryId: string) => {
+  // A busy or no_space banner is one sentence for the whole stop. Confirming
+  // one card on its own makes that sentence out of date, so every storage
+  // notice comes down together. Other failure codes stay on their cards.
+  const beginSingleConfirm = (entryId: string) => {
+    setPartialLine(null);
     setFailureById((current) => {
-      if (!current.has(entryId)) return current;
+      let changed = false;
       const next = new Map(current);
-      next.delete(entryId);
-      return next;
+      if (next.delete(entryId)) changed = true;
+      for (const [id, notice] of current) {
+        if (notice.code !== CODE_BUSY && notice.code !== CODE_NO_SPACE) continue;
+        if (next.delete(id)) changed = true;
+      }
+      return changed ? next : current;
     });
   };
 
@@ -702,10 +710,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
                   cueNothingOnHand={cuedNothing.has(entry.id)}
                   selected={selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
-                  onConfirmStart={() => {
-                    clearFailure(entry.id);
-                    setPartialLine(null);
-                  }}
+                  onConfirmStart={() => beginSingleConfirm(entry.id)}
                   onBlocked={() => rememberPin([entry.id])}
                   onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}

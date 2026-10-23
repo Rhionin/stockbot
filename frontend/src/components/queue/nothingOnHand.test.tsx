@@ -750,4 +750,43 @@ describe('nothing on hand queue', () => {
     expect(within(screen.getByRole('article', { name: 'Scan 666' })).queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
     expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).not.toBeInTheDocument();
   });
+
+  it('a busy batch banner clears when one card is confirmed on its own', async () => {
+    const oats = scan({
+      id: 'scan-pin',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: [oats.id, rice.id],
+        failedReasons: [BUSY_SENTENCE, BUSY_SENTENCE],
+        failedCodes: ['busy', 'busy'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    const banner = await screen.findByText('Stockbot is busy right now. Try again in a moment.');
+    expect(banner.closest('.scan-batch-banner')).not.toBeNull();
+    expect(within(screen.getByRole('article', { name: 'Scan 555' })).queryByText('Stockbot is busy right now. Try again in a moment.')).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    const card = await screen.findByRole('article', { name: 'Scan 555, Nothing on hand to take out.' });
+    expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
+    expect(within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.")).toBeInTheDocument();
+    expect(document.querySelector('.scan-batch-banner')).toBeNull();
+    expect(screen.queryByText('Stockbot is busy right now. Try again in a moment.')).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+  });
 });
