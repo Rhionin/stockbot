@@ -3,8 +3,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
 import { getInventoryList } from '../../api/client';
-import { OFFLINE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
+import { InventoryPage } from '../inventory/InventoryPage';
 import { ScanQueuePage } from './ScanQueuePage';
+import { MemoryRouter } from 'react-router-dom';
 import type { ScanEntry } from '../../types';
 
 class FakeEventSource {
@@ -90,6 +93,7 @@ function renderQueue(failure: unknown) {
   render(
     <MantineProvider>
       <Notifications />
+      <ServerNoticeBanner />
       <ScanQueuePage />
     </MantineProvider>,
   );
@@ -138,12 +142,15 @@ describe('offline notice', () => {
     const queue = renderQueue(failure);
     await press(action, true);
 
-    await waitFor(() => {
-      expect(screen.getAllByText(OFFLINE_SENTENCE).length).toBeGreaterThan(0);
-    });
-    expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
+    const banner = await screen.findByTestId('server-notice-banner');
+    expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(document.querySelector('.restock-toast')).toBeNull();
+    const milkCard = screen.getByRole('article', { name: /^Scan 111(,|$)/ });
+    expect(milkCard).toBeInTheDocument();
+    expect(within(milkCard).queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
     expect(screen.getByRole('article', { name: /^Scan 222(,|$)/ })).toBeInTheDocument();
-    expect(within(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(within(milkCard).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
     for (const raw of RAW) expect(screen.queryByText(raw)).not.toBeInTheDocument();
 
     queue.succeed();
@@ -187,6 +194,7 @@ describe('offline notice', () => {
     render(
       <MantineProvider>
         <Notifications />
+        <ServerNoticeBanner />
         <ScanQueuePage />
       </MantineProvider>,
     );
@@ -202,13 +210,11 @@ describe('offline notice', () => {
   it('keeps the sentence through another failed confirm and clears it when inventory loads', async () => {
     renderQueue(new TypeError('Failed to fetch'));
     await press('confirm', true);
-    await waitFor(() => {
-      expect(screen.getAllByText(OFFLINE_SENTENCE).length).toBeGreaterThan(0);
-    });
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
 
     await press('confirm', false);
     await waitFor(() => {
-      expect(screen.getAllByText(OFFLINE_SENTENCE).length).toBeGreaterThan(0);
+      expect(screen.getByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
     });
     expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
     expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
@@ -218,5 +224,99 @@ describe('offline notice', () => {
       expect(screen.queryAllByText(OFFLINE_SENTENCE)).toHaveLength(0);
     });
     expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
+  });
+
+  it('shows the banner on Inventory and clears it after that screen loads', async () => {
+    let open = true;
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (open && (url.includes('/api/inventory') || url.includes('/api/'))) {
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      if (url.includes('/api/events')) return Promise.reject(new Error('no events'));
+      return Promise.resolve(json([]));
+    }));
+    render(
+      <MantineProvider>
+        <MemoryRouter initialEntries={['/inventory']}>
+          <ServerNoticeBanner />
+          <InventoryPage />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Inventory' })).toBeInTheDocument();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(document.querySelector('.restock-toast')).toBeNull();
+
+    open = false;
+    await getInventoryList();
+    await waitFor(() => {
+      expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('heading', { name: 'Inventory' })).toBeInTheDocument();
+  });
+
+  it('replaces a batch failure banner and leaves the card failure in place', async () => {
+    const pending = [scan('scan-milk', '111'), scan('scan-oats', '222')];
+    const itemFailure = 'That scan is no longer pending.';
+    let offline = false;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('batch-commit') && method === 'POST') {
+        if (offline) return Promise.reject(new TypeError('Failed to fetch'));
+        return Promise.resolve(json({
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: ['scan-milk'],
+          failedReasons: [itemFailure],
+          failedCodes: ['not_pending'],
+        }));
+      }
+      if (url.includes('status=pending')) return Promise.resolve(json(pending));
+      if (url.includes('status=flagged') || url.includes('status=qr')) return Promise.resolve(json([]));
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?') || url.startsWith('/api/products')) {
+        return Promise.resolve(json([]));
+      }
+      if (url.endsWith('/api/scanner/config')) {
+        return Promise.resolve(json({
+          stockInBarcode: 'STOCK_IN',
+          stockOutBarcode: 'STOCK_OUT',
+          currentMode: 'stock_in',
+          connected: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected ${method} ${url}`));
+    }));
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ServerNoticeBanner />
+        <ScanQueuePage />
+      </MantineProvider>,
+    );
+
+    await screen.findByRole('article', { name: /^Scan 111(,|$)/ });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(await screen.findByText(BATCH_FAILURE_FALLBACK)).toBeInTheDocument();
+    expect(await screen.findByText(itemFailure)).toBeInTheDocument();
+
+    offline = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 1 selected scans' }));
+    const banner = await screen.findByTestId('server-notice-banner');
+    expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).not.toBeInTheDocument();
+    expect(screen.getByText(itemFailure)).toBeInTheDocument();
+    expect(within(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).getByText(itemFailure)).toBeInTheDocument();
+    expect(document.querySelector('.restock-toast')).toBeNull();
+
+    offline = false;
+    await getInventoryList();
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument());
+    expect(screen.getByText(BATCH_FAILURE_FALLBACK)).toBeInTheDocument();
   });
 });

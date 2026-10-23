@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { notifyApiSuccess, SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -108,7 +108,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   } catch (error) {
     reportApiResult(route, 0, performance.now() - started, started);
     const unreachable = unreachableFrom(error);
-    if (unreachable !== null) throw unreachable;
+    if (unreachable !== null) {
+      raiseOfflineBanner();
+      throw unreachable;
+    }
     throw error;
   }
 
@@ -582,7 +585,10 @@ async function fetchResponse(path: string, init?: RequestInit): Promise<Response
     return await fetch(`${BASE_URL}${path}`, init);
   } catch (error) {
     const unreachable = unreachableFrom(error);
-    if (unreachable !== null) throw unreachable;
+    if (unreachable !== null) {
+      raiseOfflineBanner();
+      throw unreachable;
+    }
     throw error;
   }
 }
@@ -601,6 +607,7 @@ export async function getSession(): Promise<HouseholdSession> {
   if (!res.ok) {
     return { required: true, username: '', error: body.error || 'Sign-in is unavailable right now.' };
   }
+  notifyApiSuccess();
   if (!body.required) {
     return { required: false, username: '', error: '' };
   }
@@ -624,6 +631,7 @@ export async function login(username: string, password: string): Promise<void> {
     }
     throw new ApiError(res.status, message);
   }
+  notifyApiSuccess();
 }
 
 export async function logout(): Promise<void> {
@@ -631,6 +639,7 @@ export async function logout(): Promise<void> {
   if (!res.ok) {
     throw new ApiError(res.status, 'Could not sign out.');
   }
+  notifyApiSuccess();
 }
 
 export interface PushSubscriptionInput {

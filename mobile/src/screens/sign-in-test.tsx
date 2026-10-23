@@ -1,8 +1,9 @@
-import { fireEvent, waitFor } from '@testing-library/react-native';
+import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
 import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
+import { QueueScreen } from './QueueScreen';
 import { basicAuthorization, HOUSEHOLD_USERNAME } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
 import { ConnectionForm } from './ConnectionForm';
@@ -159,12 +160,13 @@ describe('session sign-in', () => {
     expect(screen.queryByText('offline')).toBeNull();
   });
 
-  it('clears a saved-session offline warning after a later load', async () => {
+  it('uses the queue banner for a saved-session offline startup and clears it after a load', async () => {
     mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
     mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    let online = false;
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/api/session')) throw new TypeError('Network request failed');
+      if (url.endsWith('/api/session') || !online) throw new TypeError('Network request failed');
       return jsonResponse(200, []);
     });
 
@@ -174,6 +176,7 @@ describe('session sign-in', () => {
       if (session.status !== 'ready') return <Text>Signed out</Text>;
       return (
         <>
+          <QueueScreen client={session.client} warning={session.warning} />
           <Text>{session.warning === '' ? 'no-warning' : session.warning}</Text>
           <Pressable accessibilityLabel="Reload" onPress={() => { void session.client.listPending(); }} />
         </>
@@ -185,9 +188,15 @@ describe('session sign-in', () => {
         <Probe />
       </SessionProvider>,
     );
-    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText('Reload'));
-    await waitFor(() => expect(screen.getByText('no-warning')).toBeTruthy());
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(screen.getByText('no-warning')).toBeTruthy();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expect(screen.queryByText('Network request failed')).toBeNull();
+
+    online = true;
+    await fireEvent.press(screen.getByLabelText('Reload'));
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
+    expect(screen.getByText('no-warning')).toBeTruthy();
   });
 });

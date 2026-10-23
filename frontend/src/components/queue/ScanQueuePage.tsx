@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
-import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, offlineBannerActive, offlineSentence, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -194,7 +194,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           // Keep the last list. An empty stand-in would mark every stock-out as nothing on hand.
         });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load scan queue.');
+      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to load scan queue.'));
     } finally {
       setLoading(false);
     }
@@ -395,7 +395,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       setScanError('');
       clearOfflineNotice();
     } catch (requestError) {
-      setScanError(requestError instanceof Error ? requestError.message : 'Unable to switch scanner mode.');
+      setScanError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to switch scanner mode.'));
     }
   }, [holdLocalMode]);
 
@@ -461,7 +461,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       await createScanEntry({ barcode, direction: scannerModeRef.current, userId });
       await loadQueue();
     } catch (requestError) {
-      setScanError(requestError instanceof Error ? requestError.message : 'Unable to add the scan.');
+      setScanError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to add the scan.'));
     }
   };
 
@@ -521,6 +521,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   // Later refreshes keep the rows on screen. A loader is only for the first
   // paint, when there is nothing to shift under the user's finger.
   const showInitialLoader = loading && entries.length === 0;
+  const offline = useSyncExternalStore(subscribeOfflineBanner, offlineBannerActive, () => false);
 
   return (
     <Stack gap={6} className="scan-page">
@@ -615,14 +616,14 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
-        {blockingFailures.length > 0 && (
+        {!offline && blockingFailures.length > 0 && (
           <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
             <div>{BATCH_FAILURE_FALLBACK}</div>
             {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
           </Alert>
         )}
         {/* Amber cards carry their own message. The teal banner is only the partial line, and only when there is one. */}
-        {blockingFailures.length === 0 && partialLine !== null && (
+        {!offline && blockingFailures.length === 0 && partialLine !== null && (
           <Text
             role="status"
             className="scan-batch-banner scan-batch-banner--success scan-batch-partial"

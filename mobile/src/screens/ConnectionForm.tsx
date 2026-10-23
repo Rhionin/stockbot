@@ -9,7 +9,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
+import { offlineSentence, raiseOfflineBanner } from '../../../frontend/src/api/contract';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';
 
@@ -45,7 +46,12 @@ export function ConnectionForm({
     try {
       await onSubmit(serverUrl, password);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : OFFLINE_SENTENCE);
+      if (offlineSentence(requestError) !== null || !(requestError instanceof Error)) {
+        if (offlineSentence(requestError) === null) raiseOfflineBanner();
+        setError('');
+      } else {
+        setError(requestError.message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -56,6 +62,7 @@ export function ConnectionForm({
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
+      <ServerNoticeBanner />
       <View style={styles.copy}>
         <Text style={styles.heading} accessibilityRole="header">{heading}</Text>
         <View style={styles.edge} />

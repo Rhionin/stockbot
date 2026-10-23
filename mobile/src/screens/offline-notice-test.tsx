@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
+import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
 import type { InventoryItem, ScanEntry } from '../../../frontend/src/types';
 import { createStockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
@@ -130,7 +130,10 @@ describe('offline notice', () => {
       await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
     }
 
-    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(within(screen.getByTestId('scan-scan-1')).queryByText(OFFLINE_SENTENCE)).toBeNull();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     if (action !== 'remove') expect(screen.getByLabelText('Confirm Oat milk')).toBeTruthy();
     else expect(screen.getByLabelText('Remove Oat milk')).toBeTruthy();
@@ -177,10 +180,12 @@ describe('offline notice', () => {
     const screen = await renderScreen(<QueueScreen client={api.client} warning="" focused />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
 
     await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
-    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-1')).queryByText(OFFLINE_SENTENCE)).toBeNull();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     expect(screen.queryByText('Network request failed')).toBeNull();
 
@@ -189,6 +194,51 @@ describe('offline notice', () => {
 
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
     expect(screen.getByText('Oat milk')).toBeTruthy();
+    expect(screen.queryByText('Network request failed')).toBeNull();
+  });
+
+  it('replaces the batch banner and leaves the card failure', async () => {
+    const itemFailure = 'That scan is no longer pending.';
+    const oats = entry({
+      id: 'scan-2',
+      barcode: '999',
+      productId: 'prod-2',
+      product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
+    });
+    let offline = false;
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('batch-commit') && method === 'POST') {
+        return jsonResponse(200, {
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: ['scan-1'],
+          failedReasons: [itemFailure],
+          failedCodes: ['not_pending'],
+        });
+      }
+      if (url.endsWith('/commit') && method === 'POST') {
+        if (offline) throw new TypeError('Network request failed');
+        return jsonResponse(200, { ...oats, status: 'committed' });
+      }
+      if (url.includes('status=pending')) return jsonResponse(200, [entry(), oats]);
+      if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
+      return jsonResponse(500, { error: 'unexpected' });
+    });
+    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const screen = await renderScreen(<QueueScreen client={client} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(BATCH_FAILURE_FALLBACK)).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-1')).getByText(itemFailure)).toBeTruthy();
+
+    offline = true;
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
+    expect(within(screen.getByTestId('scan-scan-1')).getByText(itemFailure)).toBeTruthy();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expect(screen.queryByText('Network request failed')).toBeNull();
   });
 });

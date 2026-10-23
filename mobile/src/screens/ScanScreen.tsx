@@ -6,7 +6,9 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ScanDirection, ScannerConfig } from '../../../frontend/src/types';
 import type { PriorScan } from '../../../frontend/src/components/scanner/scanTiming';
+import { OFFLINE_SENTENCE, offlineSentence, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import type { StockbotClient } from '../api/client';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
@@ -35,6 +37,10 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   }, [client]);
 
   useEffect(() => {
+    if (warning === OFFLINE_SENTENCE) raiseOfflineBanner();
+  }, [warning]);
+
+  useEffect(() => {
     let active = true;
     client.getScannerConfig().then((next) => {
       if (!active) return;
@@ -47,7 +53,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       if (!active) return;
       configRef.current = null;
       setConfig(null);
-      setSetupError(error instanceof Error ? error.message : 'The scanner setup did not load.');
+      setSetupError(offlineSentence(error) !== null ? '' : (error instanceof Error ? error.message : 'The scanner setup did not load.'));
     });
     return () => {
       active = false;
@@ -64,7 +70,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       setMode(response.mode);
       setNotice(response.mode === 'stock_in' ? 'Switched to putting away' : 'Switched to using up');
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'The scan mode did not change.');
+      setNotice(offlineSentence(error) !== null ? '' : (error instanceof Error ? error.message : 'The scan mode did not change.'));
       setReloadKey((value) => value + 1);
     }
   }
@@ -94,7 +100,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       } catch (error) {
         if (lastRef.current?.at === acceptedAt) lastRef.current = null;
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setNotice(error instanceof Error ? error.message : 'The scan did not save.');
+        setNotice(offlineSentence(error) !== null ? '' : (error instanceof Error ? error.message : 'The scan did not save.'));
       }
     })();
   }, []);
@@ -105,11 +111,12 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
     <View style={styles.screen}>
       <StatusBar style="light" />
       <View style={[styles.band, { paddingTop: insets.top + 12 }]}>
+        <ServerNoticeBanner />
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />
           <ModeWord mode="stock_out" current={mode} onPress={switchMode} />
         </View>
-        {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
+        {warning !== '' && warning !== OFFLINE_SENTENCE && <Text style={styles.warning}>{warning}</Text>}
       </View>
 
       <View style={styles.stage}>

@@ -13,6 +13,7 @@ import { GroupDetailPage } from './components/groups/GroupDetailPage';
 import { HistoryPage } from './components/history/HistoryPage';
 import { LedgerPage } from './components/history/LedgerPage';
 import { AppMenu } from './components/shell/AppMenu';
+import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import { HouseholdGate } from './components/auth/HouseholdGate';
 import { CredentialsRevisionContext } from './credentialsRefresh';
 import { reportRoute } from './telemetry/client';
@@ -56,6 +57,7 @@ function SignedInApp() {
             </div>
           </AppShell.Header>
           <AppShell.Main>
+            <ServerNoticeBanner />
             <div className="page-frame">
               <Routes>
                 <Route path="/" element={<ScanQueuePage />} />

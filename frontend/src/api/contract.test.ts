@@ -4,7 +4,10 @@ import {
   formatPartialRemoval,
   networkErrorResult,
   nothingOnHandPill,
+  notifyApiSuccess,
   OFFLINE_SENTENCE,
+  raiseOfflineBanner,
+  serverStateBanner,
   shelfHasNothingOnHand,
   UnreachableError,
   unreachableFrom,
@@ -203,5 +206,22 @@ describe('networkErrorResult', () => {
     expect(error.result).toEqual(offline);
     expect(networkErrorResult(error)).toBe(error.result);
     expect(unreachableFrom(error)).toBe(error);
+  });
+});
+
+const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
+const NO_SPACE_SENTENCE = "Stockbot is out of storage space, so this wasn't saved.";
+
+describe('serverStateBanner', () => {
+  it('lets offline replace busy and no_space until a success', () => {
+    expect(serverStateBanner(BUSY_SENTENCE)).toBe(BUSY_SENTENCE);
+    expect(serverStateBanner(null)).toBeNull();
+    raiseOfflineBanner();
+    expect(serverStateBanner(BUSY_SENTENCE)).toBe(OFFLINE_SENTENCE);
+    expect(serverStateBanner(NO_SPACE_SENTENCE)).toBe(OFFLINE_SENTENCE);
+    expect(serverStateBanner(null)).toBe(OFFLINE_SENTENCE);
+    notifyApiSuccess();
+    expect(serverStateBanner(BUSY_SENTENCE)).toBe(BUSY_SENTENCE);
+    expect(serverStateBanner(NO_SPACE_SENTENCE)).toBe(NO_SPACE_SENTENCE);
   });
 });

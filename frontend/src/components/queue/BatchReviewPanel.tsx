@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import { OFFLINE_SENTENCE, offlineSentence, type BatchCommitResponse } from '../../api/contract';
-import { clearOfflineNotice, subscribeOfflineClear } from './offlineNotice';
+import { offlineSentence, type BatchCommitResponse } from '../../api/contract';
+import { clearOfflineNotice } from './offlineNotice';
 
 export interface BatchReviewPanelProps {
   selectedIds: string[];
@@ -14,11 +14,9 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => subscribeOfflineClear(() => setError('')), []);
-
   const handleApprove = async () => {
     setSubmitting(true);
-    setError((current) => (current === OFFLINE_SENTENCE ? current : ''));
+    setError('');
     onStart?.();
     try {
       const response = await batchCommitScanEntries({
@@ -28,8 +26,9 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
       clearOfflineNotice();
       onComplete(response);
     } catch (requestError) {
-      const offline = offlineSentence(requestError);
-      setError(offline ?? 'Unable to confirm selected scans.');
+      if (offlineSentence(requestError) === null) {
+        setError('Unable to confirm selected scans.');
+      }
     } finally {
       setSubmitting(false);
     }

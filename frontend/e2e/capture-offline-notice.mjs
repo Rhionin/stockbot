@@ -115,7 +115,7 @@ function toastSettled(info) {
     && box.right <= viewport.width + 1;
 }
 
-const NOTICE_SELECTOR = '.restock-toast, [data-testid="confirm-toast"], .mantine-Alert-root';
+const NOTICE_SELECTOR = '[data-testid="server-notice-banner"], [data-testid="batch-banner"]';
 
 async function readToast(page, selector) {
   return page.evaluate(({ selector: rootSelector, expected }) => {
@@ -167,10 +167,9 @@ async function waitForSettledToast(page, selector) {
 
 async function captureWeb(browser) {
   const shots = [
-    { width: 390, height: 844, scheme: 'light', barcode: '37339081', name: 'Settled milk', file: 'web_offline_confirm_390_light.png', cleared: 'web_offline_cleared_inventory_390_light.png' },
+    { width: 390, height: 844, scheme: 'light', barcode: '37339081', name: 'Settled milk', file: 'web_offline_confirm_390_light.png', other: 'web_offline_inventory_390_light.png', cleared: 'web_offline_cleared_inventory_390_light.png' },
     { width: 390, height: 844, scheme: 'dark', barcode: '37339091', name: 'Settled milk dark', file: 'web_offline_confirm_390_dark.png' },
     { width: 1280, height: 800, scheme: 'light', barcode: '37312881', name: 'Settled milk wide', file: 'web_offline_confirm_1280_light.png' },
-    { width: 390, height: 844, scheme: 'light', barcode: '37339082', name: 'Settled oats', file: 'web_offline_remove_390_light.png', remove: true },
   ];
 
   for (const shot of shots) {
@@ -196,30 +195,35 @@ async function captureWeb(browser) {
     const mode = page.getByRole('alert').filter({ hasText: /^Mode: stock_(in|out)/ });
     await mode.waitFor({ state: 'visible' });
     const scanner = page.getByRole('textbox', { name: 'Barcode scanner input' });
-    if (shot.remove || !(await page.getByText('Mode: stock_in').isVisible())) {
-      const wanted = shot.remove ? 'STOCK_OUT' : 'STOCK_IN';
-      const label = shot.remove ? 'stock_out' : 'stock_in';
-      if (!(await page.getByText(`Mode: ${label}`).isVisible())) {
-        await scanner.fill(wanted);
-        await scanner.press('Enter');
-        await page.getByText(`Mode: ${label}`).waitFor({ state: 'visible' });
-      }
+    if (!(await page.getByText('Mode: stock_in').isVisible())) {
+      await scanner.fill('STOCK_IN');
+      await scanner.press('Enter');
+      await page.getByText('Mode: stock_in').waitFor({ state: 'visible' });
     }
     await scanner.fill(shot.barcode);
     await scanner.press('Enter');
     const card = page.getByRole('article', { name: new RegExp(`^Scan ${shot.barcode}(,|$)`) });
     await card.waitFor({ state: 'visible' });
     await context.setOffline(true);
-    await card.getByRole('button', { name: shot.remove ? 'Remove' : 'Confirm', exact: true }).click();
+    await card.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.getByText(sentence).waitFor({ state: 'visible' });
     await waitForSettledToast(page, NOTICE_SELECTOR);
     if (await page.getByText('Failed to fetch').count()) throw new Error('raw fetch text is visible');
+    if (await page.locator('.restock-toast').count()) throw new Error('offline notice used a toast');
     await page.screenshot({ path: join(shotDir, shot.file) });
     console.log('saved', shot.file);
 
-    await context.setOffline(false);
-    if (shot.cleared) {
+    if (shot.other) {
       await page.getByRole('link', { name: 'Inventory' }).click();
+      await page.getByRole('heading', { name: 'Inventory' }).waitFor({ state: 'visible' });
+      await waitForSettledToast(page, NOTICE_SELECTOR);
+      await page.screenshot({ path: join(shotDir, shot.other) });
+      console.log('saved', shot.other);
+    }
+
+    if (shot.cleared) {
+      await context.setOffline(false);
+      await page.reload();
       await page.getByRole('heading', { name: 'Inventory' }).waitFor({ state: 'visible' });
       await page.getByText(sentence).waitFor({ state: 'hidden' });
       await page.locator('.restock-toast').waitFor({ state: 'detached' });
@@ -304,19 +308,12 @@ async function capturePhone(browser) {
     await waitForOk(`http://localhost:${expoPort}`);
 
     const flows = [
-      { file: 'mobile_offline_confirm.png', cleared: 'mobile_offline_cleared_after_refresh.png', name: 'Phone milk', barcode: '37390011', remove: false },
-      { file: 'mobile_offline_remove.png', name: 'Phone oats', barcode: '37390012', remove: true },
+      { file: 'mobile_offline_confirm.png', cleared: 'mobile_offline_cleared_after_refresh.png', name: 'Phone milk', barcode: '37390011' },
     ];
     for (const flow of flows) {
       await resetPending();
       await seedProduct(flow.name, flow.barcode);
-      if (flow.remove) {
-        await seedScan(flow.barcode, 'stock_in', true);
-        await seedScan(flow.barcode, 'stock_out', true);
-        await seedScan(flow.barcode, 'stock_out', false);
-      } else {
-        await seedScan(flow.barcode, 'stock_in', false);
-      }
+      await seedScan(flow.barcode, 'stock_in', false);
       const context = await browser.newContext({
         viewport: { width: 390, height: 844 },
         locale: 'en-US',
@@ -331,12 +328,12 @@ async function capturePhone(browser) {
       await page.getByLabel('Connect').click();
       await page.getByRole('tab', { name: 'Queue' }).click();
       await page.getByText(flow.name, { exact: true }).waitFor({ timeout: 30000 });
-      const button = flow.remove ? `Remove ${flow.name}` : `Confirm ${flow.name}`;
       await context.setOffline(true);
-      await page.getByRole('button', { name: button }).click();
+      await page.getByRole('button', { name: `Confirm ${flow.name}` }).click();
       await page.getByText(sentence).waitFor({ state: 'visible' });
-      await waitForSettledToast(page, '[data-testid="confirm-toast"]');
+      await waitForSettledToast(page, '[data-testid="batch-banner"]');
       if (await page.getByText('Network request failed').count()) throw new Error('raw network text is visible');
+      if (await page.getByTestId('confirm-toast').count()) throw new Error('offline notice used a toast');
       await page.screenshot({ path: join(shotDir, flow.file) });
       console.log('saved', flow.file);
       if (flow.cleared) {

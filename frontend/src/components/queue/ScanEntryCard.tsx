@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, offlineSentence, type CommitScanResponse } from '../../api/contract';
+import { CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
-import { clearOfflineNotice, isUnreachable, showOfflineNotice } from './offlineNotice';
+import { clearOfflineNotice, isUnreachable } from './offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -352,10 +352,7 @@ export const ScanEntryCard = ({
       }
       message = behavior.showMessage ? (requestError.message || 'Unable to confirm scan.') : '';
     }
-    if (isUnreachable(requestError)) {
-      showOfflineNotice();
-      return;
-    }
+    if (isUnreachable(requestError)) return;
     showCommitSentence(message);
   };
 
@@ -403,6 +400,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
+      if (isUnreachable(requestError)) return;
       setRemoveError(requestError instanceof Error ? requestError.message : 'Unable to remove scan.');
     } finally {
       setRemoving(false);
@@ -438,7 +436,12 @@ export const ScanEntryCard = ({
       onChanged();
     } catch (requestError) {
       if (generation !== saveGeneration.current || unitCountRef.current !== draft) return;
-      setUnitCountError(offlineSentence(requestError) ?? 'Unable to update unit count.');
+      if (isUnreachable(requestError)) {
+        unitCountRef.current = confirmedCountRef.current;
+        setUnitCountDraft(confirmedCountRef.current);
+        return;
+      }
+      setUnitCountError('Unable to update unit count.');
       unitCountRef.current = confirmedCountRef.current;
       setUnitCountDraft(confirmedCountRef.current);
     }
@@ -494,7 +497,11 @@ export const ScanEntryCard = ({
         clearOfflineNotice();
         onChanged();
       } catch (requestError) {
-        setExpiryError(offlineSentence(requestError) ?? 'Unable to update expiration date.');
+        if (isUnreachable(requestError)) {
+          setExpiryDraft(expiryCommitted);
+          return;
+        }
+        setExpiryError('Unable to update expiration date.');
         setExpiryDraft(expiryCommitted);
         return;
       }
@@ -525,7 +532,8 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      setExpiryError(offlineSentence(requestError) ?? 'Unable to update expiration date.');
+      if (isUnreachable(requestError)) return;
+      setExpiryError('Unable to update expiration date.');
     }
   };
 

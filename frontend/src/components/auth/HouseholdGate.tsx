@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { OFFLINE_SENTENCE, UnreachableError } from '../../api/contract';
+import { UnreachableError } from '../../api/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { HouseholdSessionContext } from './householdSession';
 import { LoginPage } from './LoginPage';
 import './LoginPage.css';
@@ -24,7 +25,7 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     }).catch((error: unknown) => {
       if (cancelled) return;
       setRequired(true);
-      setError(error instanceof UnreachableError ? OFFLINE_SENTENCE : 'Stockbot could not be reached.');
+      setError(error instanceof UnreachableError ? '' : 'Stockbot could not be reached.');
       setPhase('login');
     });
     return () => {
@@ -55,14 +56,17 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
 
   if (phase === 'login') {
     return (
-      <LoginPage
-        initialError={error}
-        onSignedIn={() => {
-          setRequired(true);
-          setError('');
-          setPhase('app');
-        }}
-      />
+      <>
+        <ServerNoticeBanner />
+        <LoginPage
+          initialError={error}
+          onSignedIn={() => {
+            setRequired(true);
+            setError('');
+            setPhase('app');
+          }}
+        />
+      </>
     );
   }
 

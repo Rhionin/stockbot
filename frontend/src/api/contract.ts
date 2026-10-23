@@ -338,5 +338,44 @@ export function subscribeApiSuccess(listener: () => void): () => void {
 }
 
 export function notifyApiSuccess(): void {
+  clearOfflineBanner();
   for (const listener of apiSuccessListeners) listener();
+}
+
+let offlineBanner = false;
+const offlineBannerListeners = new Set<() => void>();
+
+export function offlineBannerActive(): boolean {
+  return offlineBanner;
+}
+
+function publishOfflineBanner(next: boolean): void {
+  if (offlineBanner === next) return;
+  offlineBanner = next;
+  for (const listener of offlineBannerListeners) listener();
+}
+
+// A transport failure raises this. The next response that arrives clears it.
+export function raiseOfflineBanner(): void {
+  publishOfflineBanner(true);
+}
+
+export function clearOfflineBanner(): void {
+  publishOfflineBanner(false);
+}
+
+export function subscribeOfflineBanner(listener: () => void): () => void {
+  offlineBannerListeners.add(listener);
+  return () => {
+    offlineBannerListeners.delete(listener);
+  };
+}
+
+// Offline is the same kind of server-state notice as busy and no_space, and it
+// wins while it is up. `other` is the banner those notices would show. A later
+// success clears offline, so a new server report can show busy or no_space again.
+export function serverStateBanner(other: string | null): string | null {
+  if (offlineBanner) return OFFLINE_SENTENCE;
+  if (other === null || other === '') return null;
+  return other;
 }

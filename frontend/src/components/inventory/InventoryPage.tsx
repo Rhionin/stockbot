@@ -6,6 +6,7 @@ import {
   addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
 } from '../../api/client';
+import { offlineSentence } from '../../api/contract';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
@@ -113,7 +114,7 @@ export const InventoryPage = () => {
       setSuggestions(asSuggestions(cards));
       setCatalog(asCatalog(products));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load inventory.');
+      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to load inventory.'));
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -149,7 +150,7 @@ export const InventoryPage = () => {
       if (created.length === 0) setNotice('No new groups found');
       await loadInventory(true);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to look for groups.');
+      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to look for groups.'));
     } finally {
       setScanning(false);
     }
@@ -235,7 +236,7 @@ export const InventoryPage = () => {
       const created = await createGroup(name, [productId]);
       navigate(`/groups/${created.id}`);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to create the group.');
+      setError(offlineSentence(requestError) !== null ? '' : (requestError instanceof Error ? requestError.message : 'Unable to create the group.'));
     }
   };
 

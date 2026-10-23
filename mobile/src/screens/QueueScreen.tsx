@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -19,7 +19,10 @@ import {
   batchFailureNotices,
   CODE_NONE_ON_HAND,
   OFFLINE_SENTENCE,
-  subscribeApiSuccess,
+  offlineBannerActive,
+  offlineSentence,
+  raiseOfflineBanner,
+  subscribeOfflineBanner,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
@@ -32,8 +35,9 @@ import {
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
-function withoutOfflineNotice(current: string): string {
-  return current === OFFLINE_SENTENCE ? current : '';
+function besideBanner(error: unknown, fallback: string): string {
+  if (offlineSentence(error) !== null) return '';
+  return error instanceof Error ? error.message : fallback;
 }
 
 const LINK_OFFER_HEADING = 'Which item is this?';
@@ -177,11 +181,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
 
-  useEffect(() => subscribeApiSuccess(() => {
-    setToast((current) => (current === OFFLINE_SENTENCE ? '' : current));
-    setError((current) => (current === OFFLINE_SENTENCE ? '' : current));
-    setLoadError((current) => (current === OFFLINE_SENTENCE ? '' : current));
-  }), []);
+  const offline = useSyncExternalStore(subscribeOfflineBanner, offlineBannerActive, () => false);
+  useEffect(() => {
+    if (warning === OFFLINE_SENTENCE) raiseOfflineBanner();
+  }, [warning]);
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -235,7 +238,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setRefreshing(false);
       setLoading(false);
       if (surfaceError) {
-        setLoadError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+        setLoadError(besideBanner(requestError, 'The queue did not load.'));
       }
     }
   }, [applyEntries, client, loadHousehold, storeHousehold]);
@@ -253,7 +256,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }).catch((requestError: unknown) => {
       if (!active) return;
       setLoading(false);
-      setLoadError(requestError instanceof Error ? requestError.message : 'The queue did not load.');
+      setLoadError(besideBanner(requestError, 'The queue did not load.'));
     });
     return () => {
       active = false;
@@ -365,10 +368,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   async function confirmOne(id: string) {
     setBusyId(id);
-    setError(withoutOfflineNotice);
+    setError('');
     clearFailure(id);
     setPartialLine('');
-    setToast(withoutOfflineNotice);
+    setToast('');
     try {
       const committed = await client.commitScan(id);
       clearOffer(id);
@@ -381,7 +384,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (requestError instanceof ApiError) {
         await showCommitFailure(id, requestError);
       } else {
-        setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+        setToast(besideBanner(requestError, 'That scan could not be confirmed.'));
       }
     } finally {
       setBusyId('');
@@ -390,8 +393,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   async function removeOne(id: string) {
     setBusyId(id);
-    setError(withoutOfflineNotice);
-    setToast(withoutOfflineNotice);
+    setError('');
+    setToast('');
     try {
       const removed = await client.cancelScan(id);
       if (removed.status !== 'cancelled') {
@@ -413,7 +416,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       await refresh('', false);
     } catch (requestError) {
-      setToast(requestError instanceof Error ? requestError.message : 'That scan could not be removed.');
+      setToast(besideBanner(requestError, 'That scan could not be removed.'));
     } finally {
       setBusyId('');
     }
@@ -422,10 +425,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function linkOne(id: string, productId: string) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
-    setError(withoutOfflineNotice);
+    setError('');
     clearFailure(id);
     setPartialLine('');
-    setToast(withoutOfflineNotice);
+    setToast('');
     try {
       const committed = await client.commitScan(id, productId);
       clearOffer(id);
@@ -446,7 +449,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       } else if (requestError instanceof ApiError) {
         await showCommitFailure(id, requestError);
       } else {
-        setToast(requestError instanceof Error ? requestError.message : 'That scan could not be confirmed.');
+        setToast(besideBanner(requestError, 'That scan could not be confirmed.'));
       }
     } finally {
       setBusyId('');
@@ -459,10 +462,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
-    setError(withoutOfflineNotice);
+    setError('');
     setFailureBannerIds({});
     setPartialLine('');
-    setToast(withoutOfflineNotice);
+    setToast('');
     try {
       const names: Record<string, string> = {};
       for (const entry of confirmable) {
@@ -538,7 +541,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Those scans could not be confirmed.');
+      setError(besideBanner(requestError, 'Those scans could not be confirmed.'));
     } finally {
       setBusyId('');
     }
@@ -547,7 +550,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
-  const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
+  const batchHead = offline ? OFFLINE_SENTENCE : (failureBanner ? BATCH_FAILURE_FALLBACK : error);
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
@@ -562,7 +565,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       <Text style={styles.count}>{loading ? 'Checking the queue' : waiting}</Text>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
-      {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
+      {warning !== '' && warning !== OFFLINE_SENTENCE && <Text style={styles.warning}>{warning}</Text>}
       {(batchHead !== '' || partialLine !== '') && (
         <View
           testID="batch-banner"

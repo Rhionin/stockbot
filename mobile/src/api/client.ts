@@ -16,6 +16,7 @@ import {
   scanCommitPath,
   scansQuery,
   notifyApiSuccess,
+  raiseOfflineBanner,
   SERVER_ERROR_FALLBACK,
   unreachableFrom,
 } from '../../../frontend/src/api/contract';
@@ -90,7 +91,10 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       res = await fetchImpl(`${credentials.serverUrl}${path}`, { ...init, headers });
     } catch (error) {
       const unreachable = unreachableFrom(error);
-      if (unreachable !== null) throw unreachable;
+      if (unreachable !== null) {
+        raiseOfflineBanner();
+        throw unreachable;
+      }
       throw new ApiError(0, 'Stockbot did not answer at that address.');
     }
 

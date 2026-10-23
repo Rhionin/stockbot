@@ -1,5 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { OFFLINE_SENTENCE, subscribeApiSuccess } from '../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, raiseOfflineBanner, subscribeApiSuccess } from '../../frontend/src/api/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
@@ -75,13 +75,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             setState({ status: 'signedOut', error: error.message });
             return;
           }
-          const warning = error instanceof Error ? error.message : OFFLINE_SENTENCE;
+          if (!(error instanceof Error) || error.message === OFFLINE_SENTENCE) {
+            if (!(error instanceof Error)) raiseOfflineBanner();
+            setState({
+              status: 'ready',
+              serverUrl: saved.serverUrl,
+              password: saved.password,
+              client,
+              warning: '',
+            });
+            return;
+          }
           setState({
             status: 'ready',
             serverUrl: saved.serverUrl,
             password: saved.password,
             client,
-            warning,
+            warning: error.message,
           });
         }
       } catch (error) {

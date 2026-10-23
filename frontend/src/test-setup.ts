@@ -3,11 +3,15 @@
 import '@testing-library/jest-dom/vitest';
 import { afterEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
+import { clearOfflineBanner } from './api/contract';
 
 // vite.config.ts does not set test.globals, so React Testing Library's
 // automatic afterEach cleanup (which relies on a global afterEach) never
 // registers. Wire it up explicitly so each test starts with a clean DOM.
-afterEach(cleanup);
+afterEach(() => {
+  clearOfflineBanner();
+  cleanup();
+});
 
 // jsdom does not implement matchMedia, but Mantine's color scheme detection
 // calls it on every mount. Stub it so components wrapped in MantineProvider
