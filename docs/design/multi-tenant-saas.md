@@ -358,7 +358,7 @@ One CDK app with stages `dev` and `prod`, deployed to the `stockbot-dev` and `st
 | Stack | Constructs |
 |---|---|
 | `EdgeGlobal` (**us-east-1**, `crossRegionReferences: true`) | ACM certificate for `app.stockbot.rhionin.com` (DNS validation); `wafv2.CfnWebACL` with `Scope: CLOUDFRONT` (rate-based rule); the ACM certificate for a Cognito custom domain, if one is used. Nothing else. See §8.1. |
-| `Edge` (us-west-2, `crossRegionReferences: true`) | `cloudfront.Distribution` for `app.stockbot.rhionin.com` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; certificate and web ACL taken from `EdgeGlobal`; optional Route 53 records (or a CNAME at Cloudflare) |
+| `Edge` (us-west-2, `crossRegionReferences: true`) | `cloudfront.Distribution` for `app.stockbot.rhionin.com` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; certificate and web ACL taken from `EdgeGlobal`; DNS CNAME for the app at Cloudflare (no Route 53) |
 | `Data` | `dsql.CfnCluster` (L1, `deletionProtectionEnabled: true`); AWS Backup plan (daily, 14-day retention); exports bucket (block public access, SSE-KMS, lifecycle 7 days, noncurrent 1 day); KMS CMK |
 | `Identity` | `cognito.UserPool` (Essentials feature plan, email sign-in, SES email config), `UserPoolClient`s (web BFF confidential client, Expo public PKCE client), managed login domain, post-confirmation trigger; SES identity for the sending domain |
 | `App` | `lambda.Function` api + jobs + migrate (Go arm64, `provided.al2023`), `FunctionUrl` (auth IAM for OAC); AppSync Events API (`EventApi` + `hh` channel namespace, Lambda authorizer, IAM publish); EventBridge Scheduler group + role; SSM parameters (names only; values set out-of-band); migrate custom resource |
@@ -376,7 +376,7 @@ Options for the certificate and web ACL:
 2. **Deploy the whole `Edge` stack in us-east-1.** It then needs the S3 bucket and Function URL domain from us-west-2 stacks, which is a cross-region reference in the other direction, so it saves nothing and splits the app's front door across Regions.
 3. **Create the certificate once, outside the app, and pass its ARN as CDK context or an SSM parameter.** No cross-region machinery, but renewals and the WAF ACL are no longer managed by CDK. Acceptable fallback if `crossRegionReferences` causes trouble.
 
-DNS validation: if `rhionin.com` stays on Cloudflare, use `CertificateValidation.fromDns()` with no hosted zone and add the validation CNAME at Cloudflare by hand. The first deploy of `EdgeGlobal` waits until the certificate is issued.
+DNS validation: `rhionin.com` stays on Cloudflare (decided), so use `CertificateValidation.fromDns()` with no hosted zone. Network Engineer adds the validation CNAME at Cloudflare (API, with CJ's OK). The first deploy of `EdgeGlobal` waits until the certificate is issued.
 
 The Lambda Function URL, the SPA bucket and the exports bucket are all in us-west-2. CloudFront reaches them over the AWS network, so the browser-to-edge latency is unaffected by the origin Region; the API round trip from Utah to us-west-2 is the latency CJ's decision improves.
 
@@ -443,5 +443,5 @@ The Lambda Function URL, the SPA bucket and the exports bucket are all in us-wes
 - Is the product/barcode catalog global across households (shared Open Food Facts enrichment and user-contributed names)? Privacy implication: a user-entered product name could leak across households. TODO(PM)
 - USB dongle host vs Bluetooth: still TODO(PM).
 - Paid tier billing provider and limits: TODO(PM).
-- Hosted domain name: **decided** (CJ, 2026-10-22): `app.stockbot.rhionin.com`, mail from `stockbot.rhionin.com`. Whether DNS for these records stays on Cloudflare or moves to Route 53: TODO(CJ).
+- Hosted domain name: **decided** (CJ, 2026-10-22): `app.stockbot.rhionin.com`, mail from `stockbot.rhionin.com`. DNS stays on Cloudflare (decided, CJ via Network Engineer, 2026-10-22): ACM validation, SES DKIM, MAIL FROM and DMARC records are created in Cloudflare, not Route 53.
 - Pi self-host: does it get the new auth, or keep the shared password? TODO(PM)
