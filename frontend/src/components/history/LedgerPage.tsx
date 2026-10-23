@@ -264,6 +264,7 @@ export function LedgerPage() {
               expanded={pairCopy !== null && pairCopy.hideLine !== ''}
               keepMounted
               keepMountedMode="display-none"
+              transitionDuration={0}
             >
               {undoing !== null && pair && (
                 <p className="ledger-empty">{pairUndoHideLine(undoing.productName)}</p>

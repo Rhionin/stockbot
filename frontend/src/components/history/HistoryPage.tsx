@@ -263,6 +263,7 @@ export function HistoryPage() {
               expanded={pairCopy !== null && pairCopy.hideLine !== ''}
               keepMounted
               keepMountedMode="display-none"
+              transitionDuration={0}
             >
               {undoing !== null && pair && (
                 <p className="history-empty">{pairUndoHideLine(undoing.productName)}</p>
