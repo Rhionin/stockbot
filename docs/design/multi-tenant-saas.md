@@ -1,11 +1,16 @@
 # Stockbot for more than one household: technical design (AWS, serverless)
 
-Status: Proposed for approval. Decisions: hosted on AWS + CDK; Aurora DSQL; AppSync Events push with polling fallback (CJ, 2026-10-22).
+Status: Proposed for approval. Decisions: hosted on AWS + CDK; Aurora DSQL; AppSync Events push with polling fallback; region **us-west-2 (Oregon)**; AWS Organization with `stockbot-dev` and `stockbot-prod` member accounts; app at `app.stockbot.rhionin.com` (CJ, 2026-10-22).
 It reworks the PR #224 design doc, which assumed a Hetzner VM + Postgres + RLS.
-Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labeled **(opinion)**. "PM req" means a requirement stated by PM in PR #224 review. "PM decision (2026-10-22)" is a scope call PM made that day. Anything PM has not specified is marked **TODO(PM)**. Cost arithmetic is in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md).
+Facts are cited with a URL (accessed 2026-10-22). The home region is **us-west-2**; us-east-1 appears only where AWS requires it for CloudFront (§8.1); opinions are labeled **(opinion)**. "PM req" means a requirement stated by PM in PR #224 review. "PM decision (2026-10-22)" is a scope call PM made that day. Anything PM has not specified is marked **TODO(PM)**. Cost arithmetic is in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md).
 
 ## Decision log
 
+- **2026-10-22, 22:16 MDT (CJ, relayed by Network Engineer).** Region, accounts and domains:
+  - **Home region us-west-2 (Oregon)** instead of us-east-1, for lower latency from Utah. Every regional resource (DSQL, Lambda, AppSync Events, Cognito, SES, Scheduler, KMS, SSM, Backup, CloudWatch, SNS, S3) lives in us-west-2. Every service in §3 is available there, and every unit price used in the costs doc is identical to us-east-1, so the totals do not change (costs doc §1).
+  - **The only us-east-1 resources** are the ones CloudFront requires: the ACM certificate and the `CLOUDFRONT`-scope WAF web ACL, plus the ACM certificate for a Cognito custom domain if one is used. They live in a small `EdgeGlobal` stack (§8.1).
+  - **AWS Organization** under CJ's existing account, with member accounts **`stockbot-dev`** and **`stockbot-prod`**. Each stage deploys to its own account.
+  - **Domains:** the hosted app is **`app.stockbot.rhionin.com`**. SES sends from **`stockbot.rhionin.com`**. The custom MAIL FROM MX record points at **`feedback-smtp.us-west-2.amazonses.com`** (§5). `stockbot.rhionin.com` itself stays on the Pi.
 - **2026-10-22.** CJ chose Aurora DSQL + AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected.
   - **DSQL + polling only:** rejected. About $1.79/month at 3 households and $3.65 at 10; the CloudFront Free plan fills at ~14 households, and 2 s polling keeps the phone radio from idling.
   - **Aurora Serverless v2 + AppSync Events push:** rejected. About $6/month at 3 households and $15 at 10, with a 15–30 s first load after a pause.
@@ -25,6 +30,9 @@ Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labele
   2. **AWS**, infrastructure in **CDK**.
   3. A **serverless DB**, low cost, tiny traffic.
   4. **Aurora DSQL + AppSync Events push** on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. See the decision log.
+  5. **Region us-west-2 (Oregon)**; only CloudFront's certificate and web ACL are in us-east-1 (§8.1).
+  6. **An AWS Organization** under CJ's existing account, with member accounts `stockbot-dev` and `stockbot-prod`.
+  7. **Domains:** app at `app.stockbot.rhionin.com`; SES sends from `stockbot.rhionin.com`.
 - PM decisions (2026-10-22):
   1. **Export.** The owner exports household data as JSON (canonical, versioned schema) plus CSV for spreadsheets. The hosted app imports the JSON. A Pi-side importer is later and out of launch scope. The export does not rebuild a SQLite file.
   2. **Erasure.** Day 30 from live data and day 44 from backups is accepted. User-facing copy: "Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that."
@@ -36,7 +44,7 @@ Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labele
 
 ## 2. Options, costs, tradeoffs
 
-Full arithmetic and citations are in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md). Summary (USD/month, us-east-1):
+Full arithmetic and citations are in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md). Summary (USD/month, us-west-2; every unit price is identical to us-east-1):
 
 | Option | Idle | Low traffic | Main tradeoff |
 |---|---|---|---|
@@ -80,7 +88,7 @@ SQLite-specific SQL (`INSERT OR …`, `ON CONFLICT`, `strftime`, `datetime(`, `j
 
 ## 3. Chosen architecture (Option C, CJ 2026-10-22)
 
-**Lambda arm64 (Go, `provided.al2023`) outside any VPC, behind CloudFront (flat-rate Free plan) → Lambda Function URL with OAC; Aurora DSQL single-Region; AppSync Events for live updates (hint-only push on visible screens; 2 s / 10 s polling only while disconnected); S3 for the SPA and exports; Cognito Essentials + SES for identity; EventBridge Scheduler for timers; CloudWatch → SNS email for the operator; AWS Budgets.**
+**In us-west-2 (Oregon): Lambda arm64 (Go, `provided.al2023`) outside any VPC, behind CloudFront (flat-rate Free plan) → Lambda Function URL with OAC; Aurora DSQL single-Region; AppSync Events for live updates (hint-only push on visible screens; 2 s / 10 s polling only while disconnected); S3 for the SPA and exports; Cognito Essentials + SES for identity; EventBridge Scheduler for timers; CloudWatch → SNS email for the operator; AWS Budgets.**
 
 Why: it is the only option where the DB is serverless, truly scales to zero with no resume pause, and needs no VPC, NAT, public IPv4, ALB, or DB secret. It stays Postgres-compatible, so the SQL port is mechanical, unlike the DynamoDB rewrite. With AppSync Events push it costs about $1.80/month at 3 households (see the costs doc).
 
@@ -129,7 +137,7 @@ Effort estimate (opinion): 1–2 weeks for statelessness plus 1–2 weeks for th
 
 ### 3.1 Live updates: polling vs push
 
-> **Status (2026-10-22):** CJ chose Aurora DSQL + AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. This section is the record of the alternatives. PM's user-facing requirement is unchanged: while the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. Cost arithmetic is in [multi-tenant-saas-costs.md §6](multi-tenant-saas-costs.md). Prices are us-east-1, accessed 2026-10-22.
+> **Status (2026-10-22):** CJ chose Aurora DSQL + AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. This section is the record of the alternatives. PM's user-facing requirement is unchanged: while the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. Cost arithmetic is in [multi-tenant-saas-costs.md §6](multi-tenant-saas-costs.md). Prices are us-west-2 (identical to us-east-1 for every line), accessed 2026-10-22.
 
 #### What stays the same in every style
 
@@ -289,6 +297,9 @@ The three launch options, for the record:
 ## 5. Auth
 
 - **Cognito user pool, Essentials tier, with SES, is required** (PM decision 2026-10-22). 10k MAU free; email OTP, passkeys, managed login, refresh token rotation; https://aws.amazon.com/cognito/pricing/. Email must go through SES: Cognito's default email sender is limited to **50 emails per day per AWS account**, which can't be raised and resets at 09:00 UTC (https://docs.aws.amazon.com/cognito/latest/developerguide/quotas.html, accessed 2026-10-22). Request SES production access and a verified sending domain first (§12) so that review wait runs in parallel with the build.
+- **SES in us-west-2 (CJ, 2026-10-22).** The identity is `stockbot.rhionin.com`, verified with Easy DKIM in us-west-2 in each account that sends. The SES sandbox and production access are per account and per Region, so production access is requested for `stockbot-prod` in us-west-2; `stockbot-dev` may stay in the sandbox. The Cognito user pool's SES configuration must point at the us-west-2 identity.
+  - **Custom MAIL FROM:** a subdomain of the identity, for example `mail.stockbot.rhionin.com` (the exact name is Network Engineer's call). It needs an MX record `10 feedback-smtp.us-west-2.amazonses.com` and an SPF TXT record `v=spf1 include:amazonses.com ~all`. The feedback endpoint is Region-specific: SES puts the one for the Region where MAIL FROM is configured into the MX value (https://docs.aws.amazon.com/ses/latest/dg/regions.html, accessed 2026-10-22). The earlier us-east-1 endpoint is not used.
+  - DKIM CNAMEs sit under `_domainkey.stockbot.rhionin.com`, DMARC at `_dmarc.stockbot.rhionin.com`, and MAIL FROM on its own subdomain, so no record is added at `stockbot.rhionin.com` itself and the Pi's record is untouched.
 - Considered and not chosen: custom auth in Go (bcrypt + email codes via SES). It is cheaper only in principle, and owning reset, verification, and token security costs more **(opinion)**.
 - Signup (PM req): email only → verify the email (code) → set the household name → the #296 restock-mode question (auto or ask first) → phone-camera scanning. People must be verified before they can invite.
   - Implemented with Cognito managed login or SDK flows. A post-confirmation Lambda trigger creates the `users` row. The household is created by an explicit API call after verification.
@@ -342,17 +353,32 @@ The three launch options, for the record:
 
 ## 8. CDK outline (TypeScript)
 
-One CDK app with environments `dev` and `prod`, in separate AWS accounts if possible **(opinion; at minimum separate stacks with a stage prefix)**.
+One CDK app with stages `dev` and `prod`, deployed to the `stockbot-dev` and `stockbot-prod` member accounts of CJ's AWS Organization (CJ, 2026-10-22). The home region is **us-west-2**. Each account is bootstrapped in us-west-2 **and** us-east-1, because the `EdgeGlobal` stack (§8.1) deploys to us-east-1.
 
 | Stack | Constructs |
 |---|---|
-| `Edge` | `cloudfront.Distribution` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; ACM cert in us-east-1; WAF WebACL (rate-based rule); optional Route 53 records (or a CNAME at Cloudflare) |
+| `EdgeGlobal` (**us-east-1**, `crossRegionReferences: true`) | ACM certificate for `app.stockbot.rhionin.com` (DNS validation); `wafv2.CfnWebACL` with `Scope: CLOUDFRONT` (rate-based rule); the ACM certificate for a Cognito custom domain, if one is used. Nothing else. See §8.1. |
+| `Edge` (us-west-2, `crossRegionReferences: true`) | `cloudfront.Distribution` for `app.stockbot.rhionin.com` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; certificate and web ACL taken from `EdgeGlobal`; optional Route 53 records (or a CNAME at Cloudflare) |
 | `Data` | `dsql.CfnCluster` (L1, `deletionProtectionEnabled: true`); AWS Backup plan (daily, 14-day retention); exports bucket (block public access, SSE-KMS, lifecycle 7 days, noncurrent 1 day); KMS CMK |
 | `Identity` | `cognito.UserPool` (Essentials feature plan, email sign-in, SES email config), `UserPoolClient`s (web BFF confidential client, Expo public PKCE client), managed login domain, post-confirmation trigger; SES identity for the sending domain |
 | `App` | `lambda.Function` api + jobs + migrate (Go arm64, `provided.al2023`), `FunctionUrl` (auth IAM for OAC); AppSync Events API (`EventApi` + `hh` channel namespace, Lambda authorizer, IAM publish); EventBridge Scheduler group + role; SSM parameters (names only; values set out-of-band); migrate custom resource |
 | `Ops` | Log groups (30-day retention), metric filters, alarms, SNS topic (email to CJ), `budgets.CfnBudget` (for example $10/month actual + forecast) |
 
 Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
+
+### 8.1 Region layout and the cross-region certificate
+
+CloudFront only accepts ACM certificates from us-east-1, and a web ACL for CloudFront (`Scope: CLOUDFRONT`) must also be created in us-east-1 (https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-wafv2-webacl.html). A Cognito custom domain has the same certificate rule, because Cognito serves it through CloudFront (https://docs.aws.amazon.com/cognito/latest/developerguide/troubleshooting.html). Everything else is in us-west-2. The CloudFront distribution is a global resource, so its stack can live in either Region.
+
+Options for the certificate and web ACL:
+
+1. **A small `EdgeGlobal` stack in us-east-1 holding only the certificate and the web ACL. The `Edge` stack stays in us-west-2. Both stacks set `crossRegionReferences: true`.** (Recommended, **opinion**.) CDK passes the ARNs through an SSM parameter written in the consumer's Region by a small custom resource; this is the pattern in the `aws-cdk-lib/aws-cloudfront` README (https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_cloudfront-readme.html). Cost: about $0 (ACM public certificates are free; one SSM standard parameter and a custom-resource Lambda that runs only on deploy). Caveats: CDK marks `crossRegionReferences` experimental, and a referenced export can't be removed while the consumer still uses it, so replacing the certificate takes two deploys.
+2. **Deploy the whole `Edge` stack in us-east-1.** It then needs the S3 bucket and Function URL domain from us-west-2 stacks, which is a cross-region reference in the other direction, so it saves nothing and splits the app's front door across Regions.
+3. **Create the certificate once, outside the app, and pass its ARN as CDK context or an SSM parameter.** No cross-region machinery, but renewals and the WAF ACL are no longer managed by CDK. Acceptable fallback if `crossRegionReferences` causes trouble.
+
+DNS validation: if `rhionin.com` stays on Cloudflare, use `CertificateValidation.fromDns()` with no hosted zone and add the validation CNAME at Cloudflare by hand. The first deploy of `EdgeGlobal` waits until the certificate is issued.
+
+The Lambda Function URL, the SPA bucket and the exports bucket are all in us-west-2. CloudFront reaches them over the AWS network, so the browser-to-edge latency is unaffected by the origin Region; the API round trip from Utah to us-west-2 is the latency CJ's decision improves.
 
 ## 9. Security
 
@@ -398,11 +424,11 @@ Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
 
 ## 12. Rollout plan
 
-1. Request **SES production access** and verify the sending domain first, so the AWS review waiting period runs in parallel with the rest (PM decision 2026-10-22: Cognito + SES is required).
+1. Request **SES production access** for `stockbot-prod` in **us-west-2** and verify `stockbot.rhionin.com` (DKIM, custom MAIL FROM with MX `feedback-smtp.us-west-2.amazonses.com`, DMARC) first, so the AWS review waiting period runs in parallel with the rest (PM decision 2026-10-22: Cognito + SES is required).
 2. Port SQL to PG + DSQL constraints behind the store interface. CI runs both SQLite (the Pi) and PG.
 3. Add multi-tenancy (`household_id` everywhere, remove `user-1`) with isolation tests, in SQLite first so the Pi gets it too.
 4. Make the server stateless for Lambda (AppSync Events push on visible screens, 2 s / 10 s polling only while disconnected, Scheduler, lazy timers) behind a `HOSTED=1` mode. The Pi keeps SSE and in-process timers.
-5. CDK `dev` deploy; Cognito, invites, devices; nightly isolation tests against dev DSQL.
+5. CDK `dev` deploy to `stockbot-dev` (us-west-2, plus `EdgeGlobal` in us-east-1); Cognito, invites, devices; nightly isolation tests against dev DSQL.
 6. JSON export/import round-trip test; test the erasure job. No SQLite-file round-trip.
 7. Invite-only beta with one test household; alarms and budget live.
 8. Second household onboard. Later, an optional import of CJ's house (CJ's decision says the Pi stays).
@@ -417,5 +443,5 @@ Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
 - Is the product/barcode catalog global across households (shared Open Food Facts enrichment and user-contributed names)? Privacy implication: a user-entered product name could leak across households. TODO(PM)
 - USB dongle host vs Bluetooth: still TODO(PM).
 - Paid tier billing provider and limits: TODO(PM).
-- Hosted domain name and whether DNS stays on Cloudflare: TODO(CJ).
+- Hosted domain name: **decided** (CJ, 2026-10-22): `app.stockbot.rhionin.com`, mail from `stockbot.rhionin.com`. Whether DNS for these records stays on Cloudflare or moves to Route 53: TODO(CJ).
 - Pi self-host: does it get the new auth, or keep the shared password? TODO(PM)

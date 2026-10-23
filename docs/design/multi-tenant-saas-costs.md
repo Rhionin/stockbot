@@ -1,8 +1,10 @@
 # Stockbot hosted (multi-household): cost arithmetic
 
-Region: **us-east-1 (N. Virginia)**. All prices accessed **2026-10-22**. Every unit price comes from the AWS Price List bulk API (`https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/<ServiceCode>/current/us-east-1/index.json`). This is the same data the Pricing API `get_pricing` returns. I cross-checked against the public pricing page listed for each one. "PL" below means price-list offer file (service code, publication date).
+Region: **us-west-2 (Oregon)** (CJ, 2026-10-22). All prices accessed **2026-10-22**. Every unit price comes from the AWS Price List bulk API (`https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/<ServiceCode>/current/us-west-2/index.json`; the `pricing.us-east-1` host is the Price List endpoint, not the workload Region). This is the same data the Pricing API `get_pricing` returns. I cross-checked against the public pricing page listed for each one. "PL" below means price-list offer file (service code, publication date).
 
 Costs are USD per 730-hour month. They **exclude** the new-account Free Tier credits ($100–200) and the 12-month-only free tiers (API Gateway 1M calls, Aurora Data API 1M requests). They **include** the free tiers that never expire (Lambda, DynamoDB 25 GB storage, DSQL 100k DPU + 1 GB, Cognito 10k MAU, CloudWatch basics, EventBridge Scheduler 14M). If a number is my estimate rather than a published price, it is marked **(estimate)**.
+
+**Region re-check (2026-10-22).** When the home Region moved from us-east-1 to us-west-2, every line below was re-read from both Regions' offer files (`.../current/us-east-1/index.json` and `.../current/us-west-2/index.json`, same publication date in each pair). **Every unit price is identical**, so no total in this doc changed. Only the usage-type prefix changed (`USW2-` → `USW2-`). Files compared: AuroraDSQL, AWSLambda, AWSAppSync, AmazonCognito, AmazonSES, AWSEvents, awskms, AWSBackup, AmazonCloudWatch, AmazonS3, AmazonSNS, AWSSecretsManager, AmazonApiGateway, AmazonRDS, AmazonDynamoDB, AmazonECS (Fargate), AWSELB; EC2 t4g from the `ec2-ondemand-without-sec-sel` JSON for US West (Oregon). Not re-read: Lightsail, RDS Data API and RDS Multi-AZ, which come from the public pricing pages. The us-east-1 resources the design keeps (the ACM certificate and the CloudFront web ACL, §8.1 of the design doc) add nothing here: public ACM certificates are free, and WAF is covered by the CloudFront flat-rate Free plan.
 
 ## 1. Unit prices used
 
@@ -12,28 +14,28 @@ Costs are USD per 730-hour month. They **exclude** the new-account Free Tier cre
 | Lambda arm64 duration | $0.0000133334 / GB-s (tier 1) | AWSLambda, 2026-10-22 (`Lambda-GB-Second-ARM`) | same |
 | Lambda free tier | 1M req + 400,000 GB-s / month (does not expire) | Lambda pricing page | same |
 | Lambda Function URL | no extra charge (billed as Lambda requests/duration) | Lambda pricing page | same |
-| API Gateway HTTP API | $1.00 / 1M (first 300M) | AmazonApiGateway, 2026-10-13 (`USE1-ApiGatewayHttpRequest`) | https://aws.amazon.com/api-gateway/pricing/ |
+| API Gateway HTTP API | $1.00 / 1M (first 300M) | AmazonApiGateway, 2026-10-13 (`USW2-ApiGatewayHttpRequest`) | https://aws.amazon.com/api-gateway/pricing/ |
 | Aurora Serverless v2 PG (Standard) | $0.12 / ACU-hr | AmazonRDS, 2026-10-20 (`Aurora:ServerlessV2Usage`, Aurora PostgreSQL) | https://aws.amazon.com/rds/aurora/pricing/ |
 | Aurora Serverless v2 PG (I/O-Optimized) | $0.16 / ACU-hr (the PL says 0.16; a page example shows 0.156) | AmazonRDS, 2026-10-20 | same |
 | Aurora storage (Standard) | $0.10 / GB-mo | AmazonRDS (`Aurora:StorageUsage`) | same |
 | Aurora I/O (Standard) | $0.20 / 1M I/O | AmazonRDS (`Aurora:StorageIOUsage`) | same |
 | Aurora backup beyond 100% of cluster size | $0.021 / GB-mo | AmazonRDS (`Aurora:BackupUsage`) | same |
 | RDS Data API | $0.35 / 1M requests (per 32 KB); 1M/mo free for the first year only | Aurora pricing page | same |
-| RDS Proxy on Serverless v2 | $0.015 / ACU-hr (and Proxy **prevents auto-pause**) | AmazonRDS (`USE1-RDS:Proxy-ASv2-Usage`) | same |
-| Aurora DSQL DPU | $0.000008 / DPU ($8 / 1M) | AuroraDSQL, 2026-09-11 (`USE1-DSQL-DistributedProcessingUnits`) | https://aws.amazon.com/rds/aurora/dsql/pricing/ |
-| Aurora DSQL storage | $0.33 / GB-mo | AuroraDSQL (`USE1-DSQL-Storage-ByteHrs`) | same |
+| RDS Proxy on Serverless v2 | $0.015 / ACU-hr (and Proxy **prevents auto-pause**) | AmazonRDS (`USW2-RDS:Proxy-ASv2-Usage`) | same |
+| Aurora DSQL DPU | $0.000008 / DPU ($8 / 1M) | AuroraDSQL, 2026-09-11 (`USW2-DSQL-DistributedProcessingUnits`) | https://aws.amazon.com/rds/aurora/dsql/pricing/ |
+| Aurora DSQL storage | $0.33 / GB-mo | AuroraDSQL (`USW2-DSQL-Storage-ByteHrs`) | same |
 | Aurora DSQL free tier | 100,000 DPU + 1 GB storage / month (`Global-DSQL-*`, $0) | AuroraDSQL | same |
-| DSQL backup (AWS Backup warm) | $0.10 / GB-mo | AWSBackup, 2026-10-14 (`USE1-WarmStorage-ByteHrs-DSQL`) | https://aws.amazon.com/backup/pricing/ |
+| DSQL backup (AWS Backup warm) | $0.10 / GB-mo | AWSBackup, 2026-10-14 (`USW2-WarmStorage-ByteHrs-DSQL`) | https://aws.amazon.com/backup/pricing/ |
 | DynamoDB on-demand writes | $0.625 / 1M WRU | AmazonDynamoDB, 2026-09-11 | https://aws.amazon.com/dynamodb/pricing/on-demand/ |
 | DynamoDB on-demand reads | $0.125 / 1M RRU | same | same |
 | DynamoDB storage | first 25 GB free, then $0.25 / GB-mo | same | same |
 | DynamoDB PITR | $0.20 / GB-mo | same | same |
 | RDS db.t4g.micro PostgreSQL Single-AZ | $0.016 / hr (Multi-AZ $0.032) | AWS pricing JSON `rds-postgresql-ondemand` (b0.p.awsstatic.com), 2026-10-22 | https://aws.amazon.com/rds/postgresql/pricing/ |
 | RDS gp3 storage | $0.115 / GB-mo (PG minimum 20 GB) | AmazonRDS (`RDS:GP3-Storage`) | same |
-| EC2 t4g.nano / t4g.micro | $0.0042 / $0.0084 per hr | AWS pricing JSON `ec2-ondemand` Linux, us-east-1 | https://aws.amazon.com/ec2/pricing/on-demand/ |
+| EC2 t4g.nano / t4g.micro | $0.0042 / $0.0084 per hr | AWS pricing JSON `ec2-ondemand` Linux, us-west-2 (identical to us-east-1) | https://aws.amazon.com/ec2/pricing/on-demand/ |
 | Lightsail Linux 1 GB, IPv4 included | $7 / mo (0.5 GB: $5; IPv6-only 1 GB: $5) | Lightsail pricing page | https://aws.amazon.com/lightsail/pricing/ |
-| Fargate Linux/ARM | $0.0000089944 / vCPU-s = $0.03238 / vCPU-hr; $0.0000009889 / GB-s = $0.00356 / GB-hr | Fargate page, us-east-1 example | https://aws.amazon.com/fargate/pricing/ |
-| ALB | $0.0225 / hr + $0.008 / LCU-hr | ELB page, us-east-1 example | https://aws.amazon.com/elasticloadbalancing/pricing/ |
+| Fargate Linux/ARM | $0.0000089944 / vCPU-s = $0.03238 / vCPU-hr; $0.0000009889 / GB-s = $0.00356 / GB-hr | AmazonECS PL, 2026-10-19 (`USW2-Fargate-ARM-vCPU-Hours:perCPU`, `USW2-Fargate-ARM-GB-Hours`) | https://aws.amazon.com/fargate/pricing/ |
+| ALB | $0.0225 / hr + $0.008 / LCU-hr | AWSELB PL, 2026-09-11 (`USW2-LoadBalancerUsage`, `USW2-LCUUsage`) | https://aws.amazon.com/elasticloadbalancing/pricing/ |
 | Public IPv4 (in-use or idle) | $0.005 / hr = $3.65 / mo | VPC page | https://aws.amazon.com/vpc/pricing/ |
 | NAT gateway | $0.045 / hr = $32.85 / mo + $0.045 / GB | VPC page | same |
 | Interface VPC endpoint | $0.01 / AZ-hr = $7.30 / AZ-mo (+$0.01 / GB) | API GW page, PrivateLink example | https://aws.amazon.com/privatelink/pricing/ |
@@ -49,7 +51,7 @@ Costs are USD per 730-hour month. They **exclude** the new-account Free Tier cre
 | CloudWatch Logs | $0.50 / GB ingested (Standard); $0.03 / GB-mo stored | AmazonCloudWatch, 2026-10-07 | https://aws.amazon.com/cloudwatch/pricing/ |
 | CloudWatch alarm | $0.10 / standard alarm metric-mo | AmazonCloudWatch | same |
 | CloudWatch free tier | 5 GB logs, 10 alarms, 10 custom metrics (per the free-tier section; verify) | CloudWatch page | same |
-| EventBridge Scheduler | first 14M scheduled invocations / mo free, then $1 / 1M | AWSEvents, 2026-09-24 (`USE1-ScheduledInvocation`) | https://aws.amazon.com/eventbridge/pricing/ |
+| EventBridge Scheduler | first 14M scheduled invocations / mo free, then $1 / 1M | AWSEvents, 2026-09-24 (`USW2-ScheduledInvocation`) | https://aws.amazon.com/eventbridge/pricing/ |
 | AWS Budgets | budget monitoring and notifications free; first 2 action-enabled budgets free | Budgets page | https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/ |
 
 ## 2. Workload assumptions (estimate)
@@ -149,16 +151,16 @@ Lambda statelessness rework (A, B, C) means replacing the in-memory state: the S
 
 This section compares four live-update styles on the two serverless databases still in play: **C. Aurora DSQL** and **A. Aurora Serverless v2 (min 0 ACU) via Data API**.
 
-It uses the same conventions as §1–§5: USD per 30-day month, us-east-1, the never-expiring free tiers included, and the 12-month free tiers excluded. Every usage figure is my **(estimate)**. Prices were accessed 2026-10-22. Style (a) is today's PM-decided design. At 3 households it reproduces §2 and §4C exactly: 199,500 requests and 99,750 DPU.
+It uses the same conventions as §1–§5: USD per 30-day month, us-west-2, the never-expiring free tiers included, and the 12-month free tiers excluded. Every usage figure is my **(estimate)**. Prices were accessed 2026-10-22. Style (a) is today's PM-decided design. At 3 households it reproduces §2 and §4C exactly: 199,500 requests and 99,750 DPU.
 
 ### 6.1 Unit prices added
 
 | Item | Price | Service code, publication date (`usagetype`) | Pricing page |
 |---|---|---|---|
-| API Gateway WebSocket messages | $1.00 / 1M (first 1B), then $0.80 / 1M | AmazonApiGateway, 2026-10-13T00:30:44Z (`USE1-ApiGatewayMessage`) | https://aws.amazon.com/api-gateway/pricing/ |
-| API Gateway WebSocket connection minutes | $0.25 / 1M minutes | AmazonApiGateway, 2026-10-13T00:30:44Z (`USE1-ApiGatewayMinute`) | same |
-| AppSync Events operations | $1.00 / 1M operations | AWSAppSync, 2026-09-11T12:45:25Z (`USE1-EventAPI-Operation`) | https://aws.amazon.com/appsync/pricing/ |
-| AppSync Events connection minutes | $0.08 / 1M minutes | AWSAppSync, 2026-09-11T12:45:25Z (`USE1-EventAPI-ConnectionDuration`) | same |
+| API Gateway WebSocket messages | $1.00 / 1M (first 1B), then $0.80 / 1M | AmazonApiGateway, 2026-10-13T00:30:44Z (`USW2-ApiGatewayMessage`) | https://aws.amazon.com/api-gateway/pricing/ |
+| API Gateway WebSocket connection minutes | $0.25 / 1M minutes | AmazonApiGateway, 2026-10-13T00:30:44Z (`USW2-ApiGatewayMinute`) | same |
+| AppSync Events operations | $1.00 / 1M operations | AWSAppSync, 2026-09-11T12:45:25Z (`USW2-EventAPI-Operation`) | https://aws.amazon.com/appsync/pricing/ |
+| AppSync Events connection minutes | $0.08 / 1M minutes | AWSAppSync, 2026-09-11T12:45:25Z (`USW2-EventAPI-ConnectionDuration`) | same |
 | CloudFront flat-rate plans | Free $0 (1M requests/mo), Pro $15/mo (10M requests/mo), no overage charges | CloudFront pricing page | https://aws.amazon.com/cloudfront/pricing/ |
 
 The prices come from the AWS bulk Price List files for those service codes. The Pricing MCP `get_pricing` cross-check failed with "Unable to locate credentials".
