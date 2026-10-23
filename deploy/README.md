@@ -840,7 +840,7 @@ For automatic updates, you can install systemd units that periodically check for
 
 **Before enabling automatic updates, understand:**
 - The service runs as root because it drives the Docker daemon. The update script does not call `sudo`.
-- Enabling automatic updates means **every push to master deploys unattended** with no approval step
+- Enabling automatic updates means **every push to master deploys unattended** with no approval step. Two pushes close together share one publish queue, and `:latest` moves only for the commit that is still the tip of master. See [Deploy when the image is published](#deploy-when-the-image-is-published).
 - Container recreation drops the attached scanner session, but the listener reconnects on its own within 30 seconds
 - If you pin to a specific commit SHA, leave automatic updates disabled (they would run forever finding nothing)
 - A pull that does not change a running image does nothing else. When an image does change, the updater keeps it only if `GET /health` on `127.0.0.1:$HOST_PORT` is ok and `GET /api/build`'s `commit` matches the pantry image label `org.opencontainers.image.revision`. Otherwise it starts the previous image digest again. That does not undo a database migration.
@@ -870,6 +870,8 @@ For automatic updates, you can install systemd units that periodically check for
 ### Deploy when the image is published
 
 The timer above is the fallback. After `ghcr.io/rhionin/pantry:latest` is pushed, GitHub Actions POSTs a signed request to `https://stockbot.rhionin.com/api/deploy-hook`, and tries `https://pantry.rhionin.com/api/deploy-hook` only if the new name does not answer. Caddy does not ask for the household password on that path. The app checks an HMAC of the timestamp and body, rejects a replay older than five minutes (and a timestamp more than a minute ahead), and writes `/opt/pantry/deploy-trigger/request`. `pantry-update.path` starts `pantry-update.service`, which is the same pull the timer runs. Two hooks that arrive together share one pull; a hook that arrives during a pull causes one more pull. The container cannot call `systemctl` itself. Nothing on the router is opened: the request comes in through the existing Cloudflare tunnel (`cloudflared` to `caddy:80`).
+
+Pushes to `master` publish through one queue, `deploy-master`. One image job runs at a time. A newer push replaces a publish that is still waiting, and a publish that has already started is left to finish. That run always pushes the immutable tag `ghcr.io/rhionin/pantry:<commit>`. It fetches `master` and moves `:latest` and `:master`, then calls the deploy hook, only when that commit is still the tip. When a newer commit is already the tip, the job succeeds and leaves those tags where they are. `pantry-update.timer` keeps pulling `:latest`, so the Pi follows the tip instead of whichever build happened to finish last.
 
 Do this once, after the files from this change are on the Pi:
 

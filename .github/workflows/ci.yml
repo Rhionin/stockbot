@@ -223,6 +223,16 @@ jobs:
     # tell the two runs apart. The reusable run passes publish_image skip
     # and skips this job. The push-triggered run is the only one that tags
     # :latest and :master, and the only one that calls the deploy hook below.
+    #
+    # Master publishes share deploy-master so two merges cannot push :latest
+    # at the same time. cancel-in-progress is false: the build that has
+    # started finishes (and still pushes its immutable sha tag), and GitHub
+    # drops a publish that is only waiting when a newer master push joins
+    # the group. Pull requests and the Release skip use a unique group so
+    # they do not queue behind production.
+    concurrency:
+      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.publish_image != 'skip' && 'deploy-master' || format('image-{0}', github.run_id) }}
+      cancel-in-progress: false
     if: inputs.publish_image != 'skip' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.repository == 'Rhionin/stockbot'))
     steps:
       - name: Checkout code
@@ -243,28 +253,28 @@ jobs:
 
       - name: Determine image tags
         id: tags
+        env:
+          # Branch names are untrusted. Keep the value in the environment so
+          # it cannot break out of the script.
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Build common tags array - always include commit hash
+          # Always push the immutable commit tag. Moving tags are applied
+          # later, and only when this commit is still the tip of master.
           TAGS="ghcr.io/rhionin/pantry:${{ github.sha }}"
           SIDECAR="ghcr.io/rhionin/pantry-grocy-sync:${{ github.sha }}"
-          
-          # Add branch name tag for all builds (PR and master)
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BRANCH_NAME="${{ github.head_ref }}"
+            BRANCH_NAME="${HEAD_REF}"
             # Remove 'refs/heads/' prefix if present
             BRANCH_NAME="${BRANCH_NAME#refs/heads/}"
             # Replace slashes with dashes for valid tag
             BRANCH_NAME="${BRANCH_NAME//\//-}"
             TAGS="$TAGS,ghcr.io/rhionin/pantry:$BRANCH_NAME"
             SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:$BRANCH_NAME"
-          else
-            # On master commit, add latest and master tags
-            TAGS="$TAGS,ghcr.io/rhionin/pantry:latest,ghcr.io/rhionin/pantry:master"
-            SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:latest,ghcr.io/rhionin/pantry-grocy-sync:master"
           fi
-          
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "sidecar_tags=$SIDECAR" >> $GITHUB_OUTPUT
+
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "sidecar_tags=$SIDECAR" >> "$GITHUB_OUTPUT"
 
       - name: Read commit identity
         id: commit
@@ -310,11 +320,43 @@ jobs:
           cache-to: type=gha,mode=max,scope=grocy-sync
           tags: ${{ steps.tags.outputs.sidecar_tags }}
 
+      # The sha tags are already in the registry. Move :latest and :master
+      # only when this commit is still the tip, so a slower older build
+      # cannot overwrite the tag pantry-update.timer pulls.
+      - name: Publish moving tags when this commit is still the tip
+        id: moving
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          # Compare to the tip. A commit that master has moved past is still
+          # an ancestor of master, so an ancestry check would still move :latest.
+          git fetch --no-tags --depth=1 origin +refs/heads/master:refs/remotes/origin/master
+          tip="$(git ls-remote origin refs/heads/master | awk 'NR == 1 { print $1 }')"
+          if [ -z "${tip}" ]; then
+            echo "Could not read refs/heads/master from origin."
+            exit 1
+          fi
+          if [ "${tip}" != "${GITHUB_SHA}" ]; then
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            echo "${GITHUB_SHA} is not the tip of master (${tip}). Pushed the immutable tag only; leaving :latest and :master unchanged and skipping the deploy hook."
+            exit 0
+          fi
+          docker buildx imagetools create \
+            --tag "ghcr.io/rhionin/pantry:latest" \
+            --tag "ghcr.io/rhionin/pantry:master" \
+            "ghcr.io/rhionin/pantry:${GITHUB_SHA}"
+          docker buildx imagetools create \
+            --tag "ghcr.io/rhionin/pantry-grocy-sync:latest" \
+            --tag "ghcr.io/rhionin/pantry-grocy-sync:master" \
+            "ghcr.io/rhionin/pantry-grocy-sync:${GITHUB_SHA}"
+          echo "publish=true" >> "${GITHUB_OUTPUT}"
+
       # The image is already in the registry. This asks the Pi to pull it now.
       # The step is a no-op until DEPLOY_HOOK_SECRET exists, so a repo without
       # that secret still publishes the image and the Pi timer still deploys.
+      # It runs only after the moving tags above were published.
       - name: Ask the Stockbot host to deploy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.moving.outputs.publish == 'true'
         env:
           DEPLOY_HOOK_SECRET: ${{ secrets.DEPLOY_HOOK_SECRET }}
         run: |

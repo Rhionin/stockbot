@@ -34,7 +34,17 @@ have .github/workflows/ci.yml 'https://pantry.rhionin.com/api/deploy-hook' "work
 have .github/workflows/ci.yml 'DEPLOY_HOOK_SECRET is not set; skipping the deploy hook' "workflow skips when the repo secret is unset"
 have .github/workflows/ci.yml "github.ref == 'refs/heads/master'" "workflow notifies only after a master push"
 have .github/workflows/ci.yml "inputs.publish_image != 'skip'" "reusable Release run does not publish the image"
+have .github/workflows/ci.yml 'deploy-master' "master image publish shares one queue"
+have .github/workflows/ci.yml 'cancel-in-progress: false' "a running master publish is not cancelled"
+have .github/workflows/ci.yml 'git fetch --no-tags --depth=1 origin +refs/heads/master:refs/remotes/origin/master' "workflow fetches master before moving tags"
+have .github/workflows/ci.yml 'git ls-remote origin refs/heads/master' "workflow compares this commit to the tip of master"
+have .github/workflows/ci.yml 'leaving :latest and :master unchanged' "a stale master publish does not move :latest"
+have .github/workflows/ci.yml "steps.moving.outputs.publish == 'true'" "deploy hook runs only after moving tags are published"
 have .github/workflows/release.yml 'publish_image: skip' "Release does not publish :latest and :master"
+have deploy/README.md 'deploy-master' "README documents the master publish queue"
+if grep -q "TAGS=\"\$TAGS,ghcr.io/rhionin/pantry:latest" .github/workflows/ci.yml; then
+  fail "build tags still include :latest before the tip check"
+fi
 
 have deploy/Caddyfile '@deploy path /api/deploy-hook' "certificate Caddyfile exempts the hook"
 have deploy/Caddyfile.tunnel '@deploy path /api/deploy-hook' "tunnel Caddyfile exempts the hook"
