@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,9 @@ func TestScanCommitStockIn(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.status", value: "committed"},
 					{path: "$.id", value: "scan-1"},
+					{path: "$.code", absent: true},
 				},
+				bodyExcludes: []string{"no_item", "Not in your pantry", "Nothing on hand to take out."},
 			},
 			afterRequest: func(env testEnv) {
 				// Verify one instance was created and its expiry is set.
@@ -207,6 +210,10 @@ func TestScanCommitStockIn(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-committed/commit",
 				expectedStatus: http.StatusBadRequest,
+				assertions: []assertion{
+					{path: "$.error", value: "This scan was already handled."},
+					{path: "$.code", value: "not_pending"},
+				},
 			},
 		},
 		{
@@ -227,6 +234,10 @@ func TestScanCommitStockIn(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-no-product/commit",
 				expectedStatus: http.StatusBadRequest,
+				assertions: []assertion{
+					{path: "$.error", value: "Choose which item this is first."},
+					{path: "$.code", value: "product_unresolved"},
+				},
 			},
 		},
 	}
@@ -430,8 +441,25 @@ func TestScanCommitStockOut(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/scan-out-empty/commit",
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-empty", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-out-empty"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 	}
 
@@ -469,7 +497,22 @@ func TestScanCommitStockInErrors(t *testing.T) {
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
 					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.error", value: "Which item is this?"},
+					{path: "$.suggestions", absent: true},
+					{path: "$.members", absent: true},
+				},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Choose which item this is first."},
+			},
+		},
+		{
+			name: "a missing scan is not found",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-not-in-queue/commit",
+				expectedStatus: http.StatusNotFound,
+				assertions: []assertion{
+					{path: "$.error", value: "This scan is no longer in the queue."},
+					{path: "$.code", value: "scan_not_found"},
 				},
 			},
 		},
@@ -497,6 +540,11 @@ func TestScanCommitStockInErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-zero-count/commit",
 				expectedStatus: http.StatusInternalServerError,
+				assertions: []assertion{
+					{path: "$.error", value: "Something went wrong. Try again."},
+					{path: "$.code", value: "internal"},
+				},
+				bodyExcludes: []string{"unit count must be at least 1"},
 			},
 		},
 	}
@@ -510,7 +558,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name: "shelved item is not in the pantry",
+			name: "shelved item is nothing on hand",
 			setup: func(env testEnv) {
 				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
 					ID: "prod-shelved", Name: "Wiped Soup", Category: "Test", UnitOfMeasure: "unit",
@@ -538,10 +586,23 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				path:           "/api/scans/scan-shelved/commit",
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.suggestions", absent: true},
 				},
+				bodyExcludes: []string{"no_item", "Which item is this?", "Not in your pantry", "No close match found.", "Choose which item this is first."},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-shelved", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-shelved"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 		{
 			name: "error when no item exists for user+product",
@@ -569,11 +630,22 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
 					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions", absent: true},
 				},
-				bodyExcludes: []string{`no item found for user`},
+				bodyExcludes: []string{"Not in your pantry", "Nothing on hand to take out.", "No close match found.", "Choose which item this is first.", `no item found for user`},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-no-item", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-no-item"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 		{
 			name: "error when specified instanceID does not exist",
@@ -608,7 +680,13 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-bad-inst/commit",
 				body:           `{"instanceId":"inst-does-not-exist"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
 		},
 		{
@@ -648,8 +726,103 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 				method:         "POST",
 				path:           "/api/scans/scan-removed-inst/commit",
 				body:           `{"instanceId":"inst-removed"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
 			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-removed-inst", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-removed-inst"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-removed-inst/instances",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0]", absent: true}},
+				},
+			),
+		},
+		{
+			name: "removed instance with another unit still on hand asks for a different one",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-stale", Name: "Test Product", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id) VALUES ('item-stale', 'user-stale', 'prod-stale')`); err != nil {
+					env.T.Fatalf("create item: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(), `
+					INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason)
+					VALUES ('inst-stale', 'item-stale', ?, ?, 'consumed')`,
+					now.Add(-48*time.Hour), now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create removed instance: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-still', 'item-stale', ?)`,
+					now.Add(-24*time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				scanRepo := scan.NewQueue(env.DB)
+				productID := "prod-stale"
+				direction := scan.StockOut
+				entry := scan.ScanEntry{
+					ID: "scan-stale", UserID: "user-stale", Barcode: "666777888999",
+					ScannedAt: now, Direction: &direction, UnitCount: 1,
+					ProductID: &productID, Status: scan.Pending,
+				}
+				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+					env.T.Fatalf("CreateScanEntry: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-stale/commit",
+				body:           `{"instanceId":"inst-stale"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-stale", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-stale"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory/item-stale/instances",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "inst-still"},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
 		},
 	}
 
@@ -827,6 +1000,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{ID: "prod-slices", Name: "Pear Slices", Category: "Fruit", UnitOfMeasure: "can"},
 			{ID: "prod-tuna", Name: "Canned Tuna", Category: "Canned", UnitOfMeasure: "can"},
 			{ID: "prod-beans", Name: "Black Beans", Category: "Canned", UnitOfMeasure: "can"},
+			{ID: "prod-empty-pear", Name: "Empty Pear", Category: "Fruit", UnitOfMeasure: "can"},
+			{ID: "prod-shelved-pear", Name: "Shelved Pear", Category: "Fruit", UnitOfMeasure: "can"},
 		}
 		for _, item := range products {
 			if err := env.ProductStore.CreateProduct(context.Background(), item); err != nil {
@@ -840,6 +1015,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{"999000111222", "prod-slices", "global", ""},
 			{"491", "prod-tuna", "user_override", "user-1"},
 			{"1552", "prod-beans", "global", ""},
+			{"110828385", "prod-empty-pear", "user_override", "user-1"},
+			{"011110828385", "prod-shelved-pear", "user_override", "user-1"},
 		}
 		for _, barcode := range barcodes {
 			if _, err := env.DB.ExecContext(context.Background(),
@@ -857,6 +1034,8 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			{"item-slices", "prod-slices", 2},
 			{"item-tuna", "prod-tuna", 1},
 			{"item-beans", "prod-beans", 2},
+			{"item-empty-pear", "prod-empty-pear", 0},
+			{"item-shelved-pear", "prod-shelved-pear", 2},
 		}
 		for _, item := range items {
 			if _, err := env.DB.ExecContext(context.Background(),
@@ -879,6 +1058,10 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 				}
 			}
 		}
+		if _, err := env.DB.ExecContext(context.Background(),
+			`UPDATE items SET shelved = 1 WHERE id = 'item-shelved-pear'`); err != nil {
+			env.T.Fatalf("shelve pear: %v", err)
+		}
 		scanRepo := scan.NewQueue(env.DB)
 		productID := "prod-off"
 		direction := scan.StockOut
@@ -894,7 +1077,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 
 	tests := []handlerTestCase{
 		{
-			name:  "stock-out with no item returns suggestions ranked by suffix",
+			name:  "stock-out of an unlinked barcode offers ranked links and writes nothing",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -902,7 +1085,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
 					{path: "$.code", value: "no_item"},
-					{path: "$.error", value: "Not in your pantry"},
+					{path: "$.error", value: "Which item is this?"},
 					{path: "$.suggestions[0].name", value: "Sliced Pears"},
 					{path: "$.suggestions[0].productId", value: "prod-pears"},
 					{path: "$.suggestions[0].itemId", value: "item-pears"},
@@ -910,8 +1093,9 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 					{path: "$.suggestions[1].name", value: "Unrelated Crackers"},
 					{path: "$.suggestions[2].name", value: "Pear Slices"},
 					{path: "$.suggestions[3]", absent: true},
+					{path: "$.members", absent: true},
 				},
-				bodyExcludes: []string{"Canned Tuna", "Black Beans", "no item found"},
+				bodyExcludes: []string{"Not in your pantry", "No close match found.", "Nothing on hand to take out.", "Choose which item this is first.", "Canned Tuna", "Black Beans", "Empty Pear", "Shelved Pear", "no item found"},
 			},
 			afterRequest: exchanges(
 				httpExchange{
@@ -991,19 +1175,490 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			),
 		},
 		{
-			name:  "linking a product the household does not stock stays a 4xx",
+			name:  "linking a product the household does not stock leaves the scan pending",
 			setup: seed,
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans/scan-pears/commit",
 				body:           `{"linkProductId":"prod-off"}`,
-				expectedStatus: http.StatusBadRequest,
+				expectedStatus: http.StatusConflict,
 				assertions: []assertion{
-					{path: "$.error", value: "That product is not in your pantry"},
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+					{path: "$.members", absent: true},
 				},
+				bodyExcludes: []string{"That product is not in your pantry"},
 			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[0].productId", value: "prod-off"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
+		{
+			name: "linking a shelved product leaves the scan pending",
+			setup: func(env testEnv) {
+				seed(env)
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-wiped', 'user-1', 'prod-off', 1)`); err != nil {
+					env.T.Fatalf("shelve item: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-pears/commit",
+				body:           `{"linkProductId":"prod-off"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"That product is not in your pantry"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[1]", absent: true},
+				},
+			}),
+		},
+		{
+			name:  "linking an unknown product leaves the scan pending",
+			setup: seed,
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-pears/commit",
+				body:           `{"linkProductId":"prod-missing"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That item isn't available anymore. Pick another."},
+					{path: "$.code", value: "link_target_gone"},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"That product is not in your pantry"},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/scans",
+				query:          map[string]string{"userId": "user-1", "status": "pending"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].id", value: "scan-pears"},
+					{path: "$[0].status", value: "pending"},
+					{path: "$[0].productId", value: "prod-off"},
+					{path: "$[1]", absent: true},
+				},
+			}),
 		},
 	}
 
 	runHandlerTests(t, tests)
+}
+
+// TestScanOutOfEmptyShelf is the #277 repro: stock a product in, scan it out
+// until the shelf is empty, then commit another scan-out. The handler suite
+// opens a temporary in-memory database and applies migrations before the request.
+func TestScanOutOfEmptyShelf(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "committing a scan-out when nothing is on hand is a conflict and writes nothing",
+			setup: func(env testEnv) {
+				finishOpening(env)
+				seedShelfItem(env, "prod-zero", "Oat Milk", "item-zero")
+				seedScanAt(env, "scan-in", "prod-zero", scan.StockIn, 1, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+				seedScanAt(env, "scan-out-1", "prod-zero", scan.StockOut, 1, time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC))
+				h := handlerFromEnv(env)
+				commitScan(env, h, "scan-in")
+				commitScan(env, h, "scan-out-1")
+				// The first stock-out is committed, so scanning the product out again is a new card.
+				seedScanAt(env, "scan-out-2", "prod-zero", scan.StockOut, 1, time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC))
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-out-2/commit",
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"Something went wrong", "no available instances", "item-zero"},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].item.id", value: "item-zero"},
+						{path: "$[0].instanceCount", value: float64(0)},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-out-2"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[0].productId", value: "prod-zero"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans/history",
+					query:          map[string]string{"userId": "user-1"},
+					expectedStatus: http.StatusOK,
+					bodyContains:   []string{"scan-in", "scan-out-1"},
+					bodyExcludes:   []string{"scan-out-2"},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/items/item-zero/history",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$.onHand", value: float64(0)},
+						{path: "$.moves[0].direction", value: "out"},
+						{path: "$.moves[0].quantity", value: float64(1)},
+						{path: "$.moves[0].source", value: "scan"},
+						{path: "$.moves[1].direction", value: "in"},
+						{path: "$.moves[1].quantity", value: float64(1)},
+						{path: "$.moves[2]", absent: true},
+					},
+				},
+			),
+		},
+		{
+			name: "linking a barcode onto an empty shelf does not keep the link",
+			setup: func(env testEnv) {
+				finishOpening(env)
+				seedShelfItem(env, "prod-empty", "Empty Oats", "item-empty")
+				seedShelfItem(env, "prod-other", "Other Oats", "item-other")
+				seedScanAt(env, "scan-link", "prod-other", scan.StockOut, 1, time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-link/commit",
+				body:           `{"linkProductId":"prod-empty"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+					{path: "$.members", absent: true},
+					{path: "$.suggestions", absent: true},
+				},
+				bodyExcludes: []string{"link_target_gone", "That item isn't available anymore. Pick another."},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "pending"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-link"},
+						{path: "$[0].status", value: "pending"},
+						{path: "$[0].productId", value: "prod-other"},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/products/prod-empty",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.barcodes[0]", absent: true}},
+					bodyExcludes:   []string{"scan-link"},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/items/item-empty/history",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$.onHand", value: float64(0)},
+						{path: "$.moves", value: []any{}},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].instanceCount", value: float64(0)},
+						{path: "$[1].instanceCount", value: float64(0)},
+						{path: "$[2]", absent: true},
+					},
+				},
+			),
+		},
+	})
+}
+
+// TestScanCommitRemovedInstance is the #285 regression. On master, naming an
+// instance that was already removed returned 500. The commit must refuse with
+// 409 and leave every stock move, instance, and scan row as it was.
+func TestScanCommitRemovedInstance(t *testing.T) {
+	now := time.Date(2026, 6, 3, 15, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(48 * time.Hour)
+	snaps := map[string]string{}
+
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name: "removed instance with nothing else on hand is an empty shelf",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "only")
+				snaps["only"] = pantrySnapshot(env, "item-only", "scan-only")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-only/commit",
+				body:           `{"instanceId":"inst-only"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "Nothing on hand to take out."},
+					{path: "$.code", value: "none_on_hand"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["only"], "item-only", "scan-only")
+			},
+		},
+		{
+			name: "removed instance with another unit still on hand",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "stale")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-stale-left', 'item-stale', ?)`,
+					now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				snaps["stale"] = pantrySnapshot(env, "item-stale", "scan-stale")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-stale/commit",
+				body:           `{"instanceId":"inst-stale"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["stale"], "item-stale", "scan-stale")
+			},
+		},
+		{
+			name: "instance id that never existed still has another unit",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "missing")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE item_instances SET removed_at = NULL, removal_reason = NULL WHERE id = 'inst-missing'`); err != nil {
+					env.T.Fatalf("restore instance: %v", err)
+				}
+				snaps["missing"] = pantrySnapshot(env, "item-missing", "scan-missing")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-missing/commit",
+				body:           `{"instanceId":"inst-never"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["missing"], "item-missing", "scan-missing")
+			},
+		},
+		{
+			name: "instance id from a different item is not on this shelf",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "home")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE item_instances SET removed_at = NULL, removal_reason = NULL WHERE id = 'inst-home'`); err != nil {
+					env.T.Fatalf("restore instance: %v", err)
+				}
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-other-home", Name: "Other", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO items (id, user_id, product_id) VALUES ('item-other-home', 'user-home', 'prod-other-home')`); err != nil {
+					env.T.Fatalf("create other item: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-foreign', 'item-other-home', ?)`,
+					now); err != nil {
+					env.T.Fatalf("create foreign instance: %v", err)
+				}
+				snaps["home"] = pantrySnapshot(env, "item-home", "scan-home")
+				snaps["foreign"] = pantrySnapshot(env, "item-other-home", "scan-home")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-home/commit",
+				body:           `{"instanceId":"inst-foreign"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				assertPantryUnchanged(env, snaps["home"], "item-home", "scan-home")
+				assertPantryUnchanged(env, snaps["foreign"], "item-other-home", "scan-home")
+			},
+		},
+		{
+			name: "linking while the named instance is gone does not keep the link",
+			setup: func(env testEnv) {
+				seedRemovedInstanceScan(env, now, expiresAt, "link")
+				if _, err := env.DB.ExecContext(context.Background(),
+					`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-link-left', 'item-link', ?)`,
+					now.Add(-time.Hour)); err != nil {
+					env.T.Fatalf("create remaining instance: %v", err)
+				}
+				if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+					ID: "prod-link-src", Name: "Scanned", Category: "Test", UnitOfMeasure: "unit",
+				}); err != nil {
+					env.T.Fatalf("CreateProduct: %v", err)
+				}
+				if _, err := env.DB.ExecContext(context.Background(),
+					`UPDATE scan_entries SET product_id = 'prod-link-src', barcode = '999000111222' WHERE id = 'scan-link'`); err != nil {
+					env.T.Fatalf("point scan at the other product: %v", err)
+				}
+				snaps["link"] = pantrySnapshot(env, "item-link", "scan-link") + barcodeSnapshot(env, "999000111222")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/scan-link/commit",
+				body:           `{"instanceId":"inst-link","linkProductId":"prod-link"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.error", value: "That one was already taken out. Pick another."},
+					{path: "$.code", value: "instance_gone"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				got := pantrySnapshot(env, "item-link", "scan-link") + barcodeSnapshot(env, "999000111222")
+				if got != snaps["link"] {
+					env.T.Fatalf("rows changed\nbefore:\n%s\nafter:\n%s", snaps["link"], got)
+				}
+			},
+		},
+	})
+}
+
+func seedRemovedInstanceScan(env testEnv, now, expiresAt time.Time, suffix string) {
+	env.T.Helper()
+	productID := "prod-" + suffix
+	itemID := "item-" + suffix
+	instanceID := "inst-" + suffix
+	scanID := "scan-" + suffix
+	userID := "user-" + suffix
+	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
+		ID: productID, Name: "Removed " + suffix, Category: "Test", UnitOfMeasure: "unit",
+	}); err != nil {
+		env.T.Fatalf("CreateProduct: %v", err)
+	}
+	if _, err := env.DB.ExecContext(context.Background(),
+		`INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`, itemID, userID, productID); err != nil {
+		env.T.Fatalf("create item: %v", err)
+	}
+	if _, err := env.DB.ExecContext(context.Background(), `
+		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, removed_at, removal_reason)
+		VALUES (?, ?, ?, ?, ?, 'consumed')`,
+		instanceID, itemID, now.Add(-48*time.Hour), expiresAt, now.Add(-time.Hour)); err != nil {
+		env.T.Fatalf("create removed instance: %v", err)
+	}
+	direction := scan.StockOut
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		ID: scanID, UserID: userID, Barcode: "barcode-" + suffix,
+		ScannedAt: now, Direction: &direction, UnitCount: 1,
+		ProductID: &productID, Status: scan.Pending,
+	}); err != nil {
+		env.T.Fatalf("CreateScanEntry: %v", err)
+	}
+}
+
+func assertPantryUnchanged(env testEnv, before, itemID, scanID string) {
+	env.T.Helper()
+	after := pantrySnapshot(env, itemID, scanID)
+	if after != before {
+		env.T.Fatalf("rows changed\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func pantrySnapshot(env testEnv, itemID, scanID string) string {
+	env.T.Helper()
+	var b strings.Builder
+	dumpQuery(&b, env, "instances", `
+		SELECT id, item_id, IFNULL(CAST(removed_at AS TEXT), ''), IFNULL(removal_reason, ''),
+		       IFNULL(stock_move_id, ''), IFNULL(removed_by_move_id, '')
+		FROM item_instances WHERE item_id = ? ORDER BY id`, itemID)
+	dumpQuery(&b, env, "moves", `
+		SELECT id, direction, quantity, source, IFNULL(scan_entry_id, '')
+		FROM stock_moves WHERE item_id = ? ORDER BY id`, itemID)
+	dumpQuery(&b, env, "scan", `
+		SELECT id, status, IFNULL(product_id, ''), IFNULL(CAST(committed_at AS TEXT), '')
+		FROM scan_entries WHERE id = ?`, scanID)
+	return b.String()
+}
+
+func barcodeSnapshot(env testEnv, barcode string) string {
+	env.T.Helper()
+	var b strings.Builder
+	dumpQuery(&b, env, "barcodes", `
+		SELECT barcode, product_id, source, user_id FROM barcodes WHERE barcode = ? ORDER BY source, user_id`, barcode)
+	return b.String()
+}
+
+func dumpQuery(b *strings.Builder, env testEnv, title, query string, args ...any) {
+	env.T.Helper()
+	fmt.Fprintf(b, "[%s]\n", title)
+	rows, err := env.DB.Query(query, args...)
+	if err != nil {
+		env.T.Fatalf("%s: %v", title, err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		env.T.Fatal(err)
+	}
+	for rows.Next() {
+		vals := make([]sql.RawBytes, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			env.T.Fatal(err)
+		}
+		for i, col := range cols {
+			fmt.Fprintf(b, "%s=%s ", col, string(vals[i]))
+		}
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		env.T.Fatal(err)
+	}
 }

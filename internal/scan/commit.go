@@ -17,8 +17,16 @@ var (
 	ErrItemNotFound = errors.New("item not found")
 	// ErrNoneOnHand means a stock-out found no unit on the shelf.
 	ErrNoneOnHand = errors.New("nothing on hand")
-	// ErrLinkNotStocked means the chosen product has no household item to scan out.
-	ErrLinkNotStocked = errors.New("that product is not in your pantry")
+	// ErrLinkNotStocked means linkProductId names a product this household does not stock.
+	ErrLinkNotStocked = errors.New("link target is not stocked")
+	// ErrScanNotFound means the queue has no scan with that id.
+	ErrScanNotFound = errors.New("scan not found")
+	// ErrNotPending means the scan was already committed or cancelled.
+	ErrNotPending = errors.New("scan is not pending")
+	// ErrDirectionUnset means the scan has no stock-in or stock-out direction.
+	ErrDirectionUnset = errors.New("scan direction is unset")
+	// ErrProductUnresolved means the scan has no product yet.
+	ErrProductUnresolved = errors.New("product is unresolved")
 )
 
 // CommitStockIn commits a stock-in scan entry by creating one item instance
@@ -209,7 +217,7 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 			selected, itemID,
 		).Scan(&exists)
 		if err == sql.ErrNoRows {
-			return inventory.ErrInstanceNotFound
+			return r.namedInstanceUnavailable(ctx, tx, itemID)
 		}
 		if err != nil {
 			return fmt.Errorf("verify instance: %w", err)
@@ -272,6 +280,25 @@ func (r *Queue) recordStockOutTx(ctx context.Context, tx *sql.Tx, itemID string,
 		return fmt.Errorf("record stock-out: %w", err)
 	}
 	return nil
+}
+
+// namedInstanceUnavailable distinguishes a stale pick from an empty shelf.
+// The chosen unit is gone. When nothing else is on hand, that is the same
+// refusal as a scan-out with no unit to take.
+func (r *Queue) namedInstanceUnavailable(ctx context.Context, tx *sql.Tx, itemID string) error {
+	var onHand int
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM item_instances
+		WHERE item_id = ? AND removed_at IS NULL`,
+		itemID,
+	).Scan(&onHand)
+	if err != nil {
+		return fmt.Errorf("count on hand: %w", err)
+	}
+	if onHand == 0 {
+		return ErrNoneOnHand
+	}
+	return inventory.ErrInstanceNotFound
 }
 
 // StockIn adds one on-hand unit of an item the household already keeps.
@@ -438,6 +465,12 @@ func (r *Queue) findOrCreateItem(ctx context.Context, tx *sql.Tx, userID, produc
 // that specific instance is removed.
 //
 // A missing household item returns *NoItemError and changes nothing.
+// A shelved item is still linked and returns ErrNoneOnHand without ranking links.
+// An item with nothing left on the shelf returns ErrNoneOnHand and changes
+// nothing, including a barcode link started in the same transaction.
+// A named instance that is not on that item returns ErrNoneOnHand when the
+// shelf is empty, and inventory.ErrInstanceNotFound when another unit remains.
+// Either way the transaction rolls back, so a barcode link is not kept.
 // CommitStockOutLink is the explicit choice that adds the scanned barcode
 // and decrements that product. Nothing is linked on its own.
 //
@@ -484,12 +517,16 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 		scanEntry.UserID, targetProductID,
 	).Scan(&itemID, &shelved)
 
-	// A wipe keeps the item row and hides it. Scanning that product out is
-	// the same as scanning a product the household does not stock.
-	if err == sql.ErrNoRows || (err == nil && shelved != 0) {
-		if linkProductID != "" {
-			return ErrLinkNotStocked
-		}
+	// linkProductId for a missing or wiped product is not a stock-out of this barcode.
+	if linkProductID != "" && (err == sql.ErrNoRows || (err == nil && shelved != 0)) {
+		return ErrLinkNotStocked
+	}
+	// A wipe keeps the item row, so the barcode is still linked. That stock-out
+	// is an empty shelf and does not rank other items.
+	if err == nil && shelved != 0 {
+		return ErrNoneOnHand
+	}
+	if err == sql.ErrNoRows {
 		// Same connection as the open transaction. A second query on r.db
 		// would deadlock the single-connection test database, or read an
 		// empty :memory: database from the pool.
@@ -517,16 +554,6 @@ func (r *Queue) commitStockOut(ctx context.Context, scanEntry *ScanEntry, instan
 
 	scanID := scanEntry.ID
 	if err := r.recordStockOutTx(ctx, tx, itemID, instanceID, scanEntry.ScannedAt, &scanID); err != nil {
-		if errors.Is(err, ErrNoneOnHand) {
-			return fmt.Errorf("no available instances for item %q: %w", itemID, err)
-		}
-		if errors.Is(err, inventory.ErrInstanceNotFound) {
-			missing := ""
-			if instanceID != nil {
-				missing = *instanceID
-			}
-			return fmt.Errorf("instance %q not found or already removed: %w", missing, err)
-		}
 		return err
 	}
 
