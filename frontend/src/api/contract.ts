@@ -894,14 +894,27 @@ const PAIRING_CHECK = `${PAIRING_PAYLOAD}*~$=U`;
 export const PAIRING_CODE_GRAMMAR =
   /^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/;
 
+/** Space, tab, LF, VT, FF, and CR. U+0085 and U+FEFF are left in place. */
+function isAsciiWhitespace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 11 || code === 12 || code === 13;
+}
+
+function trimAsciiWhitespace(input: string): string {
+  let start = 0;
+  let end = input.length;
+  while (start < end && isAsciiWhitespace(input.charCodeAt(start))) start++;
+  while (end > start && isAsciiWhitespace(input.charCodeAt(end - 1))) end--;
+  return input.slice(start, end);
+}
+
 /**
- * Trim the whitespace a scan can carry, including a trailing CR or LF.
- * A non-ASCII character rejects the value. Then uppercase ASCII a-z only,
- * and map O to 0 and I or L to 1. Unicode case folding is not used.
+ * Trim ASCII whitespace only. A non-ASCII character rejects the value.
+ * Then uppercase ASCII a-z only, and map O to 0 and I or L to 1.
+ * Unicode case folding is not used.
  * Returns null when the value contains a non-ASCII character.
  */
 export function normalizePairingCode(input: string): string | null {
-  const trimmed = input.trim();
+  const trimmed = trimAsciiWhitespace(input);
   let out = '';
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
@@ -934,10 +947,10 @@ export function formatPairingCode(payload: string): string {
 
 /**
  * A product barcode, matching the server scan classifier: ASCII digits, length
- * 1 through 14, after the same trim. That includes 6- and 7-digit UPC-E.
+ * 1 through 14, after the same ASCII-only trim. That includes 6- and 7-digit UPC-E.
  */
 export function isProductBarcode(input: string): boolean {
-  return /^\d{1,14}$/.test(input.trim());
+  return /^\d{1,14}$/.test(trimAsciiWhitespace(input));
 }
 
 /** Grammar only, after normalization, including a wrong check character. Scan rejection uses this. */

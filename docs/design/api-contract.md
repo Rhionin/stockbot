@@ -658,7 +658,7 @@ interface PairingCode {
 
 pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. U is a check symbol only, not a payload character. O, I, and L are aliases: O maps to 0, and I or L maps to 1. The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The symbols `*`, `~`, `$`, and `=` stay in that alphabet. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`.
 
-Before that compare, the client and the server normalize a scan the same way. Trim the whitespace `strings.TrimSpace` trims, including a trailing CR or LF. Reject a value that still contains a non-ASCII character. Then uppercase ASCII `a` through `z` only. Never use Unicode case folding, so `ſ` does not become `S`. Then map O to 0 and I or L to 1. The shared vectors are `testdata/pairing-codes.json`.
+Before that compare, the client and the server normalize a scan the same way. Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR. `U+0085` and `U+FEFF` are not trimmed. A value that still contains a non-ASCII character is rejected. Then uppercase ASCII `a` through `z` only. Never use Unicode case folding, so `ſ` does not become `S`. Then map O to 0 and I or L to 1. The shared vectors are `testdata/pairing-codes.json`.
 
 A product barcode is ASCII digits of length 1 through 14 after that same trim. That includes 6- and 7-digit UPC-E, and GTIN-8, GTIN-12, GTIN-13, and GTIN-14. The server's scan classifier uses this rule: digits only and at most 14 characters is a product, not a QR payload. A pairing code contains letters and hyphens, so it is not one.
 
@@ -1090,13 +1090,13 @@ The Pi status is `ready`. The stage-3 status is `pending`. Stage 1 on the Pi ser
 
 ### GET /api/export/{id}
 
-The poll for the job `POST /api/export` created. `{id}` is the job id. On the Pi the household is the one stored on the job row. In stage 3 the job must belong to the household selected for the request.
+The poll for the job `POST /api/export` created. `{id}` is the job id. On the Pi the household is the one stored on the job row, so this poll does not require `X-Household-Id`. In stage 3 the header is required, and the job must belong to that household.
 
 | | |
 |---|---|
 | Auth | Session |
 | Role | Owner |
-| X-Household-Id | Required |
+| X-Household-Id | Required in stage 3 only. The Pi takes the household from the job row. |
 | Response | `200` `ExportJob` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found` |
 
@@ -1270,7 +1270,7 @@ type LiveConfig =
 
 `householdPasswordSignIn` is true on the Pi while household 1's shared password can still sign in, and false otherwise. The login screen reads it from this route before anyone signs in. Stage 3 returns false.
 
-The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string } }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. The version gate in [Stage 1 auth](#stage-1-auth) uses it. A missing `X-Stockbot-Client` header means web, so there is no version gate. The exception is `Authorization: Basic` with no `X-Stockbot-Client` after the household password is retired: that request returns `426` `upgrade_required`, not `401`. An `X-Stockbot-Client: expo/<semver>` below the minimum also returns `426` `upgrade_required`. A value that starts with `expo/` and is not a semver is the same `426`. The gate does not run on this route, on `GET /api/build`, or on telemetry. Stage 3 returns the same `minClientVersion` field.
+The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string }, "householdPasswordSignIn": boolean }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string }, "householdPasswordSignIn": boolean }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. The version gate in [Stage 1 auth](#stage-1-auth) uses it. A missing `X-Stockbot-Client` header means web, so there is no version gate. The exception is `Authorization: Basic` with no `X-Stockbot-Client` after the household password is retired: that request returns `426` `upgrade_required`, not `401`. An `X-Stockbot-Client: expo/<semver>` below the minimum also returns `426` `upgrade_required`. A value that starts with `expo/` and is not a semver is the same `426`. The gate does not run on this route, on `GET /api/build`, or on telemetry. Stage 3 returns the same `minClientVersion` field.
 
 ### POST /api/live/ticket
 
@@ -1350,7 +1350,7 @@ A scan commit may also include `members` or `suggestions`, as today's 409 bodies
 
 generic-sentence: Something went wrong. Try again.
 
-That sentence is `clientmsg.ServerError` on master. On the Pi, `writeStatusError` returns a generic 5xx as `{"error":"Something went wrong. Try again."}` with no `code`, except a commit or stock-out that already sets `code` to `internal`. The Pi stays that way. The hosted API requires the code on every 5xx that is not `busy` or `no_space`:
+That sentence is `clientmsg.Generic`. On the Pi, `writeStatusError` returns a generic 5xx as `{"error":"Something went wrong. Try again."}` with no `code`, except a commit or stock-out that already sets `code` to `internal`. The Pi stays that way. The hosted API requires the code on every 5xx that is not `busy` or `no_space`:
 
 ```json
 {"error":"Something went wrong. Try again.","code":"internal"}
@@ -1386,7 +1386,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `link_target_gone` | 409 | That item isn't available anymore. Pick another. | Existing scan-queue sentence. Unchanged. |
 | `scan_not_found` | 404 | This scan is no longer in the queue. | Existing scan-queue sentence. Unchanged. |
 | `direction_unset` | 400 | Choose stock in or stock out first. | Existing scan-queue sentence. Unchanged. |
-| `internal` | 500 | Something went wrong. Try again. | Existing sentence, `clientmsg.ServerError`. The Pi omits `code` on a generic 5xx and keeps it on commit and stock-out. Hosted sends `code` `internal` on every such 5xx. |
+| `internal` | 500 | Something went wrong. Try again. | Existing sentence, `clientmsg.Generic`. The Pi omits `code` on a generic 5xx and keeps it on commit and stock-out. Hosted sends `code` `internal` on every such 5xx. |
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
@@ -1505,6 +1505,6 @@ Review of this contract at `6de8179`, from the client:
 ## Open questions
 
 2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
-3. **Pairing check symbols.** `*`, `~`, `$`, and `=` stay in the check alphabet. They are awkward to type on some keyboards. Pairing codes are carried as Code 128 and QR, so a person does not type them. Left open in case a later ruling wants a keyboard-safe alphabet.
+3. **Pairing check symbols.** `*`, `~`, `$`, and `=` stay in the check alphabet. Pairing codes can be typed with the USB-keyboard fallback, the same string as `barcodeValue`, so typed `*`, `~`, `$`, and `=` are allowed. Whether a later ruling replaces them with a keyboard-safe alphabet stays open.
 
 PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. The Architect accepted the two plan-vs-#374 differences that were still open (one `unauthorized` code, and both scan bodies on one route). They are under [Decided by Architect](#decided-by-architect). Open question 7, household create, stays closed on PM's `invite_required` ruling. An expired or used reset code stays `reset_expired`.

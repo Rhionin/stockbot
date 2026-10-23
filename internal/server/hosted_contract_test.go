@@ -258,10 +258,18 @@ func TestHostedAPIContract(t *testing.T) {
 		"The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling",
 		"GET redirects to sign-in and POST returns `not_found`, except in recover mode",
 		"householdPasswordEnabled: boolean",
+		"clientmsg.Generic",
+		`"householdPasswordSignIn": boolean`,
+		"Required in stage 3 only. The Pi takes the household from the job row.",
+		"Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR.",
+		"typed `*`, `~`, `$`, and `=` are allowed",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)
 		}
+	}
+	if strings.Contains(doc, "clientmsg.ServerError") {
+		t.Fatal("generic 5xx sentence still names clientmsg.ServerError")
 	}
 }
 
@@ -323,8 +331,12 @@ var (
 	productBarcode = regexp.MustCompile(`^\d{1,14}$`)
 )
 
+func trimASCIIWhitespace(s string) string {
+	return strings.Trim(s, " \t\n\v\f\r")
+}
+
 func normalizePairingCode(input string) (string, bool) {
-	trimmed := strings.TrimSpace(input)
+	trimmed := trimASCIIWhitespace(input)
 	var b strings.Builder
 	for _, r := range trimmed {
 		if r > 127 {
@@ -371,7 +383,7 @@ func isPairingCode(input string) bool {
 }
 
 func isProductBarcode(input string) bool {
-	return productBarcode.MatchString(strings.TrimSpace(input))
+	return productBarcode.MatchString(trimASCIIWhitespace(input))
 }
 
 func TestPairingCodeFixture(t *testing.T) {
