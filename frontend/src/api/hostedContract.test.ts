@@ -174,6 +174,12 @@ describe('hosted API contract', () => {
     expect(doc).toContain('POST /api/household/household-password/retire');
     expect(doc).toContain('Clients label `revoked` as Cancelled.');
     expect(doc).toContain('A missing `X-Stockbot-Client` header means web, so there is no version gate.');
+    expect(doc).toContain('Any `X-Stockbot-Client` value that does not start with `expo/` is web too, the same as a missing header, so there is no version gate.');
+    expect(doc).toContain('The same `426` applies when that Basic request carries a value that does not start with `expo/`.');
+    expect(doc).toContain('On the LAN it stays open, with no session.');
+    expect(doc).not.toContain('Superseded by PM');
+    expect(doc).toContain('S6 (#379) must run the production classifier in `internal/scan/qr.go` against `testdata/pairing-codes.json`.');
+    expect(doc).toContain('`POST /api/devices/pair/complete` | No session');
     expect(doc).toContain('`Authorization: Basic` and no `X-Stockbot-Client` returns `426` `upgrade_required`, not `401`');
     expect(doc).toContain('activeHouseholdId order');
     expect(source).toContain('export interface LoginResponse');

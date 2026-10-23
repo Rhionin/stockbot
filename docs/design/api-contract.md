@@ -79,12 +79,12 @@ Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own 
 
 CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
 
-The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>` (`EXPO_CLIENT_PREFIX`), where `<semver>` is `expo.version` from `app.json`. Today's value is `1.0.0`, three numeric parts. The server compares that dotted number numerically, part by part. A missing part compares as 0, so `1.0` equals `1.0.0`. A pre-release suffix is ignored. A new Expo build sends `X-Stockbot-Client` on every request, including `GET /api/events`. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated. The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling, including when nobody is signed in. A request that fails the gate is `426` and is not counted as a login attempt.
+The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` and `GET /api/build` never return `426`. Telemetry stays exempt from the gate. `GET /api/config` includes `minClientVersion.expo`. The header name is `X-Stockbot-Client` (`CLIENT_HEADER`). An Expo request sends `expo/<semver>` (`EXPO_CLIENT_PREFIX`), where `<semver>` is `expo.version` from `app.json`. Today's value is `1.0.0`, three numeric parts. The server compares that dotted number numerically, part by part. A missing part compares as 0, so `1.0` equals `1.0.0`. A pre-release suffix is ignored. A new Expo build sends `X-Stockbot-Client` on every request, including `GET /api/events`. Below the minimum, or a value that starts with `expo/` and is not a semver, the response is `426` `upgrade_required`. The body is `{"error":"Update Stockbot to keep using it.","code":"upgrade_required"}`. A missing header means the client is not Expo, so there is no gate. `web/<sha>` is web and is not gated. Any `X-Stockbot-Client` value that does not start with `expo/` is web too, the same as a missing header, so there is no version gate. The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling, including when nobody is signed in. A request that fails the gate is `426` and is not counted as a login attempt.
 
 Both of these rules apply:
 
 1. A missing `X-Stockbot-Client` header means web, so there is no version gate.
-2. The exception: once the household password is retired, a request with `Authorization: Basic` and no `X-Stockbot-Client` returns `426` `upgrade_required`, not `401`. Old Expo builds then show the update sentence and do not loop on sign-in. While the household password is still on, that Basic request signs in as a member of household 1.
+2. The exception: once the household password is retired, a request with `Authorization: Basic` and no `X-Stockbot-Client` returns `426` `upgrade_required`, not `401`. The same `426` applies when that Basic request carries a value that does not start with `expo/`. A value that starts with `expo/` uses the version gate, not this exception. Old Expo builds then show the update sentence and do not loop on sign-in. While the household password is still on, that Basic request with no header signs in as a member of household 1.
 
 Pi-only additions, outside the stage-3 AWS behavior: `householdPasswordEnabled` and `householdPasswordRestoreUntil` on `GET /api/household/settings`, and `POST /api/household/household-password/retire` and `POST /api/household/household-password/restore`. Stage 3 returns `householdPasswordEnabled: false` and `not_found` for those two routes. Households other than household 1 also return `householdPasswordEnabled: false` and `not_found` for the routes, including in stage 1. The settings body never includes the password or its hash.
 
@@ -92,14 +92,14 @@ LAN `:8080`, while the household password is on: people get the LAN principal. T
 
 lan-client: Expo must use `appBaseUrl` for personal sign-in. LAN URLs are unsupported for people after retirement. Clients never show Sign in on a LAN URL.
 
-`GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. A caller who is not the operator, including a household-password, LAN, or device principal, gets `not_found`. `POST /api/telemetry/client` stays a public write. Its response has no household activity and no process-wide counts. The changeover counts (household-password sessions and Basic requests in the last 7 days) are part of the operator-only GET. Both telemetry routes stay exempt from the version gate.
+`GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. On that entry, a caller who is not the operator, including a household-password or device principal, gets `not_found`. On the LAN it stays open, with no session. That is Architect answer 2. PM's ruling is the public entry only. `POST /api/telemetry/client` stays a public write on both entries. Its response has no household activity and no process-wide counts. The changeover counts (household-password sessions and Basic requests in the last 7 days) are part of the operator-only GET on the public entry. Both telemetry routes stay exempt from the version gate.
 
-These routes do not take a household session. None of them return a household id, name, item, or count, except `GET /api/telemetry`, which is operator-only.
+These routes do not select a household from the client. A row that names a session still does not take `X-Household-Id`. None of them return a household id, name, item, or count, except `GET /api/telemetry` on the public entry, which is operator-only. On the LAN that GET stays open.
 
 | Path | Who | What |
 |---|---|---|
 | `GET /api/build` | No session | `{ "commit": string, "committedAt"?: string, "builtAt"?: string, "version": string, "subject"?: string }`. Stays available on the LAN after retirement. Never `426`. |
-| `GET /api/telemetry` | Operator on the public entry | Process-wide counts. Anyone else gets `not_found`. Exempt from the version gate. |
+| `GET /api/telemetry` | Operator on the public entry. Open on the LAN | On the public entry, process-wide counts for the operator. Anyone else on that entry gets `not_found`. On the LAN it stays open, with no session. Exempt from the version gate. |
 | `POST /api/telemetry/client` | No session | Public write. The response has no household activity and no process-wide counts. Exempt from the version gate. |
 | `POST /api/sentry-tunnel` | No session | Forwards an allowlisted client envelope. The response has no household data. |
 | `POST /api/deploy-hook` | No session | Accepted only when the HMAC signature and timestamp check. The response has no household data. |
@@ -109,6 +109,16 @@ These routes do not take a household session. None of them return a household id
 | `GET /health` | LAN principal while the household password is on | `{"status":"ok"}` and an optional `scanner` object. No household id, name, or item count. It is not on the public no-password list. |
 | `GET /api/sync/snapshot` | Sync token | Pi only. Not a hosted route. Household 1, read-only. |
 | `GET /setup` and `POST /setup` | No session | The setup code is 40 bits. On the LAN, while no personal account exists, the page asks for that code, then name, email, and password. It creates the operator as owner of household 1, signs them in, and sets `activeHouseholdId` to household 1. On the public entry, GET and POST return `not_found`. On the LAN, after the first account exists, GET redirects to sign-in and POST returns `not_found`, except in recover mode, which is the same LAN page with a fresh code. |
+| `GET /api/config` | No session | `LiveConfig`, including `appBaseUrl`. Both entries. Never `426`. |
+| `POST /api/auth/login` | No session on the public entry | Email and password, or `{ "householdPassword" }` while that password is on. On the LAN this route is `404` `not_found`. |
+| `GET /api/auth/session` | Optional session | No cookie and no bearer is a signed-out session. On the LAN, while the household password is on, this is the LAN principal. `Bearer sbs_…` on the LAN is `401` `unauthorized`. |
+| `POST /api/auth/logout` | Session on the public entry | Revokes that session and clears the cookie. On the LAN a session cookie is not honored, and `Bearer sbs_…` is `401` `unauthorized`. |
+| `POST /api/auth/session/household` | Personal session on the public entry | Sets `activeHouseholdId`. The LAN has no personal session. |
+| `POST /api/auth/reset` | No session on the public entry | The reset code is the credential. On the LAN this route is `404` `not_found`. |
+| `GET /api/auth/login` and `GET /api/auth/callback` | No session | Stage 3 web PKCE. Stage 1 sign-in is `POST /api/auth/login` on the public entry. |
+| `POST /api/invites/preview` | No session | `{ "code" }`. The body has no household id. |
+| `POST /api/invites/accept` | No session when `account` is sent. Otherwise a session on the public entry | On the LAN, accept with `account` is `404` `not_found`. |
+| `POST /api/devices/pair/complete` | No session. The code is the credential | Returns the device token. Omit `X-Household-Id`. The body has no household id. |
 
 ## Endpoint index
 
@@ -1396,7 +1406,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. Also a `POST /api/device/scans` body over 64 KB. |
 | `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
-| `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`, and a malformed `expo/` value. Also Basic with no `X-Stockbot-Client` after the household password is retired. A missing client header on any other request is web and is not gated. The gate skips `GET /api/config`, `GET /api/build`, and telemetry. |
+| `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`, and a malformed `expo/` value. Also Basic with no `X-Stockbot-Client`, or Basic with a value that does not start with `expo/`, after the household password is retired. A missing header, or any other non-`expo/` value, is web and is not gated. The gate skips `GET /api/config`, `GET /api/build`, and telemetry. |
 
 ## Decided by PM
 
@@ -1435,7 +1445,7 @@ Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
 - **Reset link.** `<APP_BASE_URL>/reset/<code>` stands.
 - **`device_revoked`.** The sentence is "This device was disconnected. Pair it again to keep using it."
 - **`reset_expired`.** An expired or already-used reset code is `reset_expired`. The sentence is "This reset link has expired or was already used. Ask for a new one." A revoked or unknown reset code stays `not_found`.
-- **Telemetry.** `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. The route stays exempt from the version gate. `POST /api/telemetry/client` stays a public write and returns no such counts.
+- **Telemetry.** `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. On the LAN it stays open. The route stays exempt from the version gate. `POST /api/telemetry/client` stays a public write and returns no such counts.
 
 ## Decided by Architect
 
@@ -1455,8 +1465,8 @@ Stage-1 answers confirmed by the Architect, matching `docs/design/multi-househol
 - **LAN.** As in §3.7. While the household password is on, LAN `:8080` is household 1 as member and ignores `X-Household-Id`. After retirement, browsers redirect to `APP_BASE_URL` and people-facing API calls are `401`. Device routes keep working.
 - **Login.** Success is `LoginResponse`. An invite accept whose `account.email` is already registered is `409` `account_exists`.
 - **Reset.** An expired or used reset link is `reset_expired`, not `invite_expired`.
-- **Telemetry.** Superseded by PM: `GET /api/telemetry` is operator-only on the public entry. Both telemetry routes stay exempt from the version gate.
-- **Version gate.** A missing `X-Stockbot-Client` means web and is not gated. After retirement, Basic with no `X-Stockbot-Client` is `426` `upgrade_required`, not `401`.
+- **Telemetry.** PM's operator-only rule is the public entry only. On the LAN, `GET /api/telemetry` stays open, per Architect answer 2. Both telemetry routes stay exempt from the version gate.
+- **Version gate.** A missing `X-Stockbot-Client`, or a value that does not start with `expo/`, means web and is not gated. After retirement, Basic with no `X-Stockbot-Client`, or Basic with a non-`expo/` value, is `426` `upgrade_required`, not `401`. A value that starts with `expo/` uses the version gate.
 - **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs. There is no `device_unauthorized`.
 
 Review of this contract at `6de8179`, decided by the Architect:
@@ -1508,5 +1518,9 @@ Review of this contract at `6de8179`, from the client:
 
 2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
 3. **Pairing check symbols.** `*`, `~`, `$`, and `=` stay in the check alphabet. Pairing codes can be typed with the USB-keyboard fallback, the same string as `barcodeValue`, so typed `*`, `~`, `$`, and `=` are allowed. Whether a later ruling replaces them with a keyboard-safe alphabet stays open.
+
+## Follow-ups
+
+- **S6 (#379) must run the production classifier in `internal/scan/qr.go` against `testdata/pairing-codes.json`.**
 
 PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. The Architect accepted the two plan-vs-#374 differences that were still open (one `unauthorized` code, and both scan bodies on one route). They are under [Decided by Architect](#decided-by-architect). Open question 7, household create, stays closed on PM's `invite_required` ruling. An expired or used reset code stays `reset_expired`.
