@@ -102,34 +102,33 @@ export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
 export const PROVIDER_FIELD = 'provider';
 export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
 
-export const CODE_SIGN_IN_REQUIRED = 'sign_in_required';
+// Names shared with the hosted contract (#364) where the meaning is the same.
+// The sentence on these routes stays the one the server already returns.
+
+export const CODE_UNAUTHORIZED = 'unauthorized';
 export const SIGN_IN_REQUIRED_SENTENCE = 'Sign in required.';
-
-export const CODE_SIGN_IN_NOT_USED = 'sign_in_not_used';
-export const SIGN_IN_NOT_USED_SENTENCE = 'Sign-in is not used on this address.';
-
-export const CODE_MISSING_CREDENTIALS = 'missing_credentials';
-export const MISSING_CREDENTIALS_SENTENCE = 'Enter your username and password.';
-
-export const CODE_INVALID_CREDENTIALS = 'invalid_credentials';
 export const INVALID_CREDENTIALS_SENTENCE = 'The username or password is incorrect.';
+export const SYNC_TOKEN_INVALID_SENTENCE = 'The sync token is not valid.';
 
-export const CODE_TOO_MANY_ATTEMPTS = 'too_many_attempts';
-export const TOO_MANY_ATTEMPTS_SENTENCE = 'Too many sign-in attempts. Try again later.';
-
-export const CODE_BODY_TOO_LARGE = 'body_too_large';
-export const BODY_TOO_LARGE_SENTENCE = 'request body is too large';
-
-export const CODE_INVALID_BODY = 'invalid_body';
+export const CODE_VALIDATION = 'validation';
+export const MISSING_CREDENTIALS_SENTENCE = 'Enter your username and password.';
 export const INVALID_BODY_PREFIX = 'invalid request body: ';
-
-export const CODE_INVALID_PATH = 'invalid_path';
 export const INVALID_PATH_PREFIX = 'invalid path parameters: ';
+export const INVALID_REPORT_SENTENCE = 'invalid report';
 
-export const CODE_INVALID_REQUEST = 'invalid_request';
-export const CODE_UNPROCESSABLE = 'unprocessable';
+export const CODE_CONFIRMATION_MISMATCH = 'confirmation_mismatch';
+
+export const CODE_RATE_LIMITED = 'rate_limited';
+export const RATE_LIMITED_SENTENCE = 'Too many sign-in attempts. Try again later.';
+
+export const CODE_PAYLOAD_TOO_LARGE = 'payload_too_large';
+export const BODY_TOO_LARGE_SENTENCE = 'request body is too large';
+export const REPORT_TOO_LARGE_SENTENCE = 'report is too large';
+
 export const CODE_NOT_FOUND = 'not_found';
 export const NOT_FOUND_SENTENCE = 'Not found.';
+export const SIGN_IN_NOT_USED_SENTENCE = 'Sign-in is not used on this address.';
+
 export const CODE_CONFLICT = 'conflict';
 export const CODE_METHOD_NOT_ALLOWED = 'method_not_allowed';
 export const METHOD_NOT_ALLOWED_SENTENCE = 'Method not allowed.';
@@ -138,17 +137,8 @@ export const METHOD_NOT_ALLOWED_SENTENCE = 'Method not allowed.';
 // The sentence is SERVER_ERROR_FALLBACK.
 export const CODE_INTERNAL = 'internal';
 
-export const CODE_SYNC_TOKEN_INVALID = 'sync_token_invalid';
-export const SYNC_TOKEN_INVALID_SENTENCE = 'The sync token is not valid.';
-
 export const CODE_SYNC_READ_ONLY = 'sync_read_only';
 export const SYNC_READ_ONLY_SENTENCE = 'This token only reads the sync snapshot.';
-
-export const CODE_INVALID_REPORT = 'invalid_report';
-export const INVALID_REPORT_SENTENCE = 'invalid report';
-
-export const CODE_REPORT_TOO_LARGE = 'report_too_large';
-export const REPORT_TOO_LARGE_SENTENCE = 'report is too large';
 
 // JSON body of an error the web or mobile app reads. `provider` is the
 // display name on provider_unavailable. `status` is "migrating" on updating.

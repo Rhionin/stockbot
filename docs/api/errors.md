@@ -124,6 +124,13 @@ The body is JSON, `Content-Type: application/json`:
 {"error":"...","code":"..."}
 ```
 
+Where the hosted contract (#364, `docs/design/api-contract.md` on
+`cursor/hosted-api-contract-92f0`) already names a code for the same
+meaning, this page uses that name. The sentence stays the one the
+server already returns. The HTTP status stays the one the server
+already sends. Master does not ship a 429 code, so the sign-in limiter
+uses the hosted name `rate_limited`.
+
 `members` and `suggestions` stay on the conflicts that already send them.
 A 502, 503, 504, or 530 that this server did not produce still has no
 `code`. The client keeps treating that as offline.
@@ -178,17 +185,18 @@ stays 500 `internal` (`internal/server/handler_lookup.go`). It is not a
 
 ## Sign-in
 
-These sentences stay word for word. `too_many_attempts` keeps the
-`Retry-After` header it already sends. There is no retry field in the
-JSON. The sign-in screen shows the sentence, as it does today.
+These sentences stay word for word. They are the sentences the server
+already returns. `rate_limited` keeps the `Retry-After` header the
+limiter already sends. There is no retry field in the JSON. The sign-in
+screen shows the sentence, as it does today.
 
 | Status | Code | Sentence | Where |
 | --- | --- | --- | --- |
-| 401 | `sign_in_required` | `Sign in required.` | A protected `/api` route with no session or a rejected Basic credential (`internal/server/household_auth.go:167`, `:180`, `:206`, `:213`). Also a protected `/api` route when a password is required and none is configured (`:148`), except `GET /api/session` and `POST /api/login`. |
-| 404 | `sign_in_not_used` | `Sign-in is not used on this address.` | `POST /api/login` when this address does not require sign-in (`:219`). |
-| 400 | `missing_credentials` | `Enter your username and password.` | `POST /api/login` when the body is missing or not JSON (`:232`). |
-| 401 | `invalid_credentials` | `The username or password is incorrect.` | `POST /api/login` when the username or password is wrong (`:242`). |
-| 429 | `too_many_attempts` | `Too many sign-in attempts. Try again later.` | The sign-in limiter on Basic auth, `GET /api/session`, and `POST /api/login` (`:158`, `:196`, `:237`, written at `:361`). |
+| 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected Basic credential (`internal/server/household_auth.go:167`, `:180`, `:206`, `:213`). Also a protected `/api` route when a password is required and none is configured (`:148`), except `GET /api/session` and `POST /api/login`. |
+| 404 | `not_found` | `Sign-in is not used on this address.` | `POST /api/login` when this address does not require sign-in (`:219`). |
+| 400 | `validation` | `Enter your username and password.` | `POST /api/login` when the body is missing or not JSON (`:232`). This response does not include `field`. |
+| 401 | `unauthorized` | `The username or password is incorrect.` | `POST /api/login` when the username or password is wrong (`:242`). |
+| 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | The sign-in limiter on Basic auth, `GET /api/session`, and `POST /api/login` (`:158`, `:196`, `:237`, written at `:361`). |
 
 `GET /api/session` and `POST /api/login` when a password is required and
 none is configured are not in this table. That 503 is
@@ -201,21 +209,24 @@ the 401 at `:148`.
 ## Request parsing
 
 These three apply to every route wrapped by `HandleJSON`. The sentence
-stays the parser text it is today.
+stays the parser text it is today. A body or path the server cannot
+read is `validation`. A body over the size cap is `payload_too_large`.
+The status stays 400. These responses do not include `field`.
 
 | Status | Code | Sentence | File:line |
 | --- | --- | --- | --- |
-| 400 | `body_too_large` | `request body is too large` | `internal/server/handler_wrapper.go:64`, `:72` |
-| 400 | `invalid_body` | `invalid request body: ` plus the parser text | `:75`, `:80` |
-| 400 | `invalid_path` | `invalid path parameters: ` plus the parser text | `:88` |
+| 400 | `payload_too_large` | `request body is too large` | `internal/server/handler_wrapper.go:64`, `:72` |
+| 400 | `validation` | `invalid request body: ` plus the parser text | `:75`, `:80` |
+| 400 | `validation` | `invalid path parameters: ` plus the parser text | `:88` |
 
 A handler that checks an empty path id after the parser succeeds is
-`invalid_request`, not `invalid_path`.
+`validation` as well, in the next section.
 
-## 400 invalid request
+## 400 validation
 
-`BadRequest` with no more specific code is HTTP 400 `invalid_request`.
-The sentence is the one that handler already returns.
+`BadRequest` with no more specific code is HTTP 400 `validation`.
+The sentence is the one that handler already returns. These responses
+do not include `field`.
 
 | Route | File:line | Sentence |
 | --- | --- | --- |
@@ -270,14 +281,18 @@ The sentence is the one that handler already returns.
 | same | `:455` | `The quantity has to be more than zero and at most 999 ounces.` |
 | group routes that call `groupErr` | `handler_group.go:518` | The group's invalid sentence: `Choose a window, a quantity, or clearing the target.` `The supply window has to be between 0 and 12 months.` `The quantity has to be more than zero and at most 999 ounces.` `Say whether that amount is weight or volume.` `Pick at least one product.` `Pick one of the rules.` `Star a product that is in this group.` `That product is not in the group you named.` `That product is not in the pantry.` `The group needs a name.` `That product is not on this suggestion.` `Choose a product.` |
 | `GET /api/history`, `GET /api/items/{itemId}/history`, `GET /api/groups/{groupId}/history`, `PATCH /api/moves/{id}`, `DELETE /api/moves/{id}` | `handler_history.go:102` | `Quantity has to be at least 1. Undo the move to remove it.` `Quantity has to be 999 or less.` `Choose in, out, or all.` |
-| `POST /api/inventory/wipe` | `handler_inventory_wipe.go:21` | `Type WIPE INVENTORY to confirm wiping the inventory.` |
 | `POST /api/items/{itemId}/replenishment-mode` | `handler_item_replenishment_mode.go:36` | `missing itemId path parameter` |
 
-## 422 unprocessable
+`POST /api/inventory/wipe` when the typed confirmation does not match is
+HTTP 400 `confirmation_mismatch`. The sentence stays
+`Type WIPE INVENTORY to confirm wiping the inventory.`
+(`handler_inventory_wipe.go:21`).
 
-A parsed body whose fields are not acceptable is HTTP 422
-`unprocessable`. The sentence stays the one already returned. No extra
-fields.
+## 422 validation
+
+A parsed body whose fields are not acceptable is HTTP 422 `validation`.
+The status stays 422. The sentence stays the one already returned. No
+extra fields, and no `field`.
 
 | Route | File:line | Sentence |
 | --- | --- | --- |
@@ -368,7 +383,8 @@ stays 409 `in_group` with `members.groupId`
 
 A known `/api` path called with the wrong method is HTTP 405
 `method_not_allowed`. The sentence is `Method not allowed.` Today the
-router writes plain text. This contract is JSON.
+router writes plain text. This contract is JSON. The hosted contract
+has no 405 code, so this name stays.
 
 ## 500 internal
 
@@ -393,8 +409,11 @@ not send this token. The sentences stay word for word.
 | Status | Code | Sentence | File:line |
 | --- | --- | --- | --- |
 | 404 | `not_found` | `Not found.` | Token unset. `sync_auth.go:34`, `handler_sync.go:21`. |
-| 401 | `sync_token_invalid` | `The sync token is not valid.` | `GET /api/sync/snapshot` with a missing or wrong token. `sync_auth.go:50`, `handler_sync.go:25`. |
+| 401 | `unauthorized` | `The sync token is not valid.` | `GET /api/sync/snapshot` with a missing or wrong token. `sync_auth.go:50`, `handler_sync.go:25`. |
 | 403 | `sync_read_only` | `This token only reads the sync snapshot.` | Any other route presented with a valid sync token. `sync_auth.go:46`. `GET /api/events` with that token is allowed and is not this error. |
+
+`sync_read_only` stays. The hosted `forbidden_role` means the person is
+not an owner, which is a different meaning.
 
 ## Telemetry
 
@@ -403,9 +422,11 @@ one. The sentences stay word for word.
 
 | Status | Code | Sentence | File:line |
 | --- | --- | --- | --- |
-| 400 | `invalid_report` | `invalid report` | `handler_telemetry.go:33`, `:41` |
-| 400 | `report_too_large` | `report is too large` | `:38` |
-| 400 | `invalid_report` | `unknown report kind`, `duration must not be negative`, `status is invalid`, `skipped count is invalid`, or `resource counts are invalid` | `:45` |
+| 400 | `validation` | `invalid report` | `handler_telemetry.go:33`, `:41` |
+| 400 | `payload_too_large` | `report is too large` | `:38` |
+| 400 | `validation` | `unknown report kind`, `duration must not be negative`, `status is invalid`, `skipped count is invalid`, or `resource counts are invalid` | `:45` |
+
+These responses do not include `field`. The status stays 400.
 
 `GET /api/telemetry` does not return these.
 
