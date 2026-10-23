@@ -238,7 +238,9 @@ export function confirmSkipsNothingOnHand(count: number): string | null {
 // Types only. The Pi client still uses the helpers above, including userId,
 // until the hosted routes exist. Nothing here selects a tenant except the
 // X-Household-Id header, which the server checks against membership, or, for
-// device calls, the household bound to the device token.
+// device calls, the household bound to the device token. The one exception is
+// the householdId body on POST /api/auth/session/household, which sets the
+// session's active household after a membership check.
 
 export type HouseholdHeaderName = 'X-Household-Id';
 
@@ -328,10 +330,6 @@ export interface Household {
 
 export interface HouseholdDeleted extends Household {
   message: 'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.';
-}
-
-export interface CreateHouseholdRequest {
-  name: string;
 }
 
 export interface CreateHouseholdResponse {
@@ -451,10 +449,11 @@ export interface Device {
   id: string;
   label: string | null;
   createdAt: string;
+  /** In-memory last contact. The database row is written on a status flip or every 5 minutes. */
   lastSeenAt: string | null;
   revokedAt: string | null;
   kind: DeviceKind;
-  /** Server-computed: lastSeenAt is within 300 seconds. */
+  /** Server-computed from the in-memory lastSeenAt: within 300 seconds. */
   online: boolean;
 }
 
@@ -477,11 +476,12 @@ export interface DeviceScanRequest {
 
 export interface DeviceScanResponse {
   id: string;
+  /** `accepted` is the single-body form of a batch item's `created`. */
   status: 'accepted' | 'duplicate';
   cursor: string;
 }
 
-/** Stage 1 batch on POST /api/device/scans. A single DeviceScanRequest remains a batch of one. */
+/** Stage 1 batch on POST /api/device/scans. A body is a batch when it has `scans`. Both `scans` and `id` is validation. */
 export interface DeviceScanBatchRequest {
   scans: {
     id: string;
@@ -496,7 +496,12 @@ export interface DeviceScanBatchRequest {
 }
 
 export interface DeviceScanBatchResponse {
-  results: { id: string; status: 'created' | 'duplicate' | 'conflict' }[];
+  results: {
+    id: string;
+    status: 'created' | 'duplicate' | 'conflict' | 'rejected';
+    /** Present only when status is `rejected`. */
+    code?: 'validation';
+  }[];
   config: DeviceHubConfig;
 }
 
@@ -697,7 +702,8 @@ export interface ExportDocumentV1 {
 
 export interface ExportJobCreated {
   jobId: string;
-  status: 'pending';
+  /** Pi returns `ready`. Stage 3 returns `pending`. */
+  status: 'pending' | 'ready';
 }
 
 export interface ExportJob {
@@ -875,9 +881,14 @@ export function isProductBarcode(input: string): boolean {
   return /^(?:\d{8}|\d{12}|\d{13}|\d{14})$/.test(input);
 }
 
+/** Grammar only, including a wrong check character. Scan rejection uses this, not `isPairingCode`. */
+export function looksLikePairingCode(input: string): boolean {
+  return PAIRING_CODE_GRAMMAR.test(input.toUpperCase());
+}
+
 export function isPairingCode(input: string): boolean {
   const code = input.toUpperCase();
-  if (!PAIRING_CODE_GRAMMAR.test(code)) return false;
+  if (!looksLikePairingCode(code)) return false;
   const payload = code.slice(4, 8) + code.slice(9, 13);
   return code[14] === pairingCheckCharacter(payload);
 }

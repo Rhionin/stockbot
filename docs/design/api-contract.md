@@ -18,23 +18,25 @@ JSON field names are camelCase, matching the API the web client already calls. D
 
 ## Tenancy
 
-tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token; nothing else selects a tenant.
+tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token, except the householdId body on POST /api/auth/session/household, which sets the session's active household after a membership check; nothing else selects a tenant.
 
-The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call.
+The signed-in user comes from the server session. Web sends the BFF cookie. Stage 3 Expo sends `Authorization: Bearer` with the Cognito access token, and that client still sends `X-Household-Id` on each data request. Stage 1 Expo sends `Authorization: Bearer sbs_…`, an opaque session token. A paired device sends its own bearer token, and the household is the one stored for that device. The client does not send a household id for a device call.
 
-activeHouseholdId order, for a personal session: a present `X-Household-Id` is the household for that request, and it must be one of the caller's memberships. If the header is omitted, the server uses the `activeHouseholdId` stored on the session, which must still be a membership. The header wins when both are present. The stored id is not a client-supplied tenant on the data request. `POST /api/auth/session/household` is what writes it. A header that is not a membership is `not_found`. A missing header with no stored `activeHouseholdId` is `validation`.
+`X-Household-Id` is optional on session routes. When it is omitted, the session's `activeHouseholdId` is the household for that request. Login, invite accept, and setup set `activeHouseholdId` when the person has exactly one household. No header and no active household is `400` `validation`. A household the caller does not belong to, or an unknown household, is `404` `not_found`. `GET /api/events` and a same-origin export download use the session and do not require the header. The download's household is the one stored on the export job.
+
+activeHouseholdId order, for a personal session: a present `X-Household-Id` is the household for that request, and it must be one of the caller's memberships. If the header is omitted, the server uses the `activeHouseholdId` stored on the session, which must still be a membership. The header wins when both are present. The stored id is not a client-supplied tenant on the data request. `POST /api/auth/session/household` is what writes it, and its `householdId` body is the one exception to the tenant rule. A header that is not a membership is `404` `not_found`. A missing header with no stored `activeHouseholdId` is `400` `validation`.
 
 `userId` is removed from every hosted request: query, body, and path, except the path segment on the member routes below, which names the member being changed and is not a tenant. userId-removed: If a client still sends userId, the server ignores it and does not treat it as the tenant.
 
 These are not tenants, and the server does not select a household from them:
 
-- a `householdId` field in a body, including an imported file
-- the `{id}` of a household path, unless it equals the validated `X-Household-Id`
+- a `householdId` field in a body, including an imported file, other than `POST /api/auth/session/household`
+- the `{id}` of a household path, unless it equals the household selected for this request (the validated header, or the session's `activeHouseholdId` when the header is omitted)
 - the `{userId}` of a member path
 - `device_id` in a scan body (the device id comes from the device token)
 - the `household_id` claim inside a live ticket (the server minted it; the client does not present it to `/api`)
 
-A missing `X-Household-Id` is `validation` only when the session has no `activeHouseholdId`. An unknown id, a household the caller does not belong to, or a path `{id}` that does not equal the household selected for this request is `not_found`. Cross-household access is `not_found`, never `forbidden_role` and never `unauthorized`, so the response does not reveal that the other household exists (design §4).
+A missing `X-Household-Id` is `400` `validation` only when the session has no `activeHouseholdId`. An unknown id, a household the caller does not belong to, or a path `{id}` that does not equal the household selected for this request is `404` `not_found`. Cross-household access is `not_found`, never `forbidden_role` and never `unauthorized`, so the response does not reveal that the other household exists (design §4).
 
 `forbidden_role` is only for a caller who is a member of the named household and whose role cannot perform the action.
 
@@ -67,7 +69,7 @@ Roles, from design §5:
 | member | Scan, confirm, edit, manage the shopping list, create and revoke invites, list members, list devices. |
 | owner | Everything a member can do, plus change roles, remove members, revoke devices, export, import, and delete or restore the household. |
 
-A household has at least one owner. The check locks the owner rows with `SELECT ... FOR UPDATE` in the same transaction as the demotion, removal, or account deletion. A write that would leave zero owners returns `last_owner`. A soft-deleted household does not count for `last_owner` on `DELETE /api/me`. If the serialization-error retry budget is exhausted first, the response is `busy`. T13 adds a concurrent cross-demotion test for this lock.
+A household has at least one owner. The check runs in the same transaction as the demotion, removal, or account deletion. On the Pi that transaction is `BEGIN IMMEDIATE`. SQLite has no `FOR UPDATE`. Stage 3 (DSQL) locks the owner rows with `SELECT ... FOR UPDATE`. A write that would leave zero owners returns `last_owner`. A soft-deleted household does not count for `last_owner` on `DELETE /api/me`. If the serialization-error retry budget is exhausted first, the response is `busy`. T13 adds a concurrent cross-demotion test for this lock.
 
 The server retries a transaction that fails with a serialization error, from the start, inside a bounded attempt budget. Calls that leave the database run only after that transaction has committed: the SES invite email, Cognito `AdminUserGlobalSignOut` on logout, Cognito `AdminDeleteUser` on account deletion, and EventBridge Scheduler create. `DELETE /api/me` commits the database step first, then calls `AdminDeleteUser` from a job that retries on its own. A failure of that job does not restore the memberships.
 
@@ -77,7 +79,7 @@ Cognito, in stage 3, owns hosted sign-up, email verification, and Cognito's own 
 
 CJ decided on 2026-10-23 that everyone, household 1 included, uses a personal email and password. On the Pi this is the local identity provider. Sessions are opaque and stored on this server, so the same user id can link to a Cognito `sub` in stage 3. The shared household password signs in to household 1 as member only while it is on. An owner retires it with `POST /api/household/household-password/retire`. It can be restored for 7 days, then the hash is deleted. Device tokens do not depend on a person's session, password, or `pantry_session`.
 
-The version gate runs before auth. `GET /api/config` includes `minClientVersion.expo`. An Expo request sends `X-Stockbot-Client: expo/<semver>`. Below that minimum the response is `426` `upgrade_required`, sentence "Update Stockbot to keep using it."
+The version gate runs before auth on every `/api` route except `GET /api/config`, `GET /api/build`, and the telemetry routes (`GET /api/telemetry`, `POST /api/telemetry/client`). `GET /api/config` includes `minClientVersion.expo`. An Expo request sends `X-Stockbot-Client: expo/<semver>`. Below that minimum the response is `426` `upgrade_required`, sentence "Update Stockbot to keep using it." A value that starts with `expo/` and is not `expo/<semver>` is the same `426`. Web is never gated.
 
 Both of these rules apply:
 
@@ -92,7 +94,7 @@ LAN `:8080`, while the household password is on: no personal sign-in, household 
 
 ## Endpoint index
 
-endpoint-count: 51
+endpoint-count: 52
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -147,11 +149,12 @@ POST /api/household/import/uploads
 POST /api/import
 GET /api/import/{id}
 DELETE /api/me
+GET /api/events
 POST /api/live/ticket
 GET /api/config
 ```
 
-Routes the current server already serves, and that this contract does not redefine, keep today's JSON. On the hosted API they drop `userId` and require `X-Household-Id`. That includes history, restock, groups, providers, settings, and the shopping-list mutations. Their field list stays the one the handlers use today.
+Routes the current server already serves, and that this contract does not redefine, keep today's JSON. On the hosted API they drop `userId`. The household is the validated `X-Household-Id` or, when that header is omitted, the session's `activeHouseholdId`. That includes history, restock, groups, providers, settings, and the shopping-list mutations. Their field list stays the one the handlers use today.
 
 ## Auth and session
 
@@ -181,9 +184,9 @@ Stage 1. Email and password. The household-password form exists only while house
 | X-Household-Id | Omit |
 | Request | `{ "email": string, "password": string }` or, during the changeover, `{ "householdPassword": string }` |
 | Response | `200` `LoginResponse`. Web sets `__Host-stockbot_session`. Expo, when `X-Stockbot-Client` starts with `expo/`, also receives `token` (`sbs_…`). |
-| Errors | `unauthorized`, `validation`, `rate_limited` |
+| Errors | `unauthorized`, `validation`, `rate_limited`, `busy` |
 
-Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`.
+Email is trimmed and compared case-insensitively. Password length is 10 through 256 bytes. Shorter or longer is `validation`. The client may show "Use at least 10 characters." on the field. An unknown email and a wrong password return the same `401` `unauthorized` body. The body does not say which one failed. `{ "householdPassword" }` signs in as a member of household 1 with no user id. After the password is retired, that form is the same `401` `unauthorized` body. Sending both forms, or neither, is `validation`. When the signed-in person has exactly one household, login sets `activeHouseholdId` to it. A wait of more than 2 seconds for the argon2id semaphore is `busy`. Reset and invite accept use that same semaphore.
 
 Limits: 5 failures per 15 minutes per client IP, and 10 failures per 15 minutes per normalised email. Over the limit is `429` `rate_limited` with `Retry-After`. The body is still the registry sentence and does not say which field was wrong.
 
@@ -264,7 +267,7 @@ Sets a new password from a reset link. The link is single use and expires 24 hou
 | X-Household-Id | Omit |
 | Request | `{ "code": string, "password": string }` |
 | Response | `200` `LoginResponse`. This signs the person in and revokes their other sessions. |
-| Errors | `validation`, `reset_expired`, `not_found`, `rate_limited` |
+| Errors | `validation`, `reset_expired`, `not_found`, `rate_limited`, `busy` |
 
 Password rules match login. A code past its expiry, or already used, is `reset_expired`. A code that was never issued is `not_found`. Invite links do not use `reset_expired`. Limits match invite accept: 10 per 15 minutes per IP, and 5 attempts per code. The server builds the link that created this code as `<APP_BASE_URL>/reset/<code>`.
 
@@ -281,11 +284,11 @@ Creates a household and makes the caller an owner. This is the step after email 
 | X-Household-Id | Omit |
 | Request | `{ "name": string, "restockMode"?: "auto" \| "ask_restock" \| "ask_hold", "inviteCode"?: string }` |
 | Response | `201` `{ "id": string, "name": string, "role": "owner" }` |
-| Errors | `unauthorized`, `validation`, `invite_required`, `invite_expired`, `not_found` |
+| Errors | `unauthorized`, `validation`, `invite_required`, `invite_expired`, `not_found`, `rate_limited` |
 
 `name` is required, trimmed, and 1–80 characters. The 1–80 length is not in the design. `restockMode` is optional: `auto`, `ask_restock`, or `ask_hold`, the three values in [#296](https://github.com/Rhionin/stockbot/issues/296). Omitted means `auto`, which is today's behavior. Master has no route for that setting. `PUT /api/restock/household` sets a numeric household target. It is not this mode.
 
-`inviteCode` is optional on the route so a later stage can make it optional without changing the path. In stage 1 it is required, and it must be an open `start_household` invite. A missing `inviteCode` is `403` `invite_required`. An expired or already used code is `invite_expired`. A revoked or unknown code is `not_found`, the same split as invite accept. A code for joining an existing household is `not_found` on this route.
+`inviteCode` is optional on the route so a later stage can make it optional without changing the path. In stage 1 it is required, and it must be an open `start_household` invite. A missing `inviteCode` is `403` `invite_required`. An expired or already used code is `invite_expired`. A revoked or unknown code is `not_found`, the same split as invite accept. A code for joining an existing household is `not_found` on this route. The server consumes the code in the same transaction that creates the household and the owner membership. A failed create does not consume the code. Invite-accept limits apply: 10 per 15 minutes per IP, and 5 attempts per code. Over the limit is `rate_limited`. When this household is the person's only one, the session's `activeHouseholdId` is set to it.
 
 ### GET /api/household/settings
 
@@ -317,7 +320,7 @@ interface HouseholdSettings {
 
 ### POST /api/household/household-password/restore
 
-Owner actions for household 1 during stage 1. Retire turns the shared password off, replaces its session key, and revokes sessions that came from that password. Personal sessions stay. Restore, before `householdPasswordRestoreUntil`, turns the same password back on. The new session key stays, so old `pantry_session` cookies stay dead.
+Owner actions for household 1 during stage 1. Retire turns the shared password off, replaces its session key, and revokes sessions that came from that password. In that same transaction it deletes household-password push subscriptions, the rows with `household_id = 1` and `user_id` null. After commit, `LiveHub.Kick` closes those SSE streams. Personal sessions stay. Restore, before `householdPasswordRestoreUntil`, turns the same password back on. The new session key stays, so old `pantry_session` cookies stay dead.
 
 | | |
 |---|---|
@@ -623,7 +626,7 @@ interface PairingCode {
 }
 ```
 
-pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no I, L, O, or U). The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`. A product barcode (GTIN-8, GTIN-12, GTIN-13, or GTIN-14) is digits only. A payload that contains letters and hyphens cannot be one. The client and the server reject a scan that matches the pattern. It is never created as a product. `isPairingCode` in `frontend/src/api/contract.ts` checks the pattern and the check character.
+pairing-collision: A pairing code cannot collide with a product barcode. The grammar is `SBP-XXXX-XXXX-C`: a `SBP-` prefix, 8 Crockford base32 characters (40 bits) in two groups of four, and a check character. Crockford's payload alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no I, L, O, or U). The check character is that 40-bit value modulo 37, written with `0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U`. The screen pattern is `^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`. A product barcode (GTIN-8, GTIN-12, GTIN-13, or GTIN-14) is digits only. A payload that contains letters and hyphens cannot be one. The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check. `isPairingCode` also requires the check character. A bad check still matches `looksLikePairingCode`, so the scan is rejected. `isPairingCode` alone would let that scan through as a product.
 
 ### GET /api/devices/pair/{pairingId}
 
@@ -678,7 +681,7 @@ interface Device {
 }
 ```
 
-`id`, `label`, `createdAt`, `lastSeenAt`, and `revokedAt` are the #364 fields. `kind` and `online` are the stage-1 additions. `online` is true when `lastSeenAt` is within 300 seconds of now. The server decides, so web and mobile agree. `direct` is the scanner on this server. It belongs to household 1, and it cannot be paired, renamed, revoked, or moved: those routes return `not_found` for it. The token and the token hash are not in this response.
+`id`, `label`, `createdAt`, `lastSeenAt`, and `revokedAt` are the #364 fields. `kind` and `online` are the stage-1 additions. `lastSeenAt` in this response is the in-memory value. The database row is written only when online status flips, or every 5 minutes. `online` is true when that in-memory time is within 300 seconds of now. The server decides, so web and mobile agree. `direct` is the scanner on this server. It belongs to household 1, and it cannot be paired, renamed, revoked, or moved: those routes return `not_found` for it. The token and the token hash are not in this response.
 
 ### PATCH /api/devices/{id}
 
@@ -707,7 +710,7 @@ Revoke. Owners only. The server publishes a `rekey` hint on the current channel,
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
 
-A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token. Disconnecting a hub discards scans it has not sent. The confirm uses the last `queued` count from heartbeat.
+A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token and keeps its unsent queue, as [Device error handling](#device-error-handling) says. The confirm uses the last `queued` count from heartbeat.
 
 ### POST /api/device/scans
 
@@ -718,9 +721,9 @@ The relay and any other paired scanner call this. The relay is never a push subs
 | Auth | Device bearer |
 | Role | Device |
 | X-Household-Id | Omit. If the client sends it and it does not equal the device's household, `not_found`. |
-| Request | `DeviceScanRequest` |
-| Response | `200` `DeviceScanResponse` |
-| Errors | `unauthorized`, `validation`, `not_found`, `conflict`, `busy`, `no_space` |
+| Request | `DeviceScanRequest` or `DeviceScanBatchRequest` |
+| Response | `200` `DeviceScanResponse` or `DeviceScanBatchResponse` |
+| Errors | `unauthorized`, `device_revoked`, `validation`, `not_found`, `conflict`, `rate_limited`, `payload_too_large`, `busy`, `no_space` |
 
 ```ts
 interface DeviceScanRequest {
@@ -739,15 +742,17 @@ interface DeviceScanResponse {
 }
 ```
 
-Idempotency: a second request with the same device and the same `id` does not create a second scan. It returns `200` with `status: "duplicate"` and the original result. If the barcode or `unitCount` differs from the stored request, the response is `conflict` and the stored scan is unchanged.
+The #364 body above stays valid. Stage 1 hubs may instead send `DeviceScanBatchRequest` on this same route. Stage 3 accepts that batch too. The single-object body and `DeviceScanResponse` stay as written. A body is a batch when it has a `scans` array. A body that has both `scans` and `id` is `validation`. A batch holds 1 to 50 items.
 
-Heartbeat: every accepted scan updates that device's `lastSeenAt`. `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`.
+Idempotency is the same for both forms. The same device and the same `id`, with the same barcode, direction, and `unitCount`, does not create a second scan. The single body returns `200` with `status: "accepted"` the first time and `status: "duplicate"` on that replay. `accepted` on the single body is `created` on a batch item. If the barcode, direction, or `unitCount` differs, the single body is `conflict` and the stored scan is unchanged. A batch item with that difference has `status: "conflict"` and the HTTP status stays 200.
+
+Heartbeat: every accepted scan updates that device's `lastSeenAt`. `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`. The heartbeat flag is only on the single body.
 
 The offline ring of 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`.
 
 A committed scan publishes one `scans` hint after the final commit, on this device's household channel only.
 
-The #364 body above stays valid. One `DeviceScanRequest` is a batch of one. Stage 1 hubs may instead send `DeviceScanBatchRequest` on this same route. Stage 3 accepts that batch too. The single-object body and `DeviceScanResponse` stay as written.
+Scan time, for either form: use `scannedAt` when it is present and inside the window from now minus 30 days through now plus 5 minutes. Otherwise use `receivedAt` minus `ageMs` when `ageMs` is present. Otherwise use `receivedAt` and set `timeApprox`. A `scannedAt` that is not a timestamp is not this fallback.
 
 ```ts
 interface DeviceScanBatchRequest {
@@ -764,12 +769,18 @@ interface DeviceScanBatchRequest {
 }
 
 interface DeviceScanBatchResponse {
-  results: { id: string; status: 'created' | 'duplicate' | 'conflict' }[];
+  results: { id: string; status: 'created' | 'duplicate' | 'conflict' | 'rejected'; code?: 'validation' }[];
   config: DeviceHubConfig;
 }
 ```
 
-A batch has at most 50 scans and a body of at most 64 KB. `barcode` is at most 64 printable ASCII characters. Over either limit is `validation`. The batch is one transaction. A per-item `conflict` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode and direction. `created` is a new scan. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
+`code` is present only when `status` is `rejected`.
+
+These fail the whole request and write nothing: a body over 64 KB (`413` `payload_too_large`), more than 50 items (`validation`), and JSON the server cannot read (`validation`). A barcode longer than 64 characters, a barcode `looksLikePairingCode` matches, or a `scannedAt` that is not a timestamp does not fail the other items. That item is `rejected` with `code` `validation`. On the single body those three are `validation` for the request, because `DeviceScanResponse` has no `rejected` status.
+
+A device may submit 600 scans per minute. Over that limit the response is `429` `rate_limited` with `Retry-After`, and nothing in the request is written.
+
+The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
 
 `DeviceHubConfig` is `{ controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, configVersion: number }`.
 
@@ -784,7 +795,7 @@ The hub reports liveness. A flush also counts as contact. This does not remove `
 | X-Household-Id | Omit |
 | Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean }` |
 | Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: { "version": string, "url": string, "sha256": string, "sig": string } }` |
-| Errors | `unauthorized`, `device_revoked`, `validation` |
+| Errors | `unauthorized`, `device_revoked`, `validation`, `rate_limited`, `busy` |
 
 `heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent.
 
@@ -799,9 +810,19 @@ The hub calls this about every 30 days, or when heartbeat returns `rotateToken: 
 | X-Household-Id | Omit |
 | Request | Empty body |
 | Response | `200` `{ "token": string }` |
-| Errors | `unauthorized`, `device_revoked`, `busy` |
+| Errors | `unauthorized`, `device_revoked`, `rate_limited`, `busy` |
 
 `token` is shown once and stored hashed, same format as pairing. The previous token stays valid until the new token is used, or for 24 hours, whichever comes first.
+
+### Device error handling
+
+The hub branches on the HTTP status and the `code`. It does not branch on the sentence.
+
+Any `401`, whether `unauthorized` or `device_revoked`, means stop, wipe the token, return to pairing mode, and keep the unsent queue.
+
+A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
+
+Any other `4xx` is not retried.
 
 ## Scans and changes-since
 
@@ -984,7 +1005,7 @@ interface ExportDocumentV1 {
 }
 ```
 
-A hosted file has `schemaVersion` 1. Any other `schemaVersion` is `validation`. A top-level key the importer does not know is not a failure. The job ignores it and lists the key in `warnings`. Item, instance, scan, shopping-list, stock-move, group, and category ids are preserved. Identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Before inserting, the job advances those identity sequences above the file's max ids. Product ids in the file are not inserted into the shared catalog. Nested fields are the ones on those TypeScript types.
+A hosted file has `schemaVersion` 1. Any other `schemaVersion` is `validation`. A top-level key the importer does not know is not a failure. The job ignores it and lists the key in `warnings`. Item, instance, scan, shopping-list, stock-move, group, and category ids are preserved. Stage 1 (Pi, SQLite) keeps UUIDv7 text ids preserved; no sequences. Stage 3 identity columns are `GENERATED BY DEFAULT`, so the import can keep them (design §2.1, §7). Before inserting, the stage-3 job advances those identity sequences above the file's max ids. Product ids in the file are not inserted into the shared catalog. Nested fields are the ones on those TypeScript types.
 
 `ExportSettingsV1` is an allowlist: `restockMode` and `supplyDefault`. It is not an open set of keys. `channel_key` is never in the file. Import overwrites those two settings and leaves the destination household's `channel_key` alone.
 
@@ -1018,7 +1039,7 @@ The round-trip test compares products by barcode set plus name, not by id. Item,
 
 ### POST /api/export
 
-Owner. Async. `stockbot-jobs` writes the JSON and the CSV to the exports bucket (SSE-KMS, 7-day expiry) and a later GET returns presigned URLs.
+Owner. On the Pi the export is synchronous. `POST` returns `202` with `status` `ready`. Stage 3 stays async: `stockbot-jobs` writes the JSON and the CSV to the exports bucket (SSE-KMS, 7-day expiry) and `POST` returns `status` `pending`.
 
 | | |
 |---|---|
@@ -1026,12 +1047,14 @@ Owner. Async. `stockbot-jobs` writes the JSON and the CSV to the exports bucket 
 | Role | Owner |
 | X-Household-Id | Required |
 | Request | Empty body |
-| Response | `202` `{ "jobId": string, "status": "pending" }` |
+| Response | `202` `{ "jobId": string, "status": "pending" \| "ready" }` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy`, `no_space` |
+
+The Pi status is `ready`. The stage-3 status is `pending`.
 
 ### GET /api/export/{id}
 
-The poll for the job `POST /api/export` created. `{id}` is the job id, and the job must belong to `X-Household-Id`.
+The poll for the job `POST /api/export` created. `{id}` is the job id. On the Pi the household is the one stored on the job row. In stage 3 the job must belong to the household selected for the request.
 
 | | |
 |---|---|
@@ -1047,15 +1070,17 @@ interface ExportJob {
   status: 'pending' | 'ready' | 'failed';
   jsonUrl: string | null;
   csvUrl: string | null;
-  expiresAt: string | null; // URL expiry, within the 7-day object life
+  expiresAt: string | null; // URL expiry. Pi: 15 minutes. Stage 3: within the 7-day object life
 }
 ```
 
 `failed` is a job status, not an error code. The body has no item names. A job for another household is `not_found`.
 
+On the Pi, `jsonUrl` and `csvUrl` are same-origin paths. Each one needs the owner's session (cookie or bearer). The household is taken from the job row, so the download does not require `X-Household-Id`. The URLs expire 15 minutes after they are issued. Stage 3 leaves those fields null until the job is `ready`, and then they are presigned URLs.
+
 ### POST /api/household/import/uploads
 
-Owner. First step of import. Returns a presigned S3 PUT URL. The object key is under `imports/`. The documented max file size is 32 MiB (`33554432` bytes).
+Stage 3; Pi returns `not_found`. Owner. First step of import. Returns a presigned S3 PUT URL. The object key is under `imports/`. The documented max file size is 32 MiB (`33554432` bytes).
 
 | | |
 |---|---|
@@ -1079,7 +1104,7 @@ Network Engineer owns these. CJ approved the production names on 2026-10-22.
 
 ### POST /api/import
 
-Owner. Starts the job for an object already uploaded. The destination household must be empty. Writes run in transactions of at most 1,000 rows. Idempotent per `(household_id, importId)`.
+Stage 3; Pi returns `not_found`. Owner. Starts the job for an object already uploaded. The destination household must be empty. Writes run in transactions of at most 1,000 rows. Idempotent per `(household_id, importId)`.
 
 | | |
 |---|---|
@@ -1111,7 +1136,7 @@ Job states:
 
 ### GET /api/import/{id}
 
-Same auth as POST. `{id}` is the job id.
+Stage 3; Pi returns `not_found`. Same auth as POST. `{id}` is the job id.
 
 ```ts
 interface ImportJob {
@@ -1162,7 +1187,21 @@ The caller types the account email. The server trims it and compares it case-ins
 
 ## Push
 
-Decided transport: AppSync Events on every visible screen. Polling is the fallback while the socket is disconnected. The Pi does not use this section.
+Decided transport for stage 3: AppSync Events on every visible screen. Polling is the fallback while the socket is disconnected. Stage 1 on the Pi uses `GET /api/events` instead of the AppSync routes below.
+
+### GET /api/events
+
+Stage 1, Pi only. Stage 3 does not serve this stream and returns `not_found`.
+
+| | |
+|---|---|
+| Auth | Session cookie or `Bearer sbs_…`. A sync token is also accepted, and it stays household 1 and read-only. |
+| Role | Member of the active household. The sync token is not a member route. |
+| X-Household-Id | Optional. Omitted, the household is the session's `activeHouseholdId`. A present header follows the activeHouseholdId order. The sync token ignores the header and stays household 1. |
+| Response | `200` `text/event-stream` |
+| Errors | `unauthorized`, `validation`, `not_found` |
+
+Events are named `hint`. The data is a `LiveHint`. Household 1 also keeps the event payloads it already receives today. A principal may hold at most 10 streams. Removing a member closes that member's streams for the household. Retiring the household password closes the household-password streams after commit.
 
 ### GET /api/config
 
@@ -1182,9 +1221,11 @@ type LiveConfig =
   | { live: 'push'; appsync: { httpUrl: string; realtimeUrl: string }; minClientVersion: { expo: string } };
 ```
 
-The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string } }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. The version gate in [Stage 1 auth](#stage-1-auth) uses it. A missing `X-Stockbot-Client` header means web, so there is no version gate. The exception is `Authorization: Basic` with no `X-Stockbot-Client` after the household password is retired: that request returns `426` `upgrade_required`, not `401`. An `X-Stockbot-Client: expo/<semver>` below the minimum also returns `426` `upgrade_required`. Stage 3 returns the same `minClientVersion` field.
+The Pi returns `{ "live": "sse", "minClientVersion": { "expo": string } }`. Hosted returns `{ "live": "push", "appsync": { "httpUrl": string, "realtimeUrl": string }, "minClientVersion": { "expo": string } }`. `appsync` is required when `live` is `push`. `poll` is reserved for a deployment that has no push. `httpUrl` is the AppSync HTTP domain. `realtimeUrl` is the websocket domain. `minClientVersion.expo` is the oldest Expo build this server accepts. The version gate in [Stage 1 auth](#stage-1-auth) uses it. A missing `X-Stockbot-Client` header means web, so there is no version gate. The exception is `Authorization: Basic` with no `X-Stockbot-Client` after the household password is retired: that request returns `426` `upgrade_required`, not `401`. An `X-Stockbot-Client: expo/<semver>` below the minimum also returns `426` `upgrade_required`. A value that starts with `expo/` and is not a semver is the same `426`. The gate does not run on this route, on `GET /api/build`, or on telemetry. Stage 3 returns the same `minClientVersion` field.
 
 ### POST /api/live/ticket
+
+Stage 3; Pi returns `not_found`.
 
 | | |
 |---|---|
@@ -1278,7 +1319,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 
 | code | HTTP | sentence | notes |
 |---|---|---|---|
-| `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
+| `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). On the Pi, also an argon2id semaphore wait over 2 seconds, and a writer wait over 2 seconds. Login, reset, and invite accept return it for that semaphore. |
 | `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
 | `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
@@ -1300,11 +1341,11 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
-| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, and pairing complete. Login also sends `Retry-After`. |
-| `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. |
+| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, and stage-1 `POST /api/households`. Login also sends `Retry-After`. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. |
+| `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. Also a `POST /api/device/scans` body over 64 KB. |
 | `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
-| `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`. Also Basic with no `X-Stockbot-Client` after the household password is retired. A missing client header on any other request is web and is not gated. |
+| `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`, and a malformed `expo/` value. Also Basic with no `X-Stockbot-Client` after the household password is retired. A missing client header on any other request is web and is not gated. The gate skips `GET /api/config`, `GET /api/build`, and telemetry. |
 
 ## Decided by PM
 
@@ -1339,7 +1380,7 @@ Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbo
 Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
 
 - **Invite status.** The wire value stays `revoked`. Clients label it Cancelled.
-- **Start a household.** `POST /api/households` takes optional `inviteCode`. Stage 1 requires a `start_household` code. Missing is `invite_required`. Expired or used is `invite_expired`. Revoked or unknown is `not_found`. A later stage may omit the code on this same route.
+- **Start a household.** `POST /api/households` takes optional `inviteCode`. Stage 1 requires a `start_household` code. Missing is `invite_required`. Expired or used is `invite_expired`. Revoked, unknown, or a join code is `not_found`. The code is consumed in the same transaction that creates the household and the owner. Invite-accept limits apply, so the route also returns `rate_limited`. A later stage may omit the code on this same route. Open question 7 stays closed.
 - **Reset link.** `<APP_BASE_URL>/reset/<code>` stands.
 - **`device_revoked`.** The sentence is "This device was disconnected. Pair it again to keep using it."
 
@@ -1348,7 +1389,7 @@ Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
 Numbers are the open-question numbers from the `e584250` contract, which is the text the Architect reviewed. Where one of these refines a PM ruling, the text in the body is this decision.
 
 8. **Stable extra codes.** `last_owner` stays 409, `household_not_empty` stays 409, and `confirmation_mismatch` stays 400.
-15. **Empty household.** Zero rows in every household-owned table that version 1 import writes: items, item instances, scans, shopping list, stock moves, groups, categories, and barcode overrides. Memberships, invites, devices, and the settings row are allowed, and import overwrites settings. The check runs on POST and again at job start. The job advances the identity sequences above the file's max ids before inserting.
+15. **Empty household.** Zero rows in every household-owned table that version 1 import writes: items, item instances, scans, shopping list, stock moves, groups, categories, and barcode overrides. Memberships, invites, devices, and the settings row are allowed, and import overwrites settings. The check runs on POST and again at job start. Stage 1 keeps UUIDv7 text ids preserved; no sequences. The stage-3 job advances the identity sequences above the file's max ids before inserting.
 19. **Export exclusions.** Export excludes memberships, invites, device tokens, push subscriptions, provider ciphertext, and `usage_daily`. Settings exclude `channel_key`. `ExportSettingsV1` is an allowlist.
 20. **Referenced products.** Export only products the household references, and each product carries its barcodes. Import matches by barcode or creates a product and remaps. It does not insert into the shared catalog under the file's ids. Item, scan, and move ids stay preserved. The round-trip test compares products by barcode set plus name, not by id.
 24. **Unknown or expired cursor.** A full `200`.
@@ -1363,7 +1404,16 @@ Stage-1 answers confirmed by the Architect, matching `docs/design/multi-househol
 - **Reset.** An expired or used reset link is `reset_expired`, not `invite_expired`.
 - **Telemetry.** The public timing routes stay public. Changeover counts are operator-only.
 - **Version gate.** A missing `X-Stockbot-Client` means web and is not gated. After retirement, Basic with no `X-Stockbot-Client` is `426` `upgrade_required`, not `401`.
-- **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs.
+- **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs. There is no `device_unauthorized`.
+
+Review of this contract at `6de8179`, decided by the Architect:
+
+- **One `unauthorized` code.** A failed login and an unknown device token are both `unauthorized`. `device_revoked` is the other `401`. The hub treats any `401` as [Device error handling](#device-error-handling) describes.
+- **One scan route, two bodies.** `POST /api/device/scans` accepts the single body and the batch. A body with `scans` is the batch. Both `scans` and `id` is `validation`. The duplicate fingerprint is barcode, direction, and `unitCount`. Single `accepted` is batch `created`.
+- **Tenant exception.** `POST /api/auth/session/household` is the one body that sets the active household. `X-Household-Id` is optional when the session already has `activeHouseholdId`.
+- **Household create.** Matches PM, including same-transaction consumption of `inviteCode` and `rate_limited`. Open question 7 stays closed.
+- **Pi export.** `POST /api/export` returns `202` with `status` `ready`. Stage 3 stays `pending`.
+- **Stage-3 routes on the Pi.** `POST /api/live/ticket`, `POST /api/household/import/uploads`, `POST /api/import`, and `GET /api/import/{id}` return `not_found` on the Pi.
 
 ## Decided by Frontend Builder
 
@@ -1392,7 +1442,4 @@ From the review on PR #364. Where one of these refines an earlier ruling, the te
 
 2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays. This is stage-3 AppSync reconnect behavior.
 
-PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. These two plan-vs-#374 differences are still open:
-
-5. **Device scan body.** The plan replaces the single scan with a batch. #374 says to keep the #364 device-scan shape. Both bodies are accepted. One `DeviceScanRequest` is a batch of one.
-6. **Login failure copy.** A failed login, unknown email or wrong password, is `unauthorized` with that registry sentence, and the body is the same either way. An unknown device token is the same `unauthorized` code. `device_revoked` is only after an owner revokes the device. The plan's separate `device_unauthorized` code is not used.
+PM ruled on the invite label, `inviteCode`, the reset path, and the `device_revoked` sentence. The Architect accepted the two plan-vs-#374 differences that were still open (one `unauthorized` code, and both scan bodies on one route). They are under [Decided by Architect](#decided-by-architect). Open question 7, household create, stays closed on PM's `invite_required` ruling. An expired or used reset code stays `reset_expired`.

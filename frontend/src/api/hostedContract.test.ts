@@ -7,6 +7,7 @@ import {
   formatPairingCode,
   isPairingCode,
   isProductBarcode,
+  looksLikePairingCode,
   pairingCodeCollidesWithBarcode,
   type HostedErrorCode,
   type LiveHint,
@@ -122,7 +123,7 @@ describe('hosted API contract', () => {
 
   it('states the tenant rule and the endpoint index count', () => {
     expect(doc).toContain(
-      'tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token; nothing else selects a tenant.',
+      'tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token, except the householdId body on POST /api/auth/session/household, which sets the session\'s active household after a membership check; nothing else selects a tenant.',
     );
     expect(doc).toContain('userId-removed:');
     const paths = endpointIndex(doc);
@@ -176,6 +177,14 @@ describe('hosted API contract', () => {
     expect(source).toContain('inviteCode?: string');
     expect(doc).toContain('householdPassword: null');
     expect(doc).toContain('not_found');
+    expect(doc).toContain('BEGIN IMMEDIATE');
+    expect(doc).toContain('UUIDv7 text ids preserved; no sequences');
+    expect(doc).toContain('Stage 3; Pi returns `not_found`');
+    expect(doc).toContain('GET /api/events');
+    expect(doc).toContain('looksLikePairingCode');
+    expect(source).toContain("status: 'pending' | 'ready'");
+    expect(source).toContain("status: 'created' | 'duplicate' | 'conflict' | 'rejected'");
+    expect(source.match(/export interface CreateHouseholdRequest/g)).toHaveLength(1);
   });
 
   it('rejects a pairing code as a product barcode', () => {
@@ -195,5 +204,38 @@ describe('hosted API contract', () => {
     expect(pairingCodeCollidesWithBarcode(code)).toBe(false);
     const broken = `${code.slice(0, -1)}${code.endsWith('0') ? '1' : '0'}`;
     expect(isPairingCode(broken)).toBe(false);
+    expect(looksLikePairingCode(broken)).toBe(true);
+  });
+
+  // Literals S6's Go twin can copy. looksLike is the grammar, including a bad check.
+  it('vectors for looksLikePairingCode and isPairingCode', () => {
+    const vectors: { input: string; looksLike: boolean; pairing: boolean; gtin: boolean }[] = [
+      { input: 'SBP-0123-ABCD-G', looksLike: true, pairing: true, gtin: false },
+      { input: 'sbp-0123-abcd-g', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0123-ABCD-0', looksLike: true, pairing: false, gtin: false },
+      { input: 'SBP-0000-0000-0', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0000-0000-1', looksLike: true, pairing: false, gtin: false },
+      { input: 'SBP-ZZZZ-ZZZZ-F', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-ZZZZ-ZZZZ-0', looksLike: true, pairing: false, gtin: false },
+      { input: 'SBP-0000-0010-*', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0000-0010-0', looksLike: true, pairing: false, gtin: false },
+      { input: 'SBP-0000-0011-~', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0000-0012-$', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0000-0013-=', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0000-0014-U', looksLike: true, pairing: true, gtin: false },
+      { input: 'SBP-0123-ABCD-I', looksLike: false, pairing: false, gtin: false },
+      { input: '000111222333', looksLike: false, pairing: false, gtin: true },
+      { input: '036000291452', looksLike: false, pairing: false, gtin: true },
+      { input: '12345670', looksLike: false, pairing: false, gtin: true },
+      { input: '1234567890123', looksLike: false, pairing: false, gtin: true },
+      { input: '12345678901231', looksLike: false, pairing: false, gtin: true },
+    ];
+    expect(formatPairingCode('0123ABCD')).toBe('SBP-0123-ABCD-G');
+    for (const vector of vectors) {
+      expect(looksLikePairingCode(vector.input), vector.input).toBe(vector.looksLike);
+      expect(isPairingCode(vector.input), vector.input).toBe(vector.pairing);
+      expect(isProductBarcode(vector.input), vector.input).toBe(vector.gtin);
+      expect(pairingCodeCollidesWithBarcode(vector.input), vector.input).toBe(false);
+    }
   });
 });

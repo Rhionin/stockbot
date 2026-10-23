@@ -202,7 +202,7 @@ func TestHostedAPIContract(t *testing.T) {
 		t.Fatalf("generic sentence does not match %q", clientmsg.ServerError)
 	}
 
-	const tenant = "tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token; nothing else selects a tenant."
+	const tenant = "tenant-rule: Nothing in this contract accepts a client-supplied tenant other than the X-Household-Id header, and that header is valid only when it names a household the signed-in user belongs to, or, for device calls, the household bound to the device token, except the householdId body on POST /api/auth/session/household, which sets the session's active household after a membership check; nothing else selects a tenant."
 	if !strings.Contains(doc, tenant) {
 		t.Fatal("tenant rule missing")
 	}
@@ -235,6 +235,11 @@ func TestHostedAPIContract(t *testing.T) {
 		"POST /api/auth/login",
 		"POST /api/device/heartbeat",
 		"POST /api/device/token/rotate",
+		"GET /api/events",
+		"BEGIN IMMEDIATE",
+		"UUIDv7 text ids preserved; no sequences",
+		"looksLikePairingCode",
+		"Stage 3; Pi returns `not_found`",
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)
