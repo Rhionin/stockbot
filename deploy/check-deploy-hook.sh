@@ -51,6 +51,7 @@ have deploy/README.md 'queue: max' "README documents the waiting queue"
 have deploy/README.md "If the tip's run did not publish, re-run it." "README documents re-running the tip when that run did not publish"
 have deploy/README.md 'Re-run only a master run from after #329' "README says to re-run only master runs from after the tip guard"
 have deploy/README.md 'when that queue is already full' "README limits a cancelled waiting job to a full queue"
+have deploy/README.md 'A cancel or timeout between the two moves skips that summary line.' "README says a cancel between tag moves skips the summary"
 # The notice stores the tip in ${tip}; the quotes keep that literal.
 # shellcheck disable=SC2016
 have scripts/publish-moving-tags.sh 'If ${tip}'"'"'s run did not publish, re-run it.' "stale skip names the tip run"

@@ -32,16 +32,17 @@ if [ "${tip}" != "${sha}" ]; then
   exit 0
 fi
 
-# Sidecar first. A failure on the pantry move then leaves pantry on the
-# previous tip while the sidecar has already moved. The step still fails;
-# the summary has to name that split, because nothing else does.
+# Sidecar first, so a failed pantry move does not leave pantry ahead of the
+# sidecar. The summary says that move failed and that :latest and :master
+# may be partially moved. A cancel or timeout between the two moves kills
+# the step without running this trap, so that summary line is skipped.
 sidecar_moved=0
 on_publish_error() {
   local code=$?
   local msg
   trap - ERR
   if [ "$sidecar_moved" -eq 1 ]; then
-    msg="Moved pantry-grocy-sync :latest and :master to ${sha}, then failed to move pantry :latest and :master. The two images are on different versions."
+    msg="The pantry tag move failed. :latest and :master may be partially moved."
     printf '%s\n' "$msg" >> "$summary"
     printf '%s\n' "$msg" >&2
   fi

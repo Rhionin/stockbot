@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fake git and docker. Covers the tip match (exact retag lines), a stale
-# skip, a tip that matches only through character 7, a failed ls-remote,
+# skip, a tip that differs only in the last character, a failed ls-remote,
 # empty ls-remote output, pipefail on that pipeline, and a pantry retag
 # that fails after the sidecar has already moved.
 
@@ -50,7 +50,8 @@ if [ -n "${FAKE_DOCKER_FAIL_ON:-}" ]; then
   n=$(wc -l < "${DOCKER_LOG}")
   if [ "$n" -eq "${FAKE_DOCKER_FAIL_ON}" ]; then
     echo "fake docker refused" >&2
-    exit 1
+    # Not 1. The publisher has to propagate this status; exit 1 in the trap would hide the mutant.
+    exit 7
   fi
 fi
 EOF
@@ -58,14 +59,14 @@ chmod +x "$tmp/bin/git" "$tmp/bin/docker"
 
 SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 OTHER=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-# Equal through character 7. A compare of only that prefix would treat
-# this tip as the commit being published.
-PREFIX="${SHA:0:7}b${SHA:8}"
-if [ "${#SHA}" -ne 40 ] || [ "${#PREFIX}" -ne 40 ] || [ "${PREFIX:0:7}" != "${SHA:0:7}" ] || [ "${PREFIX:7:1}" != "b" ] || [ "$PREFIX" = "$SHA" ]; then
+# Same through character 39. Any shorter compare would treat this tip as
+# the commit being published.
+PREFIX="${SHA:0:39}b"
+if [ "${#SHA}" -ne 40 ] || [ "${#PREFIX}" -ne 40 ] || [ "${PREFIX:0:39}" != "${SHA:0:39}" ] || [ "${PREFIX:39}" = "${SHA:39}" ]; then
   fail "prefix fixture"
 fi
 
-SPLIT_MSG="Moved pantry-grocy-sync :latest and :master to ${SHA}, then failed to move pantry :latest and :master. The two images are on different versions."
+SPLIT_MSG="The pantry tag move failed. :latest and :master may be partially moved."
 
 run_case() {
   local name="$1" expect="$2"
@@ -130,7 +131,7 @@ assert_skip() {
   grep -F -q 'leaving :latest and :master unchanged' "$dir/summary" || fail "$name summary"
   grep -F -q "If ${tip}'s run did not publish, re-run it." "$dir/summary" || fail "$name summary omitted recovery"
   if grep -F -q "$SPLIT_MSG" "$dir/summary"; then
-    fail "$name wrote the split-version summary"
+    fail "$name wrote the partial-move summary"
   fi
 }
 
@@ -144,12 +145,12 @@ grep -q '::notice::Moved :latest and :master to '"$SHA" "$match/stdout" || fail 
 grep -q 'Moved :latest and :master to '"$SHA" "$match/summary" || fail "tip match summary"
 assert_exact_publish "$match" match
 if grep -F -q "$SPLIT_MSG" "$match/summary"; then
-  fail "tip match wrote the split-version summary"
+  fail "tip match wrote the partial-move summary"
 fi
 
 export FAKE_TIP="$PREFIX"
-prefix7=$(run_case prefix7 0)
-assert_skip "$prefix7" prefix7 "$PREFIX"
+truncated=$(run_case truncated 0)
+assert_skip "$truncated" truncated "$PREFIX"
 
 export FAKE_TIP="$OTHER"
 stale=$(run_case stale 0)
@@ -180,26 +181,26 @@ pipe=$(run_case pipefail 1)
 assert_no_docker "$pipe" pipefail
 
 # The sidecar command is attempted and fails. Pantry has not moved, so the
-# summary must not claim the images diverged.
+# summary must not claim a partial move.
 export FAKE_LS_FAIL=0
 export FAKE_LS_STDOUT=
 export FAKE_TIP="$SHA"
 export FAKE_DOCKER_FAIL_ON=1
-sidecar_fail=$(run_case sidecar-fail 1)
+sidecar_fail=$(run_case sidecar-fail 7)
 if [ "$(grep -c '' "$sidecar_fail/docker" || true)" -ne 1 ] || [ "$(sed -n '1p' "$sidecar_fail/docker")" != "$(sidecar_cmd)" ]; then
   fail "sidecar failure did not stop after the sidecar command: $(cat "$sidecar_fail/docker")"
 fi
 if grep -F -q "$SPLIT_MSG" "$sidecar_fail/summary" || grep -F -q "$SPLIT_MSG" "$sidecar_fail/stderr"; then
-  fail "sidecar failure claimed the images diverged"
+  fail "sidecar failure wrote the partial-move summary"
 fi
 if grep -q '^publish=' "$sidecar_fail/output"; then
   fail "sidecar failure wrote a publish output"
 fi
 
 export FAKE_DOCKER_FAIL_ON=2
-pantry_fail=$(run_case pantry-fail 1)
-grep -F -q "$SPLIT_MSG" "$pantry_fail/summary" || fail "pantry failure omitted the split-version summary: $(cat "$pantry_fail/summary")"
-grep -F -q "$SPLIT_MSG" "$pantry_fail/stderr" || fail "pantry failure omitted the split-version log"
+pantry_fail=$(run_case pantry-fail 7)
+grep -F -q "$SPLIT_MSG" "$pantry_fail/summary" || fail "pantry failure omitted the partial-move summary: $(cat "$pantry_fail/summary")"
+grep -F -q "$SPLIT_MSG" "$pantry_fail/stderr" || fail "pantry failure omitted the partial-move log"
 if grep -q '^publish=' "$pantry_fail/output"; then
   fail "pantry failure wrote a publish output"
 fi
