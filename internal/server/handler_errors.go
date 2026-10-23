@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"modernc.org/sqlite"
 )
@@ -130,6 +131,12 @@ func sqliteBusy(err error) bool {
 			return false
 		}
 	}
+	// A commit failure already chose code internal and a sentence. The string
+	// fallback must not replace that decision. A driver result code is
+	// classified above and still wins.
+	if keepsInternalCode(err) {
+		return false
+	}
 	for err != nil {
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked") {
@@ -188,6 +195,9 @@ func sqliteNoSpace(err error) bool {
 	if errors.As(err, &driverErr) {
 		return driverErr.Code()&0xff == sqlitePrimaryFull
 	}
+	if keepsInternalCode(err) {
+		return false
+	}
 	for err != nil {
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "sqlite_full") || strings.Contains(msg, "database or disk is full") || strings.Contains(msg, "disk is full") {
@@ -196,4 +206,14 @@ func sqliteNoSpace(err error) bool {
 		err = errors.Unwrap(err)
 	}
 	return false
+}
+
+// keepsInternalCode reports an unexpected failure whose sentence and code
+// were already chosen. Only the string fallback consults it.
+func keepsInternalCode(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != ""
 }

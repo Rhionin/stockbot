@@ -583,7 +583,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 			entryID = created.ID
 
 			queue.Broadcaster = broadcaster
-			if err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
@@ -856,7 +856,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				broadcaster.scanEvents = nil
 				entry = created
 			}
-			err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, entry, instanceID)
 		}
 
 		if err == nil {
@@ -910,7 +910,7 @@ func TestRealtimeProperty7_QueuePublishesInventoryEventOnSuccess(t *testing.T) {
 
 			queue.Broadcaster = broadcaster
 			queue.Pantry = pantry
-			if err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
@@ -1023,7 +1023,7 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 				broadcaster.inventoryEvents = nil
 				entry = created
 			}
-			err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, entry, instanceID)
 		}
 
 		if err == nil {

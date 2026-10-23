@@ -35,8 +35,9 @@ no names. Operator alerts for #224 match that line. This does not add an alert.
 ## Other 5xx
 
 Every other 5xx uses the generic sentence
-`Something went wrong. Please try again.` The body has no `code`. The server
-does not emit `internal`.
+`Something went wrong. Try again.` The body has no `code`, except an
+unexpected commit or stock-out failure, which keeps code `internal` with
+that same sentence. A lock or a full disk is still the 503 above.
 
 The generic sentence does not replace the busy sentence or the no-space sentence.
 

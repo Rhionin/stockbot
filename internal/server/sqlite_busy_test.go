@@ -507,6 +507,9 @@ func TestClientSentencesAreTheAgreedWords(t *testing.T) {
 	if clientmsg.Busy != "Stockbot is busy right now. Try again in a moment." {
 		t.Fatalf("busy = %q", clientmsg.Busy)
 	}
+	if clientmsg.Generic != "Something went wrong. Try again." {
+		t.Fatalf("generic = %q", clientmsg.Generic)
+	}
 }
 
 func TestRenameUniqueConstraintIsConflict(t *testing.T) {

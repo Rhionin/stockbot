@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/go-json-experiment/json"
 )
 
@@ -163,9 +165,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 }
 
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
-// request when one is available. A classified busy or no-space 503 keeps its
-// own sentence. Every other 5xx uses the generic sentence, so driver text is
-// not part of the body.
+// request when one is available. A classified busy or no-space failure keeps
+// its own sentence. Every other 5xx uses the generic sentence. An unexpected
+// commit failure keeps code internal. Driver text stays in the server log.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
 	if status >= 500 {
 		reportServerError(r, err)
@@ -191,15 +193,34 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if status >= 500 {
-		switch {
-		case sqliteNoSpace(err):
+		// A full disk has its own warning line. The driver text is not
+		// copied into the request-failed log.
+		if sqliteNoSpace(err) {
 			logNoSpace(r, err)
-		case !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded):
-			log.Printf("request failed: %s", message)
+		} else {
+			logged := message
+			if httpErr != nil && httpErr.Err != nil {
+				logged = httpErr.Err.Error()
+			}
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("request failed: %s", logged)
+			}
 		}
-		message, code, extra = serverClientPayload(err, code)
-		members = nil
-		suggestions = nil
+		if sqliteBusy(err) || sqliteNoSpace(err) {
+			message, code, extra = serverClientPayload(err, code)
+			members = nil
+			suggestions = nil
+		} else {
+			message = clientmsg.Generic
+			if httpErr != nil && httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != "" {
+				code = httpErr.ErrorCode
+				members = nil
+				suggestions = nil
+				extra = true
+			} else {
+				extra = false
+			}
+		}
 	}
 	if extra {
 		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})

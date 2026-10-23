@@ -12,11 +12,14 @@ import (
 	"encoding/hex"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 )
 
 // Register missing MIME types for font files that Go's built-in table lacks
@@ -126,7 +129,8 @@ func (h *handler) serveOpened(w http.ResponseWriter, r *http.Request, name strin
 	if !ok {
 		data, err := io.ReadAll(f)
 		if err != nil {
-			http.Error(w, "The file could not be read.", http.StatusInternalServerError)
+			log.Printf("web ui: %s", err)
+			http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 			return
 		}
 		rs = bytes.NewReader(data)
@@ -160,7 +164,8 @@ func (h *handler) serveOpened(w http.ResponseWriter, r *http.Request, name strin
 // the bytes (new hashed chunk names), so the shell cannot stay stale.
 func (h *handler) serveFallback(w http.ResponseWriter, r *http.Request) {
 	if h.indexErr != nil {
-		http.Error(w, "Internal Server Error: "+h.indexErr.Error(), http.StatusInternalServerError)
+		log.Printf("web ui: %s", h.indexErr)
+		http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 		return
 	}
 
