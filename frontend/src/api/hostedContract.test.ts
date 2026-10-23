@@ -229,10 +229,12 @@ describe('hosted API contract', () => {
     expect(doc).toContain('set the new argon2id hash; revoke all of that account\'s sessions (web and Expo `sbs_`); delete the push subscriptions tied to those sessions and close their SSE streams; invalidate any outstanding reset tokens for that account; consume the code (delete the file and leave recover mode).');
     expect(doc).toContain('Device tokens (`sbd_`) and the household\'s other members are untouched.');
     expect(doc).toContain('No session is set. A successful POST sends the user to sign-in at `APP_BASE_URL`.');
-    expect(doc).toContain('The code is single-use with a 24 h expiry, and POST /setup (first setup and recover) uses that same limit as `POST /api/auth/login`, keyed on `RemoteAddr`. An expired code returns `not_found`.');
+    expect(doc).toContain('`POST /setup`, in both first-setup and recover mode, uses the same per-IP limit as `POST /api/auth/login`, keyed on `RemoteAddr` on `:8080`. After 10 failed setup-code attempts the current code is invalidated, and the operator needs a fresh code from the updater.');
+    expect(doc).toContain('The code is single-use with a 24 h expiry, and the setup rate limits defined above apply. An expired code returns `not_found`.');
     expect(doc).toContain('pairing complete, stage-1 `POST /api/households`, and `POST /setup`.');
-    expect(doc).toContain('`POST /setup` (first setup and recover) uses the same limit as login, keyed on `RemoteAddr`.');
+    expect(doc).toContain('`POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`.');
     expect(doc).not.toContain('the setup rate limits apply');
+    expect(doc).toContain('(f) The 11th failed setup-code attempt finds the code invalidated, so even the correct code then returns `not_found` until a fresh one is issued.');
     expect(doc).not.toContain('public is only the `X-Pantry-Entry` header');
     expect(doc).not.toContain('The port binding is owned by infra.');
     expect(doc).toContain('The proxy configs (`deploy/Caddyfile` and `deploy/Caddyfile.tunnel`) must send every handle to `pantry:8081` and stop sending `X-Pantry-Entry`. That is an infra deploy step owned by the network engineer, paired with S15/S5.');
