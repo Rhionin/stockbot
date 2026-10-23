@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/go-json-experiment/json"
 )
 
@@ -189,11 +191,25 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if status >= 500 {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("request failed: %s", message)
+		logged := message
+		if httpErr != nil && httpErr.Err != nil {
+			logged = httpErr.Err.Error()
 		}
-		message = "Something went wrong. Please try again."
-		extra = false
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("request failed: %s", logged)
+		}
+		// Every generic 5xx uses one sentence. Code internal keeps its code
+		// so a commit failure stays distinguishable. The underlying error
+		// was logged above and is not part of the body.
+		message = clientmsg.ServerError
+		if httpErr != nil && httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != "" {
+			code = httpErr.ErrorCode
+			members = nil
+			suggestions = nil
+			extra = true
+		} else {
+			extra = false
+		}
 	}
 	if extra {
 		writeJSON(w, status, errorPayload{Error: message, Code: code, Members: members, Suggestions: suggestions})
