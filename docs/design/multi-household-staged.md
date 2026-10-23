@@ -22,6 +22,7 @@ All five Stage-1 questions were decided by CJ on 2026-10-23. Where a decision ov
 | 2026-10-23 | **Q3: Stage 1 supports only a Pi as the hub.** ESP32 is deferred. The device protocol stays microcontroller-friendly: plain HTTPS + JSON, small payloads, bearer token, no client certificates. | CJ | §4.1 and §4.7: no mTLS, bodies ≤ 64 KB, batches ≤ 50, one `Authorization: Bearer` header. |
 | 2026-10-23 | **Q4: invite-only households.** CJ sends a link; there is no open sign-up. A household-creation invite (`start_household`, operator only) is distinct from a member invite (`join_household`). | CJ | Invite-only is built in; there is no sign-up toggle (§10). §2.2 `invites.kind`, §3.6, S14. |
 | 2026-10-23 | **Q5: nightly backups of every household, kept 14 days.** Storage and location proposed by Architect, confirmed by Network Engineer. | CJ | §9.1: recommend an encrypted nightly snapshot to Cloudflare R2 (≈ $0/month); Network Engineer confirms in S9. |
+| 2026-10-23 | **S9 review (technical, not CJ questions):** R2 bucket name is configurable, default `pantry-pi-backups`; the setup code is written once to `/opt/pantry/setup-code` (0600, CJ's Pi user), deleted after the first account, never journaled; CJ alone holds the backup `age` private key. | Architect (from Network Engineer's S9 review) | §3.9 A1, §6, §9.1, §11.2 |
 
 ---
 
@@ -35,7 +36,7 @@ All five Stage-1 questions were decided by CJ on 2026-10-23. Where a decision ov
 | Stage 3 | AWS per #224, unchanged: Lambda, DSQL, Cognito, AppSync Events, us-west-2, CDK. Stage 1 is built so households, hubs, ids, routes and the error registry carry over. |
 | Device transport | **HTTPS batch** (`POST /api/device/scans`, plus a heartbeat). It is the same API in Stage 3. |
 | Live push | SSE behind a `LiveHub` interface with per-household topics. In Stage 3 the same hints map onto AppSync channels `/hh/<household_id>/<channel_key>`. |
-| Exposure | Keep the tunnel. **No Cloudflare Access** on the hostname. App-level auth stays the gate. One Free-plan WAF rate-limit rule is a backstop. |
+| Exposure | Keep the tunnel. **No Cloudflare Access** on the hostname. App-level auth stays the gate. One Free-plan WAF rate-limit rule (path-only match) is a backstop; per-device limits stay in the app. |
 | Remaining CJ decisions | **None** (§13.2). Backup storage and the outside-check account are Network Engineer confirmations. |
 | Changeover | Accounts ship first beside the household password, with no deadline. CJ then retires it from the app; there is a 7-day undo, after which the hash is deleted. Paired devices and the USB scanner never re-pair (§3.9). |
 
@@ -57,7 +58,7 @@ flowchart LR
 **Entry criteria**
 - CJ approves this plan. Q1–Q5 are decided (decision log).
 - The #364 contract amendment (S1, §11) is merged as a document before any code.
-- A fresh pre-migration backup of the Pi database exists and a restore has been tested (Network Engineer).
+- A fresh pre-migration backup of the Pi database exists **in R2** and a restore has been tested (Network Engineer, S9 phase 0, the first Stage-1 work; it depends on no other ticket).
 
 **Exit criteria**
 - Every household-1 person signs in with a personal account. CJ has retired the household password; `pantry_session` and Basic auth are ended, and the hash is deleted after the 7-day undo (§3.9). The direct USB scanner, the grocy-sync token and every paired hub kept working through the changeover with no re-pairing.
@@ -182,7 +183,7 @@ An allow-list holds the few global-catalog and operator queries, each with a rea
 
 ```mermaid
 flowchart TD
-  A[Start migration 022] --> B[Pre-migration snapshot via existing backup.go]
+  A[Start migration 022] --> B["Verified pre-deploy R2 snapshot exists (S9 phase 0)<br/>no new in-volume snapshot"]
   B --> C{Any user_id other than 'user-1'?}
   C -->|yes| X[Abort with counts only; no data changed]
   C -->|no| D["Insert households row: new UUIDv7, is_primary=1<br/>app_settings.primary_household_id"]
@@ -197,7 +198,8 @@ flowchart TD
 
 - Rows are moved, not copied. Counts are compared per table in the same transaction.
 - Migration 022 is split into ordered steps (022a–022f) so each step stays small. The existing duplicate `006`/`007` prefixes stay as they are, and new numbers start at 022.
-- **Rollback:** restore the pre-migration snapshot. This is a tested drill in S9.
+- **Rollback:** restore the pre-deploy R2 snapshot that S9 takes and verifies immediately before the phase-A deploy. This is a tested drill in S9.
+- **No new in-volume snapshot.** Migrations 022a–f must **not** add a `writeSnapshot`-style copy (for example `pantry-pre-households-*.db`) to `/data`, as `internal/app/backup.go` does for migrations 012, 013 and 019. That pattern leaves a plaintext full copy on the SD card that no purge reaches. S3 relies on the S9 R2 snapshot instead.
 - **Operator bootstrap:** see §3.9. The migration creates no user. Household 1 has no owner until CJ runs the bootstrap CLI.
 
 ### 2.6 Shared catalog with household overrides (PM-REQ #11; PM decided §10.9)
@@ -402,14 +404,14 @@ The WAF rule (§6) is an edge backstop only.
 | Push subscriptions made under the household password | Work | **Dropped at retirement** (§2A A8, PM decided §10.23): rows with `household_id = 1` and `user_id IS NULL` are deleted. People turn notifications on again after signing in. |
 | Personal sessions | Work | Untouched |
 
-**A1. CJ's first account without SSH editing. Decision: a LAN-only setup page unlocked by a one-time code that the updater prints.**
-- After the phase-A deploy, the updater (the existing deploy hook/`setup.sh` run that CJ or Network Engineer already watches) prints:
+**A1. CJ's first account without SSH editing. Decision: a LAN-only setup page unlocked by a one-time code that the updater writes to a CJ-only file.**
+- After the phase-A deploy, the updater writes the code **once** (not on every 1-minute timer run) to `/opt/pantry/setup-code`, mode `0600`, owned by CJ's Pi user (`rhionin`). The file holds:
 
   `Stockbot setup code: XXXX-XXXX (open http://<pi>:8080/setup on your home network; expires in 24 h)`
 
-  The code is 40 bits, stored as a hash, and single use.
+  The code is 40 bits, stored in the database as a hash, and single use. It is **not** printed to the journal or any log: the updater runs as root, its output goes to the root journal that CJ cannot read without sudo, and whoever holds the code claims operator. The file is deleted once the first account is created (and when the code expires). Network Engineer cannot read it by design. **Decided by Architect 2026-10-23** (proposed by Network Engineer in S9).
 - `/setup` exists **only while no personal account exists** and **only on the LAN listener**. It asks for the code, then name, email and password. It then creates CJ's user with `operator=true` and an owner membership of household 1 (all existing data), and signs CJ in (PM-REQ R2A.1).
-- Once any personal account exists, `/setup` returns `not_found` for good, except in **recover** mode (§3.6). Recover mode needs a fresh code that the updater prints on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
+- Once any personal account exists, `/setup` returns `not_found` for good, except in **recover** mode (§3.6). Recover mode needs a fresh code that the updater writes to the same file on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
 - **Rejected:**
   - A page open to anyone while no account exists: whoever opens it first gets operator.
   - "First household-password sign-in forces account creation": anyone who knows the shared password could claim operator **(opinion)**.
@@ -445,7 +447,7 @@ The WAF rule (§6) is an edge backstop only.
 
 ```mermaid
 flowchart LR
-  P0["Phase 0<br/>backup + restore drill"] --> PA["Phase A: ship accounts<br/>hash imported, auth.caddy deleted,<br/>Caddy -> :8081, setup code"]
+  P0["Phase 0 (first, no deps)<br/>R2 backup + restore drill"] --> PA["Phase A: ship accounts<br/>hash imported, auth.caddy deleted,<br/>Caddy -> :8081, setup code"]
   PA --> PS["CJ: /setup -> operator + owner<br/>invites family, Expo build out"]
   PS -->|CJ decides, no deadline| PB["Phase B: CJ taps Turn off<br/>key rotated, sessions ended"]
   PB -->|within 7 days| PR["Undo: Turn back on (same password)"]
@@ -456,8 +458,8 @@ flowchart LR
 
 | Phase | What | Gate | Rollback |
 |---|---|---|---|
-| 0 | Fresh off-Pi snapshot and a tested restore (S9) | Restore drill passes | — |
-| A, "ship accounts; both sign-ins work" | Deploy S3–S5, S8 and S10, with the S9 Caddy and listener change and the hash import. CJ runs `/setup`, invites the family, and the Expo build is released. Personal accounts and the household password both work. | None to start retiring: **CJ decides, with no automatic deadline** (PM decided §10.16). The Server page shows how many household-password sessions and Basic requests were seen in the last 7 days (counts only). The retire confirm lists who has an account. | Redeploy the previous image and restore the phase-0 snapshot. For an import fault, Network Engineer keeps the old `auth.caddy` off the Pi until phase A is verified, then deletes it. |
+| 0 | Off-Pi R2 snapshot and a tested restore (S9 PR-1; depends on no other ticket and runs before any Stage-1 deploy). A fresh, verified pre-deploy R2 snapshot is taken immediately before phase A and recorded as the rollback point. | Restore drill passes | — |
+| A, "ship accounts; both sign-ins work" | Deploy S3–S5, S8 and S10, with the S9 Caddy and listener change and the hash import. CJ runs `/setup`, invites the family, and the Expo build is released. Personal accounts and the household password both work. | None to start retiring: **CJ decides, with no automatic deadline** (PM decided §10.16). The Server page shows how many household-password sessions and Basic requests were seen in the last 7 days (counts only). The retire confirm lists who has an account. | Redeploy the previous image and restore the pre-deploy R2 snapshot. For an import fault, Network Engineer keeps the old `auth.caddy` off the Pi until phase A is verified, then deletes it. |
 | B, "retire" | CJ's owner action (above) | — | **Turn household password back on** for 7 days; after that, owner or operator reset links (§3.6) |
 | Day 7 | Purge deletes the hash and key | — | None by design: retirement is permanent after 7 days (PM decided §10.18) |
 | C, "clean up" | ≥ 30 days after day 7: delete `HouseholdPasswordAuth`, the Basic parser, `/api/login`, `/api/logout`, `/api/session`, the LAN principal, and the `household_password` table | — | Revert the commit; no data effect |
@@ -646,12 +648,14 @@ type LiveHub interface {
 - Access would make strangers and hubs carry a second identity (an Access login, or service tokens [CF-access-service-tokens]) before they reach Stockbot's own login.
 - That breaks PM-REQ's "no Cloudflare account / no SSH" flows for household 2 and hubs.
 - The deploy README already says not to add an Access policy to the hostname.
+- The remotely managed tunnel `pantry-pi` serves **two** public hostnames, `stockbot.rhionin.com` and `pantry.rhionin.com`, both to `http://caddy:80` (per the compose comment; Network Engineer verifies the live config in task 1). Everything in this section applies to both.
+- The zone still has unproxied A records for `*.rhionin.com`, `rhionin.com` and `www` pointing at the old home IP. Explicit tunnel records take precedence, but any other subdomain resolves straight to the home IP, where old router port forwards may still be open. Network Engineer will propose removing these records and closing the forwards as a separate change. Do this before the changeover.
 - App-level auth (§3), body limits, rate limits and the isolation suite are the gate.
 - A path-scoped Access app for operator-only routes is a possible later hardening [CF-access-policies]. It is not needed in Stage 1.
 
 ```mermaid
 flowchart LR
-  B[Browsers / Expo / hubs] -->|HTTPS| CF[Cloudflare edge<br/>stockbot.rhionin.com<br/>WAF rate-limit rule]
+  B[Browsers / Expo / hubs] -->|HTTPS| CF[Cloudflare edge<br/>stockbot.rhionin.com + pantry.rhionin.com<br/>WAF rate-limit rule (path only)]
   CF --> T[cloudflared on Pi]
   T -->|http://caddy:80 only| C[Caddy<br/>body limits]
   C -->|:8081 public listener| A[Stockbot app inside compose]
@@ -661,17 +665,19 @@ flowchart LR
 ```
 
 ### Exact Network Engineer tasks (S9)
-1. **Ingress check.** Confirm the tunnel's public hostname `stockbot.rhionin.com` points to `http://caddy:80` (or the host Caddy port) and **never** to `8080`. Confirm `Caddyfile.tunnel`'s `trusted_proxies` is only `10.77.77.2/32`. Record the result in the S9 ticket.
+1. **Ingress check.** Confirm **every** public hostname on the tunnel (`stockbot.rhionin.com` and `pantry.rhionin.com`) points to `http://caddy:80` (or the host Caddy port) and **never** to `8080`, `10.77.77.1:8080` or `pantry:*`. Confirm `Caddyfile.tunnel`'s `trusted_proxies` is only `10.77.77.2/32`. Record the result in the S9 ticket.
 2. **Caddy body limits.** Add `request_body max_size 1MB` (catch-all) and `64KB` (`/api/device/*`) to both Caddyfiles, then re-run the deploy ACCEPTANCE steps.
-3. **WAF rate-limit rule** (Free plan includes one rule [CF-WAF-rl]). Expression: `http.request.method eq "POST" and http.request.uri.path in {"/api/auth/login" "/api/login" "/api/auth/reset" "/api/invites/accept" "/api/invites/preview" "/api/devices/pair/complete"}`. Count by IP, 20 requests per 10 s, block for 10 s. The app limits (§3.5) are the real control; this rule only stops floods.
-4. **Bot Fight Mode / Super Bot Fight Mode stays off** for this hostname, because a JS challenge would break hubs and Expo. Verify with `curl` from outside and from the Expo app.
+3. **WAF rate-limit rule.** The Free plan allows **one** rate-limiting rule, whose expression may use only the **Path** and Verified Bot fields (no Method, Host or Source IP); counting is by IP, with a 10 s period and a 10 s mitigation timeout [CF-WAF-rl]. Expression: `http.request.uri.path in {"/api/auth/login" "/api/login" "/api/auth/reset" "/api/invites/accept" "/api/invites/preview" "/api/devices/pair/complete"}`. Count by IP, 20 requests per 10 s, block for 10 s. The method clause is dropped, so the rule counts every method on these paths; that is harmless for a flood backstop. With no Host field it applies zone-wide; Network Engineer confirms no other app on `rhionin.com` uses these paths. The app limits (§3.5) are the real control; this rule only stops floods.
+   - `/api/device/*` gets **no** edge rule (the one rule is used above). Its limits stay in the app: 600 scans per minute per device, batches ≤ 50, and Caddy's 64 KB body cap (§8).
+   - A WAF **custom** rule could match `http.request.method` (Free allows 5 custom rules [CF-WAF-custom]), but custom rules cannot count requests, so they cannot add a POST-only rate limit. None is needed in Stage 1.
+4. **Bot Fight Mode stays off for the whole zone `rhionin.com`.** On Free it protects the entire domain, cannot be scoped to a hostname or path, and cannot be skipped by a WAF custom rule or Page Rule [CF-BFM] [CF-WAF-skip]. Per-path skips need Super Bot Fight Mode (Pro and above) [CF-SBFM]. A JS challenge would break hubs and Expo. Also confirm "Block AI bots" does not challenge `/api/*`. Verify with `curl` from outside and from the Expo app.
 5. **Caching:** confirm no Cache Rule caches `/api/*` and that `Cache-Control: no-store` responses pass through.
 6. **Tunnel health notification:** create the Cloudflare **Tunnel Health Alert** for this tunnel, sent to CJ's email [CF-tunnel-notify]. It is included on all Zero Trust plans.
 7. **Outside check** (§9.4): deploy the free Worker cron and create the healthchecks.io check; Network Engineer confirms which account it lives in, then run an alert drill by stopping the app for 15 minutes.
-8. **Backups (confirm storage):** confirm R2 on CJ's Cloudflare account (or propose another off-Pi store with its cost). Create the bucket `stockbot-backups` with **no** replication or extra copies, the 14-day expire lifecycle rule, and an R2 API token scoped to that bucket only. Install the nightly job (§9.1). Keep the `age` private key off the Pi. Run a restore drill on a spare SD card or a container and record the time.
+8. **Backups (phase 0, first, no ticket dependencies):** confirm R2 on CJ's Cloudflare account (or propose another off-Pi store with its cost). Create the bucket (name from the backup config, default `pantry-pi-backups`, §9.1) with **no** replication or extra copies, the 14-day expire lifecycle rule, and an R2 API token scoped to that bucket only. Install the nightly job (§9.1; new code, S9 PR-1). The Pi and Network Engineer get only the `age` **public** key. Run a restore drill off the Pi, with CJ supplying the private key, and record the time. After a verified R2 backup and a passing drill, remove the existing pre-migration copies from `/data` (with CJ's OK, §9.1).
 9. **WAL on local storage:** confirm the DB volume is on local SD/USB storage, not network storage, which WAL requires [sqlite-wal]. Confirm the backup reads through SQLite, not a file copy.
 10. **DNS stays on Cloudflare.** No new hostname is needed in Stage 1. Hubs use the same hostname.
-11. **Changeover (§3.8, §3.9):** point Caddy's catch-all at the app's `:8081` listener and remove the `X-Pantry-Entry` stamp from both Caddyfiles. Update `deploy/setup.sh` and `deploy/check-publish-modes.sh` to check `:8081`. After the app confirms the hash import, delete `auth.caddy`, the `PANTRY_AUTH_FILE` mount and `PANTRY_SESSION_SECRET` from the Pi; keep the old `auth.caddy` off the Pi only until phase A is verified. Make sure the updater prints the one-time `/setup` code where CJ sees it. Verify that `:8081` is not published on the host.
+11. **Changeover (§3.8, §3.9):** point Caddy's catch-all at the app's `:8081` listener and remove the `X-Pantry-Entry` stamp from both Caddyfiles. Update `deploy/setup.sh` and `deploy/check-publish-modes.sh` to check `:8081`. After the app confirms the hash import, delete `auth.caddy`, the `PANTRY_AUTH_FILE` mount and `PANTRY_SESSION_SECRET` from the Pi; keep the old `auth.caddy` off the Pi only until phase A is verified. Make the updater write the one-time `/setup` code once to `/opt/pantry/setup-code` (0600, CJ's user) and never to the journal (§3.9 A1). Verify that `:8081` is not published on the host.
 
 ---
 
@@ -705,8 +711,8 @@ flowchart LR
 |---|---|
 | API1 Broken object-level authorisation (another household's ids) | `tenant.Scope` on every store call, the SQL lint, and `not_found` for foreign ids. The S13 isolation suite covers every route, with a route-coverage check. |
 | API2 Broken authentication: stolen device token | Per-device tokens, hash only, rotation with 24 h grace, instant revoke, `prefix` in logs. Device tokens work only on `/api/device/*`. |
-| API2: pairing-code or invite brute force | 40/48-bit codes, 10-minute/7-day expiry, 5 attempts per code, per-IP limits, WAF backstop |
-| API4 Unrestricted resource consumption | Caddy body caps (1 MB / 64 KB); batches ≤ 50; barcodes ≤ 64 characters; per-device limit of 600 scans per minute (`rate_limited`); argon2 semaphore; SSE subscriber cap of 10 per principal |
+| API2: pairing-code or invite brute force | 40/48-bit codes, 10-minute/7-day expiry, 5 attempts per code, per-IP limits, WAF backstop (path-only rule, §6) |
+| API4 Unrestricted resource consumption | Caddy body caps (1 MB / 64 KB); batches ≤ 50; barcodes ≤ 64 characters; per-device limit of 600 scans per minute (`rate_limited`, in the app; no edge rule on Free); argon2 semaphore; SSE subscriber cap of 10 per principal |
 | Replay of a captured batch | TLS protects the channel. Replaying a batch returns `duplicate` with no effect, thanks to client scan ids. |
 | API5 Broken function-level authorisation | Role checks per route (owner/member); operator routes check `operator`. Device, household-password (changeover only) and LAN principals cannot reach member, device-management or operator routes. |
 | API8 Security misconfiguration | The tunnel never points at 8080; public entry is decided by listener (`:8081`), not a header; the LAN principal is pinned to household 1 and ends at retirement; `X-Pantry-Client-IP` is always overwritten by Caddy and trusted only on `:8081` |
@@ -733,16 +739,19 @@ Retention is 180 days **(opinion)**. The log never holds item names or barcodes.
 | Restore point | Up to 24 h old (meets "last night's backup", PM-REQ) | Seconds |
 | Deletion promise "cleared within 2 weeks" | Simple: snapshots older than 14 days are deleted by a lifecycle rule [R2-lifecycle] | WAL segments and generations need retention tuning, and are harder to reason about |
 | Pi load | One read for a few seconds at night | A constant sidecar process |
-| Moving parts | The existing `internal/store/backup.go` plus a cron | A new daemon |
+| Moving parts | A new backup job plus a systemd timer (S9 PR-1). `internal/app/backup.go` only writes one-time pre-migration copies into `/data`; there is no nightly job to reuse | A new daemon |
 
 **Design (Q5: nightly, every household, 14 days; PM-REQ §12 #9: off the SD card, old copies truly gone)**
 - **Snapshot.** At 03:30 local time, take one `VACUUM INTO` copy of the whole database, which covers every household [sqlite-vacuum]. It reads through SQLite and is consistent under WAL; the online backup API is an alternative [sqlite-backup].
-  - The copy is written to a RAM-backed staging directory (`/run/stockbot-backup`, tmpfs) when the database is under 150 MB **(estimate; S9 checks the size and free RAM)**. Otherwise it goes to a temp file on the data volume.
+  - The copy is written to a RAM-backed staging directory (`/run/stockbot-backup`, tmpfs) when it fits. Whenever the database is too large for tmpfs, the job stages on the data volume instead. There is no size range where the backup refuses to run.
   - In both cases the staging file is removed as soon as the upload is verified.
-- **Check and encrypt.** Run `PRAGMA integrity_check` on the copy, gzip it, and encrypt it with `age` to a recipient key. The private half is kept **off the Pi** (by CJ and Network Engineer). Encryption is required because the database holds household data.
-- **Store off the Pi.** Upload to the R2 bucket `stockbot-backups/YYYY-MM-DD.db.gz.age`, then verify size and sha256 with a HEAD request.
-  - **No backup copy stays on the Pi's SD card.** The earlier "keep 2 local copies" is dropped, so a failed card cannot take the backups with it (PM-REQ §12 #9).
+- **Check and encrypt.** Run `PRAGMA integrity_check` on the copy, gzip it, and encrypt it with `age` to a recipient key. Encryption is required because the database holds household data.
+  - **Key custody:** **CJ alone** holds the `age` private key (generated on his laptop, kept in his password manager plus one offline copy). The Pi and Network Engineer have only the public key. The private key is never on the Pi, the shared agent box or GitHub.
+- **Store off the Pi.** Upload to the R2 bucket, then verify size and sha256 with a HEAD request. The bucket name comes from the backup config, **default `pantry-pi-backups`** (host-tied, so the pending product rename does not strand it). **Decided by Architect 2026-10-23** (proposed by Network Engineer in S9). Object keys follow S9's naming.
+  - **Target: no backup copy stays on the Pi's SD card.** The earlier "keep 2 local copies" is dropped, so a failed card cannot take the backups with it (PM-REQ §12 #9).
+  - **Today this is not yet true.** `/data` holds one-time `pantry-pre-groups-*.db`, `pantry-pre-restock-*.db` and `pantry-pre-targets-*.db` copies from `internal/app/backup.go`, and an orphan `deploy_pantry-data` volume may hold an old copy. They are removed after a verified R2 backup and a passing phase-0 drill (deleting data on the Pi needs CJ's OK). S3's migrations must not write new in-volume snapshots (§2.5).
   - Restores download from R2.
+  - **Config secrets.** S9 also uploads an encrypted tarball of the Pi's config secrets (the Caddy auth file and `.env` backups) to R2. It uses the same `age` public key and the same 14-day lifecycle. The private key stays with CJ.
 - **Retention and true deletion.** R2 is the only place backups live. Three controls make old copies actually go away:
   1. **R2 lifecycle rule:** objects expire 14 days after upload. R2 says expired objects are "typically removed within 24 hours" [R2-lifecycle]. Deleted objects are no longer stored or billed.
   2. **Nightly sweep:** after each upload, the job lists the bucket and deletes any object older than 14 days itself. This covers lifecycle delays.
@@ -755,7 +764,7 @@ Retention is 180 days **(opinion)**. The log never holds item names or barcodes.
   - **Household delete:** a household is soft-deleted on day 0 and purged on day 30. A snapshot taken on day 29 is the last to contain it. It expires on day 43, and is gone by day 44 at the latest under the 24 h lifecycle note. That matches "cleared within two weeks after that" (PM-REQ C6.3; the "day-44 deletion promise", §12 #9).
   - **Live database:** the purge job runs with `PRAGMA secure_delete=ON`, so freed pages are overwritten [sqlite-pragma]. `VACUUM INTO` copies carry no freed pages.
   - **Household password hash:** deleted on day 7 after retirement, and gone from all snapshots by about day 22.
-- **Restore drill** (S9, monthly): restore the newest snapshot into a scratch container, run integrity_check and the row-count script (counts only), record the time, then delete the scratch copy.
+- **Restore drill** (S9 phase 0, then monthly): runs only on CJ's own computer, never on the shared agent box and never on the Pi. CJ supplies the private key (on that computer, or pasted into a tmpfs scratch dir that is wiped afterwards). Restore the newest snapshot into a scratch container, run integrity_check and the row-count script (counts only), record the time, then delete the scratch copy and the key copy.
 
 ### 9.2 Export (PM-REQ R5.1)
 - `GET /api/households/{id}/export` (owner) streams a zip: `stockbot-export.json` (export format v1, per #364/T16, with ids remapped to export-local ids and no other household's rows), plus `items.csv` and `shopping-list.csv` for people.
@@ -852,11 +861,11 @@ Renaming the product or moving the domain is a config change plus a Network Engi
 | S6 | Device API: pairing, batch scans, heartbeat, online sweeper, token rotate/revoke, per-device limits; confirm the operator-alert path | Backend Builder | S5 |
 | S7 | `LiveHub`: per-household SSE, hints, scanner mode per device, push subscription and alert scoping, `change_versions`/changes-since | Backend Builder | S4 |
 | S8 | Export v1 zip, household soft delete/restore/purge, account delete | Backend Builder | S4 |
-| S9 | Pi ops: the §6 list (ingress check, body limits, WAF rule, bot mode, cache, tunnel alert, outside check, backup storage confirmation, R2 bucket and lifecycle, off-SD staging, restore drill, WAL disk) plus changeover task 11 (Caddy → `:8081`, `X-Pantry-Entry` removed, `setup.sh`/`check-publish-modes.sh`, `auth.caddy` deletion, setup-code printing). **Phase-0 backup and drill come before any Stage-1 deploy.** | Network Engineer | S1; S3 (backup job); S15 (changeover items) |
+| S9 | Pi ops: the §6 list (ingress check, body limits, WAF rule, bot mode, cache, tunnel alert, outside check, backup storage confirmation, R2 bucket and lifecycle, off-SD staging, restore drill, WAL disk) plus changeover task 11 (Caddy → `:8081`, `X-Pantry-Entry` removed, `setup.sh`/`check-publish-modes.sh`, `auth.caddy` deletion, setup-code printing). **Phase-0 backup and drill (PR-1) come first, before any Stage-1 deploy.** | Network Engineer | PR-1 Phase-0 backup and restore drill: none; edge and outside-check PRs: after PR-1; task 11: S3, S5, S15 |
 | S10 | Web: sign-in (email + password; household-password link only while on), C2A.1 banner, C2A.2 retire/restore confirm under ⋯, C2A.3 sign-in note, household switcher, members/invites, devices/pairing screens (Code 128 + QR + print), status indicators, export/delete (T21), copy per PM-REQ §8 | Frontend Builder | S1 (mock), S5–S8 |
 | S11 | Expo: delete the Basic (`pantry`) path; email + password and changeover household-password sign-in, Bearer in SecureStore, `X-Stockbot-Client`; any 401 → sign-in (C2A.3); version gate; C2A.1 banner; household switcher, pairing screen, offline/online indicators | Frontend Builder | S1, S5, S15 |
 | S12 | Hub: `stockbot hub` binary, buffer, flush, heartbeat, signed update/rollback; pi-gen image and Imager customisation check | Backend Builder (binary) + Network Engineer (image, release signing key custody) | S6 |
-| S13 | Tests: isolation suite on every route with a coverage check, migration test on a synthetic DB, hub offline-flush test, auth/limit tests, LAN-pinning test, catalog-leak test, restore drill sign-off; **changeover tests**: device independence (§3.9), retire ends every household-password session and keeps personal sessions, restore within 7 days, purge on day 7, `/setup` locked after the first account, LAN redirect after retirement, old-build 401; backup lifecycle and alarm test | Tester | S4–S8, S12, S15 |
+| S13 | Tests: isolation suite on every route with a coverage check, migration test on a synthetic DB, hub offline-flush test, auth/limit tests, LAN-pinning test, catalog-leak test, restore drill sign-off; **changeover tests**: device independence (§3.9), retire ends every household-password session and keeps personal sessions, restore within 7 days, purge on day 7, `/setup` locked after the first account, LAN redirect after retirement, old-build 401; backup lifecycle and alarm test | Tester | S3–S12, S15 |
 | S14 | Operator overview (ids and counts only) and household-start invites | Backend Builder | S5 |
 
 ```mermaid
@@ -866,15 +875,17 @@ flowchart LR
   S4 --> S5 & S7 & S8
   S5 --> S6 & S14 & S11 & S15
   S7 --> S15
-  S15 --> S11 & S9
+  S15 --> S11
+  S9P0["S9 phase 0<br/>R2 backup + drill (no deps)"] --> S9
+  S9P0 -.gates deploy.-> S3
+  S3 & S5 & S15 --> S9
   S6 --> S12
   S1 -.mock.-> S10
   S5 & S6 & S7 & S8 --> S10
-  S3 --> S9
-  S4 & S5 & S6 & S7 & S8 & S12 & S15 --> S13
+  S3 & S4 & S5 & S6 & S7 & S8 & S9 & S10 & S11 & S12 & S15 --> S13
 ```
 
-**Order:** S1 (contract) is merged first, then S9's phase-0 backup and drill. S2–S8 and S15 follow on a branch. Web and Expo work (S10, S11) builds against S1 mocks in parallel. The phase-A deploy needs S3–S5, S8, S9 task 11, S10, S11 and S15 green on S13. Build work starts only after CJ approves this plan.
+**Order:** S9's phase-0 backup and restore drill start first and depend on nothing, in parallel with S1 (contract), which is merged before any other code. Phase 0 must pass before any Stage-1 deploy. S2–S8 and S15 follow on a branch. Web and Expo work (S10, S11) builds against S1 mocks in parallel. The phase-A deploy needs S3–S5, S8, S9 task 11, S10, S11 and S15 green on S13. Build work starts only after CJ approves this plan.
 
 ### 11.3 #364 answers (draft text for S1; nothing is posted to GitHub)
 
@@ -897,7 +908,7 @@ flowchart LR
 | 6 | Hub install, updates, buffer, clock, control barcodes, flush, pairing format, typed fallback | pi-gen SD image; signed updates with 120 s rollback; 500-scan SQLite buffer; chrony plus `ageMs`; control barcodes via heartbeat; batch endpoint; `SBP-XXXX-XXXX-C` Code 128 + QR; USB-keyboard and print fallbacks | §4.3, §4.8 |
 | 7 | Device routes via the tunnel; heartbeat and threshold | HTTPS through the same tunnel with `sbd_` bearer; 60 s heartbeat; offline at 300 s (≤ 5.5 min shown); immediate beat on reconnect (≤ ~30 s) | §4.5, §6 |
 | 8 | Capacity and busy rate | WAL + NORMAL + `busy_timeout`, one writer plus 2 readers; ≪ 1 tx/s sustained; `busy` after a 2 s wait; leave the Pi at ~10 households | §7 |
-| 9 | Backups and outside check | Nightly encrypted `VACUUM INTO` of every household to R2, **off the Pi**, with no local copy on the SD card; 14-day lifecycle expiry plus a nightly sweep and an over-age alarm, so the day-44 promise holds; ≈ $0; Network Engineer confirms storage. Worker cron + healthchecks.io + Tunnel Health Alert, $0. | §9.1, §9.4 |
+| 9 | Backups and outside check | Nightly encrypted `VACUUM INTO` of every household to R2, **off the Pi** (new job, S9 PR-1), with no local copy on the SD card as the target (existing pre-migration copies removed after phase 0); 14-day lifecycle expiry plus a nightly sweep and an over-age alarm, so the day-44 promise holds; ≈ $0; Network Engineer confirms storage. Worker cron + healthchecks.io + Tunnel Health Alert, $0. | §9.1, §9.4 |
 | 10 | Stay aligned with #364 | Same routes and shapes for invites, devices, device scans (batch amendment), errors, export v1; only auth routes differ (S1) | §11 |
 | 11 | Catalog split | Global products/tags/misses; household items, barcodes, groups, overrides and contributions private; leak test | §2.6 |
 
@@ -905,7 +916,7 @@ flowchart LR
 
 | # | PM item | Answer | Where |
 |---|---|---|---|
-| A1 | CJ's operator/owner account on the Pi without SSH editing | The updater prints a one-time 24 h setup code. `/setup` works only on the LAN listener and only while no personal account exists. It creates CJ as operator and owner of household 1, and is `not_found` after that. Recover mode needs a fresh updater-printed code. | §3.9 |
+| A1 | CJ's operator/owner account on the Pi without SSH editing | The updater writes a one-time 24 h setup code once to `/opt/pantry/setup-code` (0600, CJ's user; not the journal), deleted after the first account. `/setup` works only on the LAN listener and only while no personal account exists. It creates CJ as operator and owner of household 1, and is `not_found` after that. Recover mode needs a fresh code written the same way. | §3.9 |
 | A2 | Remove Caddy basic-auth and the `X-Pantry-Entry: public` rule | The hash is imported from `auth.caddy` to the DB, then `auth.caddy` and `PANTRY_AUTH_FILE` are deleted. Caddy proxies to the internal `:8081` listener, and the app decides entry by listener and ignores the header. Sign-in is the app's own everywhere. | §3.8, §6 task 11 |
 | A3 | LAN `:8080` after retirement | People must sign in: the LAN redirects browsers to `APP_BASE_URL`, because LAN sign-in over plain http is rejected **(opinion)**. The LAN keeps serving device routes and `/api/build`. `LAN_PEOPLE=signin` is the fallback. | §3.7 |
 | A4 | End every `pantry_session` at once, without touching personal sessions | Retirement replaces `household_password.session_key`, so every cookie fails verification. Household-password bearer rows are revoked and their SSE streams kicked. Personal sessions are opaque rows with no shared key. | §3.5, §3.9 |
@@ -931,7 +942,7 @@ PM holds the canonical copy in PM-REQ.
 
 ### 13.2 CJ decisions (technical only, ranked)
 
-**None remain.** Q1–Q5 are decided (decision log). The two items listed here earlier are now Network Engineer confirmations in S9: which account holds the healthchecks.io check, and R2 as the backup store (including whether it needs a payment method). Neither needs CJ unless Network Engineer finds that R2 cannot be used without a paid commitment, in which case it comes back as a cost question.
+**None remain.** Q1–Q5 are decided (decision log). The two items listed here earlier are now Network Engineer confirmations in S9: which account holds the healthchecks.io check, and R2 as the backup store (including whether it needs a payment method). Neither needs CJ unless Network Engineer finds that R2 cannot be used without a paid commitment, in which case it comes back as a cost question. The bucket name (configurable, default `pantry-pi-backups`) and the setup-code location (`/opt/pantry/setup-code`) were decided by Architect on 2026-10-23 (§9.1, §3.9 A1). CJ actions that are not design decisions (enable R2, generate the `age` key, OK deleting the pre-migration copies and orphan volume) are tracked in S9.
 
 ---
 
@@ -974,7 +985,11 @@ PM holds the canonical copy in PM-REQ.
 - [CF-tunnel-faq] / [CF-tunnel-sse] Cloudflare Tunnel troubleshooting: https://developers.cloudflare.com/tunnel/troubleshooting/ ; cloudflared SSE buffering: https://github.com/cloudflare/cloudflared/issues/199
 - [CF-tunnel-notify] Tunnel notifications: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/monitor-tunnels/notifications/
 - [CF-USSL-limits] Universal SSL limitations: https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/
-- [CF-WAF-rl] WAF rate limiting rules: https://developers.cloudflare.com/waf/rate-limiting-rules/
+- [CF-WAF-rl] WAF rate limiting rules (Availability table: Free = 1 rule, Path and Verified Bot fields, IP counting, 10 s period and timeout): https://developers.cloudflare.com/waf/rate-limiting-rules/
+- [CF-WAF-custom] WAF custom rules (Free = 5 rules): https://developers.cloudflare.com/waf/custom-rules/
+- [CF-WAF-skip] Custom rule Skip action ("you cannot skip Bot Fight Mode"): https://developers.cloudflare.com/waf/custom-rules/skip/
+- [CF-BFM] Bot Fight Mode (entire domain; no skip via custom rules or Page Rules): https://developers.cloudflare.com/bots/get-started/bot-fight-mode/
+- [CF-SBFM] Super Bot Fight Mode (Pro+; Skip exceptions): https://developers.cloudflare.com/bots/get-started/super-bot-fight-mode/
 - [CF-workers-limits] Workers limits: https://developers.cloudflare.com/workers/platform/limits/
 - [CF-ws] Cloudflare WebSockets: https://developers.cloudflare.com/network/websockets/
 - [Cognito-email] Cognito email settings: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-email.html
