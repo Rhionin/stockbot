@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
-import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { createScanEntry, DEFAULT_SCAN_USER_ID, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
 import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
@@ -18,7 +18,7 @@ import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } fro
 import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from './queueUtils';
 import { scannerModeFromEventData } from './scannerModeEvent';
 
-const DEFAULT_USER_ID = 'user-1';
+const DEFAULT_USER_ID = 'user-1' satisfies typeof DEFAULT_SCAN_USER_ID;
 
 interface NothingPin {
   onHand: number | null;
