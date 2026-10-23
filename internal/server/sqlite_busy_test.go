@@ -26,6 +26,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/restock"
+	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/getsentry/sentry-go"
 	"modernc.org/sqlite"
 )
@@ -351,6 +352,128 @@ func TestNoSpaceReportIsAWarning(t *testing.T) {
 	}
 }
 
+// commitClientError chooses code internal before the handler classifies the
+// cause. A real driver error still has to win. InternalError does not set
+// that code, so it does not catch a check that prefers internal.
+func TestCommitClientErrorDriverBusyIs503(t *testing.T) {
+	busy := realDriverBusy(t)
+	var driverErr *sqlite.Error
+	if !errors.As(busy, &driverErr) {
+		t.Fatalf("busy = %v", busy)
+	}
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, commitClientError(fmt.Errorf("x: %w", busy))
+	})
+	res := serveJSON(handler, http.MethodPost, "/api/scans/scan-1/commit", "")
+	if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
+		t.Fatalf("busy = %d %s", res.code, res.body)
+	}
+}
+
+func TestCommitClientErrorDriverFullIs503(t *testing.T) {
+	full := realDriverFull(t)
+	var driverErr *sqlite.Error
+	if !errors.As(full, &driverErr) || driverErr.Code()&0xff != sqlitePrimaryFull {
+		t.Fatalf("full = %v", full)
+	}
+	handler := HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, commitClientError(fmt.Errorf("x: %w", full))
+	})
+	res := serveJSON(handler, http.MethodPost, "/api/scans/scan-1/commit", "")
+	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
+		t.Fatalf("full = %d %s", res.code, res.body)
+	}
+}
+
+func TestSingleCommitLockIsBusyWarning(t *testing.T) {
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
+	mustProduct(env, "prod-lock", "Locked Beans")
+	insertPendingScan(env, "scan-lock", "prod-lock", scan.StockIn)
+
+	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
+	defer release()
+	done := make(chan lockedHTTPResult, 1)
+	go func() {
+		done <- serveJSON(handler, http.MethodPost, "/api/scans/scan-lock/commit", "")
+	}()
+	res := awaitLockedResult(t, env.DB, done, 50*time.Millisecond)
+	release()
+	if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
+		t.Fatalf("commit = %d %s", res.code, res.body)
+	}
+	assertClassifiedWarning(t, tr, "db_busy")
+}
+
+func TestSingleCommitFullIsNoSpaceWarning(t *testing.T) {
+	tr := &recordTransport{}
+	useSentryTransport(t, tr)
+	if err := InitSentry(SentrySettings{DSN: fakeSentryDSN, Environment: "test", IngestHost: "o1.ingest.example"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	handler, env := setupTestOnDSN(t, path, nil)
+	mustProduct(env, "prod-full", "Full Beans")
+	insertPendingScan(env, "scan-full", "prod-full", scan.StockIn)
+	// The stock-in rows can fit in pages that already exist. The trigger
+	// allocates one inside the commit transaction, which is what hits the cap.
+	if _, err := env.DB.Exec(`CREATE TABLE nospace_fill (x BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`
+		CREATE TRIGGER nospace_on_commit
+		BEFORE UPDATE ON scan_entries
+		BEGIN
+			INSERT INTO nospace_fill (x) VALUES (randomblob(8192));
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	var pages int
+	if err := env.DB.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	var limit int
+	if err := env.DB.QueryRow(`PRAGMA max_page_count = ` + fmt.Sprint(pages)).Scan(&limit); err != nil {
+		t.Fatal(err)
+	}
+	if limit != pages {
+		t.Fatalf("max_page_count = %d, page_count = %d", limit, pages)
+	}
+
+	res := serveJSON(handler, http.MethodPost, "/api/scans/scan-full/commit", "")
+	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
+		t.Fatalf("commit = %d %s", res.code, res.body)
+	}
+	assertClassifiedWarning(t, tr, "db_no_space")
+	events := tr.errors()
+	if events[0].Message != clientmsg.NoSpace {
+		t.Fatalf("message = %q", events[0].Message)
+	}
+}
+
+func assertClassifiedWarning(t *testing.T, tr *recordTransport, tag string) {
+	t.Helper()
+	events := tr.errors()
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	event := events[0]
+	if event.Level != sentry.LevelWarning {
+		t.Fatalf("level = %q", event.Level)
+	}
+	if event.Tags[tag] != "true" {
+		t.Fatalf("tags = %#v", event.Tags)
+	}
+	if len(event.Exception) != 0 {
+		t.Fatalf("captured as an exception: %+v", event.Exception)
+	}
+}
+
 func TestNoSpaceLogsTheOperatorLine(t *testing.T) {
 	var slogBuf, logBuf bytes.Buffer
 	oldSlog := slog.Default()
@@ -500,18 +623,6 @@ func TestDuplicateGroupNameDoesNotWaitOnWriteLock(t *testing.T) {
 	}
 }
 
-func TestClientSentencesAreTheAgreedWords(t *testing.T) {
-	if clientmsg.NoSpace != "Stockbot is out of storage space, so this wasn't saved." {
-		t.Fatalf("no space = %q", clientmsg.NoSpace)
-	}
-	if clientmsg.Busy != "Stockbot is busy right now. Try again in a moment." {
-		t.Fatalf("busy = %q", clientmsg.Busy)
-	}
-	if clientmsg.Generic != "Something went wrong. Try again." {
-		t.Fatalf("generic = %q", clientmsg.Generic)
-	}
-}
-
 func TestRenameUniqueConstraintIsConflict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	handler, env := setupTestOnDSN(t, path, nil)
@@ -584,6 +695,25 @@ func TestNoSpaceDebugKeepsTheDriverText(t *testing.T) {
 	debug := debugNoSpaceLine(t, slogBuf.String())
 	if !strings.Contains(debug, "level=DEBUG") || !strings.Contains(debug, "driver_message=") || !strings.Contains(debug, "database or disk is full") {
 		t.Fatalf("debug = %s", debug)
+	}
+
+	// A commit failure sets HTTPError.Message to the client sentence.
+	// Error() then hides the driver text, which is what the debug line must keep.
+	slogBuf.Reset()
+	handler = HandleJSON(func(Request[struct{}, struct{}]) (struct{}, error) {
+		return struct{}{}, commitClientError(fmt.Errorf("commit stock-in: %w", full))
+	})
+	res = serveJSON(handler, http.MethodPost, "/api/scans/scan-1/commit", "")
+	if res.code != http.StatusServiceUnavailable || res.body != noSpaceBody() {
+		t.Fatalf("wrapped = %d %s", res.code, res.body)
+	}
+	warn = noSpaceLogLine(t, slogBuf.String())
+	if strings.Contains(strings.ToLower(warn), "database or disk is full") || !strings.Contains(warn, "level=WARN") {
+		t.Fatalf("wrapped warn = %s", warn)
+	}
+	debug = debugNoSpaceLine(t, slogBuf.String())
+	if !strings.Contains(debug, "database or disk is full") || strings.Contains(debug, clientmsg.Generic) {
+		t.Fatalf("wrapped debug = %s", debug)
 	}
 }
 

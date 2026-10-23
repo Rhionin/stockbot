@@ -37,7 +37,10 @@ no names. Operator alerts for #224 match that line. This does not add an alert.
 Every other 5xx uses the generic sentence
 `Something went wrong. Try again.` The body has no `code`, except an
 unexpected commit or stock-out failure, which keeps code `internal` with
-that same sentence. A lock or a full disk is still the 503 above.
+that same sentence. A lock or a full disk on a single commit or stock-out
+is still the 503 above. A batch commit answers 200. A lock or a full disk
+on one of its items stays in that body as code `internal` and the generic
+sentence.
 
 The generic sentence does not replace the busy sentence or the no-space sentence.
 
