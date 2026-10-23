@@ -3,6 +3,8 @@ name: Test metrics
 # Advisory test calorie density. This file is separate from ci.yml on purpose:
 # another change is adding a Denver-timezone job there, and this workflow must
 # not collide with it. The numbers never fail the build and never block merge.
+# A metrics job that cannot produce web coverage fails on its own. The
+# continue-on-error flags below keep that failure from blocking merge.
 on:
   pull_request:
   schedule:
@@ -118,9 +120,24 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::metrics.json was not written (collect exited ${status})"
+            echo "::error::metrics.json was not written (collect exited ${status})"
           fi
-          exit 0
+          web_final="$out/vitest-coverage/coverage-final.json"
+          if [ ! -s "$web_final" ]; then
+            echo "::error::Web coverage was not produced at ${web_final} (collect exited ${status}). The metrics job fails instead of publishing an empty web density."
+            {
+              echo "## Web coverage missing"
+              echo
+              echo "Vitest did not write \`coverage-final.json\`, so this job fails instead of reporting web density as zero."
+              echo
+              echo "collect-test-metrics.sh exited ${status}."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::collect-test-metrics.sh exited ${status}"
+            exit "$status"
+          fi
 
       - name: Publish the densities on the job summary
         if: steps.collect.outputs.ok == 'true'
@@ -201,9 +218,24 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::metrics.json was not written (collect exited ${status})"
+            echo "::error::metrics.json was not written (collect exited ${status})"
           fi
-          exit 0
+          web_final="$out/vitest-coverage/coverage-final.json"
+          if [ ! -s "$web_final" ]; then
+            echo "::error::Web coverage was not produced at ${web_final} (collect exited ${status}). The metrics job fails instead of publishing an empty web density."
+            {
+              echo "## Web coverage missing"
+              echo
+              echo "Vitest did not write \`coverage-final.json\`, so this job fails instead of reporting web density as zero."
+              echo
+              echo "collect-test-metrics.sh exited ${status}."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::collect-test-metrics.sh exited ${status}"
+            exit "$status"
+          fi
 
       - name: Publish the densities on the job summary
         if: steps.collect.outputs.ok == 'true'
@@ -259,7 +291,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download the two reports
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: test-metrics-*
@@ -294,7 +326,7 @@ jobs:
       - name: Post or update the sticky comment
         if: always()
         continue-on-error: true
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs')

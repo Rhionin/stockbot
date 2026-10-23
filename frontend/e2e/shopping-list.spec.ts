@@ -1,8 +1,16 @@
 import { expect, test } from '@playwright/test'
-import { commitSelectedScan, createKnownProduct, inventoryRow, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
+import { commitSelectedScan, createKnownProduct, inventoryRow, resetSharedState, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const barcode = '210000000004'
 const productName = 'E2E Shopping Rice'
+
+test.beforeEach(async ({ request }) => {
+  await resetSharedState(request)
+})
+
+test.afterEach(async ({ request }) => {
+  await resetSharedState(request)
+})
 
 test('inventory gap is derived, purchased, and leaves inventory unchanged', async ({ page, request }) => {
   await createKnownProduct(request, {

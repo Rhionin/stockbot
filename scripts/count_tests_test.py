@@ -616,5 +616,32 @@ def synthetic_report(go_test: int, go_covered: int, web_test: int, web_covered: 
     }
 
 
+class CollectMetricsScriptTest(unittest.TestCase):
+    """The metrics collector must follow the locked vitest and fail without web coverage."""
+
+    def test_coverage_provider_tracks_lockfile_and_missing_coverage_fails(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "scripts" / "collect-test-metrics.sh").read_text()
+        workflow = (root / ".github" / "workflows" / "test-metrics.yml").read_text()
+        lock = json.loads((root / "frontend" / "package-lock.json").read_text())
+        declared = json.loads((root / "frontend" / "package.json").read_text())["devDependencies"]["vitest"]
+
+        locked = lock["packages"]["node_modules/vitest"]["version"]
+        self.assertEqual(locked, declared)
+        self.assertRegex(locked, r"^\d+\.\d+\.\d+")
+        # A hardcoded provider version is what drifted behind vitest 5.0.5.
+        self.assertNotRegex(script, r"@vitest/coverage-v8@\d")
+        self.assertIn("packages['node_modules/vitest'].version", script)
+        install_lines = [
+            line
+            for line in script.splitlines()
+            if "npm install" in line and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(install_lines, ['  elif ! npm install --no-save "@vitest/coverage-v8@${vitest_version}"; then'])
+        self.assertIn("web coverage was not produced", script)
+        self.assertEqual(workflow.count("Web coverage was not produced"), 2)
+        self.assertEqual(workflow.count("exit 1"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
