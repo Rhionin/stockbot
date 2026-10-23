@@ -71,12 +71,21 @@ export function toQueryString(params: Record<string, string | undefined>): strin
   return `?${new URLSearchParams(entries).toString()}`;
 }
 
-// Commit outcomes for the web queue. Appended after the shared routes so a
-// merge with the Expo client keeps that half of the file and adds this half.
+// Household items, including rows at zero. The inventory page and the link
+// card both use this. It is not the product catalog.
+export function inventoryListPath(query?: string, userId?: string): string {
+  return `/api/inventory${toQueryString({ q: query, userId })}`;
+}
+
+// Commit outcomes for the web queue and the phone. Appended after the shared
+// routes so both apps import this module and neither keeps a second copy.
 
 export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
+
+// A 5xx response with no JSON error field. A body that includes error still wins.
+export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
 // Both counts ride on every successful stock-out commit. Stock-in omits them.
 export const REMOVED_COUNT_FIELD = 'removedCount';
@@ -152,8 +161,8 @@ function countField(value: unknown): number | null {
 }
 
 // A batch names the one short card. Several short cards, or one short card
-// with no name, use the count sentence, singular when only one card is short.
-// Equal counts and a missing map say nothing.
+// with no name, use the count sentence. One card stays singular. Equal counts
+// and a missing map say nothing.
 function batchPartialLine(
   counts: Record<string, StockOutCount>,
   names: Readonly<Record<string, string>> | undefined,
@@ -179,8 +188,8 @@ function batchPartialLine(
     const verb = only.removed === 1 ? 'was' : 'were';
     return `Only ${only.removed} of ${only.requested} ${only.name} ${verb} on hand, so ${only.removed} ${verb} taken out.`;
   }
-  const cards = partials.length === 1 ? 'card' : 'cards';
-  return `${partials.length} ${cards} had fewer on hand than scanned, so only what was on hand was taken out.`;
+  const noun = partials.length === 1 ? 'card' : 'cards';
+  return `${partials.length} ${noun} had fewer on hand than scanned, so only what was on hand was taken out.`;
 }
 
 // Fewer units left than the card asked for. A single confirm keeps the short
@@ -201,10 +210,6 @@ export function formatPartialRemoval(
   if (removedCount === 1) return 'Only 1 was on hand, so 1 was taken out.';
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }
-
-// A 5xx with no JSON error field: a migration 503, a proxy 502/504, or empty
-// HTTP/2 status text. Appended so the Expo client can show the same sentence.
-export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
 export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
