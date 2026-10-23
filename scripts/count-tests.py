@@ -2,10 +2,11 @@
 """Count Stockbot test size and test calorie density.
 
 Density is non-blank, non-comment test lines divided by production lines that
-a test actually ran. It is an advisory signal, not a merge gate. Definitions
-match count-tests.py 1.0, which the 2026-10-17 master baseline was measured
-with (Go about 2.62, web unit about 3.15). Change the counting rules only
-with a version bump.
+a test actually ran. It is an advisory signal, not a merge gate. Go and web
+definitions match count-tests.py 1.0, which the 2026-10-17 master baseline was
+measured with (Go about 2.62, web unit about 3.15). 1.1 changes only how mobile
+test files are found: from the mobile Jest config, not the web naming rule.
+Change the counting rules only with a version bump.
 
 Usage:
   scripts/count-tests.py report --repo . \\
@@ -40,7 +41,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 # Twice the 2026-10-17 baseline densities (Go 2.62, web 3.15), as agreed.
 # Flag A fires only when marginal density is strictly above these.
@@ -181,9 +182,121 @@ def is_excluded_file(rel: str) -> bool:
     return rel.endswith((".bak", ".snap", ".d.ts"))
 
 
+# Jest's own defaults, used when the mobile app sets neither testMatch nor testRegex.
+JEST_DEFAULT_TEST_MATCH = [
+    "**/__tests__/**/*.?([mc])[jt]s?(x)",
+    "**/?(*.)+(spec|test).?([mc])[jt]s?(x)",
+]
+JEST_JS_CONFIGS = ("jest.config.js", "jest.config.ts", "jest.config.mjs", "jest.config.cjs")
+
+
+def jest_glob_regex(glob: str) -> str:
+    """Translate the micromatch subset Jest testMatch uses into a regex.
+
+    Supports **, *, ?, [...], {a,b} and the extglobs ?(..) *(..) +(..) @(..).
+    A leading ! (negation) is handled by the caller.
+    """
+    out: list[str] = []
+    i = 0
+    stack: list[str] = []
+    while i < len(glob):
+        c = glob[i]
+        nxt = glob[i + 1] if i + 1 < len(glob) else ""
+        if c in "?*+@" and nxt == "(":
+            stack.append(c)
+            out.append("(?:")
+            i += 2
+            continue
+        if c == ")" and stack:
+            op = stack.pop()
+            out.append({"?": ")?", "*": ")*", "+": ")+", "@": ")"}[op])
+            i += 1
+            continue
+        if c == "|" and stack:
+            out.append("|")
+        elif c == "{":
+            stack.append("{")
+            out.append("(?:")
+        elif c == "}" and stack and stack[-1] == "{":
+            stack.pop()
+            out.append(")")
+        elif c == "," and stack and stack[-1] == "{":
+            out.append("|")
+        elif c == "*" and nxt == "*":
+            if glob[i + 2 : i + 3] == "/":
+                out.append("(?:.*/)?")
+                i += 3
+                continue
+            out.append(".*")
+            i += 2
+            continue
+        elif c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            end = glob.find("]", i + 1)
+            if end == -1:
+                out.append(re.escape(c))
+            else:
+                out.append("[" + glob[i + 1 : end] + "]")
+                i = end + 1
+                continue
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return "".join(out)
+
+
+def mobile_test_matcher(root: Path):
+    """Return a predicate for repo-relative paths that the mobile Jest run treats as tests.
+
+    Reads testMatch or testRegex from mobile/package.json "jest" or mobile/jest.config.json,
+    falling back to Jest's defaults. A JavaScript Jest config cannot be read here, so it is
+    an error rather than a guess.
+    """
+    mobile = root / "mobile"
+    config: dict = {}
+    package = mobile / "package.json"
+    if package.is_file():
+        try:
+            config = json.loads(package.read_text(encoding="utf-8")).get("jest") or {}
+        except json.JSONDecodeError as err:
+            raise ValueError(f"mobile/package.json could not be parsed: {err}") from err
+    if (mobile / "jest.config.json").is_file():
+        config = json.loads((mobile / "jest.config.json").read_text(encoding="utf-8"))
+    for name in JEST_JS_CONFIGS:
+        if (mobile / name).is_file():
+            raise ValueError(
+                f"mobile/{name} is a JavaScript Jest config; count-tests.py reads only "
+                "package.json \"jest\" or jest.config.json to find mobile tests"
+            )
+    test_regex = config.get("testRegex")
+    if test_regex:
+        patterns = [re.compile(r) for r in ([test_regex] if isinstance(test_regex, str) else test_regex)]
+    else:
+        patterns, negated = [], []
+        for glob in config.get("testMatch") or JEST_DEFAULT_TEST_MATCH:
+            target = negated if glob.startswith("!") else patterns
+            glob = glob.lstrip("!").replace("<rootDir>/", "mobile/")
+            if not glob.startswith(("mobile/", "**")):
+                glob = "**/" + glob
+            target.append(re.compile("^" + jest_glob_regex(glob) + "$"))
+
+    def is_mobile_test(rel: str) -> bool:
+        if "/node_modules/" in "/" + rel:
+            return False
+        if test_regex:
+            return any(p.search("/" + rel) for p in patterns)
+        return any(p.match(rel) for p in patterns) and not any(p.match(rel) for p in negated)
+
+    return is_mobile_test
+
+
 def classify(root: Path) -> dict[str, list[str]]:
     """Group source files. Fixture and testdata files are listed, not measured."""
     groups: dict[str, list[str]] = defaultdict(list)
+    is_mobile_test = mobile_test_matcher(root)
     for rel in walk_files(root):
         if is_excluded_file(rel):
             continue
@@ -207,7 +320,9 @@ def classify(root: Path) -> dict[str, list[str]]:
             else:
                 groups["web_prod"].append(rel)
         elif parts[0] == "mobile":
-            key = "mobile_test" if is_test else "mobile_prod"
+            # Mobile Jest names tests by its own testMatch (for example
+            # client-test.ts), not by the web .test.ts rule.
+            key = "mobile_test" if is_mobile_test(rel) else "mobile_prod"
             groups[key].append(rel)
 
     # The walk above prunes fixture directories so they cannot inflate density.
@@ -593,7 +708,7 @@ def build_report(args: argparse.Namespace) -> dict:
         if args.mobile_cover:
             mobile_covered, mobile_coverable = parse_istanbul(root, args.mobile_cover)
         # Mobile uses the web signal names (vi.fn, expect) and per-directory
-        # buckets, matching the v1.0 report. There is no mobile tree on master today.
+        # buckets, matching the v1.0 report.
         report["mobile"] = language_section(
             root,
             groups["mobile_test"],

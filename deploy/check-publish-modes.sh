@@ -185,6 +185,11 @@ fi
 empty_env=$(mktemp)
 public_cfg=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml --profile public config)
 tunnel_cfg=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.tunnel.yml --profile tunnel config)
+# Profile grocy must not include grocy-sync. The sidecar stays out of a
+# default config too, and appears only on profile grocy-sync.
+grocy_default=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.grocy.yml config)
+grocy_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.grocy.yml --profile grocy config)
+grocy_sync_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.grocy.yml --profile grocy-sync config)
 rm -f "$empty_env"
 
 have "$public_cfg" 'published: "80"' "certificate mode publishes port 80"
@@ -196,7 +201,10 @@ lack "$public_cfg" 'Caddyfile.tunnel' "certificate mode must not mount the tunne
 
 lack "$tunnel_cfg" 'published: "80"' "tunnel mode must not publish port 80"
 lack "$tunnel_cfg" 'published: "443"' "tunnel mode must not publish port 443"
-have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.1' "tunnel mode pins cloudflared"
+have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.3' "tunnel mode pins cloudflared"
+lack "$grocy_default" 'container_name: pantry-grocy-sync' "default compose must not start grocy-sync"
+lack "$grocy_profile" 'container_name: pantry-grocy-sync' "grocy profile must not start grocy-sync"
+have "$grocy_sync_profile" 'container_name: pantry-grocy-sync' "grocy-sync profile names the sidecar"
 have "$tunnel_cfg" "$tunnel_caddy" "tunnel mode pins Caddy"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.2' "cloudflared has the trusted address"
 have "$tunnel_cfg" 'ipv4_address: 10.77.77.3' "caddy has a fixed address"

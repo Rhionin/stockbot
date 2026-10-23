@@ -2,7 +2,26 @@ package server
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
+
+	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/restock"
+	"modernc.org/sqlite"
+)
+
+// SQLite primary result codes. Extended codes keep the same low byte.
+const (
+	sqlitePrimaryBusy   = 5
+	sqlitePrimaryLocked = 6
+	sqlitePrimaryFull   = 13
+)
+
+const (
+	busyErrorCode    = "busy"
+	noSpaceErrorCode = "no_space"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -64,15 +83,155 @@ func BadGateway(message string) error {
 }
 
 // httpStatusFromError determines the HTTP status code from an error.
+// A lock that outlasts the busy timeout, or a full disk, is a 503.
+// A 4xx stays a 4xx even when the cause is one of those database errors.
 func httpStatusFromError(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
 
+	status := http.StatusInternalServerError
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		return httpErr.Code
+		status = httpErr.Code
 	}
+	if status >= 500 && (sqliteBusy(err) || sqliteNoSpace(err)) {
+		return http.StatusServiceUnavailable
+	}
+	return status
+}
 
-	return http.StatusInternalServerError
+// serverClientPayload is the browser sentence for a 5xx.
+// A classified busy or no-space failure keeps its own sentence and code.
+// The generic sentence does not replace either of those.
+// The handler ErrorCode is ignored. A 5xx without a busy or full driver
+// cause stays generic, including one that already named "busy" or "no_space".
+func serverClientPayload(err error, _ string) (string, string, bool) {
+	switch {
+	case sqliteBusy(err):
+		return clientmsg.Busy, busyErrorCode, true
+	case sqliteNoSpace(err):
+		return clientmsg.NoSpace, noSpaceErrorCode, true
+	default:
+		return clientmsg.Generic, "", false
+	}
+}
+
+func sqliteBusy(err error) bool {
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) {
+		// Extended codes keep the primary in the low byte. A snapshot lock is
+		// SQLITE_BUSY_SNAPSHOT (517), and 517 & 0xff == 5, so the mask
+		// classifies it. Once the driver error is in hand, its text is not
+		// a second vote.
+		switch driverErr.Code() & 0xff {
+		case sqlitePrimaryBusy, sqlitePrimaryLocked:
+			return true
+		default:
+			return false
+		}
+	}
+	// A commit failure already chose code internal and a sentence. The string
+	// fallback must not replace that decision. A driver result code is
+	// classified above and still wins.
+	if keepsInternalCode(err) {
+		return false
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
+// logNoSpace is the one server line for a no-space 503. Operator alerts
+// match msg and event. The warning carries no driver text and no SQL.
+// The wrapped message is a second record at debug level.
+func logNoSpace(r *http.Request, err error) {
+	method, route, household := "", "", ""
+	if r != nil {
+		method = r.Method
+		route = requestRoute(r)
+		// One household serves every request until logins name another.
+		// The id is not read from the query or body.
+		household = restock.HouseholdID
+	}
+	attrs := []any{"event", "db_no_space", "method", method, "route", route}
+	if household != "" {
+		attrs = append(attrs, "household_id", household)
+	}
+	if code := sqliteDriverCode(err); code != 0 {
+		attrs = append(attrs, "sqlite_code", code)
+	}
+	slog.Warn("db_no_space", attrs...)
+	if msg := noSpaceDriverMessage(err); msg != "" {
+		slog.Debug("db_no_space", "driver_message", msg)
+	}
+}
+
+// noSpaceDriverMessage is the driver text for the debug record.
+// HTTPError.Error returns the client sentence once Message is set, which is
+// what a commit or stock-out failure does, so the debug line uses the wrapped cause.
+func noSpaceDriverMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.Err != nil {
+		return httpErr.Err.Error()
+	}
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) {
+		return driverErr.Error()
+	}
+	return err.Error()
+}
+
+func requestRoute(r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	if r.URL == nil {
+		return ""
+	}
+	return r.URL.Path
+}
+
+func sqliteDriverCode(err error) int {
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) {
+		return 0
+	}
+	return driverErr.Code()
+}
+
+func sqliteNoSpace(err error) bool {
+	var driverErr *sqlite.Error
+	if errors.As(err, &driverErr) {
+		return driverErr.Code()&0xff == sqlitePrimaryFull
+	}
+	if keepsInternalCode(err) {
+		return false
+	}
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "sqlite_full") || strings.Contains(msg, "database or disk is full") || strings.Contains(msg, "disk is full") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
+// keepsInternalCode reports an unexpected failure whose sentence and code
+// were already chosen. Only the string fallback consults it.
+func keepsInternalCode(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != ""
 }

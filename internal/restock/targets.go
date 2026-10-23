@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -232,7 +233,7 @@ func (t *Targets) Snapshot(ctx context.Context) (Snapshot, error) {
 func (t *Targets) ensureStarters(ctx context.Context) error {
 	var count int
 	if err := t.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE household_id = ?`, HouseholdID).Scan(&count); err != nil {
-		return fmt.Errorf("could not read categories")
+		return fmt.Errorf("could not read categories: %w", err)
 	}
 	if count > 0 {
 		return nil
@@ -300,7 +301,7 @@ func (t *Targets) SetHousehold(ctx context.Context, target Target) error {
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("could not save the household default")
+		return fmt.Errorf("could not save the household default: %w", err)
 	}
 	defer tx.Rollback()
 	if err := putSetting(ctx, tx, "supply_target_kind", string(target.Kind)); err != nil {
@@ -310,7 +311,7 @@ func (t *Targets) SetHousehold(ctx context.Context, target Target) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not save the household default")
+		return fmt.Errorf("could not save the household default: %w", err)
 	}
 	return nil
 }
@@ -326,7 +327,7 @@ func (t *Targets) ItemTarget(ctx context.Context, itemID string) (*Target, error
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("could not read the restock target")
+		return nil, fmt.Errorf("could not read the restock target: %w", err)
 	}
 	target := Target{Kind: Kind(kind), Value: value}
 	return &target, nil
@@ -347,7 +348,7 @@ func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) err
 		ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
 		HouseholdID, itemID, string(target.Kind), target.Value)
 	if err != nil {
-		return fmt.Errorf("could not save the restock target")
+		return fmt.Errorf("could not save the restock target: %w", err)
 	}
 	return nil
 }
@@ -355,7 +356,7 @@ func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) err
 // ClearItem removes the item target so a broader one applies.
 func (t *Targets) ClearItem(ctx context.Context, itemID string) error {
 	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, HouseholdID, itemID); err != nil {
-		return fmt.Errorf("could not clear the restock target")
+		return fmt.Errorf("could not clear the restock target: %w", err)
 	}
 	return nil
 }
@@ -370,7 +371,7 @@ func (t *Targets) ItemIDByProduct(ctx context.Context, productID string) (string
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("could not read the restock target")
+		return "", fmt.Errorf("could not read the restock target: %w", err)
 	}
 	return id, nil
 }
@@ -383,7 +384,7 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 	if target == nil {
 		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, HouseholdID, categoryID)
 		if err != nil {
-			return fmt.Errorf("could not clear the category target")
+			return fmt.Errorf("could not clear the category target: %w", err)
 		}
 		return nil
 	}
@@ -397,7 +398,7 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 		ON CONFLICT (household_id, category_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
 		HouseholdID, categoryID, string(prepared.Kind), prepared.Value)
 	if err != nil {
-		return fmt.Errorf("could not save the category target")
+		return fmt.Errorf("could not save the category target: %w", err)
 	}
 	return nil
 }
@@ -442,7 +443,7 @@ func (t *Targets) PreviewGroup(ctx context.Context, groupID string, target Targe
 		return Preview{}, fmt.Errorf("That group isn't in the household.")
 	}
 	if err != nil {
-		return Preview{}, fmt.Errorf("could not read the group")
+		return Preview{}, fmt.Errorf("could not read the group: %w", err)
 	}
 	snap, err := Load(ctx, t.db, HouseholdID)
 	if err != nil {
@@ -494,7 +495,7 @@ func (t *Targets) RenameCategory(ctx context.Context, id, name string) error {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return fmt.Errorf("A category named %s already exists.", strings.TrimSpace(name))
 		}
-		return fmt.Errorf("could not rename the category")
+		return fmt.Errorf("could not rename the category: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
@@ -510,7 +511,7 @@ func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("could not delete the category")
+		return fmt.Errorf("could not delete the category: %w", err)
 	}
 	defer tx.Rollback()
 	for _, query := range []string{
@@ -523,7 +524,7 @@ func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
 			args = append(args, HouseholdID)
 		}
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return fmt.Errorf("could not delete the category")
+			return fmt.Errorf("could not delete the category: %w", err)
 		}
 	}
 	return tx.Commit()
@@ -542,14 +543,14 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id, source, confirmed_at, removed_at FROM item_categories
 		WHERE household_id = ? AND category_id = ?`, HouseholdID, id)
 	if err != nil {
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	type row struct {
 		item, source       string
@@ -560,13 +561,13 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 		var item row
 		if err := rows.Scan(&item.item, &item.source, &item.confirmed, &item.removed); err != nil {
 			rows.Close()
-			return fmt.Errorf("could not merge the categories")
+			return fmt.Errorf("could not merge the categories: %w", err)
 		}
 		moved = append(moved, item)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	rows.Close()
 	for _, item := range moved {
@@ -576,17 +577,17 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 			ON CONFLICT (household_id, item_id, category_id) DO NOTHING`,
 			HouseholdID, item.item, intoID, item.source, nullableTime(item.confirmed), nullableTime(item.removed))
 		if err != nil {
-			return fmt.Errorf("could not merge the categories")
+			return fmt.Errorf("could not merge the categories: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM item_categories WHERE category_id = ?`, id); err != nil {
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM category_targets WHERE category_id = ?`, id); err != nil {
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM categories WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("could not merge the categories")
+		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	return tx.Commit()
 }
@@ -621,7 +622,7 @@ func (t *Targets) membership(ctx context.Context, itemID, categoryID, source str
 			removed_at = excluded.removed_at`,
 		HouseholdID, itemID, categoryID, source, time.Now().UTC(), removedAt)
 	if err != nil {
-		return fmt.Errorf("could not update the category")
+		return fmt.Errorf("could not update the category: %w", err)
 	}
 	return nil
 }
@@ -705,7 +706,7 @@ func (t *Targets) DismissSuggestions(ctx context.Context, category string, itemI
 			VALUES (?, ?, ?)
 			ON CONFLICT (household_id, item_id, category_key) DO NOTHING`,
 			HouseholdID, itemID, key); err != nil {
-			return fmt.Errorf("could not dismiss the suggestion")
+			return fmt.Errorf("could not dismiss the suggestion: %w", err)
 		}
 	}
 	return nil
@@ -717,11 +718,11 @@ func (t *Targets) SaveOffTags(ctx context.Context, productID string, categories,
 	foodGroups = cleanTags(foodGroups)
 	catJSON, err := json.Marshal(categories)
 	if err != nil {
-		return fmt.Errorf("could not save product tags")
+		return fmt.Errorf("could not save product tags: %w", err)
 	}
 	groupJSON, err := json.Marshal(foodGroups)
 	if err != nil {
-		return fmt.Errorf("could not save product tags")
+		return fmt.Errorf("could not save product tags: %w", err)
 	}
 	_, err = t.db.ExecContext(ctx, `
 		INSERT INTO product_off_tags (product_id, categories_tags, food_groups_tags)
@@ -731,7 +732,7 @@ func (t *Targets) SaveOffTags(ctx context.Context, productID string, categories,
 			food_groups_tags = excluded.food_groups_tags`,
 		productID, string(catJSON), string(groupJSON))
 	if err != nil {
-		return fmt.Errorf("could not save product tags")
+		return fmt.Errorf("could not save product tags: %w", err)
 	}
 	return nil
 }
@@ -766,7 +767,7 @@ func CopyLegacy(ctx context.Context, q Queryer) error {
 	}
 	for _, query := range statements {
 		if _, err := q.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("could not move existing restock targets")
+			return fmt.Errorf("could not move existing restock targets: %w", err)
 		}
 	}
 	return nil
@@ -792,20 +793,20 @@ func suggest(ctx context.Context, q Queryer, household string, items []ItemView)
 	existing := map[string]string{}
 	rows, err := q.QueryContext(ctx, `SELECT name_key, id, name FROM categories WHERE household_id = ?`, household)
 	if err != nil {
-		return nil, fmt.Errorf("could not read categories")
+		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
 	defer rows.Close()
 	ids := map[string]string{}
 	for rows.Next() {
 		var key, id, name string
 		if err := rows.Scan(&key, &id, &name); err != nil {
-			return nil, fmt.Errorf("could not read categories")
+			return nil, fmt.Errorf("could not read categories: %w", err)
 		}
 		existing[key] = name
 		ids[name] = id
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("could not read categories")
+		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
 
 	type bucket struct {
@@ -877,14 +878,14 @@ type tagPair struct {
 func loadTags(ctx context.Context, q Queryer) (map[string]tagPair, error) {
 	rows, err := q.QueryContext(ctx, `SELECT product_id, categories_tags, food_groups_tags FROM product_off_tags`)
 	if err != nil {
-		return nil, fmt.Errorf("could not read product tags")
+		return nil, fmt.Errorf("could not read product tags: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]tagPair{}
 	for rows.Next() {
 		var id, categories, groups string
 		if err := rows.Scan(&id, &categories, &groups); err != nil {
-			return nil, fmt.Errorf("could not read product tags")
+			return nil, fmt.Errorf("could not read product tags: %w", err)
 		}
 		out[id] = tagPair{categories: decodeTags(categories), groups: decodeTags(groups)}
 	}
@@ -894,14 +895,14 @@ func loadTags(ctx context.Context, q Queryer) (map[string]tagPair, error) {
 func loadBarcodes(ctx context.Context, q Queryer) (map[string]string, error) {
 	rows, err := q.QueryContext(ctx, `SELECT product_id, barcode FROM barcodes ORDER BY product_id, barcode`)
 	if err != nil {
-		return nil, fmt.Errorf("could not read barcodes")
+		return nil, fmt.Errorf("could not read barcodes: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]string{}
 	for rows.Next() {
 		var id, barcode string
 		if err := rows.Scan(&id, &barcode); err != nil {
-			return nil, fmt.Errorf("could not read barcodes")
+			return nil, fmt.Errorf("could not read barcodes: %w", err)
 		}
 		if _, ok := out[id]; !ok {
 			out[id] = barcode
@@ -917,14 +918,14 @@ func loadRemoved(ctx context.Context, q Queryer, household string) (map[string]b
 		JOIN categories c ON c.id = ic.category_id AND c.household_id = ic.household_id
 		WHERE ic.household_id = ? AND ic.removed_at IS NOT NULL`, household)
 	if err != nil {
-		return nil, fmt.Errorf("could not read categories")
+		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]bool{}
 	for rows.Next() {
 		var item, name string
 		if err := rows.Scan(&item, &name); err != nil {
-			return nil, fmt.Errorf("could not read categories")
+			return nil, fmt.Errorf("could not read categories: %w", err)
 		}
 		out[item+"\x00"+name] = true
 	}
@@ -934,14 +935,14 @@ func loadRemoved(ctx context.Context, q Queryer, household string) (map[string]b
 func loadDismissals(ctx context.Context, q Queryer, household string) (map[string]bool, error) {
 	rows, err := q.QueryContext(ctx, `SELECT item_id, category_key FROM category_suggestion_dismissals WHERE household_id = ?`, household)
 	if err != nil {
-		return nil, fmt.Errorf("could not read dismissed suggestions")
+		return nil, fmt.Errorf("could not read dismissed suggestions: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]bool{}
 	for rows.Next() {
 		var item, key string
 		if err := rows.Scan(&item, &key); err != nil {
-			return nil, fmt.Errorf("could not read dismissed suggestions")
+			return nil, fmt.Errorf("could not read dismissed suggestions: %w", err)
 		}
 		out[item+"\x00"+key] = true
 	}
@@ -959,7 +960,7 @@ func (t *Targets) categoryByName(ctx context.Context, name string) (string, erro
 		return id, nil
 	}
 	if err != sql.ErrNoRows {
-		return "", fmt.Errorf("could not read categories")
+		return "", fmt.Errorf("could not read categories: %w", err)
 	}
 	created, err := t.CreateCategory(ctx, name)
 	if err != nil {
@@ -980,7 +981,7 @@ func loadItems(ctx context.Context, q Queryer, household string) (map[string]*lo
 		WHERE i.user_id = ? AND i.shelved = 0
 		ORDER BY p.name, i.id`, household)
 	if err != nil {
-		return nil, fmt.Errorf("could not read restock targets")
+		return nil, fmt.Errorf("could not read restock targets: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]*loadedItem{}
@@ -988,7 +989,7 @@ func loadItems(ctx context.Context, q Queryer, household string) (map[string]*lo
 		var item loadedItem
 		var unit string
 		if err := rows.Scan(&item.view.ItemID, &item.view.ProductID, &item.view.Name, &unit, &item.view.GroupID, &item.view.GroupName, &item.window, &item.quantity, &item.dimension); err != nil {
-			return nil, fmt.Errorf("could not read restock targets")
+			return nil, fmt.Errorf("could not read restock targets: %w", err)
 		}
 		if unit == "" {
 			unit = "units"
@@ -1002,14 +1003,14 @@ func loadItems(ctx context.Context, q Queryer, household string) (map[string]*lo
 func attachStoredTargets(ctx context.Context, q Queryer, household string, items map[string]*loadedItem) error {
 	rows, err := q.QueryContext(ctx, `SELECT item_id, kind, value FROM item_targets WHERE household_id = ?`, household)
 	if err != nil {
-		return fmt.Errorf("could not read restock targets")
+		return fmt.Errorf("could not read restock targets: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, kind string
 		var value float64
 		if err := rows.Scan(&id, &kind, &value); err != nil {
-			return fmt.Errorf("could not read restock targets")
+			return fmt.Errorf("could not read restock targets: %w", err)
 		}
 		item := items[id]
 		if item == nil {
@@ -1030,7 +1031,7 @@ func attachCategories(ctx context.Context, q Queryer, household string, items ma
 		WHERE ic.household_id = ? AND ic.removed_at IS NULL
 		ORDER BY c.name`, household)
 	if err != nil {
-		return fmt.Errorf("could not read categories")
+		return fmt.Errorf("could not read categories: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -1038,7 +1039,7 @@ func attachCategories(ctx context.Context, q Queryer, household string, items ma
 		var kind sql.NullString
 		var value sql.NullFloat64
 		if err := rows.Scan(&itemID, &id, &name, &kind, &value); err != nil {
-			return fmt.Errorf("could not read categories")
+			return fmt.Errorf("could not read categories: %w", err)
 		}
 		item := items[itemID]
 		if item == nil {
@@ -1066,7 +1067,7 @@ func loadCategoryRows(ctx context.Context, q Queryer, household string) ([]categ
 		WHERE c.household_id = ?
 		ORDER BY c.name`, household)
 	if err != nil {
-		return nil, fmt.Errorf("could not read categories")
+		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
 	defer rows.Close()
 	var out []categoryRow
@@ -1075,7 +1076,7 @@ func loadCategoryRows(ctx context.Context, q Queryer, household string) ([]categ
 		var kind sql.NullString
 		var value sql.NullFloat64
 		if err := rows.Scan(&row.ID, &row.Name, &kind, &value); err != nil {
-			return nil, fmt.Errorf("could not read categories")
+			return nil, fmt.Errorf("could not read categories: %w", err)
 		}
 		if kind.Valid && value.Valid {
 			target := Target{Kind: Kind(kind.String), Value: value.Float64}
@@ -1087,8 +1088,14 @@ func loadCategoryRows(ctx context.Context, q Queryer, household string) ([]categ
 }
 
 func readHousehold(ctx context.Context, q Queryer) (Target, error) {
-	kind := readSetting(ctx, q, "supply_target_kind")
-	value := readSetting(ctx, q, "supply_target_value")
+	kind, err := readSetting(ctx, q, "supply_target_kind")
+	if err != nil {
+		return Target{}, fmt.Errorf("could not read the household default: %w", err)
+	}
+	value, err := readSetting(ctx, q, "supply_target_value")
+	if err != nil {
+		return Target{}, fmt.Errorf("could not read the household default: %w", err)
+	}
 	if kind == string(KindAmount) && value != "" {
 		return Target{Kind: KindAmount, Value: parseNumber(value, 0)}, nil
 	}
@@ -1098,13 +1105,16 @@ func readHousehold(ctx context.Context, q Queryer) (Target, error) {
 	return Target{Kind: KindMonths, Value: 3}, nil
 }
 
-func readSetting(ctx context.Context, q Queryer, key string) string {
+func readSetting(ctx context.Context, q Queryer, key string) (string, error) {
 	var value string
 	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
-	if err != nil {
-		return ""
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	return value
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func putSetting(ctx context.Context, q Queryer, key, value string) error {
@@ -1112,7 +1122,7 @@ func putSetting(ctx context.Context, q Queryer, key, value string) error {
 		INSERT INTO app_settings (key, value) VALUES (?, ?)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
 	if err != nil {
-		return fmt.Errorf("could not save the household default")
+		return fmt.Errorf("could not save the household default: %w", err)
 	}
 	return nil
 }
@@ -1153,7 +1163,7 @@ func ensureItem(ctx context.Context, q Queryer, itemID string) error {
 		return fmt.Errorf("That item isn't in the household.")
 	}
 	if err != nil {
-		return fmt.Errorf("could not read the item")
+		return fmt.Errorf("could not read the item: %w", err)
 	}
 	return nil
 }
@@ -1165,7 +1175,7 @@ func ensureCategory(ctx context.Context, q Queryer, id string) error {
 		return fmt.Errorf("That category isn't in the household.")
 	}
 	if err != nil {
-		return fmt.Errorf("could not read the category")
+		return fmt.Errorf("could not read the category: %w", err)
 	}
 	return nil
 }
@@ -1177,7 +1187,7 @@ func categoryName(ctx context.Context, q Queryer, id string) (string, error) {
 		return "", fmt.Errorf("That category isn't in the household.")
 	}
 	if err != nil {
-		return "", fmt.Errorf("could not read the category")
+		return "", fmt.Errorf("could not read the category: %w", err)
 	}
 	return name, nil
 }
