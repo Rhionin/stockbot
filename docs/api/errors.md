@@ -35,18 +35,31 @@ no names. Operator alerts for #224 match that line. This does not add an alert.
 ## Batch commit
 
 `POST /api/scans/batch-commit` stays HTTP 200 when an item cannot be saved.
-`failedIds`, `failedReasons`, and `failedCodes` stay parallel arrays.
+That is still true when the body includes `direction`, `unitCount`, or
+`expiresAt`. `failedIds`, `failedReasons`, and `failedCodes` stay parallel
+arrays. Empty fields are omitted: an empty `committedIds`, `failedIds`,
+`failedReasons`, `failedCodes`, or `stockOutCounts` is left out of the JSON.
+
+`committedIds` means committed, or confirmed as already committed, by this
+request. An id this request did not read is not in that list.
 
 A locked database is code `busy` and the busy sentence above. A full disk is
 code `no_space` and the no-space sentence above. A full disk writes one
 `db_no_space` warning for the whole batch, with the same attributes as the
-503 above, not one line per item.
+503 above, not one line per item. A batch that ends `busy` writes one
+`db_busy` warning for the whole batch. The message is `db_busy`. The
+attributes are `event=db_busy`, `method`, `route`, `sqlite_code`, and
+`household_id` when the server knows the household. The line has no SQL and
+no names. It is one line for the batch, not one line per item.
 
 The batch stops on the first `busy` or `no_space` result. That item and every
-item not yet tried get the same code and the same sentence. They stay open
-(pending or flagged, unchanged), so a retry is safe. Items already committed
-stay committed and are listed in `committedIds`. Other per-item failures do
-not stop the batch.
+item not yet tried get the same code and the same sentence. This includes an
+id that was already committed by something else: the request does not read it
+to check. Items this request did not commit stay as they were (pending,
+flagged, or already committed), so a retry is safe. A retry lists an id that
+was already committed in `committedIds`. Items this request committed before
+the stop stay committed and are listed in `committedIds`. Other per-item
+failures do not stop the batch.
 
 A client shows that sentence once. When some items were committed first, the
 line leads with the committed count and "confirmed.", then the sentence. Two

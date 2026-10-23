@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
@@ -32,7 +34,9 @@ type stockOutCount struct {
 }
 
 type batchCommitResponse struct {
-	UpdatedCount  int      `json:"updatedCount"`
+	UpdatedCount int `json:"updatedCount"`
+	// CommittedIDs lists scans this request committed, or confirmed as already
+	// committed. An id this request did not read is left out.
 	CommittedIDs  []string `json:"committedIds,omitempty"`
 	FailedIDs     []string `json:"failedIds,omitempty"`
 	FailedReasons []string `json:"failedReasons,omitempty"`
@@ -49,8 +53,10 @@ type batchCommitResponse struct {
 
 // batchStopsOnStorageFailure is the product decision for a busy or full
 // database in one batch commit. The item that failed and every item not yet
-// tried share that code and sentence and are not written. Items already
-// committed stay committed. Other per-item failures do not stop the batch.
+// tried share that code and sentence and are not written. Those later ids
+// are not read, even when one was already committed by something else.
+// Items this request already committed stay committed. Other per-item
+// failures do not stop the batch.
 const batchStopsOnStorageFailure = true
 
 func batchStopsEarly(code string) bool {
@@ -71,7 +77,9 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		}
 	}
 
-	// Apply batch updates if any fields are provided
+	// Apply batch updates if any fields are provided. A lock or a full disk
+	// here is the same per-item result as a commit that cannot start. The
+	// update transaction rolls back, so the cards stay as they were.
 	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
 		err := h.Queue.BatchUpdateScanEntries(
 			req.Context,
@@ -81,6 +89,9 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			req.Body.ExpiresAt,
 		)
 		if err != nil {
+			if response, ok := batchStorageFailure(req, err); ok {
+				return response, nil
+			}
 			return batchCommitResponse{}, commitClientError(err)
 		}
 	}
@@ -98,11 +109,21 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		var stockOutCounts map[string]stockOutCount
 		var haltMessage, haltCode string
 		loggedNoSpace := false
+		loggedBusy := false
+		loggedCancel := false
 		failItem := func(id string, err error) {
+			if errors.Is(err, context.Canceled) && !loggedCancel {
+				slog.Info("request canceled")
+				loggedCancel = true
+			}
 			message, code := explainCommitFailure(err)
 			if code == noSpaceErrorCode && !loggedNoSpace {
 				logNoSpace(req.RawRequest, err)
 				loggedNoSpace = true
+			}
+			if code == busyErrorCode && !loggedBusy {
+				logBusy(req.RawRequest, err)
+				loggedBusy = true
 			}
 			recordCommitResult(&failedIDs, &failedReasons, &failedCodes, id, message, code)
 			if batchStopsEarly(code) {
@@ -184,6 +205,26 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	}
 
 	return response, nil
+}
+
+// batchStorageFailure is the HTTP 200 for a lock or a full disk that happens
+// before any item is committed. Every id gets that code. Nothing is read
+// afterward to see whether an id was already committed.
+func batchStorageFailure(req Request[batchCommitRequest, struct{}], err error) (batchCommitResponse, bool) {
+	message, code, ok := storageClientResult(err)
+	if !ok {
+		return batchCommitResponse{}, false
+	}
+	if code == busyErrorCode {
+		logBusy(req.RawRequest, err)
+	} else {
+		logNoSpace(req.RawRequest, err)
+	}
+	response := batchCommitResponse{UpdatedCount: len(req.Body.ScanEntryIDs)}
+	for _, id := range req.Body.ScanEntryIDs {
+		recordCommitResult(&response.FailedIDs, &response.FailedReasons, &response.FailedCodes, id, message, code)
+	}
+	return response, true
 }
 
 func uniqueInOrder(ids []string) []string {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -46,14 +47,25 @@ func explainCommitFailure(err error) (message, code string) {
 	if message, code, ok := knownCommitFailure(err); ok {
 		return message, code
 	}
-	if sqliteBusy(err) {
-		return clientmsg.Busy, busyErrorCode
+	// The batch handler logs a canceled request once. This must not add a line per item.
+	if errors.Is(err, context.Canceled) {
+		return inventory.InternalMessage, inventory.CodeInternal
 	}
-	if sqliteNoSpace(err) {
-		return clientmsg.NoSpace, noSpaceErrorCode
+	if message, code, ok := storageClientResult(err); ok {
+		return message, code
 	}
 	log.Printf("scan commit failed: %s", err)
 	return inventory.InternalMessage, inventory.CodeInternal
+}
+
+func storageClientResult(err error) (message, code string, ok bool) {
+	if sqliteBusy(err) {
+		return clientmsg.Busy, busyErrorCode, true
+	}
+	if sqliteNoSpace(err) {
+		return clientmsg.NoSpace, noSpaceErrorCode, true
+	}
+	return "", "", false
 }
 
 func commitStatus(err error) int {

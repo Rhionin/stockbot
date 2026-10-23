@@ -151,6 +151,19 @@ func sqliteBusy(err error) bool {
 // match msg and event. The warning carries no driver text and no SQL.
 // The wrapped message is a second record at debug level.
 func logNoSpace(r *http.Request, err error) {
+	logStorageWarning(r, err, "db_no_space")
+	if msg := noSpaceDriverMessage(err); msg != "" {
+		slog.Debug("db_no_space", "driver_message", msg)
+	}
+}
+
+// logBusy is the one server line for a batch that ends busy.
+// Operator alerts match msg and event. The warning carries no driver text and no SQL.
+func logBusy(r *http.Request, err error) {
+	logStorageWarning(r, err, "db_busy")
+}
+
+func logStorageWarning(r *http.Request, err error, event string) {
 	method, route, household := "", "", ""
 	if r != nil {
 		method = r.Method
@@ -159,17 +172,14 @@ func logNoSpace(r *http.Request, err error) {
 		// The id is not read from the query or body.
 		household = restock.HouseholdID
 	}
-	attrs := []any{"event", "db_no_space", "method", method, "route", route}
+	attrs := []any{"event", event, "method", method, "route", route}
 	if household != "" {
 		attrs = append(attrs, "household_id", household)
 	}
 	if code := sqliteDriverCode(err); code != 0 {
 		attrs = append(attrs, "sqlite_code", code)
 	}
-	slog.Warn("db_no_space", attrs...)
-	if msg := noSpaceDriverMessage(err); msg != "" {
-		slog.Debug("db_no_space", "driver_message", msg)
-	}
+	slog.Warn(event, attrs...)
 }
 
 // noSpaceDriverMessage is the driver text for the debug record.
