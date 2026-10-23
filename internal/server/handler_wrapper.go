@@ -48,6 +48,8 @@ type errorPayload struct {
 	Provider    string `json:"provider,omitempty"`
 	Members     any    `json:"members,omitempty"`
 	Suggestions any    `json:"suggestions,omitempty"`
+	ItemID      string `json:"itemId,omitempty"`
+	OnHand      *int   `json:"onHand,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -179,6 +181,13 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 // stays in the server log. A 4xx that did not name a code gets the default
 // for its status. An explicit code, including a commit code, is kept.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
+	// A deadline or cancel is the client hanging up only when this request's
+	// own context is already done. The same error on a live request is a
+	// server failure: it is logged and reported, and the client gets a 500.
+	if r != nil && r.Context().Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		log.Printf("request canceled")
+		return
+	}
 	if status >= 500 {
 		reportServerError(r, err)
 	}
@@ -191,6 +200,8 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var provider string
 	var members any
 	var suggestions any
+	var itemID string
+	var onHand *int
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
@@ -199,11 +210,15 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		provider = httpErr.Provider
 		members = httpErr.Members
 		suggestions = httpErr.Suggestions
+		itemID = httpErr.ItemID
+		onHand = httpErr.OnHand
 	}
 	if status >= 500 {
-		// A full disk has its own warning line. The driver text is not
-		// copied into the request-failed log.
-		if sqliteNoSpace(err) {
+		// A preview copy that cannot be written keeps its own sentence.
+		// A full disk otherwise has its own warning line. The driver text
+		// is not copied into that warning, or into the response.
+		preview := httpErr != nil && httpErr.Message == clientmsg.PreviewNoSpace
+		if sqliteNoSpace(err) && !preview {
 			logNoSpace(r, err)
 		} else {
 			logged := message
@@ -212,25 +227,39 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			}
 			if errors.Is(err, context.Canceled) {
 				slog.Info("request canceled")
-			} else if !errors.Is(err, context.DeadlineExceeded) {
+			} else {
 				log.Printf("request failed: %s", logged)
 			}
 		}
 		switch {
+		case preview:
+			message = clientmsg.PreviewNoSpace
+			code = codeInternal
+			provider = ""
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
 		case sqliteBusy(err) || sqliteNoSpace(err):
 			message, code, _ = serverClientPayload(err, code)
 			provider = ""
 			members = nil
 			suggestions = nil
+			itemID = ""
+			onHand = nil
 		case code == codeProviderUnavailable:
 			members = nil
 			suggestions = nil
+			itemID = ""
+			onHand = nil
 		default:
 			message = clientmsg.Generic
 			code = codeInternal
 			provider = ""
 			members = nil
 			suggestions = nil
+			itemID = ""
+			onHand = nil
 		}
 	} else if code == "" {
 		code = defaultClientCode(status)
@@ -241,6 +270,8 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		Provider:    provider,
 		Members:     members,
 		Suggestions: suggestions,
+		ItemID:      itemID,
+		OnHand:      onHand,
 	})
 }
 

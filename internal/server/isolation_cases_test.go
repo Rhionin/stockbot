@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 // maxQuarantined is the number of routes still waiting on per-household
 // authorization (#377). The coverage test fails when the quarantine list
@@ -76,9 +80,51 @@ var opsAllowlist = []allowEntry{
 }
 
 // isolationCases holds routes whose cross-household check runs in this
-// suite. It is empty until a route leaves quarantine with a real check.
-// The runner still executes the public and ops allowlists today.
-var isolationCases = map[string]isolationCase{}
+// suite. A new household route lands here with a check. It does not join
+// quarantine.
+var isolationCases = map[string]isolationCase{
+	"GET /api/moves/{id}/preview": {
+		kind:   kindForeignID,
+		reason: "another household's userId or move id is the same 404 as a missing move, and the body names nothing",
+		check:  checkPreviewHidesForeignMove,
+	},
+	"GET /api/scans/{id}/link-suggestions": {
+		kind:   kindForeignID,
+		reason: "another household's scan id is the same 404 as a missing scan, and the body names nothing",
+		check:  checkLinkSuggestionsHideForeignScan,
+	},
+}
+
+func checkPreviewHidesForeignMove(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	for _, path := range []string{
+		"/api/moves/" + fx.Birch.ProductID + "/preview?userId=" + fx.Birch.ID,
+		"/api/moves/seg/preview?userId=" + fx.Birch.ID,
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		fx.principalFor(fx.Alder).Apply(req)
+		rec := httptest.NewRecorder()
+		fx.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status %d body %s", path, rec.Code, rec.Body.String())
+		}
+		assertNoLeak(t, rec.Body.Bytes(), fx.Birch)
+		assertNoLeak(t, rec.Body.Bytes(), fx.Alder)
+	}
+}
+
+func checkLinkSuggestionsHideForeignScan(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/scans/"+fx.Birch.ProductID+"/link-suggestions", nil)
+	fx.principalFor(fx.Alder).Apply(req)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertNoLeak(t, rec.Body.Bytes(), fx.Birch)
+	assertNoLeak(t, rec.Body.Bytes(), fx.Alder)
+}
 
 // quarantine is every household route that cannot be asserted until
 // per-household authorization exists (#377). The list may shrink. It must

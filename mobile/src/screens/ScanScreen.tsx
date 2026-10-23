@@ -90,7 +90,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
           return;
         }
         const entry = await clientRef.current.createScan(decision.barcode, modeRef.current);
-        if (entry.status === 'flagged' || entry.product === null) {
+        if (entry.status === 'flagged' || entry.product == null) {
           setNotice(`${entry.barcode} needs a name on the pantry site`);
           return;
         }

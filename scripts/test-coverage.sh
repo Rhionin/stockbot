@@ -3,7 +3,9 @@ set -e
 
 # Minimum required line coverage percentage.
 # 82.6 is the clean ./... total, including the public brand mark and legal pages.
-# A cached go test run can report a different total. Do not ratchet from a cached result.
+# A cached go test run, or several packages writing one profile at once, can
+# report a different total. Do not ratchet from that result. -p 1 keeps the
+# merged profile to a single writer.
 COVERAGE_THRESHOLD=82.6
 
 # Colors for output
@@ -21,7 +23,7 @@ echo ""
 # stockbot code. Leaving it in ./... drops the baseline whenever node_modules exists.
 mapfile -t PKGS < <(go list ./... | grep -v '/node_modules/')
 COVERPKG=$(IFS=,; echo "${PKGS[*]}")
-go test -cover -coverpkg="${COVERPKG}" -coverprofile=coverage.out "${PKGS[@]}"
+go test -p 1 -cover -coverpkg="${COVERPKG}" -coverprofile=coverage.out "${PKGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Tests failed${NC}"

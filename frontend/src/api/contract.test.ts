@@ -6,21 +6,29 @@ import {
   BATCH_FAILURE_FALLBACK,
   BODY_TOO_LARGE_SENTENCE,
   BUSY_SENTENCE,
+  backfillFailureKind,
   CODE_AUTH_NOT_CONFIGURED,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
   CODE_CONFIRMATION_MISMATCH,
+  CODE_DIRECTION_UNSET,
   CODE_INTERNAL,
+  CODE_NONE_ON_HAND,
   CODE_NOT_FOUND,
+  CODE_NOT_PENDING,
+  CODE_NOT_STOCK_OUT,
   CODE_PAYLOAD_TOO_LARGE,
+  CODE_PRODUCT_UNRESOLVED,
   CODE_PROVIDER_UNAVAILABLE,
   CODE_RATE_LIMITED,
+  CODE_SCAN_NOT_FOUND,
   CODE_UNAUTHORIZED,
+  CODE_UNITS_ON_HAND,
   CODE_UPDATING,
   CODE_VALIDATION,
-  failuresAfterConfirm,
   confirmSkipsNothingOnHand,
+  failuresAfterConfirm,
   formatPartialRemoval,
   INVALID_BODY_PREFIX,
   INVALID_CREDENTIALS_SENTENCE,
@@ -31,29 +39,42 @@ import {
   networkErrorResult,
   NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
+  nothingOnHandBody,
   nothingOnHandPill,
+  nothingOnHandStillQueued,
   applyHttpResponse,
   notifyApiSuccess,
   OFFLINE_SENTENCE,
   offlineBannerActive,
+  pairStockInMoveId,
+  pairUndoBody,
+  pairUndoCopy,
+  pairUndoHideLine,
+  previewReshelves,
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
   raiseAuthNotConfiguredBanner,
   raiseOfflineBanner,
+  readOnHand,
   REPORT_TOO_LARGE_SENTENCE,
+  scanReportsNothingOnHand,
   SERVER_ERROR_FALLBACK,
   serverNoticeText,
   shelfHasNothingOnHand,
   SIGN_IN_NOT_USED_SENTENCE,
   SIGN_IN_REQUIRED_SENTENCE,
+  skippedNothingOnHandBanner,
   SYNC_TOKEN_INVALID_SENTENCE,
   UnreachableError,
   unreachableFrom,
   UPDATING_SENTENCE,
   UPDATING_STATUS,
   inlineFailure,
+  type BackfillCommitResponse,
   type BatchCommitResponse,
+  type ScanListEntry,
+  type UndoPreview,
 } from './contract';
 
 const oneUnnamed = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
@@ -386,6 +407,270 @@ describe('nothing on hand copy', () => {
     { name: 'one on hand', onHand: 1, empty: false },
   ])('$name', ({ onHand, empty }) => {
     expect(shelfHasNothingOnHand(onHand)).toBe(empty);
+  });
+
+  it.each([
+    { name: 'no units', count: 0, body: 'Stockbot thinks you have none. If you had 0 anyway, this adds them and takes them out in one step.' },
+    { name: 'one unit', count: 1, body: 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.' },
+    { name: 'two units', count: 2, body: 'Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.' },
+    { name: 'four units', count: 4, body: 'Stockbot thinks you have none. If you had 4 anyway, this adds them and takes them out in one step.' },
+  ])('body for $name', ({ count, body }) => {
+    expect(nothingOnHandBody(count)).toBe(body);
+  });
+
+  it.each([
+    { n: 0, line: '0 with nothing on hand are still in the queue.' },
+    { n: 1, line: '1 with nothing on hand is still in the queue.' },
+    { n: 2, line: '2 with nothing on hand are still in the queue.' },
+  ])('still queued $n', ({ n, line }) => {
+    expect(nothingOnHandStillQueued(n)).toBe(line);
+  });
+
+  it.each([
+    { name: 'onHand 0', onHand: 0 as number | undefined, direction: 'stock_out' as const, offer: true },
+    { name: 'onHand 3', onHand: 3 as number | undefined, direction: 'stock_out' as const, offer: false },
+    { name: 'omitted on a stock-out', onHand: undefined, direction: 'stock_out' as const, offer: false },
+    { name: 'omitted on a stock-in', onHand: undefined, direction: 'stock_in' as const, offer: false },
+  ])('$name', ({ onHand, direction, offer }) => {
+    const entry: ScanListEntry = {
+      id: 'scan-row',
+      userId: 'user-1',
+      barcode: '111',
+      scannedAt: '2026-10-18T16:00:00.000Z',
+      direction,
+      unitCount: 1,
+      expiresAt: null,
+      status: 'pending',
+      productId: 'prod-row',
+      committedAt: null,
+      createdAt: '2026-10-18T16:00:00.000Z',
+      ...(onHand === undefined ? {} : { onHand }),
+    };
+    expect(scanReportsNothingOnHand(entry)).toBe(offer);
+  });
+
+  it.each([
+    {
+      name: 'one taken out and one still queued',
+      takenOut: 1,
+      stillQueued: 1,
+      line: '1 taken out. 1 with nothing on hand is still in the queue. Each one has its own Add it and take it out button.',
+    },
+    {
+      name: 'two taken out and three still queued',
+      takenOut: 2,
+      stillQueued: 3,
+      line: '2 taken out. 3 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.',
+    },
+    { name: 'nothing taken out', takenOut: 0, stillQueued: 1, line: null },
+    { name: 'none still queued', takenOut: 1, stillQueued: 0, line: null },
+  ])('$name', ({ takenOut, stillQueued, line }) => {
+    expect(skippedNothingOnHandBanner(takenOut, stillQueued)).toBe(line);
+  });
+
+  const shelfRow = (): ScanListEntry => ({
+    id: 'scan-row',
+    userId: 'user-1',
+    barcode: '111',
+    scannedAt: '2026-10-18T16:00:00.000Z',
+    direction: 'stock_out',
+    unitCount: 1,
+    expiresAt: null,
+    status: 'pending',
+    productId: 'prod-row',
+    committedAt: null,
+    createdAt: '2026-10-18T16:00:00.000Z',
+  });
+
+  it.each([
+    { name: 'a word', onHand: '0' },
+    { name: 'a fraction', onHand: 0.5 },
+    { name: 'null', onHand: null },
+    { name: 'true', onHand: true },
+  ])('a malformed onHand ($name) is not an empty shelf', ({ onHand }) => {
+    expect(readOnHand({ onHand })).toBeUndefined();
+    expect(scanReportsNothingOnHand({ ...shelfRow(), onHand: readOnHand({ onHand }) })).toBe(false);
+    expect(scanReportsNothingOnHand({ ...shelfRow(), onHand: onHand as never })).toBe(false);
+  });
+});
+
+const hideLine = 'Sour cream will be hidden from your inventory again, since none are on hand.';
+const at = '2026-10-18T16:40:00.000Z';
+
+const effect = (reshelvesOnUndo: boolean, stockInMoveId = 'move-cream-in'): UndoPreview['effects'][number] => ({
+  itemId: 'item-sour-cream',
+  productId: 'prod-sour-cream',
+  name: 'Sour cream',
+  stockInMoveId,
+  stockOutMoveId: 'move-cream-out',
+  onHand: 0,
+  reshelvesOnUndo,
+});
+
+const previewRows: { name: string; preview: UndoPreview; hide: boolean }[] = [
+  { name: 'true', preview: { effects: [effect(true)] }, hide: true },
+  { name: 'false', preview: { effects: [effect(false)] }, hide: false },
+  { name: 'no matching effect', preview: { effects: [effect(true, 'move-other')] }, hide: false },
+  {
+    name: 'only one of two effects',
+    preview: {
+      effects: [
+        {
+          itemId: 'item-milk',
+          productId: 'prod-milk',
+          name: 'Milk',
+          stockInMoveId: 'move-milk-in',
+          stockOutMoveId: 'move-milk-out',
+          onHand: 1,
+          reshelvesOnUndo: true,
+        },
+        effect(true),
+      ],
+    },
+    hide: true,
+  },
+];
+
+describe('pair undo confirmation', () => {
+  it.each(previewRows)('shows the hide line only when the preview effect is $name', ({ preview, hide }) => {
+    expect(previewReshelves(preview, 'move-cream-in')).toBe(hide);
+    const copy = pairUndoCopy('Sour cream', hide ? true : undefined);
+    expect(copy.title).toBe('Undo "Add it and take it out"?');
+    expect(copy.body).toBe('This removes both the add and the take-out for Sour cream, as if neither happened.');
+    expect(copy.body).toBe(pairUndoBody('Sour cream'));
+    expect(copy.hideLine).toBe(hide ? hideLine : '');
+    if (hide) expect(copy.hideLine).toBe(pairUndoHideLine('Sour cream'));
+    expect(copy.confirm).toBe('Undo');
+    expect(copy.cancel).toBe('Cancel');
+    expect(copy.body).not.toMatch(/\d/);
+    expect(`${copy.body} ${copy.hideLine}`).not.toMatch(/pace|history|unit/i);
+  });
+
+  it('leaves the hide line out when the preview never arrives', () => {
+    expect(previewReshelves(undefined, 'move-cream-in')).toBe(false);
+    expect(pairUndoCopy('Sour cream', undefined).hideLine).toBe('');
+  });
+
+  const stockIn = { id: 'move-cream-in', source: 'backfill', at, productId: 'prod-sour' };
+  const stockOut = { id: 'move-cream-out', source: 'scan', at, productId: 'prod-sour' };
+  const pairMoves = [stockOut, stockIn];
+
+  it.each([
+    { name: 'the stock-in row', move: stockIn, moves: pairMoves, id: 'move-cream-in' },
+    { name: 'the paired stock-out', move: stockOut, moves: pairMoves, id: 'move-cream-in' },
+    {
+      name: 'a different product',
+      move: { id: 'move-other-out', source: 'scan', at, productId: 'prod-other' },
+      moves: pairMoves,
+      id: 'move-other-out',
+    },
+    {
+      name: 'a different time',
+      move: { id: 'move-later-out', source: 'scan', at: '2026-10-19T16:40:00.000Z', productId: 'prod-sour' },
+      moves: pairMoves,
+      id: 'move-later-out',
+    },
+  ])('previews the backfill stock-in id for $name', ({ move, moves, id }) => {
+    expect(pairStockInMoveId(move, moves)).toBe(id);
+  });
+
+  it.each([
+    {
+      name: 'the stock-out id of this move',
+      effectId: { stockInMoveId: 'move-other', stockOutMoveId: 'move-cream-in' },
+      reshelvesOnUndo: true,
+      hide: true,
+    },
+    {
+      name: 'a different move',
+      effectId: { stockInMoveId: 'move-other', stockOutMoveId: 'move-else' },
+      reshelvesOnUndo: true,
+      hide: false,
+    },
+    {
+      name: 'this move when the undo does not re-shelve',
+      effectId: { stockInMoveId: 'move-cream-in', stockOutMoveId: 'move-cream-out' },
+      reshelvesOnUndo: false,
+      hide: false,
+    },
+  ])('matches the preview effect for $name', ({ effectId, reshelvesOnUndo, hide }) => {
+    expect(previewReshelves({
+      effects: [{
+        itemId: 'item-sour-cream',
+        productId: 'prod-sour-cream',
+        name: 'Sour cream',
+        onHand: 0,
+        reshelvesOnUndo,
+        ...effectId,
+      }],
+    }, 'move-cream-in')).toBe(hide);
+  });
+});
+
+const failureKinds: { code: string | undefined; kind: string }[] = [
+  { code: CODE_PRODUCT_UNRESOLVED, kind: 'define' },
+  { code: CODE_UNITS_ON_HAND, kind: 'stock-out' },
+  { code: CODE_NOT_PENDING, kind: 'reload' },
+  { code: CODE_SCAN_NOT_FOUND, kind: 'reload' },
+  { code: CODE_NOT_STOCK_OUT, kind: 'sentence' },
+  { code: CODE_DIRECTION_UNSET, kind: 'sentence' },
+  { code: CODE_NONE_ON_HAND, kind: 'sentence' },
+  { code: CODE_INTERNAL, kind: 'sentence' },
+  { code: 'anything-else', kind: 'sentence' },
+  { code: undefined, kind: 'sentence' },
+];
+
+const backfillCommit: BackfillCommitResponse = {
+  removed: 2,
+  backfilled: 2,
+  itemId: 'item-sour-cream',
+  backfill: {
+    stockInMoveId: 'move-cream-in',
+    stockOutMoveId: 'move-cream-out',
+  },
+};
+
+describe('backfill commit response', () => {
+  it('returns the five fields, with the in move then the out move', () => {
+    expect(backfillCommit).toEqual({
+      removed: 2,
+      backfilled: 2,
+      itemId: 'item-sour-cream',
+      backfill: {
+        stockInMoveId: 'move-cream-in',
+        stockOutMoveId: 'move-cream-out',
+      },
+    });
+    expect(Object.keys(backfillCommit)).toEqual(['removed', 'backfilled', 'itemId', 'backfill']);
+    expect(Object.keys(backfillCommit.backfill)).toEqual(['stockInMoveId', 'stockOutMoveId']);
+  });
+});
+
+describe('batch commit response', () => {
+  it('matches the partial stock-out body and never claims a backfill', () => {
+    const body: BatchCommitResponse = {
+      updatedCount: 4,
+      committedIds: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
+      failedIds: ['scan-batch-none'],
+      failedReasons: ['Nothing on hand to take out.'],
+      failedCodes: ['none_on_hand'],
+      stockOutCounts: {
+        'scan-batch-full': { removedCount: 2, requestedCount: 2 },
+        'scan-batch-partial': { removedCount: 1, requestedCount: 3 },
+      },
+    };
+    expect(body.failedCodes).toEqual(['none_on_hand']);
+    expect(body).not.toHaveProperty('backfill');
+    expect(body).not.toHaveProperty('backfilled');
+    expect(body).not.toHaveProperty('removed');
+    expect(JSON.stringify(body)).not.toContain('stockInMoveId');
+    expect(JSON.stringify(body)).not.toContain('stockOutMoveId');
+  });
+});
+
+describe('backfill failure kind', () => {
+  it.each(failureKinds)('$code is $kind', ({ code, kind }) => {
+    expect(backfillFailureKind(code)).toBe(kind);
   });
 });
 

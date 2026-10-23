@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -12,6 +14,7 @@ type ScanUpdateHandler struct {
 		UpdateScanEntry(ctx context.Context, id string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *scan.ScanStatus) error
 		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
 		ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error
+		LinkStockOutProduct(ctx context.Context, scanID, productID string) (int, error)
 	}
 }
 
@@ -58,6 +61,21 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		if entry == nil {
 			return nil, NotFound("scan entry not found")
 		}
+		// productId with pending is the link. Any other status is a second change.
+		if req.Body.Status != nil && *req.Body.Status != scan.Pending {
+			return nil, &HTTPError{
+				Code:      http.StatusBadRequest,
+				Message:   inventory.ConflictingFieldsMessage,
+				ErrorCode: inventory.CodeConflictingFields,
+			}
+		}
+
+		// A stock-out link writes the barcode override and the household item
+		// without stocking anything. Flagged stock-in stays on ResolveFlaggedEntry.
+		if entry.Direction != nil && *entry.Direction == scan.StockOut &&
+			(entry.Status == scan.Pending || entry.Status == scan.Flagged) {
+			return h.linkStockOut(req)
+		}
 
 		// If the entry is currently flagged and we're setting a productID,
 		// use ResolveFlaggedEntry which handles barcode override creation
@@ -100,4 +118,36 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	}
 
 	return entry, nil
+}
+
+func (h *ScanUpdateHandler) linkStockOut(req Request[updateScanRequest, updateScanPathParams]) (*scan.ScanEntry, error) {
+	onHand, err := h.Queue.LinkStockOutProduct(req.Context, req.PathParams.ID, *req.Body.ProductID)
+	if err != nil {
+		if _, _, ok := knownCommitFailure(err); ok {
+			return nil, commitClientError(err)
+		}
+		return nil, InternalError(err)
+	}
+	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
+		if err := h.Queue.UpdateScanEntry(
+			req.Context,
+			req.PathParams.ID,
+			req.Body.Direction,
+			req.Body.UnitCount,
+			req.Body.ExpiresAt,
+			nil,
+			nil,
+		); err != nil {
+			return nil, InternalError(err)
+		}
+	}
+	linked, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if linked == nil {
+		return nil, NotFound("scan entry not found")
+	}
+	linked.OnHand = &onHand
+	return linked, nil
 }

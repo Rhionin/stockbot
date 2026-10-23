@@ -14,7 +14,6 @@ const entry = (barcode: string): ScanEntry => ({
   expiresAt: null,
   status: 'qr',
   productId: null,
-  product: null,
   committedAt: null,
   createdAt: '2026-10-14T12:00:00Z',
 });

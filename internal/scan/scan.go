@@ -52,6 +52,12 @@ type ScanEntry struct {
 	GroupHint   *GroupHint `json:"groupHint,omitempty"`
 	CommittedAt *time.Time `json:"committedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// OnHand is the household's current shelf count. A link response sets it.
+	// The scan list sets it on a stock-out that already has an item: a shelved
+	// item is 0, and a removed unit is not counted. It is omitted when the
+	// product is unresolved, this household has no item, or the scan is not a
+	// stock-out. It is not stored on the scan row.
+	OnHand *int `json:"onHand,omitempty"`
 	// RemovedCount and RequestedCount are the stock-out figures stored when
 	// the scan first committed. Batch retry reads them. They are not scan JSON.
 	RemovedCount   *int `json:"-"`
@@ -251,7 +257,7 @@ func (r *Queue) GetScanEntry(ctx context.Context, id string) (*ScanEntry, error)
 		id,
 	)
 
-	entry, err := scanScanEntry(row)
+	entry, err := scanScanEntry(row, false)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -287,7 +293,7 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode stri
 		userID, barcode, nullableString(directionStr),
 	)
 
-	entry, err := scanScanEntry(row)
+	entry, err := scanScanEntry(row, false)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -299,16 +305,29 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode stri
 
 // ListScanEntries returns scan entries filtered by status and ordered by
 // scanned_at ascending (chronological order). If status is empty, all entries
-// are returned.
+// are returned. A linked stock-out carries the current on-hand count in this
+// same query. A shelved item counts as 0, which is what a stock-out commit
+// treats as nothing on hand.
 func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanStatus) ([]ScanEntry, error) {
 	query := `
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count,
+			CASE
+				WHEN se.direction = 'stock_out' AND i.id IS NOT NULL THEN
+					CASE WHEN i.shelved != 0 THEN 0 ELSE COALESCE(on_hand_counts.n, 0) END
+			END
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
+		LEFT JOIN items i ON i.user_id = se.user_id AND i.product_id = se.product_id
+		LEFT JOIN (
+			SELECT item_id, COUNT(*) AS n
+			FROM item_instances
+			WHERE removed_at IS NULL
+			GROUP BY item_id
+		) AS on_hand_counts ON on_hand_counts.item_id = i.id
 		WHERE se.user_id = ?`
 
 	args := []interface{}{userID}
@@ -328,7 +347,7 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 
 	var entries []ScanEntry
 	for rows.Next() {
-		entry, err := scanScanEntry(rows)
+		entry, err := scanScanEntry(rows, true)
 		if err != nil {
 			return nil, fmt.Errorf("ListScanEntries scan: %w", err)
 		}
@@ -548,15 +567,16 @@ type scanner interface {
 	Scan(dest ...interface{}) error
 }
 
-func scanScanEntry(row scanner) (*ScanEntry, error) {
+func scanScanEntry(row scanner, withOnHand bool) (*ScanEntry, error) {
 	var entry ScanEntry
 	var direction, productIDCol sql.NullString
 	var expiresAt, committedAt sql.NullTime
 	var removedCount, requestedCount sql.NullInt64
 	var productID, productName, productCategory, productUnitOfMeasure, productImageURL, productExternalSource sql.NullString
 	var packCount sql.NullInt64
+	var onHand sql.NullInt64
 
-	err := row.Scan(
+	dest := []any{
 		&entry.ID,
 		&entry.UserID,
 		&entry.Barcode,
@@ -577,8 +597,11 @@ func scanScanEntry(row scanner) (*ScanEntry, error) {
 		&productImageURL,
 		&productExternalSource,
 		&packCount,
-	)
-	if err != nil {
+	}
+	if withOnHand {
+		dest = append(dest, &onHand)
+	}
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 
@@ -602,6 +625,10 @@ func scanScanEntry(row scanner) (*ScanEntry, error) {
 	if requestedCount.Valid {
 		n := int(requestedCount.Int64)
 		entry.RequestedCount = &n
+	}
+	if onHand.Valid {
+		n := int(onHand.Int64)
+		entry.OnHand = &n
 	}
 
 	if productID.Valid {

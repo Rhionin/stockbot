@@ -24,6 +24,9 @@ type batchCommitRequest struct {
 	UnitCount    *int                `json:"unitCount,omitempty"`
 	ExpiresAt    *time.Time          `json:"expiresAt,omitempty"`
 	Commit       bool                `json:"commit"`
+	// Backfill is accepted and ignored. One batch flag cannot choose a
+	// backfill for some cards and a normal commit for the others.
+	Backfill bool `json:"backfill,omitempty"`
 }
 
 // stockOutCount is one committed stock-out. removedCount is how many units
@@ -191,6 +194,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				failures.fail(id, scan.ErrProductUnresolved)
 				continue
 			}
+			passCommitCheck()
 
 			var removed int
 			var commitErr error

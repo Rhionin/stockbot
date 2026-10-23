@@ -2,6 +2,7 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
+import type { ScanListEntry } from '../api/contract';
 
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 
@@ -111,21 +112,8 @@ export interface ScanGroupHint {
   name: string;
 }
 
-export interface ScanEntry {
-  id: string;
-  userId: string;
-  barcode: string;
-  scannedAt: string; // ISO 8601
-  direction: ScanDirection | null;
-  unitCount: number;
-  expiresAt: string | null;
-  status: ScanStatus;
-  productId: string | null;
-  product: ProductSummary | null;
-  groupHint?: ScanGroupHint;
-  committedAt: string | null;
-  createdAt: string;
-}
+// A scan list row is the contract shape, including optional onHand.
+export type ScanEntry = ScanListEntry;
 
 export interface Item {
   id: string;
@@ -195,7 +183,7 @@ export interface HistoryMove {
   direction: 'in' | 'out';
   quantity: number;
   at: string;
-  source: 'scan' | 'manual';
+  source: 'scan' | 'manual' | 'backfill';
   productId: string;
   productName: string;
 }
@@ -215,7 +203,7 @@ export interface LedgerMove {
   direction: 'in' | 'out';
   quantity: number;
   at: string;
-  source: 'scan' | 'manual';
+  source: 'scan' | 'manual' | 'backfill';
   productId: string;
   productName: string;
   imageUrl?: string;

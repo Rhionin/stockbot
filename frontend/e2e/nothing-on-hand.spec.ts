@@ -5,10 +5,21 @@ import { expect, test, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const shotDir = process.env.NOTHING_ON_HAND_SHOTS ?? join(tmpdir(), 'nothing-on-hand')
+const reviewDir = process.env.REVIEW_SHOTS
 mkdirSync(shotDir, { recursive: true })
+if (reviewDir !== undefined) mkdirSync(reviewDir, { recursive: true })
+
+const keepReview = (slug: 'offer' | 'banner' | 'toast', width: number, scheme: string): boolean => {
+  if (scheme === 'dark') return slug === 'offer' && width === 390
+  if (slug === 'offer') return width === 390 || width === 1280
+  return width === 390 || width === 1280
+}
 
 const title = 'Nothing on hand to take out.'
 const skipTwo = 'Confirm skips the 2 with nothing on hand.'
+const bodyOne = 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'
+const banner = '1 taken out. 2 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.'
+const added = 'Added and taken out.'
 
 const settle = async (page: Page) => {
   await expect(page.locator('.scan-entry-card--changed-animated, .scan-entry-card--just-captured')).toHaveCount(0)
@@ -81,7 +92,14 @@ for (const shot of shots) {
     await expect(missingCard).toBeVisible()
     await expect(emptyCard).toBeVisible()
     await expect(missingCard.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
-    await expect(missingCard.getByRole('button', { name: 'Remove' })).toBeVisible()
+    await expect(missingCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
+    await expect(missingCard.getByText(bodyOne)).toBeVisible()
+    await expect(missingCard.getByRole('button', { name: 'Increase unit count' })).toBeEnabled()
+    await expect(missingCard.getByRole('button', { name: 'Decrease unit count' })).toBeDisabled()
+    await expect(missingCard.getByRole('button', { name: 'Remove' })).toHaveCount(0)
+    const offerBox = await missingCard.getByRole('button', { name: 'Add it and take it out' }).boundingBox()
+    const cardBox = await missingCard.boundingBox()
+    expect(offerBox && cardBox && offerBox.width > cardBox.width * 0.55).toBeTruthy()
     await expect(normal.getByRole('button', { name: 'Confirm' })).toBeVisible()
     await expect(page.getByText('2 with nothing on hand', { exact: true })).toBeVisible()
     await expect(page.getByText(skipTwo)).toBeVisible()
@@ -91,5 +109,57 @@ for (const shot of shots) {
       path: `${shotDir}/queue-${shot.width}-${shot.scheme}.png`,
       fullPage: true,
     })
+    if (reviewDir !== undefined && keepReview('offer', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `offer-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
+
+    if (shot.width === 390) {
+      await page.locator('.scan-page-queue').evaluate((node) => {
+        const queue = node as HTMLElement
+        const filler = document.createElement('div')
+        filler.setAttribute('data-scroll-spacer', 'true')
+        filler.style.height = '1600px'
+        queue.append(filler)
+        queue.scrollTop = queue.scrollHeight
+      })
+    }
+    await page.getByRole('button', { name: 'Confirm 1 selected scans' }).click()
+    await expect(page.locator('.scan-nothing-skipped')).toHaveText(banner)
+    if (shot.width === 390) {
+      await expect(page.locator('.scan-nothing-skipped')).toBeInViewport()
+      const toolbar = await page.locator('.scan-page-tools').boundingBox()
+      const bannerBox = await page.locator('.scan-nothing-skipped').boundingBox()
+      expect(toolbar !== null && bannerBox !== null && bannerBox.y >= toolbar.y + toolbar.height - 1).toBe(true)
+      await page.locator('[data-scroll-spacer]').evaluate((node) => node.remove())
+    }
+    await expect(missingCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
+    await settle(page)
+    await page.screenshot({
+      path: `${shotDir}/banner-${shot.width}-${shot.scheme}.png`,
+      fullPage: true,
+    })
+    if (reviewDir !== undefined && keepReview('banner', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `banner-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
+
+    await missingCard.getByRole('button', { name: 'Add it and take it out' }).click()
+    await expect(page.locator('.restock-toast').filter({ hasText: added })).toBeVisible()
+    await settle(page)
+    await page.screenshot({
+      path: `${shotDir}/toast-${shot.width}-${shot.scheme}.png`,
+      fullPage: true,
+    })
+    if (reviewDir !== undefined && keepReview('toast', shot.width, shot.scheme)) {
+      await page.screenshot({
+        path: join(reviewDir, `toast-${shot.width}-${shot.scheme}.png`),
+        fullPage: true,
+      })
+    }
   })
 }

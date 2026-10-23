@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
@@ -286,7 +286,9 @@ describe('partial line transitions', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
       fireEvent.click(screen.getByRole('button', { name: 'Confirm 1 selected scans' }));
     } else if (trigger === 'remove') {
-      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      const card = screen.getByRole('article', { name: /Scan scan-keep/ });
+      fireEvent.click(within(card).getByRole('button', { name: 'More' }));
+      fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
     } else if (trigger === 'typed') {
       const input = screen.getByLabelText('Barcode scanner input');
       fireEvent.change(input, { target: { value: '444444444444' } });

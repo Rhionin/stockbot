@@ -23,7 +23,9 @@ const visibleToasts = (): HTMLElement[] =>
 
 // The queue pads by whichever toast reaches highest, so a second, taller
 // toast still leaves room to scroll the last card clear.
-const applyToastClearance = () => {
+export function applyToastClearance(): void {
+  // A close timer can fire after the document is gone, such as a test teardown.
+  if (typeof document === 'undefined') return;
   const toasts = visibleToasts();
   if (toasts.length === 0) {
     document.documentElement.style.removeProperty(CLEARANCE_VAR);
@@ -43,13 +45,13 @@ const applyToastClearance = () => {
   for (const toast of toasts) clearanceObserver.observe(toast);
 };
 
-export function showUndo(title: string, detail: string, onUndo: () => void): void;
-export function showUndo(toast: UndoToast): void;
+export function showUndo(title: string, detail: string, onUndo: () => void): string;
+export function showUndo(toast: UndoToast): string;
 export function showUndo(
   titleOrToast: string | UndoToast,
   detail?: string,
   onUndo?: () => void,
-): void {
+): string {
   const toast: UndoToast = typeof titleOrToast === 'string'
     ? { title: titleOrToast, detail: detail ?? '', onUndo }
     : titleOrToast;
@@ -89,4 +91,10 @@ export function showUndo(
       </span>
     ),
   });
+  return id;
+}
+
+export function dismissUndo(id: string): void {
+  if (id === '') return;
+  notifications.hide(id);
 }

@@ -403,6 +403,7 @@ func newAPIMux(
 	scanHistoryHandler := &ScanHistoryHandler{Queue: scanQueue}
 	scanUpdateHandler := &ScanUpdateHandler{Queue: scanQueue}
 	scanCommitHandler := &ScanCommitHandler{Queue: scanQueue}
+	scanLinkSuggestionsHandler := &ScanLinkSuggestionsHandler{Queue: scanQueue}
 	scanBatchCommitHandler := &ScanBatchCommitHandler{Queue: scanQueue}
 
 	apiMux.HandleFunc("POST /api/scans", HandleJSON(scanCreateHandler.Handle))
@@ -410,6 +411,7 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/scans/history", HandleJSON(scanHistoryHandler.Handle))
 	apiMux.HandleFunc("PATCH /api/scans/{id}", HandleJSON(scanUpdateHandler.Handle))
 	apiMux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON(scanCommitHandler.Handle))
+	apiMux.HandleFunc("GET /api/scans/{id}/link-suggestions", HandleJSON(scanLinkSuggestionsHandler.Handle))
 	apiMux.HandleFunc("POST /api/scans/batch-commit", HandleJSON(scanBatchCommitHandler.Handle))
 
 	// Inventory handlers
@@ -452,6 +454,7 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/items/{itemId}/history", HandleJSON(historyHandler.Product))
 	apiMux.HandleFunc("GET /api/groups/{groupId}/history", HandleJSON(historyHandler.Group))
 	apiMux.HandleFunc("PATCH /api/moves/{id}", HandleJSON(historyHandler.SetQuantity))
+	apiMux.HandleFunc("GET /api/moves/{id}/preview", HandleJSON(historyHandler.PreviewUndo))
 	apiMux.HandleFunc("DELETE /api/moves/{id}", HandleJSON(historyHandler.Undo))
 
 	apiMux.HandleFunc("GET /api/settings/supply", HandleJSON(supplySettingsGetHandler.Handle))

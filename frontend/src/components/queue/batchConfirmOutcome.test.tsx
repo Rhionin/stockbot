@@ -189,6 +189,7 @@ interface OutcomeCase {
   pendingSequence?: PendingSet[];
   holdSecondBatch?: boolean;
   bannerGone?: boolean;
+  skippedLine?: string;
   batches?: unknown[];
   thenSee?: string[];
   thenGone?: string[];
@@ -230,6 +231,7 @@ interface OutcomeCase {
   fixed?: boolean;
   toast?: string;
   keepsUndo?: boolean;
+  backfillOn?: string[];
   kept?: ScanEntry[];
   visibleCards?: number;
   confirmCount?: number;
@@ -344,6 +346,7 @@ const cases: OutcomeCase[] = [
     amberBarcodes: ['111'],
     instanceFetches: 1,
     noSearchOn: ['111'],
+    backfillOn: ['111'],
   },
   {
     name: 'a failed single commit shows the server sentence in the toast',
@@ -357,6 +360,7 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
     amberBarcodes: ['111'],
     noSearchOn: ['111'],
+    backfillOn: ['111'],
   },
   {
     name: 'a 400 without a code still shows the server message',
@@ -749,13 +753,13 @@ const cases: OutcomeCase[] = [
     cardWithoutAlert: '111',
   },
   {
-    name: 'an absent product keeps Confirm',
+    name: 'a known product missing from the list stays confirmable',
     action: 'view',
     pendingAfter: 'both',
     wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
     visible: ['Milk'],
-    absent: ['No inventory item is available', 'Nothing on hand to take out.', "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan."],
+    absent: ['No inventory item is available', 'Not in your pantry', 'Nothing on hand to take out.', 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
@@ -777,25 +781,23 @@ const cases: OutcomeCase[] = [
     cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
   },
   {
-    name: 'an absent product is not an amber card',
+    name: 'a listed product with stock stays confirmable',
     action: 'view',
     pendingAfter: 'both',
-    wiped: true,
-    household: [householdItem('oats', 'Oats', 1)],
+    household: [householdItem('milk', 'Milk', 2), householdItem('oats', 'Oats', 1)],
     visible: ['Milk'],
     absent: ['No inventory item is available', 'Nothing on hand to take out.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },
   {
-    name: 'a listed zero is amber before anyone confirms it',
+    name: 'a listed zero without onHand stays confirmable',
     action: 'view',
     pendingAfter: 'both',
     wiped: true,
     household: [householdItem('milk', 'Milk', 0), householdItem('oats', 'Oats', 1)],
-    visible: ['Nothing on hand to take out.'],
-    absent: ['No inventory item is available'],
-    amberBarcodes: ['111'],
+    visible: ['Milk'],
+    absent: ['Nothing on hand to take out.', 'No inventory item is available'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
     cardWithoutAlert: '111',
@@ -1064,7 +1066,7 @@ const partialBatchRows = (): OutcomeCase[] => {
       visible: ['Nothing on hand to take out.'],
       absent: [wasLine, wereLine, manyLine, 'was taken out', 'were taken out', 'cards had fewer', fallback],
       once: ['Nothing on hand to take out.'],
-      bannerGone: true,
+      skippedLine: '2 taken out. 1 with nothing on hand is still in the queue. Each one has its own Add it and take it out button.',
       amberBarcodes: ['scan-batch-none'],
       pendingBarcodes: ['scan-batch-none'],
       goneBarcodes: ['scan-batch-full', 'scan-batch-partial', 'scan-batch-in'],
@@ -1269,9 +1271,11 @@ describe('scan commit outcomes', () => {
     let instanceFetches = 0;
     let inventoryFetches = 0;
     const commitBodies: { linkProductId?: string }[] = [];
+    const batchRequests: Record<string, unknown>[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('batch-commit') && init?.method === 'POST') {
+        batchRequests.push(JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>);
         const round = batchRound;
         pending = row.pendingSequence?.[round] ?? row.pendingAfter;
         const body = row.batches?.[round] ?? row.batch ?? {};
@@ -1322,6 +1326,9 @@ describe('scan commit outcomes', () => {
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) {
         inventoryFetches += 1;
         return Promise.resolve(jsonResponse(householdFor(row)));
+      }
+      if (url.startsWith('/api/products/lookup')) {
+        return Promise.resolve(jsonResponse({ product: null, source: '' }));
       }
       if (url === '/api/products' || url.startsWith('/api/products?')) {
         return Promise.resolve(jsonResponse(row.catalog ?? []));
@@ -1420,6 +1427,9 @@ describe('scan commit outcomes', () => {
     }
     if (row.action === 'batch-then-remove') {
       const card = screen.getByRole('article', { name: scanName(row.followBarcode ?? '') });
+      if (within(card).queryByRole('button', { name: 'Remove' }) === null) {
+        fireEvent.click(within(card).getByRole('button', { name: 'More' }));
+      }
       fireEvent.click(within(card).getByRole('button', { name: 'Remove' }));
     }
     if (row.action === 'batch-then-scan') {
@@ -1505,6 +1515,10 @@ describe('scan commit outcomes', () => {
         expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
         expect(document.querySelector('.scan-batch-banner')).toBeNull();
       }
+      if (row.skippedLine !== undefined) {
+        const skipped = document.querySelector('.scan-nothing-skipped');
+        expect(skipped?.textContent?.replace(/\s+/g, ' ').trim()).toBe(row.skippedLine);
+      }
       if (row.instanceFetches !== undefined) {
         expect(instanceFetches).toBe(row.instanceFetches);
       }
@@ -1577,16 +1591,27 @@ describe('scan commit outcomes', () => {
       }
     });
 
+    if (String(row.action).startsWith('batch')) {
+      expect(batchRequests.length).toBeGreaterThan(0);
+      for (const request of batchRequests) {
+        expect(request).not.toHaveProperty('backfill');
+        expect(Object.keys(request)).not.toContain('backfill');
+      }
+      expect(screen.queryByText('Added and taken out.')).not.toBeInTheDocument();
+    }
+
     const amberBarcodes = new Set(row.amberBarcodes ?? []);
+    const backfillFor = new Set([...(row.backfillOn ?? []), ...(row.amberBarcodes ?? [])]);
     for (const barcode of row.pendingBarcodes) {
       const card = screen.getByRole('article', { name: scanName(barcode) });
-      if (amberBarcodes.has(barcode)) {
-        expect(card).toHaveClass('scan-entry-card--nothing');
+      if (backfillFor.has(barcode)) {
+        expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
         expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
-        expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+        if (amberBarcodes.has(barcode)) expect(card).toHaveClass('scan-entry-card--nothing');
       } else {
         expect(card).not.toHaveClass('scan-entry-card--nothing');
         expect(within(card).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+        expect(within(card).queryByRole('button', { name: 'Add it and take it out' })).not.toBeInTheDocument();
       }
     }
     if (row.cardReason) {

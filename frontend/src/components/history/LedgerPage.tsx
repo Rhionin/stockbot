@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActionIcon, Alert, Button, Group, Loader, Menu, Modal, Stack, TextInput, Title,
+  ActionIcon, Alert, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { inlineFailure, pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
 import type { LedgerMove } from '../../types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
@@ -11,10 +12,24 @@ import {
 import { PulseChart, type PulseInspect } from './PulseChart';
 import '../groups/groups.css';
 import '../inventory/shelf.css';
-import { inlineFailure } from '../../api/contract';
+import { usePairHideLine } from './pairUndoPreview';
 import './history.css';
 
 type Direction = 'all' | 'in' | 'out';
+
+// The Used response is only stock-outs, so the backfill stock-in that locks
+// the matching use is loaded with the same search and no direction.
+async function readLedger(direction: Direction, query: string) {
+  const trimmed = query.trim();
+  const q = trimmed === '' ? undefined : trimmed;
+  const next = await getHouseholdHistory({
+    direction: direction === 'all' ? undefined : direction,
+    q,
+  });
+  if (direction !== 'out') return { moves: next.moves, lockMoves: next.moves, setupAt: next.setupAt };
+  const wider = await getHouseholdHistory({ q });
+  return { moves: next.moves, lockMoves: wider.moves, setupAt: next.setupAt };
+}
 
 const filters: { id: Direction; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -34,6 +49,7 @@ function KebabIcon() {
 
 export function LedgerPage() {
   const [moves, setMoves] = useState<LedgerMove[] | null>(null);
+  const [lockMoves, setLockMoves] = useState<LedgerMove[]>([]);
   const [setupAt, setSetupAt] = useState<string | undefined>();
   const [inspectedKey, setInspectedKey] = useState<string | null>(null);
   const [direction, setDirection] = useState<Direction>('all');
@@ -50,13 +66,10 @@ export function LedgerPage() {
     void Promise.resolve().then(async () => {
       if (!active) return;
       try {
-        const trimmed = query.trim();
-        const next = await getHouseholdHistory({
-          direction: direction === 'all' ? undefined : direction,
-          q: trimmed === '' ? undefined : trimmed,
-        });
+        const next = await readLedger(direction, query);
         if (!active) return;
         setMoves(next.moves);
+        setLockMoves(next.lockMoves);
         setSetupAt(next.setupAt);
         setError('');
       } catch (requestError) {
@@ -72,12 +85,9 @@ export function LedgerPage() {
   }, [direction, query]);
 
   const reload = async () => {
-    const trimmed = query.trim();
-    const next = await getHouseholdHistory({
-      direction: direction === 'all' ? undefined : direction,
-      q: trimmed === '' ? undefined : trimmed,
-    });
+    const next = await readLedger(direction, query);
     setMoves(next.moves);
+    setLockMoves(next.lockMoves);
     setSetupAt(next.setupAt);
   };
 
@@ -122,7 +132,13 @@ export function LedgerPage() {
 
   const now = new Date();
   const groups = groupMovesByDay(moves ?? [], now);
-  const undo = undoing ? undoCopy(undoing.direction, undoing.quantity) : null;
+  const pair = undoing !== null && quantityLocked(undoing, lockMoves);
+  const stockInMoveId = pair && undoing !== null ? pairStockInMoveId(undoing, lockMoves) : '';
+  const hideLine = usePairHideLine(stockInMoveId);
+  const pairCopy = pair && undoing !== null
+    ? pairUndoCopy(undoing.productName, hideLine ? true : undefined)
+    : null;
+  const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
   const showEmpty = !loading && error === '' && moves !== null && groups.length === 0;
 
   return (
@@ -194,9 +210,11 @@ export function LedgerPage() {
                           </ActionIcon>
                         </Menu.Target>
                         <Menu.Dropdown>
-                          <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
-                            Change quantity
-                          </Menu.Item>
+                          {!quantityLocked(move, lockMoves) && (
+                            <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
+                              Change quantity
+                            </Menu.Item>
+                          )}
                           <Menu.Item onClick={() => { setError(''); setUndoing(move); }}>
                             {move.direction === 'in' ? 'Undo this stock in' : 'Undo this use'}
                           </Menu.Item>
@@ -236,16 +254,30 @@ export function LedgerPage() {
       <Modal
         opened={undoing !== null}
         onClose={() => { if (!pending) setUndoing(null); }}
-        title={undo?.title ?? 'Undo this move?'}
+        title={pairCopy?.title ?? undo?.title ?? 'Undo this move?'}
         closeButtonProps={{ 'aria-label': 'Close' }}
       >
-        {undo && (
+        {(pairCopy ?? undo) && (
           <Stack gap="sm">
-            <p className="ledger-empty">{undo.body}</p>
+            <p className="ledger-empty">{(pairCopy ?? undo)?.body}</p>
+            <Collapse
+              expanded={pairCopy !== null && pairCopy.hideLine !== ''}
+              keepMounted
+              keepMountedMode="display-none"
+              transitionDuration={0}
+            >
+              {undoing !== null && pair && (
+                <p className="ledger-empty">{pairUndoHideLine(undoing.productName)}</p>
+              )}
+            </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
-              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>Keep it</Button>
-              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>{undo.confirm}</Button>
+              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>
+                {pairCopy?.cancel ?? 'Keep it'}
+              </Button>
+              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>
+                {(pairCopy ?? undo)?.confirm}
+              </Button>
             </Group>
           </Stack>
         )}

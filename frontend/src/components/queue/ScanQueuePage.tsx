@@ -4,8 +4,8 @@ import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
-import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, shelfHasNothingOnHand, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
-import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
+import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, scanReportsNothingOnHand, skippedNothingOnHandBanner, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '../../api/contract';
+import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -30,7 +30,7 @@ interface NothingPin {
 const reconcilePins = (
   current: Map<string, NothingPin>,
   items: InventoryItem[],
-  listed: ScanEntry[],
+  listed: ScanListEntry[],
 ): Map<string, NothingPin> => {
   if (current.size === 0) return current;
   const counts = new Map(items.map((item) => [item.item.productId, item.instanceCount]));
@@ -64,7 +64,7 @@ export interface ScanQueuePageProps {
 }
 
 export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePageProps) => {
-  const [entries, setEntries] = useState<ScanEntry[]>([]);
+  const [entries, setEntries] = useState<ScanListEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryReady, setInventoryReady] = useState(false);
   const [pinnedNone, setPinnedNone] = useState<Map<string, NothingPin>>(() => new Map());
@@ -79,6 +79,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
   const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState<string | null>(null);
+  const [batchTakenOut, setBatchTakenOut] = useState(0);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
@@ -111,6 +112,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     if (changed) {
       setSelectedIds([]);
       setPartialLine(null);
+      setBatchTakenOut(0);
     }
   }, []);
 
@@ -119,6 +121,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     scannerModeRef.current = mode;
     setScannerModeState(mode);
     setPartialLine(null);
+    setBatchTakenOut(0);
   }, []);
 
   const stockInCount = useMemo(() => getEntriesForView(entries, 'stock_in').length, [entries]);
@@ -176,7 +179,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
         }
         return changed ? next : current;
       });
-      if (!keepPartialLine) setPartialLine(null);
+      if (!keepPartialLine) {
+        setPartialLine(null);
+        setBatchTakenOut(0);
+      }
       setError('');
       setQueueLoaded(true);
       clearOfflineNotice();
@@ -211,6 +217,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   useEffect(() => () => {
     window.clearTimeout(captureHighlightTimer.current);
     setPartialLine(null);
+    setBatchTakenOut(0);
   }, []);
 
   useEffect(() => {
@@ -273,7 +280,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     const eventSource = new EventSource('/api/events');
     trackEventSource(eventSource);
     eventSource.addEventListener('scan', (message) => {
-      const scanEntry = JSON.parse((message as MessageEvent).data) as ScanEntry;
+      const scanEntry = JSON.parse((message as MessageEvent).data) as ScanListEntry;
       if (scanEntry.direction === 'stock_in' && scanEntry.productId !== null && scanEntry.status === 'committed') {
         releasePinsRef.current(new Set([scanEntry.productId]));
       }
@@ -324,15 +331,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     const ids = new Set<string>();
     for (const entry of entries) {
       if (entry.status !== 'pending' || entry.direction !== 'stock_out' || entry.productId === null) continue;
-      if (pinnedNone.has(entry.id)) {
-        ids.add(entry.id);
-        continue;
-      }
-      if (!inventoryReady) continue;
-      if (shelfHasNothingOnHand(onHandByProductId.get(entry.productId))) ids.add(entry.id);
+      if (pinnedNone.has(entry.id) || scanReportsNothingOnHand(entry)) ids.add(entry.id);
     }
     return ids;
-  }, [entries, inventoryReady, onHandByProductId, pinnedNone]);
+  }, [entries, pinnedNone]);
 
   const eligibleEntries = useMemo(
     () => viewEntries.filter((entry) => isBatchEligible(entry) && !nothingOnHandIds.has(entry.id)),
@@ -346,6 +348,14 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     ? confirmSkipsNothingOnHand(skippedBlocked)
     : null;
   const blockingFailures = [...failureById.values()].filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+  const skippedBanner = skippedNothingOnHandBanner(batchTakenOut, nothingOnHandIds.size);
+  const queueRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (skippedBanner === null) return;
+    const queue = queueRef.current;
+    if (queue === null) return;
+    queue.scrollTop = 0;
+  }, [skippedBanner]);
 
   const rememberPin = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
@@ -366,7 +376,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
 
   const releasePins = useCallback((productIds: ReadonlySet<string>) => {
     if (productIds.size === 0) return;
-    const stocked = (entry: ScanEntry | undefined) => (
+    const stocked = (entry: ScanListEntry | undefined) => (
       entry?.productId !== null && entry?.productId !== undefined && productIds.has(entry.productId)
     );
     setPinnedNone((current) => {
@@ -450,6 +460,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const captureBarcode = async (barcode: string) => {
     setScanError('');
     setPartialLine(null);
+    setBatchTakenOut(0);
     const targetMode = classifyControlBarcode(barcode);
     if (targetMode !== null) {
       // Show the switch immediately. The mode write and the scanner_mode event
@@ -507,6 +518,11 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       const name = entry.product?.name;
       if (name !== undefined && name !== '') names[entry.id] = name;
     }
+    const committed = new Set(response.committedIds ?? []);
+    const takenOut = entries.filter((entry) =>
+      committed.has(entry.id) && entry.direction === 'stock_out',
+    ).length;
+    setBatchTakenOut(takenOut);
     setPartialLine(formatPartialRemoval(response, names));
     void loadQueue(true);
   };
@@ -515,6 +531,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   // confirm retires it. A lock or a full disk stays until that confirm succeeds.
   const beginSingleConfirm = () => {
     setPartialLine(null);
+    setBatchTakenOut(0);
   };
 
   // A confirm that succeeds, including this card on its own, makes a lock or a
@@ -633,7 +650,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             />
             <BatchReviewPanel
               selectedIds={selectedIds.filter((id) => viewEntryIds.has(id) && !nothingOnHandIds.has(id))}
-              onStart={() => setPartialLine(null)}
+              onStart={() => {
+                setPartialLine(null);
+                setBatchTakenOut(0);
+              }}
               onComplete={rememberBatchOutcome}
             />
             {skipLine !== null && (
@@ -645,13 +665,23 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           </Group>
         )}
       </div>
-      <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
+      <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries" ref={queueRef}>
         <ServerNoticeBanner
           shell
           text={batchFailureBannerText(blockingFailures, confirmedCount) ?? ''}
           partial={partialLine ?? ''}
         />
-        {/* Amber cards carry their own message. The teal banner is only the partial line, and only when there is one. */}
+        {!offline && blockingFailures.length === 0 && skippedBanner !== null && (
+          <Text
+            role="status"
+            className="scan-batch-banner scan-batch-banner--success scan-nothing-skipped"
+            style={{ flexShrink: 0 }}
+          >
+            <strong>{`${batchTakenOut} taken out.`}</strong>
+            {skippedBanner.slice(`${batchTakenOut} taken out.`.length)}
+          </Text>
+        )}
+        {/* Amber cards carry their own message. The teal banner is the partial line, and the skipped-batch line above it. */}
         {!offline && blockingFailures.length === 0 && partialLine !== null && (
           <Text
             role="status"

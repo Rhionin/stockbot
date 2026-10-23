@@ -26,7 +26,11 @@ func TestCommitFailureCopy(t *testing.T) {
 		{"link target gone", LinkTargetGoneMessage, "That item isn't available anymore. Pick another."},
 		{"scan not found", ScanNotFoundMessage, "This scan is no longer in the queue."},
 		{"direction unset", DirectionUnsetMessage, "Choose stock in or stock out first."},
+		{"units on hand", UnitsOnHandMessage, "You already have some on hand, so there's nothing to add."},
+		{"not stock out", NotStockOutMessage, "This only works when taking something out."},
 		{"internal", InternalMessage, "Something went wrong. Try again."},
+		{"conflicting fields", ConflictingFieldsMessage, "Choose one change at a time."},
+		{"backfill locked", BackfillLockedMessage, "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead."},
 	}
 	for _, tt := range checks {
 		t.Run(tt.name, func(t *testing.T) {
@@ -37,7 +41,9 @@ func TestCommitFailureCopy(t *testing.T) {
 	}
 	if CodeNotPending != "not_pending" || CodeProductUnresolved != "product_unresolved" ||
 		CodeScanNotFound != "scan_not_found" || CodeDirectionUnset != "direction_unset" ||
-		CodeInternal != "internal" || CodeNoItem != "no_item" || CodeLinkTargetGone != "link_target_gone" {
+		CodeUnitsOnHand != "units_on_hand" || CodeNotStockOut != "not_stock_out" ||
+		CodeInternal != "internal" || CodeNoItem != "no_item" || CodeLinkTargetGone != "link_target_gone" ||
+		CodeConflictingFields != "conflicting_fields" || CodeBackfillLocked != "backfill_locked" {
 		t.Fatalf("codes drifted: %s %s %s %s %s %s %s", CodeNotPending, CodeProductUnresolved, CodeScanNotFound, CodeDirectionUnset, CodeInternal, CodeNoItem, CodeLinkTargetGone)
 	}
 }

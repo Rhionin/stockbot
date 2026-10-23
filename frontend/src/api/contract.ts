@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ScanDirection, ScanStatus, ShoppingListEntry, TargetConflictMember } from '../types';
+import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, TargetConflictMember } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -17,6 +17,8 @@ export interface CreateScanEntryInput {
   userId: string;
 }
 
+// `backfill` on this body is accepted and ignored. Omitting it is the request
+// this client sends. The response never includes the backfill pair.
 export interface BatchCommitInput {
   scanEntryIds: string[];
   direction?: ScanDirection;
@@ -64,6 +66,28 @@ export function expoClientHeader(version: string): string {
   return `${EXPO_CLIENT_PREFIX}${version}`;
 }
 export const SCANS_PATH = '/api/scans';
+
+// One row of GET /api/scans. onHand is the current shelf count for a linked
+// stock-out. A shelved item and a live item with nothing left are 0, and a
+// removed unit is not counted. The field is omitted when the product is
+// unresolved, this household has no item, or the scan is not a stock-out.
+// Absence is not an empty shelf. product and groupHint are omitted the same way.
+export interface ScanListEntry {
+  id: string;
+  userId: string;
+  barcode: string;
+  scannedAt: string;
+  direction: ScanDirection | null;
+  unitCount: number;
+  expiresAt: string | null;
+  status: ScanStatus;
+  productId: string | null;
+  product?: ProductSummary;
+  groupHint?: ScanGroupHint;
+  committedAt: string | null;
+  createdAt: string;
+  onHand?: number;
+}
 export const BATCH_COMMIT_PATH = '/api/scans/batch-commit';
 export const SCANNER_CONFIG_PATH = '/api/scanner/config';
 export const SCANNER_MODE_PATH = '/api/scanner/mode';
@@ -292,12 +316,206 @@ export function formatPartialRemoval(
   return `Only ${removedCount} were on hand, so ${removedCount} were taken out.`;
 }
 
+// Backfill on a stock-out. Appended for the web queue; the phone shares this
+// file and does not have to send backfill until it grows the same card.
+// Batch commit accepts `backfill` and ignores it. This client does not send
+// the field. A batch never backfills, and its body is committedIds,
+// stockOutCounts, and the parallel failedIds / failedReasons / failedCodes.
+
+export const CODE_NONE_ON_HAND = 'none_on_hand';
+export const CODE_UNITS_ON_HAND = 'units_on_hand';
+export const CODE_NOT_STOCK_OUT = 'not_stock_out';
+export const CODE_NOT_PENDING = 'not_pending';
+export const CODE_DIRECTION_UNSET = 'direction_unset';
+export const CODE_SCAN_NOT_FOUND = 'scan_not_found';
+
+export const BACKFILL_SOURCE = 'backfill';
+
+export const NOTHING_ON_HAND_TO_TAKE_OUT = 'Nothing on hand to take out.';
+export const ADD_IT_AND_TAKE_IT_OUT = 'Add it and take it out';
+export const ADD_AS_A_NEW_ITEM = 'Add as a new item';
+export const ADDED_AND_TAKEN_OUT = 'Added and taken out.';
+export const ADDED_WHEN_TAKING_OUT = 'Added when taking out';
+
+export interface BackfillCommitRequest {
+  backfill: true;
+}
+
+// stockInMoveId is the stock-in (source backfill). stockOutMoveId is the
+// stock-out (source scan). DELETE /api/moves/{id} accepts either id and
+// removes the pair. The delete body is the item history view, not this pair.
+export interface BackfillPairMoves {
+  stockInMoveId: string;
+  stockOutMoveId: string;
+}
+
+// Every field is present on a successful backfill commit.
+export interface BackfillCommitResponse {
+  removed: number;
+  backfilled: number;
+  itemId: string;
+  backfill: BackfillPairMoves;
+}
+
+// What the card does with a backfill commit's code. The sentence is always
+// the server's error field. units_on_hand returns to the normal stock-out.
+// product_unresolved returns to defining the barcode. A missing scan reloads.
+export type BackfillFailureKind = 'define' | 'stock-out' | 'reload' | 'sentence';
+
+export function backfillFailureKind(code: string | undefined): BackfillFailureKind {
+  switch (code) {
+    case CODE_PRODUCT_UNRESOLVED:
+      return 'define';
+    case CODE_UNITS_ON_HAND:
+      return 'stock-out';
+    case CODE_NOT_PENDING:
+    case CODE_SCAN_NOT_FOUND:
+      return 'reload';
+    case CODE_NOT_STOCK_OUT:
+    case CODE_DIRECTION_UNSET:
+    case CODE_NONE_ON_HAND:
+    case CODE_INTERNAL:
+      return 'sentence';
+    default:
+      return 'sentence';
+  }
+}
+
+export function readOnHand(body: object | null | undefined): number | undefined {
+  if (body === null || body === undefined) return undefined;
+  const onHand = (body as Record<string, unknown>).onHand;
+  if (typeof onHand !== 'number' || !Number.isInteger(onHand)) return undefined;
+  return onHand;
+}
+
+export function readItemId(body: object | null | undefined): string {
+  if (body === null || body === undefined) return '';
+  const itemId = (body as Record<string, unknown>).itemId;
+  return typeof itemId === 'string' ? itemId : '';
+}
+
+export const CODE_CONFLICTING_FIELDS = 'conflicting_fields';
+export const CODE_BACKFILL_LOCKED = 'backfill_locked';
+
+// Pair undo confirmation, shared with the phone.
+export const PAIR_UNDO_TITLE = 'Undo "Add it and take it out"?';
+export const PAIR_UNDO_CONFIRM = 'Undo';
+export const PAIR_UNDO_CANCEL = 'Cancel';
+
+export function pairUndoBody(itemName: string): string {
+  return `This removes both the add and the take-out for ${itemName}, as if neither happened.`;
+}
+
+export function pairUndoHideLine(itemName: string): string {
+  return `${itemName} will be hidden from your inventory again, since none are on hand.`;
+}
+
+export interface PairUndoCopy {
+  title: string;
+  body: string;
+  hideLine: string;
+  confirm: string;
+  cancel: string;
+}
+
+// GET /api/moves/{id}/preview. Read-only. {id} is stockInMoveId or stockOutMoveId.
+export interface UndoPreviewEffect {
+  itemId: string;
+  productId: string;
+  name: string;
+  stockInMoveId?: string;
+  stockOutMoveId?: string;
+  onHand: number;
+  reshelvesOnUndo: boolean;
+}
+
+export interface UndoPreview {
+  effects: UndoPreviewEffect[];
+}
+
+export function undoPreviewPath(id: string): string {
+  return `/api/moves/${id}/preview`;
+}
+
+// The backfill stock-in id. Preview and DELETE both accept either id of the pair.
+export function pairStockInMoveId(
+  move: { id: string; source: string; at: string; productId: string },
+  moves: readonly { id: string; source: string; at: string; productId: string }[],
+): string {
+  if (move.source === BACKFILL_SOURCE) return move.id;
+  const stockIn = moves.find((other) => other.source === BACKFILL_SOURCE
+    && other.productId === move.productId
+    && other.at === move.at);
+  return stockIn === undefined ? move.id : stockIn.id;
+}
+
+// True only when the effect for this move says the undo re-shelves.
+// A missing preview, a different effect, and false all leave the line out.
+export function previewReshelves(preview: UndoPreview | undefined, moveId: string): boolean {
+  if (preview === undefined) return false;
+  return preview.effects.some((effect) => effect.reshelvesOnUndo === true
+    && (effect.stockInMoveId === moveId || effect.stockOutMoveId === moveId));
+}
+
+export function pairUndoCopy(itemName: string, reshelvesOnUndo: boolean | undefined): PairUndoCopy {
+  return {
+    title: PAIR_UNDO_TITLE,
+    body: pairUndoBody(itemName),
+    hideLine: reshelvesOnUndo === true ? pairUndoHideLine(itemName) : '',
+    confirm: PAIR_UNDO_CONFIRM,
+    cancel: PAIR_UNDO_CANCEL,
+  };
+}
+
+export function linkSuggestionsPath(id: string): string {
+  return `${SCANS_PATH}/${id}/link-suggestions`;
+}
+
+export interface LinkSuggestionsResponse {
+  suggestions: { itemId: string; productId: string; name: string; onHand: number }[];
+}
+
+// A backfill stock-in, and the stock-out recorded with it, cannot change count.
+export function quantityLocked(
+  move: { source: string; direction: string; at: string; productId: string },
+  moves: { source: string; direction: string; at: string; productId: string }[],
+): boolean {
+  if (move.source === BACKFILL_SOURCE) return true;
+  return moves.some((other) => other.source === BACKFILL_SOURCE
+    && other.productId === move.productId
+    && other.at === move.at
+    && move.source === 'scan'
+    && move.direction === 'out');
+}
+
 export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
+// The phone still shows this sentence. The web card uses nothingOnHandBody.
 export const NOTHING_ON_HAND_BODY =
   "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
 
-export const CODE_NONE_ON_HAND = 'none_on_hand';
+const NOTHING_ON_HAND_BODY_ONE =
+  'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.';
+
+export function nothingOnHandBody(unitCount: number): string {
+  if (Number.isInteger(unitCount) && unitCount !== 1) {
+    return `Stockbot thinks you have none. If you had ${unitCount} anyway, this adds them and takes them out in one step.`;
+  }
+  return NOTHING_ON_HAND_BODY_ONE;
+}
+
+// Count of 1 uses "is". Every other count, including 0, uses "are".
+export function nothingOnHandStillQueued(count: number): string {
+  const verb = count === 1 ? 'is' : 'are';
+  return `${count} with nothing on hand ${verb} still in the queue.`;
+}
+
+// After a batch confirm that skipped nothing-on-hand cards. The lead is "{M} taken out."
+export function skippedNothingOnHandBanner(takenOut: number, stillQueued: number): string | null {
+  if (!Number.isInteger(takenOut) || takenOut < 1) return null;
+  if (!Number.isInteger(stillQueued) || stillQueued < 1) return null;
+  return `${takenOut} taken out. ${nothingOnHandStillQueued(stillQueued)} Each one has its own Add it and take it out button.`;
+}
 
 // A lock or a full disk is the banner sentence. The card does not repeat it.
 // Amber never does. An item failure stays on its card.
@@ -349,9 +567,15 @@ export function batchFailureBannerText(
   return `${count} confirmed. ${sentence}`;
 }
 
-// A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
+// A listed count of zero is nothing on hand. Absence is not an empty shelf.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
   return onHand !== undefined && onHand <= 0;
+}
+
+// GET /api/scans sends onHand: 0 for a linked stock-out with nothing on the shelf.
+// Omitted is not that case.
+export function scanReportsNothingOnHand(entry: ScanListEntry): boolean {
+  return entry.onHand === 0;
 }
 
 export function nothingOnHandPill(count: number): string | null {

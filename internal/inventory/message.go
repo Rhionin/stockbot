@@ -31,10 +31,23 @@ const ScanNotFoundMessage = "This scan is no longer in the queue."
 // DirectionUnsetMessage is the sentence when a scan has no stock direction.
 const DirectionUnsetMessage = "Choose stock in or stock out first."
 
+// UnitsOnHandMessage is the sentence when a backfill finds units already on the shelf.
+const UnitsOnHandMessage = "You already have some on hand, so there's nothing to add."
+
+// NotStockOutMessage is the sentence when a backfill is asked for on a stock-in.
+const NotStockOutMessage = "This only works when taking something out."
+
 // InternalMessage is the sentence for an unexpected failure. The server logs
 // the real error and does not send it to the household. It is the same
 // sentence every generic 5xx uses.
 const InternalMessage = clientmsg.Generic
+
+// ConflictingFieldsMessage is the sentence when one scan update asks for two
+// changes that cannot happen together.
+const ConflictingFieldsMessage = "Choose one change at a time."
+
+// BackfillLockedMessage is the sentence when a backfill pair's count is edited.
+const BackfillLockedMessage = "This was recorded with Add it and take it out, so its count can't be changed. Undo it instead."
 
 // Codes on a commit failure. The frontend matches these, not the sentences.
 const (
@@ -46,5 +59,9 @@ const (
 	CodeLinkTargetGone    = "link_target_gone"
 	CodeScanNotFound      = "scan_not_found"
 	CodeDirectionUnset    = "direction_unset"
+	CodeUnitsOnHand       = "units_on_hand"
+	CodeNotStockOut       = "not_stock_out"
 	CodeInternal          = "internal"
+	CodeConflictingFields = "conflicting_fields"
+	CodeBackfillLocked    = "backfill_locked"
 )

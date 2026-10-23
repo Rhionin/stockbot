@@ -7,9 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// PreviewDirPrefix is the directory name prefix of a throwaway undo preview.
+// The directory sits beside the pantry file. Startup removes leftovers.
+const PreviewDirPrefix = ".stockbot-preview-"
 
 // shoppingChangeMigration is the first migration that changes live shopping rows.
 const shoppingChangeMigration = "012_shopping_list_group.sql"
@@ -25,6 +30,16 @@ const targetsChangeMigration = "019_restock_targets.sql"
 // A partial apply would leave the column behind, and the next startup
 // would fail with "duplicate column name: shelved".
 const shelveChangeMigration = "020_shelve_wiped_items.sql"
+
+// backfillSourceMigration lets a history row record source backfill.
+// SQLite cannot change a CHECK with ALTER TABLE, so the stock_moves table
+// is rebuilt. The copy and the schema_migrations row commit together.
+const backfillSourceMigration = "021_backfill_move_source.sql"
+
+// backfillUnshelveMigration records that a backfill put a wiped item back.
+// Undo of that pair hides the item again. The column and the
+// schema_migrations row commit together.
+const backfillUnshelveMigration = "022_backfill_unshelve.sql"
 
 // snapshotShoppingDB runs once, immediately before shoppingChangeMigration.
 // Tests replace it to simulate a backup that cannot be written.
@@ -139,6 +154,30 @@ func writeSnapshot(db *sql.DB, spec snapshotSpec) error {
 // snapshotCopyHook runs after VACUUM INTO and before the temp is chmodded.
 // Tests use it to read the mode the copy itself created.
 var snapshotCopyHook func(temp string) error
+
+// previewLockName is held inside a preview directory for as long as that
+// copy is in use. Startup skips a directory whose lock is still held.
+const previewLockName = "preview.lock"
+
+func removePreviewDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		// ReadDir does not return "." or "..". A plain file, or a directory
+		// whose name is not exactly this prefix, is left alone.
+		if name == "." || name == ".." || !entry.IsDir() || !strings.HasPrefix(name, PreviewDirPrefix) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if previewDirBusy(path) {
+			continue
+		}
+		_ = os.RemoveAll(path)
+	}
+}
 
 func removeSnapshotTemps(dir string) {
 	for _, prefix := range []string{"pantry-pre-groups", "pantry-pre-restock", "pantry-pre-targets"} {

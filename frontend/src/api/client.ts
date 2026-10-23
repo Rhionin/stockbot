@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, linkSuggestionsPath, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -26,7 +26,6 @@ import type {
   ProductWriteResult,
   ContributionSettings,
   ScanDirection,
-  ScanEntry,
   ScannerConfig,
   ScanStatus,
   ProvisionReport,
@@ -77,6 +76,8 @@ export class ApiError extends Error {
   readonly code: string;
   readonly members: TargetConflictMember[];
   readonly suggestions: PantryLinkSuggestion[];
+  readonly itemId: string;
+  readonly onHand: number | undefined;
 
   constructor(
     status: number,
@@ -84,6 +85,8 @@ export class ApiError extends Error {
     code = '',
     members: TargetConflictMember[] = [],
     suggestions: PantryLinkSuggestion[] = [],
+    itemId = '',
+    onHand?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -91,6 +94,8 @@ export class ApiError extends Error {
     this.code = code;
     this.members = members;
     this.suggestions = suggestions;
+    this.itemId = itemId;
+    this.onHand = onHand;
   }
 }
 
@@ -123,22 +128,28 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     let code = '';
     let members: TargetConflictMember[] = [];
     let suggestions: PantryLinkSuggestion[] = [];
+    let itemId = '';
+    let onHand: number | undefined;
     try {
       const body = (await res.json()) as {
         error?: string;
         code?: string;
         members?: TargetConflictMember[];
         suggestions?: PantryLinkSuggestion[];
+        itemId?: string;
+        onHand?: number;
       };
       if (body.error) message = body.error;
       code = stockbotCode(body);
       members = body.members ?? [];
       suggestions = body.suggestions ?? [];
+      itemId = readItemId(body);
+      onHand = readOnHand(body);
     } catch {
       // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw classifiedError(res.status, message, code, members, suggestions);
+    throw classifiedError(res.status, message, code, members, suggestions, itemId, onHand);
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
@@ -172,11 +183,13 @@ function classifiedError(
   code: string,
   members: TargetConflictMember[] = [],
   suggestions: PantryLinkSuggestion[] = [],
+  itemId = '',
+  onHand?: number,
 ): Error {
   const disposition = applyHttpResponse(status, code);
   if (disposition === 'offline') return new UnreachableError();
   if (disposition === 'auth') return new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
-  return new ApiError(status, message, code, members, suggestions);
+  return new ApiError(status, message, code, members, suggestions, itemId, onHand);
 }
 
 // --- Products ---
@@ -231,15 +244,15 @@ export function createProductOverride(
 
 // --- Scan queue ---
 
-export function createScanEntry(input: CreateScanEntryInput): Promise<ScanEntry> {
+export function createScanEntry(input: CreateScanEntryInput): Promise<ScanListEntry> {
   return apiFetch(SCANS_PATH, { method: 'POST', body: JSON.stringify(input) });
 }
 
-export function listScanEntries(userId: string, status?: ScanStatus): Promise<ScanEntry[]> {
+export function listScanEntries(userId: string, status?: ScanStatus): Promise<ScanListEntry[]> {
   return apiFetch(scansQuery(userId, status));
 }
 
-export function getScanHistory(userId: string): Promise<ScanEntry[]> {
+export function getScanHistory(userId: string): Promise<ScanListEntry[]> {
   return apiFetch(`/api/scans/history${toQueryString({ userId })}`);
 }
 
@@ -251,18 +264,37 @@ interface UpdateScanEntryInput {
   status?: ScanStatus;
 }
 
-export function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanEntry> {
+export async function updateScanEntry(id: string, input: UpdateScanEntryInput): Promise<ScanListEntry> {
+  // productId and status cancelled together is conflicting_fields. Link first, then cancel.
+  if (input.productId !== undefined && input.status === 'cancelled') {
+    const { status, ...link } = input;
+    await apiFetch<ScanListEntry>(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(link) });
+    return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+  }
   return apiFetch(`/api/scans/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+}
+
+export function listLinkSuggestions(id: string): Promise<LinkSuggestionsResponse> {
+  return apiFetch(linkSuggestionsPath(id));
 }
 
 export function commitScanEntry(
   id: string,
   instanceId?: string,
   linkProductId?: string,
-): Promise<ScanEntry & CommitScanResponse> {
+): Promise<ScanListEntry & CommitScanResponse> {
   const body: { instanceId?: string; linkProductId?: string } = {};
   if (instanceId) body.instanceId = instanceId;
   if (linkProductId) body.linkProductId = linkProductId;
+  return apiFetch(scanCommitPath(id), {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+// Uses the scan's linked item. The body is only {backfill:true}.
+export function commitBackfill(id: string): Promise<BackfillCommitResponse> {
+  const body: BackfillCommitRequest = { backfill: true };
   return apiFetch(scanCommitPath(id), {
     method: 'POST',
     body: JSON.stringify(body),
@@ -332,8 +364,14 @@ export function setMoveQuantity(id: string, quantity: number): Promise<HistoryVi
   return apiFetch(`/api/moves/${id}`, { method: 'PATCH', body: JSON.stringify({ quantity }) });
 }
 
+// 200 is the item history view after the move is gone. Either id of a
+// backfill pair removes both moves.
 export function undoMove(id: string): Promise<HistoryView> {
   return apiFetch(`/api/moves/${id}`, { method: 'DELETE' });
+}
+
+export function previewUndo(id: string): Promise<UndoPreview> {
+  return apiFetch(undoPreviewPath(id));
 }
 
 // Exact phrase POST /api/inventory/wipe requires. Kept in sync with

@@ -65,7 +65,7 @@ describe('ScanEntryCard stock-out review', () => {
     expect(screen.getByRole('button', { name: 'More', expanded: false })).toBeInTheDocument();
   });
 
-  it('shows the amber nothing-on-hand card with Remove and a disabled checkbox', () => {
+  it('shows the amber nothing-on-hand card with backfill and a disabled checkbox', () => {
     vi.stubGlobal('fetch', vi.fn());
     render(
       <MantineProvider>
@@ -82,14 +82,22 @@ describe('ScanEntryCard stock-out review', () => {
     const card = screen.getByRole('article', { name: 'Scan 123, Nothing on hand to take out.' });
     expect(card).toHaveClass('scan-entry-card--nothing');
     expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
-    expect(within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.")).toBeInTheDocument();
+    expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
     expect(within(card).getByText('!')).toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
-    expect(within(card).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
+    const offer = within(card).getByRole('button', { name: 'Add it and take it out' });
+    expect(offer).toHaveClass('scan-entry-offer');
+    expect(within(card).getByRole('button', { name: 'Increase unit count' })).toBeEnabled();
+    expect(within(card).getByRole('textbox', { name: 'Unit count' })).toBeEnabled();
+    fireEvent.click(within(card).getByRole('button', { name: 'Increase unit count' }));
+    expect(within(card).getByText('Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'More' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'More' }));
     expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     const checkbox = within(card).getByRole('checkbox', { name: 'Select scan for batch approval' });
     expect(checkbox).toBeDisabled();
-    expect(checkbox).toHaveAttribute('aria-describedby', within(card).getByText("Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.").id);
+    expect(checkbox).toHaveAttribute('aria-describedby', within(card).getByText('Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.').id);
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 
@@ -1250,6 +1258,35 @@ describe('ScanEntryCard stock-in confirmation', () => {
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 
+  it('saves a stepped count before confirm while the stepper delay is still waiting', async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      const body = request?.body === undefined ? undefined : JSON.parse(request.body as string);
+      calls.push({ url, body });
+      if (url === '/api/scans/scan-1' && request?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse({ ...stockIn, unitCount: (body as { unitCount: number }).unitCount }));
+      }
+      if (url.endsWith('/commit') && request?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ ...stockIn, status: 'committed', unitCount: 2 }));
+      }
+      throw new Error(`Unexpected ${request?.method ?? 'GET'} request: ${url}`);
+    }));
+
+    renderStockIn();
+    fireEvent.click(screen.getByRole('button', { name: 'Increase unit count' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.url.endsWith('/commit'))).toBe(true);
+    });
+    const patchAt = calls.findIndex((call) => call.url === '/api/scans/scan-1');
+    const commitAt = calls.findIndex((call) => call.url.endsWith('/commit'));
+    expect(calls[patchAt]?.body).toEqual({ unitCount: 2 });
+    expect(patchAt).toBeGreaterThanOrEqual(0);
+    expect(patchAt).toBeLessThan(commitAt);
+  });
+
   it('patches the same unit count when the stepper or the field changes it', async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
@@ -1426,7 +1463,7 @@ describe('ScanEntryCard provenance badge', () => {
     render(
       <MantineProvider>
         <ScanEntryCard
-          entry={{ ...entry, product: null }}
+          entry={{ ...entry, product: undefined }}
           itemId="item-1"
           selected={false}
           onSelectedChange={vi.fn()}
@@ -1534,7 +1571,7 @@ describe('ScanEntryCard group hint', () => {
     render(
       <MantineProvider>
         <ScanEntryCard
-          entry={{ ...entry, status: 'flagged', direction: null, product: null, productId: null }}
+          entry={{ ...entry, status: 'flagged', direction: null, product: undefined, productId: null }}
           selected={false}
           onSelectedChange={vi.fn()}
           onChanged={vi.fn()}

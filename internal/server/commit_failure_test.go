@@ -24,7 +24,7 @@ func TestKnownCommitFailureMessages(t *testing.T) {
 		code    string
 	}{
 		{"none_on_hand", scan.ErrNoneOnHand, "Nothing on hand to take out.", "none_on_hand"},
-		{"link_target_gone", scan.ErrLinkNotStocked, "That item isn't available anymore. Pick another.", "link_target_gone"},
+		{"link_target_gone", scan.ErrLinkTargetGone, "That item isn't available anymore. Pick another.", "link_target_gone"},
 		{"unlinked batch", &scan.NoItemError{}, "Choose which item this is first.", "product_unresolved"},
 		{"instance_gone", inventory.ErrInstanceNotFound, "That one was already taken out. Pick another.", "instance_gone"},
 		{"not_pending", scan.ErrNotPending, "This scan was already handled.", "not_pending"},
@@ -46,8 +46,8 @@ func TestKnownCommitFailureMessages(t *testing.T) {
 	if commitStatus(scan.ErrScanNotFound) != http.StatusNotFound {
 		t.Fatalf("scan_not_found status = %d, want 404", commitStatus(scan.ErrScanNotFound))
 	}
-	if commitStatus(scan.ErrLinkNotStocked) != http.StatusConflict {
-		t.Fatalf("link_target_gone status = %d, want 409", commitStatus(scan.ErrLinkNotStocked))
+	if commitStatus(scan.ErrLinkTargetGone) != http.StatusConflict {
+		t.Fatalf("link_target_gone status = %d, want 409", commitStatus(scan.ErrLinkTargetGone))
 	}
 }
 
@@ -324,7 +324,7 @@ func (q linkGoneQueue) BatchUpdateScanEntries(context.Context, []string, *scan.S
 }
 func (q linkGoneQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return nil }
 func (q linkGoneQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
-	return 0, scan.ErrLinkNotStocked
+	return 0, scan.ErrLinkTargetGone
 }
 
 func assertScanStillPending(t *testing.T, handler http.Handler, id string) {
@@ -352,6 +352,12 @@ func (q dbErrorQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) 
 	return 0, q.err
 }
 func (q dbErrorQueue) CommitStockOutLink(context.Context, *scan.ScanEntry, *string, string) (int, error) {
+	return 0, q.err
+}
+func (q dbErrorQueue) CommitBackfill(context.Context, *scan.ScanEntry) (scan.BackfillResult, error) {
+	return scan.BackfillResult{}, q.err
+}
+func (q dbErrorQueue) CountOnHand(context.Context, string, string) (int, error) {
 	return 0, q.err
 }
 func (q dbErrorQueue) StockOut(context.Context, string, time.Time) error { return q.err }

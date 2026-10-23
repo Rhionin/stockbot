@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { clearOfflineBanner } from '../../api/contract';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import type { Product, ScanEntry } from '../../types';
 
@@ -15,6 +17,7 @@ HTMLElement.prototype.scrollIntoView = vi.fn();
 // components (e.g. ScanEntryCard) that assert on animated vs reduced-motion
 // behavior; vitest isolates each test file's jsdom environment.
 beforeEach(() => {
+  clearOfflineBanner();
   vi.stubGlobal(
     'matchMedia',
     (query: string) =>
@@ -41,7 +44,6 @@ const flaggedEntry: ScanEntry = {
   expiresAt: null,
   status: 'flagged',
   productId: null,
-  product: null,
   committedAt: null,
   createdAt: '2026-03-20T10:00:00Z',
 };
@@ -76,6 +78,7 @@ const renderResolver = (onResolved = vi.fn()) => {
     // env="test" disables Popover hideDetached so the combobox list stays
     // open in jsdom, which reports no layout box for the search field.
     <MantineProvider env="test" theme={{ respectReducedMotion: true }}>
+      <ServerNoticeBanner />
       <FlaggedEntryResolver entry={flaggedEntry} onResolved={onResolved} />
     </MantineProvider>,
   );
@@ -129,6 +132,8 @@ describe('FlaggedEntryResolver', () => {
         body: JSON.stringify({ productId: 'product-1', status: 'pending' }),
       }),
     );
+    const sequence = fetchMock.mock.calls.map((call) => `${String(call[0])} ${call[1]?.method ?? 'GET'}`);
+    expect(sequence.indexOf('/api/scans/scan-1 PATCH')).toBeLessThan(sequence.indexOf('/api/products/overrides POST'));
   });
 
   it('clears the selected product when the search text changes', async () => {
@@ -225,5 +230,72 @@ describe('FlaggedEntryResolver', () => {
         }),
       }),
     );
+  });
+
+  const goneSentence = "That item isn't available anymore. Pick another.";
+
+  it.each([
+    {
+      name: 'drops a product that is no longer available and does not save the barcode',
+      status: 409,
+      body: { error: goneSentence, code: 'link_target_gone' } as unknown,
+      sentence: goneSentence,
+      drop: true,
+      reject: false,
+    },
+    {
+      name: 'keeps the product when the server refuses a different change',
+      status: 400,
+      body: { error: 'Choose one change at a time.', code: 'conflicting_fields' } as unknown,
+      sentence: 'Choose one change at a time.',
+      drop: false,
+      reject: false,
+    },
+    {
+      name: 'keeps the product when the request never reaches the server',
+      status: 0,
+      body: {} as unknown,
+      sentence: "Can't reach Stockbot. Check your connection and try again.",
+      drop: false,
+      reject: true,
+    },
+  ])('$name', async (row) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/products' && request?.method === undefined) {
+        return Promise.resolve(jsonResponse([yogurt, milk]));
+      }
+      if (url === '/api/products/overrides') return Promise.resolve(jsonResponse({}));
+      if (url === '/api/scans/scan-1') {
+        if (row.reject) return Promise.reject(new TypeError('Failed to fetch'));
+        return Promise.resolve(jsonResponse(row.body, row.status));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderResolver();
+
+    const search = screen.getByRole('combobox', { name: 'Search products' });
+    fireEvent.click(search);
+    fireEvent.click(await screen.findByRole('option', { name: 'Whole Milk — Dairy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use selected product' }));
+
+    expect(await screen.findByText(row.sentence)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/scans/scan-1',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ productId: 'product-1', status: 'pending' }),
+      }),
+    );
+    expect(fetchMock.mock.calls.some((call) => String(call[0]) === '/api/products/overrides')).toBe(false);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Search products' }), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Search products' }));
+    if (row.drop) {
+      expect(screen.queryByRole('option', { name: 'Whole Milk — Dairy' })).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole('option', { name: 'Whole Milk — Dairy' })).toBeInTheDocument();
+    }
+    expect(await screen.findByRole('option', { name: 'Greek Yogurt — Dairy' })).toBeInTheDocument();
   });
 });

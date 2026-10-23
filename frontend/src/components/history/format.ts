@@ -27,6 +27,7 @@ export function moveTitle(direction: string, quantity: number): string {
 }
 
 export function sourceLabel(source: string): string {
+  if (source === 'backfill') return 'Added when taking out';
   return source === 'scan' ? 'scan' : 'by hand';
 }
 
@@ -125,7 +126,10 @@ export function deltaName(direction: string, quantity: number): string {
   return quantity === 1 ? '1 used' : `${quantity} used`;
 }
 
-export function undoCopy(direction: string, quantity: number): { title: string; body: string; confirm: string } {
+export function undoCopy(
+  direction: string,
+  quantity: number,
+): { title: string; body: string; confirm: string } {
   if (direction === 'in') {
     const shelf = quantity === 1 ? '1 unit leaves the shelf' : `${quantity} units leave the shelf`;
     return {

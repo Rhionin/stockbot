@@ -9,11 +9,13 @@ import {
   useCombobox,
 } from '@mantine/core';
 import {
+  ApiError,
   createProduct,
   createProductOverride,
   listProducts,
   updateScanEntry,
 } from '../../api/client';
+import { CODE_LINK_TARGET_GONE } from '../../api/contract';
 import type { Product, ProductWriteInput, ScanEntry } from '../../types';
 import { ContributeFields, type ContributeChoice } from '../product/ContributeFields';
 import { NetSizeFields } from '../product/NetSizeFields';
@@ -105,9 +107,18 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
   };
 
   const resolveWithProduct = async (productId: string) => {
-    await createProductOverride({ barcode: entry.barcode, productId });
-    const resolvedEntry = await updateScanEntry(entry.id, { productId, status: 'pending' });
-    onResolved(resolvedEntry);
+    try {
+      const resolvedEntry = await updateScanEntry(entry.id, { productId, status: 'pending' });
+      await createProductOverride({ barcode: entry.barcode, productId });
+      onResolved(resolvedEntry);
+    } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.code === CODE_LINK_TARGET_GONE) {
+        setProducts((current) => current.filter((product) => product.id !== productId));
+        setSelectedProductId('');
+        setQuery('');
+      }
+      throw requestError;
+    }
   };
 
   const handleResolve = async () => {

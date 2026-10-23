@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
-  ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, TextInput,
+  ActionIcon, Alert, Anchor, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
+import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
 import type { HistoryMove, HistoryView } from '../../types';
 import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
 } from './format';
+import { usePairHideLine } from './pairUndoPreview';
 import '../groups/groups.css';
 import { inlineFailure } from '../../api/contract';
 import './history.css';
@@ -102,7 +104,8 @@ export function HistoryPage() {
     void Promise.resolve().then(load);
   }, [load]);
 
-  const shown = (view?.moves ?? []).filter((move) => filter === 'recent' || move.direction === filter);
+  const orderedMoves = view?.moves ?? [];
+  const shown = orderedMoves.filter((move) => filter === 'recent' || move.direction === filter);
   const now = new Date();
 
   const saveQuantity = async () => {
@@ -140,7 +143,13 @@ export function HistoryPage() {
     }
   };
 
-  const undo = undoing ? undoCopy(undoing.direction, undoing.quantity) : null;
+  const pair = undoing !== null && quantityLocked(undoing, view?.moves ?? []);
+  const stockInMoveId = pair && undoing !== null ? pairStockInMoveId(undoing, view?.moves ?? []) : '';
+  const hideLine = usePairHideLine(stockInMoveId);
+  const pairCopy = pair && undoing !== null
+    ? pairUndoCopy(undoing.productName, hideLine ? true : undefined)
+    : null;
+  const undo = undoing !== null && !pair ? undoCopy(undoing.direction, undoing.quantity) : null;
 
   return (
     <Stack className="bin-page history-page" gap="md">
@@ -202,9 +211,11 @@ export function HistoryPage() {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
-                        <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
-                          Change quantity
-                        </Menu.Item>
+                        {!quantityLocked(move, view.moves) && (
+                          <Menu.Item onClick={() => { setQuantity(String(move.quantity)); setError(''); setEditing(move); }}>
+                            Change quantity
+                          </Menu.Item>
+                        )}
                         <Menu.Item onClick={() => { setError(''); setUndoing(move); }}>
                           {move.direction === 'in' ? 'Undo this stock in' : 'Undo this use'}
                         </Menu.Item>
@@ -243,16 +254,30 @@ export function HistoryPage() {
       <Modal
         opened={undoing !== null}
         onClose={() => { if (!pending) setUndoing(null); }}
-        title={undo?.title ?? 'Undo this move?'}
+        title={pairCopy?.title ?? undo?.title ?? 'Undo this move?'}
         closeButtonProps={{ 'aria-label': 'Close' }}
       >
-        {undo && (
+        {(pairCopy ?? undo) && (
           <Stack gap="sm">
-            <p className="history-empty">{undo.body}</p>
+            <p className="history-empty">{(pairCopy ?? undo)?.body}</p>
+            <Collapse
+              expanded={pairCopy !== null && pairCopy.hideLine !== ''}
+              keepMounted
+              keepMountedMode="display-none"
+              transitionDuration={0}
+            >
+              {undoing !== null && pair && (
+                <p className="history-empty">{pairUndoHideLine(undoing.productName)}</p>
+              )}
+            </Collapse>
             {error !== '' && <Alert color="red">{error}</Alert>}
             <Group gap="sm" grow>
-              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>Keep it</Button>
-              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>{undo.confirm}</Button>
+              <Button variant="default" disabled={pending} onClick={() => setUndoing(null)}>
+                {pairCopy?.cancel ?? 'Keep it'}
+              </Button>
+              <Button color="red" loading={pending} onClick={() => void confirmUndo()}>
+                {(pairCopy ?? undo)?.confirm}
+              </Button>
             </Group>
           </Stack>
         )}
