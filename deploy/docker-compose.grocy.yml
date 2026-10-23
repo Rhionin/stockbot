@@ -1,17 +1,20 @@
 # Optional one-way sync from Stockbot into a Grocy container that is not
-# part of this file. A normal `docker compose up` does not start it and
-# does not need the tunnel network.
+# part of this file. This service is profile grocy-sync. A normal
+# `docker compose up` does not start it, and profile grocy does not start
+# it either. Setup and the update timer leave the profile off, so the
+# container stays stopped and its volume stays.
 #
 # Grocy stays on the network this stack already created for Cloudflare
-# (pantry_cf-tunnel). This service joins that network so it can open
-# http://grocy:80, and the project default network so it can open
-# http://pantry:8080. It is not pinned to 10.77.77.2 or .3.
+# (pantry_cf-tunnel). When profile grocy-sync is started, this service
+# joins that network so it can open http://grocy:80, and the project
+# default network so it can open http://pantry:8080. It is not pinned to
+# 10.77.77.2 or .3.
 #
 # Enable with the steps in README.md under "Grocy sync".
 
 services:
   grocy-sync:
-    profiles: ["grocy"]
+    profiles: ["grocy-sync"]
     image: ghcr.io/rhionin/pantry-grocy-sync:${PANTRY_IMAGE_TAG:-latest}
     container_name: pantry-grocy-sync
     restart: unless-stopped

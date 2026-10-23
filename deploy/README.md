@@ -604,7 +604,7 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `SCANNER_DEVICE` | `/dev/input/pantry-scanner` | Path to the scanner's stable symlink created by the udev rule. Point at a concrete `/dev/input/eventN` to bypass the symlink while debugging |
 | `SCANNER_GID` | `65532` | Numeric group ID the container process joins so it can read the `0640` scanner node |
 | `DEPLOY_HOOK_SECRET` | generated | Shared HMAC secret for `POST /api/deploy-hook`. `sudo ./setup.sh` fills this in when it is empty and never replaces a value already set. The same value is the GitHub Actions secret `DEPLOY_HOOK_SECRET`. Print it with `sudo ./setup.sh deploy-secret` |
-| `GROCY_URL` | empty | Grocy base URL from the sidecar, usually `http://grocy:80`. Empty keeps grocy-sync off. See [Grocy sync](#grocy-sync) |
+| `GROCY_URL` | empty | Grocy base URL from the sidecar, usually `http://grocy:80`. The sidecar is profile `grocy-sync` and stays stopped until that profile is started. See [Grocy sync](#grocy-sync) |
 | `GROCY_API_KEY` | empty | API key created in the Grocy UI. Stored only in `/opt/pantry/.env` |
 | `PANTRY_SYNC_TOKEN` | empty | Read-only secret the sidecar sends to Stockbot. Generate with `openssl rand -hex 32` |
 | `GROCY_SYNC_INTERVAL` | `5m` | How often the sidecar re-reads Stockbot and writes Grocy |
@@ -998,7 +998,7 @@ If either secret is empty, the run logs a notice and exits successfully. Otherwi
 
 ## Grocy sync
 
-Stockbot can copy itself into [Grocy](https://grocy.info/) on the same Pi. Stockbot stays the source of truth. Grocy being down does not stop Stockbot, and Stockbot being down does not stop Grocy. The copy is a separate container, `pantry-grocy-sync`, and it stays off until the three values below are set.
+Stockbot can copy itself into [Grocy](https://grocy.info/) on the same Pi. Stockbot stays the source of truth. Grocy being down does not stop Stockbot, and Stockbot being down does not stop Grocy. The copy is a separate container, `pantry-grocy-sync`, on Compose profile `grocy-sync`. Profile `grocy` does not start it. `sudo ./setup.sh` and the update timer do not start it either, so Grocy and grocy-sync stay stopped and their volumes stay in place.
 
 Grocy itself is not in this repository. On this Pi it is the linuxserver image, container name `grocy`, started from `/home/pantrybot/grocy`, and attached to the Docker network `pantry_cf-tunnel`. Other containers reach it at `http://grocy:80`.
 
@@ -1023,16 +1023,18 @@ TZ=America/Denver
 
 `TZ` must be the same zone the Grocy container uses, or a stock-in late in the evening can land on the previous day in Grocy. The sidecar image has the zone database; the zone name is enough.
 
-3. Recreate Stockbot so it loads the token, and start the sidecar. From `/opt/pantry`, after `sudo ./setup.sh` has copied `docker-compose.grocy.yml`:
+3. Recreate Stockbot so it loads the token. From `/opt/pantry`, after `sudo ./setup.sh` has copied `docker-compose.grocy.yml`. Setup leaves the sidecar stopped. Start it only with profile `grocy-sync`:
 
 ```bash
 cd /opt/pantry
 sudo ./setup.sh
-sudo docker compose -f docker-compose.yml -f docker-compose.grocy.yml --profile grocy up -d grocy-sync
+sudo docker compose -f docker-compose.yml -f docker-compose.grocy.yml --profile grocy-sync up -d grocy-sync
 sudo docker logs pantry-grocy-sync --tail=40
 ```
 
-`sudo ./setup.sh` also starts the sidecar once all three values are in `/opt/pantry/.env`. A plain `docker compose up` does not. The update timer uses the same rule, so later image pulls recreate `pantry-grocy-sync` when the values stay set.
+`sudo ./setup.sh` leaves `pantry-grocy-sync` stopped even when all three values are in `/opt/pantry/.env`. A plain `docker compose up` does not start it. Profile `grocy` does not start it. The update timer does not recreate it. Image pulls leave the stopped sidecar and its volume alone until profile `grocy-sync` is started.
+
+Deploys log `Found orphan containers` for `pantry-grocy-sync`. That warning is expected. Do not run `--remove-orphans`. It would delete the stopped container. The named volume stays either way.
 
 The sidecar is limited to 64 MB. It has no published ports. It joins the Compose project network (hostname `pantry`) and the existing network `pantry_cf-tunnel` (hostname `grocy`). That second network only hands out dynamic addresses from `10.77.77.4/30`, and Grocy already uses one. If `up` says the pool is exhausted, another container is holding the remaining address. Do not pin this service to `10.77.77.2` or `10.77.77.3`.
 
@@ -1051,7 +1053,7 @@ The sidecar image runs as uid 65532. Grocy's files on this Pi are owned by uid 1
 ```bash
 sudo docker stop grocy
 cd /opt/pantry
-sudo docker compose -f docker-compose.yml -f docker-compose.grocy.yml --profile grocy run --rm --no-deps --user 1001:1001 \
+sudo docker compose -f docker-compose.yml -f docker-compose.grocy.yml --profile grocy-sync run --rm --no-deps --user 1001:1001 \
   -v /home/pantrybot/grocy/config:/grocy \
   grocy-sync backfill --db /grocy/data/grocy.db --confirm
 sudo docker start grocy
