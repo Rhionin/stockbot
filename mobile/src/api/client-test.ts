@@ -1,4 +1,5 @@
 import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
+import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -135,7 +136,7 @@ describe('createStockbotClient', () => {
     { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.', notice: '' },
     { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved.", notice: '' },
     { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.', notice: '' },
-    { name: 'auth not configured', status: 503, code: 'auth_not_configured', message: AUTH_NOT_CONFIGURED_SENTENCE, notice: AUTH_NOT_CONFIGURED_SENTENCE },
+    { name: 'auth not configured', status: 503, code: authNotConfigured.code, message: AUTH_NOT_CONFIGURED_SENTENCE, notice: "Sign-in isn't set up yet." },
   ])('$name clears offline and keeps its own message', async ({ status, code, message, notice }) => {
     raiseOfflineBanner();
     const { client } = clientWith(jest.fn(async () => jsonResponse(status, { error: message, code })));
@@ -157,6 +158,35 @@ describe('createStockbotClient', () => {
     const { client } = clientWith(jest.fn(async () => jsonResponse(200, { required: false })));
     await client.getSession();
     expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('clears the auth banner on a later response and lets offline or busy replace it', async () => {
+    const auth = async () => jsonResponse(503, { error: "Sign-in isn't set up yet.", code: authNotConfigured.code });
+    const raised = clientWith(jest.fn(auth));
+    await expect(raised.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    expect(serverNoticeText()).toBe("Sign-in isn't set up yet.");
+    expect(serverNoticeText().charCodeAt(serverNoticeText().indexOf("'"))).toBe(39);
+
+    const signedOut = clientWith(jest.fn(async () => jsonResponse(401, { error: 'Sign in required.' })));
+    await expect(signedOut.client.getSession()).rejects.toMatchObject({ status: 401 });
+    expect(serverNoticeText()).toBe('');
+
+    const again = clientWith(jest.fn(auth));
+    await expect(again.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    const busy = clientWith(jest.fn(async () => jsonResponse(503, {
+      error: 'Stockbot is busy right now. Try again in a moment.',
+      code: 'busy',
+    })));
+    await expect(busy.client.listPending()).rejects.toMatchObject({ code: 'busy' });
+    expect(serverNoticeText()).toBe('');
+
+    const authAgain = clientWith(jest.fn(auth));
+    await expect(authAgain.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    const offline = clientWith(jest.fn(async () => {
+      throw new TypeError('Network request failed');
+    }));
+    await expect(offline.client.listPending()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
   });
 
   it('treats an HTML success and a failed body read as unreachable', async () => {

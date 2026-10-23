@@ -609,9 +609,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
 
   return (
-    <View style={[styles.screen, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
+    <View style={styles.screen}>
       <StatusBar style="dark" />
       <ServerNoticeBanner topInset={insets.top} text={derivedBanner} />
+      <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       {loading ? (
         <Text style={styles.count}>Checking the queue</Text>
@@ -752,6 +753,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       )}
+      </View>
     </View>
   );
 }
@@ -840,6 +842,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.paper,
+  },
+  body: {
+    flex: 1,
     paddingHorizontal: 20,
   },
   heading: {

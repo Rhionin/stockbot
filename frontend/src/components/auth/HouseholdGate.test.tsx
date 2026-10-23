@@ -1,8 +1,17 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess } from '../../api/contract';
+import { OFFLINE_SENTENCE, notifyApiSuccess } from '../../api/contract';
 import { HouseholdGate } from './HouseholdGate';
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
+
+const AUTH_BANNER = "Sign-in isn't set up yet.";
+const SETUP_SENTENCE = "Whoever runs this server needs to finish setting it up.";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -101,16 +110,109 @@ describe('HouseholdGate', () => {
     expect(screen.getByRole('heading', { name: 'Scan Queue' })).toBeVisible();
   });
 
-  it('shows the sign-in banner when auth is not configured', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
-      error: AUTH_NOT_CONFIGURED_SENTENCE,
-      code: 'auth_not_configured',
-    }, 503))));
+  it('caps the retry wait at 30 seconds', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(() => {
+      calls += 1;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }));
     renderGate();
-    expect(await screen.findByText(AUTH_NOT_CONFIGURED_SENTENCE)).toBeVisible();
-    expect(screen.getAllByText(AUTH_NOT_CONFIGURED_SENTENCE)).toHaveLength(1);
-    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
-    expect(screen.getByRole('form', { name: 'Sign in' })).toBeVisible();
+    await act(async () => { await Promise.resolve(); });
+    const gaps = [1000, 2000, 4000, 8000, 16000, 30000, 30000];
+    for (const gap of gaps) {
+      const seen = calls;
+      await act(async () => { await vi.advanceTimersByTimeAsync(gap - 1); });
+      expect(calls).toBe(seen);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(calls).toBe(seen + 1);
+    }
+  });
+
+  it('starts the next retry at one second after a session response', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(() => {
+      calls += 1;
+      if (calls === 2) {
+        return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
+      }
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }));
+    renderGate();
+    await act(async () => { await Promise.resolve(); });
+    expect(calls).toBe(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls).toBe(2);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(calls).toBe(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(calls).toBe(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(calls).toBe(4);
+  });
+
+  it.each([
+    { via: 'session', next: 'form' },
+    { via: 'session', next: 'stay' },
+    { via: 'session', next: 'offline' },
+    { via: 'login', next: 'form' },
+  ])('hides the form when $via returns auth_not_configured and Try again handles $next', async ({ via, next }) => {
+    let sessionCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/login')) {
+        return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
+      }
+      if (!url.endsWith('/api/session')) return Promise.reject(new Error(url));
+      sessionCalls += 1;
+      if (via === 'login' && sessionCalls === 1) {
+        return Promise.resolve(json({ error: 'Sign in required.' }, 401));
+      }
+      if (sessionCalls === 1 || (via === 'login' && sessionCalls < 2)) {
+        return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
+      }
+      if (next === 'form') return Promise.resolve(json({ error: 'Sign in required.' }, 401));
+      if (next === 'stay') return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }));
+    renderGate();
+    if (via === 'login') {
+      fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
+      fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    }
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeVisible();
+    expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+    expect(screen.getByText(AUTH_BANNER)).toBeVisible();
+    expect(screen.getAllByText(AUTH_BANNER)).toHaveLength(1);
+    expect(AUTH_BANNER.includes('\u2019')).toBe(false);
+    expect(screen.getByText(SETUP_SENTENCE)).toBeVisible();
+    expect(screen.getAllByText(SETUP_SENTENCE)).toHaveLength(1);
+    expect(document.querySelector('a[href*="/setup"]')).toBeNull();
+    expect(document.body.innerHTML).not.toContain('/setup');
+
+    const before = sessionCalls;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(sessionCalls).toBe(before + 1));
+    if (next === 'form') {
+      expect(await screen.findByRole('form', { name: 'Sign in' })).toBeVisible();
+      expect(screen.queryByText(AUTH_BANNER)).not.toBeInTheDocument();
+      expect(screen.queryByText(SETUP_SENTENCE)).not.toBeInTheDocument();
+    } else if (next === 'offline') {
+      expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
+      expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+      expect(screen.queryByText(SETUP_SENTENCE)).not.toBeInTheDocument();
+      expect(screen.queryByText(AUTH_BANNER)).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByText(AUTH_BANNER)).toBeVisible();
+      expect(screen.getByText(SETUP_SENTENCE)).toBeVisible();
+      expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+    }
+    expect(document.body.innerHTML).not.toContain('/setup');
   });
 
   it('opens the app after a successful sign-in', async () => {

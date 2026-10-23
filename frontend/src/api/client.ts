@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, clearOfflineBanner, notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -175,7 +175,7 @@ function classifiedError(
 ): Error {
   const disposition = applyHttpResponse(status, code);
   if (disposition === 'offline') return new UnreachableError();
-  if (disposition === 'auth') return new ServerNoticeError('auth_not_configured', AUTH_NOT_CONFIGURED_SENTENCE);
+  if (disposition === 'auth') return new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
   return new ApiError(status, message, code, members, suggestions);
 }
 
@@ -622,7 +622,7 @@ async function fetchResponse(path: string, init?: RequestInit): Promise<Response
 export async function getSession(): Promise<HouseholdSession> {
   const res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
   if (res.status === 401) {
-    clearOfflineBanner();
+    applyHttpResponse(res.status, '');
     return { required: true, username: '', error: '' };
   }
   let text: string;

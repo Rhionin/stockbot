@@ -3,13 +3,13 @@
 import '@testing-library/jest-dom/vitest';
 import { afterEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import { clearOfflineBanner } from './api/contract';
+import { clearServerNotice } from './api/contract';
 
 // vite.config.ts does not set test.globals, so React Testing Library's
 // automatic afterEach cleanup (which relies on a global afterEach) never
 // registers. Wire it up explicitly so each test starts with a clean DOM.
 afterEach(() => {
-  clearOfflineBanner();
+  clearServerNotice();
   cleanup();
 });
 

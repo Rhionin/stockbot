@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  AUTH_NOT_CONFIGURED_SENTENCE,
   BATCH_FAILURE_FALLBACK,
   BUSY_SENTENCE,
   CODE_AUTH_NOT_CONFIGURED,
@@ -300,6 +301,11 @@ const authNotConfigured = JSON.parse(
 describe('auth_not_configured', () => {
   it('is the sign-in code', () => {
     expect(CODE_AUTH_NOT_CONFIGURED).toBe(authNotConfigured.code);
+  });
+
+  it('uses a straight apostrophe in the banner sentence', () => {
+    expect(AUTH_NOT_CONFIGURED_SENTENCE).toBe("Sign-in isn't set up yet.");
+    expect(AUTH_NOT_CONFIGURED_SENTENCE.charCodeAt(AUTH_NOT_CONFIGURED_SENTENCE.indexOf("'"))).toBe(39);
   });
 });
 

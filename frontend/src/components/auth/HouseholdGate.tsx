@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { UnreachableError } from '../../api/contract';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, serverNoticeText, UnreachableError } from '../../api/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { HouseholdSessionContext } from './householdSession';
@@ -10,9 +10,10 @@ const RETRY_START_MS = 1000;
 const RETRY_CAP_MS = 30_000;
 
 export const HouseholdGate = ({ children }: { children: ReactNode }) => {
-  const [phase, setPhase] = useState<'checking' | 'offline' | 'login' | 'app'>('checking');
+  const [phase, setPhase] = useState<'checking' | 'offline' | 'login' | 'setup' | 'app'>('checking');
   const [required, setRequired] = useState(false);
   const [error, setError] = useState('');
+  const recheckRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -21,6 +22,11 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
 
     const applySession = (session: Awaited<ReturnType<typeof getSession>>) => {
       setRequired(session.required);
+      if (serverNoticeText() === AUTH_NOT_CONFIGURED_SENTENCE && session.username === '') {
+        setError('');
+        setPhase('setup');
+        return;
+      }
       if (!session.required || session.username !== '') {
         setError('');
         setPhase('app');
@@ -51,10 +57,15 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
       });
     };
 
+    recheckRef.current = () => {
+      window.clearTimeout(timer);
+      attempt();
+    };
     attempt();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      recheckRef.current = null;
     };
   }, []);
 
@@ -80,6 +91,18 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     );
   }
 
+  if (phase === 'setup') {
+    return (
+      <main className="login-screen login-screen--offline">
+        <ServerNoticeBanner />
+        <p className="login-setup-sentence">{AUTH_SETUP_SENTENCE}</p>
+        <button type="button" className="login-setup-retry" onClick={() => { recheckRef.current?.(); }}>
+          Try again
+        </button>
+      </main>
+    );
+  }
+
   if (phase === 'login') {
     return (
       <>
@@ -90,6 +113,10 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
             setRequired(true);
             setError('');
             setPhase('app');
+          }}
+          onNotConfigured={() => {
+            setError('');
+            setPhase('setup');
           }}
         />
       </>

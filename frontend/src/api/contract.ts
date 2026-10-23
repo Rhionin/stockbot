@@ -309,6 +309,8 @@ export const OFFLINE_SENTENCE = "Can't reach Stockbot. Check your connection and
 
 export const AUTH_NOT_CONFIGURED_SENTENCE = "Sign-in isn't set up yet.";
 
+export const AUTH_SETUP_SENTENCE = "Whoever runs this server needs to finish setting it up.";
+
 // A proxy or tunnel can answer with one of these and no Stockbot code.
 const GATEWAY_STATUSES = new Set([502, 503, 504, 530]);
 
@@ -417,20 +419,21 @@ export function stockbotCode(body: unknown): string {
 
 export type HttpDisposition = 'offline' | 'auth' | 'stockbot';
 
-// A Stockbot response, including an error, clears offline. A 502, 503, 504, or
-// 530 with no code did not come from Stockbot, so it is offline. auth_not_configured
-// is its own banner. busy and no_space stay with the caller and clear only on success.
+// A Stockbot response, including an error, clears offline and the sign-in banner.
+// A 502, 503, 504, or 530 with no code did not come from Stockbot, so it is offline.
+// auth_not_configured is its own banner. busy and no_space stay with the caller
+// and clear only on success.
 export function applyHttpResponse(status: number, code: string): HttpDisposition {
   const trimmed = code.trim();
   if (GATEWAY_STATUSES.has(status) && trimmed === '') {
     raiseOfflineBanner();
     return 'offline';
   }
-  clearOfflineBanner();
   if (trimmed === CODE_AUTH_NOT_CONFIGURED) {
     raiseAuthNotConfiguredBanner();
     return 'auth';
   }
+  clearServerNotice();
   return 'stockbot';
 }
 
@@ -456,8 +459,8 @@ export function notifyApiSuccess(): void {
   for (const listener of apiSuccessListeners) listener();
 }
 
-// One shared banner. Offline replaces any other notice. A Stockbot response
-// clears only offline. Success clears the whole slot, including auth.
+// One shared banner. Offline replaces any other notice. auth_not_configured
+// replaces offline. Any other Stockbot response clears the slot. Success does too.
 type NoticeKind = '' | 'offline' | 'auth';
 
 let noticeKind: NoticeKind = '';
@@ -494,6 +497,10 @@ export function raiseAuthNotConfiguredBanner(): void {
 export function unreadableResponse(error: unknown): UnreachableError {
   raiseOfflineBanner();
   return unreachableFrom(error) ?? new UnreachableError();
+}
+
+export function clearServerNotice(): void {
+  if (noticeKind !== '') publishNotice('');
 }
 
 export function clearOfflineBanner(): void {

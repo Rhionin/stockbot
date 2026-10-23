@@ -2,15 +2,22 @@ import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
-import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner } from '../../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '../../../frontend/src/api/contract';
+import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
+import SignInRoute from '../app/sign-in';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { QueueScreen } from './QueueScreen';
 import { basicAuthorization, HOUSEHOLD_USERNAME } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
-import { ConnectionForm } from './ConnectionForm';
+import { ConnectionForm, ConnectionScreen } from './ConnectionForm';
 import { SessionProvider, useSession } from '../session';
 import { renderScreen } from '../test/renderScreen';
 
 const mockMemory = new Map<string, string>();
+
+jest.mock('expo-router', () => ({
+  router: { replace: jest.fn() },
+}));
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async (key: string) => mockMemory.get(key) ?? null),
@@ -37,6 +44,7 @@ function ConnectProbe() {
   const [error, setError] = useState('');
   if (session.status === 'loading') return <Text>Loading</Text>;
   if (session.status === 'ready') return <Text>Ready</Text>;
+  const signedOutError = session.status === 'signedOut' ? session.error : '';
   return (
     <Pressable
       accessibilityLabel="Connect now"
@@ -46,7 +54,7 @@ function ConnectProbe() {
         });
       }}
     >
-      <Text>{error || session.error || 'Signed out'}</Text>
+      <Text>{error || signedOutError || 'Signed out'}</Text>
     </Pressable>
   );
 }
@@ -202,7 +210,8 @@ describe('session sign-in', () => {
 
   it('shows the connection banner for an unreachable submit', async () => {
     const screen = await renderScreen(
-      <ConnectionForm
+      <ConnectionScreen
+        topInset={0}
         heading="Connect"
         lede="The phone keeps this Stockbot."
         submitLabel="Connect now"
@@ -267,5 +276,94 @@ describe('session sign-in', () => {
     await fireEvent.press(screen.getByLabelText('Reload'));
     await waitFor(() => expect(screen.getByText('no-warning')).toBeTruthy());
     expect(screen.queryByText('Stockbot did not answer at that address.')).toBeNull();
+  });
+});
+
+const AUTH_BANNER = "Sign-in isn't set up yet.";
+const SETUP_SENTENCE = "Whoever runs this server needs to finish setting it up.";
+
+function AuthGate() {
+  const session = useSession();
+  if (session.status === 'ready') {
+    return (
+      <>
+        <Text>In the app</Text>
+        <ServerNoticeBanner />
+      </>
+    );
+  }
+  return <SignInRoute />;
+}
+
+describe('auth is not configured', () => {
+  afterEach(() => {
+    mockMemory.clear();
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    { via: 'session', next: 'form' },
+    { via: 'session', next: 'stay' },
+    { via: 'session', next: 'offline' },
+    { via: 'connect', next: 'form' },
+  ])('hides the form when $via returns auth_not_configured and Try again handles $next', async ({ via, next }) => {
+    let calls = 0;
+    let mode: 'auth' | 'form' | 'offline' = 'auth';
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      if (mode === 'offline') throw new TypeError('Network request failed');
+      if (mode === 'form') return jsonResponse(401, { error: 'Sign in required.' });
+      return jsonResponse(503, { error: AUTH_BANNER, code: authNotConfigured.code });
+    });
+    if (via === 'session') {
+      mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
+      mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    }
+    const screen = await renderScreen(
+      <SessionProvider>
+        <AuthGate />
+      </SessionProvider>,
+    );
+    if (via === 'connect') {
+      await fireEvent.changeText(await screen.findByLabelText('Server'), 'https://stockbot.example');
+      await fireEvent.changeText(screen.getByLabelText('Household password'), 'correct-horse');
+      await fireEvent.press(screen.getByLabelText('Connect'));
+    }
+    expect(await screen.findByText(SETUP_SENTENCE)).toBeTruthy();
+    expect(screen.getByText(AUTH_BANNER)).toBeTruthy();
+    expect(screen.getAllByText(AUTH_BANNER)).toHaveLength(1);
+    expect(AUTH_BANNER.includes('\u2019')).toBe(false);
+    expect(screen.getAllByText(SETUP_SENTENCE)).toHaveLength(1);
+    expect(screen.getByLabelText('Try again')).toBeTruthy();
+    expect(screen.queryByLabelText('Household password')).toBeNull();
+    expect(screen.queryByLabelText('Server')).toBeNull();
+    expect(JSON.stringify(screen.toJSON())).not.toContain('/setup');
+
+    const before = calls;
+    mode = next === 'form' ? 'form' : next === 'stay' ? 'auth' : 'offline';
+    await fireEvent.press(screen.getByLabelText('Try again'));
+    await waitFor(() => expect(calls).toBe(before + 1));
+    if (next === 'form') {
+      expect(await screen.findByLabelText('Household password')).toBeTruthy();
+      expect(screen.queryByText(AUTH_BANNER)).toBeNull();
+      expect(screen.queryByText(SETUP_SENTENCE)).toBeNull();
+    } else if (next === 'offline') {
+      expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+      expect(screen.queryByText(SETUP_SENTENCE)).toBeNull();
+      expect(screen.queryByText(AUTH_BANNER)).toBeNull();
+      if (via === 'session') {
+        expect(await screen.findByText('In the app')).toBeTruthy();
+        expect(screen.getByText(OFFLINE_SENTENCE)).toBeTruthy();
+        expect(screen.queryByLabelText('Household password')).toBeNull();
+      } else {
+        expect(await screen.findByLabelText('Household password')).toBeTruthy();
+        expect(screen.getByText(OFFLINE_SENTENCE)).toBeTruthy();
+      }
+    } else {
+      expect(screen.getByText(SETUP_SENTENCE)).toBeTruthy();
+      expect(screen.getByText(AUTH_BANNER)).toBeTruthy();
+      expect(screen.queryByLabelText('Household password')).toBeNull();
+    }
+    expect(JSON.stringify(screen.toJSON())).not.toContain('/setup');
   });
 });

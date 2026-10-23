@@ -48,6 +48,25 @@ function bindingNames(binding: string): string[] {
   return /^[A-Za-z_$][\w$]*$/.test(name) ? [name] : [];
 }
 
+function aliasesOf(body: string, names: string[]): string[] {
+  const found = new Set(names);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const name of [...found]) {
+      const alias = new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${name}\\b`, 'g');
+      let match: RegExpExecArray | null;
+      while ((match = alias.exec(body)) !== null) {
+        if (!found.has(match[1])) {
+          found.add(match[1]);
+          grew = true;
+        }
+      }
+    }
+  }
+  return [...found];
+}
+
 function messageHits(source: string): string[] {
   const hits: string[] = [];
   const lines = source.split('\n');
@@ -57,7 +76,7 @@ function messageHits(source: string): string[] {
     if (/\{[^}]*\bmessage\b/.test(head)) {
       hits.push(`${lineOf(site.at)}: catch (${head})`);
     }
-    const names = bindingNames(head);
+    const names = aliasesOf(site.body, bindingNames(head));
     for (const name of names) {
       const patterns = [
         new RegExp(`\\b${name}\\s*\\.\\s*message\\b`),
@@ -65,6 +84,9 @@ function messageHits(source: string): string[] {
         new RegExp(`\\b${name}\\s*\\[\\s*['"]message['"]\\s*\\]`),
         new RegExp(`\\(\\s*${name}\\s+as\\s+[\\w.]+\\s*\\)\\s*\\.\\s*message\\b`),
         new RegExp(`(?:const|let|var)\\s*\\{[^}]*\\bmessage\\b[^}]*\\}\\s*=\\s*${name}\\b`),
+        new RegExp(`\\bString\\s*\\(\\s*${name}\\s*\\)`),
+        new RegExp(`\\bJSON\\.stringify\\s*\\(\\s*${name}\\b`),
+        new RegExp(`\`[^\`]*\\$\\{\\s*${name}\\b`),
       ];
       if (patterns.some((pattern) => pattern.test(site.body))) {
         const line = lines[lineOf(site.at) - 1]?.trim() ?? head;
@@ -95,5 +117,28 @@ describe('inline failure sites', () => {
       for (const hit of messageHits(source)) hits.push(`${file}:${hit}`);
     }
     expect(hits).toEqual([]);
+  });
+
+  it('flags an alias and a stringified catch binding', () => {
+    const source = `
+      try { work(); } catch (requestError) {
+        const err = requestError;
+        console.log(err.message);
+      }
+      try { work(); } catch (requestError) {
+        console.log(String(requestError));
+      }
+      try { work(); } catch (requestError) {
+        console.log(\`\${requestError}\`);
+      }
+      try { work(); } catch (requestError) {
+        console.log(JSON.stringify(requestError));
+      }
+      try { work(); } catch (requestError) {
+        const message = inlineFailure(requestError, '');
+        return message;
+      }
+    `;
+    expect(messageHits(source)).toHaveLength(4);
   });
 });

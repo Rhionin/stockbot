@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as telemetry from '../telemetry/client';
 import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
 import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from './contract';
+
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
 
 describe('api error messages', () => {
   afterEach(() => {
@@ -95,7 +101,7 @@ describe('api error messages', () => {
     { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved.", notice: '' },
     { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.', notice: '' },
     { name: 'coded 500', status: 500, code: 'internal', message: 'Something went wrong. Try again.', notice: '' },
-    { name: 'auth not configured', status: 503, code: 'auth_not_configured', message: AUTH_NOT_CONFIGURED_SENTENCE, notice: AUTH_NOT_CONFIGURED_SENTENCE },
+    { name: 'auth not configured', status: 503, code: authNotConfigured.code, message: AUTH_NOT_CONFIGURED_SENTENCE, notice: "Sign-in isn't set up yet." },
   ])('$name clears offline and keeps its own message', async ({ status, code, message, notice }) => {
     raiseOfflineBanner();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
@@ -131,11 +137,12 @@ describe('api error messages', () => {
     await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
 
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
-      JSON.stringify({ error: AUTH_NOT_CONFIGURED_SENTENCE, code: 'auth_not_configured' }),
+      JSON.stringify({ error: "Sign-in isn't set up yet.", code: authNotConfigured.code }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     ))));
     await expect(getSession()).resolves.toEqual({ required: true, username: '', error: '' });
-    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+    expect(serverNoticeText()).toBe("Sign-in isn't set up yet.");
+    expect(serverNoticeText().charCodeAt(serverNoticeText().indexOf("'"))).toBe(39);
 
     raiseOfflineBanner();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
@@ -191,6 +198,40 @@ describe('api error messages', () => {
     raiseOfflineBanner();
     await logout();
     expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('clears the auth banner on a later response and lets offline or busy replace it', async () => {
+    const authBody = JSON.stringify({ error: "Sign-in isn't set up yet.", code: authNotConfigured.code });
+    const authResponse = () => Promise.resolve(new Response(authBody, {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    vi.stubGlobal('fetch', vi.fn(authResponse));
+    await getSession();
+    expect(serverNoticeText()).toBe("Sign-in isn't set up yet.");
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'Sign in required.' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await getSession();
+    expect(serverNoticeText()).toBe('');
+
+    vi.stubGlobal('fetch', vi.fn(authResponse));
+    await getSession();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'Stockbot is busy right now. Try again in a moment.', code: 'busy' }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(listProducts()).rejects.toMatchObject({ code: 'busy' });
+    expect(serverNoticeText()).toBe('');
+
+    vi.stubGlobal('fetch', vi.fn(authResponse));
+    await getSession();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
   });
 
   it('treats an HTML success and a failed body read as unreachable', async () => {

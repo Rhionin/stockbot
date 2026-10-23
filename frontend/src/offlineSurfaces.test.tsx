@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
-import { OFFLINE_SENTENCE, notifyApiSuccess, raiseOfflineBanner } from './api/contract';
+import { BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from './api/contract';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
+import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import type { ScanEntry } from './types';
 
 class FakeEventSource {
@@ -43,6 +44,39 @@ const renderQueue = () => render(
 );
 
 describe('offline surfaces', () => {
+  it('shows one banner on the scan queue', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    window.history.pushState({}, '', '/');
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }));
+    render(
+      <MantineProvider>
+        <App />
+      </MantineProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Scan queue' })).toBeInTheDocument();
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
+    expect(screen.getAllByTestId('server-notice-banner')).toHaveLength(1);
+  });
+
+  it('replaces the auth sentence with the busy sentence', () => {
+    raiseAuthNotConfiguredBanner();
+    render(
+      <MantineProvider>
+        <ServerNoticeBanner text={BUSY_SENTENCE} />
+      </MantineProvider>,
+    );
+    expect(screen.getByText("Sign-in isn't set up yet.")).toBeVisible();
+    act(() => {
+      applyHttpResponse(503, 'busy');
+    });
+    expect(screen.queryByText("Sign-in isn't set up yet.")).not.toBeInTheDocument();
+    expect(screen.getByText(BUSY_SENTENCE)).toBeVisible();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     window.history.pushState({}, '', '/');

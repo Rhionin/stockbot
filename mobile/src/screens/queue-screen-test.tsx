@@ -3,8 +3,13 @@ import { StyleSheet } from 'react-native';
 import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
+  AUTH_NOT_CONFIGURED_SENTENCE,
   BATCH_FAILURE_FALLBACK,
   BUSY_SENTENCE,
+  CODE_AUTH_NOT_CONFIGURED,
+  OFFLINE_SENTENCE,
+  raiseAuthNotConfiguredBanner,
+  ServerNoticeError,
   NOTHING_ON_HAND_BODY,
   NOTHING_ON_HAND_TITLE,
   NO_SPACE_SENTENCE,
@@ -514,6 +519,23 @@ describe('QueueScreen', () => {
     expect(screen.getByText('Oats')).toBeTruthy();
   });
 
+  it('keeps the sign-in sentence off the card', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const api = client({
+      listPending: jest.fn(async () => [oats]),
+      commitScan: jest.fn(async () => {
+        raiseAuthNotConfiguredBanner();
+        throw new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, "Sign-in isn't set up yet.");
+      }),
+      getInventoryList: jest.fn(async () => [householdItem('Oats', oats.productId ?? '', 2)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    await fireEvent.press(await screen.findByLabelText('Confirm Oats'));
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText("Sign-in isn't set up yet.")).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-a')).queryByText("Sign-in isn't set up yet.")).toBeNull();
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+  });
+
   it.each([
     { name: 'a busy remove is only the banner', status: 503, code: 'busy', sentence: BUSY_SENTENCE },
     { name: 'a no_space remove is only the banner', status: 507, code: 'no_space', sentence: NO_SPACE_SENTENCE },
@@ -701,7 +723,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     await waitFor(() => {
-      expect(screen.queryByTestId('server-notice-banner') ?? screen.queryByTestId('batch-banner')).toBeTruthy();
+      expect(screen.getByTestId('server-notice-banner')).toBeTruthy();
     });
     await fireEvent.press(screen.getByLabelText(`Confirm ${confirmName}`));
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(3));
@@ -1185,6 +1207,16 @@ describe('QueueScreen', () => {
       .map((child) => String(child.props.children));
   }
 
+  function onServerNotice(line: string): boolean {
+    return line === BUSY_SENTENCE
+      || line === NO_SPACE_SENTENCE
+      || line === OFFLINE_SENTENCE
+      || line === AUTH_NOT_CONFIGURED_SENTENCE
+      || line === BATCH_FAILURE_FALLBACK
+      || line.endsWith(BUSY_SENTENCE)
+      || line.endsWith(NO_SPACE_SENTENCE);
+  }
+
   function expectBanner(
     screen: Awaited<ReturnType<typeof renderScreen>>,
     state: 'gone' | 'success' | 'failure',
@@ -1216,7 +1248,9 @@ describe('QueueScreen', () => {
     }
     const head = lines[0] ?? '';
     const rest = lines.slice(1);
-    if (notice !== null && within(notice).queryByText(head) !== null) {
+    if (onServerNotice(head)) {
+      if (notice === null) throw new Error('The server notice banner is missing.');
+      expect(within(notice).getByText(head)).toBeTruthy();
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
       expect(fill).toBe(SERVER_NOTICE_RED);
@@ -1231,6 +1265,7 @@ describe('QueueScreen', () => {
       expect(wash).toBeUndefined();
       return;
     }
+    expect(notice === null || within(notice).queryByText(head) === null).toBe(true);
     if (batch === null) throw new Error('The batch banner is missing.');
     const texts = batch.children.filter((child): child is Exclude<typeof child, string> => typeof child !== 'string');
     expect(texts.map((node) => String(node.props.children))).toEqual(lines);

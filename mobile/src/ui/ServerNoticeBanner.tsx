@@ -7,6 +7,9 @@ import { fonts } from './theme';
 // share this one banner so every tab looks the same.
 export const SERVER_NOTICE_RED = '#EF4444';
 
+// The same inset on every tab: just below the status bar, inset from the screen edge.
+export const SERVER_NOTICE_INSET = 20;
+
 export function ServerNoticeBanner({ topInset = 0, text = '' }: { topInset?: number; text?: string }) {
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const shown = notice !== '' ? notice : text;
@@ -15,7 +18,7 @@ export function ServerNoticeBanner({ topInset = 0, text = '' }: { topInset?: num
     <View
       testID="server-notice-banner"
       accessibilityLiveRegion="polite"
-      style={[styles.banner, { marginTop: topInset }]}
+      style={[styles.banner, { marginTop: topInset, marginHorizontal: SERVER_NOTICE_INSET }]}
     >
       <Text style={styles.sentence}>{shown}</Text>
     </View>

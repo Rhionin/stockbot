@@ -1,13 +1,32 @@
 import type { ReactElement } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { render } from '@testing-library/react-native';
-import { OFFLINE_SENTENCE, notifyApiSuccess, raiseOfflineBanner } from '../../../frontend/src/api/contract';
+import { act, render } from '@testing-library/react-native';
+import { BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '../../../frontend/src/api/contract';
 import { createStockbotClient } from '../api/client';
-import { ConnectionForm } from '../screens/ConnectionForm';
+import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
+import HouseholdRoute from '../app/(app)/household';
+import SignInRoute from '../app/sign-in';
+import { SessionProvider } from '../session';
 import { QueueScreen } from '../screens/QueueScreen';
 import { ScanScreen } from '../screens/ScanScreen';
-import { SERVER_NOTICE_RED } from './ServerNoticeBanner';
+import { ServerNoticeBanner, SERVER_NOTICE_INSET, SERVER_NOTICE_RED } from './ServerNoticeBanner';
+
+const mockMemory = new Map<string, string>();
+
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn(async (key: string) => mockMemory.get(key) ?? null),
+  setItemAsync: jest.fn(async (key: string, value: string) => {
+    mockMemory.set(key, value);
+  }),
+  deleteItemAsync: jest.fn(async (key: string) => {
+    mockMemory.delete(key);
+  }),
+}));
+
+jest.mock('expo-router', () => ({
+  router: { replace: jest.fn() },
+}));
 
 jest.mock('expo-camera', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -68,43 +87,71 @@ function offlineClient() {
   );
 }
 
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  } as Response;
+}
+
 describe('mobile server notice banner', () => {
-  afterEach(() => {
-    notifyApiSuccess();
+  afterEach(async () => {
+    await act(async () => {
+      notifyApiSuccess();
+    });
+    mockMemory.clear();
+    jest.restoreAllMocks();
   });
 
   it.each([
     {
       name: 'queue',
       heading: 'To confirm',
-      marginTop: TOP,
       draw: () => render(framed(<QueueScreen client={offlineClient()} warning="" />)),
     },
     {
       name: 'scan',
       heading: 'Putting away',
-      marginTop: TOP,
       draw: () => render(framed(<ScanScreen client={offlineClient()} warning="" />)),
     },
     {
       name: 'household',
       heading: 'Household',
-      marginTop: 0,
-      draw: () => {
-        raiseOfflineBanner();
-        return render(framed(
-          <View style={{ paddingTop: TOP }}>
-            <ConnectionForm
-              heading="Household"
-              lede="Saved on this phone."
-              submitLabel="Save"
-              onSubmit={async () => undefined}
-            />
-          </View>,
+      draw: async () => {
+        mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
+        mockMemory.set(PASSWORD_KEY, 'correct-horse');
+        jest.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ required: true, username: 'pantry' }));
+        const view = await render(framed(
+          <SessionProvider>
+            <HouseholdRoute />
+          </SessionProvider>,
         ));
+        await view.findByText('Household');
+        await act(async () => {
+          raiseOfflineBanner();
+        });
+        return view;
       },
     },
-  ])('pins a boxed red banner above the $name heading', async ({ heading, marginTop, draw }) => {
+    {
+      name: 'sign-in',
+      heading: 'Stockbot',
+      draw: async () => {
+        const view = await render(framed(
+          <SessionProvider>
+            <SignInRoute />
+          </SessionProvider>,
+        ));
+        await view.findByText('Stockbot');
+        await act(async () => {
+          raiseOfflineBanner();
+        });
+        return view;
+      },
+    },
+  ])('pins a boxed red banner above the $name heading', async ({ heading, draw }) => {
     const view = await draw();
     const banner = await view.findByTestId('server-notice-banner');
     expect(view.getByText(OFFLINE_SENTENCE)).toBeTruthy();
@@ -112,11 +159,26 @@ describe('mobile server notice banner', () => {
     expect(style.backgroundColor).toBe(SERVER_NOTICE_RED);
     expect(style.backgroundColor).toBe('#EF4444');
     expect(style.borderRadius).toBe(4);
-    expect(style.marginTop).toBe(marginTop);
+    expect(style.marginTop).toBe(TOP);
+    expect(style.marginHorizontal).toBe(SERVER_NOTICE_INSET);
+    expect(style.marginHorizontal).toBe(20);
     const order = collect(view.toJSON());
     const bannerAt = order.indexOf('server-notice-banner');
     const headingAt = order.indexOf(heading);
     expect(bannerAt).toBeGreaterThanOrEqual(0);
     expect(headingAt).toBeGreaterThan(bannerAt);
+  });
+
+  it('replaces the auth sentence with the queue sentence', async () => {
+    const view = await render(<ServerNoticeBanner text={BUSY_SENTENCE} />);
+    await act(async () => {
+      raiseAuthNotConfiguredBanner();
+    });
+    expect(view.getByText("Sign-in isn't set up yet.")).toBeTruthy();
+    await act(async () => {
+      applyHttpResponse(503, 'busy');
+    });
+    expect(view.queryByText("Sign-in isn't set up yet.")).toBeNull();
+    expect(view.getByText(BUSY_SENTENCE)).toBeTruthy();
   });
 });

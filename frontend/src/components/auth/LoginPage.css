@@ -25,6 +25,33 @@
   margin-top: 28px;
 }
 
+.login-setup-sentence {
+  margin: 28px 0 0;
+  max-width: 28rem;
+  font-size: 1.125rem;
+  line-height: 1.45;
+  color: #1c1915;
+}
+
+.login-setup-retry {
+  align-self: flex-start;
+  margin-top: 20px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 0;
+  background: #115e59;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+
+.login-setup-retry:focus-visible {
+  outline: 2px solid #0d9488;
+  outline-offset: 3px;
+}
+
 .login-card {
   width: min(100%, 420px);
   box-sizing: border-box;
