@@ -1105,6 +1105,74 @@ fi
 [[ ! -e "$orphan/.update-rejected-digest" ]] || fail "an orphaned grocy-sync recorded a digest: $(cat "$orphan/.update-rejected-digest")"
 unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
 
+# A changed cloudflared that is down after up fails the deploy. Pantry's
+# image did not change and stayed healthy, so only the cloudflared digest
+# is rejected. This is the shared confirm_recreated path.
+cloud_down=$(mktemp -d)
+prepare_pantry "$cloud_down"
+write_images "$cloud_down/images.tsv" \
+  sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_down/images.tsv"
+printf '%s\n' $'cloudflared\texited\t0' > "$cloud_down/status.tsv"
+STUB_STATUS_TSV="$cloud_down/status.tsv"
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${OLD_COMMIT}\"}"
+PANTRY_UPDATE_SETTLE_SECONDS=0
+run_update "$cloud_down"
+[[ "$LAST_RC" -ne 0 ]] || fail "changed cloudflared exit should fail the deploy: $LAST_OUT"
+have "$LAST_OUT" "cloudflared is not running" "a changed cloudflared that exited is reported"
+have "$(cat "$cloud_down/.update-rejected-digest")" $'cloudflared\tcloudflare/cloudflared@sha256:newcloud' "a changed cloudflared exit rejects only that digest"
+lack "$(cat "$cloud_down/.update-rejected-digest")" "oldpantry" "a changed cloudflared exit does not reject pantry"
+lack "$(cat "$cloud_down/.update-rejected-digest")" "newpantry" "a changed cloudflared exit does not invent a pantry digest"
+unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_UPDATE_SETTLE_SECONDS
+
+# compose up fails and the changed cloudflared is still on its previous
+# image. That digest is rejected. The new pantry image, which is running,
+# is not.
+cloud_stale=$(mktemp -d)
+prepare_pantry "$cloud_stale"
+write_images "$cloud_stale/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_stale/images.tsv"
+printf '%s\n' $'pantry\tsha256:newpantry' > "$cloud_stale/live.tsv"
+STUB_LIVE_IMAGE_TSV="$cloud_stale/live.tsv"
+STUB_UP_RC=1
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$cloud_stale"
+[[ "$LAST_RC" -ne 0 ]] || fail "stale cloudflared should exit non-zero: $LAST_OUT"
+have "$LAST_OUT" "cloudflared is still running the previous image" "a stale changed cloudflared is not healthy"
+have "$LAST_DOCKER" "--pull never" "a stale changed cloudflared rolls back"
+have "$(cat "$cloud_stale/.update-rejected-digest")" "newcloud" "a stale cloudflared is rejected"
+lack "$(cat "$cloud_stale/.update-rejected-digest")" "newpantry" "a stale cloudflared does not reject the new pantry"
+unset STUB_LIVE_IMAGE_TSV STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# An unchanged cloudflared that was already restarting is a warning.
+# Three runs keep the new pantry image and record no digest.
+cloud_warn=$(mktemp -d)
+prepare_pantry "$cloud_warn"
+write_images "$cloud_warn/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$cloud_warn/images.tsv"
+printf '%s\n' $'cloudflared\trestarting\t4' > "$cloud_warn/status.tsv"
+STUB_STATUS_TSV="$cloud_warn/status.tsv"
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+PANTRY_UPDATE_SETTLE_SECONDS=0
+cloud_warn_try=0
+while [[ "$cloud_warn_try" -lt 3 ]]; do
+  cloud_warn_try=$((cloud_warn_try + 1))
+  run_update "$cloud_warn"
+  [[ "$LAST_RC" -eq 0 ]] || fail "already-restarting cloudflared run ${cloud_warn_try} exited $LAST_RC: $LAST_OUT"
+  have "$LAST_OUT" "cloudflared was already restarting and its image did not change" "run ${cloud_warn_try} warns about cloudflared"
+  lack "$LAST_DOCKER" "--pull never" "run ${cloud_warn_try} does not roll back"
+  [[ ! -e "$cloud_warn/.update-rejected-digest" ]] || fail "run ${cloud_warn_try} recorded a digest: $(cat "$cloud_warn/.update-rejected-digest")"
+done
+unset STUB_STATUS_TSV STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_UPDATE_SETTLE_SECONDS
+
 # A sidecar that is running at first and then crash-loops is caught on the
 # settle re-check. Pantry already passed health, so only caddy is rejected.
 crash=$(mktemp -d)
@@ -2219,5 +2287,5 @@ for grocy_mode in lan tunnel; do
 done
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
 
-rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
+rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"
