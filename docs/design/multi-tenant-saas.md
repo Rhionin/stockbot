@@ -18,7 +18,7 @@ Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labele
   1. **Export.** The owner exports household data as JSON (canonical, versioned schema) plus CSV for spreadsheets. The hosted app imports the JSON. A Pi-side importer is later and out of launch scope. The export does not rebuild a SQLite file.
   2. **Erasure.** Day 30 from live data and day 44 from backups is accepted. User-facing copy: "Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that."
   3. **Auth.** Cognito + SES is required.
-  4. **Live updates.** While the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s. Poll every 2 s only while that screen is visible, every 10 s on other visible screens, and stop in the background. No WebSockets for launch.
+  4. **Live updates.** While the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s. Poll every 2 s only while that screen is visible, every 10 s on other visible screens, and stop in the background. *Transport superseded, pending CJ's decision:* PM's "no WebSockets for launch" is reopened by the polling-vs-push comparison in §3.1. The ~2 s user-facing requirement and the no-background rule stand in every option.
   5. **Expo.** Moving the Expo app (PR #230) to Cognito sign-in is in launch scope.
 - Still **TODO(PM)**: which host runs the USB-dongle scanner.
 - Ground rules: simple, low cost, serverless. Avoid fixed-cost traps: NAT, public IPv4, Aurora minimums, ALB, Logs, KMS, Secrets Manager (PM req).
@@ -103,7 +103,7 @@ Lambda rework for in-memory state (needed for A, B, and C):
 
 | Today (in process) | Hosted |
 |---|---|
-| SSE broadcaster `/api/events` | Poll a cheap changes-since cursor only while a screen is visible, and stop in the background (PM decision 2026-10-22). Scan Queue (web or mobile): every 2 s while it is open and visible, so new scans appear within about 2 s. Visibility is the Page Visibility API on web, and AppState plus screen focus on Expo. Other visible screens: every 10 s, same changes-since pattern. The Scan Queue poll is `GET /api/scans?since=<cursor>` (empty or 304 when nothing changed), backed by an index on `(household_id, updated_at)`. No WebSockets for launch. API Gateway WebSockets is a later option if polling is not enough. |
+| SSE broadcaster `/api/events` | Poll a cheap changes-since cursor only while a screen is visible, and stop in the background (PM decision 2026-10-22). Scan Queue (web or mobile): every 2 s while it is open and visible, so new scans appear within about 2 s. Visibility is the Page Visibility API on web, and AppState plus screen focus on Expo. Other visible screens: every 10 s, same changes-since pattern. The Scan Queue poll is `GET /api/scans?since=<cursor>` (empty or 304 when nothing changed), backed by an index on `(household_id, updated_at)`. Push is compared in §3.1 and supersedes "no WebSockets for launch", pending CJ's decision. Recommended **(opinion)**: AppSync Events hint-only push on visible screens, with this polling kept as the fallback while disconnected. |
 | Push-alert timers (`internal/push/attention.go`, 5-minute settle, 2,500 B batching) | Create a one-time EventBridge Scheduler entry per household batch window, named for idempotency, which invokes `stockbot-jobs` |
 | Scanner-mode idle timer | Store `mode_expires_at`; evaluate it lazily on read |
 | Background product refresh | Daily scheduled Lambda; the catalog is shared |
@@ -112,6 +112,146 @@ Lambda rework for in-memory state (needed for A, B, and C):
 | `internal/scanlistener` (/dev/input) | Stays Pi-only. Hosted ingest is phone camera, keyboard wedge in the browser, or relay `POST /api/device/scans` |
 
 Effort estimate (opinion): 1–2 weeks for statelessness plus 1–2 weeks for the SQL port and DSQL constraints.
+
+
+### 3.1 Live updates: polling vs push
+
+> **Status (2026-10-22):** this section supersedes "No WebSockets for launch" in §1 and §3, pending CJ's decision below. PM's user-facing requirement is unchanged: while the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. This section only compares *how* to meet that requirement. Cost arithmetic is in [multi-tenant-saas-costs.md §6](multi-tenant-saas-costs.md). Prices are us-east-1, accessed 2026-10-22.
+
+#### What stays the same in every style
+
+- **The Pi does not change.** It keeps SQLite and the SSE broadcaster `/api/events`; none of this section applies to it.
+  - The web and Expo clients pick their transport from a server-advertised setting, for example `GET /api/config` → `live: "sse" | "poll" | "push"`. All three call the same `onChanged(scope, cursor)` handler.
+- **The changes-since endpoints stay**, because push needs them to resync:
+  - `GET /api/scans?since=<cursor>`
+  - the changes-since pattern on other screens
+- **Push carries hints, not data.**
+  - A message is `{type: "scans"|"stock"|"list", cursor}`, under 1 KB.
+  - It contains no item names, so no household data passes through the push service. A client that receives a hint refetches through the normal API, which enforces tenancy as in §4.
+  - Hints also fit one 5 KB AppSync metering unit or one 32 KB API Gateway message.
+- **Trigger: publish after commit, from the Lambda that made the write.**
+  - This covers scan ingest from any source, confirm or edit, stock changes, list changes, and `stockbot-jobs` writes.
+  - It needs no DB triggers or CDC, which DSQL does not offer anyway, so it works the same on DSQL and on Aurora Serverless v2.
+  - Under DSQL OCC retries, publish only after the *final* successful commit.
+  - Publishing is best effort: a failed publish logs a metric and is covered by resync on reconnect.
+- **Visibility rules are the same as polling.**
+  - Connect only while a screen is visible: the Page Visibility API on web; `AppState` plus screen focus on Expo.
+  - Close the socket on hide or background. Nothing runs in the background.
+  - On every (re)connect, do one changes-since fetch.
+
+#### The four styles
+
+| | (a) Polling (current text) | (b) Push via API Gateway WebSocket | (c) Push via AppSync Events | (d) Hybrid: AppSync Events on the Scan Queue only |
+|---|---|---|---|---|
+| Scan Queue latency | ≤ 2 s, ~1 s average + request time | Sub-second (estimate) | Sub-second (estimate) | Sub-second (estimate) |
+| Other screens | 10 s | Sub-second | Sub-second | 10 s polling |
+| Server parts | Changes-since endpoints | WebSocket API; `$connect`/`$disconnect`/keepalive routes; Lambda authorizer; **connection registry** (household → connection IDs); fan-out with `POST /@connections/{id}` (SigV4, `execute-api:ManageConnections`); `GoneException` cleanup | Event API; one channel namespace `hh`; Lambda authorizer for subscribe; IAM-only publish from the Lambda role via `POST https://<http-domain>/event`; **no registry** | Same as (c), plus (a)'s 10 s polling |
+| Connection limits | n/a | Max 2 h connection; 10 min idle timeout, so the client must send an app-level keepalive about every 9 min, because browsers can't send ping frames. The 32 KB frame limit is irrelevant for hints. | The server sends `ka` every 60 s, and the client closes the socket if none arrives within `connectionTimeoutMs` (300,000). | As (c) |
+| Kicking a removed member | Immediate: the next poll returns 404 | Immediate: `DELETE /@connections/{id}` for that user's connections | No server-side disconnect API. Rotate the household's channel key on member removal (see ACL below), so old subscribers receive nothing further. | As (c) |
+| Cost, DSQL, 3 / 10 households | $1.79 / $3.65 | $1.80 / $1.83 | $1.80 / $1.83 | $1.80 / $1.83 |
+| Cost, Serverless v2, 3 / 10 households | $13.21 / $38.83 | $5.97 / $14.68 | $5.97 / $14.69 | $13.17 / $38.70 |
+| CloudFront Free plan (1M requests) fills at | ~14 households | ~112 | ~112 | ~65 |
+
+Sources for the limits, accessed 2026-10-22:
+- WebSocket quotas: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-execution-service-websocket-limits-table.html
+- `@connections` commands: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-how-to-call-websocket-api-connections.html
+- AppSync Events WebSocket protocol (`ka`, 60 s, 300,000 ms): https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
+- HTTP publish (`POST /event`, up to 5 events per batch): https://docs.aws.amazon.com/appsync/latest/eventapi/publish-http.html
+
+**Serverless v2 and polling.** Any request wakes the cluster, and the 300 s pause timer never elapses under 2 s or 10 s polling. Every polled session therefore keeps the cluster awake, at about 30 min per session, and at 10 households the cluster is close to always on. Push connections do not touch the DB, so only loads, scans and refetches wake it, at about 10 min per session.
+
+On Serverless v2 the API Gateway connection registry must live in DynamoDB, not Aurora, or every connect would wake the cluster. On DSQL the registry can be a DSQL table.
+
+#### Per-household channel ACL (b and c)
+
+Facts this design relies on:
+- **Web clients hold no Cognito token.** Web uses the server-side BFF cookie (§5), so browser JavaScript cannot present a Cognito token to AppSync or API Gateway.
+- **AppSync Events auth modes:** `API_KEY`, `AWS_LAMBDA`, `AWS_IAM`, `OPENID_CONNECT` and `AMAZON_COGNITO_USER_POOLS` (https://docs.aws.amazon.com/appsync/latest/eventapi/configure-event-api-auth.html).
+- **Per-namespace overrides:** publish and subscribe modes can be set separately per namespace. CDK has `ChannelNamespace` with `authorizationConfig.publishAuthModeTypes` / `subscribeAuthModeTypes` in `aws-cdk-lib/aws-appsync`, v2.274.0.
+- **The Lambda authorizer sees the channel.** Its request includes `requestContext.operation` (`EVENT_CONNECT`, `EVENT_SUBSCRIBE`, `EVENT_PUBLISH`) and `requestContext.channel`. On `EVENT_CONNECT` the channel isn't available, and the authorizer result is cached per API, operation, channel and token.
+
+The design (opinion), shared by web and Expo:
+
+1. **Live ticket.** `POST /api/live/ticket` checks the session and `X-Household-Id` against `memberships`. It returns a signed ticket of `{household_id, user_id, channel_key, exp ≤ 15 min}`, signed with an HMAC key from SSM SecureString, plus the channel name.
+2. **Channel.**
+   - The channel is `/hh/<household_id>/<channel_key>`.
+   - `channel_key` is a random value stored in `household_settings` and **rotated whenever a member or device is removed**. That cuts off old subscribers on AppSync (c), where the server can't disconnect a client.
+   - Channel limits: 5 segments and 50 characters per segment (https://docs.aws.amazon.com/general/latest/gr/appsync.html).
+3. **Subscribe.**
+   - (c): the `AWS_LAMBDA` authorizer verifies the ticket's signature and expiry. It allows `EVENT_SUBSCRIBE` only if `channel` equals exactly the ticket's channel: no wildcards, no prefix match. It denies `EVENT_PUBLISH` from clients. Cache TTL is ≤ 60 s.
+   - (b): the `$connect` Lambda authorizer does the same check. The registry row is keyed by the ticket's `household_id`.
+4. **Publish.** In (c), the namespace's publish mode is `AWS_IAM` only, granted to the API Lambda role. Clients can never publish.
+5. **Isolation tests** (added to §4's suite):
+   - H1's ticket can't subscribe to H2's channel, or to `/hh/*`.
+   - A forged or expired ticket is rejected.
+   - After a member is removed, that client gets no further hints and its refetch returns 404.
+   - A device scan in H1 produces a hint only on H1's channel.
+   - A client can't publish.
+
+#### Scan ingest paths under each style
+
+Hosted ingest stays as §11 describes: phone camera, keyboard wedge into a focused browser tab, or the ESP32 relay calling `POST /api/device/scans`. A scan from the relay reaches an open Scan Queue as follows:
+
+- **(a)** The scan Lambda commits. The visible queue's next 2 s poll returns it: ≤ 2 s, ~1 s on average plus request time.
+- **(b)** The scan Lambda commits, queries the registry for that household's connections, and calls `PostToConnection` for each. Clients receive a hint and refetch, which takes about 200–500 ms end to end (estimate). If nobody is connected, nothing is sent and nothing is billed beyond the registry query.
+- **(c) / (d)** The scan Lambda commits and makes one SigV4 `POST /event` to `/hh/<id>/<key>`. AppSync fans the hint out to subscribers, and clients refetch, which takes about 200–500 ms (estimate). With nobody subscribed, the publish still costs one operation ($1 per 1M).
+
+The relay is never a subscriber. It only POSTs, so it holds no socket and its firmware doesn't change.
+
+#### Mobile battery and data (estimate)
+
+- **(a) 2 s polling on the Scan Queue:**
+  - 1,800 requests per hour. An empty or 304 answer over HTTP/2 is ~1 KB with headers, so about **2 MB/h** of cellular data.
+  - The cellular radio never gets to drop back to idle between requests, because 2 s is shorter than an LTE tail of about 5–10 s. Battery drain while the queue is open is roughly the same as continuous light browsing.
+  - The 10 s screens put about a fifth of that load on the radio.
+- **(b) and (c):**
+  - An idle socket plus a keepalive costs a few KB per hour. That is `ka` every 60 s on AppSync, or an app ping about every 9 min on API Gateway.
+  - Traffic is otherwise only per change: a hint plus one refetch.
+  - The radio can idle between events. Scanning sessions still use the camera, which dominates battery use while scanning.
+- **Background:** nothing runs in any style.
+
+#### Build effort (opinion: engineer-days, one engineer who knows the codebase)
+
+| Work | (a) | (b) | (c) | (d) |
+|---|---|---|---|---|
+| Changes-since endpoints + client polling with visibility rules | already in the §3 statelessness estimate | same (still needed to resync) | same | same |
+| Publish-after-commit hook in the store/handler layer | — | 1 | 0.5 | 0.5 |
+| Ticket endpoint, authorizer, channel-key rotation, IAM-only publish | — | 1.5 | 1 | 1 |
+| Connection management: registry + TTL, `GoneException` cleanup, keepalive route, 2 h reconnect, disconnect on member removal | — | 2 | 0.5 (key rotation only) | 0.5 |
+| CDK: `CfnApi`/WebSocket routes or `EventApi` + `ChannelNamespace` | — | 1 | 0.5 | 0.5 |
+| Web client: reconnect with exponential backoff + jitter, close on hidden, resync, fall back to a 10 s poll while disconnected | — | 1 | 1 | 1 |
+| Expo client: React Native's built-in `WebSocket`, `AppState` + NetInfo reconnect | — | 1 | 1 | 1 |
+| Cross-household isolation + reconnect tests (CI + nightly against dev) | — | 1.5 | 1.5 | 1.5 |
+| **Added over (a)** | **0** | **≈ 8–9 days** | **≈ 5–6 days** | **≈ 5–6 days, and it keeps both transports on the queue screens** |
+
+Expo client options for (c):
+- Amplify JS `events` (`aws-amplify/data`), which is documented for React Native at https://docs.amplify.aws/react-native/build-a-backend/data/connect-event-api/. It adds the Amplify dependency.
+- A small client built on the documented protocol: subprotocols `aws-appsync-event-ws` + `header-<base64url auth>`, then `subscribe` and `ka`. React Native's `WebSocket` accepts a subprotocol array.
+
+My pick is the small client, because Stockbot uses its own ticket rather than Amplify Auth **(opinion)**.
+
+#### Recommendation (opinion)
+
+**Use DSQL and AppSync Events push on every visible screen (c), with polling as the fallback while the socket is down.**
+
+- On DSQL, polling is already cheap, so cost is not the reason to move. The reasons are:
+  1. Sub-second updates on every screen instead of 2 s or 10 s.
+  2. Much less phone radio and data use on the Scan Queue.
+  3. The CloudFront Free plan lasts to ~112 households instead of ~14.
+  4. DSQL stays inside its free tier to ~25 households instead of ~3.
+- (c) beats (b) on effort: there's no connection registry, no 2 h reconnect, and no keepalive route. The price is the same.
+  - (b)'s one real advantage is a hard server-side disconnect. Channel-key rotation covers that need well enough for hint-only payloads.
+- (d) keeps two transports and gains nothing on DSQL.
+- Cost of the switch: about 1 extra week of build. It can also ship after launch: the changes-since endpoints are needed either way, so polling can go out first and push can follow without rework.
+
+On Serverless v2, push matters much more: about $15/month instead of about $39 at 10 households. The 15–30 s resume on the first request after a pause remains in every style.
+
+#### Decision for CJ (database + live-update style)
+
+> **Which database and live-update style should hosted Stockbot launch with?**
+> 1. **Aurora DSQL + AppSync Events push on every visible screen**, with the 2 s / 10 s polling kept only as the fallback while disconnected. About $1.80/month at 3 households and $1.83 at 10. About 1 extra week of build. Sub-second updates. *(my recommendation)*
+> 2. **Aurora DSQL + polling only** (2 s Scan Queue / 10 s elsewhere, as PM accepted). About $1.79/month at 3 households and $3.65 at 10. No extra build. Push can be added later without rework. Free CloudFront tier to ~14 households.
+> 3. **Aurora Serverless v2 (full Postgres) + AppSync Events push.** About $6/month at 3 households and $15 at 10. 15–30 s first load after a pause. Same extra week of build.
 
 ## 4. Tenancy isolation
 
@@ -264,3 +404,4 @@ Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
 - Paid tier billing provider and limits: TODO(PM).
 - Hosted domain name and whether DNS stays on Cloudflare: TODO(CJ).
 - Pi self-host: does it get the new auth, or keep the shared password? TODO(PM)
+- Database + live-update style (DSQL + AppSync Events push, DSQL + polling, or Serverless v2 + push): TODO(CJ), see §3.1.

@@ -144,3 +144,123 @@ The Data API lets Lambda stay outside the VPC, so there is no NAT. The cluster i
 | E. Fargate + ALB + RDS t4g.micro | ~$50.14 | ~$50.14 | ALB + IPv4 + always-on DB | Postgres port only |
 
 Lambda statelessness rework (A, B, C) means replacing the in-memory state: the SSE broadcaster `/api/events` becomes polling (2 s while the Scan Queue is visible, 10 s on other visible screens, off in the background); the push-attention timers become EventBridge Scheduler one-time schedules; the scanner-mode idle timer becomes a stored expiry; the background product refresh becomes a scheduled Lambda; the telemetry registry and login rate limiter become DB rows. Rough estimate (opinion): about 1–2 weeks of one engineer. See [multi-tenant-saas.md](multi-tenant-saas.md).
+
+## 6. Live updates: polling vs push
+
+This section compares four live-update styles on the two serverless databases still in play: **C. Aurora DSQL** and **A. Aurora Serverless v2 (min 0 ACU) via Data API**.
+
+It uses the same conventions as §1–§5: USD per 30-day month, us-east-1, the never-expiring free tiers included, and the 12-month free tiers excluded. Every usage figure is my **(estimate)**. Prices were accessed 2026-10-22. Style (a) is today's PM-decided design. At 3 households it reproduces §2 and §4C exactly: 199,500 requests and 99,750 DPU.
+
+### 6.1 Unit prices added
+
+| Item | Price | Service code, publication date (`usagetype`) | Pricing page |
+|---|---|---|---|
+| API Gateway WebSocket messages | $1.00 / 1M (first 1B), then $0.80 / 1M | AmazonApiGateway, 2026-10-13T00:30:44Z (`USE1-ApiGatewayMessage`) | https://aws.amazon.com/api-gateway/pricing/ |
+| API Gateway WebSocket connection minutes | $0.25 / 1M minutes | AmazonApiGateway, 2026-10-13T00:30:44Z (`USE1-ApiGatewayMinute`) | same |
+| AppSync Events operations | $1.00 / 1M operations | AWSAppSync, 2026-09-11T12:45:25Z (`USE1-EventAPI-Operation`) | https://aws.amazon.com/appsync/pricing/ |
+| AppSync Events connection minutes | $0.08 / 1M minutes | AWSAppSync, 2026-09-11T12:45:25Z (`USE1-EventAPI-ConnectionDuration`) | same |
+| CloudFront flat-rate plans | Free $0 (1M requests/mo), Pro $15/mo (10M requests/mo), no overage charges | CloudFront pricing page | https://aws.amazon.com/cloudfront/pricing/ |
+
+The prices come from the AWS bulk Price List files for those service codes. The Pricing MCP `get_pricing` cross-check failed with "Unable to locate credentials".
+
+Metering rules, from the pricing pages as of 2026-10-22:
+- **API Gateway WebSocket:**
+  - Messages are metered in 32 KB increments.
+  - Control frames (ping/pong) are not metered.
+  - Free tier: 1M messages and 750,000 connection minutes per month, for 12 months.
+- **AppSync Events:**
+  - Inbound publishes, outbound deliveries, event-handler invocations, connections, subscription requests and "ping requests" are all operations.
+  - Real-time messages are metered per 5 KB.
+  - Free tier: 250,000 real-time updates and 600,000 connection minutes per month, for 12 months.
+
+### 6.2 Workload, per household per month (estimate)
+
+The workload follows §2.
+
+| Item | Value | Basis |
+|---|---|---|
+| Non-poll API requests | 5,300 | §2 base of 37,500 for 3 households, minus the 10 s polls |
+| 10 s polls on other visible screens | 7,200 | §2: 720/day for 3 households, which is 40 visible min/day per household |
+| 2 s Scan Queue polls | 54,000 | §2: 1 h/day × 1,800/h × 30 |
+| Visible time | 100 min/day, in 4 sessions | 60 min on the Scan Queue + 40 min on other screens |
+| Change events | 1,500 | ~30 scans + ~20 stock changes per day. A relay scan is one event. |
+| Push fan-out | 1.5 open sessions per event, or 1.0 for (d) | The scanning phone is usually one of the receivers |
+| Refetches under push | 1 per connect (120) + 1 per hint received | Hints are type + cursor only, < 1 KB, no item names |
+| Static-asset requests | 1,200 | Through CloudFront |
+| Lambda | 0.05 GB-s per request | §2 |
+| DSQL | 0.5 DPU per request | §4C. Connection-registry rows cost 0.2 DPU. |
+| Serverless v2, polling sessions | 25 min visible + 5 min pause delay = 30 min awake per session | Sessions are assumed not to overlap across households, which makes this an upper bound |
+| Serverless v2, push sessions | ~10 min awake per session | Only loads, scans and refetches touch the DB |
+| Serverless v2, scheduled jobs | + 5 h/month | §4A |
+
+### 6.3 Arithmetic per style (per household per month unless noted)
+
+**(a) Polling: 2 s on the Scan Queue, 10 s elsewhere (the current design)**
+- Requests: 5,300 + 7,200 + 54,000 = 66,500.
+  - 3 households: 199,500.
+  - 10 households: 665,000. The Lambda free tier still covers this, so **$0**.
+- DSQL: 33,250 DPU per household.
+  - 3 households: 99,750 DPU, which is **$0.00**.
+  - 10 households: 332,500 DPU. 232,500 billable × $8/1M = **$1.86**.
+  - §2 quotes "+$1.40" for 10 households. That figure nets the free tier against the polls alone; counting base traffic as well gives $1.86 in total.
+- Serverless v2:
+  - 3 households: 3 × 120 sessions × 30 min = 180 h + 5 = 185 h × 0.5 ACU × $0.12 = **$11.10**, plus the fixed items.
+  - 10 households: 605 h = **$36.30**, which is close to always on.
+- CloudFront: 67,700 requests per household, so the Free plan's 1M fills at **~14 households**.
+
+**(b) Push everywhere via API Gateway WebSocket**
+- Messages ≈ 2,850 → $0.003:
+  - 2,250 deliveries (1,500 × 1.5);
+  - 360 app keepalives (3 per session; the idle timeout is 10 min and browsers can't send ping frames);
+  - 240 connect/disconnect messages (counted conservatively).
+- Connection minutes: 3,000 → $0.0008.
+- Connection registry: DynamoDB on Serverless v2, so registry writes don't wake the cluster, at < $0.001. On DSQL it is a DSQL table at ~800 DPU.
+- Lambda: 360 authorizer/`$connect`/`$disconnect` calls + 1,500 fan-outs. The keepalive route is a MOCK integration.
+- Requests: 5,300 + 120 + 2,250 = 7,670.
+- DSQL: ~4,000 DPU per household, so free until ~25 households.
+- Serverless v2:
+  - 3 households: 3 × 120 × 10 min = 60 h + 5 = 65 h = **$3.90**.
+  - 10 households: 205 h = **$12.30**.
+
+**(c) Push everywhere via AppSync Events**
+- Operations: 120 connects + 120 subscribes + 120 authorizer evaluations + 1,500 publishes + 2,250 deliveries = **4,110** → $0.004.
+  - Upper bound if the server's 60 s `ka` keep-alives are billed as "ping requests" (unverified): +3,000 → $0.007.
+- Connection minutes: 3,000 → $0.0002.
+- No registry.
+- Requests: 7,670.
+- DSQL: ~3,800 DPU per household. Serverless v2: the same hours as (b).
+
+**(d) Hybrid: AppSync Events on the visible Scan Queue only, 10 s polling elsewhere**
+- Operations: 360 + 1,500 + 1,500 = 3,360 (up to 5,160 with `ka`).
+- Connection minutes: 1,800.
+- Requests: 5,300 + 7,200 + 120 + 1,500 = 14,120.
+- DSQL: ~7,100 DPU per household, so free until ~14 households.
+- Serverless v2: the 10 s polls still keep the cluster awake for each whole session, so hours ≈ (a).
+
+### 6.4 Summary, USD/month
+
+Each figure is the option total: option C's or option A's own costs, plus the shared $1.51, plus the live-update cost. Lambda is $0 in every cell.
+
+| Style | C. DSQL, 3 hh | C. DSQL, 10 hh | A. Serverless v2, 3 hh | A. Serverless v2, 10 hh | Serverless v2 awake h (3 / 10 hh) | CloudFront Free plan fills at |
+|---|---|---|---|---|---|---|
+| (a) Polling, 2 s queue / 10 s elsewhere (current) | **1.79** | **3.65** | 13.21 | 38.83 | 185 / 605 | ~14 hh |
+| (b) Push everywhere, API GW WebSocket | 1.80 | 1.83 | 5.97 | 14.68 | 65 / 205 | ~112 hh |
+| (c) Push everywhere, AppSync Events | 1.80 | 1.83 (≤ 1.86) | 5.97 | 14.69 | 65 / 205 | ~112 hh |
+| (d) Hybrid: push on the Scan Queue, 10 s polls elsewhere | 1.80 | 1.83 | 13.17 | 38.70 | 185 / 605 | ~65 hh |
+
+How the totals are built:
+- **DSQL** = §4C's $1.79 (backups + shared) + DPU above the free tier + push charges.
+- **Serverless v2** = shared $1.51 + storage + I/O (scaled per household) + the $0.40 Data API secret + Data API statements + awake hours × $0.06/h + push charges.
+- The Serverless v2 polling figures replace §4A's "$6.57 low traffic" active-window model whenever the Scan Queue is open 1 h/day per household.
+
+Reading the table:
+- **On DSQL every style costs about $2/month or less.**
+  - Polling's real costs are the CloudFront Free plan request quota and phone battery and data.
+    - The quota fills at ~14 households. After that the Pro plan costs $15/month.
+    - Push moves the quota limit to ~112 households.
+  - Polling also leaves the DSQL free tier at about 3 households: it is at 99,750 DPU today.
+- **On Serverless v2, polling is what costs money.** Any style that polls the DB from visible screens keeps the cluster awake for every session. Push connections never touch the DB, which cuts the awake hours by about two thirds.
+- **API GW WebSocket and AppSync Events cost the same at this scale, to within a few cents.** Choose between them on build effort and security.
+- **With the 12-month free tiers, both push services cost $0 in year one.**
+
+`push_model.py` (kept beside the working docs, not committed) reproduces every number above. Its inputs are the assumptions in §6.2.
