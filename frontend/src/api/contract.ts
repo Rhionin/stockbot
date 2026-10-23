@@ -336,6 +336,7 @@ export interface InviteCreateRequest {
 export interface InviteCreated {
   id: string;
   code: string;
+  /** Server-built `<APP_BASE_URL>/invite/<code>`. APP_BASE_URL is per-stage config. */
   url: string;
   email: string | null;
   expiresAt: string;

@@ -100,6 +100,11 @@ describe('hosted API contract', () => {
     }
     expect(doc).toContain('generic-sentence: Something went wrong. Try again.');
     expect(doc).toContain('stock target');
+    expect(doc).not.toContain('TODO(CJ)');
+    expect(doc).toContain('Decided by CJ, via Network Engineer, on 2026-10-22');
+    expect(doc).toContain('<APP_BASE_URL>/invite/<code>');
+    expect(doc).toContain('https://app.stockbot.rhionin.com');
+    expect(doc).toContain('mail.stockbot.rhionin.com');
   });
 
   it('states the tenant rule and the endpoint index count', () => {

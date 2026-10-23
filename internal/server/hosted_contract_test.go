@@ -166,6 +166,19 @@ func TestHostedAPIContract(t *testing.T) {
 	if strings.Contains(doc, "proposed, PM to confirm") {
 		t.Fatal("a sentence is still marked proposed, PM to confirm")
 	}
+	if strings.Contains(doc, "TODO(CJ)") {
+		t.Fatal("invite host is still TODO(CJ)")
+	}
+	for _, phrase := range []string{
+		"Decided by CJ, via Network Engineer, on 2026-10-22",
+		"<APP_BASE_URL>/invite/<code>",
+		"https://app.stockbot.rhionin.com",
+		"mail.stockbot.rhionin.com",
+	} {
+		if !strings.Contains(doc, phrase) {
+			t.Fatalf("contract missing %q", phrase)
+		}
+	}
 	for _, row := range rows {
 		want, ok := existing[row.code]
 		if !ok {

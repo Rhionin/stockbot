@@ -50,7 +50,7 @@ Proposed: restore does not revive device tokens. The owner re-pairs each device 
 | Expo | `Authorization: Bearer` Cognito access token, from the system browser PKCE flow. Tokens stay in the device secure store. | `X-Household-Id` |
 | Device | `Authorization: Bearer` device token, returned once at pairing. | Bound to the token. One household per device. |
 
-Web cookie calls that change state also require an `Origin` equal to the hosted origin (design §5). Expo bearer calls do not use that cookie.
+Web cookie calls that change state also require an `Origin` equal to `APP_BASE_URL` (design §5). Expo bearer calls do not use that cookie. `APP_BASE_URL` is per-stage config. Production is `https://app.stockbot.rhionin.com`. The server reads the variable. This contract does not hardcode the host.
 
 The cookie's name is not specified here. It replaces `pantry_session` on the hosted origin. `pantry_session` stays the Pi cookie.
 
@@ -370,13 +370,13 @@ The household is the caller's `X-Household-Id` on create, list, and revoke. Acce
 interface InviteCreated {
   id: string;
   code: string;       // shown once
-  url: string;        // hosted origin + code, origin from server config
+  url: string;        // <APP_BASE_URL>/invite/<code>
   email: string | null;
   expiresAt: string;  // created plus 7 days
 }
 ```
 
-The code has at least 40 bits of entropy. When `email` is present, the server sends that URL through SES only after the invite row commits. The address is not a tenant. A failure to send does not roll back the invite.
+The code has at least 40 bits of entropy. The server builds `url` as `<APP_BASE_URL>/invite/<code>`. The client does not send a host. When `email` is present, the server sends that URL through SES only after the invite row commits. SES sends from `stockbot.rhionin.com`, and the MAIL FROM domain is `mail.stockbot.rhionin.com`. The address is not a tenant. A failure to send does not roll back the invite.
 
 ### GET /api/invites
 
@@ -806,7 +806,14 @@ Owner. First step of import. Returns a presigned S3 PUT URL. The object key is u
 
 `contentLength` above `maxBytes` is `413` `payload_too_large`, and no URL is issued. The presigned PUT is limited to that same size. The client PUTs the JSON to `uploadUrl`, then starts the job.
 
-Infrastructure: the imports bucket needs CORS that allows `PUT` from the hosted origin. Network Engineer owns that bucket policy. This contract does not create the bucket.
+### Infrastructure dependencies
+
+Network Engineer owns these. CJ approved the production names on 2026-10-22.
+
+- `APP_BASE_URL` is per stage. Production is `https://app.stockbot.rhionin.com`. A later dev stage gets its own host. The server reads the variable.
+- Invite links are `<APP_BASE_URL>/invite/<code>`.
+- SES sends from `stockbot.rhionin.com`. The MAIL FROM domain is `mail.stockbot.rhionin.com`.
+- The imports bucket needs CORS that allows `PUT` from the origin in `APP_BASE_URL`. This contract does not create the bucket.
 
 ### POST /api/import
 
@@ -1033,7 +1040,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 
 ## Decided by PM
 
-Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). PM confirmed every working assumption except the invite host. Where the comment rewrote a rule, that rewrite is the contract.
+Numbers are the ones in [PM's review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). PM confirmed every working assumption except the invite host, which CJ later decided. Where the comment rewrote a rule, that rewrite is the contract.
 
 1. **JSON casing.** CamelCase on the wire. Decided by PM.
 3. **Rename.** Owner. Decided by PM.
@@ -1088,11 +1095,14 @@ From the review on PR #364. Where one of these refines an earlier ruling, the te
 9. **Reused scan id.** A different body is `409` `conflict`. `id` stays optional.
 10. **History page.** The body returns `nextBefore`. `since` does not apply to committed or cancelled paging.
 11. **AppSync header.** base64url without padding. `host` is the HTTP domain.
-12. **Presigned import.** The imports bucket needs CORS for the hosted origin. Network Engineer owns that. Job start checks that a file `importId` matches the request.
+12. **Presigned import.** The imports bucket needs CORS for the origin in `APP_BASE_URL`. Network Engineer owns that. Job start checks that a file `importId` matches the request.
+
+## Decided by CJ
+
+27. **Invite URL host.** Decided by CJ, via Network Engineer, on 2026-10-22. This replaces the open domain note in design §13. The hosted app and invite URLs use `APP_BASE_URL`. Production is `https://app.stockbot.rhionin.com`. Invite links are `<APP_BASE_URL>/invite/<code>`. SES sends from `stockbot.rhionin.com`, with MAIL FROM at `mail.stockbot.rhionin.com`. The host is stage config, not a hardcoded string, because dev will get its own host later. The client does not send a host.
 
 ## Open questions
 
-1. **Invite URL host** (PM's #27). Still open. It waits on CJ's hosted domain. The server builds the URL. The client does not send a host.
-2. **Session cookie name.** Still open for the Architect. It must not be the Pi's `pantry_session`. PM's comment did not name it.
-3. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays.
-4. **Pi auth** (question 31 on the reviewed contract). This contract does not change the Pi. Which auth the Pi keeps is PM's decision. It is not a T2 blocker.
+1. **Session cookie name.** Still open for the Architect. It must not be the Pi's `pantry_session`. PM's comment did not name it.
+2. **Reconnect backoff numbers.** Still unspecified. The 2 s / 10 s polls and the 300 s `ka` timeout stand. PM's comment did not set the delays.
+3. **Pi auth** (question 31 on the reviewed contract). This contract does not change the Pi. Which auth the Pi keeps is PM's decision. It is not a T2 blocker.
