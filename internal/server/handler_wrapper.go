@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/go-json-experiment/json"
 )
 
@@ -165,7 +168,9 @@ func writeHTTPError(w http.ResponseWriter, status int, err error) {
 }
 
 // writeStatusError writes a JSON error. A 5xx is also reported, with the
-// request when one is available. The client still receives a fixed sentence.
+// request when one is available. A classified busy or no-space failure keeps
+// its own sentence. Every other 5xx uses the generic sentence. An unexpected
+// commit failure keeps code internal. Driver text stays in the server log.
 func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err error) {
 	// A deadline or cancel is the client hanging up only when this request's
 	// own context is already done. The same error on a live request is a
@@ -202,28 +207,44 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	}
 	if status >= 500 {
-		logged := message
-		if httpErr != nil && httpErr.Err != nil {
-			logged = httpErr.Err.Error()
+		// A preview copy that cannot be written keeps its own sentence.
+		// A full disk otherwise has its own warning line. The driver text
+		// is not copied into that warning, or into the response.
+		preview := httpErr != nil && httpErr.Message == clientmsg.PreviewNoSpace
+		if sqliteNoSpace(err) && !preview {
+			logNoSpace(r, err)
+		} else {
+			logged := message
+			if httpErr != nil && httpErr.Err != nil {
+				logged = httpErr.Err.Error()
+			}
+			if errors.Is(err, context.Canceled) {
+				slog.Info("request canceled")
+			} else {
+				log.Printf("request failed: %s", logged)
+			}
 		}
-		log.Printf("request failed: %s", logged)
-		// code internal is a deliberate client contract: the sentence is safe
-		// and the underlying error was logged above. A 503 with its own
-		// sentence is retryable. Other 500s stay generic and omit the code.
-		if status == http.StatusServiceUnavailable && httpErr != nil && httpErr.Message != "" {
-			message = httpErr.Message
+		if preview {
+			message = clientmsg.PreviewNoSpace
 			extra = false
-		} else if httpErr != nil && httpErr.ErrorCode == "internal" && httpErr.Message != "" {
-			message = httpErr.Message
-			code = httpErr.ErrorCode
+		} else if sqliteBusy(err) || sqliteNoSpace(err) {
+			message, code, extra = serverClientPayload(err, code)
 			members = nil
 			suggestions = nil
 			itemID = ""
 			onHand = nil
-			extra = true
 		} else {
-			message = "Something went wrong. Please try again."
-			extra = false
+			message = clientmsg.Generic
+			if httpErr != nil && httpErr.ErrorCode == inventory.CodeInternal && httpErr.Message != "" {
+				code = httpErr.ErrorCode
+				members = nil
+				suggestions = nil
+				itemID = ""
+				onHand = nil
+				extra = true
+			} else {
+				extra = false
+			}
 		}
 	}
 	if extra {

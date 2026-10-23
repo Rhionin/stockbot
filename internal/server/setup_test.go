@@ -22,13 +22,19 @@ const testProductCacheTTL = 30 * 24 * time.Hour
 // setupTestDB opens an in-memory SQLite database, applies all migrations, and returns the connection.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := app.OpenSQLite(":memory:")
+	return openMigratedDB(t, ":memory:")
+}
+
+func openMigratedDB(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	conn, err := app.OpenSQLite(dsn)
 	if err != nil {
-		t.Fatalf("open in-memory SQLite: %v", err)
+		t.Fatalf("open SQLite: %v", err)
 	}
 	// A :memory: database lives on one connection. A second pooled connection
 	// is an empty database, so transactions (group suggestion refresh during
-	// lookup) would miss the migrated schema.
+	// lookup) would miss the migrated schema. The server uses one connection
+	// too, so a file-backed test matches that pool.
 	conn.SetMaxOpenConns(1)
 	t.Cleanup(func() { conn.Close() })
 	if err := app.RunMigrations(conn); err != nil {
@@ -52,6 +58,11 @@ func setupTestWithDB(t *testing.T) (http.Handler, testEnv) {
 func setupTestWithContributor(t *testing.T, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {
 	t.Helper()
 	return setupOnDB(t, setupTestDB(t), contributor, extra...)
+}
+
+func setupTestOnDSN(t *testing.T, dsn string, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {
+	t.Helper()
+	return setupOnDB(t, openMigratedDB(t, dsn), contributor, extra...)
 }
 
 func setupOnDB(t *testing.T, db *sql.DB, contributor product.UpstreamContributor, extra ...Option) (http.Handler, testEnv) {

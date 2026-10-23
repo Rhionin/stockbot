@@ -34,7 +34,28 @@ have .github/workflows/ci.yml 'https://pantry.rhionin.com/api/deploy-hook' "work
 have .github/workflows/ci.yml 'DEPLOY_HOOK_SECRET is not set; skipping the deploy hook' "workflow skips when the repo secret is unset"
 have .github/workflows/ci.yml "github.ref == 'refs/heads/master'" "workflow notifies only after a master push"
 have .github/workflows/ci.yml "inputs.publish_image != 'skip'" "reusable Release run does not publish the image"
+have .github/workflows/ci.yml 'deploy-master' "master image publish shares one queue"
+have .github/workflows/ci.yml 'cancel-in-progress: false' "a running master publish is not cancelled"
+have .github/workflows/ci.yml 'queue: max' "waiting master publishes stay queued"
+have .github/workflows/ci.yml 'bash scripts/publish-moving-tags.sh' "workflow runs the tip guard script"
+have .github/workflows/ci.yml "steps.moving.outputs.publish == 'true'" "deploy hook runs only after moving tags are published"
+have scripts/publish-moving-tags.sh 'git ls-remote origin refs/heads/master' "tip guard compares this commit to the tip of master"
+have scripts/publish-moving-tags.sh 'leaving :latest and :master unchanged' "a stale master publish does not move :latest"
+have scripts/publish-moving-tags.sh '::notice::' "tip guard emits a notice"
+have scripts/publish-moving-tags.sh 'GITHUB_STEP_SUMMARY' "tip guard writes the job summary"
+have scripts/publish-moving-tags.sh 'set -euo pipefail' "tip guard keeps pipefail"
+have scripts/publish-moving-tags.sh 'pantry-grocy-sync:latest' "tip guard moves the sidecar tag"
 have .github/workflows/release.yml 'publish_image: skip' "Release does not publish :latest and :master"
+have deploy/README.md 'deploy-master' "README documents the master publish queue"
+have deploy/README.md 'queue: max' "README documents the waiting queue"
+have deploy/README.md 'Re-run the master workflow' "README documents re-running the tip"
+have deploy/README.md 'cancelled' "README says a cancelled waiting job is not a failure"
+if grep -q 'git fetch' scripts/publish-moving-tags.sh .github/workflows/ci.yml; then
+  fail "tip guard still fetches master"
+fi
+if grep -q "TAGS=\"\$TAGS,ghcr.io/rhionin/pantry:latest" .github/workflows/ci.yml; then
+  fail "build tags still include :latest before the tip check"
+fi
 
 have deploy/Caddyfile '@deploy path /api/deploy-hook' "certificate Caddyfile exempts the hook"
 have deploy/Caddyfile.tunnel '@deploy path /api/deploy-hook' "tunnel Caddyfile exempts the hook"

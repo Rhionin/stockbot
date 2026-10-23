@@ -38,16 +38,7 @@ declare global {
   }
 }
 
-export const DEFAULT_BARCODE_FORMATS = [
-  'ean_13',
-  'ean_8',
-  'upc_a',
-  'upc_e',
-  'code_128',
-  'code_39',
-  'itf',
-  'qr_code',
-];
+export { DEFAULT_BARCODE_FORMATS } from './barcodeFormats';
 
 async function formatsForNativeDetector(requested: readonly string[]): Promise<string[]> {
   const Detector = window.BarcodeDetector;

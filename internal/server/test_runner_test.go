@@ -120,7 +120,7 @@ func runHandlerTests(t *testing.T, tests []handlerTestCase) {
 
 			test := apitest.New().Handler(handler)
 			req := buildRequest(test, tt.httpExchange)
-			expect := buildExpectations(req, tt.httpExchange)
+			expect := buildExpectations(t, req, tt.httpExchange)
 
 			var capturedRes *http.Response
 			if tt.afterRequest != nil {
@@ -144,7 +144,7 @@ func runHandlerTests(t *testing.T, tests []handlerTestCase) {
 func executeExchange(t *testing.T, handler http.Handler, ex httpExchange) {
 	test := apitest.New().Handler(handler)
 	req := buildRequest(test, ex)
-	expect := buildExpectations(req, ex)
+	expect := buildExpectations(t, req, ex)
 	expect.End()
 }
 
@@ -187,8 +187,8 @@ func buildRequest(test *apitest.APITest, ex httpExchange) *apitest.Request {
 }
 
 // buildExpectations builds apitest expectations from an httpExchange.
-func buildExpectations(req *apitest.Request, ex httpExchange) *apitest.Response {
-	expect := req.Expect(nil).Status(ex.expectedStatus)
+func buildExpectations(t *testing.T, req *apitest.Request, ex httpExchange) *apitest.Response {
+	expect := req.Expect(t).Status(ex.expectedStatus)
 
 	for _, a := range ex.assertions {
 		if a.absent {

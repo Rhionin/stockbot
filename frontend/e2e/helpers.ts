@@ -50,9 +50,9 @@ export const scanBarcode = async (page: Page, barcode: string): Promise<Locator>
   await scannerInput.fill(barcode)
   await scannerInput.press('Enter')
 
-  // exact: the in-flight placeholder is "Scan <barcode> processing", and a
-  // substring match would return that card before the real row exists.
-  const scanCard = page.getByRole('article', { name: `Scan ${barcode}`, exact: true })
+  // The in-flight placeholder is "Scan <barcode> processing". A nothing-on-hand
+  // card appends its title after a comma. Neither should match the other.
+  const scanCard = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
   await expect(scanCard).toBeVisible()
   return scanCard
 }
@@ -149,3 +149,18 @@ export const commitSelectedScan = async (
 
 export const inventoryRow = (page: Page, productName: string): Locator =>
   page.getByRole('article').filter({ has: page.getByRole('heading', { name: productName }) })
+
+// Specs share one SQLite database and one scanner mode for the whole
+// Playwright run. Clear shopping-list rows, on-hand stock, and the opening
+// snapshot, and put the scanner back to stock_in, so a spec neither inherits
+// nor leaves that state.
+export const resetSharedState = async (request: APIRequestContext): Promise<void> => {
+  const wiped = await request.post('/api/inventory/wipe', {
+    data: { confirmation: 'WIPE INVENTORY' },
+  })
+  expect(wiped.ok()).toBe(true)
+  const mode = await request.post('/api/scanner/mode', {
+    data: { mode: 'stock_in' },
+  })
+  expect(mode.ok()).toBe(true)
+}

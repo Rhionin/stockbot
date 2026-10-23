@@ -604,19 +604,35 @@ func TestBatchCommitIgnoresBackfill(t *testing.T) {
 			}
 		}
 		seedScanAt(env, "scan-batch-full", "prod-batch-full", scan.StockOut, 2, at)
-		exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
+		body := exchangeJSON(t, handler, http.MethodPost, "/api/scans/batch-commit",
 			`{"scanEntryIds":["scan-batch-full"],"commit":true,"backfill":true}`, http.StatusOK)
+		var got struct {
+			CommittedIDs   []string `json:"committedIds"`
+			FailedIDs      []string `json:"failedIds"`
+			StockOutCounts map[string]struct {
+				RemovedCount   int `json:"removedCount"`
+				RequestedCount int `json:"requestedCount"`
+			} `json:"stockOutCounts"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		counts := got.StockOutCounts["scan-batch-full"]
+		if len(got.FailedIDs) != 0 || len(got.CommittedIDs) != 1 || got.CommittedIDs[0] != "scan-batch-full" ||
+			counts.RemovedCount != 2 || counts.RequestedCount != 2 {
+			t.Fatalf("batch = %+v", got)
+		}
 		view := productHistory(env, handler, "item-batch-full")
 		var outs, backfills int
 		for _, move := range view.Moves {
 			if move.Source == "backfill" {
 				backfills++
 			}
-			if move.Direction == "out" && move.Source == "scan" && move.Quantity == 1 {
+			if move.Direction == "out" && move.Source == "scan" && move.Quantity == 2 {
 				outs++
 			}
 		}
-		if view.OnHand != 2 || outs != 1 || backfills != 0 {
+		if view.OnHand != 1 || outs != 1 || backfills != 0 {
 			t.Fatalf("batch history = %+v", view)
 		}
 	})

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -53,6 +54,10 @@ type ScanEntry struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	// OnHand is set on a link response. It is not stored on the scan row.
 	OnHand *int `json:"onHand,omitempty"`
+	// RemovedCount and RequestedCount are the stock-out figures stored when
+	// the scan first committed. Batch retry reads them. They are not scan JSON.
+	RemovedCount   *int `json:"-"`
+	RequestedCount *int `json:"-"`
 }
 
 // GroupHint is the one line on a scan row that offers to add the product to a group.
@@ -240,6 +245,7 @@ func (r *Queue) GetScanEntry(ctx context.Context, id string) (*ScanEntry, error)
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
+			se.removed_count, se.requested_count,
 			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
@@ -273,6 +279,7 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode stri
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
+			se.removed_count, se.requested_count,
 			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
@@ -300,6 +307,7 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
+			se.removed_count, se.requested_count,
 			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
@@ -424,7 +432,9 @@ func (r *Queue) CommitScanEntry(ctx context.Context, id string) error {
 }
 
 // BatchUpdateScanEntries applies the same direction, unit_count, and expires_at
-// to multiple scan entries identified by their IDs.
+// to multiple scan entries identified by their IDs. A missing id is skipped so
+// the other ids still update. A committed scan is left as it was: a retry must
+// not rewrite the card that already committed.
 func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direction *ScanDirection, unitCount *int, expiresAt *time.Time) error {
 	if len(ids) == 0 {
 		return nil
@@ -436,22 +446,37 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 	}
 	defer tx.Rollback()
 
+	changed := make([]string, 0, len(ids))
 	for _, id := range ids {
-		err := r.updateScanEntryInTx(ctx, tx, id, direction, unitCount, expiresAt, nil, nil)
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
+		if err == sql.ErrNoRows {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("BatchUpdateScanEntries: %w", err)
 		}
+		if status == string(Committed) {
+			continue
+		}
+		if err := r.updateScanEntryInTx(ctx, tx, id, direction, unitCount, expiresAt, nil, nil); err != nil {
+			return fmt.Errorf("BatchUpdateScanEntries: %w", err)
+		}
+		changed = append(changed, id)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("BatchUpdateScanEntries commit: %w", err)
 	}
 
+	// The transaction is already committed. A failed re-read here must not
+	// make the caller report the saved update as a failure.
 	if r.Broadcaster != nil {
-		for _, id := range ids {
+		for _, id := range changed {
 			updated, err := r.GetScanEntry(ctx, id)
 			if err != nil {
-				return err
+				slog.Warn("scan update saved but its event was not sent", slog.Any("err", err))
+				break
 			}
 			if updated != nil {
 				r.Broadcaster.PublishScanEvent(*updated)
@@ -529,6 +554,7 @@ func scanScanEntry(row scanner) (*ScanEntry, error) {
 	var entry ScanEntry
 	var direction, productIDCol sql.NullString
 	var expiresAt, committedAt sql.NullTime
+	var removedCount, requestedCount sql.NullInt64
 	var productID, productName, productCategory, productUnitOfMeasure, productImageURL, productExternalSource sql.NullString
 	var packCount sql.NullInt64
 
@@ -544,6 +570,8 @@ func scanScanEntry(row scanner) (*ScanEntry, error) {
 		&productIDCol,
 		&committedAt,
 		&entry.CreatedAt,
+		&removedCount,
+		&requestedCount,
 		&productID,
 		&productName,
 		&productCategory,
@@ -568,6 +596,14 @@ func scanScanEntry(row scanner) (*ScanEntry, error) {
 	}
 	if committedAt.Valid {
 		entry.CommittedAt = &committedAt.Time
+	}
+	if removedCount.Valid {
+		n := int(removedCount.Int64)
+		entry.RemovedCount = &n
+	}
+	if requestedCount.Valid {
+		n := int(requestedCount.Int64)
+		entry.RequestedCount = &n
 	}
 
 	if productID.Valid {

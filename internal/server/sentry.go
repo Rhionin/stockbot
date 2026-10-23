@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/buildinfo"
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/getsentry/sentry-go"
 	sentryhttp "github.com/getsentry/sentry-go/http"
 )
@@ -101,7 +104,11 @@ func InitSentry(settings SentrySettings) error {
 		BeforeBreadcrumb: func(crumb *sentry.Breadcrumb, _ *sentry.BreadcrumbHint) *sentry.Breadcrumb {
 			return scrubSentryBreadcrumb(crumb)
 		},
-		Transport: sentryTestTransport,
+		// Drop every 404 transaction, including a real route such as
+		// GET /api/gone, not only unmatched paths. Set explicitly so a
+		// future SDK default cannot start sending that noise from the Pi.
+		TraceIgnoreStatusCodes: [][]int{{404}},
+		Transport:              sentryTestTransport,
 	}
 	err := sentry.Init(options)
 	if err != nil {
@@ -185,7 +192,7 @@ func isHTTPMethod(s string) bool {
 }
 
 func reportServerError(r *http.Request, err error) {
-	if err == nil || !sentryEnabled.Load() {
+	if err == nil || errors.Is(err, context.Canceled) || !sentryEnabled.Load() {
 		return
 	}
 	hub := sentry.CurrentHub()
@@ -193,6 +200,22 @@ func reportServerError(r *http.Request, err error) {
 		if scoped := sentry.GetHubFromContext(r.Context()); scoped != nil {
 			hub = scoped
 		}
+	}
+	if sqliteBusy(err) {
+		hub.WithScope(func(scope *sentry.Scope) {
+			scope.SetLevel(sentry.LevelWarning)
+			scope.SetTag("db_busy", "true")
+			hub.CaptureMessage(clientmsg.Busy)
+		})
+		return
+	}
+	if sqliteNoSpace(err) {
+		hub.WithScope(func(scope *sentry.Scope) {
+			scope.SetLevel(sentry.LevelWarning)
+			scope.SetTag("db_no_space", "true")
+			hub.CaptureMessage(clientmsg.NoSpace)
+		})
+		return
 	}
 	hub.CaptureException(err)
 }

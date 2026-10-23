@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
+	"database/sql"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +126,163 @@ func TestSQLiteOpensGoThroughUTC(t *testing.T) {
 	})
 	if opens != 1 {
 		t.Fatalf("sqlite.go has %d Open calls, want 1", opens)
+	}
+}
+
+func TestBusyTimeoutDSNPinsThreeSeconds(t *testing.T) {
+	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(3000)&_txlock=immediate"; got != want {
+		t.Fatalf("dsn = %s, want %s", got, want)
+	}
+}
+
+func TestWithSQLiteLocking(t *testing.T) {
+	busy := "busy_timeout(" + strconv.Itoa(sqliteBusyTimeoutMS) + ")"
+	if got, want := withSQLiteLocking(":memory:"), ":memory:?_pragma="+busy+"&_txlock=immediate"; got != want {
+		t.Fatalf("memory: got %s, want %s", got, want)
+	}
+	if got, want := withUTCTimezone(withSQLiteLocking(":memory:")), ":memory:?_pragma="+busy+"&_txlock=immediate&_timezone=UTC"; got != want {
+		t.Fatalf("opened: got %s, want %s", got, want)
+	}
+	if got, want := withSQLiteLocking("pantry.db?_pragma=busy_timeout(40)"), "pantry.db?_pragma=busy_timeout(40)&_txlock=immediate"; got != want {
+		t.Fatalf("pragma kept: got %s, want %s", got, want)
+	}
+	if got, want := withSQLiteLocking("pantry.db?_busy_timeout=40"), "pantry.db?_busy_timeout=40&_txlock=immediate"; got != want {
+		t.Fatalf("shorthand kept: got %s, want %s", got, want)
+	}
+	if got, want := withSQLiteLocking("pantry.db?_timeout=15"), "pantry.db?_timeout=15&_txlock=immediate"; got != want {
+		t.Fatalf("alias kept: got %s, want %s", got, want)
+	}
+	if got, want := withSQLiteLocking("pantry.db?_txlock=deferred"), "pantry.db?_txlock=deferred&_pragma="+busy; got != want {
+		t.Fatalf("txlock kept: got %s, want %s", got, want)
+	}
+	if got, want := withSQLiteLocking("pantry.db?_pragma=BUSY_TIMEOUT(10)&_pragma=foreign_keys(1)"), "pantry.db?_pragma=BUSY_TIMEOUT(10)&_pragma=foreign_keys(1)&_txlock=immediate"; got != want {
+		t.Fatalf("pragma case: got %s, want %s", got, want)
+	}
+}
+
+func TestOpenSQLiteSetsBusyTimeoutAndImmediateLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+
+	var timeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != sqliteBusyTimeoutMS {
+		t.Fatalf("busy_timeout = %d, want %d", timeout, sqliteBusyTimeoutMS)
+	}
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(mode, "delete") {
+		t.Fatalf("journal_mode = %s, want delete", mode)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// BEGIN takes the reserved lock before any statement. A second connection
+	// with no busy wait must fail at once. A deferred begin would still be
+	// unlocked here, and the second writer would succeed.
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+
+	other, err := OpenSQLite(path + "?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = other.ExecContext(ctx, `BEGIN IMMEDIATE`)
+	if err == nil {
+		t.Fatal("a second connection took the write lock during an open transaction")
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("busy handler waited %s; a zero timeout should fail at once", time.Since(started))
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "database is locked") && !strings.Contains(err.Error(), "SQLITE_BUSY") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOpenSQLiteReadOnlyTransactionStaysDeferred(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	other, err := OpenSQLite(path + "?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := other.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("read-only transaction blocked a writer: %v", err)
+	}
+	if _, err := other.Exec(`ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenSQLitePreservesExplicitBusyTimeout(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		dsn  string
+		want int
+	}{
+		{name: "pragma", dsn: "?_pragma=busy_timeout(40)", want: 40},
+		{name: "shorthand", dsn: "?_busy_timeout=40", want: 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := OpenSQLite(filepath.Join(dir, tc.name+".db") + tc.dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Close() })
+			var got int
+			if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("busy_timeout = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

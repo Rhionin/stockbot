@@ -49,8 +49,8 @@ func TestGrocySyncStaysOffTheDefaultCompose(t *testing.T) {
 	if !ok {
 		t.Fatal("grocy-sync service missing")
 	}
-	if len(svc.Profiles) != 1 || svc.Profiles[0] != "grocy" {
-		t.Fatalf("profiles = %v", svc.Profiles)
+	if len(svc.Profiles) != 1 || svc.Profiles[0] != "grocy-sync" {
+		t.Fatalf("profiles = %v, want [grocy-sync]", svc.Profiles)
 	}
 	if svc.MemLimit != "64m" {
 		t.Fatalf("mem_limit = %q", svc.MemLimit)

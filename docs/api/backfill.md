@@ -128,9 +128,9 @@ An empty body is a normal commit, not a backfill.
 
 `POST /api/scans/batch-commit` **ignores** `backfill`.
 
-The batch body is still `scanEntryIds`, an optional shared `direction` / `unitCount` / `expiresAt`, and `commit`. A `backfill` field on that body is dropped. Each id is committed or failed exactly as it is today. A stock-out with nothing on hand fails that id with `none_on_hand` and `Nothing on hand to take out.`, and nothing is stocked in.
+The batch body is still `scanEntryIds`, an optional shared `direction` / `unitCount` / `expiresAt`, and `commit`. A `backfill` field on that body is dropped. Each id is its own result. Committed scans are listed in `committedIds`. A committed stock-out is also in `stockOutCounts`, keyed by scan id, with `removedCount` (units that left the shelf) and `requestedCount` (that card's unit count). A failure is parallel `failedIds`, `failedReasons`, and `failedCodes`. A stock-out with nothing on hand fails that id with `none_on_hand` and `Nothing on hand to take out.`, and nothing is stocked in. A busy database or a full disk stops the rest of the batch with that sentence.
 
-Ignore, rather than reject the whole batch. The flag is per card. One batch flag cannot mean "backfill every id" without stocking in items the household did not confirm, and it cannot mean "backfill some of them" because the body has no per-id flag. Rejecting the field would turn a batch that happens to send it into a 400 and commit nothing. Ignoring it keeps today's batch result and still never backfills.
+Ignore, rather than reject the whole batch. The flag is per card. One batch flag cannot mean "backfill every id" without stocking in items the household did not confirm, and it cannot mean "backfill some of them" because the body has no per-id flag. Rejecting the field would turn a batch that happens to send it into a 400 and commit nothing. Ignoring it keeps the normal per-item result and still never backfills.
 
 ## Undo
 

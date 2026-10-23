@@ -548,7 +548,7 @@ func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
 		t.Fatal(err)
 	}
-	if busy != 0 || db.Stats().MaxOpenConnections != 1 {
+	if busy != 3000 || db.Stats().MaxOpenConnections != 1 {
 		t.Fatalf("busy_timeout %d pool %d", busy, db.Stats().MaxOpenConnections)
 	}
 	if err := app.RunMigrations(db); err != nil {
@@ -731,7 +731,7 @@ func TestDeadlineOnALiveRequestIsAServerError(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Error != "Something went wrong. Please try again." {
+	if payload.Error != clientmsg.Generic {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
 	if strings.Contains(buf.String(), "request canceled") || !strings.Contains(buf.String(), "request failed") {

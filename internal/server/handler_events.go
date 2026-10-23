@@ -3,9 +3,11 @@ package server
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/telemetry"
 )
@@ -42,7 +44,8 @@ func (h *EventsHandler) keepaliveEvery() time.Duration {
 func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		log.Printf("events: streaming unsupported")
+		http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 		return
 	}
 

@@ -3,7 +3,9 @@ package scan_test
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1193,6 +1195,109 @@ func TestUpdateScanEntry_UnknownID_NoPublish(t *testing.T) {
 	}
 	if len(broadcaster.scanEvents) != 0 {
 		t.Errorf("expected 0 published scan events, got %d", len(broadcaster.scanEvents))
+	}
+}
+
+func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
+	queue, _ := newTestQueue(t)
+	ctx := context.Background()
+	now := time.Now()
+	if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		ID: "scan-keep", UserID: "user-1", Barcode: "1",
+		ScannedAt: now, UnitCount: 1, Status: scan.Pending,
+	}); err != nil {
+		t.Fatalf("CreateScanEntry: %v", err)
+	}
+
+	broadcaster := &fakeBroadcaster{}
+	queue.Broadcaster = broadcaster
+	expires := time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)
+	count := 3
+	direction := scan.StockOut
+	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-upd", "scan-keep"}, &direction, &count, &expires); err != nil {
+		t.Fatalf("BatchUpdateScanEntries: %v", err)
+	}
+
+	got, err := queue.GetScanEntry(ctx, "scan-keep")
+	if err != nil {
+		t.Fatalf("GetScanEntry: %v", err)
+	}
+	if got == nil || got.Direction == nil || *got.Direction != scan.StockOut || got.UnitCount != 3 || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
+		t.Fatalf("known card = %+v", got)
+	}
+	missing, err := queue.GetScanEntry(ctx, "missing-upd")
+	if err != nil {
+		t.Fatalf("GetScanEntry missing: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("missing card = %+v", missing)
+	}
+	if len(broadcaster.scanEvents) != 1 || broadcaster.scanEvents[0].ID != "scan-keep" {
+		t.Fatalf("events = %+v", broadcaster.scanEvents)
+	}
+
+	broadcaster.scanEvents = nil
+	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-only"}, &direction, nil, nil); err != nil {
+		t.Fatalf("unknown-only batch: %v", err)
+	}
+	if len(broadcaster.scanEvents) != 0 {
+		t.Fatalf("unknown-only events = %+v", broadcaster.scanEvents)
+	}
+}
+
+type cancelAfterPublish struct {
+	fakeBroadcaster
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterPublish) PublishScanEvent(entry scan.ScanEntry) {
+	c.fakeBroadcaster.PublishScanEvent(entry)
+	c.cancel()
+}
+
+func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
+	queue, _ := newTestQueue(t)
+	ctx := context.Background()
+	now := time.Now()
+	for i, id := range []string{"scan-evt-a", "scan-evt-b"} {
+		if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			ID: id, UserID: "user-1", Barcode: string(rune('1' + i)),
+			ScannedAt: now.Add(time.Duration(i) * time.Minute),
+			UnitCount: 1, Status: scan.Pending,
+		}); err != nil {
+			t.Fatalf("CreateScanEntry %s: %v", id, err)
+		}
+	}
+
+	updateCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	broadcaster := &cancelAfterPublish{cancel: cancel}
+	queue.Broadcaster = broadcaster
+
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	direction := scan.StockOut
+	if err := queue.BatchUpdateScanEntries(updateCtx, []string{"scan-evt-a", "scan-evt-b"}, &direction, nil, nil); err != nil {
+		t.Fatalf("saved update reported as failed: %v", err)
+	}
+	for _, id := range []string{"scan-evt-a", "scan-evt-b"} {
+		got, err := queue.GetScanEntry(ctx, id)
+		if err != nil {
+			t.Fatalf("GetScanEntry %s: %v", id, err)
+		}
+		if got == nil || got.Direction == nil || *got.Direction != scan.StockOut {
+			t.Fatalf("%s = %+v", id, got)
+		}
+	}
+	if len(broadcaster.scanEvents) != 1 || broadcaster.scanEvents[0].ID != "scan-evt-a" {
+		t.Fatalf("events = %+v", broadcaster.scanEvents)
+	}
+	logged := slogBuf.String()
+	if strings.Count(logged, "scan update saved but its event was not sent") != 1 || !strings.Contains(logged, "err=") || strings.Contains(logged, "user-1") {
+		t.Fatalf("log = %q", logged)
 	}
 }
 

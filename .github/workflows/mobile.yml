@@ -1,0 +1,51 @@
+# Expo typecheck, lint, and tests. Not a required status check: a pull
+# request that does not touch these paths does not run this workflow, and a
+# skipped run must not block merge.
+name: Mobile
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - 'frontend/src/types/**'
+      - 'frontend/src/api/contract.ts'
+      - 'frontend/src/components/scanner/barcodeFormats.ts'
+      - 'frontend/src/components/scanner/scanTiming.ts'
+  push:
+    branches: [master]
+    paths:
+      - 'mobile/**'
+      - 'frontend/src/types/**'
+      - 'frontend/src/api/contract.ts'
+      - 'frontend/src/components/scanner/barcodeFormats.ts'
+      - 'frontend/src/components/scanner/scanTiming.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  mobile:
+    name: Mobile typecheck, lint, and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: mobile/.nvmrc
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: cd mobile && npm ci
+
+      - name: Type check
+        run: cd mobile && npm run typecheck
+
+      - name: Lint code
+        run: cd mobile && npm run lint
+
+      - name: Run tests
+        run: cd mobile && npx jest --ci
