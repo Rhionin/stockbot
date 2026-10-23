@@ -918,14 +918,16 @@ flowchart LR
 
 ## 13. Questions and decisions
 
-### 13.1 Questions for PM
-1. **LAN after retirement.** Is it acceptable that people at home need the internet to open Stockbot once the household password is retired, because the LAN redirects to the HTTPS site (§3.7)? The USB scanner and hubs are unaffected. (Proposed: yes; the alternative, sign-in over plain http on the LAN, exposes passwords on home Wi-Fi.)
-2. **Operator alert channel.** Through which channel should CJ get the #313/#320 alerts? I could not find the delivery path on master. (Proposed: the existing path, tagged with household UUID only.)
-3. **Copy for the Expo version gate.** "Update Stockbot to keep using it." plus a store/link button (§3.9 A5). Also, should the retire confirm (C2A.2) warn when Basic requests from old app builds were seen in the last 7 days? (Proposed: yes, as a count only.)
-4. **Audit log visibility.** Can owners see their household's audit log in Stage 1? (Proposed: deferred; operator CLI only.)
-5. **Disconnected hub's buffer.** When an owner disconnects a hub, are its unsent scans discarded? (Proposed: yes; needs copy.)
-6. **Fallback copy.** Copy for the "Print code" option and for "plug a keyboard into the hub and type the code".
-7. **Session length.** Is 30 days sliding with a 180-day cap right for personal sessions?
+### 13.1 PM answers (Stockbot PM, 2026-10-23)
+1. **LAN after retirement: accepted.** LAN `:8080` redirects to the HTTPS site; no plain-http sign-in. If home internet is down, people can't use the app until it returns; the Pi's own scanner keeps recording and scans appear afterward. Clients show the #373 sentence "Can't reach Stockbot. Check your connection and try again." Keep LAN HTTPS easy to add later (listener and cookie config already allow it, §10).
+2. **Operator alerts:** push notification to CJ's operator account through the existing notification mechanism, and listed on the Server page. May include the household's name (never item or scan contents). Internally keyed by household UUID; the Server page resolves the name. (S6/S14 own this.)
+3. **Retire confirm:** add "{N} devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it." (omit when N is 0; counts devices, not people). Version-gate copy: "Update Stockbot to keep using it." plus the store button. (S15, S10, S11.)
+4. **Audit log:** deferred; operator CLI only in Stage 1.
+5. **Disconnecting a hub discards its unsent scans.** Confirm behind ⋯: "Disconnect {hub name}? {N} scans it hasn't sent yet will be lost." (second sentence omitted when N is 0), red Disconnect plus Cancel; afterward "{hub name} was disconnected." The server needs the hub's last-reported queue depth (from heartbeat) to show N. (S6, S10.)
+6. **Pairing fallback copy:** button "Print pairing code"; printed page "Scan this code with your scanner to connect your hub to {household name}. This code works once and expires in 10 minutes."; keyboard option "No printer? Plug a USB keyboard into the hub, type this code, and press Enter: {CODE}", code shown large and spaced; on expiry "This code expired. Get a new one." (S10, S12.)
+7. **Sessions:** 30 days sliding with a 180-day cap. At the cap, the existing unauthorized sentence "Sign in to continue."
+
+PM holds the canonical copy in PM-REQ.
 
 ### 13.2 CJ decisions (technical only, ranked)
 
