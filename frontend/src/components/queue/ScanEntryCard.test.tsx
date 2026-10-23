@@ -53,11 +53,11 @@ describe('ScanEntryCard stock-out review', () => {
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add expiration' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Use oldest available automatically' })).not.toBeInTheDocument();
-    expect(screen.queryByText('No inventory item is available for this product.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing on hand to take out.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'More', expanded: false })).toBeInTheDocument();
   });
 
-  it('keeps the missing-inventory note behind More and still hides the expiration control', () => {
+  it('says nothing is on hand when this product is not in the household', () => {
     vi.stubGlobal('fetch', vi.fn());
     render(
       <MantineProvider>
@@ -70,10 +70,10 @@ describe('ScanEntryCard stock-out review', () => {
       </MantineProvider>,
     );
 
-    expect(screen.queryByText('No inventory item is available for this product.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing on hand to take out.')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    expect(screen.getByText('No inventory item is available for this product.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing on hand to take out.')).toBeInTheDocument();
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 
@@ -1493,7 +1493,7 @@ describe('ScanEntryCard group hint', () => {
 });
 
 const noItemBody = {
-  error: 'Not in your pantry',
+  error: 'barcode is not linked',
   code: 'no_item',
   suggestions: [
     { itemId: 'item-pears', productId: 'prod-pears', name: 'Sliced Pears', onHand: 3 },
@@ -1521,6 +1521,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
   it('shows pantry suggestions in rank order and does not commit until one is picked', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url === '/api/scans/scan-1/commit' && request?.method === 'POST') {
         const body = JSON.parse(String(request.body)) as { linkProductId?: string };
         if (body.linkProductId === 'prod-pears') {
@@ -1536,8 +1537,11 @@ describe('ScanEntryCard unmatched stock-out', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
-    const offer = await screen.findByRole('region', { name: 'Not in your pantry' });
-    expect(offer).toHaveTextContent('Link the barcode to an item you stock. That scan out uses the item you pick.');
+    const offer = await screen.findByRole('region', { name: 'Which item is this?' });
+    expect(offer).toHaveTextContent('Which item is this?');
+    expect(within(offer).getByLabelText('Search products')).toBeInTheDocument();
+    expect(within(offer).queryByText('barcode is not linked', { exact: false })).not.toBeInTheDocument();
+    expect(within(offer).queryByText('Not in your pantry', { exact: false })).not.toBeInTheDocument();
     const rows = within(offer).getAllByRole('listitem');
     expect(rows.map((row) => row.textContent)).toEqual([
       'Sliced Pears3 in stockLink',
@@ -1546,7 +1550,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
     expect(within(rows[0]).getByText('3 in stock')).toHaveClass('stock-note--full');
     expect(onChanged).not.toHaveBeenCalled();
 
-    fireEvent.click(within(offer).getByRole('button', { name: 'Link Sliced Pears and scan it out' }));
+    fireEvent.click(within(offer).getByRole('button', { name: 'Link Sliced Pears' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     const linkCall = fetchMock.mock.calls.find(([, request]) => {
       const body = request?.body ? JSON.parse(String(request.body)) as { linkProductId?: string } : {};
@@ -1558,6 +1562,7 @@ describe('ScanEntryCard unmatched stock-out', () => {
   it('dismisses the suggestions without linking', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/products') return Promise.resolve(jsonResponse([]));
       if (url === '/api/scans/scan-1/commit') return Promise.resolve(errorResponse(noItemBody, 409));
       throw new Error(`Unexpected ${request?.method ?? 'GET'} request: ${url}`);
     });
@@ -1566,12 +1571,112 @@ describe('ScanEntryCard unmatched stock-out', () => {
     renderStockOut(onChanged);
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    const offer = await screen.findByRole('region', { name: 'Not in your pantry' });
+    const offer = await screen.findByRole('region', { name: 'Which item is this?' });
     fireEvent.click(within(offer).getByRole('button', { name: 'Dismiss' }));
 
-    await waitFor(() => expect(screen.queryByRole('region', { name: 'Not in your pantry' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Which item is this?' })).not.toBeInTheDocument());
     expect(onChanged).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/commit'))).toHaveLength(1);
     expect(screen.getByRole('article', { name: 'Scan 123' })).toBeInTheDocument();
+  });
+});
+
+const householdRow = (id: string, name: string) => ({
+  item: {
+    id: `item-${id}`,
+    userId: 'default-user',
+    productId: `prod-${id}`,
+    product: { id: `prod-${id}`, name, category: 'Grocery', unitOfMeasure: 'box' },
+    targetQuantity: null,
+    createdAt: '2026-03-20T10:00:00Z',
+  },
+  instanceCount: 1,
+  nearExpiryCount: 0,
+  expiredCount: 0,
+  needsAttention: false,
+});
+
+const staleSuggestion = { itemId: 'item-stale', productId: 'prod-stale', name: 'Stale Oats', onHand: 1 };
+const keptSuggestion = { itemId: 'item-kept', productId: 'prod-kept', name: 'Kept Oats', onHand: 2 };
+
+describe('ScanEntryCard gone link target', () => {
+  it.each([
+    {
+      name: 'drops the gone suggestion and reloads the household list',
+      suggestions: [staleSuggestion, keptSuggestion],
+      remaining: 'Kept Oats',
+    },
+    {
+      name: 'drops the only suggestion and says no close match was found',
+      suggestions: [staleSuggestion],
+      remaining: '',
+    },
+  ])('$name', async ({ suggestions, remaining }) => {
+    const inventoryGets: { url: string; method: string }[] = [];
+    const commitBodies: { linkProductId?: string }[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/inventory/item-1/instances') return Promise.resolve(jsonResponse(instances));
+      if (url === '/api/inventory') {
+        inventoryGets.push({ url, method: request?.method ?? 'GET' });
+        return Promise.resolve(jsonResponse([
+          householdRow('stale', 'Stale Oats'),
+          householdRow('kept', 'Kept Oats'),
+        ]));
+      }
+      if (url === '/api/scans/scan-1/commit' && request?.method === 'POST') {
+        const body = JSON.parse(String(request.body)) as { linkProductId?: string };
+        commitBodies.push(body);
+        if (body.linkProductId === 'prod-stale') {
+          return Promise.resolve(errorResponse({
+            error: "That item isn't available anymore. Pick another.",
+            code: 'link_target_gone',
+          }, 409));
+        }
+        return Promise.resolve(errorResponse({
+          error: 'barcode is not linked',
+          code: 'no_item',
+          suggestions,
+        }, 409));
+      }
+      throw new Error(`Unexpected ${request?.method ?? 'GET'} request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider>
+        <ScanEntryCard
+          entry={entry}
+          itemId="item-1"
+          selected={false}
+          onSelectedChange={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More', expanded: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Link Stale Oats' }));
+
+    await waitFor(() => {
+      expect(inventoryGets).toEqual([
+        { url: '/api/inventory', method: 'GET' },
+        { url: '/api/inventory', method: 'GET' },
+      ]);
+    });
+    expect(commitBodies).toEqual([{}, { linkProductId: 'prod-stale' }]);
+    expect(screen.queryByRole('button', { name: 'Link Stale Oats' })).not.toBeInTheDocument();
+    if (remaining === '') {
+      expect(screen.getByText('No close match found.')).toBeInTheDocument();
+    } else {
+      expect(screen.getByRole('button', { name: `Link ${remaining}` })).toBeInTheDocument();
+    }
+    fireEvent.focus(screen.getByLabelText('Search products'));
+    expect(screen.queryByRole('option', { name: 'Stale Oats', hidden: true })).not.toBeInTheDocument();
+    if (remaining !== '') {
+      expect(await screen.findByRole('option', { name: remaining, hidden: true })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.getByRole('button', { name: 'More', expanded: false })).toBeInTheDocument();
   });
 });
