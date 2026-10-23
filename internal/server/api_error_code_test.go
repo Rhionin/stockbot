@@ -229,6 +229,11 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		if rec.Body.String() != `{"error":"Sign in required.","code":"unauthorized"}` {
 			t.Fatalf("body = %s", rec.Body.String())
 		}
+		login := publicHandler(gate)
+		badPassword := callAPI(login, http.MethodPost, "/api/login", `{"username":"pantry","password":"wrong-password-value"}`, publicHeaders())
+		if badPassword.Code != http.StatusUnauthorized || badPassword.Body.String() != `{"error":"The username or password is incorrect.","code":"unauthorized"}` {
+			t.Fatalf("login = %d %s", badPassword.Code, badPassword.Body.String())
+		}
 	})
 
 	t.Run("validation", func(t *testing.T) {
@@ -241,6 +246,12 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		assertErrorPrefix(t, rec, "invalid request body: ")
 		if strings.Contains(rec.Body.String(), `"field"`) {
 			t.Fatalf("validation body included field: %s", rec.Body.String())
+		}
+		gate := testHousehold(t, "pantry", "correct-horse-battery")
+		login := publicHandler(gate)
+		badBody := callAPI(login, http.MethodPost, "/api/login", "{", publicHeaders())
+		if badBody.Code != http.StatusBadRequest || badBody.Body.String() != `{"error":"Enter your username and password.","code":"validation"}` {
+			t.Fatalf("login = %d %s", badBody.Code, badBody.Body.String())
 		}
 	})
 
@@ -260,6 +271,15 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		}
 		if report.Body.String() != `{"error":"report is too large","code":"payload_too_large"}` {
 			t.Fatalf("report = %s", report.Body.String())
+		}
+		// No Content-Length: MaxBytesReader rejects the body (handler_wrapper.go).
+		chunked := httptest.NewRequest(http.MethodPost, "/api/products", strings.NewReader(body))
+		chunked.ContentLength = -1
+		chunked.Header.Del("Content-Length")
+		chunkedRec := httptest.NewRecorder()
+		handler.ServeHTTP(chunkedRec, chunked)
+		if chunkedRec.Code != http.StatusBadRequest || chunkedRec.Body.String() != `{"error":"request body is too large","code":"payload_too_large"}` {
+			t.Fatalf("chunked = %d %s", chunkedRec.Code, chunkedRec.Body.String())
 		}
 	})
 
@@ -330,38 +350,40 @@ func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
-	files, err := parseNonTest(fset, serverDir)
-	if err != nil {
-		t.Fatal(err)
+	for _, status := range []int{
+		http.StatusForbidden,
+		http.StatusGone,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnsupportedMediaType,
+	} {
+		if got := defaultClientCode(status); got != "" {
+			t.Errorf("status %d default code = %q; 403, 410, 413, and 415 have no default", status, got)
+		}
 	}
+	fset := token.NewFileSet()
 	exemptCalls := map[string]int{}
-	for _, file := range files {
-		name := filepath.Base(fset.Position(file.Pos()).Filename)
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+	for _, dir := range []string{serverDir, filepath.Join(serverDir, "..", "..", "cmd", "server")} {
+		files, err := parseNonTest(fset, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inspectCodelessWriters(t, fset, files, exemptCalls)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
 			}
-			ident, ok := call.Fun.(*ast.Ident)
-			if !ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Error" {
-					if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "http" {
-						t.Errorf("%s: http.Error on an API path has no code", fset.Position(call.Pos()))
-					}
-				}
-				return true
+			text, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
 			}
-			switch ident.Name {
-			case "writeError", "writeAuthError":
-				if len(call.Args) < 4 || !codeArg(call.Args[2]) {
-					t.Errorf("%s: %s needs a code argument", fset.Position(call.Pos()), ident.Name)
-				}
-			case "writeExemptError":
-				exemptCalls[name]++
+			if strings.Contains(string(text), `map[string]string{"error"`) && entry.Name() != "sentry_tunnel.go" {
+				t.Errorf("%s builds a JSON error map with no code", entry.Name())
 			}
-			return true
-		})
+		}
 	}
 	if exemptCalls["sentry_tunnel.go"] == 0 {
 		t.Fatal("sentry tunnel no longer uses writeExemptError")
@@ -369,23 +391,6 @@ func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
 	for name, n := range exemptCalls {
 		if name != "sentry_tunnel.go" {
 			t.Errorf("%s has %d writeExemptError calls; only the sentry tunnel may omit a code", name, n)
-		}
-	}
-
-	entries, err := os.ReadDir(serverDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		text, err := os.ReadFile(filepath.Join(serverDir, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(text), `map[string]string{"error"`) && entry.Name() != "sentry_tunnel.go" {
-			t.Errorf("%s builds a JSON error map with no code", entry.Name())
 		}
 	}
 
@@ -418,6 +423,160 @@ func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
 	if strings.Contains(string(web), `"code"`) {
 		t.Fatal("web shell gained a code field")
 	}
+}
+
+func inspectCodelessWriters(t *testing.T, fset *token.FileSet, files []*ast.File, exemptCalls map[string]int) {
+	t.Helper()
+	for _, file := range files {
+		name := filepath.Base(fset.Position(file.Pos()).Filename)
+		var fnName string
+		var walk func(ast.Node) bool
+		walk = func(n ast.Node) bool {
+			if n == nil {
+				return false
+			}
+			switch node := n.(type) {
+			case *ast.FuncDecl:
+				prev := fnName
+				if node.Name != nil {
+					fnName = node.Name.Name
+				}
+				if node.Body != nil {
+					ast.Inspect(node.Body, walk)
+				}
+				fnName = prev
+				return false
+			case *ast.FuncLit:
+				prev := fnName
+				fnName = ""
+				if node.Body != nil {
+					ast.Inspect(node.Body, walk)
+				}
+				fnName = prev
+				return false
+			case *ast.CompositeLit:
+				if typeName(node.Type) == "HTTPError" && statusWithoutDefault(compositeField(node, "Code")) && !codeArg(compositeField(node, "ErrorCode")) {
+					t.Errorf("%s: HTTPError uses a 4xx with no default code and no ErrorCode", fset.Position(node.Pos()))
+				}
+			case *ast.CallExpr:
+				ident, ok := node.Fun.(*ast.Ident)
+				if !ok {
+					if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Error" {
+						if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "http" {
+							t.Errorf("%s: http.Error on an API path has no code", fset.Position(node.Pos()))
+						}
+					}
+					return true
+				}
+				switch ident.Name {
+				case "writeError", "writeAuthError":
+					if len(node.Args) < 4 || !codeArg(node.Args[2]) {
+						if len(node.Args) >= 2 && statusWithoutDefault(node.Args[1]) {
+							t.Errorf("%s: %s uses a 4xx with no default code", fset.Position(node.Pos()), ident.Name)
+						} else {
+							t.Errorf("%s: %s needs a code argument", fset.Position(node.Pos()), ident.Name)
+						}
+					}
+				case "writeStatusError":
+					if len(node.Args) >= 4 && statusWithoutDefault(node.Args[2]) && !exprCarriesCode(node.Args[3]) {
+						t.Errorf("%s: writeStatusError uses a 4xx with no default code", fset.Position(node.Pos()))
+					}
+				case "writeExemptError":
+					exemptCalls[name]++
+				case "writeJSON":
+					if len(node.Args) < 3 || fnName == "writeExemptError" {
+						break
+					}
+					lit, ok := node.Args[2].(*ast.CompositeLit)
+					if !ok || typeName(lit.Type) != "errorPayload" {
+						break
+					}
+					if !codeFieldPresent(compositeField(lit, "Code")) {
+						t.Errorf("%s: writeJSON(errorPayload) has no Code", fset.Position(node.Pos()))
+					}
+				}
+			}
+			return true
+		}
+		ast.Inspect(file, walk)
+	}
+}
+
+func typeName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	case *ast.StarExpr:
+		return typeName(v.X)
+	default:
+		return ""
+	}
+}
+
+func compositeField(lit *ast.CompositeLit, name string) ast.Expr {
+	if lit == nil {
+		return nil
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		id, ok := kv.Key.(*ast.Ident)
+		if ok && id.Name == name {
+			return kv.Value
+		}
+	}
+	return nil
+}
+
+func codeFieldPresent(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	lit, ok := expr.(*ast.BasicLit)
+	return !ok || (lit.Value != `""` && lit.Value != "``")
+}
+
+func statusWithoutDefault(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.SelectorExpr:
+		pkg, ok := v.X.(*ast.Ident)
+		if !ok || pkg.Name != "http" {
+			return false
+		}
+		switch v.Sel.Name {
+		case "StatusForbidden", "StatusGone", "StatusRequestEntityTooLarge", "StatusUnsupportedMediaType":
+			return true
+		}
+	case *ast.BasicLit:
+		switch v.Value {
+		case "403", "410", "413", "415":
+			return true
+		}
+	}
+	return false
+}
+
+func exprCarriesCode(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.UnaryExpr:
+		return exprCarriesCode(v.X)
+	case *ast.CompositeLit:
+		return codeArg(compositeField(v, "ErrorCode"))
+	case *ast.CallExpr:
+		ident, ok := v.Fun.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		switch ident.Name {
+		case "BadRequest", "NotFound", "Conflict", "ConfirmationMismatch", "ProviderUnavailable", "ConflictDetails", "ConflictSuggestions":
+			return true
+		}
+	}
+	return false
 }
 
 func codeArg(expr ast.Expr) bool {

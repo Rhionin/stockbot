@@ -9,8 +9,8 @@ import (
 )
 
 // syncSnapshotHandler serves GET /api/sync/snapshot.
-// The gate in front of the mux already checks the token. The handler checks
-// again so the route stays closed if that gate is ever wired differently.
+// The bearer check is unreachable behind syncGate, which already returns
+// 401 (sync_auth.go). It stays so an unwired handler still refuses the token.
 type syncSnapshotHandler struct {
 	DB    *sql.DB
 	Token string
