@@ -60,20 +60,21 @@ func assertPublicEntryRefused(t *testing.T, gate *server.HouseholdAuth) {
 		t.Fatalf("public page = %d %s", pageRec.Code, pageRec.Header().Get("Content-Type"))
 	}
 
-	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"pantry","password":"secret"}`))
+	const notConfigured = `{"error":"Sign-in isn't set up yet.","code":"auth_not_configured"}`
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
 	login.Header.Set("X-Pantry-Entry", "public")
 	loginRec := httptest.NewRecorder()
 	handler.ServeHTTP(loginRec, login)
-	if loginRec.Code != http.StatusUnauthorized {
-		t.Fatalf("public login = %d %s, want a login that cannot succeed", loginRec.Code, loginRec.Body.String())
+	if loginRec.Code != http.StatusServiceUnavailable || loginRec.Body.String() != notConfigured {
+		t.Fatalf("public login = %d %s", loginRec.Code, loginRec.Body.String())
 	}
 
 	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
 	session.Header.Set("X-Pantry-Entry", "public")
 	sessionRec := httptest.NewRecorder()
 	handler.ServeHTTP(sessionRec, session)
-	if sessionRec.Code != http.StatusServiceUnavailable || !strings.Contains(sessionRec.Body.String(), "Sign-in is unavailable") {
-		t.Fatalf("public session = %d %s, want sign-in unavailable", sessionRec.Code, sessionRec.Body.String())
+	if sessionRec.Code != http.StatusServiceUnavailable || sessionRec.Body.String() != notConfigured {
+		t.Fatalf("public session = %d %s", sessionRec.Code, sessionRec.Body.String())
 	}
 
 	lan := httptest.NewRequest(http.MethodGet, "/health", nil)

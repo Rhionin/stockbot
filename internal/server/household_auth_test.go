@@ -535,16 +535,13 @@ func TestHouseholdAuthCredentialEdges(t *testing.T) {
 	unavailable.Header.Set(entryHeader, entryPublic)
 	unavailableRec := httptest.NewRecorder()
 	closedHandler.ServeHTTP(unavailableRec, unavailable)
-	if unavailableRec.Code != http.StatusServiceUnavailable || !strings.Contains(unavailableRec.Body.String(), "Sign-in is unavailable") {
-		t.Fatalf("session without a hash = %d %s", unavailableRec.Code, unavailableRec.Body.String())
-	}
-	closedLogin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"pantry","password":"x"}`))
+	assertSignInNotConfigured(t, unavailableRec)
+	closedLogin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
 	closedLogin.Header.Set(entryHeader, entryPublic)
+	closedLogin.Header.Set("Content-Type", "application/json")
 	closedLoginRec := httptest.NewRecorder()
 	closedHandler.ServeHTTP(closedLoginRec, closedLogin)
-	if closedLoginRec.Code != http.StatusUnauthorized {
-		t.Fatalf("login without a hash = %d", closedLoginRec.Code)
-	}
+	assertSignInNotConfigured(t, closedLoginRec)
 
 	wired, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(gate))
 	wiredReq := httptest.NewRequest(http.MethodGet, "/api/session", nil)
@@ -554,6 +551,37 @@ func TestHouseholdAuthCredentialEdges(t *testing.T) {
 	wired.ServeHTTP(wiredRec, wiredReq)
 	if wiredRec.Code != http.StatusOK || !strings.Contains(wiredRec.Body.String(), `"required":true`) {
 		t.Fatalf("wired session = %d %s", wiredRec.Code, wiredRec.Body.String())
+	}
+}
+
+func TestSignInNotConfiguredErrorCode(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+
+	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	withPublicEntry(session)
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, session)
+	assertSignInNotConfigured(t, sessionRec)
+
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
+	withPublicEntry(login)
+	login.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, login)
+	assertSignInNotConfigured(t, loginRec)
+}
+
+func assertSignInNotConfigured(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	const want = `{"error":"Sign-in isn't set up yet.","code":"auth_not_configured"}`
+	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
 	}
 }
 
