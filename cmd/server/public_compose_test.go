@@ -379,7 +379,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !ok {
 		t.Fatal("cloudflared service missing")
 	}
-	if cloudflared.Image != "cloudflare/cloudflared:2026.10.1" {
+	if cloudflared.Image != "cloudflare/cloudflared:2026.10.3" {
 		t.Fatalf("cloudflared image = %q", cloudflared.Image)
 	}
 	if len(cloudflared.Profiles) != 1 || cloudflared.Profiles[0] != "tunnel" {
