@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
@@ -32,7 +34,9 @@ type stockOutCount struct {
 }
 
 type batchCommitResponse struct {
-	UpdatedCount  int      `json:"updatedCount"`
+	UpdatedCount int `json:"updatedCount"`
+	// CommittedIDs lists scans this request committed, or confirmed as already
+	// committed. An id this request did not read is left out.
 	CommittedIDs  []string `json:"committedIds,omitempty"`
 	FailedIDs     []string `json:"failedIds,omitempty"`
 	FailedReasons []string `json:"failedReasons,omitempty"`
@@ -45,6 +49,18 @@ type batchCommitResponse struct {
 	// and failed cards are left out. Failures stay parallel arrays; this is
 	// a map because it is only the stock-out subset of committedIds.
 	StockOutCounts map[string]stockOutCount `json:"stockOutCounts,omitempty"`
+}
+
+// batchStopsOnStorageFailure is the product decision for a busy or full
+// database in one batch commit. The item that failed and every item not yet
+// tried share that code and sentence and are not written. Those later ids
+// are not read, even when one was already committed by something else.
+// Items this request already committed stay committed. Other per-item
+// failures do not stop the batch.
+const batchStopsOnStorageFailure = true
+
+func batchStopsEarly(code string) bool {
+	return batchStopsOnStorageFailure && (code == busyErrorCode || code == noSpaceErrorCode)
 }
 
 func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}]) (batchCommitResponse, error) {
@@ -61,7 +77,11 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		}
 	}
 
-	// Apply batch updates if any fields are provided
+	// Apply batch updates if any fields are provided. A lock or a full disk
+	// here is the same per-item result as a commit that cannot start.
+	// A lock rolls this update back, so the cards stay as they were.
+	// On a full disk the field edit can persist and the stock commit then
+	// fails. Stock is still applied exactly once.
 	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
 		err := h.Queue.BatchUpdateScanEntries(
 			req.Context,
@@ -71,6 +91,9 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			req.Body.ExpiresAt,
 		)
 		if err != nil {
+			if response, ok := batchStorageFailure(req, err); ok {
+				return response, nil
+			}
 			return batchCommitResponse{}, commitClientError(err)
 		}
 	}
@@ -86,15 +109,42 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		failedReasons := []string{}
 		failedCodes := []string{}
 		var stockOutCounts map[string]stockOutCount
+		var haltMessage, haltCode string
+		loggedNoSpace := false
+		loggedBusy := false
+		loggedCancel := false
+		failItem := func(id string, err error) {
+			if errors.Is(err, context.Canceled) && !loggedCancel {
+				slog.Info("request canceled")
+				loggedCancel = true
+			}
+			message, code := explainCommitFailure(err)
+			if code == noSpaceErrorCode && !loggedNoSpace {
+				logNoSpace(req.RawRequest, err)
+				loggedNoSpace = true
+			}
+			if code == busyErrorCode && !loggedBusy {
+				logBusy(req.RawRequest, err)
+				loggedBusy = true
+			}
+			recordCommitResult(&failedIDs, &failedReasons, &failedCodes, id, message, code)
+			if batchStopsEarly(code) {
+				haltMessage, haltCode = message, code
+			}
+		}
 
 		for _, id := range req.Body.ScanEntryIDs {
+			if haltCode != "" {
+				recordCommitResult(&failedIDs, &failedReasons, &failedCodes, id, haltMessage, haltCode)
+				continue
+			}
 			entry, err := h.Queue.GetScanEntry(req.Context, id)
 			if err != nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, err)
+				failItem(id, err)
 				continue
 			}
 			if entry == nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrScanNotFound)
+				failItem(id, scan.ErrScanNotFound)
 				continue
 			}
 			if entry.Status == scan.Committed {
@@ -112,15 +162,15 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 				continue
 			}
 			if entry.Status != scan.Pending {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrNotPending)
+				failItem(id, scan.ErrNotPending)
 				continue
 			}
 			if entry.Direction == nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrDirectionUnset)
+				failItem(id, scan.ErrDirectionUnset)
 				continue
 			}
 			if entry.ProductID == nil || *entry.ProductID == "" {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, scan.ErrProductUnresolved)
+				failItem(id, scan.ErrProductUnresolved)
 				continue
 			}
 
@@ -133,7 +183,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			}
 
 			if commitErr != nil {
-				recordCommitFailure(&failedIDs, &failedReasons, &failedCodes, id, commitErr)
+				failItem(id, commitErr)
 				continue
 			}
 			committedIDs = append(committedIDs, id)
@@ -159,6 +209,26 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	return response, nil
 }
 
+// batchStorageFailure is the HTTP 200 for a lock or a full disk that happens
+// before any item is committed. Every id gets that code. Nothing is read
+// afterward to see whether an id was already committed.
+func batchStorageFailure(req Request[batchCommitRequest, struct{}], err error) (batchCommitResponse, bool) {
+	message, code, ok := storageClientResult(err)
+	if !ok {
+		return batchCommitResponse{}, false
+	}
+	if code == busyErrorCode {
+		logBusy(req.RawRequest, err)
+	} else {
+		logNoSpace(req.RawRequest, err)
+	}
+	response := batchCommitResponse{UpdatedCount: len(req.Body.ScanEntryIDs)}
+	for _, id := range req.Body.ScanEntryIDs {
+		recordCommitResult(&response.FailedIDs, &response.FailedReasons, &response.FailedCodes, id, message, code)
+	}
+	return response, true
+}
+
 func uniqueInOrder(ids []string) []string {
 	seen := make(map[string]struct{}, len(ids))
 	unique := make([]string, 0, len(ids))
@@ -172,8 +242,7 @@ func uniqueInOrder(ids []string) []string {
 	return unique
 }
 
-func recordCommitFailure(ids, reasons, codes *[]string, id string, err error) {
-	message, code := explainCommitFailure(err)
+func recordCommitResult(ids, reasons, codes *[]string, id, message, code string) {
 	*ids = append(*ids, id)
 	*reasons = append(*reasons, message)
 	*codes = append(*codes, code)

@@ -32,15 +32,54 @@ Each of these responses also writes one warning log line. The message is
 `household_id` when the server knows the household. The line has no SQL and
 no names. Operator alerts for #224 match that line. This does not add an alert.
 
+## Batch commit
+
+`POST /api/scans/batch-commit` stays HTTP 200 when an item cannot be saved.
+That is still true when the body includes `direction`, `unitCount`, or
+`expiresAt`. `failedIds`, `failedReasons`, and `failedCodes` stay parallel
+arrays. Empty fields are omitted: an empty `committedIds`, `failedIds`,
+`failedReasons`, `failedCodes`, or `stockOutCounts` is left out of the JSON.
+
+Known exception, tracked in
+https://github.com/Rhionin/stockbot/issues/370: a batch confirm that sends
+`direction`, `unitCount`, or `expiresAt` and includes an unknown scan id
+returns 500 for the whole request. It does not return 200 with that id
+reported as `scan_not_found`. Remove this note when #370 is fixed.
+
+`committedIds` means committed, or confirmed as already committed, by this
+request. An id this request did not read is not in that list.
+
+A locked database is code `busy` and the busy sentence above. A full disk is
+code `no_space` and the no-space sentence above. A full disk writes one
+`db_no_space` warning for the whole batch, with the same attributes as the
+503 above, not one line per item. A batch that ends `busy` writes one
+`db_busy` warning for the whole batch. The message is `db_busy`. The
+attributes are `event=db_busy`, `method`, `route`, `sqlite_code`, and
+`household_id` when the server knows the household. The line has no SQL and
+no names. It is one line for the batch, not one line per item.
+
+The batch stops on the first `busy` or `no_space` result. That item and every
+item not yet tried get the same code and the same sentence. This includes an
+id that was already committed by something else: the request does not read it
+to check. Items this request did not commit stay as they were (pending,
+flagged, or already committed), so a retry is safe. A retry lists an id that
+was already committed in `committedIds`. Items this request committed before
+the stop stay committed and are listed in `committedIds`. Other per-item
+failures do not stop the batch.
+
+A client shows that sentence once. When some items were committed first, the
+line leads with the committed count and "confirmed.", then the sentence. Two
+committed items and a lock read:
+`2 confirmed. Stockbot is busy right now. Try again in a moment.`
+
 ## Other 5xx
 
 Every other 5xx uses the generic sentence
 `Something went wrong. Try again.` The body has no `code`, except an
 unexpected commit or stock-out failure, which keeps code `internal` with
 that same sentence. A lock or a full disk on a single commit or stock-out
-is still the 503 above. A batch commit answers 200. A lock or a full disk
-on one of its items stays in that body as code `internal` and the generic
-sentence.
+is still the 503 above. A batch commit stays HTTP 200 and reports those
+same codes on each affected item.
 
 The generic sentence does not replace the busy sentence or the no-space sentence.
 
