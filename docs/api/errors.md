@@ -40,11 +40,8 @@ That is still true when the body includes `direction`, `unitCount`, or
 arrays. Empty fields are omitted: an empty `committedIds`, `failedIds`,
 `failedReasons`, `failedCodes`, or `stockOutCounts` is left out of the JSON.
 
-Known exception, tracked in
-https://github.com/Rhionin/stockbot/issues/370: a batch confirm that sends
-`direction`, `unitCount`, or `expiresAt` and includes an unknown scan id
-returns 500 for the whole request. It does not return 200 with that id
-reported as `scan_not_found`. Remove this note when #370 is fixed.
+An unknown scan id is `scan_not_found` on that request too. The other ids
+are updated and committed as they would be without it.
 
 `committedIds` means committed, or confirmed as already committed, by this
 request. An id this request did not read is not in that list.

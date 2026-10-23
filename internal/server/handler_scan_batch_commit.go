@@ -77,12 +77,14 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		}
 	}
 
-	// Apply batch updates if any fields are provided. A lock or a full disk
-	// here is the same per-item result as a commit that cannot start.
-	// A lock rolls this update back, so the cards stay as they were.
-	// On a full disk the field edit can persist and the stock commit then
-	// fails. Stock is still applied exactly once.
-	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
+	// An update-only request still applies one transaction to every id.
+	// A confirm applies those fields to each pending card as that card is
+	// reached, so an unknown id stays a per-item result. A lock rolls that
+	// card's update back, so the card stays as it was. On a full disk the
+	// field edit can persist and the stock commit then fails. Stock is still
+	// applied exactly once.
+	applyFields := req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil
+	if applyFields && !req.Body.Commit {
 		err := h.Queue.BatchUpdateScanEntries(
 			req.Context,
 			req.Body.ScanEntryIDs,
@@ -164,6 +166,28 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			if entry.Status != scan.Pending {
 				failItem(id, scan.ErrNotPending)
 				continue
+			}
+			if applyFields {
+				err := h.Queue.BatchUpdateScanEntries(
+					req.Context,
+					[]string{id},
+					req.Body.Direction,
+					req.Body.UnitCount,
+					req.Body.ExpiresAt,
+				)
+				if err != nil {
+					failItem(id, err)
+					continue
+				}
+				entry, err = h.Queue.GetScanEntry(req.Context, id)
+				if err != nil {
+					failItem(id, err)
+					continue
+				}
+				if entry == nil {
+					failItem(id, scan.ErrScanNotFound)
+					continue
+				}
 			}
 			if entry.Direction == nil {
 				failItem(id, scan.ErrDirectionUnset)

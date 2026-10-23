@@ -197,6 +197,65 @@ func TestScanBatchCommit(t *testing.T) {
 			),
 		},
 		{
+			name: "field updates with an unknown id are per item, not a 500",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-field-mix", "Field Peas")
+				insertPendingScanUnits(env, "scan-field-a", "prod-field-mix", scan.StockIn, 1)
+				insertPendingScanUnits(env, "scan-field-b", "prod-field-mix", scan.StockIn, 1)
+			},
+			httpExchange: httpExchange{
+				method: "POST",
+				path:   "/api/scans/batch-commit",
+				body:   `{"scanEntryIds":["scan-field-a","missing-field","scan-field-b"],"direction":"stock_in","unitCount":4,"expiresAt":"2026-12-01T00:00:00Z","commit":true}`,
+				// A 500 here is the bug: the unknown id used to fail the whole request.
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.updatedCount", value: float64(3)},
+					{path: "$.committedIds[0]", value: "scan-field-a"},
+					{path: "$.committedIds[1]", value: "scan-field-b"},
+					{path: "$.failedIds[0]", value: "missing-field"},
+					{path: "$.failedReasons[0]", value: "This scan is no longer in the queue."},
+					{path: "$.failedCodes[0]", value: "scan_not_found"},
+					{path: "$.error", absent: true},
+				},
+				bodyExcludes: []string{"Something went wrong"},
+			},
+			afterRequest: func(env testEnv) {
+				h := handlerFromEnv(env)
+				const body = `{"scanEntryIds":["scan-field-a","missing-field","scan-field-b"],"direction":"stock_in","unitCount":4,"expiresAt":"2026-12-01T00:00:00Z","commit":true}`
+				exchanges(
+					httpExchange{
+						method:         "GET",
+						path:           "/api/inventory",
+						expectedStatus: http.StatusOK,
+						assertions:     []assertion{{path: "$[0].instanceCount", value: float64(8)}},
+					},
+					httpExchange{
+						method:         "GET",
+						path:           "/api/scans",
+						query:          map[string]string{"userId": "user-1", "status": "committed"},
+						expectedStatus: http.StatusOK,
+						assertions: []assertion{
+							{path: "$[0].unitCount", value: float64(4)},
+							{path: "$[1].unitCount", value: float64(4)},
+							{path: "$[0].expiresAt", value: "2026-12-01T00:00:00Z"},
+							{path: "$[1].expiresAt", value: "2026-12-01T00:00:00Z"},
+						},
+					},
+				)(env)
+				again := exchangeJSON(env.T, h, http.MethodPost, "/api/scans/batch-commit", body, http.StatusOK)
+				if !strings.Contains(string(again), `"scan_not_found"`) || strings.Contains(string(again), "Something went wrong") {
+					env.T.Fatalf("retry = %s", again)
+				}
+				exchanges(httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(8)}},
+				})(env)
+			},
+		},
+		{
 			name: "scans that cannot commit stay on the queue",
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-gap", "Gap")
