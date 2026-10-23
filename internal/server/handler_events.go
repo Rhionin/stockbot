@@ -45,7 +45,7 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Printf("events: streaming unsupported")
-		http.Error(w, clientmsg.ServerError, http.StatusInternalServerError)
+		http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 		return
 	}
 

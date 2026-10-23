@@ -34,7 +34,7 @@ const DirectionUnsetMessage = "Choose stock in or stock out first."
 // InternalMessage is the sentence for an unexpected failure. The server logs
 // the real error and does not send it to the household. It is the same
 // sentence every generic 5xx uses.
-const InternalMessage = clientmsg.ServerError
+const InternalMessage = clientmsg.Generic
 
 // Codes on a commit failure. The frontend matches these, not the sentences.
 const (

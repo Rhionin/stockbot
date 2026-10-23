@@ -130,7 +130,7 @@ func (h *handler) serveOpened(w http.ResponseWriter, r *http.Request, name strin
 		data, err := io.ReadAll(f)
 		if err != nil {
 			log.Printf("web ui: %s", err)
-			http.Error(w, clientmsg.ServerError, http.StatusInternalServerError)
+			http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 			return
 		}
 		rs = bytes.NewReader(data)
@@ -165,7 +165,7 @@ func (h *handler) serveOpened(w http.ResponseWriter, r *http.Request, name strin
 func (h *handler) serveFallback(w http.ResponseWriter, r *http.Request) {
 	if h.indexErr != nil {
 		log.Printf("web ui: %s", h.indexErr)
-		http.Error(w, clientmsg.ServerError, http.StatusInternalServerError)
+		http.Error(w, clientmsg.Generic, http.StatusInternalServerError)
 		return
 	}
 

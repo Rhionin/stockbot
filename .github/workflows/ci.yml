@@ -70,10 +70,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       
       - name: Lint deploy shell scripts
-        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/firewall/pantry-lan-only.sh deploy/setup_apply_test.sh deploy/pantry_update_test.sh deploy/mdns/pantry-mdns.sh deploy/dns/pantry-split-dns.sh deploy/mdns/lan-ipv4.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh scripts/check-stockbot-names.sh
+        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/firewall/pantry-lan-only.sh deploy/setup_apply_test.sh deploy/pantry_update_test.sh deploy/mdns/pantry-mdns.sh deploy/dns/pantry-split-dns.sh deploy/mdns/lan-ipv4.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh scripts/check-stockbot-names.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh
 
       - name: Setup script syntax and behavior
-        run: bash -n deploy/setup.sh deploy/firewall/pantry-lan-only.sh deploy/systemd/pantry-update.sh deploy/mdns/pantry-mdns.sh deploy/mdns/lan-ipv4.sh deploy/dns/pantry-split-dns.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh deploy/pantry_update_test.sh && bash deploy/setup_apply_test.sh && bash deploy/pantry_update_test.sh
+        run: bash -n deploy/setup.sh deploy/firewall/pantry-lan-only.sh deploy/systemd/pantry-update.sh deploy/mdns/pantry-mdns.sh deploy/mdns/lan-ipv4.sh deploy/dns/pantry-split-dns.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/auth-migrate.sh deploy/pantry_update_test.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh && bash deploy/setup_apply_test.sh && bash deploy/pantry_update_test.sh && bash scripts/publish-moving-tags_test.sh
 
       - name: Publish modes compose config and Caddyfile adapt
         run: bash deploy/check-publish-modes.sh
@@ -223,6 +223,19 @@ jobs:
     # tell the two runs apart. The reusable run passes publish_image skip
     # and skips this job. The push-triggered run is the only one that tags
     # :latest and :master, and the only one that calls the deploy hook below.
+    #
+    # Master publishes share deploy-master so two merges cannot push :latest
+    # at the same time. queue: max keeps every waiting publish (up to
+    # GitHub's limit of 100). Jobs join this group when their tests finish,
+    # not in push order, so the default single waiting slot would let an
+    # older commit cancel the newest publish that is already waiting.
+    # cancel-in-progress is false: the build that has started finishes and
+    # still pushes its immutable sha tag. Pull requests and the Release
+    # skip use a unique group so they do not queue behind production.
+    concurrency:
+      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.publish_image != 'skip' && 'deploy-master' || format('image-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
     if: inputs.publish_image != 'skip' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.repository == 'Rhionin/stockbot'))
     steps:
       - name: Checkout code
@@ -243,28 +256,28 @@ jobs:
 
       - name: Determine image tags
         id: tags
+        env:
+          # Branch names are untrusted. Keep the value in the environment so
+          # it cannot break out of the script.
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Build common tags array - always include commit hash
+          # Always push the immutable commit tag. Moving tags are applied
+          # later, and only when this commit is still the tip of master.
           TAGS="ghcr.io/rhionin/pantry:${{ github.sha }}"
           SIDECAR="ghcr.io/rhionin/pantry-grocy-sync:${{ github.sha }}"
-          
-          # Add branch name tag for all builds (PR and master)
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BRANCH_NAME="${{ github.head_ref }}"
+            BRANCH_NAME="${HEAD_REF}"
             # Remove 'refs/heads/' prefix if present
             BRANCH_NAME="${BRANCH_NAME#refs/heads/}"
             # Replace slashes with dashes for valid tag
             BRANCH_NAME="${BRANCH_NAME//\//-}"
             TAGS="$TAGS,ghcr.io/rhionin/pantry:$BRANCH_NAME"
             SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:$BRANCH_NAME"
-          else
-            # On master commit, add latest and master tags
-            TAGS="$TAGS,ghcr.io/rhionin/pantry:latest,ghcr.io/rhionin/pantry:master"
-            SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:latest,ghcr.io/rhionin/pantry-grocy-sync:master"
           fi
-          
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "sidecar_tags=$SIDECAR" >> $GITHUB_OUTPUT
+
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "sidecar_tags=$SIDECAR" >> "$GITHUB_OUTPUT"
 
       - name: Read commit identity
         id: commit
@@ -310,11 +323,20 @@ jobs:
           cache-to: type=gha,mode=max,scope=grocy-sync
           tags: ${{ steps.tags.outputs.sidecar_tags }}
 
+      # The sha tags are already in the registry. Move :latest and :master
+      # only when this commit is still the tip, so a slower older build
+      # cannot overwrite the tag pantry-update.timer pulls.
+      - name: Publish moving tags when this commit is still the tip
+        id: moving
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: bash scripts/publish-moving-tags.sh
+
       # The image is already in the registry. This asks the Pi to pull it now.
       # The step is a no-op until DEPLOY_HOOK_SECRET exists, so a repo without
       # that secret still publishes the image and the Pi timer still deploys.
+      # It runs only after the moving tags above were published.
       - name: Ask the Stockbot host to deploy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.moving.outputs.publish == 'true'
         env:
           DEPLOY_HOOK_SECRET: ${{ secrets.DEPLOY_HOOK_SECRET }}
         run: |
