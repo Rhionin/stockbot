@@ -18,7 +18,9 @@ import {
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
+  CODE_BUSY,
   CODE_NONE_ON_HAND,
+  CODE_NO_SPACE,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
@@ -161,7 +163,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, true>>({});
+  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, string>>({});
   const [partialLine, setPartialLine] = useState('');
   const refreshGeneration = useRef(0);
   const [toast, setToast] = useState('');
@@ -189,9 +191,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setError(nextError);
     setLoadError('');
     setFailureBannerIds((current) => {
-      const kept: Record<string, true> = {};
+      const kept: Record<string, string> = {};
       for (const entry of next) {
-        if (current[entry.id] === true) kept[entry.id] = true;
+        const code = current[entry.id];
+        if (code !== undefined) kept[entry.id] = code;
       }
       return kept;
     });
@@ -295,9 +298,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
-  function clearFailure(id: string) {
+  // A busy or no_space banner is one sentence for the stop. Confirming one
+  // card makes that sentence out of date, so the banner comes down. Other
+  // failure codes still clear one card at a time.
+  function retireSingleConfirm(id: string) {
     setFailureBannerIds((current) => {
-      if (current[id] !== true) return current;
+      const hadStorage = Object.values(current).some((code) => code === CODE_BUSY || code === CODE_NO_SPACE);
+      if (hadStorage) return {};
+      if (current[id] === undefined) return current;
       const next = { ...current };
       delete next[id];
       return next;
@@ -356,7 +364,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
-    clearFailure(id);
+    retireSingleConfirm(id);
     setPartialLine('');
     setToast('');
     try {
@@ -413,7 +421,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
-    clearFailure(id);
+    retireSingleConfirm(id);
     setPartialLine('');
     setToast('');
     try {
@@ -513,10 +521,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setExcluded({});
       const stillThere = (noticeId: string) => pending.some((entry) => entry.id === noticeId);
       const amberLeft = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id)).map((notice) => notice.id);
-      const pendingFailures: Record<string, true> = {};
+      const pendingFailures: Record<string, string> = {};
       for (const notice of notices) {
         if (notice.code === CODE_NONE_ON_HAND) continue;
-        if (stillThere(notice.id)) pendingFailures[notice.id] = true;
+        if (stillThere(notice.id)) pendingFailures[notice.id] = notice.code;
       }
       setFailureBannerIds(pendingFailures);
       const banner = batchFailureBannerText(
@@ -541,7 +549,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
-  const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
+  const failureBanner = entries.some((entry) => failureBannerIds[entry.id] !== undefined);
   const batchHead = failureBanner ? batchSentence : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const successBanner = batchHead === '' && !failedPending && partialLine !== '';
