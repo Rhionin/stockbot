@@ -1,7 +1,17 @@
 # Stockbot for more than one household: technical design (AWS, serverless)
 
-Status: draft for review. It reworks the PR #224 design doc, which assumed a Hetzner VM + Postgres + RLS.
+Status: Proposed for approval. Decisions: hosted on AWS + CDK; Aurora DSQL; AppSync Events push with polling fallback (CJ, 2026-10-22).
+It reworks the PR #224 design doc, which assumed a Hetzner VM + Postgres + RLS.
 Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labeled **(opinion)**. "PM req" means a requirement stated by PM in PR #224 review. "PM decision (2026-10-22)" is a scope call PM made that day. Anything PM has not specified is marked **TODO(PM)**. Cost arithmetic is in [multi-tenant-saas-costs.md](multi-tenant-saas-costs.md).
+
+## Decision log
+
+- **2026-10-22.** CJ chose Aurora DSQL + AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected.
+  - **DSQL + polling only:** rejected. About $1.79/month at 3 households and $3.65 at 10; the CloudFront Free plan fills at ~14 households, and 2 s polling keeps the phone radio from idling.
+  - **Aurora Serverless v2 + AppSync Events push:** rejected. About $6/month at 3 households and $15 at 10, with a 15–30 s first load after a pause.
+  - **API Gateway WebSocket:** rejected. Same price as AppSync Events, but it needs a connection registry, a 2 h reconnect, and a keepalive route.
+  - **DynamoDB:** rejected. Cheapest idle, but a full rewrite of a relational app; the JSON/CSV export is a translator.
+  - **Lightsail SQLite:** rejected. Least code change, but not a serverless DB (conflicts with decision 3).
 
 ## 1. Context and decisions
 
@@ -14,11 +24,12 @@ Facts are cited with a URL (accessed 2026-10-22, us-east-1); opinions are labele
   1. New households run on a hosted cloud service with its **own origin**. `stockbot.rhionin.com` stays on the Pi for CJ's house, with a one-time `pantry.db` import later.
   2. **AWS**, infrastructure in **CDK**.
   3. A **serverless DB**, low cost, tiny traffic.
+  4. **Aurora DSQL + AppSync Events push** on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. See the decision log.
 - PM decisions (2026-10-22):
   1. **Export.** The owner exports household data as JSON (canonical, versioned schema) plus CSV for spreadsheets. The hosted app imports the JSON. A Pi-side importer is later and out of launch scope. The export does not rebuild a SQLite file.
   2. **Erasure.** Day 30 from live data and day 44 from backups is accepted. User-facing copy: "Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that."
   3. **Auth.** Cognito + SES is required.
-  4. **Live updates.** While the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s. Poll every 2 s only while that screen is visible, every 10 s on other visible screens, and stop in the background. *Transport superseded, pending CJ's decision:* PM's "no WebSockets for launch" is reopened by the polling-vs-push comparison in §3.1. The ~2 s user-facing requirement and the no-background rule stand in every option.
+  4. **Live updates.** While the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. CJ (2026-10-22) chose AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. The comparison is in §3.1.
   5. **Expo.** Moving the Expo app (PR #230) to Cognito sign-in is in launch scope.
 - Still **TODO(PM)**: which host runs the USB-dongle scanner.
 - Ground rules: simple, low cost, serverless. Avoid fixed-cost traps: NAT, public IPv4, Aurora minimums, ALB, Logs, KMS, Secrets Manager (PM req).
@@ -67,11 +78,11 @@ Sources:
 
 SQLite-specific SQL (`INSERT OR …`, `ON CONFLICT`, `strftime`, `datetime(`, `json_extract`, `AUTOINCREMENT`) appears in 17 files under `internal/`. Porting it is needed for A, C, and E alike. DSQL adds the retry and batching work on top.
 
-## 3. Recommended architecture (Option C)
+## 3. Chosen architecture (Option C, CJ 2026-10-22)
 
-**Lambda arm64 (Go, `provided.al2023`) outside any VPC, behind CloudFront (flat-rate Free plan) → Lambda Function URL with OAC; Aurora DSQL single-Region; S3 for the SPA and exports; Cognito Essentials + SES for identity; EventBridge Scheduler for timers; CloudWatch → SNS email for the operator; AWS Budgets.**
+**Lambda arm64 (Go, `provided.al2023`) outside any VPC, behind CloudFront (flat-rate Free plan) → Lambda Function URL with OAC; Aurora DSQL single-Region; AppSync Events for live updates (hint-only push on visible screens; 2 s / 10 s polling only while disconnected); S3 for the SPA and exports; Cognito Essentials + SES for identity; EventBridge Scheduler for timers; CloudWatch → SNS email for the operator; AWS Budgets.**
 
-Why: it is the only option where the DB is serverless, truly scales to zero with no resume pause, and needs no VPC, NAT, public IPv4, ALB, or DB secret. It stays Postgres-compatible, so the SQL port is mechanical, unlike the DynamoDB rewrite. It costs ≈ $2/month at the expected traffic, including 2 s Scan Queue polling (DSQL stays inside the free tier at 3 households; see the costs doc).
+Why: it is the only option where the DB is serverless, truly scales to zero with no resume pause, and needs no VPC, NAT, public IPv4, ALB, or DB secret. It stays Postgres-compatible, so the SQL port is mechanical, unlike the DynamoDB rewrite. With AppSync Events push it costs about $1.80/month at 3 households (see the costs doc).
 
 ```mermaid
 flowchart LR
@@ -85,6 +96,8 @@ flowchart LR
   CF -->|/api/*| FURL[Lambda Function URL, OAC]
   FURL --> API[Lambda: stockbot-api Go arm64]
   API -->|IAM token| DSQL[(Aurora DSQL)]
+  API -->|hint after commit| AE[AppSync Events]
+  W & M -->|subscribe while visible| AE
   API --> COG[Cognito user pool - Essentials]
   COG --> SES[SES]
   API -->|one-time schedules| SCH[EventBridge Scheduler]
@@ -103,7 +116,7 @@ Lambda rework for in-memory state (needed for A, B, and C):
 
 | Today (in process) | Hosted |
 |---|---|
-| SSE broadcaster `/api/events` | Poll a cheap changes-since cursor only while a screen is visible, and stop in the background (PM decision 2026-10-22). Scan Queue (web or mobile): every 2 s while it is open and visible, so new scans appear within about 2 s. Visibility is the Page Visibility API on web, and AppState plus screen focus on Expo. Other visible screens: every 10 s, same changes-since pattern. The Scan Queue poll is `GET /api/scans?since=<cursor>` (empty or 304 when nothing changed), backed by an index on `(household_id, updated_at)`. Push is compared in §3.1 and supersedes "no WebSockets for launch", pending CJ's decision. Recommended **(opinion)**: AppSync Events hint-only push on visible screens, with this polling kept as the fallback while disconnected. |
+| SSE broadcaster `/api/events` | AppSync Events hint-only push on every visible screen (CJ, 2026-10-22). The 2 s / 10 s polling stays only as the fallback while disconnected, and nothing runs in the background. Visibility is the Page Visibility API on web, and AppState plus screen focus on Expo. The fallback poll is `GET /api/scans?since=<cursor>` (empty or 304 when nothing changed), every 2 s on the visible Scan Queue and every 10 s on other visible screens, backed by an index on `(household_id, updated_at)`. |
 | Push-alert timers (`internal/push/attention.go`, 5-minute settle, 2,500 B batching) | Create a one-time EventBridge Scheduler entry per household batch window, named for idempotency, which invokes `stockbot-jobs` |
 | Scanner-mode idle timer | Store `mode_expires_at`; evaluate it lazily on read |
 | Background product refresh | Daily scheduled Lambda; the catalog is shared |
@@ -116,7 +129,7 @@ Effort estimate (opinion): 1–2 weeks for statelessness plus 1–2 weeks for th
 
 ### 3.1 Live updates: polling vs push
 
-> **Status (2026-10-22):** this section supersedes "No WebSockets for launch" in §1 and §3, pending CJ's decision below. PM's user-facing requirement is unchanged: while the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. This section only compares *how* to meet that requirement. Cost arithmetic is in [multi-tenant-saas-costs.md §6](multi-tenant-saas-costs.md). Prices are us-east-1, accessed 2026-10-22.
+> **Status (2026-10-22):** CJ chose Aurora DSQL + AppSync Events push on every visible screen, with the 2 s / 10 s polling kept only as the fallback while disconnected. This section is the record of the alternatives. PM's user-facing requirement is unchanged: while the Scan Queue (web or mobile) is open and visible, new scans appear within about 2 s, and nothing runs in the background. Cost arithmetic is in [multi-tenant-saas-costs.md §6](multi-tenant-saas-costs.md). Prices are us-east-1, accessed 2026-10-22.
 
 #### What stays the same in every style
 
@@ -141,7 +154,7 @@ Effort estimate (opinion): 1–2 weeks for statelessness plus 1–2 weeks for th
 
 #### The four styles
 
-| | (a) Polling (current text) | (b) Push via API Gateway WebSocket | (c) Push via AppSync Events | (d) Hybrid: AppSync Events on the Scan Queue only |
+| | (a) Polling only | (b) Push via API Gateway WebSocket | (c) Push via AppSync Events | (d) Hybrid: AppSync Events on the Scan Queue only |
 |---|---|---|---|---|
 | Scan Queue latency | ≤ 2 s, ~1 s average + request time | Sub-second (estimate) | Sub-second (estimate) | Sub-second (estimate) |
 | Other screens | 10 s | Sub-second | Sub-second | 10 s polling |
@@ -170,7 +183,7 @@ Facts this design relies on:
 - **Per-namespace overrides:** publish and subscribe modes can be set separately per namespace. CDK has `ChannelNamespace` with `authorizationConfig.publishAuthModeTypes` / `subscribeAuthModeTypes` in `aws-cdk-lib/aws-appsync`, v2.274.0.
 - **The Lambda authorizer sees the channel.** Its request includes `requestContext.operation` (`EVENT_CONNECT`, `EVENT_SUBSCRIBE`, `EVENT_PUBLISH`) and `requestContext.channel`. On `EVENT_CONNECT` the channel isn't available, and the authorizer result is cached per API, operation, channel and token.
 
-The design (opinion), shared by web and Expo:
+The design for the decided AppSync Events path, shared by web and Expo:
 
 1. **Live ticket.** `POST /api/live/ticket` checks the session and `X-Household-Id` against `memberships`. It returns a signed ticket of `{household_id, user_id, channel_key, exp ≤ 15 min}`, signed with an HMAC key from SSM SecureString, plus the channel name.
 2. **Channel.**
@@ -230,11 +243,11 @@ Expo client options for (c):
 
 My pick is the small client, because Stockbot uses its own ticket rather than Amplify Auth **(opinion)**.
 
-#### Recommendation (opinion)
+#### Decided (CJ, 2026-10-22)
 
-**Use DSQL and AppSync Events push on every visible screen (c), with polling as the fallback while the socket is down.**
+**Aurora DSQL and AppSync Events push on every visible screen (c), with the 2 s / 10 s polling kept only as the fallback while disconnected.**
 
-- On DSQL, polling is already cheap, so cost is not the reason to move. The reasons are:
+- On DSQL, polling is already cheap, so cost was not the reason to move. The reasons on the record are:
   1. Sub-second updates on every screen instead of 2 s or 10 s.
   2. Much less phone radio and data use on the Scan Queue.
   3. The CloudFront Free plan lasts to ~112 households instead of ~14.
@@ -242,16 +255,15 @@ My pick is the small client, because Stockbot uses its own ticket rather than Am
 - (c) beats (b) on effort: there's no connection registry, no 2 h reconnect, and no keepalive route. The price is the same.
   - (b)'s one real advantage is a hard server-side disconnect. Channel-key rotation covers that need well enough for hint-only payloads.
 - (d) keeps two transports and gains nothing on DSQL.
-- Cost of the switch: about 1 extra week of build. It can also ship after launch: the changes-since endpoints are needed either way, so polling can go out first and push can follow without rework.
+- The changes-since endpoints stay, because a reconnect resyncs through them. The extra build is about 1 week.
 
-On Serverless v2, push matters much more: about $15/month instead of about $39 at 10 households. The 15–30 s resume on the first request after a pause remains in every style.
+On Serverless v2, push would have mattered much more: about $15/month instead of about $39 at 10 households. That option was rejected; the 15–30 s resume on the first request after a pause would have remained in every style.
 
-#### Decision for CJ (database + live-update style)
+The three launch options, for the record:
 
-> **Which database and live-update style should hosted Stockbot launch with?**
-> 1. **Aurora DSQL + AppSync Events push on every visible screen**, with the 2 s / 10 s polling kept only as the fallback while disconnected. About $1.80/month at 3 households and $1.83 at 10. About 1 extra week of build. Sub-second updates. *(my recommendation)*
-> 2. **Aurora DSQL + polling only** (2 s Scan Queue / 10 s elsewhere, as PM accepted). About $1.79/month at 3 households and $3.65 at 10. No extra build. Push can be added later without rework. Free CloudFront tier to ~14 households.
-> 3. **Aurora Serverless v2 (full Postgres) + AppSync Events push.** About $6/month at 3 households and $15 at 10. 15–30 s first load after a pause. Same extra week of build.
+1. **Aurora DSQL + AppSync Events push on every visible screen**, with the 2 s / 10 s polling kept only as the fallback while disconnected. About $1.80/month at 3 households and $1.83 at 10. About 1 extra week of build. Sub-second updates. **Decided.**
+2. **Aurora DSQL + polling only** (2 s Scan Queue / 10 s elsewhere). About $1.79/month at 3 households and $3.65 at 10. No extra build. Free CloudFront tier to ~14 households. **Rejected.**
+3. **Aurora Serverless v2 (full Postgres) + AppSync Events push.** About $6/month at 3 households and $15 at 10. 15–30 s first load after a pause. Same extra week of build. **Rejected.**
 
 ## 4. Tenancy isolation
 
@@ -307,7 +319,8 @@ On Serverless v2, push matters much more: about $15/month instead of about $39 a
   - `/api/invites` (create, list, revoke, accept)
   - `/api/devices/pair`, `/api/devices`, `DELETE /api/devices/{id}`
   - `/api/export` (async JSON + CSV → S3 presigned link) and `/api/import` (hosted app imports the versioned JSON)
-  - `/api/scans?since=<cursor>` (Scan Queue poll every 2 s while that screen is visible; empty or 304 when nothing changed; index on `(household_id, updated_at)`). Other visible screens use the same changes-since pattern every 10 s. Replaces SSE on hosted.
+  - `/api/live/ticket` (signed subscribe ticket for the household's AppSync Events channel)
+  - `/api/scans?since=<cursor>` (fallback poll while disconnected: every 2 s on the visible Scan Queue, every 10 s on other visible screens; empty or 304 when nothing changed; index on `(household_id, updated_at)`). Replaces SSE on hosted.
   - `/api/me` (delete account)
 - Keep `POST /api/device/scans` with idempotency key `(device_id, id)` and heartbeat.
 - Errors: households see plain messages (PM req), for example "Something went wrong saving that scan, try again." Codes and internal detail go only to logs and alarms.
@@ -336,7 +349,7 @@ One CDK app with environments `dev` and `prod`, in separate AWS accounts if poss
 | `Edge` | `cloudfront.Distribution` with origins `S3BucketOrigin.withOriginAccessControl` and `FunctionUrlOrigin.withOriginAccessControl`; ACM cert in us-east-1; WAF WebACL (rate-based rule); optional Route 53 records (or a CNAME at Cloudflare) |
 | `Data` | `dsql.CfnCluster` (L1, `deletionProtectionEnabled: true`); AWS Backup plan (daily, 14-day retention); exports bucket (block public access, SSE-KMS, lifecycle 7 days, noncurrent 1 day); KMS CMK |
 | `Identity` | `cognito.UserPool` (Essentials feature plan, email sign-in, SES email config), `UserPoolClient`s (web BFF confidential client, Expo public PKCE client), managed login domain, post-confirmation trigger; SES identity for the sending domain |
-| `App` | `lambda.Function` api + jobs + migrate (Go arm64, `provided.al2023`), `FunctionUrl` (auth IAM for OAC); EventBridge Scheduler group + role; SSM parameters (names only; values set out-of-band); migrate custom resource |
+| `App` | `lambda.Function` api + jobs + migrate (Go arm64, `provided.al2023`), `FunctionUrl` (auth IAM for OAC); AppSync Events API (`EventApi` + `hh` channel namespace, Lambda authorizer, IAM publish); EventBridge Scheduler group + role; SSM parameters (names only; values set out-of-band); migrate custom resource |
 | `Ops` | Log groups (30-day retention), metric filters, alarms, SNS topic (email to CJ), `budgets.CfnBudget` (for example $10/month actual + forecast) |
 
 Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
@@ -388,12 +401,14 @@ Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
 1. Request **SES production access** and verify the sending domain first, so the AWS review waiting period runs in parallel with the rest (PM decision 2026-10-22: Cognito + SES is required).
 2. Port SQL to PG + DSQL constraints behind the store interface. CI runs both SQLite (the Pi) and PG.
 3. Add multi-tenancy (`household_id` everywhere, remove `user-1`) with isolation tests, in SQLite first so the Pi gets it too.
-4. Make the server stateless for Lambda (2 s Scan Queue polling while that screen is visible, 10 s on other visible screens, no polling in the background, Scheduler, lazy timers) behind a `HOSTED=1` mode. The Pi keeps SSE and in-process timers.
+4. Make the server stateless for Lambda (AppSync Events push on visible screens, 2 s / 10 s polling only while disconnected, Scheduler, lazy timers) behind a `HOSTED=1` mode. The Pi keeps SSE and in-process timers.
 5. CDK `dev` deploy; Cognito, invites, devices; nightly isolation tests against dev DSQL.
 6. JSON export/import round-trip test; test the erasure job. No SQLite-file round-trip.
 7. Invite-only beta with one test household; alarms and budget live.
 8. Second household onboard. Later, an optional import of CJ's house (CJ's decision says the Pi stays).
 9. Move the Expo app (PR #230) to Cognito sign-in. This is in launch scope (PM decision 2026-10-22).
+
+**Ownership:** AWS/CDK infrastructure is built and operated by the Network Engineer bot; app code by Backend/Frontend Builders.
 
 ## 13. Open questions
 
@@ -404,4 +419,3 @@ Run `cdk-nag` (AwsSolutions pack) in CI. Pin the CDK version.
 - Paid tier billing provider and limits: TODO(PM).
 - Hosted domain name and whether DNS stays on Cloudflare: TODO(CJ).
 - Pi self-host: does it get the new auth, or keep the shared password? TODO(PM)
-- Database + live-update style (DSQL + AppSync Events push, DSQL + polling, or Serverless v2 + push): TODO(CJ), see §3.1.
