@@ -378,7 +378,7 @@ test('the batch banner shows the server sentence', async ({ page, request }) => 
   }
 })
 
-test('confirming one card clears the busy banner and shows that card', async ({ page, request }) => {
+test('a successful confirm clears the busy banner', async ({ page, request }) => {
   test.setTimeout(180_000)
   const schemes = shotDir === undefined ? ['light'] as const : ['light', 'dark'] as const
   for (const scheme of schemes) {
@@ -401,22 +401,9 @@ test('confirming one card clears the busy banner and shows that card', async ({ 
         failedCodes: scans.map(() => 'busy'),
       }))
       await expectServerSentence(page, busySentence, confirmed.barcode)
-      await page.route(`**/api/scans/${confirmed.id}/commit`, async (route) => {
-        if (route.request().method() !== 'POST') {
-          await route.continue()
-          return
-        }
-        await route.fulfill({
-          status: 409,
-          contentType: 'application/json',
-          body: JSON.stringify({ error: failureNote, code: 'none_on_hand' }),
-        })
-      })
       const card = page.getByRole('article', { name: `Scan ${confirmed.barcode}`, exact: true })
       await card.getByRole('button', { name: 'Confirm' }).click()
-      const own = page.getByRole('article', { name: `Scan ${confirmed.barcode}, ${failureNote}` })
-      await expect(own).toBeVisible()
-      await expect(own.getByText(failureNote, { exact: true })).toBeVisible()
+      await expect(page.getByRole('article', { name: `Scan ${confirmed.barcode}`, exact: true })).toHaveCount(0)
       await expectNoBatchBanner(page)
       await expect(page.getByText(busySentence)).toHaveCount(0)
       await expect(page.getByRole('article', { name: `Scan ${waiting.barcode}`, exact: true })).toBeVisible()
@@ -426,7 +413,6 @@ test('confirming one card clears the busy banner and shows that card', async ({ 
       }
     } finally {
       await page.unroute('**/api/scans/batch-commit')
-      await page.unroute(`**/api/scans/${confirmed.id}/commit`)
       for (const scan of scans) {
         await cancelScan(request, scan.id).catch(() => undefined)
       }

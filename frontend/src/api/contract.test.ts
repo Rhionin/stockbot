@@ -252,6 +252,14 @@ describe('batch failure banner', () => {
     expect(batchFailureBannerText(after, 0)).toBe(banner);
   });
 
+  it('a shared code uses a later sentence when the first message is blank', () => {
+    const notices = [
+      { code: 'no_item', message: '' },
+      { code: 'no_item', message: 'Which item is this?' },
+    ];
+    expect(batchFailureBannerText(notices, 0)).toBe('Which item is this?');
+  });
+
   it('a busy card beside amber uses the busy sentence once', () => {
     const notices = [
       { code: 'none_on_hand', message: 'Nothing on hand to take out.' },

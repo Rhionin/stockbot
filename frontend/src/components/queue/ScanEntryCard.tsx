@@ -157,6 +157,7 @@ export interface ScanEntryCardProps {
   onSelectedChange: (selected: boolean) => void;
   onChanged: () => void;
   onConfirmStart?: () => void;
+  onConfirmSuccess?: () => void;
   onBlocked?: () => void;
   onStocked?: (productId: string) => void;
   userId?: string;
@@ -174,6 +175,7 @@ export const ScanEntryCard = ({
   onSelectedChange,
   onChanged,
   onConfirmStart,
+  onConfirmSuccess,
   onBlocked,
   onStocked,
   userId,
@@ -359,6 +361,7 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       noteCommitted(committed);
       if (isStockIn && entry.productId !== null) onStocked?.(entry.productId);
@@ -375,6 +378,7 @@ export const ScanEntryCard = ({
     onConfirmStart?.();
     try {
       const committed = await commitScanEntry(entry.id, instanceId === '' ? undefined : instanceId, productId);
+      onConfirmSuccess?.();
       rememberOffer(null, false);
       noteCommitted(committed);
       if (isStockIn) onStocked?.(productId);

@@ -273,8 +273,10 @@ describe('partial line transitions', () => {
       expect(line.closest('[role="alert"]')).not.toBeNull();
       expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-      await waitFor(() => expect(screen.queryByText('Choose which item this is first.')).not.toBeInTheDocument());
+      expect(screen.getAllByText('Choose which item this is first.').length).toBeGreaterThan(0);
       expect(screen.queryByText(wasLine)).not.toBeInTheDocument();
+      releaseHold();
+      await waitFor(() => expect(screen.queryByText('Choose which item this is first.')).not.toBeInTheDocument());
       return;
     }
 

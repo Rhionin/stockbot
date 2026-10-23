@@ -501,11 +501,16 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     void loadQueue(true);
   };
 
-  // A finished confirm, including this card on its own, makes a lock or a full
-  // disk out of date. Those notices come down together. Item-specific codes
-  // stay until that card is resolved.
-  const beginSingleConfirm = (entryId: string) => {
+  // The partial line belongs to the batch that just finished. Starting another
+  // confirm retires it. A lock or a full disk stays until that confirm succeeds.
+  const beginSingleConfirm = () => {
     setPartialLine(null);
+  };
+
+  // A confirm that succeeds, including this card on its own, makes a lock or a
+  // full disk out of date. Those notices come down together. Item-specific codes
+  // stay until that card is resolved. A confirm that fails leaves them up.
+  const finishSingleConfirm = (entryId: string) => {
     setFailureById((current) => {
       const next = failuresAfterConfirm([...current.values()], entryId);
       if (next.length === current.size) return current;
@@ -691,7 +696,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
                   cueNothingOnHand={cuedNothing.has(entry.id)}
                   selected={selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
-                  onConfirmStart={() => beginSingleConfirm(entry.id)}
+                  onConfirmStart={beginSingleConfirm}
+                  onConfirmSuccess={() => finishSingleConfirm(entry.id)}
                   onBlocked={() => rememberPin([entry.id])}
                   onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}

@@ -256,8 +256,8 @@ function storageSentence(notice: Pick<BatchFailureNotice, 'code' | 'message'>): 
   return notice.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE;
 }
 
-// One shared non-blank code has one sentence: the server text. A blank code,
-// a blank message, or two codes use the fallback instead.
+// One shared code uses the first non-blank server sentence. A blank code,
+// mixed codes, or a code whose messages are all blank use the fallback.
 function sharedCodeSentence(
   notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
 ): string | null {
