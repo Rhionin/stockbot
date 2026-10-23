@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BATCH_FAILURE_FALLBACK,
@@ -283,9 +285,13 @@ describe('batch failure banner', () => {
   });
 });
 
+const authNotConfigured = JSON.parse(
+  readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
+) as { code: string };
+
 describe('auth_not_configured', () => {
   it('is the sign-in code', () => {
-    expect(CODE_AUTH_NOT_CONFIGURED).toBe('auth_not_configured');
+    expect(CODE_AUTH_NOT_CONFIGURED).toBe(authNotConfigured.code);
   });
 });
 

@@ -3,11 +3,13 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -568,6 +570,20 @@ func TestGETLoginIsMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestPublicGETLoginRequiresSignIn(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+	req := httptest.NewRequest(http.MethodGet, "/api/login", nil)
+	withPublicEntry(req)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != `{"error":"Sign in required."}` {
+		t.Fatalf("GET /api/login = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+}
+
 func TestPublicLoginNotConfiguredSkipsBody(t *testing.T) {
 	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
 	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader("not-json"))
@@ -622,9 +638,31 @@ func TestSignInNotConfiguredErrorCode(t *testing.T) {
 	assertSignInNotConfigured(t, loginRec)
 }
 
+func authNotConfiguredFixtureCode(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate auth code fixture")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "testdata", "contract", "auth_not_configured.json"))
+	if err != nil {
+		t.Fatalf("read auth code fixture: %v", err)
+	}
+	var fixture struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse auth code fixture: %v", err)
+	}
+	if fixture.Code == "" {
+		t.Fatal("auth code fixture has an empty code")
+	}
+	return fixture.Code
+}
+
 func assertSignInNotConfigured(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
-	const want = `{"error":"Sign-in isn't set up yet.","code":"auth_not_configured"}`
+	want := `{"error":"Sign-in isn't set up yet.","code":"` + authNotConfiguredFixtureCode(t) + `"}`
 	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
