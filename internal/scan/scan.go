@@ -339,6 +339,14 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 	return entries, nil
 }
 
+// ErrNotOpen means a patch wrote nothing because the scan is no longer
+// pending, flagged, or a QR misread. The text is the sentence the household
+// sees. Undoing a committed scan is a move undo, not a patch.
+var ErrNotOpen = errors.New("This scan was already handled.")
+
+// ErrNotFound means the scan id is not in the queue.
+var ErrNotFound = errors.New("scan entry not found")
+
 // UpdateScanEntry updates direction, unit_count, expires_at, product_id, and
 // status for the given scan entry ID. Field edits go through here. A repeat
 // scan does not: CreateScanEntry writes unit_count and scanned_at together so
@@ -346,6 +354,10 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 //
 // Pass nil for fields that should not be updated. To clear a nullable field,
 // pass a pointer to a zero value (e.g., &time.Time{} for expires_at).
+//
+// Every change matches only an open scan (pending, flagged, or qr) in the
+// same statement as the write. A commit that lands first leaves the row and
+// its stock move alone, and the call returns ErrNotOpen.
 func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
 	query := "UPDATE scan_entries SET"
 	args := []interface{}{}
@@ -383,8 +395,11 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		}
 	}
 
-	query += " WHERE id = ?"
-	args = append(args, id)
+	// The status predicate is part of the write, including when the body does
+	// not mention status. A read of the status before this statement would
+	// let a commit land in between and leave the move out of step with the row.
+	query += " WHERE id = ? AND status IN (?, ?, ?)"
+	args = append(args, id, string(Pending), string(Flagged), string(QR))
 
 	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -396,7 +411,14 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		return fmt.Errorf("UpdateScanEntry rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("UpdateScanEntry: scan entry %q not found", id)
+		existing, getErr := r.GetScanEntry(ctx, id)
+		if getErr != nil {
+			return getErr
+		}
+		if existing != nil {
+			return fmt.Errorf("UpdateScanEntry: %w", ErrNotOpen)
+		}
+		return fmt.Errorf("UpdateScanEntry: %w", ErrNotFound)
 	}
 
 	updated, err := r.GetScanEntry(ctx, id)
