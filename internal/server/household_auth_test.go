@@ -3,11 +3,13 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -535,16 +537,13 @@ func TestHouseholdAuthCredentialEdges(t *testing.T) {
 	unavailable.Header.Set(entryHeader, entryPublic)
 	unavailableRec := httptest.NewRecorder()
 	closedHandler.ServeHTTP(unavailableRec, unavailable)
-	if unavailableRec.Code != http.StatusServiceUnavailable || !strings.Contains(unavailableRec.Body.String(), "Sign-in is unavailable") {
-		t.Fatalf("session without a hash = %d %s", unavailableRec.Code, unavailableRec.Body.String())
-	}
-	closedLogin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"pantry","password":"x"}`))
+	assertSignInNotConfigured(t, unavailableRec)
+	closedLogin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
 	closedLogin.Header.Set(entryHeader, entryPublic)
+	closedLogin.Header.Set("Content-Type", "application/json")
 	closedLoginRec := httptest.NewRecorder()
 	closedHandler.ServeHTTP(closedLoginRec, closedLogin)
-	if closedLoginRec.Code != http.StatusUnauthorized {
-		t.Fatalf("login without a hash = %d", closedLoginRec.Code)
-	}
+	assertSignInNotConfigured(t, closedLoginRec)
 
 	wired, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(gate))
 	wiredReq := httptest.NewRequest(http.MethodGet, "/api/session", nil)
@@ -554,6 +553,124 @@ func TestHouseholdAuthCredentialEdges(t *testing.T) {
 	wired.ServeHTTP(wiredRec, wiredReq)
 	if wiredRec.Code != http.StatusOK || !strings.Contains(wiredRec.Body.String(), `"required":true`) {
 		t.Fatalf("wired session = %d %s", wiredRec.Code, wiredRec.Body.String())
+	}
+}
+
+func TestGETLoginIsMethodNotAllowed(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+	req := httptest.NewRequest(http.MethodGet, "/api/login", nil)
+	req.RemoteAddr = "192.168.1.20:4000"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "Method Not Allowed\n" {
+		t.Fatalf("GET /api/login = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != "POST" {
+		t.Fatalf("Allow = %q", rec.Header().Get("Allow"))
+	}
+}
+
+func TestPublicGETLoginRequiresSignIn(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+	req := httptest.NewRequest(http.MethodGet, "/api/login", nil)
+	withPublicEntry(req)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != `{"error":"Sign in required."}` {
+		t.Fatalf("GET /api/login = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestPublicLoginNotConfiguredSkipsBody(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader("not-json"))
+	withPublicEntry(req)
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assertSignInNotConfigured(t, rec)
+}
+
+func TestLogoutWithoutPasswordFile(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+
+	lan := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	lan.RemoteAddr = "192.168.1.20:4000"
+	lanRec := httptest.NewRecorder()
+	handler.ServeHTTP(lanRec, lan)
+	if lanRec.Code != http.StatusOK || lanRec.Body.String() != "{}" {
+		t.Fatalf("LAN logout = %d %s", lanRec.Code, lanRec.Body.String())
+	}
+	const cleared = "pantry_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; SameSite=Lax"
+	if lanRec.Header().Get("Set-Cookie") != cleared {
+		t.Fatalf("LAN logout Set-Cookie = %q", lanRec.Header().Get("Set-Cookie"))
+	}
+
+	pub := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	withPublicEntry(pub)
+	pubRec := httptest.NewRecorder()
+	handler.ServeHTTP(pubRec, pub)
+	if pubRec.Code != http.StatusUnauthorized || pubRec.Body.String() != `{"error":"Sign in required."}` {
+		t.Fatalf("public logout = %d %s", pubRec.Code, pubRec.Body.String())
+	}
+	if pubRec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("public logout Set-Cookie = %q", pubRec.Header().Get("Set-Cookie"))
+	}
+}
+
+func TestSignInNotConfiguredErrorCode(t *testing.T) {
+	handler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(FailClosedHouseholdAuth()))
+
+	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	withPublicEntry(session)
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, session)
+	assertSignInNotConfigured(t, sessionRec)
+
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
+	withPublicEntry(login)
+	login.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, login)
+	assertSignInNotConfigured(t, loginRec)
+}
+
+func authNotConfiguredFixtureCode(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate auth code fixture")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "testdata", "contract", "auth_not_configured.json"))
+	if err != nil {
+		t.Fatalf("read auth code fixture: %v", err)
+	}
+	var fixture struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse auth code fixture: %v", err)
+	}
+	if fixture.Code == "" {
+		t.Fatal("auth code fixture has an empty code")
+	}
+	return fixture.Code
+}
+
+func assertSignInNotConfigured(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	want := `{"error":"Sign-in isn't set up yet.","code":"` + authNotConfiguredFixtureCode(t) + `"}`
+	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
 	}
 }
 

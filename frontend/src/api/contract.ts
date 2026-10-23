@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { ProductSummary, ScanDirection, ScanGroupHint, ScanStatus } from '../types';
+import type { InventoryItem, Item, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -50,6 +50,19 @@ export interface SetScannerModeResponse {
 export const DEFAULT_SCAN_USER_ID = 'user-1';
 
 export const SESSION_PATH = '/api/session';
+export const AUTH_SESSION_PATH = '/api/auth/session';
+/** Default `SESSION_COOKIE_NAME`. Host-only, Secure, so it is not set on plain-HTTP LAN. */
+export const SESSION_COOKIE_NAME = '__Host-stockbot_session';
+export const CLIENT_HEADER = 'X-Stockbot-Client';
+export const EXPO_CLIENT_PREFIX = 'expo/';
+export const UPGRADE_REQUIRED_SENTENCE = 'Update Stockbot to keep using it.';
+export const EVENTS_PATH = '/api/events';
+export const LIVE_HINT_EVENT = 'hint';
+export const CONFIG_PATH = '/api/config';
+
+export function expoClientHeader(version: string): string {
+  return `${EXPO_CLIENT_PREFIX}${version}`;
+}
 export const SCANS_PATH = '/api/scans';
 
 // One row of GET /api/scans. onHand is the current shelf count for a linked
@@ -108,6 +121,7 @@ export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
 export const CODE_BUSY = 'busy';
 export const CODE_NO_SPACE = 'no_space';
+export const CODE_AUTH_NOT_CONFIGURED = 'auth_not_configured';
 
 export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
 export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
@@ -310,4 +324,741 @@ export function nothingOnHandPill(count: number): string | null {
 export function confirmSkipsNothingOnHand(count: number): string | null {
   if (!Number.isInteger(count) || count < 1) return null;
   return `Confirm skips the ${count} with nothing on hand.`;
+}
+
+// Hosted multi-household contract (docs/design/api-contract.md).
+// Types only. The Pi client still uses the helpers above, including userId,
+// until the hosted routes exist. Nothing here selects a tenant except the
+// X-Household-Id header, which the server checks against membership, or, for
+// device calls, the household bound to the device token. The one exception is
+// the householdId body on POST /api/auth/session/household, which sets the
+// session's active household after a membership check.
+
+export type HouseholdHeaderName = 'X-Household-Id';
+
+export type HouseholdRole = 'owner' | 'member';
+
+export type HostedErrorCode =
+  | 'busy'
+  | 'no_space'
+  | 'unauthorized'
+  | 'forbidden_role'
+  | 'not_found'
+  | 'conflict'
+  | 'invite_expired'
+  | 'invite_required'
+  | 'reset_expired'
+  | 'account_exists'
+  | 'validation'
+  | 'not_pending'
+  | 'product_unresolved'
+  | 'none_on_hand'
+  | 'instance_gone'
+  | 'no_item'
+  | 'link_target_gone'
+  | 'scan_not_found'
+  | 'direction_unset'
+  | 'internal'
+  | 'last_owner'
+  | 'household_not_empty'
+  | 'confirmation_mismatch'
+  | 'rate_limited'
+  | 'payload_too_large'
+  | 'device_revoked'
+  | 'upgrade_required'
+  ;
+
+export interface HostedErrorBody {
+  error: string;
+  code: HostedErrorCode;
+  /** Present on `validation` when one input should show the message. */
+  field?: string;
+  members?: unknown;
+  suggestions?: unknown;
+}
+
+export type SessionKind = 'signed_out' | 'account' | 'household_password' | 'lan';
+
+export interface SessionHousehold {
+  householdId: string;
+  name: string;
+  role: HouseholdRole;
+  /** Set while the household is inside the restore window. */
+  deletedAt: string | null;
+}
+
+export interface AuthSession {
+  /** Null when nobody is signed in, and on a household-password or LAN session. */
+  user: { id: string; email: string; name: string } | null;
+  kind: SessionKind;
+  /** #364 list. `householdId` is the membership id. */
+  memberships: SessionHousehold[];
+  /** Switcher list. Same rows as `memberships`, with `id` instead of `householdId`. */
+  households: { id: string; name: string; role: HouseholdRole; deletedAt: string | null }[];
+  activeHouseholdId: string | null;
+  operator: boolean;
+}
+
+export interface LoginRequest {
+  email?: string;
+  password?: string;
+  /** Only while household 1's shared password is on. */
+  householdPassword?: string;
+}
+
+/** Web sets the session cookie. Expo also receives `token` (`sbs_…`). */
+export interface LoginResponse extends AuthSession {
+  token?: string;
+}
+
+export interface SwitchHouseholdRequest {
+  householdId: string;
+}
+
+export interface ResetPasswordRequest {
+  code: string;
+  password: string;
+}
+
+export interface ResetLinkCreated {
+  url: string;
+  expiresAt: string;
+}
+
+export interface Household {
+  id: string;
+  name: string;
+  role: HouseholdRole;
+  deletedAt: string | null;
+  purgeAt: string | null;
+}
+
+export interface HouseholdDeleted extends Household {
+  message: 'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.';
+}
+
+export interface CreateHouseholdResponse {
+  id: string;
+  name: string;
+  role: 'owner';
+}
+
+export interface RenameHouseholdRequest {
+  name: string;
+}
+
+export interface DeleteHouseholdRequest {
+  confirmation: string;
+}
+
+export interface HouseholdListResponse {
+  households: AuthSession['memberships'];
+}
+
+export interface Member {
+  userId: string;
+  email: string;
+  role: HouseholdRole;
+}
+
+export interface MemberListResponse {
+  members: Member[];
+}
+
+export interface ChangeRoleRequest {
+  role: HouseholdRole;
+}
+
+export interface InviteCreateRequest {
+  email?: string;
+  /** Stored at create. Omit for member. Only an owner may send owner. */
+  role?: 'member' | 'owner';
+}
+
+export interface InviteCreated {
+  id: string;
+  code: string;
+  /** Server-built `<APP_BASE_URL>/invite/<code>`. APP_BASE_URL is per-stage config. */
+  url: string;
+  email: string | null;
+  /** The role stored at create. Accept echoes this and cannot change it. */
+  role: 'member' | 'owner';
+  expiresAt: string;
+}
+
+export interface InviteSummary {
+  id: string;
+  email: string | null;
+  role: 'member' | 'owner';
+  createdBy: string;
+  expiresAt: string;
+  status: 'open' | 'revoked' | 'used' | 'expired';
+}
+
+export interface InviteListResponse {
+  invites: InviteSummary[];
+}
+
+/** No `role` field. The role was stored when the invite was created. */
+export interface AcceptInviteRequest {
+  code: string;
+  account?: { name: string; email: string; password: string };
+  household?: { name: string; restockMode?: RestockMode };
+}
+
+/** LoginResponse plus the #364 accept fields. `token` is set only when `account` was sent. */
+export interface AcceptInviteResponse extends LoginResponse {
+  householdId: string;
+  name: string;
+  /** Echo of the role stored on the invite. Accept cannot choose or raise it. */
+  role: 'member' | 'owner';
+}
+
+export interface InvitePreview {
+  kind: 'start_household' | 'join_household';
+  /** Echo of the role stored at create. */
+  role: 'member' | 'owner';
+  householdName?: string;
+  invitedBy?: string;
+  expiresAt: string;
+}
+
+export interface PairingCode {
+  code: string;
+  qrPayload: string;
+  expiresAt: string;
+  /** Poll id for GET /api/devices/pair/{pairingId}. */
+  pairingId: string;
+  /** Same text as `code`, drawn as Code 128, and the typed-code fallback. */
+  barcodeValue: string;
+  /** Same text as `qrPayload`, drawn as QR. */
+  qrValue: string;
+}
+
+export interface PairingLookup {
+  pairingId: string;
+  status: 'pending' | 'complete' | 'expired';
+  expiresAt: string;
+  deviceId?: string;
+}
+
+export interface CompletePairingRequest {
+  code: string;
+  label?: string;
+  hub?: { kind: 'pi_hub' | 'box_hub'; version: string; bootId: string };
+}
+
+export interface DeviceHubConfig {
+  controlBarcodes: { stockIn: string; stockOut: string };
+  idleSeconds: number;
+  configVersion: number;
+}
+
+export interface CompletePairingResponse {
+  deviceId: string;
+  token: string;
+  config?: DeviceHubConfig;
+  heartbeatSeconds?: 60;
+}
+
+export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct';
+
+export interface Device {
+  id: string;
+  label: string | null;
+  createdAt: string;
+  /** In-memory last contact. The database row is written on a status flip or every 5 minutes. */
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  kind: DeviceKind;
+  /** Server-computed from the in-memory lastSeenAt: within 300 seconds. */
+  online: boolean;
+}
+
+export interface RenameDeviceRequest {
+  label: string;
+}
+
+export interface DeviceListResponse {
+  devices: Device[];
+}
+
+export interface DeviceScanRequest {
+  id: string;
+  barcode?: string;
+  scannedAt?: string;
+  direction?: ScanDirection;
+  unitCount?: number;
+  heartbeat?: boolean;
+}
+
+export interface DeviceScanResponse {
+  id: string;
+  /** `accepted` is the single-body form of a batch item's `created`. */
+  status: 'accepted' | 'duplicate';
+  cursor: string;
+}
+
+/** Stage 1 batch on POST /api/device/scans. A body is a batch when it has `scans`. Both `scans` and `id` is validation. */
+export interface DeviceScanBatchRequest {
+  scans: {
+    id: string;
+    barcode?: string;
+    scannedAt?: string;
+    direction?: ScanDirection;
+    unitCount?: number;
+    ageMs?: number;
+    bootId?: string;
+  }[];
+  droppedCount?: number;
+}
+
+export interface DeviceScanBatchResponse {
+  results: {
+    id: string;
+    status: 'created' | 'duplicate' | 'conflict' | 'rejected';
+    /** Present only when status is `rejected`. */
+    code?: 'validation';
+  }[];
+  config: DeviceHubConfig;
+}
+
+export interface DeviceHeartbeatRequest {
+  version: string;
+  bootId: string;
+  uptimeS: number;
+  queued: number;
+  droppedCount?: number;
+  clockSynced: boolean;
+}
+
+export interface DeviceHeartbeatResponse {
+  serverTime: string;
+  config: DeviceHubConfig;
+  heartbeatSeconds: 60;
+  rotateToken: boolean;
+  update?: { version: string; url: string; sha256: string; sig: string };
+}
+
+export interface RotatedDeviceToken {
+  token: string;
+}
+
+export interface HostedCreateScanRequest {
+  /** Client UUID. Deduped on (household, user, id). A replay returns the original entry. */
+  id?: string;
+  barcode: string;
+  direction?: ScanDirection;
+  unitCount?: number;
+  expiresAt?: string;
+}
+
+export interface HostedScanEntry {
+  id: string;
+  barcode: string;
+  scannedAt: string;
+  direction: ScanDirection | null;
+  unitCount: number;
+  expiresAt: string | null;
+  status: ScanStatus;
+  productId: string | null;
+  product: ProductSummary | null;
+  groupHint?: { groupId?: string; name: string };
+  committedAt: string | null;
+  createdAt: string;
+}
+
+export type ScanChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; scans: HostedScanEntry[] };
+
+/** Committed and cancelled history. `since` does not apply. `nextBefore` is the next `before` query. */
+export interface ScanHistoryPage {
+  scans: HostedScanEntry[];
+  nextBefore: string | null;
+}
+
+export interface CommitScanRequest {
+  instanceId?: string;
+  linkProductId?: string;
+}
+
+export interface HostedInventoryItem extends Omit<InventoryItem, 'item'> {
+  item: Omit<Item, 'userId'>;
+}
+
+export type InventoryChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; items: HostedInventoryItem[] };
+
+export type ShoppingListChanges =
+  | { cursor: string; changed: false }
+  | { cursor: string; changed: true; items: ShoppingListEntry[] };
+
+export type RestockMode = 'auto' | 'ask_restock' | 'ask_hold';
+
+export interface CreateHouseholdRequest {
+  name: string;
+  restockMode?: RestockMode;
+  /** Stage 1 requires a start_household code. Later stages may omit it. */
+  inviteCode?: string;
+}
+
+/** GET and PATCH /api/household/settings. State only: never the password or its hash. */
+export interface HouseholdSettings {
+  restockMode: RestockMode;
+  householdPasswordEnabled: boolean;
+  /** RFC3339, only while a retired password can be restored. */
+  householdPasswordRestoreUntil?: string;
+}
+
+export interface ExportProductV1 {
+  /** Source id inside the file. Import does not insert this id into the shared catalog. */
+  id: string;
+  name: string;
+  category: string;
+  unitOfMeasure: string;
+  barcodes: string[];
+}
+
+export interface ExportBarcodeOverrideV1 {
+  barcode: string;
+  productId: string;
+}
+
+export interface ExportItemV1 {
+  id: string;
+  productId: string;
+  category: string | null;
+  group: string | null;
+  /** Spreadsheet column "stock target" on items.csv. */
+  stockTarget: number | null;
+  createdAt: string;
+}
+
+export interface ExportItemInstanceV1 {
+  id: string;
+  itemId: string;
+  stockInAt: string;
+  expiresAt: string | null;
+  removedAt: string | null;
+  removalReason: 'consumed' | 'expired' | 'manual' | null;
+  createdAt: string;
+}
+
+export interface ExportShoppingListItemV1 {
+  id: string;
+  itemId: string;
+  quantity: number;
+  source: 'manual' | 'auto';
+  purchasedAt: string | null;
+  createdAt: string;
+}
+
+export interface ExportStockMoveV1 {
+  id: string;
+  itemId: string;
+  productId: string;
+  direction: 'in' | 'out';
+  quantity: number;
+  at: string;
+  source: 'scan' | 'manual';
+  scanEntryId: string | null;
+  createdAt: string;
+}
+
+export interface ExportGroupV1 {
+  id: string;
+  name: string;
+  productIds: string[];
+}
+
+export interface ExportCategoryV1 {
+  id: string;
+  name: string;
+  itemIds: string[];
+}
+
+/** Allowlist. channel_key is never a field. */
+export interface ExportSettingsV1 {
+  restockMode?: RestockMode;
+  supplyDefault?: string;
+}
+
+/** Flat scan row. productId is the file's product id and is remapped on import. */
+export interface ExportScanEntryV1 {
+  id: string;
+  barcode: string;
+  scannedAt: string;
+  direction: ScanDirection | null;
+  unitCount: number;
+  expiresAt: string | null;
+  status: ScanStatus;
+  productId: string | null;
+  committedAt: string | null;
+  createdAt: string;
+}
+
+export interface ExportDocumentV1 {
+  schemaVersion: 1;
+  importId: string;
+  exportedAt: string;
+  source: 'hosted' | 'pi';
+  householdName: string;
+  /** Optional. Absent on a Pi snapshot means the Pi user user-1. */
+  legacyUserId?: string;
+  products: ExportProductV1[];
+  barcodeOverrides: ExportBarcodeOverrideV1[];
+  items: ExportItemV1[];
+  itemInstances: ExportItemInstanceV1[];
+  scanEntries: ExportScanEntryV1[];
+  shoppingListItems: ExportShoppingListItemV1[];
+  stockMoves: ExportStockMoveV1[];
+  groups: ExportGroupV1[];
+  categories: ExportCategoryV1[];
+  settings: ExportSettingsV1;
+}
+
+export interface ExportJobCreated {
+  jobId: string;
+  /** Pi returns `ready`. Stage 3 returns `pending`. */
+  status: 'pending' | 'ready';
+}
+
+export interface ExportJob {
+  jobId: string;
+  status: 'pending' | 'ready' | 'failed';
+  jsonUrl: string | null;
+  csvUrl: string | null;
+  expiresAt: string | null;
+}
+
+export interface ImportUploadRequest {
+  contentLength: number;
+}
+
+export interface ImportUploadCreated {
+  uploadUrl: string;
+  key: string;
+  maxBytes: 33554432;
+}
+
+export interface StartImportRequest {
+  importId: string;
+  key: string;
+}
+
+export interface ImportJobCreated {
+  jobId: string;
+  importId: string;
+  status: 'pending';
+}
+
+export type ImportJobStatus = 'pending' | 'running' | 'ready' | 'failed';
+
+export interface ImportJob {
+  jobId: string;
+  importId: string;
+  status: ImportJobStatus;
+  warnings: string[];
+}
+
+export interface DeleteAccountRequest {
+  confirmation: string;
+}
+
+export type LiveTransport = 'sse' | 'poll' | 'push';
+
+export type LiveConfig =
+  | {
+      live: 'sse' | 'poll';
+      minClientVersion: { expo: string };
+      householdPasswordSignIn: boolean;
+      appBaseUrl?: string;
+      entry?: 'lan' | 'public';
+    }
+  | {
+      live: 'push';
+      appsync: { httpUrl: string; realtimeUrl: string };
+      minClientVersion: { expo: string };
+      householdPasswordSignIn: boolean;
+      appBaseUrl?: string;
+      entry?: 'public';
+    };
+
+export interface LiveTicket {
+  ticket: string;
+  channel: `/hh/${string}/${string}`;
+  expiresAt: string;
+}
+
+export type LiveHintType = 'scans' | 'stock' | 'list' | 'rekey' | 'devices';
+
+export type LiveHint =
+  | { type: 'scans' | 'stock' | 'list'; cursor: string }
+  | { type: 'rekey' }
+  | { type: 'devices' };
+
+export interface LiveFallbackRules {
+  scanQueuePollMs: 2000;
+  otherVisiblePollMs: 10000;
+  connectionTimeoutMs: 300000;
+  ticketMaxTtlSec: 900;
+}
+
+/** JSON from the Pi's GET /api/sync/snapshot. Synthetic rows live in fixtures/pi-sync-snapshot.json. */
+export interface PiSyncSnapshot {
+  generatedAt: string;
+  products: unknown[];
+  groups: unknown[];
+  instances: unknown[];
+  removals: unknown[];
+  moves: unknown[];
+  shoppingList: unknown[];
+  legacyUserId?: string;
+}
+
+export interface ImportClassification {
+  ok: boolean;
+  kind: 'hosted' | 'pi';
+  warnings: string[];
+}
+
+const hostedImportKeys = new Set([
+  'schemaVersion',
+  'importId',
+  'exportedAt',
+  'source',
+  'householdName',
+  'legacyUserId',
+  'products',
+  'barcodeOverrides',
+  'items',
+  'itemInstances',
+  'scanEntries',
+  'shoppingListItems',
+  'stockMoves',
+  'groups',
+  'categories',
+  'settings',
+]);
+
+const piImportKeys = new Set([
+  'generatedAt',
+  'products',
+  'groups',
+  'instances',
+  'removals',
+  'moves',
+  'shoppingList',
+  'legacyUserId',
+]);
+
+const piArrays = ['products', 'groups', 'instances', 'removals', 'moves', 'shoppingList'] as const;
+
+// Unknown top-level keys are warnings. A missing legacyUserId is valid.
+// A schemaVersion other than 1 is not. A missing schemaVersion is the Pi snapshot.
+export function classifyImportDocument(value: unknown): ImportClassification {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, kind: 'pi', warnings: [] };
+  }
+  const doc = value as Record<string, unknown>;
+  const keys = Object.keys(doc);
+  if ('schemaVersion' in doc) {
+    if (doc.schemaVersion !== 1) return { ok: false, kind: 'hosted', warnings: [] };
+    return {
+      ok: typeof doc.importId === 'string' && doc.importId !== '',
+      kind: 'hosted',
+      warnings: keys.filter((key) => !hostedImportKeys.has(key)).sort(),
+    };
+  }
+  const arrays = piArrays.every((key) => Array.isArray(doc[key]));
+  const legacy = doc.legacyUserId;
+  const legacyOk = legacy === undefined || typeof legacy === 'string';
+  return {
+    ok: arrays && typeof doc.generatedAt === 'string' && legacyOk,
+    kind: 'pi',
+    warnings: keys.filter((key) => !piImportKeys.has(key)).sort(),
+  };
+}
+
+/** Crockford base32 payload alphabet. Check symbols add `*~$=U` (mod 37). O, I, and L are aliases, not payload characters. */
+const PAIRING_PAYLOAD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const PAIRING_CHECK = `${PAIRING_PAYLOAD}*~$=U`;
+
+/** SBP-XXXX-XXXX-C. Anchors reject a prefix or a trailing suffix. Letters and hyphens, so it cannot be a digits-only barcode. */
+export const PAIRING_CODE_GRAMMAR =
+  /^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$/;
+
+/** Space, tab, LF, VT, FF, and CR. U+0085 and U+FEFF are left in place. */
+function isAsciiWhitespace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 11 || code === 12 || code === 13;
+}
+
+function trimAsciiWhitespace(input: string): string {
+  let start = 0;
+  let end = input.length;
+  while (start < end && isAsciiWhitespace(input.charCodeAt(start))) start++;
+  while (end > start && isAsciiWhitespace(input.charCodeAt(end - 1))) end--;
+  return input.slice(start, end);
+}
+
+/**
+ * Trim ASCII whitespace only. A non-ASCII character rejects the value.
+ * Then uppercase ASCII a-z only, and map O to 0 and I or L to 1.
+ * Unicode case folding is not used.
+ * Returns null when the value contains a non-ASCII character.
+ */
+export function normalizePairingCode(input: string): string | null {
+  const trimmed = trimAsciiWhitespace(input);
+  let out = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    if (code > 127) return null;
+    let ch = code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : trimmed[i];
+    if (ch === 'O') ch = '0';
+    else if (ch === 'I' || ch === 'L') ch = '1';
+    out += ch;
+  }
+  return out;
+}
+
+export function pairingCheckCharacter(payload: string): string {
+  let value = 0n;
+  for (const ch of payload) {
+    const digit = PAIRING_PAYLOAD.indexOf(ch);
+    if (digit < 0) {
+      throw new Error('pairing payload is not Crockford base32');
+    }
+    value = value * 32n + BigInt(digit);
+  }
+  return PAIRING_CHECK[Number(value % 37n)] ?? '';
+}
+
+/** `payload` is 8 Crockford characters, without the SBP prefix or hyphens. */
+export function formatPairingCode(payload: string): string {
+  const check = pairingCheckCharacter(payload);
+  return `SBP-${payload.slice(0, 4)}-${payload.slice(4, 8)}-${check}`;
+}
+
+/**
+ * A product barcode, matching the server scan classifier: ASCII digits, length
+ * 1 through 14, after the same ASCII-only trim. That includes 6- and 7-digit UPC-E.
+ */
+export function isProductBarcode(input: string): boolean {
+  return /^\d{1,14}$/.test(trimAsciiWhitespace(input));
+}
+
+/** Grammar only, after normalization, including a wrong check character. Scan rejection uses this. */
+export function looksLikePairingCode(input: string): boolean {
+  const code = normalizePairingCode(input);
+  return code !== null && PAIRING_CODE_GRAMMAR.test(code);
+}
+
+/** Grammar plus the check character. Pairing completion uses this. */
+export function isPairingCode(input: string): boolean {
+  const code = normalizePairingCode(input);
+  if (code === null || !PAIRING_CODE_GRAMMAR.test(code)) return false;
+  const payload = code.slice(4, 8) + code.slice(9, 13);
+  return code[14] === pairingCheckCharacter(payload);
 }
