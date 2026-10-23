@@ -178,6 +178,44 @@ class CountTestsTest(unittest.TestCase):
         self.assertNotIn("mobile/app.ts", web["files"])
         self.assertNotIn("density", web)
 
+    def test_mobile_tests_follow_the_mobile_jest_test_match(self) -> None:
+        # The mobile app names Jest tests client-test.ts, not client.test.ts.
+        repo = self.repo()
+        repo.write(
+            "mobile/package.json",
+            json.dumps({"jest": {"preset": "jest-expo", "testMatch": ["**/*-test.ts", "**/*-test.tsx"]}}),
+        )
+        repo.write("mobile/src/api/client.ts", "export const get = 1\nexport const put = 2\n")
+        repo.write(
+            "mobile/src/api/client-test.ts",
+            'it("gets", () => { expect(1).toBe(1) })\ntest("puts", () => { expect(2).toBe(2) })\n',
+        )
+        repo.write("mobile/src/screens/sign-in-test.tsx", 'it("signs in", () => { expect(1).toBe(1) })\n')
+        repo.write("mobile/src/screens/latest.tsx", "export const Latest = 1\n")
+
+        mobile = repo.report()["mobile"]
+        self.assertEqual(sorted(mobile["files"]), ["mobile/src/api/client.ts", "mobile/src/screens/latest.tsx"])
+        self.assertEqual(mobile["prod_files"], 2)
+        self.assertEqual(mobile["prod_loc"], 3)
+        self.assertEqual(mobile["test_files"], 2)
+        self.assertEqual(mobile["test_loc"], 3)
+        self.assertEqual(mobile["test_cases_static"], 3)
+        self.assertEqual(mobile["assertions"], 3)
+
+    def test_mobile_test_regex_and_unreadable_jest_config(self) -> None:
+        repo = self.repo()
+        repo.write("mobile/package.json", json.dumps({"jest": {"testRegex": "/src/.*_spec\\.ts$"}}))
+        repo.write("mobile/src/a.ts", "export const a = 1\n")
+        repo.write("mobile/src/a_spec.ts", 'it("a", () => { expect(1).toBe(1) })\n')
+        mobile = repo.report()["mobile"]
+        self.assertEqual(list(mobile["files"]), ["mobile/src/a.ts"])
+        self.assertEqual(mobile["test_files"], 1)
+
+        repo.write("mobile/jest.config.js", "module.exports = {}\n")
+        proc = run("report", "--repo", str(repo.root))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("jest.config.js", proc.stderr)
+
     def test_signal_counts_follow_the_agreed_spellings(self) -> None:
         repo = self.repo()
         repo.write(

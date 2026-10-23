@@ -4,14 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"modernc.org/sqlite"
 )
 
 func newTestGroups(t *testing.T) (*Groups, *product.Catalog, *sql.DB) {
@@ -295,4 +295,70 @@ func TestTargetWindowVolumeAndDeals(t *testing.T) {
 	if err := groups.Delete(ctx, view.ID); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestNameConflictIsOnlyTheUniqueCode(t *testing.T) {
+	unique := constraintViolation(t, func(db *sql.DB) error {
+		if _, err := db.Exec(`CREATE TABLE t (name TEXT, UNIQUE (name))`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT INTO t (name) VALUES ('a')`); err != nil {
+			return err
+		}
+		_, err := db.Exec(`INSERT INTO t (name) VALUES ('a')`)
+		return err
+	}, sqliteConstraintUnique)
+
+	got := nameConflict(unique)
+	var ge *Error
+	if !errors.As(got, &ge) || ge.Code != codeConflict || ge.Msg != "A group with that name already exists." {
+		t.Fatalf("unique = %#v", got)
+	}
+
+	notNull := constraintViolation(t, func(db *sql.DB) error {
+		if _, err := db.Exec(`CREATE TABLE t (name TEXT NOT NULL)`); err != nil {
+			return err
+		}
+		_, err := db.Exec(`INSERT INTO t (name) VALUES (NULL)`)
+		return err
+	}, 1299)
+	foreign := constraintViolation(t, func(db *sql.DB) error {
+		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE TABLE parent (id INTEGER PRIMARY KEY)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE TABLE child (parent_id INTEGER REFERENCES parent (id))`); err != nil {
+			return err
+		}
+		_, err := db.Exec(`INSERT INTO child (parent_id) VALUES (1)`)
+		return err
+	}, 787)
+	for _, err := range []error{notNull, foreign} {
+		if nameConflict(err) != nil {
+			t.Fatalf("constraint became a name conflict: %v", err)
+		}
+		if strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("constraint text = %v", err)
+		}
+	}
+}
+
+func constraintViolation(t *testing.T, run func(*sql.DB) error, code int) error {
+	t.Helper()
+	db, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	err = run(db)
+	if err == nil {
+		t.Fatal("expected a constraint error")
+	}
+	var driverErr *sqlite.Error
+	if !errors.As(err, &driverErr) || driverErr.Code() != code {
+		t.Fatalf("code = %v, err = %v", code, err)
+	}
+	return err
 }
