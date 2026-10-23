@@ -74,6 +74,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [queueLoaded, setQueueLoaded] = useState(false);
   const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
   const [partialLine, setPartialLine] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
@@ -175,6 +176,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
       });
       if (!keepPartialLine) setPartialLine(null);
       setError('');
+      setQueueLoaded(true);
       clearOfflineNotice();
       const epoch = inventoryEpoch.current + 1;
       inventoryEpoch.current = epoch;
@@ -639,7 +641,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             {error}
           </Alert>
         )}
-        {!showInitialLoader && error === '' && viewEntries.length === 0 && processingForView.length === 0 && (
+        {queueLoaded && !showInitialLoader && error === '' && viewEntries.length === 0 && processingForView.length === 0 && (
           <Text c="dimmed" size="sm">No pending scans.</Text>
         )}
         {qrEntries.map((entry) => (

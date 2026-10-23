@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, clearOfflineBanner, notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -120,6 +120,9 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       onUnauthorized?.();
     }
     let message = res.status >= 500 ? SERVER_ERROR_FALLBACK : res.statusText;
+    let code = '';
+    let members: TargetConflictMember[] = [];
+    let suggestions: PantryLinkSuggestion[] = [];
     try {
       const body = (await res.json()) as {
         error?: string;
@@ -127,17 +130,15 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
         members?: TargetConflictMember[];
         suggestions?: PantryLinkSuggestion[];
       };
-      if (body.error) {
-        message = body.error;
-      }
-      reportApiResult(route, res.status, performance.now() - started, started);
-      throw new ApiError(res.status, message, body.code ?? '', body.members ?? [], body.suggestions ?? []);
-    } catch (err) {
-      if (err instanceof ApiError) throw err;
-      // Not JSON. A 5xx already uses the shared sentence; other statuses keep statusText.
+      if (body.error) message = body.error;
+      code = stockbotCode(body);
+      members = body.members ?? [];
+      suggestions = body.suggestions ?? [];
+    } catch {
+      // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw new ApiError(res.status, message);
+    throw classifiedError(res.status, message, code, members, suggestions);
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
@@ -146,21 +147,36 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   try {
     text = await res.text();
   } catch (error) {
-    reportApiResult(route, res.status, performance.now() - started, started);
+    reportApiResult(route, 0, performance.now() - started, started);
     throw unreadableResponse(error);
   }
-  reportApiResult(route, res.status, performance.now() - started, started);
   if (text === '') {
+    reportApiResult(route, res.status, performance.now() - started, started);
     notifyApiSuccess();
     return undefined as T;
   }
   try {
     const body = JSON.parse(text) as T;
+    reportApiResult(route, res.status, performance.now() - started, started);
     notifyApiSuccess();
     return body;
   } catch (error) {
+    reportApiResult(route, 0, performance.now() - started, started);
     throw unreadableResponse(error);
   }
+}
+
+function classifiedError(
+  status: number,
+  message: string,
+  code: string,
+  members: TargetConflictMember[] = [],
+  suggestions: PantryLinkSuggestion[] = [],
+): Error {
+  const disposition = applyHttpResponse(status, code);
+  if (disposition === 'offline') return new UnreachableError();
+  if (disposition === 'auth') return new ServerNoticeError(AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE);
+  return new ApiError(status, message, code, members, suggestions);
 }
 
 // --- Products ---
@@ -606,32 +622,38 @@ async function fetchResponse(path: string, init?: RequestInit): Promise<Response
 export async function getSession(): Promise<HouseholdSession> {
   const res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
   if (res.status === 401) {
+    clearOfflineBanner();
     return { required: true, username: '', error: '' };
   }
   let text: string;
   try {
     text = await res.text();
   } catch (error) {
-    if (!res.ok) return { required: true, username: '', error: 'Sign-in is unavailable right now.' };
+    if (!res.ok) return sessionFailure(res.status, '');
     throw unreadableResponse(error);
   }
-  let body: { required?: boolean; username?: string; error?: string } = {};
+  let body: { required?: boolean; username?: string; error?: string; code?: string } = {};
   if (text !== '') {
     try {
-      body = JSON.parse(text) as { required?: boolean; username?: string; error?: string };
+      body = JSON.parse(text) as { required?: boolean; username?: string; error?: string; code?: string };
     } catch (error) {
-      if (!res.ok) return { required: true, username: '', error: 'Sign-in is unavailable right now.' };
+      if (!res.ok) return sessionFailure(res.status, '');
       throw unreadableResponse(error);
     }
   }
-  if (!res.ok) {
-    return { required: true, username: '', error: body.error || 'Sign-in is unavailable right now.' };
-  }
+  if (!res.ok) return sessionFailure(res.status, stockbotCode(body), body.error);
   notifyApiSuccess();
   if (!body.required) {
     return { required: false, username: '', error: '' };
   }
   return { required: true, username: body.username ?? '', error: '' };
+}
+
+function sessionFailure(status: number, code: string, errorText?: string): HouseholdSession {
+  const disposition = applyHttpResponse(status, code);
+  if (disposition === 'offline') throw new UnreachableError();
+  if (disposition === 'auth') return { required: true, username: '', error: '' };
+  return { required: true, username: '', error: errorText || 'Sign-in is unavailable right now.' };
 }
 
 export async function login(username: string, password: string): Promise<void> {
@@ -643,13 +665,15 @@ export async function login(username: string, password: string): Promise<void> {
   });
   if (!res.ok) {
     let message = 'The username or password is incorrect.';
+    let code = '';
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { error?: string; code?: string };
       if (body.error) message = body.error;
+      code = stockbotCode(body);
     } catch {
       // The status is enough when the body is empty.
     }
-    throw new ApiError(res.status, message);
+    throw classifiedError(res.status, message, code);
   }
   notifyApiSuccess();
 }
@@ -657,7 +681,14 @@ export async function login(username: string, password: string): Promise<void> {
 export async function logout(): Promise<void> {
   const res = await fetchResponse('/api/logout', { method: 'POST', credentials: 'same-origin' });
   if (!res.ok) {
-    throw new ApiError(res.status, 'Could not sign out.');
+    let code: string;
+    try {
+      code = stockbotCode(await res.json());
+    } catch {
+      code = '';
+    }
+    const failure = classifiedError(res.status, 'Could not sign out.', code);
+    throw failure;
   }
   notifyApiSuccess();
 }

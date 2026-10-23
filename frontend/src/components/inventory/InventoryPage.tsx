@@ -6,7 +6,7 @@ import {
   addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
 } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '../../api/contract';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
@@ -127,6 +127,13 @@ export const InventoryPage = () => {
   useEffect(() => {
     void Promise.resolve().then(() => loadInventory());
   }, [loadInventory]);
+
+  useEffect(() => {
+    if (!offlineLoad) return undefined;
+    return subscribeOfflineBanner(() => {
+      if (!offlineBannerActive()) void loadInventory(true);
+    });
+  }, [offlineLoad, loadInventory]);
 
   useEffect(() => {
     const eventSource = new EventSource('/api/events');

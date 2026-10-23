@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import { offlineSentence, type BatchCommitResponse } from '../../api/contract';
+import { ServerNoticeError, UnreachableError, type BatchCommitResponse } from '../../api/contract';
 import { clearOfflineNotice } from './offlineNotice';
 
 export interface BatchReviewPanelProps {
@@ -26,7 +26,7 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
       clearOfflineNotice();
       onComplete(response);
     } catch (requestError) {
-      if (offlineSentence(requestError) === null) {
+      if (!(requestError instanceof UnreachableError) && !(requestError instanceof ServerNoticeError)) {
         setError('Unable to confirm selected scans.');
       }
     } finally {

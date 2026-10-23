@@ -188,7 +188,7 @@ describe('session sign-in', () => {
         <Probe />
       </SessionProvider>,
     );
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
     expect(screen.getByText('no-warning')).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();

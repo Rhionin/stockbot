@@ -130,7 +130,7 @@ describe('offline notice', () => {
       await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
     }
 
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expect(within(screen.getByTestId('scan-scan-1')).queryByText(OFFLINE_SENTENCE)).toBeNull();
@@ -180,11 +180,11 @@ describe('offline notice', () => {
     const screen = await renderScreen(<QueueScreen client={api.client} warning="" focused />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
 
     await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-1')).queryByText(OFFLINE_SENTENCE)).toBeNull();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     expect(screen.queryByText('Network request failed')).toBeNull();
@@ -237,7 +237,7 @@ describe('offline notice', () => {
 
     offline = true;
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.queryByText(BATCH_FAILURE_FALLBACK)).toBeNull();
     expect(within(screen.getByTestId('scan-scan-1')).getByText(itemFailure)).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
@@ -256,10 +256,31 @@ describe('offline notice', () => {
     const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
-    expect(within(await screen.findByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.queryByText('0 scans are waiting')).toBeNull();
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
+  });
+
+  it('shows the count again after a later load succeeds', async () => {
+    let online = false;
+    const fetchImpl = jest.fn(async () => {
+      if (!online) throw new TypeError('Network request failed');
+      return jsonResponse(200, [entry()]);
+    });
+    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const screen = await renderScreen(<QueueScreen client={client} warning="" focused />);
+
+    expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('0 scans are waiting')).toBeNull();
+
+    online = true;
+    await screen.rerender(framed(<QueueScreen client={client} warning="" focused={false} />));
+    await screen.rerender(framed(<QueueScreen client={client} warning="" focused />));
+
+    expect(await screen.findByText('One scan is waiting')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
+    expect(screen.queryByText('0 scans are waiting')).toBeNull();
   });
 
   it('hides a partial line while offline', async () => {
@@ -293,7 +314,7 @@ describe('offline notice', () => {
     expect(await screen.findByText(partial)).toBeTruthy();
     raiseOfflineBanner();
     await waitFor(() => expect(screen.queryByText(partial)).toBeNull());
-    expect(within(screen.getByTestId('batch-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(within(screen.getByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
     expect(screen.queryByText('The queue did not load.')).toBeNull();
   });
 });

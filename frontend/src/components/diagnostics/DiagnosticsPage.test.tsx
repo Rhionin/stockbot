@@ -113,11 +113,25 @@ describe('DiagnosticsPage', () => {
   });
 
   it('shows an error when the snapshot cannot be loaded', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'nope' }, 500)));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'nope', code: 'internal' }, 500)));
     raiseOfflineBanner();
     renderPage();
     expect(await screen.findByText('Unable to load diagnostics.')).toBeInTheDocument();
-    expect(screen.getByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+  });
+
+  it('shows the banner when the diagnostics body cannot be read', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('network error')),
+    }) as Response));
+    renderPage();
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(screen.queryByText('Unable to load diagnostics.')).not.toBeInTheDocument();
+    expect(screen.queryByText('network error')).not.toBeInTheDocument();
+    expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
   });
 
   it('shows the banner for an HTML body and clears it after a later success', async () => {

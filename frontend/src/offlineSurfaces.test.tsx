@@ -3,7 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
-import { OFFLINE_SENTENCE, raiseOfflineBanner } from './api/contract';
+import { OFFLINE_SENTENCE, notifyApiSuccess, raiseOfflineBanner } from './api/contract';
 import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import type { ScanEntry } from './types';
@@ -66,10 +66,20 @@ describe('offline surfaces', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'Inventory' })).toBeInTheDocument();
-    expect(screen.getByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
+    await waitFor(() => expect(screen.queryByLabelText('Loading inventory')).not.toBeInTheDocument());
     expect(screen.queryByText('Your inventory is empty.')).not.toBeInTheDocument();
     expect(screen.queryByText('Unable to load inventory.')).not.toBeInTheDocument();
     expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      return Promise.resolve(json([]));
+    }));
+    notifyApiSuccess();
+    expect(await screen.findByText('Your inventory is empty.')).toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
   });
 
   it('hides the queue load error while offline', async () => {
@@ -80,6 +90,7 @@ describe('offline surfaces', () => {
 
     expect(await screen.findByTestId('server-notice-banner')).toHaveTextContent(OFFLINE_SENTENCE);
     expect(screen.queryByText('Unable to load scan queue.')).not.toBeInTheDocument();
+    expect(screen.queryByText('No pending scans.')).not.toBeInTheDocument();
     expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
     expect(screen.getAllByText(OFFLINE_SENTENCE)).toHaveLength(1);
   });

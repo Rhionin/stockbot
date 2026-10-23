@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Stack, Table, Text, Title } from '@mantine/core';
-import { inlineFailure, notifyApiSuccess, raiseOfflineBanner, unreachableFrom, unreadableResponse } from '../../api/contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, inlineFailure, notifyApiSuccess, raiseOfflineBanner, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse } from '../../api/contract';
 
 interface LatencySnapshot {
   count: number;
@@ -126,7 +126,18 @@ export const DiagnosticsPage = () => {
           }
           throw error;
         }
-        if (!res.ok) throw new Error('Unable to load diagnostics.');
+        if (!res.ok) {
+          let code = '';
+          try {
+            code = stockbotCode(await res.json());
+          } catch {
+            code = '';
+          }
+          const disposition = applyHttpResponse(res.status, code);
+          if (disposition === 'offline') throw new UnreachableError();
+          if (disposition === 'auth') throw new ServerNoticeError(AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE);
+          throw new Error('Unable to load diagnostics.');
+        }
         let text: string;
         try {
           text = await res.text();

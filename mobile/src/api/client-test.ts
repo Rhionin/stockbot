@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, offlineBannerActive, raiseOfflineBanner, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -25,6 +25,10 @@ describe('basicAuthorization', () => {
 
 describe('createStockbotClient', () => {
   const password = 'correct-horse';
+
+  afterEach(() => {
+    notifyApiSuccess();
+  });
 
   function clientWith(fetchImpl: typeof fetch, onUnauthorized = jest.fn()) {
     return {
@@ -100,11 +104,55 @@ describe('createStockbotClient', () => {
     }
   });
 
-  it('leaves the offline banner up when the response is an error', async () => {
+  it('clears offline when Stockbot answers with an error', async () => {
     raiseOfflineBanner();
-    const { client } = clientWith(jest.fn(async () => jsonResponse(500, { error: 'nope' })));
-    await expect(client.getSession()).rejects.toMatchObject({ status: 500 });
+    const { client } = clientWith(jest.fn(async () => jsonResponse(500, { error: 'nope', code: 'internal' })));
+    await expect(client.getSession()).rejects.toMatchObject({ status: 500, code: 'internal' });
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it.each([
+    { status: 502, body: '<html>gateway</html>' },
+    { status: 503, body: '<html>unavailable</html>' },
+    { status: 504, body: '' },
+    { status: 530, body: 'tunnel' },
+  ])('status $status with no code is offline', async ({ status, body }) => {
+    raiseOfflineBanner();
+    const { client } = clientWith(jest.fn(async () => ({
+      ok: false,
+      status,
+      statusText: 'Bad Gateway',
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    }) as unknown as Response));
+    await expect(client.listPending()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(client.listPending()).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
     expect(offlineBannerActive()).toBe(true);
+  });
+
+  it.each([
+    { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.' },
+    { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved." },
+    { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.' },
+  ])('$name clears offline and keeps its own message', async ({ status, code, message }) => {
+    raiseOfflineBanner();
+    const { client } = clientWith(jest.fn(async () => jsonResponse(status, { error: message, code })));
+    await expect(client.listPending()).rejects.toMatchObject({ status, code, message });
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('maps auth_not_configured to the sign-in banner', async () => {
+    raiseOfflineBanner();
+    const { client } = clientWith(jest.fn(async () => jsonResponse(503, {
+      error: 'auth is off',
+      code: AUTH_NOT_CONFIGURED_CODE,
+    })));
+    await expect(client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(client.getSession()).rejects.toMatchObject({ message: AUTH_NOT_CONFIGURED_SENTENCE });
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
   });
 
   it('clears the banner after a session is read', async () => {
@@ -202,8 +250,6 @@ describe('createStockbotClient', () => {
   });
 
   it.each([
-    { status: 502, body: '', message: 'Something went wrong. Try again.' },
-    { status: 503, body: '<html>unavailable</html>', message: 'Something went wrong. Try again.' },
     { status: 500, body: JSON.stringify({ error: 'The shelf did not save.' }), message: 'The shelf did not save.' },
   ])('status $status uses the server error when present', async ({ status, body, message }) => {
     const fetchImpl = jest.fn(async () => ({

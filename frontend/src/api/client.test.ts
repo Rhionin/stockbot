@@ -1,29 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as telemetry from '../telemetry/client';
 import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
-import { OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, UnreachableError, offlineBannerActive, raiseOfflineBanner } from './contract';
+import { AUTH_NOT_CONFIGURED_CODE, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from './contract';
 
 describe('api error messages', () => {
   afterEach(() => {
+    notifyApiSuccess();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it.each([
-    {
-      name: '502 with no body',
-      status: 502,
-      statusText: 'Bad Gateway',
-      body: '',
-      contentType: undefined,
-      message: 'Something went wrong. Try again.',
-    },
-    {
-      name: '503 with an HTML body',
-      status: 503,
-      statusText: 'Service Unavailable',
-      body: '<html><body>migrating</body></html>',
-      contentType: 'text/html',
-      message: 'Something went wrong. Try again.',
-    },
     {
       name: '500 with an error field',
       status: 500,
@@ -75,15 +62,118 @@ describe('api error messages', () => {
     });
   });
 
-  it('leaves the offline banner up when the response is an error', async () => {
+  it('clears offline when Stockbot answers with an error', async () => {
     raiseOfflineBanner();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
-      JSON.stringify({ error: 'Something went wrong. Try again.' }),
+      JSON.stringify({ error: 'Something went wrong. Try again.', code: 'internal' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     ))));
 
     await expect(listProducts()).rejects.toBeInstanceOf(ApiError);
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it.each([
+    { status: 502, body: '<html>gateway</html>', code: '' },
+    { status: 503, body: '<html>unavailable</html>', code: '' },
+    { status: 504, body: '', code: '' },
+    { status: 530, body: 'tunnel down', code: '' },
+    { status: 503, body: JSON.stringify({ error: 'down' }), code: '' },
+  ])('status $status with no code is offline', async ({ status, body }) => {
+    raiseOfflineBanner();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(body, { status, statusText: 'Bad Gateway' }))));
+    const attempt = listProducts();
+    await expect(attempt).rejects.toBeInstanceOf(UnreachableError);
+    await expect(attempt).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
     expect(offlineBannerActive()).toBe(true);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+  });
+
+  it.each([
+    { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.' },
+    { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved." },
+    { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.' },
+    { name: 'coded 500', status: 500, code: 'internal', message: 'Something went wrong. Try again.' },
+  ])('$name clears offline and keeps its own message', async ({ status, code, message }) => {
+    raiseOfflineBanner();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: message, code }),
+      { status, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(listProducts()).rejects.toMatchObject({ status, code, message });
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('maps auth_not_configured to the sign-in banner', async () => {
+    raiseOfflineBanner();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'auth is off', code: AUTH_NOT_CONFIGURED_CODE }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(listProducts()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(listProducts()).rejects.toMatchObject({ message: AUTH_NOT_CONFIGURED_SENTENCE });
+    expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+  });
+
+  it('reads a session failure the same way', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      '<html>portal</html>',
+      { status: 503, headers: { 'Content-Type': 'text/html' } },
+    ))));
+    await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      text: () => Promise.reject(new TypeError('network error')),
+    }) as Response));
+    await expect(getSession()).rejects.toBeInstanceOf(UnreachableError);
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'auth is off', code: AUTH_NOT_CONFIGURED_CODE }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(getSession()).resolves.toEqual({ required: true, username: '', error: '' });
+    expect(serverNoticeText()).toBe(AUTH_NOT_CONFIGURED_SENTENCE);
+
+    raiseOfflineBanner();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: 'nope' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    ))));
+    await expect(getSession()).resolves.toEqual({ required: true, username: '', error: 'nope' });
+    expect(offlineBannerActive()).toBe(false);
+  });
+
+  it('does not record 200 when the body is treated as unreachable', async () => {
+    const report = vi.spyOn(telemetry, 'reportApiResult').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('network error')),
+    }) as Response));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    expect(report).toHaveBeenCalled();
+    expect(report.mock.calls.some((call) => call[1] === 200)).toBe(false);
+    expect(report.mock.calls.some((call) => call[1] === 0)).toBe(true);
+
+    report.mockClear();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      '<html>',
+      { status: 200, headers: { 'Content-Type': 'text/html' } },
+    ))));
+    await expect(listProducts()).rejects.toBeInstanceOf(UnreachableError);
+    expect(report.mock.calls.some((call) => call[1] === 200)).toBe(false);
+    expect(report.mock.calls.some((call) => call[1] === 0)).toBe(true);
+
+    report.mockClear();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))));
+    await expect(listProducts()).resolves.toBeUndefined();
+    expect(report.mock.calls.some((call) => call[1] === 200)).toBe(true);
   });
 
   it('clears the banner when session, login, and logout succeed', async () => {

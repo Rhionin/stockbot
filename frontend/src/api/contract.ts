@@ -237,6 +237,14 @@ export function confirmSkipsNothingOnHand(count: number): string | null {
 // Shown when fetch never received a response. Straight apostrophe, one sentence.
 export const OFFLINE_SENTENCE = "Can't reach Stockbot. Check your connection and try again.";
 
+// Stockbot sends this on /api/session and /api/login when sign-in is not set up.
+export const AUTH_NOT_CONFIGURED_CODE = 'auth_not_configured';
+
+export const AUTH_NOT_CONFIGURED_SENTENCE = "Sign-in isn't set up yet.";
+
+// A proxy or tunnel can answer with one of these and no Stockbot code.
+const GATEWAY_STATUSES = new Set([502, 503, 504, 530]);
+
 export interface NetworkErrorResult {
   kind: 'network';
   message: typeof OFFLINE_SENTENCE;
@@ -315,17 +323,48 @@ export function networkErrorResult(error: unknown): NetworkErrorResult | null {
   return { kind: 'network', message: OFFLINE_SENTENCE };
 }
 
-// The sentence when this error is the shared network failure, otherwise null.
-export function offlineSentence(error: unknown): string | null {
-  return error instanceof UnreachableError ? OFFLINE_SENTENCE : null;
+// A server-state notice other than offline. The banner owns the sentence.
+export class ServerNoticeError extends Error {
+  readonly code: string;
+
+  constructor(code: string, sentence: string) {
+    super(sentence);
+    this.name = 'ServerNoticeError';
+    this.code = code;
+  }
 }
 
-// Card and inline alerts stay quiet for an unreachable server. The banner is
-// that notice. Any other error keeps its message, or the caller's fallback.
+// Card and inline alerts stay quiet when the banner owns the failure.
+// Any other error keeps its message, or the caller's fallback.
 export function inlineFailure(error: unknown, fallback: string): string | null {
-  if (error instanceof UnreachableError) return null;
+  if (error instanceof UnreachableError || error instanceof ServerNoticeError) return null;
   if (error instanceof Error) return error.message;
   return fallback;
+}
+
+export function stockbotCode(body: unknown): string {
+  if (typeof body !== 'object' || body === null || !('code' in body)) return '';
+  const code = (body as { code?: unknown }).code;
+  return typeof code === 'string' ? code.trim() : '';
+}
+
+export type HttpDisposition = 'offline' | 'auth' | 'stockbot';
+
+// A Stockbot response, including an error, clears offline. A 502, 503, 504, or
+// 530 with no code did not come from Stockbot, so it is offline. auth_not_configured
+// is its own banner. busy and no_space stay with the caller and clear only on success.
+export function applyHttpResponse(status: number, code: string): HttpDisposition {
+  const trimmed = code.trim();
+  if (GATEWAY_STATUSES.has(status) && trimmed === '') {
+    raiseOfflineBanner();
+    return 'offline';
+  }
+  clearOfflineBanner();
+  if (trimmed === AUTH_NOT_CONFIGURED_CODE) {
+    raiseAuthNotConfiguredBanner();
+    return 'auth';
+  }
+  return 'stockbot';
 }
 
 export function unreachableFrom(error: unknown): UnreachableError | null {
@@ -346,27 +385,41 @@ export function subscribeApiSuccess(listener: () => void): () => void {
 }
 
 export function notifyApiSuccess(): void {
-  clearOfflineBanner();
+  if (noticeKind !== '') publishNotice('');
   for (const listener of apiSuccessListeners) listener();
 }
 
-let offlineBanner = false;
+// One shared banner. Offline replaces any other notice. A Stockbot response
+// clears only offline. Success clears the whole slot, including auth.
+type NoticeKind = '' | 'offline' | 'auth';
+
+let noticeKind: NoticeKind = '';
 const offlineBannerListeners = new Set<() => void>();
 
-export function offlineBannerActive(): boolean {
-  return offlineBanner;
-}
-
-function publishOfflineBanner(next: boolean): void {
-  if (offlineBanner === next) return;
-  offlineBanner = next;
+function publishNotice(next: NoticeKind): void {
+  if (noticeKind === next) return;
+  noticeKind = next;
   for (const listener of offlineBannerListeners) listener();
 }
 
-// Sets the shared banner. notifyApiSuccess clears it after a response is read
-// successfully. An error response leaves the banner up.
+export function serverNoticeText(): string {
+  if (noticeKind === 'offline') return OFFLINE_SENTENCE;
+  if (noticeKind === 'auth') return AUTH_NOT_CONFIGURED_SENTENCE;
+  return '';
+}
+
+export function offlineBannerActive(): boolean {
+  return noticeKind === 'offline';
+}
+
+// Sets the offline sentence. A later Stockbot response clears it, errors included.
+// notifyApiSuccess clears it after a response is read successfully.
 export function raiseOfflineBanner(): void {
-  publishOfflineBanner(true);
+  publishNotice('offline');
+}
+
+export function raiseAuthNotConfiguredBanner(): void {
+  publishNotice('auth');
 }
 
 // A body that cannot be read, or a success that is not JSON, is not a Stockbot
@@ -377,7 +430,7 @@ export function unreadableResponse(error: unknown): UnreachableError {
 }
 
 export function clearOfflineBanner(): void {
-  publishOfflineBanner(false);
+  if (noticeKind === 'offline') publishNotice('');
 }
 
 export function subscribeOfflineBanner(listener: () => void): () => void {

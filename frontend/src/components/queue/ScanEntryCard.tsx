@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, Checkbox, Combobox, Drawer, Group, NumberInput, Stack, Text, TextInput, Title, useCombobox } from '@mantine/core';
 import { addGroupMembers, ApiError, commitScanEntry, getInventoryList, noteGroupFromScan, updateProduct, updateScanEntry } from '../../api/client';
-import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, type CommitScanResponse } from '../../api/contract';
+import { inlineFailure, CODE_NONE_ON_HAND, commitConflictBehavior, formatPartialRemoval, NO_CLOSE_MATCH, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, ServerNoticeError, UnreachableError, type CommitScanResponse } from '../../api/contract';
 import { showUndo } from '../restock/undo';
-import { clearOfflineNotice, isUnreachable } from './offlineNotice';
+import { clearOfflineNotice } from './offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -17,6 +17,10 @@ const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
 // A burst of plus or minus taps updates the number immediately and saves the
 // latest count once the taps pause.
 const UNIT_COUNT_SAVE_DELAY_MS = 200;
+
+function heldByBanner(error: unknown): boolean {
+  return error instanceof UnreachableError || error instanceof ServerNoticeError;
+}
 
 const multipackName = /\d+\s*x\s*\d/i;
 
@@ -352,7 +356,7 @@ export const ScanEntryCard = ({
       }
       message = behavior.showMessage ? (inlineFailure(requestError, 'Unable to confirm scan.') ?? '') : '';
     }
-    if (isUnreachable(requestError)) return;
+    if (heldByBanner(requestError)) return;
     showCommitSentence(message);
   };
 
@@ -400,7 +404,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      if (isUnreachable(requestError)) return;
+      if (heldByBanner(requestError)) return;
       setRemoveError(inlineFailure(requestError, 'Unable to remove scan.') ?? '');
     } finally {
       setRemoving(false);
@@ -436,7 +440,7 @@ export const ScanEntryCard = ({
       onChanged();
     } catch (requestError) {
       if (generation !== saveGeneration.current || unitCountRef.current !== draft) return;
-      if (isUnreachable(requestError)) {
+      if (heldByBanner(requestError)) {
         unitCountRef.current = confirmedCountRef.current;
         setUnitCountDraft(confirmedCountRef.current);
         return;
@@ -497,7 +501,7 @@ export const ScanEntryCard = ({
         clearOfflineNotice();
         onChanged();
       } catch (requestError) {
-        if (isUnreachable(requestError)) {
+        if (heldByBanner(requestError)) {
           setExpiryDraft(expiryCommitted);
           return;
         }
@@ -532,7 +536,7 @@ export const ScanEntryCard = ({
       clearOfflineNotice();
       onChanged();
     } catch (requestError) {
-      if (isUnreachable(requestError)) return;
+      if (heldByBanner(requestError)) return;
       setExpiryError('Unable to update expiration date.');
     }
   };

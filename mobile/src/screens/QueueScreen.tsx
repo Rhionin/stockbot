@@ -14,7 +14,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
-import { inlineFailure, BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, OFFLINE_SENTENCE, offlineBannerActive, subscribeOfflineBanner, confirmSkipsNothingOnHand, commitConflictBehavior, formatPartialRemoval, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, nothingOnHandPill, NO_CLOSE_MATCH, shelfHasNothingOnHand } from '../../../frontend/src/api/contract';
+import { inlineFailure, BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, offlineBannerActive, serverNoticeText, subscribeOfflineBanner, confirmSkipsNothingOnHand, commitConflictBehavior, formatPartialRemoval, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, nothingOnHandPill, NO_CLOSE_MATCH, shelfHasNothingOnHand } from '../../../frontend/src/api/contract';
+import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
@@ -164,7 +165,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
 
-  const offline = useSyncExternalStore(subscribeOfflineBanner, offlineBannerActive, () => false);
+  const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
+  const offline = offlineBannerActive();
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -534,7 +536,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
-  const batchHead = offline ? OFFLINE_SENTENCE : (failureBanner ? BATCH_FAILURE_FALLBACK : error);
+  const batchHead = offline ? '' : (failureBanner ? BATCH_FAILURE_FALLBACK : error);
   const shownPartial = offline ? '' : partialLine;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const successBanner = batchHead === '' && !failedPending && shownPartial !== '';
@@ -545,8 +547,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 18 }]}>
+    <View style={[styles.screen, { paddingTop: notice === '' ? insets.top + 18 : 0 }]}>
       <StatusBar style="dark" />
+      <ServerNoticeBanner topInset={insets.top} />
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       {loading ? (
         <Text style={styles.count}>Checking the queue</Text>
