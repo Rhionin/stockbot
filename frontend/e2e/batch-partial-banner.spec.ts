@@ -6,6 +6,8 @@ const fallback = 'Some scans could not be confirmed.'
 const wasLine = 'Only 1 of 3 Tortilla chips was on hand, so 1 was taken out.'
 const manyLine = '2 cards had fewer on hand than scanned, so only what was on hand was taken out.'
 const failureNote = 'Nothing on hand to take out.'
+const busySentence = 'Stockbot is busy right now. Try again in a moment.'
+const noSpaceSentence = "Stockbot is out of storage space, so this wasn't saved."
 // commit.go wraps a missing unit as this sentence.
 const instanceGone = 'instance "inst-1" not found or already removed: item instance not found'
 
@@ -178,22 +180,22 @@ const expectSuccessBanner = async (page: Page, line: string) => {
   await fitsInViewport(banner)
 }
 
-const expectFailureWithPartial = async (page: Page, line: string) => {
+const expectFailureWithPartial = async (page: Page, line: string, head = fallback) => {
   const failure = failureBanner(page)
   const partial = failure.locator('.scan-batch-partial')
   await expect(failure).toHaveCount(1)
-  await expect(failure).toContainText(fallback)
+  await expect(failure).toContainText(head)
   await expect(partial).toHaveCount(1)
   await expect(partial).toHaveText(line)
   await expect(partial).not.toHaveAttribute('role', 'alert')
   await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
   await expect(page.locator('.restock-toast').filter({ hasText: line })).toHaveCount(0)
-  await expect.poll(() => page.evaluate((sentence) => {
+  await expect.poll(() => page.evaluate(({ sentence, headText }) => {
     const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
     const note = alert?.querySelector('.scan-batch-partial')
-    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === 'Some scans could not be confirmed.')
-    if (alert === null || alert === undefined || note === null || note === undefined || head === undefined) return false
-    const follows = (head.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const headNode = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === headText)
+    if (alert === null || alert === undefined || note === null || note === undefined || headNode === undefined) return false
+    const follows = (headNode.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
     const oneAlert = document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
     return alert.contains(note)
       && note.textContent === sentence
@@ -201,7 +203,7 @@ const expectFailureWithPartial = async (page: Page, line: string) => {
       && note.getAttribute('role') !== 'alert'
       && oneAlert
       && document.querySelectorAll('.scan-batch-banner--success').length === 0
-  }, line)).toBe(true)
+  }, { sentence: line, headText: head })).toBe(true)
   await fitsInViewport(failure)
   await fitsInViewport(partial)
 }
@@ -217,6 +219,23 @@ const expectNoBatchBanner = async (page: Page) => {
   await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
   await expect(failureBanner(page)).toHaveCount(0)
   await expect(page.getByText(fallback)).toHaveCount(0)
+}
+
+const expectServerSentence = async (page: Page, sentence: string, failedBarcode: string) => {
+  const failure = failureBanner(page)
+  await expect(failure).toHaveCount(1)
+  await expect(page.locator('.scan-batch-banner--success')).toHaveCount(0)
+  await expect(page.getByText(fallback)).toHaveCount(0)
+  await expect.poll(() => page.evaluate((expected) => {
+    const alert = document.querySelector('.mantine-Alert-root.scan-batch-banner')
+    const head = [...(alert?.querySelectorAll('div') ?? [])].find((element) => element.textContent === expected)
+    return head !== undefined
+      && document.querySelectorAll('.mantine-Alert-root.scan-batch-banner').length === 1
+      && document.querySelectorAll('.scan-batch-banner--success').length === 0
+  }, sentence)).toBe(true)
+  const missed = page.getByRole('article', { name: `Scan ${failedBarcode}`, exact: true })
+  await expect(missed.getByText(sentence, { exact: true })).toHaveCount(0)
+  await fitsInViewport(failure)
 }
 
 for (const viewport of viewports) {
@@ -274,6 +293,132 @@ for (const viewport of viewports) {
     }
   })
 }
+
+test('the batch banner shows the server sentence', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  const cases = [
+    {
+      name: 'many-busy',
+      items: [
+        { barcode: '330128001', name: 'Kept oats' },
+        { barcode: '330128002', name: 'Kept rice' },
+        { barcode: '330128003', name: 'Stopped loaf' },
+      ],
+      failedBarcode: '330128003',
+      sentence: `2 confirmed. ${busySentence}`,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 3,
+        committedIds: [scans[0]?.id, scans[1]?.id],
+        failedIds: [scans[2]?.id],
+        failedReasons: [busySentence],
+        failedCodes: ['busy'],
+      }),
+    },
+    {
+      name: 'none-busy',
+      items: [
+        { barcode: '330128011', name: 'First wait' },
+        { barcode: '330128012', name: 'Second wait' },
+      ],
+      failedBarcode: '330128011',
+      sentence: busySentence,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => busySentence),
+        failedCodes: scans.map(() => 'busy'),
+      }),
+    },
+    {
+      name: 'one-busy',
+      items: [
+        { barcode: '330128021', name: 'Kept beans' },
+        { barcode: '330128022', name: 'Busy beans' },
+      ],
+      failedBarcode: '330128022',
+      sentence: `1 confirmed. ${busySentence}`,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 1,
+        committedIds: [scans[0]?.id],
+        failedIds: [scans[1]?.id],
+        failedReasons: [busySentence],
+        failedCodes: ['busy'],
+      }),
+    },
+    {
+      name: 'none-space',
+      items: [
+        { barcode: '330128031', name: 'Full disk' },
+        { barcode: '330128032', name: 'Also full' },
+      ],
+      failedBarcode: '330128031',
+      sentence: noSpaceSentence,
+      body: (scans: KnownScan[]) => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => noSpaceSentence),
+        failedCodes: scans.map(() => 'no_space'),
+      }),
+    },
+  ] as const
+  for (const sample of cases) {
+    const scans = await seedStockOuts(page, request, [...sample.items])
+    try {
+      await confirmBatch(page, scans, () => sample.body(scans))
+      await expectServerSentence(page, sample.sentence, sample.failedBarcode)
+    } finally {
+      await page.unroute('**/api/scans/batch-commit')
+      for (const scan of scans) {
+        await cancelScan(request, scan.id).catch(() => undefined)
+      }
+    }
+  }
+})
+
+test('a successful confirm clears the busy banner', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  const schemes = shotDir === undefined ? ['light'] as const : ['light', 'dark'] as const
+  for (const scheme of schemes) {
+    await page.emulateMedia({ colorScheme: scheme })
+    await page.setViewportSize({ width: 390, height: 844 })
+    const prefix = scheme === 'dark' ? '33039011' : '33039001'
+    const scans = await seedStockOuts(page, request, [
+      { barcode: `${prefix}1`, name: 'Busy oats' },
+      { barcode: `${prefix}2`, name: 'Busy rice' },
+    ])
+    const confirmed = scans[0]
+    const waiting = scans[1]
+    if (confirmed === undefined || waiting === undefined) throw new Error('missing busy scans')
+    try {
+      await confirmBatch(page, scans, () => ({
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: scans.map((scan) => scan.id),
+        failedReasons: scans.map(() => busySentence),
+        failedCodes: scans.map(() => 'busy'),
+      }))
+      await expectServerSentence(page, busySentence, confirmed.barcode)
+      const card = page.getByRole('article', { name: `Scan ${confirmed.barcode}`, exact: true })
+      await card.getByRole('button', { name: 'Confirm' }).click()
+      await expect(page.getByRole('article', { name: `Scan ${confirmed.barcode}`, exact: true })).toHaveCount(0)
+      await expectNoBatchBanner(page)
+      await expect(page.getByText(busySentence)).toHaveCount(0)
+      await expect(page.getByRole('article', { name: `Scan ${waiting.barcode}`, exact: true })).toBeVisible()
+      if (shotDir !== undefined) {
+        await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+        await saveShot(page, `${shotDir}/single_confirm_390_${scheme}.png`)
+      }
+    } finally {
+      await page.unroute('**/api/scans/batch-commit')
+      for (const scan of scans) {
+        await cancelScan(request, scan.id).catch(() => undefined)
+      }
+    }
+  }
+})
 
 test.describe('batch banner screenshots', () => {
   test.skip(shotDir === undefined, 'set BATCH_BANNER_SHOTS to save viewport shots')
@@ -380,6 +525,102 @@ test.describe('batch banner screenshots', () => {
         await saveShot(page, `${shotDir}/banner_mixed_${viewport.width}_${scheme}.png`)
         await page.unroute('**/api/scans/batch-commit')
         await cancelScan(request, mixedEmpty.id)
+      }
+    }
+  })
+
+  test('saves the server sentence at both widths and schemes', async ({ page, request }) => {
+    test.setTimeout(300_000)
+    const schemes = ['light', 'dark'] as const
+    const shots = [
+      {
+        slug: 'm2_busy',
+        sentence: `2 confirmed. ${busySentence}`,
+        items: (prefix: string) => [
+          { barcode: `${prefix}41`, name: 'Kept oats' },
+          { barcode: `${prefix}42`, name: 'Kept rice' },
+          { barcode: `${prefix}43`, name: 'Stopped loaf' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 2,
+          committedIds: [scans[0]?.id, scans[1]?.id],
+          failedIds: [scans[2]?.id],
+          failedReasons: [busySentence],
+          failedCodes: ['busy'],
+        }),
+        failedIndex: 2,
+      },
+      {
+        slug: 'm0_busy',
+        sentence: busySentence,
+        items: (prefix: string) => [
+          { barcode: `${prefix}51`, name: 'First wait' },
+          { barcode: `${prefix}52`, name: 'Second wait' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: scans.map((scan) => scan.id),
+          failedReasons: scans.map(() => busySentence),
+          failedCodes: scans.map(() => 'busy'),
+        }),
+        failedIndex: 0,
+      },
+      {
+        slug: 'busy',
+        sentence: `1 confirmed. ${busySentence}`,
+        items: (prefix: string) => [
+          { barcode: `${prefix}61`, name: 'Kept beans' },
+          { barcode: `${prefix}62`, name: 'Busy beans' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 1,
+          committedIds: [scans[0]?.id],
+          failedIds: [scans[1]?.id],
+          failedReasons: [busySentence],
+          failedCodes: ['busy'],
+        }),
+        failedIndex: 1,
+      },
+      {
+        slug: 'no_space',
+        sentence: noSpaceSentence,
+        items: (prefix: string) => [
+          { barcode: `${prefix}71`, name: 'Full disk' },
+          { barcode: `${prefix}72`, name: 'Also full' },
+        ],
+        body: (scans: KnownScan[]) => ({
+          updatedCount: 0,
+          committedIds: [],
+          failedIds: scans.map((scan) => scan.id),
+          failedReasons: scans.map(() => noSpaceSentence),
+          failedCodes: scans.map(() => 'no_space'),
+        }),
+        failedIndex: 0,
+      },
+    ]
+    let serial = 40
+    for (const viewport of viewports) {
+      for (const scheme of schemes) {
+        serial += 1
+        await page.emulateMedia({ colorScheme: scheme })
+        await page.setViewportSize(viewport)
+        const prefix = `${viewport.width}${scheme === 'dark' ? 1 : 0}${serial}`
+        for (const shot of shots) {
+          const scans = await seedStockOuts(page, request, shot.items(prefix))
+          const failed = scans[shot.failedIndex]
+          if (failed === undefined) throw new Error(`missing ${shot.slug} scan`)
+          try {
+            await confirmBatch(page, scans, () => shot.body(scans))
+            await expectServerSentence(page, shot.sentence, failed.barcode)
+            await saveShot(page, `${shotDir}/banner_${shot.slug}_${viewport.width}_${scheme}.png`)
+          } finally {
+            await page.unroute('**/api/scans/batch-commit')
+            for (const scan of scans) {
+              await cancelScan(request, scan.id).catch(() => undefined)
+            }
+          }
+        }
       }
     }
   })

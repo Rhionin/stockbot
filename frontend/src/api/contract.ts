@@ -97,6 +97,12 @@ export const NO_CLOSE_MATCH = 'No close match found.';
 
 export const BATCH_FAILURE_FALLBACK = 'Some scans could not be confirmed.';
 
+export const CODE_BUSY = 'busy';
+export const CODE_NO_SPACE = 'no_space';
+
+export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
+export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
+
 // A 5xx response with no JSON error field. A body that includes error still wins.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
 
@@ -230,6 +236,56 @@ export const NOTHING_ON_HAND_BODY =
   "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
 
 export const CODE_NONE_ON_HAND = 'none_on_hand';
+
+// A lock or a full disk is the banner sentence. The card does not repeat it.
+// Amber never does. An item failure stays on its card.
+export function batchCardCommitNotice(code: string, message: string): string {
+  if (code === CODE_NONE_ON_HAND || code === CODE_BUSY || code === CODE_NO_SPACE) return '';
+  return message;
+}
+
+export function isStorageFailureCode(code: string): boolean {
+  return code === CODE_BUSY || code === CODE_NO_SPACE;
+}
+
+// A confirm that finishes, batch or single, drops the lock and disk notices.
+// The card just confirmed drops with them. Item-specific codes stay until that
+// card is resolved. Amber is not in this set.
+export function failuresAfterConfirm<T extends { code: string }>(
+  notices: readonly T[],
+  confirmedId: string,
+): T[] {
+  return notices.filter((notice) => {
+    const id = 'id' in notice && typeof notice.id === 'string' ? notice.id : undefined;
+    if (id === confirmedId) return false;
+    return !isStorageFailureCode(notice.code);
+  });
+}
+
+function storageSentence(notice: Pick<BatchFailureNotice, 'code' | 'message'>): string {
+  const message = notice.message.trim();
+  if (message !== '') return message;
+  return notice.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE;
+}
+
+// While an item failure remains, the banner is the fallback, whether or not
+// those codes match. The item sentence stays on the card. A lock or a full
+// disk is the banner only when no item failure is left, with the confirmed
+// count when some scans saved.
+export function batchFailureBannerText(
+  notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
+  committedCount: number,
+): string | null {
+  const blocking = notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+  if (blocking.length === 0) return null;
+  if (blocking.some((notice) => !isStorageFailureCode(notice.code))) return BATCH_FAILURE_FALLBACK;
+  const storage = blocking.find((notice) => isStorageFailureCode(notice.code));
+  if (storage === undefined) return null;
+  const sentence = storageSentence(storage);
+  const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
+  if (count === 0) return sentence;
+  return `${count} confirmed. ${sentence}`;
+}
 
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {

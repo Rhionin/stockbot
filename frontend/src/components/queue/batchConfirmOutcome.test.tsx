@@ -760,7 +760,7 @@ const cases: OutcomeCase[] = [
     goneBarcodes: [],
   },
   {
-    name: 'a single confirm replaces the batch reason so the sentence shows once',
+    name: 'a failed single confirm keeps that card on the batch reason',
     action: 'batch-then-milk',
     pendingAfter: 'both',
     batch: {
@@ -773,7 +773,6 @@ const cases: OutcomeCase[] = [
     absent: [],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
-    cardWithoutAlert: '111',
     amberBarcodes: ['111'],
     cardReason: { barcode: '222', text: 'Already confirmed by someone else.' },
   },
