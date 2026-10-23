@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button, Drawer, Radio, Select, Stack, Text } from '@mantine/core';
 import { setGroupRule } from '../../api/client';
 import { ruleChoices } from './copy';
+import { inlineFailure } from '../../api/contract';
 
 export interface RulePickerGroup {
   id: string;
@@ -38,7 +39,7 @@ export const RulePicker = ({
       onSaved();
       onClose();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save the rule.');
+      setError(inlineFailure(requestError, 'Unable to save the rule.') ?? '');
     } finally {
       setSaving(false);
     }

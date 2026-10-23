@@ -23,16 +23,30 @@ const (
 	busyErrorCode         = "busy"
 	noSpaceErrorCode      = "no_space"
 	authNotConfiguredCode = "auth_not_configured"
+
+	codeUnauthorized         = "unauthorized"
+	codeValidation           = "validation"
+	codeConfirmationMismatch = "confirmation_mismatch"
+	codeRateLimited          = "rate_limited"
+	codePayloadTooLarge      = "payload_too_large"
+	codeNotFound             = "not_found"
+	codeConflict             = "conflict"
+	codeMethodNotAllowed     = "method_not_allowed"
+	codeInternal             = inventory.CodeInternal
+	codeSyncReadOnly         = "sync_read_only"
+	codeProviderUnavailable  = "provider_unavailable"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
 // ErrorCode, Members, and Suggestions are included in the JSON body when set,
 // so a 409 can name the decision the client has to make.
+// Provider is the display name on a provider_unavailable response.
 type HTTPError struct {
 	Code        int
 	Message     string
 	Err         error
 	ErrorCode   string
+	Provider    string
 	Members     any
 	Suggestions any
 	ItemID      string
@@ -56,15 +70,51 @@ func (e *HTTPError) Unwrap() error {
 // Common HTTP error constructors.
 
 func BadRequest(message string) error {
-	return &HTTPError{Code: http.StatusBadRequest, Message: message}
+	return &HTTPError{Code: http.StatusBadRequest, Message: message, ErrorCode: codeValidation}
 }
 
 func NotFound(message string) error {
-	return &HTTPError{Code: http.StatusNotFound, Message: message}
+	return &HTTPError{Code: http.StatusNotFound, Message: message, ErrorCode: codeNotFound}
 }
 
 func Conflict(message string) error {
-	return &HTTPError{Code: http.StatusConflict, Message: message}
+	return &HTTPError{Code: http.StatusConflict, Message: message, ErrorCode: codeConflict}
+}
+
+// ConfirmationMismatch is a 400 whose typed confirmation does not match.
+func ConfirmationMismatch(message string) error {
+	return &HTTPError{Code: http.StatusBadRequest, Message: message, ErrorCode: codeConfirmationMismatch}
+}
+
+// ProviderUnavailable is a 502 whose sentence names the source that did not answer.
+func ProviderUnavailable(provider string) error {
+	return &HTTPError{
+		Code:      http.StatusBadGateway,
+		Message:   provider + " isn't responding. Try again later.",
+		ErrorCode: codeProviderUnavailable,
+		Provider:  provider,
+	}
+}
+
+// defaultClientCode is the code for a 4xx that did not name one.
+// A 403 is not defaulted: the only app 403 sets sync_read_only itself.
+func defaultClientCode(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return codeValidation
+	case http.StatusUnauthorized:
+		return codeUnauthorized
+	case http.StatusNotFound:
+		return codeNotFound
+	case http.StatusMethodNotAllowed:
+		return codeMethodNotAllowed
+	case http.StatusConflict:
+		return codeConflict
+	case http.StatusTooManyRequests:
+		return codeRateLimited
+	default:
+		return ""
+	}
 }
 
 // ConflictDetails is a 409 whose body also carries a machine-readable code and members.

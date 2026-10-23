@@ -975,7 +975,7 @@ prepare_pantry "$migrating"
 write_images "$migrating/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' '{"status":"migrating"}' '{"status":"migrating"}' > "$migrating/health.queue"
+printf '%s\n' '{"status":"migrating","error":"Updating. Try again in a minute.","code":"updating"}' '{"status":"migrating","error":"Updating. Try again in a minute.","code":"updating"}' > "$migrating/health.queue"
 STUB_HEALTH_QUEUE="$migrating/health.queue"
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
@@ -995,7 +995,7 @@ prepare_pantry "$migr_cap"
 write_images "$migr_cap/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-STUB_HEALTH_BODY='{"status":"migrating"}'
+STUB_HEALTH_BODY='{"status":"migrating","error":"Updating. Try again in a minute.","code":"updating"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 PANTRY_UPDATE_MIGRATION_TIMEOUT=0
 PANTRY_UPDATE_HEALTH_INTERVAL=1

@@ -38,7 +38,7 @@ func (h *RefreshHandler) Handle(req Request[struct{}, refreshProductPathParams])
 		if errors.Is(err, product.ErrRefreshTargetMissing) {
 			return refreshProductResponse{}, NotFound("product not found")
 		}
-		return refreshProductResponse{}, BadGateway("could not refresh product from Open Food Facts")
+		return refreshProductResponse{}, ProviderUnavailable(product.ExternalSourceOpenFoodFacts.DisplayName())
 	}
 
 	prod, err := h.Catalog.GetProductByID(req.Context, req.PathParams.ID)

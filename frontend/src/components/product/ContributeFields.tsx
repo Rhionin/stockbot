@@ -3,6 +3,7 @@ import { Checkbox, NativeSelect, Stack, Switch, Text } from '@mantine/core';
 import { getContributionSettings, updateContributionSettings } from '../../api/client';
 import type { ExternalSource } from '../../types';
 import { DATABASE_NAMES } from './databaseNames';
+import { inlineFailure } from '../../api/contract';
 
 export interface ContributeChoice {
   contribute: boolean;
@@ -64,7 +65,7 @@ export const ContributeFields = ({ onChange, allowProductOptIn = true }: Contrib
       if (!saved.enabled) setChecked(false);
     } catch (requestError) {
       setEnabled(!next);
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save sharing setting.');
+      setError(inlineFailure(requestError, 'Unable to save sharing setting.') ?? '');
     }
   };
 

@@ -6,6 +6,7 @@ import { useHouseholdSession } from '../auth/householdSession';
 import type { ProviderInfo } from '../../types';
 import { BuildStamp } from '../build/BuildStamp';
 import { CredentialsDialog } from '../shopping/CredentialsDialog';
+import { inlineFailure } from '../../api/contract';
 
 export interface AppMenuProps {
   onCredentialsChanged: () => void;
@@ -46,7 +47,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
         setSuggestionCount(0);
       }
     } catch (requestError) {
-      setLoadError(requestError instanceof Error ? requestError.message : 'Unable to load store settings.');
+      setLoadError(inlineFailure(requestError, 'Unable to load store settings.') ?? '');
     } finally {
       setLoaded(true);
     }
@@ -66,7 +67,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
       setEditingId(null);
       setOpened(false);
     } catch (requestError) {
-      setDisconnectError(requestError instanceof Error ? requestError.message : 'Unable to disconnect.');
+      setDisconnectError(inlineFailure(requestError, 'Unable to disconnect.') ?? '');
     } finally {
       setDisconnectingId(null);
     }

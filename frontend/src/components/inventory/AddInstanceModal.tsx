@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Modal, Stack, TextInput } from '@mantine/core';
 import { addItemInstance } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 
 export interface AddInstanceModalProps {
   itemId: string;
@@ -37,7 +38,7 @@ export const AddInstanceModal = ({
       closeModal();
       onAdded();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to add instance.');
+      setError(inlineFailure(requestError, 'Unable to add instance.') ?? '');
     } finally {
       setSubmitting(false);
     }

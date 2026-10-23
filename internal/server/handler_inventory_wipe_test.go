@@ -23,6 +23,7 @@ func TestInventoryWipeHandler(t *testing.T) {
 				expectedStatus: http.StatusBadRequest,
 				assertions: []assertion{
 					{path: "$.error", value: "Type WIPE INVENTORY to confirm wiping the inventory."},
+					{path: "$.code", value: "confirmation_mismatch"},
 				},
 			},
 			afterRequest: exchanges(httpExchange{

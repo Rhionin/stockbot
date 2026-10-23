@@ -255,7 +255,7 @@ func TestEventsStreamingUnsupported(t *testing.T) {
 	if rec.code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", rec.code, rec.body.String())
 	}
-	if rec.body.String() != "Something went wrong. Try again.\n" {
+	if rec.body.String() != `{"error":"Something went wrong. Try again.","code":"internal"}` {
 		t.Fatalf("body = %q", rec.body.String())
 	}
 	if strings.Contains(rec.body.String(), "streaming") {

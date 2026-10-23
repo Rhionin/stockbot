@@ -1,4 +1,5 @@
 import { deletePushSubscription, getVapidPublicKey, savePushSubscription } from '../../api/client';
+import { inlineFailure } from '../../api/contract';
 import { report } from '../../telemetry/client';
 import type { ScanDirection } from '../../types';
 
@@ -114,7 +115,7 @@ function applicationServerKey(publicKey: string): BufferSource {
 }
 
 function reportPushFailure(reason: PushSubscribeFailure, error?: unknown): void {
-  const detail = error instanceof Error ? error.message.trim() : '';
+  const detail = (inlineFailure(error, '') ?? '').trim();
   const message = detail === ''
     ? `push subscription failed: ${reason}`
     : `push subscription failed: ${reason}: ${detail}`;

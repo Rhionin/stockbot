@@ -19,6 +19,7 @@ import { ContributeFields, type ContributeChoice } from '../product/ContributeFi
 import { NetSizeFields } from '../product/NetSizeFields';
 import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from '../product/netSize';
 import { showShareNotice } from '../product/shareNotice';
+import { inlineFailure } from '../../api/contract';
 
 export interface FlaggedEntryResolverProps {
   entry: ScanEntry;
@@ -66,7 +67,7 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
       })
       .catch((requestError: unknown) => {
         if (active) {
-          setError(requestError instanceof Error ? requestError.message : 'Unable to load products.');
+          setError(inlineFailure(requestError, 'Unable to load products.') ?? '');
         }
       })
       .finally(() => {
@@ -116,7 +117,7 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
     try {
       await resolveWithProduct(selectedProductId);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to resolve scan.');
+      setError(inlineFailure(requestError, 'Unable to resolve scan.') ?? '');
     } finally {
       setSubmitting(false);
     }
@@ -150,7 +151,7 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
       if (product === undefined) throw new Error('Created product could not be loaded.');
       await resolveWithProduct(product.id);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to create product.');
+      setError(inlineFailure(requestError, 'Unable to create product.') ?? '');
     } finally {
       setSubmitting(false);
     }

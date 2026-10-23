@@ -8,6 +8,7 @@ import type { CategorySummary, RestockItem, RestockPreview, RestockTarget } from
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from './StopDialog';
 import { TargetEditor } from './TargetEditor';
+import { inlineFailure } from '../../api/contract';
 import './restock.css';
 
 function Kebab() {
@@ -46,7 +47,7 @@ export function CategoryPage() {
       setItems((snap?.items ?? []).filter((item) => item.categories.some((member) => member.id === id)));
       if (!found) setError("That category isn't in the household.");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to load the category.');
+      setError(inlineFailure(requestError, 'Unable to load the category.') ?? '');
     } finally {
       setLoading(false);
     }

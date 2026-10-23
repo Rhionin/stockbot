@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { InventoryItem, Item, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry } from '../types';
+import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, TargetConflictMember } from '../types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -125,6 +125,67 @@ export const CODE_AUTH_NOT_CONFIGURED = 'auth_not_configured';
 
 export const BUSY_SENTENCE = 'Stockbot is busy right now. Try again in a moment.';
 export const NO_SPACE_SENTENCE = 'Stockbot is out of storage space, so this wasn\'t saved.';
+
+// Codes for #395. The server sends these on the routes in docs/api/errors.md.
+// auth_not_configured is CODE_AUTH_NOT_CONFIGURED above. The sentences
+// and extra fields are specified in docs/api/errors.md.
+
+export const CODE_UPDATING = 'updating';
+export const UPDATING_SENTENCE = 'Updating. Try again in a minute.';
+export const UPDATING_STATUS = 'migrating';
+
+export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
+export const PROVIDER_FIELD = 'provider';
+export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
+
+// Names shared with the hosted contract (#364) where the meaning is the same.
+// The sentence on these routes stays the one the server already returns.
+
+export const CODE_UNAUTHORIZED = 'unauthorized';
+export const SIGN_IN_REQUIRED_SENTENCE = 'Sign in required.';
+export const INVALID_CREDENTIALS_SENTENCE = 'The username or password is incorrect.';
+export const SYNC_TOKEN_INVALID_SENTENCE = 'The sync token is not valid.';
+
+export const CODE_VALIDATION = 'validation';
+export const MISSING_CREDENTIALS_SENTENCE = 'Enter your username and password.';
+export const INVALID_BODY_PREFIX = 'invalid request body: ';
+export const INVALID_PATH_PREFIX = 'invalid path parameters: ';
+export const INVALID_REPORT_SENTENCE = 'invalid report';
+
+export const CODE_CONFIRMATION_MISMATCH = 'confirmation_mismatch';
+
+export const CODE_RATE_LIMITED = 'rate_limited';
+export const RATE_LIMITED_SENTENCE = 'Too many sign-in attempts. Try again later.';
+
+export const CODE_PAYLOAD_TOO_LARGE = 'payload_too_large';
+export const BODY_TOO_LARGE_SENTENCE = 'request body is too large';
+export const REPORT_TOO_LARGE_SENTENCE = 'report is too large';
+
+export const CODE_NOT_FOUND = 'not_found';
+export const NOT_FOUND_SENTENCE = 'Not found.';
+export const SIGN_IN_NOT_USED_SENTENCE = 'Sign-in is not used on this address.';
+
+export const CODE_CONFLICT = 'conflict';
+export const CODE_METHOD_NOT_ALLOWED = 'method_not_allowed';
+export const METHOD_NOT_ALLOWED_SENTENCE = 'Method not allowed.';
+
+// Unexpected server failure, including a commit that already uses this code.
+// The sentence is SERVER_ERROR_FALLBACK.
+export const CODE_INTERNAL = 'internal';
+
+export const CODE_SYNC_READ_ONLY = 'sync_read_only';
+export const SYNC_READ_ONLY_SENTENCE = 'This token only reads the sync snapshot.';
+
+// JSON body of an error the web or mobile app reads. `provider` is the
+// display name on provider_unavailable. `status` is "migrating" on updating.
+export interface ApiErrorJSON {
+  error: string;
+  code: string;
+  provider?: string;
+  status?: string;
+  members?: TargetConflictMember[] | { groupId: string };
+  suggestions?: PantryLinkSuggestion[];
+}
 
 // A 5xx response with no JSON error field. A body that includes error still wins.
 export const SERVER_ERROR_FALLBACK = 'Something went wrong. Try again.';
@@ -324,6 +385,216 @@ export function nothingOnHandPill(count: number): string | null {
 export function confirmSkipsNothingOnHand(count: number): string | null {
   if (!Number.isInteger(count) || count < 1) return null;
   return `Confirm skips the ${count} with nothing on hand.`;
+}
+
+// Shown when fetch never received a response. Straight apostrophe, one sentence.
+export const OFFLINE_SENTENCE = "Can't reach Stockbot. Check your connection and try again.";
+
+export const AUTH_NOT_CONFIGURED_SENTENCE = "Sign-in isn't set up yet.";
+
+export const AUTH_SETUP_SENTENCE = "Whoever runs this server needs to finish setting it up.";
+
+// A proxy or tunnel can answer with one of these and no Stockbot code.
+const GATEWAY_STATUSES = new Set([502, 503, 504, 530]);
+
+export interface NetworkErrorResult {
+  kind: 'network';
+  message: typeof OFFLINE_SENTENCE;
+}
+
+// The typed failure both clients throw. message is OFFLINE_SENTENCE.
+export class UnreachableError extends Error {
+  readonly kind = 'network' as const;
+  readonly result: NetworkErrorResult;
+
+  constructor() {
+    super(OFFLINE_SENTENCE);
+    this.name = 'UnreachableError';
+    this.result = { kind: 'network', message: OFFLINE_SENTENCE };
+  }
+}
+
+// Browser and device names for a request that ended before any HTTP response.
+// TypeError is not in this set: fetch uses it for transport failures, and so does
+// an invalid header raised before anything is sent. Those are told apart by message.
+const TRANSPORT_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError']);
+
+// The raw strings those runtimes put on the error. Matched only here.
+const TRANSPORT_MESSAGES = new Set([
+  'Failed to fetch',
+  'Network request failed',
+  'Load failed',
+  'NetworkError when attempting to fetch resource.',
+  'The Internet connection appears to be offline.',
+  'The operation was aborted.',
+  'The user aborted a request.',
+  'Aborted',
+]);
+
+const TRANSPORT_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'ABORT_ERR',
+]);
+
+function stringField(error: object, key: string): string {
+  if (!(key in error)) return '';
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : '';
+}
+
+// True for a fetch transport failure, an abort or timeout, or a DNS / connection failure.
+function isTransportFailure(error: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return TRANSPORT_NAMES.has(error.name);
+  }
+  if (typeof error !== 'object' || error === null) return false;
+  if (TRANSPORT_NAMES.has(stringField(error, 'name'))) return true;
+  if (TRANSPORT_CODES.has(stringField(error, 'code'))) return true;
+  if (TRANSPORT_MESSAGES.has(stringField(error, 'message'))) return true;
+  if ('cause' in error && error.cause !== undefined && error.cause !== error) {
+    return isTransportFailure(error.cause);
+  }
+  return false;
+}
+
+export function networkErrorResult(error: unknown): NetworkErrorResult | null {
+  if (error instanceof UnreachableError) return error.result;
+  if (!isTransportFailure(error)) return null;
+  return { kind: 'network', message: OFFLINE_SENTENCE };
+}
+
+// A server-state notice other than offline. The banner owns the sentence.
+export class ServerNoticeError extends Error {
+  readonly code: string;
+
+  constructor(code: string, sentence: string) {
+    super(sentence);
+    this.name = 'ServerNoticeError';
+    this.code = code;
+  }
+}
+
+// Card and inline alerts stay quiet when the banner owns the failure.
+// Any other error keeps its message, or the caller's fallback.
+export function inlineFailure(error: unknown, fallback: string): string | null {
+  if (error instanceof UnreachableError || error instanceof ServerNoticeError) return null;
+  if (error instanceof Error) return error.message;
+  return fallback;
+}
+
+export function stockbotCode(body: unknown): string {
+  if (typeof body !== 'object' || body === null || !('code' in body)) return '';
+  const code = (body as { code?: unknown }).code;
+  return typeof code === 'string' ? code.trim() : '';
+}
+
+export type HttpDisposition = 'offline' | 'auth' | 'stockbot';
+
+// A Stockbot response, including an error, clears offline and the sign-in banner.
+// A 502, 503, 504, or 530 with no code did not come from Stockbot, so it is offline.
+// auth_not_configured is its own banner. busy and no_space stay with the caller
+// and clear only on success.
+export function applyHttpResponse(status: number, code: string): HttpDisposition {
+  const trimmed = code.trim();
+  if (GATEWAY_STATUSES.has(status) && trimmed === '') {
+    raiseOfflineBanner();
+    return 'offline';
+  }
+  if (trimmed === CODE_AUTH_NOT_CONFIGURED) {
+    raiseAuthNotConfiguredBanner();
+    return 'auth';
+  }
+  clearServerNotice();
+  return 'stockbot';
+}
+
+export function unreachableFrom(error: unknown): UnreachableError | null {
+  if (error instanceof UnreachableError) return error;
+  if (networkErrorResult(error) === null) return null;
+  return new UnreachableError();
+}
+
+const apiSuccessListeners = new Set<() => void>();
+
+// Both clients call this after a response arrives and is read. Screens subscribe
+// so the offline sentence drops on the next success, including a load or refresh.
+export function subscribeApiSuccess(listener: () => void): () => void {
+  apiSuccessListeners.add(listener);
+  return () => {
+    apiSuccessListeners.delete(listener);
+  };
+}
+
+export function notifyApiSuccess(): void {
+  if (noticeKind !== '') publishNotice('');
+  for (const listener of apiSuccessListeners) listener();
+}
+
+// One shared banner. Offline replaces any other notice. auth_not_configured
+// replaces offline. Any other Stockbot response clears the slot. Success does too.
+type NoticeKind = '' | 'offline' | 'auth';
+
+let noticeKind: NoticeKind = '';
+const offlineBannerListeners = new Set<() => void>();
+
+function publishNotice(next: NoticeKind): void {
+  if (noticeKind === next) return;
+  noticeKind = next;
+  for (const listener of offlineBannerListeners) listener();
+}
+
+export function serverNoticeText(): string {
+  if (noticeKind === 'offline') return OFFLINE_SENTENCE;
+  if (noticeKind === 'auth') return AUTH_NOT_CONFIGURED_SENTENCE;
+  return '';
+}
+
+export function offlineBannerActive(): boolean {
+  return noticeKind === 'offline';
+}
+
+// Sets the offline sentence. A later Stockbot response clears it, errors included.
+// notifyApiSuccess clears it after a response is read successfully.
+export function raiseOfflineBanner(): void {
+  publishNotice('offline');
+}
+
+export function raiseAuthNotConfiguredBanner(): void {
+  publishNotice('auth');
+}
+
+// A body that cannot be read, or a success that is not JSON, is not a Stockbot
+// response. Throw this instead of the raw SyntaxError or TypeError.
+export function unreadableResponse(error: unknown): UnreachableError {
+  raiseOfflineBanner();
+  return unreachableFrom(error) ?? new UnreachableError();
+}
+
+export function clearServerNotice(): void {
+  if (noticeKind !== '') publishNotice('');
+}
+
+export function clearOfflineBanner(): void {
+  if (noticeKind === 'offline') publishNotice('');
+}
+
+export function subscribeOfflineBanner(listener: () => void): () => void {
+  offlineBannerListeners.add(listener);
+  return () => {
+    offlineBannerListeners.delete(listener);
+  };
 }
 
 // Hosted multi-household contract (docs/design/api-contract.md).

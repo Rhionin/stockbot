@@ -11,6 +11,7 @@ import {
 import { PulseChart, type PulseInspect } from './PulseChart';
 import '../groups/groups.css';
 import '../inventory/shelf.css';
+import { inlineFailure } from '../../api/contract';
 import './history.css';
 
 type Direction = 'all' | 'in' | 'out';
@@ -60,7 +61,7 @@ export function LedgerPage() {
         setError('');
       } catch (requestError) {
         if (!active) return;
-        setError(requestError instanceof Error ? requestError.message : 'Unable to load history.');
+        setError(inlineFailure(requestError, 'Unable to load history.') ?? '');
       } finally {
         if (active) setLoading(false);
       }
@@ -98,7 +99,7 @@ export function LedgerPage() {
       setEditing(null);
       await reload();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to change that quantity.');
+      setError(inlineFailure(requestError, 'Unable to change that quantity.') ?? '');
     } finally {
       setPending(false);
     }
@@ -113,7 +114,7 @@ export function LedgerPage() {
       setUndoing(null);
       await reload();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to undo that move.');
+      setError(inlineFailure(requestError, 'Unable to undo that move.') ?? '');
     } finally {
       setPending(false);
     }

@@ -204,8 +204,8 @@ func NewHandler(
 
 	// Create root mux that composes API routes with web UI
 	root := http.NewServeMux()
-	root.Handle("/api", apiMux)
-	root.Handle("/api/", apiMux)
+	root.Handle("/api", apiErrors(apiMux))
+	root.Handle("/api/", apiErrors(apiMux))
 	root.Handle("/health", apiMux)
 	root.Handle("/health/", apiMux)
 	// Exact public URLs. Registered before the SPA catch-all so /terms and

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type Ref } from 'react';
 import { Button, Group, NumberInput, Text } from '@mantine/core';
 import type { GroupTarget, ProductGroup } from '../../types';
 import { clampMonth, type SeesawDraft, type SeesawEnd, type SeesawPin, type SeesawView } from './seesaw';
+import { inlineFailure } from '../../api/contract';
 
 // Material Symbols "keep" (push pin), Apache-2.0.
 function PinIcon() {
@@ -118,7 +119,7 @@ export function Seesaw({
       }
       closeEditor();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save the target.');
+      setError(inlineFailure(requestError, 'Unable to save the target.') ?? '');
     }
   };
 
@@ -128,7 +129,7 @@ export function Seesaw({
       await onSave({ clear: true });
       closeEditor();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to save the target.');
+      setError(inlineFailure(requestError, 'Unable to save the target.') ?? '');
     }
   };
 

@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, notifyApiSuccess, raiseOfflineBanner, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -105,9 +105,14 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: 'same-origin' });
-  } catch (err) {
+  } catch (error) {
     reportApiResult(route, 0, performance.now() - started, started);
-    throw err;
+    const unreachable = unreachableFrom(error);
+    if (unreachable !== null) {
+      raiseOfflineBanner();
+      throw unreachable;
+    }
+    throw error;
   }
 
   if (!res.ok) {
@@ -115,6 +120,9 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       onUnauthorized?.();
     }
     let message = res.status >= 500 ? SERVER_ERROR_FALLBACK : res.statusText;
+    let code = '';
+    let members: TargetConflictMember[] = [];
+    let suggestions: PantryLinkSuggestion[] = [];
     try {
       const body = (await res.json()) as {
         error?: string;
@@ -122,24 +130,53 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
         members?: TargetConflictMember[];
         suggestions?: PantryLinkSuggestion[];
       };
-      if (body.error) {
-        message = body.error;
-      }
-      reportApiResult(route, res.status, performance.now() - started, started);
-      throw new ApiError(res.status, message, body.code ?? '', body.members ?? [], body.suggestions ?? []);
-    } catch (err) {
-      if (err instanceof ApiError) throw err;
-      // Not JSON. A 5xx already uses the shared sentence; other statuses keep statusText.
+      if (body.error) message = body.error;
+      code = stockbotCode(body);
+      members = body.members ?? [];
+      suggestions = body.suggestions ?? [];
+    } catch {
+      // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw new ApiError(res.status, message);
+    throw classifiedError(res.status, message, code, members, suggestions);
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
   // not an empty 204 body, but callers of those endpoints don't need the value.
-  const text = await res.text();
-  reportApiResult(route, res.status, performance.now() - started, started);
-  return text ? (JSON.parse(text) as T) : (undefined as T);
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (error) {
+    reportApiResult(route, 0, performance.now() - started, started);
+    throw unreadableResponse(error);
+  }
+  if (text === '') {
+    reportApiResult(route, res.status, performance.now() - started, started);
+    notifyApiSuccess();
+    return undefined as T;
+  }
+  try {
+    const body = JSON.parse(text) as T;
+    reportApiResult(route, res.status, performance.now() - started, started);
+    notifyApiSuccess();
+    return body;
+  } catch (error) {
+    reportApiResult(route, 0, performance.now() - started, started);
+    throw unreadableResponse(error);
+  }
+}
+
+function classifiedError(
+  status: number,
+  message: string,
+  code: string,
+  members: TargetConflictMember[] = [],
+  suggestions: PantryLinkSuggestion[] = [],
+): Error {
+  const disposition = applyHttpResponse(status, code);
+  if (disposition === 'offline') return new UnreachableError();
+  if (disposition === 'auth') return new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
+  return new ApiError(status, message, code, members, suggestions);
 }
 
 // --- Products ---
@@ -569,28 +606,58 @@ export function getBuildInfo(): Promise<BuildInfo> {
 
 // getSession uses fetch directly so a 401 can mean "show the login page"
 // without also tripping the signed-in handler.
+async function fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${BASE_URL}${path}`, init);
+  } catch (error) {
+    const unreachable = unreachableFrom(error);
+    if (unreachable !== null) {
+      raiseOfflineBanner();
+      throw unreachable;
+    }
+    throw error;
+  }
+}
+
 export async function getSession(): Promise<HouseholdSession> {
-  const res = await fetch(`${BASE_URL}${SESSION_PATH}`, { credentials: 'same-origin' });
+  const res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
   if (res.status === 401) {
+    applyHttpResponse(res.status, '');
     return { required: true, username: '', error: '' };
   }
-  let body: { required?: boolean; username?: string; error?: string };
+  let text: string;
   try {
-    body = (await res.json()) as { required?: boolean; username?: string; error?: string };
-  } catch {
-    body = {};
+    text = await res.text();
+  } catch (error) {
+    if (!res.ok) return sessionFailure(res.status, '');
+    throw unreadableResponse(error);
   }
-  if (!res.ok) {
-    return { required: true, username: '', error: body.error || 'Sign-in is unavailable right now.' };
+  let body: { required?: boolean; username?: string; error?: string; code?: string } = {};
+  if (text !== '') {
+    try {
+      body = JSON.parse(text) as { required?: boolean; username?: string; error?: string; code?: string };
+    } catch (error) {
+      if (!res.ok) return sessionFailure(res.status, '');
+      throw unreadableResponse(error);
+    }
   }
+  if (!res.ok) return sessionFailure(res.status, stockbotCode(body), body.error);
+  notifyApiSuccess();
   if (!body.required) {
     return { required: false, username: '', error: '' };
   }
   return { required: true, username: body.username ?? '', error: '' };
 }
 
+function sessionFailure(status: number, code: string, errorText?: string): HouseholdSession {
+  const disposition = applyHttpResponse(status, code);
+  if (disposition === 'offline') throw new UnreachableError();
+  if (disposition === 'auth') return { required: true, username: '', error: '' };
+  return { required: true, username: '', error: errorText || 'Sign-in is unavailable right now.' };
+}
+
 export async function login(username: string, password: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/login`, {
+  const res = await fetchResponse('/api/login', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -598,21 +665,32 @@ export async function login(username: string, password: string): Promise<void> {
   });
   if (!res.ok) {
     let message = 'The username or password is incorrect.';
+    let code = '';
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { error?: string; code?: string };
       if (body.error) message = body.error;
+      code = stockbotCode(body);
     } catch {
       // The status is enough when the body is empty.
     }
-    throw new ApiError(res.status, message);
+    throw classifiedError(res.status, message, code);
   }
+  notifyApiSuccess();
 }
 
 export async function logout(): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/logout`, { method: 'POST', credentials: 'same-origin' });
+  const res = await fetchResponse('/api/logout', { method: 'POST', credentials: 'same-origin' });
   if (!res.ok) {
-    throw new ApiError(res.status, 'Could not sign out.');
+    let code: string;
+    try {
+      code = stockbotCode(await res.json());
+    } catch {
+      code = '';
+    }
+    const failure = classifiedError(res.status, 'Could not sign out.', code);
+    throw failure;
   }
+  notifyApiSuccess();
 }
 
 export interface PushSubscriptionInput {

@@ -30,19 +30,19 @@ func (h *TelemetryHandler) PostClient(w http.ResponseWriter, r *http.Request) {
 	var in telemetry.InboundReport
 	if err := json.UnmarshalRead(r.Body, &in); err != nil {
 		if errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, "invalid report")
+			writeError(w, http.StatusBadRequest, codeValidation, "invalid report")
 			return
 		}
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) || strings.Contains(err.Error(), "too large") {
-			writeError(w, http.StatusBadRequest, "report is too large")
+			writeError(w, http.StatusBadRequest, codePayloadTooLarge, "report is too large")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "invalid report")
+		writeError(w, http.StatusBadRequest, codeValidation, "invalid report")
 		return
 	}
 	if err := h.Registry.AcceptClientReport(in); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, codeValidation, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

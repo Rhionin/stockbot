@@ -42,7 +42,7 @@ func (g *bootGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = fmt.Fprintln(w, `{"status":"migrating"}`)
+	_, _ = fmt.Fprintln(w, `{"status":"migrating","error":"Updating. Try again in a minute.","code":"updating"}`)
 }
 
 func writeBootBuildInfo(w http.ResponseWriter) {

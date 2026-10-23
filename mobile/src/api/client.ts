@@ -15,7 +15,16 @@ import {
   inventoryListPath,
   scanCommitPath,
   scansQuery,
+  applyHttpResponse,
+  AUTH_NOT_CONFIGURED_SENTENCE,
+  CODE_AUTH_NOT_CONFIGURED,
+  notifyApiSuccess,
+  raiseOfflineBanner,
   SERVER_ERROR_FALLBACK,
+  ServerNoticeError,
+  UnreachableError,
+  unreachableFrom,
+  unreadableResponse,
 } from '../../../frontend/src/api/contract';
 import type {
   InventoryItem,
@@ -86,24 +95,45 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     let res: Response;
     try {
       res = await fetchImpl(`${credentials.serverUrl}${path}`, { ...init, headers });
-    } catch {
+    } catch (error) {
+      const unreachable = unreachableFrom(error);
+      if (unreachable !== null) {
+        raiseOfflineBanner();
+        throw unreachable;
+      }
       throw new ApiError(0, 'Stockbot did not answer at that address.');
     }
 
     if (!res.ok) {
       if (res.status === 401) options.onUnauthorized?.();
       const parsed = await readError(res);
+      const disposition = applyHttpResponse(res.status, parsed.code);
+      if (disposition === 'offline') throw new UnreachableError();
+      if (disposition === 'auth') {
+        throw new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
+      }
       const message = res.status === 401 ? 'That password was rejected.' : parsed.message;
       throw new ApiError(res.status, message, parsed.code, parsed.suggestions);
     }
 
-    const text = await res.text();
-    if (text === '') return undefined as T;
+    let text: string;
     try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new ApiError(res.status, 'Stockbot sent a response that could not be read.');
+      text = await res.text();
+    } catch (error) {
+      throw unreadableResponse(error);
     }
+    if (text === '') {
+      notifyApiSuccess();
+      return undefined as T;
+    }
+    let body: T;
+    try {
+      body = JSON.parse(text) as T;
+    } catch (error) {
+      throw unreadableResponse(error);
+    }
+    notifyApiSuccess();
+    return body;
   }
 
   return {
