@@ -535,11 +535,6 @@ async function capturePhone(browser) {
       deviceScaleFactor: 2,
     });
     const authPage = await authContext.newPage();
-    await authPage.route('**/api/session', (route) => route.fulfill({
-      status: 503,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'auth is off', code: 'auth_not_configured' }),
-    }));
     await authPage.goto(`http://localhost:${expoPort}`, { waitUntil: 'networkidle', timeout: 120000 });
     await authPage.getByLabel('Connect').waitFor({ timeout: 120000 });
     await authPage.context().setOffline(true);
@@ -548,6 +543,11 @@ async function capturePhone(browser) {
     await authPage.screenshot({ path: join(shotDir, 'mobile_offline_sign_in.png') });
     console.log('saved mobile_offline_sign_in.png');
     await authPage.context().setOffline(false);
+    await authPage.route('**/api/session', (route) => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'auth is off', code: 'auth_not_configured' }),
+    }));
     await authPage.getByLabel('Server').fill(`http://127.0.0.1:${proxyPort}`);
     await authPage.getByLabel('Household password').fill('shots');
     await authPage.getByLabel('Connect').click();
