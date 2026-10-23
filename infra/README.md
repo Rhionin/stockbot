@@ -8,10 +8,14 @@ TypeScript CDK app for the hosted multi-household service. Stack boundaries foll
 
 | Stage  | Account                                           | Region      | Stacks                         |
 | ------ | ------------------------------------------------- | ----------- | ------------------------------ |
-| `dev`  | context `devAccount`, or `STOCKBOT_DEV_ACCOUNT`   | `us-east-1` | Edge, Data, Identity, App, Ops |
-| `prod` | context `prodAccount`, or `STOCKBOT_PROD_ACCOUNT` | `us-east-1` | Edge, Data, Identity, App, Ops |
+| `dev`  | context `devAccount`, or `STOCKBOT_DEV_ACCOUNT`   | `us-west-2` | Edge, Data, Identity, App, Ops |
+| `prod` | context `prodAccount`, or `STOCKBOT_PROD_ACCOUNT` | `us-west-2` | Edge, Data, Identity, App, Ops |
+
+Both stages use one region constant, `REGION` in `lib/stage-env.ts` (`us-west-2`, Oregon). Change that constant to move dev and prod together, then update the bootstrap commands below to match.
 
 Account IDs are not in source. `cdk.json` ships both context keys as empty strings, which means "not set". Dev and prod may be two accounts or the same account (separate accounts when that is possible).
+
+CloudFront public certificates are issued in `us-east-1` even when these stacks run in `us-west-2`. The Edge stack does not create that certificate yet, so there is no second region constant.
 
 When both a context value and the environment variable are set, the environment variable wins.
 
@@ -44,15 +48,15 @@ npm ci
 npx cdk synth 'dev/*' 'prod/*' --strict
 ```
 
-With no account ids set, the templates are region-pinned to `us-east-1` and account-agnostic. Set the accounts before deploy.
+With no account ids set, the templates are region-pinned to `us-west-2` and account-agnostic. Set the accounts before deploy.
 
 ## Bootstrap
 
-Bootstrap is once per account in `us-east-1`. Run it for each stage. If dev and prod share an account, the second command hits the same account and region, so one successful bootstrap covers both.
+Bootstrap is once per account in `us-west-2`. Run it for each stage. If dev and prod share an account, the second command hits the same account and region, so one successful bootstrap covers both.
 
 ```bash
-npx cdk bootstrap aws://<dev-account>/us-east-1
-npx cdk bootstrap aws://<prod-account>/us-east-1
+npx cdk bootstrap aws://<dev-account>/us-west-2
+npx cdk bootstrap aws://<prod-account>/us-west-2
 ```
 
 Replace `<dev-account>` and `<prod-account>` with the 12-digit ids. Export them first if they are not already in `cdk.json`:

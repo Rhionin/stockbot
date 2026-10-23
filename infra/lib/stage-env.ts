@@ -1,7 +1,13 @@
 import type { App, Environment } from 'aws-cdk-lib/core';
 
-/** Every hosted stack is in this region. Design §8 (us-east-1 for ACM and the rest). */
-export const REGION = 'us-east-1';
+/**
+ * Hosted region for both stages. This is the only place the stage region is set;
+ * change it here to move dev and prod together.
+ * Oregon (us-west-2): Aurora DSQL, AppSync Events, Cognito, SES, Scheduler,
+ * Lambda, API Gateway, KMS, and SSM are all available.
+ * A future CloudFront public certificate still has to be requested in us-east-1.
+ */
+export const REGION = 'us-west-2';
 
 export const STAGE_NAMES = ['dev', 'prod'] as const;
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CDK app for hosted Stockbot (dev and prod, us-east-1).",
+  "description": "CDK app for hosted Stockbot (dev and prod, us-west-2).",
   "engines": {
     "node": ">=20.9.0"
   },

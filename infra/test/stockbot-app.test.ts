@@ -34,9 +34,10 @@ function clearAccountEnv(): void {
 }
 
 describe('resolveStageEnv', () => {
-  it('uses us-east-1 and leaves the account unset when nothing is configured', () => {
+  it('uses the hosted region and leaves the account unset when nothing is configured', () => {
     clearAccountEnv();
     const env = resolveStageEnv(new App(), 'dev');
+    assert.equal(REGION, 'us-west-2');
     assert.equal(env.region, REGION);
     assert.equal(env.account, undefined);
   });
@@ -76,7 +77,7 @@ describe('resolveStageEnv', () => {
 });
 
 describe('createApp', () => {
-  it('synthesizes empty dev and prod stacks in us-east-1 with the common tags', () => {
+  it('synthesizes empty dev and prod stacks in the hosted region with the common tags', () => {
     clearAccountEnv();
     const outdir = mkdtempSync(path.join(tmpdir(), 'stockbot-cdk-'));
     try {
@@ -112,7 +113,7 @@ describe('createApp', () => {
 
       for (const stack of stacks) {
         const stage = stack.name.startsWith('prod-') ? 'prod' : 'dev';
-        assert.equal(stack.region, 'us-east-1');
+        assert.equal(stack.region, REGION);
         assert.equal(stack.account, 'unknown-account');
         assert.deepEqual(stack.tags, {
           app: 'stockbot',
