@@ -2,17 +2,18 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 
 	"github.com/Rhionin/stockbot/internal/buildinfo"
 )
 
-// bootGate answers while the database is still migrating. /health is 503 and
-// /api/build reports this binary. Every other route stays unavailable until
-// use swaps in the real handler. main listens with this gate before it runs
-// migrations, so a deploy can tell "still migrating" from "process is dead".
+// bootGate answers while the database is still migrating. A browser page
+// load gets a short HTML notice. /health does too when Accept lists
+// text/html; any other Accept on /health is 503 {"status":"migrating"}.
+// GET /api/build reports this binary. use swaps in the real handler when
+// migrations finish. main listens with this gate before it runs migrations,
+// so a deploy can tell "still migrating" from "process is dead".
 type bootGate struct {
 	mu    sync.RWMutex
 	ready http.Handler
@@ -40,9 +41,7 @@ func (g *bootGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBootBuildInfo(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = fmt.Fprintln(w, `{"status":"migrating"}`)
+	writeMigrating(w, r)
 }
 
 func writeBootBuildInfo(w http.ResponseWriter) {

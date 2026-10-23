@@ -89,6 +89,28 @@ or `stdin`. The `connected` field indicates whether the device is currently
 accessible (always true for stdin). The `mode` field shows the current
 scan direction (`stock_in` or `stock_out`).
 
+### While migrations run
+
+The process listens before database migrations finish. Until they do,
+`GET /api/build` returns this binary's identity. Every other route answers
+`503`.
+
+A request whose `Accept` header lists `text/html` at a quality above zero,
+and whose path is not `/api` or under `/api/`, gets a small HTML page. The
+page has no external assets. It uses the locked brand colors, says exactly
+"Stockbot is updating. This takes about a minute.", and reloads itself every
+10 seconds with a meta refresh. The response headers are
+`Content-Type: text/html; charset=utf-8`, `Retry-After: 10`, and
+`Cache-Control: no-store`.
+
+Any other request still gets a JSON body of exactly `{"status":"migrating"}`
+with `Content-Type: application/json`. That includes `/api/*` even when
+`Accept` asks for `text/html`, and clients that send `application/json`,
+`*/*`, or no `Accept` header. `curl` sends `*/*`, so `curl /health` stays
+JSON while a migration is running. Those JSON responses also send
+`Retry-After: 10`. A quality of zero on `text/html` is not a page load.
+When migrations finish, the normal routes answer again.
+
 ## Telemetry
 
 `/health` answers "is the process up, and is the scanner connected?" The
