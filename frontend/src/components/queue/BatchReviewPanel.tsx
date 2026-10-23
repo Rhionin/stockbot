@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import { offlineSentence, type BatchCommitResponse } from '../../api/contract';
+import { OFFLINE_SENTENCE, offlineSentence, type BatchCommitResponse } from '../../api/contract';
 import { clearOfflineNotice, subscribeOfflineClear } from './offlineNotice';
 
 export interface BatchReviewPanelProps {
@@ -18,7 +18,7 @@ export const BatchReviewPanel = ({ selectedIds, onComplete, onStart }: BatchRevi
 
   const handleApprove = async () => {
     setSubmitting(true);
-    setError('');
+    setError((current) => (current === OFFLINE_SENTENCE ? current : ''));
     onStart?.();
     try {
       const response = await batchCommitScanEntries({

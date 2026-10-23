@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, UnreachableError } from '../../../frontend/src/api/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, OFFLINE_SENTENCE, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
 const serverUrl = 'https://stockbot.example';
@@ -67,12 +67,37 @@ describe('createStockbotClient', () => {
     await expect(client.getSession()).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
   });
 
-  it('leaves a non-transport failure unchanged', async () => {
+  it.each([
+    { name: 'plain error', error: new Error('offline') },
+    { name: 'invalid header', error: new TypeError("Failed to construct 'Headers': Invalid name") },
+  ])('$name keeps the previous fallback', async ({ error }) => {
     const { client } = clientWith(jest.fn(async () => {
-      throw new Error('offline');
+      throw error;
     }));
 
-    await expect(client.getSession()).rejects.toThrow('offline');
+    await expect(client.getSession()).rejects.toMatchObject({
+      status: 0,
+      message: 'Stockbot did not answer at that address.',
+    });
+  });
+
+  it('notifies listeners only after a response is read', async () => {
+    const listener = jest.fn();
+    const stop = subscribeApiSuccess(listener);
+    try {
+      const { client } = clientWith(jest.fn(async () => jsonResponse(200, { required: false })));
+      await client.getSession();
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      listener.mockClear();
+      const failing = clientWith(jest.fn(async () => {
+        throw new TypeError('Network request failed');
+      }));
+      await expect(failing.client.getSession()).rejects.toBeInstanceOf(UnreachableError);
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
   });
 
   it('posts a scan, lists pending scans, and commits them for the shared household user', async () => {

@@ -1,5 +1,5 @@
 import { notifications } from '@mantine/notifications';
-import { OFFLINE_SENTENCE, UnreachableError } from '../../api/contract';
+import { OFFLINE_SENTENCE, subscribeApiSuccess, UnreachableError } from '../../api/contract';
 import { showUndo } from '../restock/undo';
 
 export const OFFLINE_NOTICE_ID = 'stockbot-offline';
@@ -31,3 +31,6 @@ export function showOfflineNotice(): void {
 export function isUnreachable(error: unknown): error is UnreachableError {
   return error instanceof UnreachableError;
 }
+
+// Any successful API response, including an inventory or product-list load.
+subscribeApiSuccess(clearOfflineNotice);

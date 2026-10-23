@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
+import { getInventoryList } from '../../api/client';
 import { OFFLINE_SENTENCE } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
@@ -195,6 +196,27 @@ describe('offline notice', () => {
 
     expect(await screen.findByText('That scan is no longer pending.')).toBeInTheDocument();
     expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
+  });
+
+  it('keeps the sentence through another failed confirm and clears it when inventory loads', async () => {
+    renderQueue(new TypeError('Failed to fetch'));
+    await press('confirm', true);
+    await waitFor(() => {
+      expect(screen.getAllByText(OFFLINE_SENTENCE).length).toBeGreaterThan(0);
+    });
+
+    await press('confirm', false);
+    await waitFor(() => {
+      expect(screen.getAllByText(OFFLINE_SENTENCE).length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+
+    await getInventoryList();
+    await waitFor(() => {
+      expect(screen.queryAllByText(OFFLINE_SENTENCE)).toHaveLength(0);
+    });
     expect(screen.getByRole('article', { name: /^Scan 111(,|$)/ })).toBeInTheDocument();
   });
 });

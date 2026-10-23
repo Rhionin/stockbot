@@ -187,6 +187,10 @@ describe('networkErrorResult', () => {
   it.each([
     { name: 'server sentence', error: new Error('Which item is this?') },
     { name: 'unrelated error', error: new Error('Network error') },
+    { name: 'invalid header', error: new TypeError("Failed to construct 'Headers': Invalid name") },
+    { name: 'type error name only', error: Object.assign(new Error('Illegal invocation'), { name: 'TypeError' }) },
+    { name: 'quota', error: new DOMException('The quota has been exceeded.', 'QuotaExceededError') },
+    { name: 'bad json', error: new SyntaxError('Unexpected token') },
     { name: 'non-error rejection', error: { statusCode: 500 } },
     { name: 'null', error: null },
   ])('$name is not a transport failure', ({ error }) => {

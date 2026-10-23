@@ -53,7 +53,13 @@ describe('api error messages', () => {
     const attempt = listProducts();
     await expect(attempt).rejects.toBeInstanceOf(UnreachableError);
     await expect(attempt).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
-    expect(OFFLINE_SENTENCE).not.toBe('Failed to fetch');
+  });
+
+  it('leaves a TypeError raised before the request is sent', async () => {
+    const error = new TypeError("Failed to construct 'Headers': Invalid name");
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(error)));
+
+    await expect(listProducts()).rejects.toBe(error);
   });
 
   it('keeps a 409 body', async () => {

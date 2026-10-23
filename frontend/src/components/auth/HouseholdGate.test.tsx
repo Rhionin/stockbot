@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OFFLINE_SENTENCE } from '../../api/contract';
 import { HouseholdGate } from './HouseholdGate';
 
 const json = (body: unknown, status = 200) =>
@@ -34,6 +35,20 @@ describe('HouseholdGate', () => {
     renderGate();
     expect(await screen.findByRole('heading', { name: 'Scan Queue' })).toBeVisible();
     expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { name: 'failed to fetch', error: new TypeError('Failed to fetch'), message: OFFLINE_SENTENCE },
+    { name: 'abort', error: new DOMException('The operation was aborted.', 'AbortError'), message: OFFLINE_SENTENCE },
+    { name: 'invalid header', error: new TypeError("Failed to construct 'Headers': Invalid name"), message: 'Stockbot could not be reached.' },
+    { name: 'other error', error: new Error('Network error'), message: 'Stockbot could not be reached.' },
+  ])('session $name shows $message', async ({ error, message }) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(error)));
+    renderGate();
+    expect(await screen.findByText(message)).toBeVisible();
+    if (message !== OFFLINE_SENTENCE) {
+      expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    }
   });
 
   it('opens the app after a successful sign-in', async () => {

@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { getInventoryList } from '../../api/client';
+import { OFFLINE_SENTENCE } from '../../api/contract';
 import { BatchReviewPanel } from './BatchReviewPanel';
 
 const jsonResponse = (body: unknown) =>
@@ -105,5 +107,51 @@ describe('BatchReviewPanel', () => {
       expect(requestBody.scanEntryIds).not.toContain('stock-in-1');
       expect(requestBody.scanEntryIds).not.toContain('stock-in-2');
     });
+  });
+});
+
+describe('BatchReviewPanel offline sentence', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the sentence until a later request succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+    render(
+      <MantineProvider>
+        <BatchReviewPanel selectedIds={['a', 'b']} onComplete={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeInTheDocument();
+
+    let rejectNext: (error: unknown) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((_resolve, reject) => {
+      rejectNext = reject;
+    })));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(screen.getByText(OFFLINE_SENTENCE)).toBeInTheDocument();
+    rejectNext(new TypeError('Failed to fetch'));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse([]))));
+    await getInventoryList();
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument());
+  });
+
+  it('does not treat an invalid header as offline', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError("Failed to construct 'Headers': Invalid name"))));
+    render(
+      <MantineProvider>
+        <BatchReviewPanel selectedIds={['a', 'b']} onComplete={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect(await screen.findByText('Unable to confirm selected scans.')).toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed to construct 'Headers': Invalid name")).not.toBeInTheDocument();
   });
 });

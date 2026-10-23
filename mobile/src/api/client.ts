@@ -15,6 +15,7 @@ import {
   inventoryListPath,
   scanCommitPath,
   scansQuery,
+  notifyApiSuccess,
   SERVER_ERROR_FALLBACK,
   unreachableFrom,
 } from '../../../frontend/src/api/contract';
@@ -90,7 +91,7 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     } catch (error) {
       const unreachable = unreachableFrom(error);
       if (unreachable !== null) throw unreachable;
-      throw error;
+      throw new ApiError(0, 'Stockbot did not answer at that address.');
     }
 
     if (!res.ok) {
@@ -101,12 +102,18 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     }
 
     const text = await res.text();
-    if (text === '') return undefined as T;
+    if (text === '') {
+      notifyApiSuccess();
+      return undefined as T;
+    }
+    let body: T;
     try {
-      return JSON.parse(text) as T;
+      body = JSON.parse(text) as T;
     } catch {
       throw new ApiError(res.status, 'Stockbot sent a response that could not be read.');
     }
+    notifyApiSuccess();
+    return body;
   }
 
   return {

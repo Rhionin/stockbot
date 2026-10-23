@@ -1,5 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { OFFLINE_SENTENCE } from '../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, subscribeApiSuccess } from '../../frontend/src/api/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
@@ -17,6 +17,13 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
+
+  useEffect(() => subscribeApiSuccess(() => {
+    setState((current) => {
+      if (current.status !== 'ready' || current.warning !== OFFLINE_SENTENCE) return current;
+      return { ...current, warning: '' };
+    });
+  }), []);
 
   const signOut = useCallback(async (error = '') => {
     await clearCredentials();

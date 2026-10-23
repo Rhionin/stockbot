@@ -1,4 +1,6 @@
+import type { ReactElement } from 'react';
 import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
 import type { InventoryItem, ScanEntry } from '../../../frontend/src/types';
 import { createStockbotClient } from '../api/client';
@@ -52,6 +54,19 @@ function jsonResponse(status: number, body: unknown): Response {
     text: async () => JSON.stringify(body),
     json: async () => body,
   } as Response;
+}
+
+function framed(ui: ReactElement) {
+  return (
+    <SafeAreaProvider
+      initialMetrics={{
+        insets: { top: 0, right: 0, bottom: 0, left: 0 },
+        frame: { x: 0, y: 0, width: 390, height: 844 },
+      }}
+    >
+      {ui}
+    </SafeAreaProvider>
+  );
 }
 
 type Action = 'confirm' | 'all' | 'remove';
@@ -155,5 +170,25 @@ describe('offline notice', () => {
     expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull();
     expect(screen.getByText('Oat milk')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-1')).getByLabelText('Confirm Oat milk')).toBeTruthy();
+  });
+
+  it('keeps the sentence until a refresh succeeds', async () => {
+    const api = queue('confirm', new TypeError('Network request failed'));
+    const screen = await renderScreen(<QueueScreen client={api.client} warning="" focused />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.getByText('Oat milk')).toBeTruthy();
+    expect(screen.queryByText('Network request failed')).toBeNull();
+
+    await screen.rerender(framed(<QueueScreen client={api.client} warning="" focused={false} />));
+    await screen.rerender(framed(<QueueScreen client={api.client} warning="" focused />));
+
+    await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
+    expect(screen.getByText('Oat milk')).toBeTruthy();
+    expect(screen.queryByText('Network request failed')).toBeNull();
   });
 });

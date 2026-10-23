@@ -255,7 +255,9 @@ export class UnreachableError extends Error {
 }
 
 // Browser and device names for a request that ended before any HTTP response.
-const TRANSPORT_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError', 'TypeError']);
+// TypeError is not in this set: fetch uses it for transport failures, and so does
+// an invalid header raised before anything is sent. Those are told apart by message.
+const TRANSPORT_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError']);
 
 // The raw strings those runtimes put on the error. Matched only here.
 const TRANSPORT_MESSAGES = new Set([
@@ -292,12 +294,11 @@ function stringField(error: object, key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-// True for a fetch TypeError, an abort or timeout, or a DNS / connection failure.
+// True for a fetch transport failure, an abort or timeout, or a DNS / connection failure.
 function isTransportFailure(error: unknown): boolean {
   if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
     return TRANSPORT_NAMES.has(error.name);
   }
-  if (error instanceof TypeError) return true;
   if (typeof error !== 'object' || error === null) return false;
   if (TRANSPORT_NAMES.has(stringField(error, 'name'))) return true;
   if (TRANSPORT_CODES.has(stringField(error, 'code'))) return true;
@@ -323,4 +324,19 @@ export function unreachableFrom(error: unknown): UnreachableError | null {
   if (error instanceof UnreachableError) return error;
   if (networkErrorResult(error) === null) return null;
   return new UnreachableError();
+}
+
+const apiSuccessListeners = new Set<() => void>();
+
+// Both clients call this after a response arrives and is read. Screens subscribe
+// so the offline sentence drops on the next success, including a load or refresh.
+export function subscribeApiSuccess(listener: () => void): () => void {
+  apiSuccessListeners.add(listener);
+  return () => {
+    apiSuccessListeners.delete(listener);
+  };
+}
+
+export function notifyApiSuccess(): void {
+  for (const listener of apiSuccessListeners) listener();
 }

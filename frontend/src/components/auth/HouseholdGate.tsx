@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { OFFLINE_SENTENCE } from '../../api/contract';
+import { OFFLINE_SENTENCE, UnreachableError } from '../../api/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { HouseholdSessionContext } from './householdSession';
 import { LoginPage } from './LoginPage';
@@ -21,10 +21,10 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
       }
       setError(session.error);
       setPhase('login');
-    }).catch(() => {
+    }).catch((error: unknown) => {
       if (cancelled) return;
       setRequired(true);
-      setError(OFFLINE_SENTENCE);
+      setError(error instanceof UnreachableError ? OFFLINE_SENTENCE : 'Stockbot could not be reached.');
       setPhase('login');
     });
     return () => {

@@ -2,6 +2,7 @@ import { fireEvent, waitFor } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
+import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
 import { basicAuthorization, HOUSEHOLD_USERNAME } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
 import { ConnectionForm } from './ConnectionForm';
@@ -129,5 +130,64 @@ describe('session sign-in', () => {
     expect(await screen.findByText('That password was rejected.')).toBeTruthy();
     expect(screen.queryByText('Ready')).toBeNull();
     expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('shows the offline sentence when connect cannot reach the server', async () => {
+    jest.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Network request failed'));
+    const screen = await renderScreen(
+      <SessionProvider>
+        <ConnectProbe />
+      </SessionProvider>,
+    );
+
+    await fireEvent.press(await screen.findByLabelText('Connect now'));
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('Network request failed')).toBeNull();
+  });
+
+  it('keeps the previous sentence when connect fails before the network', async () => {
+    jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    const screen = await renderScreen(
+      <SessionProvider>
+        <ConnectProbe />
+      </SessionProvider>,
+    );
+
+    await fireEvent.press(await screen.findByLabelText('Connect now'));
+    expect(await screen.findByText('Stockbot did not answer at that address.')).toBeTruthy();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull();
+    expect(screen.queryByText('offline')).toBeNull();
+  });
+
+  it('clears a saved-session offline warning after a later load', async () => {
+    mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
+    mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/session')) throw new TypeError('Network request failed');
+      return jsonResponse(200, []);
+    });
+
+    function Probe() {
+      const session = useSession();
+      if (session.status === 'loading') return <Text>Loading</Text>;
+      if (session.status !== 'ready') return <Text>Signed out</Text>;
+      return (
+        <>
+          <Text>{session.warning === '' ? 'no-warning' : session.warning}</Text>
+          <Pressable accessibilityLabel="Reload" onPress={() => { void session.client.listPending(); }} />
+        </>
+      );
+    }
+
+    const screen = await renderScreen(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>,
+    );
+    expect(await screen.findByText(OFFLINE_SENTENCE)).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Reload'));
+    await waitFor(() => expect(screen.getByText('no-warning')).toBeTruthy());
+    expect(screen.queryByText('Network request failed')).toBeNull();
   });
 });

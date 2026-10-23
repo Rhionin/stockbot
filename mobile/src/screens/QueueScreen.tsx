@@ -18,6 +18,8 @@ import {
   BATCH_FAILURE_FALLBACK,
   batchFailureNotices,
   CODE_NONE_ON_HAND,
+  OFFLINE_SENTENCE,
+  subscribeApiSuccess,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
@@ -29,6 +31,10 @@ import {
 } from '../../../frontend/src/api/contract';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
+
+function withoutOfflineNotice(current: string): string {
+  return current === OFFLINE_SENTENCE ? current : '';
+}
 
 const LINK_OFFER_HEADING = 'Which item is this?';
 const NO_MATCHING_PRODUCTS = 'No matching products.';
@@ -170,6 +176,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+
+  useEffect(() => subscribeApiSuccess(() => {
+    setToast((current) => (current === OFFLINE_SENTENCE ? '' : current));
+    setError((current) => (current === OFFLINE_SENTENCE ? '' : current));
+    setLoadError((current) => (current === OFFLINE_SENTENCE ? '' : current));
+  }), []);
 
   const storeHousehold = useCallback((rows: InventoryItem[] | null, listed: ScanEntry[]) => {
     if (rows === null) return;
@@ -353,10 +365,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   async function confirmOne(id: string) {
     setBusyId(id);
-    setError('');
+    setError(withoutOfflineNotice);
     clearFailure(id);
     setPartialLine('');
-    setToast('');
+    setToast(withoutOfflineNotice);
     try {
       const committed = await client.commitScan(id);
       clearOffer(id);
@@ -378,8 +390,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   async function removeOne(id: string) {
     setBusyId(id);
-    setError('');
-    setToast('');
+    setError(withoutOfflineNotice);
+    setToast(withoutOfflineNotice);
     try {
       const removed = await client.cancelScan(id);
       if (removed.status !== 'cancelled') {
@@ -410,10 +422,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function linkOne(id: string, productId: string) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
-    setError('');
+    setError(withoutOfflineNotice);
     clearFailure(id);
     setPartialLine('');
-    setToast('');
+    setToast(withoutOfflineNotice);
     try {
       const committed = await client.commitScan(id, productId);
       clearOffer(id);
@@ -447,10 +459,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
-    setError('');
+    setError(withoutOfflineNotice);
     setFailureBannerIds({});
     setPartialLine('');
-    setToast('');
+    setToast(withoutOfflineNotice);
     try {
       const names: Record<string, string> = {};
       for (const entry of confirmable) {

@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
+import { notifyApiSuccess, SERVER_ERROR_FALLBACK, unreachableFrom, type BatchCommitResponse, type CommitScanResponse } from './contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -141,7 +141,13 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   // not an empty 204 body, but callers of those endpoints don't need the value.
   const text = await res.text();
   reportApiResult(route, res.status, performance.now() - started, started);
-  return text ? (JSON.parse(text) as T) : (undefined as T);
+  if (text === '') {
+    notifyApiSuccess();
+    return undefined as T;
+  }
+  const body = JSON.parse(text) as T;
+  notifyApiSuccess();
+  return body;
 }
 
 // --- Products ---
