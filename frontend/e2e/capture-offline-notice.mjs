@@ -115,11 +115,11 @@ function toastSettled(info) {
     && box.right <= viewport.width + 1;
 }
 
+const NOTICE_SELECTOR = '.restock-toast, [data-testid="confirm-toast"], .mantine-Alert-root';
+
 async function readToast(page, selector) {
   return page.evaluate(({ selector: rootSelector, expected }) => {
-    const root = document.querySelector(rootSelector);
-    const el = root ?? [...document.querySelectorAll('.restock-toast, [data-testid="confirm-toast"]')]
-      .find((node) => node.textContent?.includes(expected));
+    const el = [...document.querySelectorAll(rootSelector)].find((node) => node.textContent?.includes(expected));
     if (!el) return null;
     const chain = [];
     let node = el;
@@ -141,10 +141,7 @@ async function waitForSettledToast(page, selector) {
   const toast = page.locator(selector).filter({ hasText: sentence });
   await toast.waitFor({ state: 'visible', timeout: 15000 });
   await page.waitForFunction(({ selector: rootSelector, expected }) => {
-    const root = document.querySelector(rootSelector);
-    const el = root && root.textContent?.includes(expected)
-      ? root
-      : [...document.querySelectorAll('.restock-toast, [data-testid="confirm-toast"]')].find((node) => node.textContent?.includes(expected));
+    const el = [...document.querySelectorAll(rootSelector)].find((node) => node.textContent?.includes(expected));
     if (!el) return false;
     let node = el;
     while (node && node.nodeType === 1) {
@@ -215,7 +212,7 @@ async function captureWeb(browser) {
     await context.setOffline(true);
     await card.getByRole('button', { name: shot.remove ? 'Remove' : 'Confirm', exact: true }).click();
     await page.getByText(sentence).waitFor({ state: 'visible' });
-    await waitForSettledToast(page, '.restock-toast');
+    await waitForSettledToast(page, NOTICE_SELECTOR);
     if (await page.getByText('Failed to fetch').count()) throw new Error('raw fetch text is visible');
     await page.screenshot({ path: join(shotDir, shot.file) });
     console.log('saved', shot.file);
@@ -344,10 +341,14 @@ async function capturePhone(browser) {
       console.log('saved', flow.file);
       if (flow.cleared) {
         await context.setOffline(false);
+        const pending = await api('/api/scans?userId=user-1&status=pending');
+        console.log('pending before refresh', pending.map((row) => row.product?.name ?? row.barcode));
         await page.getByRole('tab', { name: 'Scan' }).click();
         await page.getByRole('tab', { name: 'Queue' }).click();
         await page.getByText(sentence).waitFor({ state: 'hidden', timeout: 15000 });
         await page.getByText(flow.name, { exact: true }).waitFor({ state: 'visible' });
+        const visible = await page.locator('body').innerText();
+        if (!visible.includes(flow.name)) throw new Error('the scan left the queue when the notice cleared');
         await page.waitForTimeout(400);
         await page.screenshot({ path: join(shotDir, flow.cleared) });
         console.log('saved', flow.cleared);
