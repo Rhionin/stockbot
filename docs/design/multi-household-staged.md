@@ -347,8 +347,8 @@ The WAF rule (§6) is an edge backstop only.
 
 | When | People on the LAN | Devices on the LAN |
 |---|---|---|
-| Household password **on** (changeover) | As today: no sign-in, household 1, member (the LAN principal). `X-Household-Id` is ignored. It can never return household 2's data. Owner and operator routes need a personal session. | `/api/device/*` with device tokens |
-| Household password **off** (retired) | **No anonymous access.** Recommended: the LAN listener **stops serving the app to people**. Browser document requests get `302` to `APP_BASE_URL` (HTTPS through the tunnel), where people sign in like anywhere else. Other people-facing `/api/*` returns `401`. | `/api/device/*` with device tokens keeps working; `/api/build` stays open |
+| Household password **on** (changeover) | As today: no sign-in, household 1, member (the LAN principal). `X-Household-Id` is ignored. It can never return household 2's data. Owner and operator routes need a personal session. `POST /api/auth/login`, `POST /api/auth/reset`, invite accept with `account`, and `POST /api/households` return `404` `not_found`. `Authorization: Bearer sbs_` is `401` `unauthorized` and is never honored. Session cookies are never set or honored. `GET /api/telemetry` is open and never includes changeover counts (the operator reads those on the public entry). `POST /api/telemetry/client`, `GET /api/config`, and `/health` stay open. | `/api/device/*` with device tokens. `GET /api/build` and `POST /api/devices/pair/complete` keep working (the pairing code is the credential, and rate limits apply). |
+| Household password **off** (retired) | **No anonymous access.** The LAN listener stops serving the app to people. Document GETs are `302` to `APP_BASE_URL`. `GET /api/auth/session` is `401`. Other people-facing `/api/*` returns `401`, including `GET /api/telemetry` (the operator reads it, including changeover counts, on the public entry; the LAN response never includes those counts). `POST /api/auth/login`, `POST /api/auth/reset`, invite accept with `account`, and `POST /api/households` stay `404` `not_found`. `Bearer sbs_` is `401` `unauthorized` and is never honored. Session cookies are never set or honored. `POST /api/telemetry/client`, `GET /api/config`, and `/health` stay open. | `/api/device/*` with device tokens keeps working. `GET /api/build` and `POST /api/devices/pair/complete` keep working (the pairing code is the credential, and rate limits apply). |
 
 - **Why redirect rather than sign in over the LAN** **(opinion)**:
   - The LAN is plain http. Signing in there would send passwords and session tokens in clear text over home Wi-Fi.
@@ -373,6 +373,7 @@ The WAF rule (§6) is an edge backstop only.
   - `/api/invites/preview`, `/api/invites/accept`;
   - `/api/devices/pair/complete`;
   - `/setup` (§3.9 A1).
+  - `/api/auth/login`, `/api/auth/reset`, and `/setup` behave differently on each listener (§3.7, §3.9 A1).
   - The old `/api/login`, `/api/logout` and `/api/session` are kept for old builds while the password is on, and removed in phase C.
 - **`isPublicPath` is unchanged.**
 
@@ -414,8 +415,8 @@ The WAF rule (§6) is an edge backstop only.
   `Stockbot setup code: XXXX-XXXX (open http://<pi>:8080/setup on your home network; expires in 24 h)`
 
   The code is 40 bits, stored in the database as a hash, and single use. It is **not** printed to the journal or any log: the updater runs as root, its output goes to the root journal that CJ cannot read without sudo, and whoever holds the code claims operator. The file is deleted once the first account is created (and when the code expires). Network Engineer cannot read it by design. **Decided by Architect 2026-10-23** (proposed by Network Engineer in S9).
-- `/setup` exists **only while no personal account exists** and **only on the LAN listener**. It asks for the code, then name, email and password. It then creates CJ's user with `operator=true` and an owner membership of household 1 (all existing data), and signs CJ in (PM-REQ R2A.1).
-- On the public entry `/setup` is always `not_found`. On the LAN after the first account, GET redirects to sign-in and POST returns `not_found`, except in **recover** mode (§3.6). Recover mode needs a fresh code that the updater writes to the same file on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
+- `/setup` and **recover** mode (§3.6) create the account but set **no session** on the LAN. `/setup` exists **only while no personal account exists** and **only on the LAN listener**. It asks for the code, then name, email and password, then creates CJ's user with `operator=true` and an owner membership of household 1 (all existing data) (PM-REQ R2A.1). On success it sends the user to sign-in at `APP_BASE_URL` (a link or a `302`). Recover mode is the same page with a fresh code and also sets no session, then sends the user to sign-in at `APP_BASE_URL`.
+- On the public entry `/setup` is always `not_found`. On the LAN after the first account, GET sends the user to sign-in at `APP_BASE_URL` (a link or a `302`) and POST returns `not_found`, except in recover mode. Recover mode needs a fresh code that the updater writes to the same file on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
 - **Rejected:**
   - A page open to anyone while no account exists: whoever opens it first gets operator.
   - "First household-password sign-in forces account creation": anyone who knows the shared password could claim operator **(opinion)**.
@@ -439,7 +440,7 @@ The WAF rule (§6) is an edge backstop only.
   - The built-in Basic (`pantry` user) path is deleted.
   - Sign-in is email + password via `POST /api/auth/login`, plus the household-password option while the server reports it on. It returns a Bearer `sbs_…` token kept in SecureStore.
   - Every request sends `X-Stockbot-Client: expo/<version>`.
-  - **Any 401 clears the token and returns to the sign-in screen**, showing C2A.3 when `LiveConfig.householdPasswordSignIn` (`GET /api/config`) is false.
+  - **expo-401** (#364): Expo clears its stored `sbs_` on any `401` except the sign-in routes `POST /api/auth/login`, `POST /api/auth/reset`, `POST /api/invites/accept`, and `POST /setup`. A `401` on those is a failed sign-in and does not clear the token. Otherwise it returns to the sign-in screen, showing C2A.3 when `LiveConfig.householdPasswordSignIn` (`GET /api/config`) is false. `LiveConfig` also includes `appBaseUrl`. **lan-client:** clients never show Sign in on a LAN URL and send sign-in to `appBaseUrl`.
   - PR #230's Cognito code is parked for Stage 3 behind the same `IdentityProvider` seam.
 - **Version gate** (runs before auth). Web is never gated.
   - Header `X-Stockbot-Client: expo/<semver>`. Below `minClientVersion.expo` the server returns `426 upgrade_required`.
@@ -631,6 +632,8 @@ type LiveHub interface {
   - The scanner mode, which is global today, becomes per `(household, device)`.
   - On a full buffer, events are still dropped, and the client resyncs from changes-since.
   - Stage 1 SSE keeps today's event payloads, which go only to the same household on the same server, **and** adds `hint` events, so the frontend can move to hint-and-refetch (T19) **(opinion)**.
+  - At most 10 concurrent `GET /api/events` streams per principal. The 11th gets `429` `rate_limited`. The shared LAN principal is counted per source IP.
+  - Member removal nulls `activeHouseholdId` only on that person's sessions that point at the removed household.
 - **Stage 3 mapping:** `Publish` sends only `LiveHint` to AppSync channel `/hh/<household_id>/<channel_key>` [AppSync-Events]. Clients get `LiveConfig` from `GET /api/config`; the Pi returns `{live:"sse"}`. #364 adds `devices` to the hint types.
 - **Cloudflare tunnel SSE behaviour:**
   - cloudflared buffers responses unless the type is `text/event-stream` [CF-tunnel-sse]. The handler already sets it.
@@ -924,7 +927,7 @@ flowchart LR
 | A2 | Remove Caddy basic-auth and the `X-Pantry-Entry: public` rule | The hash is imported from `auth.caddy` to the DB, then `auth.caddy` and `PANTRY_AUTH_FILE` are deleted. Caddy proxies to the internal `:8081` listener, and the app decides entry by listener and ignores the header. Sign-in is the app's own everywhere. | §3.8, §6 task 11 |
 | A3 | LAN `:8080` after retirement | People must sign in: the LAN redirects browsers to `APP_BASE_URL`, because LAN sign-in over plain http is rejected **(opinion)**. The LAN keeps serving device routes and `/api/build`. `LAN_PEOPLE=signin` is the fallback. | §3.7 |
 | A4 | End every `pantry_session` at once, without touching personal sessions | Retirement replaces `household_password.session_key`, so every cookie fails verification. Household-password bearer rows are revoked and their SSE streams kicked. Personal sessions are opaque rows with no shared key. | §3.5, §3.9 |
-| A5 | Mobile: remove built-in Basic (`pantry`); 401 → sign-in | The new Expo build deletes the Basic path and uses Bearer `sbs_`. Any 401 clears the token and shows sign-in with C2A.3. The version gate runs before auth (`X-Stockbot-Client: expo/<semver>`; `426 upgrade_required` below `minClientVersion.expo`). After retirement, Basic with no `X-Stockbot-Client` gets 426, not 401. Web is never gated. | §3.9 |
+| A5 | Mobile: remove built-in Basic (`pantry`); 401 → sign-in | The new Expo build deletes the Basic path and uses Bearer `sbs_`. expo-401 (#364): clear stored `sbs_` on any `401` except `POST /api/auth/login`, `POST /api/auth/reset`, `POST /api/invites/accept`, and `POST /setup` (a `401` there is a failed sign-in). Otherwise show sign-in with C2A.3. `LiveConfig` includes `appBaseUrl`; clients never show Sign in on a LAN URL and send sign-in to `appBaseUrl`. The version gate runs before auth (`X-Stockbot-Client: expo/<semver>`; `426 upgrade_required` below `minClientVersion.expo`). After retirement, Basic with no `X-Stockbot-Client` gets 426, not 401. Web is never gated. | §3.9 |
 | A6 | Keep the hash 7 days for restore, then delete | `restore_until = retired_at + 7 d`, and restore uses the same hash. On day 7 the purge NULLs the hash and key with `secure_delete`. Snapshots age out by about day 22. | §3.9, §9.1 |
 | A7 | `/dev/input` scanner and paired devices independent of sessions | The direct scanner is in-process and bound to household 1's seeded direct device. Hubs use `sbd_` tokens checked only by `DeviceAuth`. The S13 retire test proves both, plus sync and store connections. | §3.9, §4.6, §4.9 |
 | A8 | Push subscriptions made under the household password | Dropped at retirement (`household_id = 1 AND user_id IS NULL`), in the same transaction. People turn notifications on again (PM decided §10.23). | §3.9, §5 |
