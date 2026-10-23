@@ -795,7 +795,7 @@ export type LiveConfig =
       live: 'sse' | 'poll';
       minClientVersion: { expo: string };
       householdPasswordSignIn: boolean;
-      appBaseUrl: string;
+      appBaseUrl?: string;
       entry?: 'lan' | 'public';
     }
   | {
@@ -803,8 +803,8 @@ export type LiveConfig =
       appsync: { httpUrl: string; realtimeUrl: string };
       minClientVersion: { expo: string };
       householdPasswordSignIn: boolean;
-      appBaseUrl: string;
-      entry?: 'lan' | 'public';
+      appBaseUrl?: string;
+      entry?: 'public';
     };
 
 export interface LiveTicket {

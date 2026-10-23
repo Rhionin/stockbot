@@ -265,7 +265,8 @@ func TestHostedAPIContract(t *testing.T) {
 		"The `426` `upgrade_required` gate runs before auth, rate limits, and busy handling",
 		"On the LAN, after the first account exists, GET sends the user to sign-in at `APP_BASE_URL` and POST returns `not_found`, except in recover mode, where GET serves the page and a successful POST sends the user to sign-in at `APP_BASE_URL`.",
 		"No session on the LAN. A session on the public entry",
-		"The saved-origin fallback applies only when `entry` is absent from `GET /api/config`: a saved http: origin, or one matching no public hostname, means LAN.",
+		"The saved-origin fallback applies only when `GET /api/config` omits `entry` (an older server). If `appBaseUrl` is present, a saved origin is LAN when it is http: or its host is not `appBaseUrl`'s host. If `appBaseUrl` is also absent, an http: origin is LAN and an https: origin is public.",
+		"from this classification (a trusted proxy means public, otherwise LAN).",
 		"On the LAN: the LAN principal while the household password is on.",
 		"on the LAN after retirement, unauthorized even with no cookie or bearer; Bearer sbs_ on the LAN is always unauthorized.",
 		"`unauthorized`, `validation`, `rate_limited`, `busy`. On the LAN, `404` `not_found`",
@@ -277,13 +278,25 @@ func TestHostedAPIContract(t *testing.T) {
 		"set the new argon2id hash; revoke all of that account's sessions (web and Expo `sbs_`); delete the push subscriptions tied to those sessions and close their SSE streams; invalidate any outstanding reset tokens for that account; consume the code (delete the file and leave recover mode).",
 		"Device tokens (`sbd_`) and the household's other members are untouched.",
 		"No session is set. A successful POST sends the user to sign-in at `APP_BASE_URL`.",
-		"The code is single-use with a 24 h expiry, and the setup rate limits apply. An expired code returns `not_found`.",
-		"`X-Pantry-Entry` and `X-Pantry-Client-IP` are trusted only when the request's `RemoteAddr` is the configured reverse proxy's address (a trusted-proxy setting). Otherwise the request is LAN and those headers are ignored.",
+		"The code is single-use with a 24 h expiry, and POST /setup (first setup and recover) uses that same limit as `POST /api/auth/login`, keyed on `RemoteAddr`. An expired code returns `not_found`.",
+		"pairing complete, stage-1 `POST /api/households`, and `POST /setup`.",
+		"`POST /setup` (first setup and recover) uses the same limit as login, keyed on `RemoteAddr`.",
+		"A request whose `RemoteAddr` is the configured trusted proxy is public, whether or not `X-Pantry-Entry` is present.",
+		"`X-Pantry-Client-IP` is read only from that address.",
+		"A request from any other address is LAN, and both headers are ignored.",
+		"The server refuses to start when `APP_BASE_URL` is set but the trusted-proxy setting isn't.",
+		"The setting is the reverse proxy's exact address, not the Docker bridge subnet.",
+		"A proxied request without `X-Pantry-Entry` (`GET /api/telemetry`, `POST /api/telemetry/client`, and `GET /api/build`) is public.",
+		"Startup with `APP_BASE_URL` set and no trusted proxy fails.",
+		"From a non-proxy address, `X-Pantry-Entry: public` on `POST /api/auth/login` returns `404` `not_found`, and `GET /api/config` returns `entry` `\"lan\"`.",
+		"From one non-proxy address, 11 `POST /api/devices/pair/complete` attempts, each with a different `X-Pantry-Client-IP` and `X-Forwarded-For`, are keyed on `RemoteAddr`, so the attempt over the limit is `429` `rate_limited`.",
+		"From the proxy address, `X-Pantry-Client-IP` sets the rate-limit key and `X-Forwarded-For` is ignored.",
 		"A separate upstream port that only the proxy can reach is an acceptable alternative deployment.",
 		"LAN rate-limit keys always use `RemoteAddr`, and `X-Forwarded-For` is never trusted.",
 		"The port binding is owned by infra.",
 		"On routers without NAT hairpin, the certificate (non-tunnel) path can hang from home Wi-Fi (see the comments in `deploy/Caddyfile`).",
-		"The client-facing type marks `entry` optional, because an older server omits it and the client falls back. The Go server always sends `entry`.",
+		"The client-facing type marks `entry` and `appBaseUrl` optional, because an older server omits them and the client falls back. The Go server always sends both fields.",
+		"The hosted push arm types `entry` as `'public'`.",
 		"Hosted `LiveConfig` sends `entry` `\"public\"` only.",
 		"householdPasswordEnabled: boolean",
 		"clientmsg.Generic",
@@ -321,6 +334,18 @@ func TestHostedAPIContract(t *testing.T) {
 	if strings.Contains(doc, "clientmsg.ServerError") {
 		t.Fatal("generic 5xx sentence still names clientmsg.ServerError")
 	}
+	for _, phrase := range []string{
+		"appBaseUrl?: string",
+		"entry?: 'lan' | 'public'",
+		"entry?: 'public'",
+	} {
+		if !strings.Contains(ts, phrase) {
+			t.Fatalf("contract.ts missing %q", phrase)
+		}
+	}
+	if strings.Contains(ts, "appBaseUrl: string") {
+		t.Fatal("client LiveConfig still requires appBaseUrl")
+	}
 	for _, gone := range []string{
 		"On the LAN it stays open, with no session.",
 		"Setup sets it when the person has exactly one household",
@@ -329,6 +354,11 @@ func TestHostedAPIContract(t *testing.T) {
 		"Sign-in is required",
 		"On success, and on a GET after the first account exists",
 		"differs from `appBaseUrl`",
+		"set by the listener that served the request",
+		"one matching no public hostname",
+		"public is only the `X-Pantry-Entry` header",
+		"the setup rate limits apply",
+		"The Go server always sends `entry`.",
 	} {
 		if strings.Contains(doc, gone) {
 			t.Fatalf("contract still says %q", gone)
