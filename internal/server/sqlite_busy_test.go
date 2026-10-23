@@ -879,7 +879,7 @@ func noSpaceBody() string {
 }
 
 func genericBody() string {
-	return `{"error":"` + clientmsg.Generic + `"}`
+	return `{"error":"` + clientmsg.Generic + `","code":"internal"}`
 }
 
 type hiddenCause struct{ inner error }

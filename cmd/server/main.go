@@ -172,7 +172,7 @@ func main() {
 	// SQLite is single-writer; limit to one connection to avoid SQLITE_BUSY.
 	sqlDB.SetMaxOpenConns(1)
 
-	// Bind before migrations. /health is 503 {"status":"migrating"} until the
+	// Bind before migrations. /health is 503 with status migrating until the
 	// real handler is installed, and /api/build is already this binary.
 	// ReadHeaderTimeout closes a connection that never sends headers.
 	// WriteTimeout is left unset so a live /api/events stream is not cut off.

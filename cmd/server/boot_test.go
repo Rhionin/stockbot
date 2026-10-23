@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,8 @@ func TestBootGateServesMigratingThenReady(t *testing.T) {
 	if health.code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /health status = %d, want 503; body = %q", health.code, health.body)
 	}
-	if !strings.Contains(health.body, `"status":"migrating"`) {
-		t.Fatalf("GET /health body = %q, want migrating", health.body)
+	if health.body != migratingBody {
+		t.Fatalf("GET /health body = %q, want updating", health.body)
 	}
 
 	build := getBody(t, srv.URL+"/api/build")
@@ -33,8 +34,15 @@ func TestBootGateServesMigratingThenReady(t *testing.T) {
 	if other.code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /api/inventory status = %d, want 503 while migrating", other.code)
 	}
-	if !strings.Contains(other.body, `"status":"migrating"`) {
-		t.Fatalf("GET /api/inventory body = %q, want migrating", other.body)
+	if other.body != migratingBody {
+		t.Fatalf("GET /api/inventory body = %q, want updating", other.body)
+	}
+	var buildJSON map[string]any
+	if err := json.Unmarshal([]byte(build.body), &buildJSON); err != nil {
+		t.Fatalf("GET /api/build body = %q: %v", build.body, err)
+	}
+	if _, ok := buildJSON["code"]; ok {
+		t.Fatalf("GET /api/build included an error code: %s", build.body)
 	}
 
 	gate.use(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +58,8 @@ func TestBootGateServesMigratingThenReady(t *testing.T) {
 		t.Fatalf("GET /health after ready body = %q, want ok", ready.body)
 	}
 }
+
+const migratingBody = `{"status":"migrating","error":"Updating. Try again in a minute.","code":"updating"}` + "\n"
 
 func fmtOK(w http.ResponseWriter) (int, error) {
 	return io.WriteString(w, `{"status":"ok"}`+"\n")

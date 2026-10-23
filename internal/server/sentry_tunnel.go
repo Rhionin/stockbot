@@ -99,20 +99,20 @@ func (h *sentryTunnel) configured() bool {
 
 func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.configured() {
-		writeError(w, http.StatusNotFound, "Not found.")
+		writeExemptError(w, http.StatusNotFound, "Not found.")
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
+		writeExemptError(w, http.StatusMethodNotAllowed, "Method not allowed.")
 		return
 	}
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != sentryEnvelopeMediaType {
-		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		writeExemptError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
 	if r.ContentLength > h.maxBody {
-		writeError(w, http.StatusRequestEntityTooLarge, "Request body is too large.")
+		writeExemptError(w, http.StatusRequestEntityTooLarge, "Request body is too large.")
 		return
 	}
 	if retry, ok := h.limiter.allow(time.Now(), clientKey(r)); !ok {
@@ -121,7 +121,7 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			secs = 1
 		}
 		w.Header().Set("Retry-After", itoa(secs))
-		writeError(w, http.StatusTooManyRequests, "Too many requests.")
+		writeExemptError(w, http.StatusTooManyRequests, "Too many requests.")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxBody)
@@ -129,31 +129,31 @@ func (h *sentryTunnel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "Request body is too large.")
+			writeExemptError(w, http.StatusRequestEntityTooLarge, "Request body is too large.")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		writeExemptError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
 	host, project, publicKey, err := envelopeTarget(body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		writeExemptError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
 	if host != h.host || !projectAllowed(h.projects, project) || !publicKeyAllowed(h.publicKeys, publicKey) {
-		writeError(w, http.StatusForbidden, "This envelope is not accepted.")
+		writeExemptError(w, http.StatusForbidden, "This envelope is not accepted.")
 		return
 	}
 	// Item parsing walks the body. It stays after the checks above so a
 	// rejected envelope does not pay for that walk.
 	if err := envelopeItems(body); err != nil {
-		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		writeExemptError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
 	endpoint := "https://" + host + "/api/" + project + "/envelope/"
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "The envelope is not valid.")
+		writeExemptError(w, http.StatusBadRequest, "The envelope is not valid.")
 		return
 	}
 	upstream.Header.Set("Content-Type", sentryEnvelopeMediaType)

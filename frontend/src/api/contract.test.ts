@@ -4,27 +4,54 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTH_NOT_CONFIGURED_SENTENCE,
   BATCH_FAILURE_FALLBACK,
+  BODY_TOO_LARGE_SENTENCE,
   BUSY_SENTENCE,
   CODE_AUTH_NOT_CONFIGURED,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
+  CODE_CONFIRMATION_MISMATCH,
+  CODE_INTERNAL,
+  CODE_NOT_FOUND,
+  CODE_PAYLOAD_TOO_LARGE,
+  CODE_PROVIDER_UNAVAILABLE,
+  CODE_RATE_LIMITED,
+  CODE_UNAUTHORIZED,
+  CODE_UPDATING,
+  CODE_VALIDATION,
   failuresAfterConfirm,
   confirmSkipsNothingOnHand,
   formatPartialRemoval,
+  INVALID_BODY_PREFIX,
+  INVALID_CREDENTIALS_SENTENCE,
+  INVALID_PATH_PREFIX,
+  INVALID_REPORT_SENTENCE,
+  METHOD_NOT_ALLOWED_SENTENCE,
+  MISSING_CREDENTIALS_SENTENCE,
   networkErrorResult,
+  NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
   nothingOnHandPill,
   applyHttpResponse,
   notifyApiSuccess,
   OFFLINE_SENTENCE,
   offlineBannerActive,
+  PROVIDER_FIELD,
+  PROVIDER_UNAVAILABLE_SENTENCE,
+  RATE_LIMITED_SENTENCE,
   raiseAuthNotConfiguredBanner,
   raiseOfflineBanner,
+  REPORT_TOO_LARGE_SENTENCE,
+  SERVER_ERROR_FALLBACK,
   serverNoticeText,
   shelfHasNothingOnHand,
+  SIGN_IN_NOT_USED_SENTENCE,
+  SIGN_IN_REQUIRED_SENTENCE,
+  SYNC_TOKEN_INVALID_SENTENCE,
   UnreachableError,
   unreachableFrom,
+  UPDATING_SENTENCE,
+  UPDATING_STATUS,
   inlineFailure,
   type BatchCommitResponse,
 } from './contract';
@@ -294,6 +321,41 @@ describe('batch failure banner', () => {
     expect(batchFailureBannerText(notices, 2)).toBe(`2 confirmed. ${BUSY_SENTENCE}`);
     expect(batchCardCommitNotice('busy', BUSY_SENTENCE)).toBe('');
     expect(batchCardCommitNotice('none_on_hand', 'Nothing on hand to take out.')).toBe('');
+  });
+});
+
+describe('app-facing error codes', () => {
+  it('names the updating and provider responses', () => {
+    expect(CODE_UPDATING).toBe('updating');
+    expect(UPDATING_SENTENCE).toBe('Updating. Try again in a minute.');
+    expect(UPDATING_STATUS).toBe('migrating');
+    expect(CODE_PROVIDER_UNAVAILABLE).toBe('provider_unavailable');
+    expect(PROVIDER_FIELD).toBe('provider');
+    expect(PROVIDER_UNAVAILABLE_SENTENCE).toBe("{provider} isn't responding. Try again later.");
+  });
+
+  it('uses the hosted names and keeps the current sentences', () => {
+    expect(CODE_UNAUTHORIZED).toBe('unauthorized');
+    expect(SIGN_IN_REQUIRED_SENTENCE).toBe('Sign in required.');
+    expect(INVALID_CREDENTIALS_SENTENCE).toBe('The username or password is incorrect.');
+    expect(SYNC_TOKEN_INVALID_SENTENCE).toBe('The sync token is not valid.');
+    expect(CODE_NOT_FOUND).toBe('not_found');
+    expect(SIGN_IN_NOT_USED_SENTENCE).toBe('Sign-in is not used on this address.');
+    expect(NOT_FOUND_SENTENCE).toBe('Not found.');
+    expect(CODE_VALIDATION).toBe('validation');
+    expect(MISSING_CREDENTIALS_SENTENCE).toBe('Enter your username and password.');
+    expect(INVALID_BODY_PREFIX).toBe('invalid request body: ');
+    expect(INVALID_PATH_PREFIX).toBe('invalid path parameters: ');
+    expect(INVALID_REPORT_SENTENCE).toBe('invalid report');
+    expect(CODE_CONFIRMATION_MISMATCH).toBe('confirmation_mismatch');
+    expect(CODE_RATE_LIMITED).toBe('rate_limited');
+    expect(RATE_LIMITED_SENTENCE).toBe('Too many sign-in attempts. Try again later.');
+    expect(CODE_PAYLOAD_TOO_LARGE).toBe('payload_too_large');
+    expect(BODY_TOO_LARGE_SENTENCE).toBe('request body is too large');
+    expect(REPORT_TOO_LARGE_SENTENCE).toBe('report is too large');
+    expect(METHOD_NOT_ALLOWED_SENTENCE).toBe('Method not allowed.');
+    expect(CODE_INTERNAL).toBe('internal');
+    expect(SERVER_ERROR_FALLBACK).toBe('Something went wrong. Try again.');
   });
 });
 
