@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import { Card, Checkbox, VisuallyHidden } from '@mantine/core';
 import type { ScanEntry } from '../../types';
+import { nothingOnHandPill } from '../../api/contract';
 import {
   batchTimeBounds,
   formatBatchScanCount,
@@ -9,6 +10,8 @@ import {
   toggleSelectAll,
 } from './queueUtils';
 
+const noBlockedIds: ReadonlySet<string> = new Set();
+
 export interface ScanSessionCardProps {
   entries: ScanEntry[];
   expanded: boolean;
@@ -16,6 +19,7 @@ export interface ScanSessionCardProps {
   directionLabel: string;
   selectedIds: string[];
   onSelectionChange: (selectedIds: string[]) => void;
+  blockedIds?: ReadonlySet<string>;
   flat?: boolean;
   children: ReactNode;
 }
@@ -27,6 +31,7 @@ export const ScanSessionCard = ({
   directionLabel,
   selectedIds,
   onSelectionChange,
+  blockedIds = noBlockedIds,
   flat = false,
   children,
 }: ScanSessionCardProps) => {
@@ -35,9 +40,11 @@ export const ScanSessionCard = ({
   const timeRange = formatBatchTimeRange(earliest, latest);
   const countLabel = formatBatchScanCount(entries.length);
   const flagged = entries.some((entry) => entry.status === 'flagged');
-  const eligibleCount = entries.filter(isBatchEligible).length;
+  const selectable = entries.filter((entry) => isBatchEligible(entry) && !blockedIds.has(entry.id));
+  const eligibleCount = selectable.length;
   const allEligibleSelected = eligibleCount > 0
-    && entries.filter(isBatchEligible).every((entry) => selectedIds.includes(entry.id));
+    && selectable.every((entry) => selectedIds.includes(entry.id));
+  const pill = nothingOnHandPill(entries.filter((entry) => blockedIds.has(entry.id)).length);
 
   const className = [
     'scan-session-card',
@@ -73,6 +80,12 @@ export const ScanSessionCard = ({
             </span>
           )}
         </span>
+        {pill !== null && (
+          <span className="scan-nothing-pill">
+            <span className="scan-nothing-pill-mark" aria-hidden="true" />
+            {pill}
+          </span>
+        )}
         <span className="scan-session-chevron" aria-hidden="true" />
       </button>
       {expanded && (
@@ -84,7 +97,7 @@ export const ScanSessionCard = ({
             aria-label={`Select all eligible scans in ${timeRange}`}
             checked={allEligibleSelected}
             disabled={eligibleCount === 0}
-            onChange={() => onSelectionChange(toggleSelectAll(entries, selectedIds))}
+            onChange={() => onSelectionChange(toggleSelectAll(selectable, selectedIds))}
           />
           <div className={flat ? 'scan-entry-list scan-entry-list--flat' : 'scan-session-grid'}>
             {children}

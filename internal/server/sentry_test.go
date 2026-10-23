@@ -31,7 +31,14 @@ func (t *recordTransport) Flush(timeout time.Duration) bool {
 	return true
 }
 
-func (t *recordTransport) FlushWithContext(context.Context) bool { return true }
+func (t *recordTransport) FlushWithContext(ctx context.Context) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if deadline, ok := ctx.Deadline(); ok {
+		t.flush = time.Until(deadline)
+	}
+	return true
+}
 
 func (t *recordTransport) Configure(sentry.ClientOptions) {}
 
@@ -89,9 +96,6 @@ func assertNoHouseholdText(t *testing.T, event *sentry.Event) {
 		for key, value := range crumb.Data {
 			parts = append(parts, key, fmt.Sprint(value))
 		}
-	}
-	for key, value := range event.Extra {
-		parts = append(parts, key, fmt.Sprint(value))
 	}
 	body := strings.Join(parts, "\n")
 	for _, secret := range []string{"Oat Milk", "query-secret", "cookie-secret", "auth-secret", "header-token", "header-secret", "ada@example.com"} {
@@ -160,10 +164,6 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 				"note":        "weekly",
 			},
 		}},
-		Extra: map[string]interface{}{
-			"name": "Oat Milk",
-			"note": "a note",
-		},
 	}
 
 	got := scrubSentryEvent(event)
@@ -175,7 +175,7 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	for _, secret := range []string{
 		"Oat Milk", "ada@example.com", "query-secret", "cookie-secret",
 		"auth-secret", "header-token", "header-secret", "weekly", "the good oats",
-		"a note", "203.0.113.8", "198.51.100.77", "203.0.113.77",
+		"203.0.113.8", "198.51.100.77", "203.0.113.77",
 		"deploy-signature-value", "cf-ray-value", "stockbot.example",
 	} {
 		if strings.Contains(body, secret) {
@@ -218,8 +218,103 @@ func TestScrubSentryEventStripsSecretsAndItemNames(t *testing.T) {
 	if _, ok := got.Breadcrumbs[0].Data["body"]; ok {
 		t.Fatal("breadcrumb body kept")
 	}
-	if !got.User.IsEmpty() || len(got.Extra) != 0 {
-		t.Fatalf("user or extra kept: %+v %+v", got.User, got.Extra)
+	if !got.User.IsEmpty() {
+		t.Fatalf("user kept: %+v", got.User)
+	}
+}
+
+func TestScrubSentryContextsAllowlist(t *testing.T) {
+	event := &sentry.Event{
+		Contexts: map[string]sentry.Context{
+			"trace":     {"trace_id": "abc"},
+			"os":        {"name": "linux"},
+			"device":    {"family": "pi"},
+			"runtime":   {"name": "go"},
+			"browser":   {"name": "chrome"},
+			"app":       {"app_start_time": "1"},
+			"extra":     {"name": "Oat Milk", "note": "a note"},
+			"response":  {"body": "a note"},
+			"household": {"item": "Oat Milk"},
+		},
+	}
+	got := scrubSentryEvent(event)
+	for _, key := range []string{"trace", "os", "device", "runtime", "browser", "app"} {
+		if _, ok := got.Contexts[key]; !ok {
+			t.Fatalf("context %s dropped", key)
+		}
+	}
+	for _, key := range []string{"extra", "response", "household"} {
+		if _, ok := got.Contexts[key]; ok {
+			t.Fatalf("context %s kept", key)
+		}
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(raw)
+	for _, secret := range []string{"Oat Milk", "a note"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("event still contains %q: %s", secret, body)
+		}
+	}
+}
+
+func TestScrubSentryRejectsForwardedForSensitiveTagsAndSpanQueries(t *testing.T) {
+	event := &sentry.Event{
+		Request: &sentry.Request{
+			URL: "/api/items/item-9",
+			Headers: map[string]string{
+				"Content-Type":    "application/json",
+				"User-Agent":      "Stockbot/1",
+				"X-Forwarded-For": "198.51.100.77",
+			},
+		},
+		Tags: map[string]string{
+			"route":       "POST /api/items?token=query-secret",
+			"environment": "ada@example.com",
+			"method":      "POST",
+		},
+		Spans: []*sentry.Span{{
+			Name:        "db.query /api/x?token=query-secret",
+			Description: "select item where id=? -- /x?token=query-secret",
+			Data: map[string]interface{}{
+				"name": "Oat Milk",
+				"url":  "/x?q=query-secret",
+			},
+		}},
+	}
+	got := scrubSentryEvent(event)
+	if _, ok := got.Request.Headers["X-Forwarded-For"]; ok {
+		t.Fatalf("X-Forwarded-For kept: %#v", got.Request.Headers)
+	}
+	if got.Request.Headers["Content-Type"] != "application/json" || got.Request.Headers["User-Agent"] != "Stockbot/1" {
+		t.Fatalf("headers = %#v", got.Request.Headers)
+	}
+	if _, ok := got.Tags["route"]; ok {
+		t.Fatalf("route tag with a query kept: %#v", got.Tags)
+	}
+	if _, ok := got.Tags["environment"]; ok {
+		t.Fatalf("environment tag with an email kept: %#v", got.Tags)
+	}
+	if got.Tags["method"] != "POST" {
+		t.Fatalf("tags = %#v", got.Tags)
+	}
+	span := got.Spans[0]
+	if strings.Contains(span.Name, "?") || strings.Contains(span.Name, "query-secret") {
+		t.Fatalf("span name = %q", span.Name)
+	}
+	if span.Name != "db.query /api/x" {
+		t.Fatalf("span name = %q", span.Name)
+	}
+	if strings.Contains(span.Description, "query-secret") || strings.Contains(span.Description, "/x?") {
+		t.Fatalf("span description = %q", span.Description)
+	}
+	if _, ok := span.Data["name"]; ok {
+		t.Fatalf("span name data kept: %#v", span.Data)
+	}
+	if span.Data["url"] != "/x" {
+		t.Fatalf("span url = %#v", span.Data)
 	}
 }
 
@@ -302,8 +397,9 @@ func TestSentrySettingsUseBuildCommitAndProduction(t *testing.T) {
 		t.Fatalf("environment = %q", events[0].Environment)
 	}
 	FlushSentry()
-	if tr.flush != sentryFlushTimeout {
-		t.Fatalf("flush = %s", tr.flush)
+	low, high := sentryFlushTimeout-100*time.Millisecond, sentryFlushTimeout+100*time.Millisecond
+	if tr.flush < low || tr.flush > high {
+		t.Fatalf("flush = %s, want between %s and %s", tr.flush, low, high)
 	}
 }
 
@@ -328,6 +424,53 @@ func TestSentryRejectsUnusableDSN(t *testing.T) {
 	})
 	if named.Environment != "staging" || named.IngestHost != "o1.ingest.example" {
 		t.Fatalf("named = %+v", named)
+	}
+}
+
+func TestSentryRejectsFTPDSN(t *testing.T) {
+	settings := LoadSentrySettings(func(key string) string {
+		if key == "SENTRY_DSN" {
+			return "ftp://key@o1.ingest.example/123"
+		}
+		return ""
+	})
+	if !settings.Rejected || settings.DSN != "" || settings.IngestHost != "" {
+		t.Fatalf("ftp DSN rejected=%v host set=%v dsn set=%v", settings.Rejected, settings.IngestHost != "", settings.DSN != "")
+	}
+}
+
+func TestScrubSentryStripsQueryPrefix(t *testing.T) {
+	const prefixed = "?token=query-secret"
+	event := &sentry.Event{
+		Transaction: prefixed,
+		Request:     &sentry.Request{URL: prefixed},
+		Spans: []*sentry.Span{{
+			Name:        prefixed,
+			Description: prefixed,
+			Data:        map[string]interface{}{"url": prefixed},
+		}},
+		Breadcrumbs: []*sentry.Breadcrumb{{
+			Data: map[string]interface{}{"url": prefixed, "method": "GET"},
+		}},
+	}
+	got := scrubSentryEvent(event)
+	if got.Transaction != "" {
+		t.Fatalf("transaction = %q", got.Transaction)
+	}
+	if got.Request == nil || got.Request.URL != "" {
+		t.Fatalf("request url = %#v", got.Request)
+	}
+	if got.Spans[0].Name != "" || got.Spans[0].Description != "" {
+		t.Fatalf("span name = %q description = %q", got.Spans[0].Name, got.Spans[0].Description)
+	}
+	if url, _ := got.Spans[0].Data["url"].(string); url != "" || strings.Contains(fmt.Sprint(got.Spans[0].Data["url"]), "?") {
+		t.Fatalf("span url = %#v", got.Spans[0].Data)
+	}
+	if got.Breadcrumbs[0].Data["url"] != "" {
+		t.Fatalf("breadcrumb url = %#v", got.Breadcrumbs[0].Data)
+	}
+	if strings.Contains(fmt.Sprint(got.Transaction, got.Request.URL, got.Spans[0].Name, got.Spans[0].Description), "query-secret") {
+		t.Fatal("query prefix kept a secret")
 	}
 }
 
@@ -531,7 +674,7 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 		t.Fatalf("unauthorized status = %d body %s", deniedRec.Code, deniedRec.Body.String())
 	}
 
-	var unmatched, buildName, deniedName string
+	var buildName, deniedName string
 	for _, event := range tr.snapshot() {
 		if event.Type != "transaction" {
 			continue
@@ -541,7 +684,7 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 		}
 		switch event.Transaction {
 		case "GET <unmatched>":
-			unmatched = event.Transaction
+			t.Fatalf("unmatched 404 was traced: %q", event.Transaction)
 		case "GET /api/build":
 			buildName = event.Transaction
 		case "POST <unmatched>":
@@ -550,8 +693,8 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 			t.Fatal("health was traced")
 		}
 	}
-	if unmatched == "" || buildName == "" || deniedName == "" {
-		t.Fatalf("names unmatched=%q build=%q denied=%q", unmatched, buildName, deniedName)
+	if buildName == "" || deniedName == "" {
+		t.Fatalf("names build=%q denied=%q", buildName, deniedName)
 	}
 }
 

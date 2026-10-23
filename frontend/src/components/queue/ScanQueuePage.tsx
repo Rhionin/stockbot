@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
-import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { createScanEntry, DEFAULT_SCAN_USER_ID, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { BATCH_FAILURE_FALLBACK, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
+import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
 import { CameraScanner } from '../scanner/CameraScanner';
@@ -16,7 +18,44 @@ import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } fro
 import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from './queueUtils';
 import { scannerModeFromEventData } from './scannerModeEvent';
 
-const DEFAULT_USER_ID = 'user-1';
+const DEFAULT_USER_ID = 'user-1' satisfies typeof DEFAULT_SCAN_USER_ID;
+
+interface NothingPin {
+  onHand: number | null;
+  observed: boolean;
+}
+
+// A reload that still reports the same count keeps the pin. A different count
+// means the shelf moved, so the card can leave the amber state on its own.
+const reconcilePins = (
+  current: Map<string, NothingPin>,
+  items: InventoryItem[],
+  listed: ScanEntry[],
+): Map<string, NothingPin> => {
+  if (current.size === 0) return current;
+  const counts = new Map(items.map((item) => [item.item.productId, item.instanceCount]));
+  let changed = false;
+  const next = new Map(current);
+  for (const [id, pin] of current) {
+    const entry = listed.find((row) => row.id === id);
+    if (entry === undefined || entry.productId === null || entry.status !== 'pending') {
+      next.delete(id);
+      changed = true;
+      continue;
+    }
+    const onHand = counts.has(entry.productId) ? (counts.get(entry.productId) ?? null) : null;
+    if (!pin.observed) {
+      next.set(id, { onHand, observed: true });
+      changed = true;
+      continue;
+    }
+    if (pin.onHand !== onHand) {
+      next.delete(id);
+      changed = true;
+    }
+  }
+  return changed ? next : current;
+};
 
 export type QueueView = 'stock_in' | 'stock_out';
 
@@ -27,6 +66,8 @@ export interface ScanQueuePageProps {
 export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) => {
   const [entries, setEntries] = useState<ScanEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventoryReady, setInventoryReady] = useState(false);
+  const [pinnedNone, setPinnedNone] = useState<Map<string, NothingPin>>(() => new Map());
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [scannerMode, setScannerModeState] = useState<QueueView>('stock_in');
   const [scannerConfig, setScannerConfig] = useState<ScannerConfig | null>(null);
@@ -34,15 +75,29 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const [processing, setProcessing] = useState<ProcessingNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [failureById, setFailureById] = useState<Map<string, BatchFailureNotice>>(new Map());
+  const [partialLine, setPartialLine] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [capturedBarcode, setCapturedBarcode] = useState('');
   const [sessionExpansion, setSessionExpansion] = useState<Record<string, boolean>>({});
   const captureHighlightTimer = useRef(0);
+  // The id-set key changes when one scan commits and would remount the cards
+  // that are still open. Each scan keeps the key it first joined.
+  const [sessionTokens, setSessionTokens] = useState<Map<string, string>>(() => new Map());
   const scannerModeRef = useRef<QueueView>('stock_in');
+  const entriesRef = useRef(entries);
+  const inventoryReadyRef = useRef(false);
+  const onHandRef = useRef<Map<string, number>>(new Map());
+  const releasePinsRef = useRef<(productIds: ReadonlySet<string>) => void>(() => {});
   // Bumped when this page or an event stream sets the mode, so a config
   // response that started earlier cannot put the previous direction back.
   const modeEpoch = useRef(0);
+  // A newer list wins. A live update that arrives while a list is in flight
+  // is folded into that list, so the other rows are not thrown away.
+  const inventoryEpoch = useRef(0);
+  const inventoryLive = useRef<InventoryItem[]>([]);
+  const [cuedNothing, setCuedNothing] = useState<ReadonlySet<string>>(() => new Set());
 
   // The selected tab is the scan direction. A refresh that reports the same
   // direction leaves the queue the user is reviewing in place.
@@ -51,13 +106,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     const changed = scannerModeRef.current !== mode;
     scannerModeRef.current = mode;
     setScannerModeState(mode);
-    if (changed) setSelectedIds([]);
+    if (changed) {
+      setSelectedIds([]);
+      setPartialLine(null);
+    }
   }, []);
 
   const holdLocalMode = useCallback((mode: QueueView) => {
     modeEpoch.current += 1;
     scannerModeRef.current = mode;
     setScannerModeState(mode);
+    setPartialLine(null);
   }, []);
 
   const stockInCount = useMemo(() => getEntriesForView(entries, 'stock_in').length, [entries]);
@@ -67,18 +126,35 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   const qrEntries = useMemo(() => viewEntries.filter((entry) => entry.status === 'qr'), [viewEntries]);
   const sessionEntries = useMemo(() => viewEntries.filter((entry) => entry.status !== 'qr'), [viewEntries]);
   const batches = useMemo(() => groupScansIntoBatches(sessionEntries), [sessionEntries]);
+  const sessionKeys = batches.map((batch) => {
+    const joined = batch.map((entry) => entry.id).sort().join('|');
+    const known = batch
+      .map((entry) => sessionTokens.get(entry.id))
+      .find((token) => token !== undefined);
+    return known ?? joined;
+  });
+  const missingTokens = batches.flatMap((batch, index) => {
+    const key = sessionKeys[index] ?? '';
+    return batch
+      .filter((entry) => sessionTokens.get(entry.id) !== key)
+      .map((entry) => [entry.id, key] as const);
+  });
+  if (missingTokens.length > 0) {
+    setSessionTokens((current) => {
+      const next = new Map(current);
+      for (const [id, key] of missingTokens) next.set(id, key);
+      return next;
+    });
+  }
   const processingForView = useMemo(
     () => processing.filter((notice) => notice.userId === userId && entryMatchesView(notice.direction, scannerMode)),
     [processing, userId, scannerMode],
   );
   const viewEntryIds = useMemo(() => new Set(viewEntries.map((entry) => entry.id)), [viewEntries]);
-  const eligibleEntries = useMemo(() => viewEntries.filter(isBatchEligible), [viewEntries]);
-  const allEligibleSelected = useMemo(
-    () => eligibleEntries.length > 0 && eligibleEntries.every((entry) => selectedIds.includes(entry.id)),
-    [eligibleEntries, selectedIds],
-  );
 
-  const loadQueue = useCallback(async () => {
+  // A batch outcome reloads the queue because cards just left. That refresh
+  // must keep the line it recorded. Every other reload is a queue change.
+  const loadQueue = useCallback(async (keepPartialLine = false) => {
     try {
       const [pending, flagged, qr] = await Promise.all([
         listScanEntries(userId, 'pending'),
@@ -87,8 +163,36 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       ]);
       setEntries(sortScansNewestFirst([...pending, ...flagged, ...qr]));
       setSelectedIds((current) => current.filter((id) => pending.some((entry) => entry.id === id)));
+      setFailureById((current) => {
+        if (current.size === 0) return current;
+        const pendingIds = new Set(pending.map((entry) => entry.id));
+        let changed = false;
+        const next = new Map<string, BatchFailureNotice>();
+        for (const [id, notice] of current) {
+          if (pendingIds.has(id)) next.set(id, notice);
+          else changed = true;
+        }
+        return changed ? next : current;
+      });
+      if (!keepPartialLine) setPartialLine(null);
       setError('');
-      void getInventoryList().then(setInventory).catch(() => setInventory([]));
+      const epoch = inventoryEpoch.current + 1;
+      inventoryEpoch.current = epoch;
+      inventoryLive.current = [];
+      void getInventoryList(undefined, userId)
+        .then((items) => {
+          if (inventoryEpoch.current !== epoch) return;
+          const merged = inventoryLive.current.reduce(
+            (list, event) => mergeInventoryEvent(list, event),
+            items,
+          );
+          setInventory(merged);
+          setInventoryReady(true);
+          setPinnedNone((current) => reconcilePins(current, merged, entriesRef.current));
+        })
+        .catch(() => {
+          // Keep the last list. An empty stand-in would mark every stock-out as nothing on hand.
+        });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to load scan queue.');
     } finally {
@@ -97,10 +201,13 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
   }, [userId]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadQueue);
+    void Promise.resolve().then(() => loadQueue());
   }, [loadQueue]);
 
-  useEffect(() => () => window.clearTimeout(captureHighlightTimer.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(captureHighlightTimer.current);
+    setPartialLine(null);
+  }, []);
 
   useEffect(() => {
     if (capturedBarcode === '') return;
@@ -163,6 +270,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     trackEventSource(eventSource);
     eventSource.addEventListener('scan', (message) => {
       const scanEntry = JSON.parse((message as MessageEvent).data) as ScanEntry;
+      if (scanEntry.direction === 'stock_in' && scanEntry.productId !== null && scanEntry.status === 'committed') {
+        releasePinsRef.current(new Set([scanEntry.productId]));
+      }
+      setPartialLine(null);
       setEntries((current) => {
         const next = sortScansNewestFirst(mergeScanEvent(current, scanEntry));
         setSelectedIds((selected) => pruneSelection(selected, next));
@@ -185,6 +296,15 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       modeEpoch.current += 1;
       acceptRemoteMode(mode);
     });
+    eventSource.addEventListener('inventory', (message) => {
+      const inventoryItem = JSON.parse((message as MessageEvent).data) as InventoryItem;
+      inventoryLive.current = mergeInventoryEvent(inventoryLive.current, inventoryItem);
+      setInventory((current) => mergeInventoryEvent(current, inventoryItem));
+      setInventoryReady(true);
+      if (inventoryItem.instanceCount > 0) {
+        releasePinsRef.current(new Set([inventoryItem.item.productId]));
+      }
+    });
     return () => eventSource.close();
   }, [acceptRemoteMode]);
 
@@ -192,6 +312,89 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
     () => new Map(inventory.map((inventoryItem) => [inventoryItem.item.productId, inventoryItem.item.id])),
     [inventory],
   );
+  const onHandByProductId = useMemo(
+    () => new Map(inventory.map((inventoryItem) => [inventoryItem.item.productId, inventoryItem.instanceCount])),
+    [inventory],
+  );
+  const nothingOnHandIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (entry.status !== 'pending' || entry.direction !== 'stock_out' || entry.productId === null) continue;
+      if (pinnedNone.has(entry.id)) {
+        ids.add(entry.id);
+        continue;
+      }
+      if (!inventoryReady) continue;
+      if (shelfHasNothingOnHand(onHandByProductId.get(entry.productId))) ids.add(entry.id);
+    }
+    return ids;
+  }, [entries, inventoryReady, onHandByProductId, pinnedNone]);
+
+  const eligibleEntries = useMemo(
+    () => viewEntries.filter((entry) => isBatchEligible(entry) && !nothingOnHandIds.has(entry.id)),
+    [viewEntries, nothingOnHandIds],
+  );
+  const allEligibleSelected = eligibleEntries.length > 0
+    && eligibleEntries.every((entry) => selectedIds.includes(entry.id));
+  const selectedInView = viewEntries.filter((entry) => selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id));
+  const skippedBlocked = viewEntries.filter((entry) => nothingOnHandIds.has(entry.id) && !selectedIds.includes(entry.id)).length;
+  const skipLine = selectedInView.length > 0 && skippedBlocked > 0
+    ? confirmSkipsNothingOnHand(skippedBlocked)
+    : null;
+  const blockingFailures = [...failureById.values()].filter((notice) => notice.code !== CODE_NONE_ON_HAND);
+
+  const rememberPin = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setCuedNothing(new Set(ids));
+    setPinnedNone((current) => {
+      const next = new Map(current);
+      const ready = inventoryReadyRef.current;
+      for (const id of ids) {
+        const entry = entriesRef.current.find((row) => row.id === id);
+        const productId = entry?.productId ?? null;
+        const counted = productId === null ? undefined : onHandRef.current.get(productId);
+        next.set(id, { onHand: ready ? (counted ?? null) : null, observed: ready });
+      }
+      return next;
+    });
+    setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
+  }, []);
+
+  const releasePins = useCallback((productIds: ReadonlySet<string>) => {
+    if (productIds.size === 0) return;
+    const stocked = (entry: ScanEntry | undefined) => (
+      entry?.productId !== null && entry?.productId !== undefined && productIds.has(entry.productId)
+    );
+    setPinnedNone((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [id] of current) {
+        if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
+        next.delete(id);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    // Stock arriving resolves the none_on_hand failure. Leaving it recorded kept an empty teal banner.
+    setFailureById((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [id, notice] of current) {
+        if (notice.code !== CODE_NONE_ON_HAND) continue;
+        if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
+        next.delete(id);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+    inventoryReadyRef.current = inventoryReady;
+    onHandRef.current = onHandByProductId;
+    releasePinsRef.current = releasePins;
+  }, [entries, inventoryReady, onHandByProductId, releasePins]);
 
   // Writes the same scannerMode the magic barcode and the headless listener
   // share. A repeat of the current direction is not a change.
@@ -252,6 +455,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
 
   const captureBarcode = async (barcode: string) => {
     setScanError('');
+    setPartialLine(null);
     const targetMode = classifyControlBarcode(barcode);
     if (targetMode !== null) {
       // Show the switch immediately. The mode write and the scanner_mode event
@@ -292,6 +496,30 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       });
     }
     void captureBarcode(barcode);
+  };
+
+  const rememberBatchOutcome = (response: BatchCommitResponse) => {
+    const notices = batchFailureNotices(response);
+    setFailureById(new Map(notices.map((notice) => [notice.id, notice])));
+    const blockedIds = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND).map((notice) => notice.id);
+    rememberPin(blockedIds);
+    setSelectedIds(notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND).map((notice) => notice.id));
+    const names: Record<string, string> = {};
+    for (const entry of entries) {
+      const name = entry.product?.name;
+      if (name !== undefined && name !== '') names[entry.id] = name;
+    }
+    setPartialLine(formatPartialRemoval(response, names));
+    void loadQueue(true);
+  };
+
+  const clearFailure = (entryId: string) => {
+    setFailureById((current) => {
+      if (!current.has(entryId)) return current;
+      const next = new Map(current);
+      next.delete(entryId);
+      return next;
+    });
   };
 
   const setEntrySelected = (entryId: string, selected: boolean) => {
@@ -377,19 +605,42 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
               aria-label="Select all eligible scans for batch approval"
               checked={allEligibleSelected}
               disabled={eligibleEntries.length === 0}
-              onChange={() => setSelectedIds((current) => toggleSelectAll(viewEntries, current))}
+              onChange={() => setSelectedIds((current) => toggleSelectAll(
+                viewEntries.filter((entry) => !nothingOnHandIds.has(entry.id)),
+                current,
+              ))}
             />
             <BatchReviewPanel
-              selectedIds={selectedIds.filter((id) => viewEntryIds.has(id))}
-              onComplete={() => {
-                setSelectedIds([]);
-                void loadQueue();
-              }}
+              selectedIds={selectedIds.filter((id) => viewEntryIds.has(id) && !nothingOnHandIds.has(id))}
+              onStart={() => setPartialLine(null)}
+              onComplete={rememberBatchOutcome}
             />
+            {skipLine !== null && (
+              <p className="scan-nothing-skip">
+                <span className="scan-nothing-skip-mark" aria-hidden="true" />
+                {skipLine}
+              </p>
+            )}
           </Group>
         )}
       </div>
       <Stack gap={8} className="scan-page-queue" aria-label="Scan queue entries">
+        {blockingFailures.length > 0 && (
+          <Alert color="red" py={4} className="scan-batch-banner" style={{ flexShrink: 0 }}>
+            <div>{BATCH_FAILURE_FALLBACK}</div>
+            {partialLine !== null && <p className="scan-batch-partial" style={{ flexShrink: 0 }}>{partialLine}</p>}
+          </Alert>
+        )}
+        {/* Amber cards carry their own message. The teal banner is only the partial line, and only when there is one. */}
+        {blockingFailures.length === 0 && partialLine !== null && (
+          <Text
+            role="status"
+            className="scan-batch-banner scan-batch-banner--success scan-batch-partial"
+            style={{ flexShrink: 0 }}
+          >
+            {partialLine}
+          </Text>
+        )}
         {showInitialLoader && <Loader size="sm" aria-label="Loading scan queue" />}
         {error !== '' && (
           <Alert color="red" py={4}>
@@ -416,7 +667,7 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
           />
         ))}
         {batches.map((batch, index) => {
-          const key = batch.map((entry) => entry.id).sort().join('|');
+          const key = sessionKeys[index] ?? '';
           const expanded = sessionExpansion[key] ?? index === 0;
           return (
             <ScanSessionCard
@@ -432,19 +683,35 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
               directionLabel={scannerMode === 'stock_in' ? 'stock in' : 'stock out'}
               selectedIds={selectedIds}
               onSelectionChange={setSelectedIds}
+              blockedIds={nothingOnHandIds}
               flat
             >
-              {batch.map((entry) => (
+              {batch.map((entry) => {
+                const notice = failureById.get(entry.id);
+                const blockedNotice = notice?.code === CODE_NONE_ON_HAND;
+                return (
                 <ScanEntryCard
                   key={entry.id}
                   entry={entry}
                   itemId={entry.productId === null ? undefined : itemIdByProductId.get(entry.productId)}
                   justCaptured={capturedBarcode !== '' && entry.barcode === capturedBarcode}
-                  selected={selectedIds.includes(entry.id)}
+                  commitNotice={blockedNotice ? '' : (notice?.message ?? '')}
+                  commitCode={notice?.code ?? ''}
+                  nothingOnHand={nothingOnHandIds.has(entry.id)}
+                  cueNothingOnHand={cuedNothing.has(entry.id)}
+                  selected={selectedIds.includes(entry.id) && !nothingOnHandIds.has(entry.id)}
                   onSelectedChange={(selected) => setEntrySelected(entry.id, selected)}
+                  onConfirmStart={() => {
+                    clearFailure(entry.id);
+                    setPartialLine(null);
+                  }}
+                  onBlocked={() => rememberPin([entry.id])}
+                  onStocked={(productId) => releasePins(new Set([productId]))}
                   onChanged={() => void loadQueue()}
+                  userId={userId}
                 />
-              ))}
+                );
+              })}
             </ScanSessionCard>
           );
         })}

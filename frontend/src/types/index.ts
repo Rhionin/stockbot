@@ -446,10 +446,3 @@ export interface TargetConflictMember {
   amount?: number;
   dimension?: NetDimension;
 }
-
-export interface BatchCommitResponse {
-  updatedCount: number;
-  committedIds?: string[];
-  failedIds?: string[];
-  failedReasons?: string[];
-}
