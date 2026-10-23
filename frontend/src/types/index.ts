@@ -2,6 +2,7 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
+import type { ScanListEntry } from '../api/contract';
 
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 
@@ -111,19 +112,13 @@ export interface ScanGroupHint {
   name: string;
 }
 
-export interface ScanEntry {
-  id: string;
+export interface ScanEntry extends ScanListEntry {
   userId: string;
   barcode: string;
   scannedAt: string; // ISO 8601
-  direction: ScanDirection | null;
   unitCount: number;
   expiresAt: string | null;
-  status: ScanStatus;
-  productId: string | null;
   product: ProductSummary | null;
-  // Present on a linked stock-out from GET /api/scans. Omitted when the server has not decided.
-  onHand?: number;
   groupHint?: ScanGroupHint;
   committedAt: string | null;
   createdAt: string;

@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, scanOnHand, shelfHasNothingOnHand, skippedNothingOnHandBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, scanReportsNothingOnHand, skippedNothingOnHandBanner, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -326,15 +326,10 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
     const ids = new Set<string>();
     for (const entry of entries) {
       if (entry.status !== 'pending' || entry.direction !== 'stock_out' || entry.productId === null) continue;
-      if (pinnedNone.has(entry.id)) {
-        ids.add(entry.id);
-        continue;
-      }
-      const listed = inventoryReady ? onHandByProductId.get(entry.productId) : undefined;
-      if (shelfHasNothingOnHand(scanOnHand(entry, listed))) ids.add(entry.id);
+      if (pinnedNone.has(entry.id) || scanReportsNothingOnHand(entry)) ids.add(entry.id);
     }
     return ids;
-  }, [entries, inventoryReady, onHandByProductId, pinnedNone]);
+  }, [entries, pinnedNone]);
 
   const eligibleEntries = useMemo(
     () => viewEntries.filter((entry) => isBatchEligible(entry) && !nothingOnHandIds.has(entry.id)),

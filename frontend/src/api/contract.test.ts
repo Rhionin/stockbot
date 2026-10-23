@@ -25,7 +25,7 @@ import {
   pairUndoCopy,
   pairUndoHideLine,
   previewReshelves,
-  scanOnHand,
+  scanReportsNothingOnHand,
   shelfHasNothingOnHand,
   skippedNothingOnHandBanner,
   type BackfillCommitResponse,
@@ -324,39 +324,12 @@ describe('nothing on hand copy', () => {
   });
 
   it.each([
-    {
-      name: 'scan onHand 0 beats a stocked list',
-      entry: { onHand: 0 },
-      listed: 4,
-      count: 0,
-    },
-    {
-      name: 'scan onHand 3 beats an empty list',
-      entry: { onHand: 3 },
-      listed: 0,
-      count: 3,
-    },
-    {
-      name: 'absent onHand uses the empty list',
-      entry: {},
-      listed: 0,
-      count: 0,
-    },
-    {
-      name: 'absent onHand uses a stocked list',
-      entry: {},
-      listed: 3,
-      count: 3,
-    },
-    {
-      name: 'absent onHand and a missing list row',
-      entry: {},
-      listed: undefined,
-      count: undefined,
-    },
-  ])('$name', ({ entry, listed, count }) => {
-    expect(scanOnHand(entry, listed)).toBe(count);
-    expect(shelfHasNothingOnHand(scanOnHand(entry, listed))).toBe(count !== undefined && count <= 0);
+    { name: 'onHand 0', entry: { id: 'scan-empty', direction: 'stock_out' as const, productId: 'prod-cream', status: 'pending' as const, onHand: 0 }, offer: true },
+    { name: 'onHand 3', entry: { id: 'scan-full', direction: 'stock_out' as const, productId: 'prod-full', status: 'pending' as const, onHand: 3 }, offer: false },
+    { name: 'omitted on a stock-out', entry: { id: 'scan-open', direction: 'stock_out' as const, productId: 'prod-open', status: 'pending' as const }, offer: false },
+    { name: 'omitted on a stock-in', entry: { id: 'scan-in', direction: 'stock_in' as const, productId: 'prod-in', status: 'pending' as const }, offer: false },
+  ])('$name', ({ entry, offer }) => {
+    expect(scanReportsNothingOnHand(entry)).toBe(offer);
   });
 
   it.each([

@@ -474,18 +474,15 @@ export function batchFailureBannerText(
   return `${count} confirmed. ${sentence}`;
 }
 
-// A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
+// A listed count of zero is nothing on hand. Absence is not an empty shelf.
 export function shelfHasNothingOnHand(onHand: number | undefined): boolean {
   return onHand !== undefined && onHand <= 0;
 }
 
-// TODO: GET /api/scans sends onHand on linked stock-out scans. Use that number when the payload includes it. Fall back to the inventory list only when onHand is absent.
-export function scanOnHand(
-  entry: { onHand?: number },
-  listedOnHand: number | undefined,
-): number | undefined {
-  if (typeof entry.onHand === 'number' && Number.isInteger(entry.onHand)) return entry.onHand;
-  return listedOnHand;
+// GET /api/scans sends onHand: 0 for a linked stock-out with nothing on the shelf.
+// Omitted is not that case.
+export function scanReportsNothingOnHand(entry: ScanListEntry): boolean {
+  return entry.onHand === 0;
 }
 
 export function nothingOnHandPill(count: number): string | null {
