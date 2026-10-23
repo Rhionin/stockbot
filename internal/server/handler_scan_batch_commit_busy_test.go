@@ -619,6 +619,14 @@ func TestBatchCommitFieldsStopOnNoSpaceWithoutReadingLaterItems(t *testing.T) {
 	if got := inventoryUnits(t, handler); got != filled {
 		t.Fatalf("inventory = %d, want %d", got, filled)
 	}
+	assertFlagUnedited := func() {
+		t.Helper()
+		rows := listedScans(t, handler, "flagged")
+		if len(rows) != 1 || rows[0].ID != "scan-flag" || rows[0].UnitCount != 1 || rows[0].ExpiresAt != nil {
+			t.Fatalf("flagged card = %+v", rows)
+		}
+	}
+	assertFlagUnedited()
 
 	if _, err := env.DB.Exec(`PRAGMA max_page_count = 1073741823`); err != nil {
 		t.Fatalf("raise page limit: %v", err)
@@ -642,10 +650,12 @@ func TestBatchCommitFieldsStopOnNoSpaceWithoutReadingLaterItems(t *testing.T) {
 	if got := inventoryUnits(t, handler); got != filled+4 {
 		t.Fatalf("inventory after retry = %d, want %d", got, filled+4)
 	}
+	assertFlagUnedited()
 	onceMore := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
 	if got := inventoryUnits(t, handler); got != filled+4 {
 		t.Fatalf("inventory after a second retry = %d, want %d body %s", got, filled+4, onceMore.body)
 	}
+	assertFlagUnedited()
 }
 
 func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {

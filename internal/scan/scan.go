@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -466,11 +467,18 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 		return fmt.Errorf("BatchUpdateScanEntries commit: %w", err)
 	}
 
+	// The transaction is already committed. A failed re-read here must not
+	// make the caller report the saved update as a failure.
 	if r.Broadcaster != nil {
+		loggedEventRead := false
 		for _, id := range changed {
 			updated, err := r.GetScanEntry(ctx, id)
 			if err != nil {
-				return err
+				if !loggedEventRead {
+					slog.Warn("scan update saved but its event was not sent")
+					loggedEventRead = true
+				}
+				break
 			}
 			if updated != nil {
 				r.Broadcaster.PublishScanEvent(*updated)

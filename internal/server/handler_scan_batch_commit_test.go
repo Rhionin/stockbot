@@ -345,6 +345,69 @@ func TestScanBatchCommit(t *testing.T) {
 			),
 		},
 		{
+			name: "a confirm with fields leaves a flagged card unedited",
+			setup: func(env testEnv) {
+				mustProduct(env, "prod-flag-mix", "Flag Peas")
+				insertPendingScanUnits(env, "scan-open", "prod-flag-mix", scan.StockIn, 1)
+				flagged := scan.Flagged
+				in := scan.StockIn
+				productID := "prod-flag-mix"
+				if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+					ID: "scan-held", UserID: "user-1", Barcode: "scan-held",
+					ScannedAt: time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
+					Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
+				}); err != nil {
+					env.T.Fatalf("flagged scan: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans/batch-commit",
+				body:           `{"scanEntryIds":["scan-open","scan-held"],"direction":"stock_in","unitCount":6,"expiresAt":"2026-10-02T00:00:00Z","commit":true}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.committedIds[0]", value: "scan-open"},
+					{path: "$.committedIds[1]", absent: true},
+					{path: "$.failedIds[0]", value: "scan-held"},
+					{path: "$.failedCodes[0]", value: "not_pending"},
+					{path: "$.failedReasons[0]", value: "This scan was already handled."},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/inventory",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].instanceCount", value: float64(6)}},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "committed"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-open"},
+						{path: "$[0].unitCount", value: float64(6)},
+						{path: "$[0].expiresAt", value: "2026-10-02T00:00:00Z"},
+						{path: "$[1]", absent: true},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-1", "status": "flagged"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$[0].id", value: "scan-held"},
+						{path: "$[0].status", value: "flagged"},
+						{path: "$[0].unitCount", value: float64(1)},
+						{path: "$[0].expiresAt", value: nil},
+						{path: "$[1]", absent: true},
+					},
+				},
+			),
+		},
+		{
 			name: "scans that cannot commit stay on the queue",
 			setup: func(env testEnv) {
 				mustProduct(env, "prod-gap", "Gap")

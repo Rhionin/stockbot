@@ -3,7 +3,9 @@ package scan_test
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1240,6 +1242,61 @@ func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
 	}
 	if len(broadcaster.scanEvents) != 0 {
 		t.Fatalf("unknown-only events = %+v", broadcaster.scanEvents)
+	}
+}
+
+type cancelAfterPublish struct {
+	fakeBroadcaster
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterPublish) PublishScanEvent(entry scan.ScanEntry) {
+	c.fakeBroadcaster.PublishScanEvent(entry)
+	c.cancel()
+}
+
+func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
+	queue, _ := newTestQueue(t)
+	ctx := context.Background()
+	now := time.Now()
+	for i, id := range []string{"scan-evt-a", "scan-evt-b"} {
+		if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			ID: id, UserID: "user-1", Barcode: string(rune('1' + i)),
+			ScannedAt: now.Add(time.Duration(i) * time.Minute),
+			UnitCount: 1, Status: scan.Pending,
+		}); err != nil {
+			t.Fatalf("CreateScanEntry %s: %v", id, err)
+		}
+	}
+
+	updateCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	broadcaster := &cancelAfterPublish{cancel: cancel}
+	queue.Broadcaster = broadcaster
+
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	direction := scan.StockOut
+	if err := queue.BatchUpdateScanEntries(updateCtx, []string{"scan-evt-a", "scan-evt-b"}, &direction, nil, nil); err != nil {
+		t.Fatalf("saved update reported as failed: %v", err)
+	}
+	for _, id := range []string{"scan-evt-a", "scan-evt-b"} {
+		got, err := queue.GetScanEntry(ctx, id)
+		if err != nil {
+			t.Fatalf("GetScanEntry %s: %v", id, err)
+		}
+		if got == nil || got.Direction == nil || *got.Direction != scan.StockOut {
+			t.Fatalf("%s = %+v", id, got)
+		}
+	}
+	if len(broadcaster.scanEvents) != 1 || broadcaster.scanEvents[0].ID != "scan-evt-a" {
+		t.Fatalf("events = %+v", broadcaster.scanEvents)
+	}
+	if strings.Count(slogBuf.String(), "scan update saved but its event was not sent") != 1 {
+		t.Fatalf("log = %q", slogBuf.String())
 	}
 }
 
