@@ -362,6 +362,90 @@ describe('QueueScreen', () => {
     expect(screen.getByText('Rice')).toBeTruthy();
   });
 
+  it('a no_space confirm keeps the banner', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const api = client({
+      listPending: jest.fn(async () => cards),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: cards.map((card) => card.id),
+        failedReasons: cards.map(() => "Stockbot is out of storage space, so this wasn't saved."),
+        failedCodes: cards.map(() => 'no_space'),
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(507, 'The pantry disk is full.', 'no_space');
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText("Stockbot is out of storage space, so this wasn't saved.")).toBeTruthy();
+    expectBanner(screen, 'failure', ["Stockbot is out of storage space, so this wasn't saved."]);
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(await screen.findByText('The pantry disk is full.')).toBeTruthy();
+    expectBanner(screen, 'failure', ["Stockbot is out of storage space, so this wasn't saved."]);
+    expect(screen.getByText('Oats')).toBeTruthy();
+    expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
+  it.each([
+    { name: 'a successful link clears a busy notice', code: 'busy', banner: BUSY_SENTENCE, outcome: 'ok' },
+    { name: 'a successful link clears a no_space notice', code: 'no_space', banner: NO_SPACE_SENTENCE, outcome: 'ok' },
+    { name: 'a failed link keeps a busy notice', code: 'busy', banner: BUSY_SENTENCE, outcome: 'fail' },
+    { name: 'a failed link keeps a no_space notice', code: 'no_space', banner: NO_SPACE_SENTENCE, outcome: 'fail' },
+    { name: 'a network failure during a link keeps the banner', code: 'busy', banner: BUSY_SENTENCE, outcome: 'offline' },
+  ] as const)('$name', async ({ code, banner, outcome }) => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(cards)
+      .mockResolvedValueOnce(cards)
+      .mockResolvedValue([rice]);
+    const api = client({
+      listPending,
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: cards.map((card) => card.id),
+        failedReasons: cards.map(() => banner),
+        failedCodes: cards.map(() => code),
+      })),
+      commitScan: jest.fn(async (_id: string, linkProductId?: string) => {
+        if (linkProductId === undefined) {
+          throw new ApiError(409, 'Which item is this?', 'no_item', [
+            { itemId: 'item-pears', productId: 'prod-pears', name: 'Sliced Pears', onHand: 3 },
+          ]);
+        }
+        if (outcome === 'offline') throw new Error('offline');
+        if (outcome === 'fail') throw new ApiError(507, 'The pantry disk is full.', 'no_space');
+        return entry({ status: 'committed' });
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText(banner)).toBeTruthy();
+    expectBanner(screen, 'failure', [banner]);
+    await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    await fireEvent.press(await screen.findByLabelText('Link Sliced Pears'));
+    if (outcome === 'ok') {
+      await waitFor(() => expect(screen.queryByText('Oats')).toBeNull());
+      expect(screen.queryByText(banner)).toBeNull();
+      expectBanner(screen, 'gone', []);
+      expect(screen.getByText('Rice')).toBeTruthy();
+      return;
+    }
+    const failure = outcome === 'offline' ? 'offline' : 'The pantry disk is full.';
+    expect(await screen.findByText(failure)).toBeTruthy();
+    expectBanner(screen, 'failure', [banner]);
+    expect(screen.getByText('Oats')).toBeTruthy();
+    expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
   it.each([
     {
       name: 'all busy then a single confirm',

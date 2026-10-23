@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { Notifications } from '@mantine/notifications';
+import { notifications, Notifications } from '@mantine/notifications';
 import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE } from '../../api/contract';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '../../types';
@@ -133,6 +133,24 @@ const renderQueue = (harness: QueueHarness) => {
       if (id === 'scan-busy-fail') {
         return Promise.resolve(json({ error: 'The pantry database is locked.', code: 'busy' }, 503));
       }
+      if (id === 'scan-nospace-fail') {
+        return Promise.resolve(json({ error: 'The pantry disk is full.', code: 'no_space' }, 507));
+      }
+      if (id === 'scan-link-ok' || id === 'scan-link-fail') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { linkProductId?: string };
+        if (typeof body.linkProductId === 'string' && body.linkProductId !== '') {
+          if (id === 'scan-link-fail') {
+            return Promise.resolve(json({ error: 'The pantry disk is full.', code: 'no_space' }, 507));
+          }
+          pending = pending.filter((entry) => entry.id !== id);
+          return Promise.resolve(json({ status: 'committed' }));
+        }
+        return Promise.resolve(json({
+          error: 'Which item is this?',
+          code: 'no_item',
+          suggestions: [{ itemId: 'item-pears', productId: 'prod-pears', name: 'Sliced Pears', onHand: 3 }],
+        }, 409));
+      }
       if (id === 'scan-offline') {
         return Promise.reject(new TypeError('Failed to fetch'));
       }
@@ -197,6 +215,7 @@ const unresolved = scan({ id: 'scan-open', barcode: '444', productId: null, prod
 
 describe('nothing on hand queue', () => {
   beforeEach(() => {
+    notifications.clean();
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource);
   });
@@ -868,6 +887,41 @@ describe('nothing on hand queue', () => {
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
 
+  it('a no_space confirm keeps the banner', async () => {
+    const oats = scan({
+      id: 'scan-nospace-fail',
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: [oats.id, rice.id],
+        failedReasons: [NO_SPACE_SENTENCE, NO_SPACE_SENTENCE],
+        failedCodes: ['no_space', 'no_space'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    expect((await screen.findByText(NO_SPACE_SENTENCE)).closest('.scan-batch-banner')).not.toBeNull();
+    fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText('The pantry disk is full.')).toBeInTheDocument();
+    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(NO_SPACE_SENTENCE);
+    expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+  });
+
   it('a network error keeps the banner', async () => {
     const oats = scan({
       id: 'scan-offline',
@@ -899,6 +953,55 @@ describe('nothing on hand queue', () => {
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
     expect(await screen.findByText('Failed to fetch')).toBeInTheDocument();
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(BUSY_SENTENCE);
+    expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+  });
+
+  it.each([
+    { name: 'a successful link clears a busy notice', id: 'scan-link-ok', code: 'busy', banner: BUSY_SENTENCE, linked: true },
+    { name: 'a successful link clears a no_space notice', id: 'scan-link-ok', code: 'no_space', banner: NO_SPACE_SENTENCE, linked: true },
+    { name: 'a failed link keeps a busy notice', id: 'scan-link-fail', code: 'busy', banner: BUSY_SENTENCE, linked: false },
+    { name: 'a failed link keeps a no_space notice', id: 'scan-link-fail', code: 'no_space', banner: NO_SPACE_SENTENCE, linked: false },
+  ])('$name', async ({ id, code, banner, linked }) => {
+    const oats = scan({
+      id,
+      barcode: '555',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    renderQueue({
+      scans: [oats, rice],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2)],
+      batchResult: {
+        updatedCount: 0,
+        committedIds: [],
+        failedIds: [oats.id, rice.id],
+        failedReasons: [banner, banner],
+        failedCodes: [code, code],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all eligible scans for batch approval' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 2 selected scans' }));
+    const card = screen.getByRole('article', { name: 'Scan 555' });
+    expect((await screen.findByText(banner)).closest('.scan-batch-banner')).not.toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await within(card).findByRole('button', { name: 'Link Sliced Pears' }));
+    if (linked) {
+      await waitFor(() => expect(screen.queryByRole('article', { name: 'Scan 555' })).not.toBeInTheDocument());
+      expect(document.querySelector('.scan-batch-banner')).toBeNull();
+      expect(screen.queryByText(banner)).not.toBeInTheDocument();
+      expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
+      return;
+    }
+    expect(await screen.findByText('The pantry disk is full.')).toBeInTheDocument();
+    expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(banner);
     expect(screen.getByRole('article', { name: 'Scan 555' })).toBeInTheDocument();
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
