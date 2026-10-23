@@ -236,7 +236,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  R[Request] --> P{Public path?}
+  R[Request] --> VG{"X-Stockbot-Client: expo/&lt;semver&gt;<br/>below minClientVersion.expo?"}
+  VG -->|yes| E426["426 upgrade_required<br/>before auth, rate limits and busy"]
+  VG -->|no| P{Public path?}
   P -->|yes| OK[Serve]
   P -->|no| SY{Sync token valid<br/>for snapshot/events?}
   SY -->|yes| SYNC["Sync principal (household 1, read-only)"]
@@ -382,7 +384,7 @@ The WAF rule (§6) is an edge backstop only.
 - The Pi no longer keeps the password in `auth.caddy`. The hash is imported at first start (§3.8).
 - `session_key` signs `pantry_session` cookies. It starts as the current `PANTRY_SESSION_SECRET`, so today's cookies keep working during phase A, and the env var is then removed.
 - Mobile household-password sign-ins (new Expo build) get `sessions` rows with `user_id NULL` and `origin='household_password'`.
-- `GET /api/household/settings` returns `householdPassword: "on" | "off" | null` and `householdPasswordRestoreUntil` (PM-REQ R2A.3). Households other than 1 return `null`. The retire and restore routes return `not_found` for them.
+- `GET /api/household/settings` returns `HouseholdSettings`: `householdPasswordEnabled: boolean` plus an optional `householdPasswordRestoreUntil` (status only, owner-only) (PM-REQ R2A.3). `GET /api/config` (`LiveConfig`) has `householdPasswordSignIn: boolean`. Households other than 1 return `householdPasswordEnabled: false` and omit `householdPasswordRestoreUntil`. The retire and restore routes return `not_found` for them.
 
 **Invariant: device auth never depends on a person's session (PM-REQ R2A.4, §2A A7).**
 - **Device tokens** (`sbd_…`) are random secrets stored as SHA-256 in `device_tokens` and checked only by `DeviceAuth`. They share no key or table with sessions or the household password.
@@ -413,7 +415,7 @@ The WAF rule (§6) is an edge backstop only.
 
   The code is 40 bits, stored in the database as a hash, and single use. It is **not** printed to the journal or any log: the updater runs as root, its output goes to the root journal that CJ cannot read without sudo, and whoever holds the code claims operator. The file is deleted once the first account is created (and when the code expires). Network Engineer cannot read it by design. **Decided by Architect 2026-10-23** (proposed by Network Engineer in S9).
 - `/setup` exists **only while no personal account exists** and **only on the LAN listener**. It asks for the code, then name, email and password. It then creates CJ's user with `operator=true` and an owner membership of household 1 (all existing data), and signs CJ in (PM-REQ R2A.1).
-- Once any personal account exists, `/setup` returns `not_found` for good, except in **recover** mode (§3.6). Recover mode needs a fresh code that the updater writes to the same file on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
+- On the public entry `/setup` is always `not_found`. On the LAN after the first account, GET redirects to sign-in and POST returns `not_found`, except in **recover** mode (§3.6). Recover mode needs a fresh code that the updater writes to the same file on request (`stockbot admin setup-code --recover`, run by the updater, not by SSH editing).
 - **Rejected:**
   - A page open to anyone while no account exists: whoever opens it first gets operator.
   - "First household-password sign-in forces account creation": anyone who knows the shared password could claim operator **(opinion)**.
@@ -437,7 +439,7 @@ The WAF rule (§6) is an edge backstop only.
   - The built-in Basic (`pantry` user) path is deleted.
   - Sign-in is email + password via `POST /api/auth/login`, plus the household-password option while the server reports it on. It returns a Bearer `sbs_…` token kept in SecureStore.
   - Every request sends `X-Stockbot-Client: expo/<version>`.
-  - **Any 401 clears the token and returns to the sign-in screen**, showing C2A.3 when the server's `householdPassword` is `"off"`.
+  - **Any 401 clears the token and returns to the sign-in screen**, showing C2A.3 when `LiveConfig.householdPasswordSignIn` (`GET /api/config`) is false.
   - PR #230's Cognito code is parked for Stage 3 behind the same `IdentityProvider` seam.
 - **Version gate** (runs before auth). Web is never gated.
   - Header `X-Stockbot-Client: expo/<semver>`. Below `minClientVersion.expo` the server returns `426 upgrade_required`.
@@ -894,7 +896,7 @@ flowchart LR
 - **Open question 3 / reviewed-contract question 31 (Pi auth). Answer:** CJ decided on 2026-10-23 (Q2) that everyone, household 1 included, uses personal email + password accounts. On the Pi this is the `local` IdentityProvider. Sessions are opaque, server-stored and Stockbot's own, so the same `users.id` links to Cognito `sub` in Stage 3 (no lock-in). Household 1's shared password exists only during the changeover. It signs in to household 1 as member, until an owner retires it with `POST /api/household/household-password/retire`. It is restorable for 7 days and then deleted. Device tokens are independent of every person's session.
 - **Open question 1 (session cookie name). Answer:** `__Host-stockbot_session` (host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`), set by `SESSION_COOKIE_NAME`. Expo uses `Authorization: Bearer sbs_…`.
 - **New error:** `upgrade_required` (HTTP 426), meaning "Update Stockbot to keep using it."
-- **Pi-only additions, outside the AWS contract:** `householdPassword` in household settings, and the retire and restore routes. Stage 3 returns `householdPassword: null` and `not_found` for the routes.
+- **Pi-only additions, outside the AWS contract:** `HouseholdSettings` has `householdPasswordEnabled: boolean` plus an optional `householdPasswordRestoreUntil` (status only, owner-only), and `LiveConfig` (`/api/config`) has `householdPasswordSignIn: boolean`, plus the retire and restore routes. Stage 3 returns `householdPasswordEnabled: false`, `householdPasswordSignIn: false`, and `not_found` for the routes.
 
 ---
 
