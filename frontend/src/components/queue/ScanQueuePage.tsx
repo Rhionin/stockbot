@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
-import { createScanEntry, DEFAULT_SCAN_USER_ID, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
-import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_BUSY, CODE_NONE_ON_HAND, CODE_NO_SPACE, confirmSkipsNothingOnHand, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
+import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_BUSY, CODE_NONE_ON_HAND, CODE_NO_SPACE, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, formatPartialRemoval, shelfHasNothingOnHand, type BatchCommitResponse, type BatchFailureNotice } from '../../api/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScanEntry, ScannerConfig } from '../../types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
@@ -17,8 +17,6 @@ import { ScanSessionCard } from './ScanSessionCard';
 import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } from './browserScanAlert';
 import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from './queueUtils';
 import { scannerModeFromEventData } from './scannerModeEvent';
-
-const DEFAULT_USER_ID = 'user-1' satisfies typeof DEFAULT_SCAN_USER_ID;
 
 interface NothingPin {
   onHand: number | null;
@@ -63,7 +61,7 @@ export interface ScanQueuePageProps {
   userId?: string;
 }
 
-export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) => {
+export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePageProps) => {
   const [entries, setEntries] = useState<ScanEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryReady, setInventoryReady] = useState(false);
@@ -370,18 +368,6 @@ export const ScanQueuePage = ({ userId = DEFAULT_USER_ID }: ScanQueuePageProps) 
       let changed = false;
       const next = new Map(current);
       for (const [id] of current) {
-        if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
-        next.delete(id);
-        changed = true;
-      }
-      return changed ? next : current;
-    });
-    // Stock arriving resolves the none_on_hand failure. Leaving it recorded kept an empty teal banner.
-    setFailureById((current) => {
-      let changed = false;
-      const next = new Map(current);
-      for (const [id, notice] of current) {
-        if (notice.code !== CODE_NONE_ON_HAND) continue;
         if (!stocked(entriesRef.current.find((row) => row.id === id))) continue;
         next.delete(id);
         changed = true;
