@@ -16,7 +16,6 @@ func scrubSentryEvent(event *sentry.Event) *sentry.Event {
 		return nil
 	}
 	event.User = sentry.User{}
-	event.Extra = nil
 	event.Request = scrubSentryRequest(event.Request)
 	event.Contexts = scrubContexts(event.Contexts)
 	event.Tags = scrubTags(event.Tags)
