@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -190,7 +192,7 @@ func isHTTPMethod(s string) bool {
 }
 
 func reportServerError(r *http.Request, err error) {
-	if err == nil || !sentryEnabled.Load() {
+	if err == nil || errors.Is(err, context.Canceled) || !sentryEnabled.Load() {
 		return
 	}
 	hub := sentry.CurrentHub()
