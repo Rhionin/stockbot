@@ -267,8 +267,8 @@ describe('partial line transitions', () => {
     }
 
     if (trigger === 'blocking') {
-      expect(screen.queryByText(fallback)).not.toBeInTheDocument();
-      expect(document.querySelector('.scan-batch-banner')?.textContent).toContain('Choose which item this is first.');
+      expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(fallback);
+      expect(screen.getAllByText('Choose which item this is first.').length).toBeGreaterThan(0);
       const line = screen.getByText(wasLine);
       expect(line.closest('[role="alert"]')).not.toBeNull();
       expect(document.querySelector('.scan-batch-banner--success')).toBeNull();

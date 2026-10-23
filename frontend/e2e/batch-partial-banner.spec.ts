@@ -280,7 +280,7 @@ for (const viewport of viewports) {
       }
       await page.getByRole('button', { name: 'Confirm 2 selected scans' }).click()
       await outcome
-      await expectFailureWithPartial(page, wasLine, instanceGone)
+      await expectFailureWithPartial(page, wasLine)
       const missed = page.getByRole('article', { name: `Scan ${missBarcode}`, exact: true })
       await expect(missed).toContainText(instanceGone)
       await expect(missed.getByText(failureNote)).toHaveCount(0)

@@ -169,7 +169,7 @@ describe('batch failure banner', () => {
       code: row.code,
       message: row.message,
       committed: 2,
-      banner: row.message,
+      banner: BATCH_FAILURE_FALLBACK,
       card: row.message,
     })),
   ])('$name', ({ code, message, committed, banner, card }) => {
@@ -222,13 +222,13 @@ describe('batch failure banner', () => {
       banner: null,
     },
     {
-      name: 'busy plus no_item leaves that sentence',
+      name: 'busy plus no_item leaves the fallback',
       before: [
         { id: 'scan-a', code: 'busy', message: BUSY_SENTENCE },
         { id: 'scan-b', code: 'no_item', message: 'Which item is this?' },
       ],
       confirmedId: 'scan-a',
-      banner: 'Which item is this?',
+      banner: BATCH_FAILURE_FALLBACK,
     },
     {
       name: 'busy plus no_item plus not_pending falls back',
@@ -252,12 +252,23 @@ describe('batch failure banner', () => {
     expect(batchFailureBannerText(after, 0)).toBe(banner);
   });
 
-  it('a shared code uses a later sentence when the first message is blank', () => {
+  it('matching item codes stay on the cards and the banner is the fallback', () => {
     const notices = [
       { code: 'no_item', message: '' },
       { code: 'no_item', message: 'Which item is this?' },
     ];
-    expect(batchFailureBannerText(notices, 0)).toBe('Which item is this?');
+    expect(batchFailureBannerText(notices, 0)).toBe(BATCH_FAILURE_FALLBACK);
+    expect(batchCardCommitNotice('no_item', 'Which item is this?')).toBe('Which item is this?');
+  });
+
+  it('an item failure beside busy keeps the banner on the fallback', () => {
+    const notices = [
+      { code: 'busy', message: BUSY_SENTENCE },
+      { code: 'not_pending', message: 'This scan was already handled.' },
+    ];
+    expect(batchFailureBannerText(notices, 2)).toBe(BATCH_FAILURE_FALLBACK);
+    expect(batchCardCommitNotice('busy', BUSY_SENTENCE)).toBe('');
+    expect(batchCardCommitNotice('not_pending', 'This scan was already handled.')).toBe('This scan was already handled.');
   });
 
   it('a busy card beside amber uses the busy sentence once', () => {

@@ -567,10 +567,10 @@ describe('nothing on hand queue', () => {
     await confirmBatch(2);
     await waitFor(() => {
       const failure = document.querySelector('.scan-batch-banner');
-      expect(failure?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Choose which item this is first.');
+      expect(failure?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Some scans could not be confirmed.');
       expect(failure?.className).not.toContain('scan-batch-banner--success');
     });
-    expect(screen.queryByText('Some scans could not be confirmed.')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
     expect(screen.getByRole('article', { name: `Scan 666, ${NOTHING_ON_HAND_TITLE}` })).toBeInTheDocument();
     expect(within(screen.getByRole('article', { name: 'Scan 444' })).getByText('Choose which item this is first.')).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 444' })).getByRole('button', { name: 'Confirm' }));
@@ -644,7 +644,7 @@ describe('nothing on hand queue', () => {
     { name: 'no_space and nothing committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 0, banner: NO_SPACE_SENTENCE, onCard: false },
     { name: 'no_space and one committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 1, banner: `1 confirmed. ${NO_SPACE_SENTENCE}`, onCard: false },
     { name: 'no_space and many committed', code: 'no_space', message: NO_SPACE_SENTENCE, committed: 3, banner: `3 confirmed. ${NO_SPACE_SENTENCE}`, onCard: false },
-    { name: 'instance_gone keeps the card sentence', code: 'instance_gone', message: 'That one was already taken out. Pick another.', committed: 1, banner: 'That one was already taken out. Pick another.', onCard: true },
+    { name: 'instance_gone keeps the card sentence', code: 'instance_gone', message: 'That one was already taken out. Pick another.', committed: 1, banner: BATCH_FAILURE_FALLBACK, onCard: true },
   ])('$name', async ({ code, message, committed, banner, onCard }) => {
     const failed = scan({
       id: 'scan-fail',
@@ -956,7 +956,7 @@ describe('nothing on hand queue', () => {
         { id: 'scan-b', barcode: '702', name: 'Rice', code: 'no_item', message: 'Which item is this?' },
       ],
       confirmBarcode: '701',
-      banner: 'Which item is this?',
+      banner: 'Some scans could not be confirmed.',
     },
     {
       name: 'busy plus no_item plus not_pending',
@@ -1011,6 +1011,10 @@ describe('nothing on hand queue', () => {
     if (banner === '') {
       expect(screen.queryByText(BUSY_SENTENCE)).not.toBeInTheDocument();
       expect(screen.queryByText(NO_SPACE_SENTENCE)).not.toBeInTheDocument();
+      return;
     }
+    const card = screen.getByRole('article', { name: 'Scan 702' });
+    expect(within(card).getAllByText('Which item is this?').length).toBeGreaterThan(0);
+    expect(bannerText()).not.toContain('Which item is this?');
   });
 });

@@ -224,9 +224,8 @@ export const NOTHING_ON_HAND_BODY =
 
 export const CODE_NONE_ON_HAND = 'none_on_hand';
 
-// A lock or a full disk is one banner sentence. The card does not repeat it.
-// Amber never does. One other code uses that code's sentence. Mixed codes use
-// the fallback, and the card keeps its own sentence.
+// A lock or a full disk is the banner sentence. The card does not repeat it.
+// Amber never does. An item failure stays on its card.
 export function batchCardCommitNotice(code: string, message: string): string {
   if (code === CODE_NONE_ON_HAND || code === CODE_BUSY || code === CODE_NO_SPACE) return '';
   return message;
@@ -256,31 +255,23 @@ function storageSentence(notice: Pick<BatchFailureNotice, 'code' | 'message'>): 
   return notice.code === CODE_NO_SPACE ? NO_SPACE_SENTENCE : BUSY_SENTENCE;
 }
 
-// One shared code uses the first non-blank server sentence. A blank code,
-// mixed codes, or a code whose messages are all blank use the fallback.
-function sharedCodeSentence(
-  notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
-): string | null {
-  const code = notices[0]?.code ?? '';
-  if (code === '') return null;
-  if (notices.some((notice) => notice.code !== code)) return null;
-  return notices.map((notice) => notice.message.trim()).find((text) => text !== '') ?? null;
-}
-
+// While an item failure remains, the banner is the fallback, whether or not
+// those codes match. The item sentence stays on the card. A lock or a full
+// disk is the banner only when no item failure is left, with the confirmed
+// count when some scans saved.
 export function batchFailureBannerText(
   notices: readonly Pick<BatchFailureNotice, 'code' | 'message'>[],
   committedCount: number,
 ): string | null {
   const blocking = notices.filter((notice) => notice.code !== CODE_NONE_ON_HAND);
   if (blocking.length === 0) return null;
+  if (blocking.some((notice) => !isStorageFailureCode(notice.code))) return BATCH_FAILURE_FALLBACK;
   const storage = blocking.find((notice) => isStorageFailureCode(notice.code));
-  if (storage !== undefined) {
-    const sentence = storageSentence(storage);
-    const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
-    if (count === 0) return sentence;
-    return `${count} confirmed. ${sentence}`;
-  }
-  return sharedCodeSentence(blocking) ?? BATCH_FAILURE_FALLBACK;
+  if (storage === undefined) return null;
+  const sentence = storageSentence(storage);
+  const count = Number.isInteger(committedCount) && committedCount > 0 ? committedCount : 0;
+  if (count === 0) return sentence;
+  return `${count} confirmed. ${sentence}`;
 }
 
 // A listed count of zero is nothing on hand. Absence is not: the server decides shelved and unknown products.
