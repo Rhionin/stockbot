@@ -84,3 +84,29 @@ func assertPublicEntryRefused(t *testing.T, gate *server.HouseholdAuth) {
 		t.Fatal("LAN /health asked for a login")
 	}
 }
+
+func TestLANInstallWithoutPasswordFile(t *testing.T) {
+	t.Setenv("PANTRY_AUTH_FILE", "sentinel")
+	os.Unsetenv("PANTRY_AUTH_FILE")
+	gate := loadHouseholdAuth()
+	if gate == nil || gate.Configured || !gate.FailClosed {
+		t.Fatalf("gate = %+v, want a fail-closed login", gate)
+	}
+	handler, _ := server.NewHandler(nil, nil, nil, nil, server.WithHouseholdAuth(gate))
+
+	session := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	session.RemoteAddr = "192.168.1.20:4000"
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, session)
+	if sessionRec.Code != http.StatusOK || sessionRec.Body.String() != `{"required":false}` {
+		t.Fatalf("LAN session = %d %s", sessionRec.Code, sessionRec.Body.String())
+	}
+
+	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"ada","password":"synthetic-passphrase"}`))
+	login.RemoteAddr = "192.168.1.20:4000"
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, login)
+	if loginRec.Code != http.StatusNotFound || loginRec.Body.String() != `{"error":"Sign-in is not used on this address."}` {
+		t.Fatalf("LAN login = %d %s", loginRec.Code, loginRec.Body.String())
+	}
+}
