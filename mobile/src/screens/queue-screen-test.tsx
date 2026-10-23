@@ -606,6 +606,40 @@ describe('QueueScreen', () => {
     expect(within(screen.getByTestId('scan-scan-a')).queryByText('Which item is this?')).toBeNull();
   });
 
+  it('a no_space retry leaves the other card, the banner, and the link offer', async () => {
+    const oats = stocked('scan-a', 'Oats');
+    const rice = stocked('scan-b', 'Rice');
+    const cards = [oats, rice];
+    const api = client({
+      listPending: jest.fn(async () => cards),
+      batchCommit: jest.fn(async () => ({
+        updatedCount: 0,
+        failedIds: [oats.id, rice.id],
+        failedReasons: [BUSY_SENTENCE, 'Which item is this?'],
+        failedCodes: ['busy', 'no_item'],
+      })),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(507, NO_SPACE_SENTENCE, 'no_space');
+      }),
+      getInventoryList: jest.fn(async () => cards.map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', 2))),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+
+    await fireEvent.press(await screen.findByLabelText('Confirm all'));
+    expect(await screen.findByText('Some scans could not be confirmed.')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByText('Which item is this?')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByLabelText('Dismiss')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Confirm Rice'));
+    await waitFor(() => expect(api.commitScan).toHaveBeenCalledWith('scan-b'));
+    expect(screen.queryByTestId('confirm-toast')).toBeNull();
+    expect(screen.queryByText(NO_SPACE_SENTENCE)).toBeNull();
+    expectBanner(screen, 'failure', ['Some scans could not be confirmed.']);
+    expect(within(screen.getByTestId('scan-scan-b')).getByText('Which item is this?')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-b')).getByLabelText('Dismiss')).toBeTruthy();
+    expect(screen.getByText('Oats')).toBeTruthy();
+    expect(within(screen.getByTestId('scan-scan-a')).queryByText('Which item is this?')).toBeNull();
+  });
+
   it.each([
     {
       name: 'all busy then a single confirm',
