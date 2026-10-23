@@ -267,14 +267,16 @@ describe('partial line transitions', () => {
     }
 
     if (trigger === 'blocking') {
-      expect(screen.getByText(fallback)).toBeInTheDocument();
-      expect(screen.getByText('Choose which item this is first.')).toBeInTheDocument();
+      expect(document.querySelector('.scan-batch-banner')?.textContent).toContain(fallback);
+      expect(screen.getAllByText('Choose which item this is first.').length).toBeGreaterThan(0);
       const line = screen.getByText(wasLine);
       expect(line.closest('[role="alert"]')).not.toBeNull();
       expect(document.querySelector('.scan-batch-banner--success')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-      await waitFor(() => expect(screen.queryByText(fallback)).not.toBeInTheDocument());
+      expect(screen.getAllByText('Choose which item this is first.').length).toBeGreaterThan(0);
       expect(screen.queryByText(wasLine)).not.toBeInTheDocument();
+      releaseHold();
+      await waitFor(() => expect(screen.queryByText('Choose which item this is first.')).not.toBeInTheDocument());
       return;
     }
 

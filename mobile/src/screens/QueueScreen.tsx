@@ -15,9 +15,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
-  BATCH_FAILURE_FALLBACK,
+  batchCardCommitNotice,
+  batchFailureBannerText,
   batchFailureNotices,
   CODE_NONE_ON_HAND,
+  failuresAfterConfirm,
+  isStorageFailureCode,
+  type BatchFailureNotice,
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
@@ -160,7 +164,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, true>>({});
+  const [failureBannerIds, setFailureBannerIds] = useState<Record<string, BatchFailureNotice>>({});
+  const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState('');
   const refreshGeneration = useRef(0);
   const [toast, setToast] = useState('');
@@ -187,9 +192,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setError(nextError);
     setLoadError('');
     setFailureBannerIds((current) => {
-      const kept: Record<string, true> = {};
+      const kept: Record<string, BatchFailureNotice> = {};
       for (const entry of next) {
-        if (current[entry.id] === true) kept[entry.id] = true;
+        const notice = current[entry.id];
+        if (notice !== undefined) kept[entry.id] = notice;
       }
       return kept;
     });
@@ -293,12 +299,26 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
-  function clearFailure(id: string) {
+  // A confirm that succeeds drops the lock and disk notices, and the card just
+  // confirmed. Item-specific codes stay until that card is resolved. A confirm
+  // that fails leaves the banner up.
+  // A lock or a full disk is the banner, including the first time one card fails.
+  // A notice already on that card stays, and nothing about it is toasted. A new
+  // one is not the batch that saved earlier scans, so that count does not prefix it.
+  function noteStorageFailure(id: string, code: string, message: string) {
+    setToast('');
     setFailureBannerIds((current) => {
-      if (current[id] !== true) return current;
-      const next = { ...current };
-      delete next[id];
-      return next;
+      if (current[id] !== undefined) return current;
+      setConfirmedCount(0);
+      return { ...current, [id]: { id, code, message } };
+    });
+  }
+
+  function retireSingleConfirm(id: string) {
+    setFailureBannerIds((current) => {
+      const next = failuresAfterConfirm(Object.values(current), id);
+      if (next.length === Object.keys(current).length) return current;
+      return Object.fromEntries(next.map((notice) => [notice.id, notice]));
     });
   }
 
@@ -334,6 +354,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       return;
     }
+    if (isStorageFailureCode(requestError.code)) {
+      noteStorageFailure(id, requestError.code, requestError.message);
+      return;
+    }
     const behavior = commitConflictBehavior(requestError.code);
     // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? requestError.message : '');
@@ -354,11 +378,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
-    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id);
+      retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       setPartialLine('');
@@ -401,6 +425,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       clearNote(id);
       await refresh('', false);
     } catch (requestError) {
+      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+        noteStorageFailure(id, requestError.code, requestError.message);
+        return;
+      }
       setToast(requestError instanceof Error ? requestError.message : 'That scan could not be removed.');
     } finally {
       setBusyId('');
@@ -411,11 +439,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
     setError('');
-    clearFailure(id);
     setPartialLine('');
     setToast('');
     try {
       const committed = await client.commitScan(id, productId);
+      retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       setPartialLine('');
@@ -423,7 +451,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (committed.direction === 'stock_in' && committed.productId) releasePins(committed.productId);
       await refresh();
     } catch (requestError) {
-      if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
+      if (requestError instanceof ApiError && isStorageFailureCode(requestError.code)) {
+        noteStorageFailure(id, requestError.code, requestError.message);
+      } else if (requestError instanceof ApiError && commitConflictBehavior(requestError.code).refreshSuggestions) {
         setToast(requestError.message);
         clearNote(id);
         setExcluded((current) => ({ ...current, [id]: productId }));
@@ -471,7 +501,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (!pending.some((entry) => entry.id === notice.id)) continue;
         if (notice.code === CODE_NONE_ON_HAND) continue;
         const behavior = commitConflictBehavior(notice.code || undefined);
-        if (behavior.showMessage && notice.message !== '') nextNotes[notice.id] = notice.message;
+        const cardNotice = batchCardCommitNotice(notice.code, notice.message);
+        if (behavior.showMessage && cardNotice !== '') nextNotes[notice.id] = cardNotice;
         if (!(behavior.linkOffer || behavior.refreshSuggestions)) continue;
         nextOffers[notice.id] = {
           suggestions: [],
@@ -509,17 +540,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setOffers(nextOffers);
       setExcluded({});
       const stillThere = (noticeId: string) => pending.some((entry) => entry.id === noticeId);
-      const blocking = notices.some((notice) => notice.code !== CODE_NONE_ON_HAND && stillThere(notice.id));
       const amberLeft = notices.filter((notice) => notice.code === CODE_NONE_ON_HAND && stillThere(notice.id)).map((notice) => notice.id);
-      const pendingFailures: Record<string, true> = {};
+      const pendingFailures: Record<string, BatchFailureNotice> = {};
       for (const notice of notices) {
         if (notice.code === CODE_NONE_ON_HAND) continue;
-        if (stillThere(notice.id)) pendingFailures[notice.id] = true;
+        if (stillThere(notice.id)) pendingFailures[notice.id] = notice;
       }
       setFailureBannerIds(pendingFailures);
-      // Red only while a non-amber failure is still open. A card that already
-      // left, including one beside an amber card, does not keep the sentence.
-      setError(blocking ? BATCH_FAILURE_FALLBACK : '');
+      // The prefix belongs to this batch. A batch that saved everything leaves
+      // nothing for a later lock or full disk to inherit.
+      setConfirmedCount(Object.keys(pendingFailures).length === 0 ? 0 : (result.committedIds?.length ?? 0));
+      // The banner is derived from the notices still listed. A card that already
+      // left, including one beside an amber card, does not keep a sentence.
+      setError('');
       setPartialLine(formatPartialRemoval(result, names) ?? '');
       setLoadError('');
       if (amberLeft.length > 0) AccessibilityInfo.announceForAccessibility(NOTHING_ON_HAND_TITLE);
@@ -534,8 +567,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
-  const failureBanner = entries.some((entry) => failureBannerIds[entry.id] === true);
-  const batchHead = failureBanner ? BATCH_FAILURE_FALLBACK : error;
+  const openNotices = entries.flatMap((entry) => {
+    const notice = failureBannerIds[entry.id];
+    return notice === undefined ? [] : [notice];
+  });
+  const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
+  const batchHead = derivedBanner !== '' ? derivedBanner : error;
   const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
   const successBanner = batchHead === '' && !failedPending && partialLine !== '';
   const pill = nothingOnHandPill(blockedCount);
