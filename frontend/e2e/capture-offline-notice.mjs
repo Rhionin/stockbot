@@ -330,7 +330,8 @@ async function capturePhone(browser) {
       await page.getByText(flow.name, { exact: true }).waitFor({ timeout: 30000 });
       await context.setOffline(true);
       await page.getByRole('button', { name: `Confirm ${flow.name}` }).click();
-      await page.getByText(sentence).waitFor({ state: 'visible' });
+      const phoneBanner = page.getByTestId('batch-banner').getByText(sentence);
+      await phoneBanner.waitFor({ state: 'visible' });
       await waitForSettledToast(page, '[data-testid="batch-banner"]');
       if (await page.getByText('Network request failed').count()) throw new Error('raw network text is visible');
       if (await page.getByTestId('confirm-toast').count()) throw new Error('offline notice used a toast');
@@ -342,7 +343,7 @@ async function capturePhone(browser) {
         console.log('pending before refresh', pending.map((row) => row.product?.name ?? row.barcode));
         await page.getByRole('tab', { name: 'Scan' }).click();
         await page.getByRole('tab', { name: 'Queue' }).click();
-        await page.getByText(sentence).waitFor({ state: 'hidden', timeout: 15000 });
+        await page.getByTestId('batch-banner').getByText(sentence).waitFor({ state: 'hidden', timeout: 15000 });
         await page.getByText(flow.name, { exact: true }).waitFor({ state: 'visible' });
         const visible = await page.locator('body').innerText();
         if (!visible.includes(flow.name)) throw new Error('the scan left the queue when the notice cleared');
