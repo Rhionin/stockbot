@@ -101,7 +101,7 @@ func knownKind(pattern string, kind isoKind) error {
 func coverageProblems(routes servedRoutes, decisions map[string]routeDecision) []string {
 	var problems []string
 	seen := map[string]cataloguedRoute{}
-	for _, route := range routes {
+	for _, route := range routes.list {
 		if prev, ok := seen[route.pattern]; ok {
 			problems = append(problems, fmt.Sprintf("duplicate registered route %q at %s and %s", route.pattern, prev.at, route.at))
 			continue
@@ -215,8 +215,9 @@ func TestEveryRouteHasIsolationCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot enumerate routes: %v", err)
 	}
-	// coverageProblems takes servedRoutes, the type only the live check
-	// returns. Assigning the source inventory here does not compile.
+	// coverageProblems takes servedRoutes, the struct crossCheckMuxes
+	// builds. Assigning the source inventory (served := routes) does not
+	// compile, and neither does a slice conversion.
 	served, err := crossCheckLiveRouter(t, routes)
 	if err != nil {
 		t.Fatalf("live router: %v", err)
@@ -272,7 +273,7 @@ func TestCoverageCheckRejectsUnlistedRoute(t *testing.T) {
 	}
 
 	routes, decisions := coverageBaseline(t)
-	problems := coverageProblems(append(servedRoutes(routes), found...), decisions)
+	problems := coverageProblems(servedRoutes{list: append(routes, found...)}, decisions)
 	if !problemContains(problems, `unlisted route "`+probe+`" (struct field) has no isolation-case decision`) {
 		t.Fatalf("problems = %v, want an unlisted-route failure", problems)
 	}
@@ -328,19 +329,63 @@ func TestRouteInventoryRejectsHiddenRegistration(t *testing.T) {
 }
 
 func TestRouteInventoryRejectsRootHandoff(t *testing.T) {
-	// brand.Register and Middleware are the only calls allowed to take root.
-	// other.Mount is a helper in another package. Routes it registered on
-	// root would never reach the live check.
-	const src = "package server\n" +
-		"func register() {\n" +
+	const allowed = "package server\n" +
+		"func NewHandler() {\n" +
+		"\troot := http.NewServeMux()\n" +
+		"\troot.Handle(\"/\", nil)\n" +
 		"\tbrand.Register(root)\n" +
-		"\thook.Middleware(root)\n" +
-		"\tother.Mount(root)\n" +
+		"\tvar handler http.Handler = root\n" +
+		"\thandler = cfg.household.Middleware(root)\n" +
 		"}\n"
-	fset, file := parseSnippet(t, "handoff.go", src)
-	_, _, err := collectRegistrations(fset, file, map[string]string{})
-	if err == nil || !strings.Contains(err.Error(), "root mux passed to other.Mount") {
-		t.Fatalf("root handoff err = %v", err)
+	fset, file := parseSnippet(t, "allowed.go", allowed)
+	if _, _, err := collectRegistrations(fset, file, map[string]string{}); err != nil {
+		t.Fatalf("root uses in NewHandler: %v", err)
+	}
+
+	// other.Register keeps the Register exemption pinned to package brand.
+	// webui.Middleware is a package function, not a method.
+	rejected := []struct {
+		name, src, want string
+	}{
+		{
+			name: "other package register",
+			src:  "package server\nfunc register() { other.Register(root) }\n",
+			want: "use of root mux",
+		},
+		{
+			name: "alias",
+			src:  "package server\nfunc register() { r2 := root; _ = r2 }\n",
+			want: "use of root mux",
+		},
+		{
+			name: "parentheses",
+			src:  "package server\nfunc register() { other.Mount((root)) }\n",
+			want: "use of root mux",
+		},
+		{
+			name: "struct literal",
+			src:  "package server\nfunc register() { h := holder{m: root}; _ = h }\n",
+			want: "use of root mux",
+		},
+		{
+			name: "package middleware",
+			src:  "package server\nfunc register() { webui.Middleware(root) }\n",
+			want: "use of root mux",
+		},
+		{
+			name: "mux assertion",
+			src:  "package server\nfunc NewHandler() { _ = handler.(*http.ServeMux) }\n",
+			want: "type assertion to *http.ServeMux",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			fset, file := parseSnippet(t, tc.name+".go", tc.src)
+			_, _, err := collectRegistrations(fset, file, map[string]string{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -369,7 +414,7 @@ func TestCoverageCheckRejectsDeletedCase(t *testing.T) {
 		t.Fatalf("case table has no %s entry to delete", dropped)
 	}
 	delete(decisions, dropped)
-	problems := coverageProblems(servedRoutes(routes), decisions)
+	problems := coverageProblems(servedRoutes{list: routes}, decisions)
 	if !problemContains(problems, `unlisted route "`+dropped+`"`) {
 		t.Fatalf("problems = %v, want an unlisted-route failure for the deleted case", problems)
 	}
@@ -380,7 +425,7 @@ func TestCoverageCheckRejectsStaleAndGrowth(t *testing.T) {
 
 	stale := cloneDecisions(decisions)
 	stale["GET /api/not-a-route"] = routeDecision{category: catOps, reason: "not registered"}
-	if !problemContains(coverageProblems(servedRoutes(routes), stale), `stale isolation entry "GET /api/not-a-route"`) {
+	if !problemContains(coverageProblems(servedRoutes{list: routes}, stale), `stale isolation entry "GET /api/not-a-route"`) {
 		t.Fatal("stale entry was accepted")
 	}
 
@@ -388,7 +433,7 @@ func TestCoverageCheckRejectsStaleAndGrowth(t *testing.T) {
 	grownRoutes := append(append([]cataloguedRoute{}, routes...), cataloguedRoute{pattern: extra, at: "test-only router"})
 	grown := cloneDecisions(decisions)
 	grown[extra] = routeDecision{category: catQuarantine, kind: kindListLeak, reason: waitsOnHouseholdScope}
-	if !problemContains(coverageProblems(servedRoutes(grownRoutes), grown), "quarantine grew") {
+	if !problemContains(coverageProblems(servedRoutes{list: grownRoutes}, grown), "quarantine grew") {
 		t.Fatal("quarantine growth was accepted")
 	}
 
@@ -411,7 +456,7 @@ func coverageBaseline(t *testing.T) ([]cataloguedRoute, map[string]routeDecision
 	if err != nil {
 		t.Fatalf("isolation case table: %v", err)
 	}
-	if problems := coverageProblems(servedRoutes(routes), decisions); len(problems) > 0 {
+	if problems := coverageProblems(servedRoutes{list: routes}, decisions); len(problems) > 0 {
 		t.Fatalf("baseline coverage is not green:\n%s", strings.Join(problems, "\n"))
 	}
 	return routes, cloneDecisions(decisions)

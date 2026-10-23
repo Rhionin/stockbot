@@ -29,7 +29,7 @@ The source walk parses `Handle` and `HandleFunc` calls in the non-test Go files 
 
 A wildcard the filler does not understand (`{name...}`, `{$}`, an empty name) fails instead of matching a different route.
 
-The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount. The root mux is a local in `NewHandler`, so the live check does not see it. Passing `root` to another function fails the source walk, except `brand.Register` (that mux is walked) and `Middleware` (it wraps the handler and registers nothing). A helper in another package that registers on `root` fails there.
+The root mux also registers five composition mounts: `/api`, `/api/`, `/health`, `/health/`, and `/` (the SPA catch-all). That set is closed. A new `root.Handle` fails until the route has an isolation decision the live cross-check can see. Household routes belong on `apiMux` or the brand mux, not on a new root mount. The root mux is a local in `NewHandler`, so the live check does not see it. Any use of that `root` identifier fails the source walk except `root.Handle` / `root.HandleFunc`, the argument of `brand.Register`, the argument of a `Middleware` method, and `var handler http.Handler = root`. An alias, parentheses, a struct field, a package function such as `webui.Middleware(root)` or `other.Register(root)`, and a `*http.ServeMux` type assertion all fail. `brand.Register`'s mux is walked. `Middleware` wraps the handler and registers nothing.
 
 ## How to add a case
 

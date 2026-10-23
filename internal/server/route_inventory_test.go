@@ -39,10 +39,11 @@ type cataloguedRoute struct {
 	at       string
 }
 
-// servedRoutes is the pattern list read from the live muxes. The case table
-// takes this type, not the source inventory, so substituting the source
-// list does not compile.
-type servedRoutes []cataloguedRoute
+// servedRoutes is the pattern list read from the live muxes. It is a struct,
+// built only by crossCheckMuxes, so the case table cannot take the source
+// inventory. served := routes does not compile, and neither does a
+// conversion from the slice.
+type servedRoutes struct{ list []cataloguedRoute }
 
 // enumerateRoutes reads route registrations from the server and brand
 // sources. A pattern that is not a string literal or a string constant
@@ -178,6 +179,9 @@ func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string
 	if err := rejectMuxMethodValues(fset, file); err != nil {
 		return nil, nil, err
 	}
+	if err := rejectRootEscapes(fset, file); err != nil {
+		return nil, nil, err
+	}
 	var routes []cataloguedRoute
 	mounts := map[string]string{}
 	var err error
@@ -188,10 +192,6 @@ func collectRegistrations(fset *token.FileSet, file *ast.File, consts map[string
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
-		}
-		if cerr := rejectRootHandoff(fset, call); cerr != nil {
-			err = cerr
-			return false
 		}
 		recvExpr, ok := handleReceiver(call)
 		if !ok {
@@ -448,11 +448,11 @@ func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) (servedRoutes,
 func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) (servedRoutes, error) {
 	apiServed, err := patternsServed(apiMux)
 	if err != nil {
-		return nil, err
+		return servedRoutes{}, err
 	}
 	brandServed, err := patternsServed(brandMux)
 	if err != nil {
-		return nil, err
+		return servedRoutes{}, err
 	}
 	servedByReceiver := map[string]map[string]struct{}{
 		"apiMux": apiServed,
@@ -466,64 +466,160 @@ func crossCheckMuxes(routes []cataloguedRoute, apiMux, brandMux *http.ServeMux) 
 	catalogued := map[string]cataloguedRoute{}
 	for _, route := range routes {
 		if prev, ok := catalogued[route.pattern]; ok {
-			return nil, fmt.Errorf("duplicate registered route %q at %s and %s", route.pattern, prev.at, route.at)
+			return servedRoutes{}, fmt.Errorf("duplicate registered route %q at %s and %s", route.pattern, prev.at, route.at)
 		}
 		catalogued[route.pattern] = route
 		served, ok := servedByReceiver[route.receiver]
 		if !ok {
-			return nil, fmt.Errorf("%s (%s) is not on a mux the inventory can cross-check", route.pattern, route.at)
+			return servedRoutes{}, fmt.Errorf("%s (%s) is not on a mux the inventory can cross-check", route.pattern, route.at)
 		}
 		if _, ok := served[route.pattern]; !ok {
-			return nil, fmt.Errorf("%s (%s) is registered in source but the live router does not serve it", route.pattern, route.at)
+			return servedRoutes{}, fmt.Errorf("%s (%s) is registered in source but the live router does not serve it", route.pattern, route.at)
 		}
 		req, err := requestForPattern(route.pattern)
 		if err != nil {
-			return nil, fmt.Errorf("%s (%s): %w", route.pattern, route.at, err)
+			return servedRoutes{}, fmt.Errorf("%s (%s): %w", route.pattern, route.at, err)
 		}
 		_, got := muxByReceiver[route.receiver].Handler(req)
 		if got != route.pattern {
-			return nil, fmt.Errorf("%s (%s): live router matched %q", route.pattern, route.at, got)
+			return servedRoutes{}, fmt.Errorf("%s (%s): live router matched %q", route.pattern, route.at, got)
 		}
 	}
 
-	var matched servedRoutes
+	var matched []cataloguedRoute
 	for _, served := range servedByReceiver {
 		for pattern := range served {
 			route, ok := catalogued[pattern]
 			if !ok {
-				return nil, fmt.Errorf("unlisted route %q is served by the live router and has no inventory entry", pattern)
+				return servedRoutes{}, fmt.Errorf("unlisted route %q is served by the live router and has no inventory entry", pattern)
 			}
 			matched = append(matched, route)
 		}
 	}
 	if len(matched) != len(routes) {
-		return nil, fmt.Errorf("live router serves %d routes, inventory has %d", len(matched), len(routes))
+		return servedRoutes{}, fmt.Errorf("live router serves %d routes, inventory has %d", len(matched), len(routes))
 	}
-	return matched, nil
+	return servedRoutes{list: matched}, nil
 }
 
-// rejectRootHandoff fails when the root mux is handed to a function the
-// inventory does not enumerate. brand.Register's mux is enumerated live.
-// Middleware wraps root and registers nothing. Any other handoff can
-// register routes on root, which is a local in NewHandler, so the live
-// check never sees them.
-func rejectRootHandoff(fset *token.FileSet, call *ast.CallExpr) error {
+// rejectRootEscapes fails when the root mux can leave NewHandler. root is a
+// local, so the live check never sees routes registered on it. The identifier
+// may be the receiver of root.Handle or root.HandleFunc, the argument of
+// brand.Register, the argument of a Middleware method, or the value in
+// var handler http.Handler = root. Anything else, including an alias, a
+// parenthesized argument, a struct field, or a package-level function, fails.
+// A type assertion to *http.ServeMux fails too: it recovers the mux from handler.
+func rejectRootEscapes(fset *token.FileSet, file *ast.File) error {
+	var err error
+	walkWithParent(file, func(n, parent ast.Node) {
+		if err != nil || n == nil {
+			return
+		}
+		if id, ok := n.(*ast.Ident); ok && id.Name == "root" && !rootIdentAllowed(id, parent) {
+			err = fmt.Errorf("%s: use of root mux bypasses the live check", formatPos(fset, id.Pos()))
+			return
+		}
+		if serveMuxAssert(n) {
+			err = fmt.Errorf("%s: type assertion to *http.ServeMux recovers the root mux; routes registered on it bypass the live check", formatPos(fset, n.Pos()))
+		}
+	})
+	return err
+}
+
+func rootIdentAllowed(id *ast.Ident, parent ast.Node) bool {
+	switch p := parent.(type) {
+	case *ast.AssignStmt:
+		for _, lhs := range p.Lhs {
+			if lhs == id {
+				return true
+			}
+		}
+	case *ast.ValueSpec:
+		for _, name := range p.Names {
+			if name == id {
+				return true
+			}
+		}
+		if len(p.Names) == 1 && p.Names[0].Name == "handler" && isHTTPHandlerType(p.Type) {
+			for _, val := range p.Values {
+				if val == id {
+					return true
+				}
+			}
+		}
+	case *ast.SelectorExpr:
+		return p.X == id && (p.Sel.Name == "Handle" || p.Sel.Name == "HandleFunc")
+	case *ast.CallExpr:
+		return rootArgAllowed(p, id)
+	}
+	return false
+}
+
+func rootArgAllowed(call *ast.CallExpr, id *ast.Ident) bool {
 	for _, arg := range call.Args {
-		id, ok := arg.(*ast.Ident)
-		if !ok || id.Name != "root" {
+		if arg != id {
 			continue
 		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "brand" && sel.Sel.Name == "Register" {
-				continue
-			}
-			if sel.Sel.Name == "Middleware" {
-				continue
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "brand" && sel.Sel.Name == "Register" {
+			return true
+		}
+		// A method receiver is not a package name. webui.Middleware is a
+		// package function and can register on the mux it is given.
+		if sel.Sel.Name == "Middleware" {
+			if _, pkgRecv := sel.X.(*ast.Ident); !pkgRecv {
+				return true
 			}
 		}
-		return fmt.Errorf("%s: root mux passed to %s; routes it registers bypass the live check", formatPos(fset, call.Pos()), exprLabel(call.Fun))
+		return false
 	}
-	return nil
+	return false
+}
+
+func isHTTPHandlerType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Handler" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "http"
+}
+
+func serveMuxAssert(n ast.Node) bool {
+	ta, ok := n.(*ast.TypeAssertExpr)
+	if !ok || ta.Type == nil {
+		return false
+	}
+	star, ok := ta.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "ServeMux" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "http"
+}
+
+func walkWithParent(root ast.Node, fn func(n, parent ast.Node)) {
+	var stack []ast.Node
+	ast.Inspect(root, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		var parent ast.Node
+		if len(stack) > 0 {
+			parent = stack[len(stack)-1]
+		}
+		stack = append(stack, n)
+		fn(n, parent)
+		return true
+	})
 }
 
 // patternsServed lists every pattern registered on mux. ServeMux has no
