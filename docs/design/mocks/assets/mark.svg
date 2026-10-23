@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <title>Stockbot</title>
+  <desc>A food can with metal rims and four corner scan sights.</desc>
+  <g fill="none" stroke="#0D9488" stroke-width="5.5" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M22 44V20H40"/>
+    <path d="M88 20H106V44"/>
+    <path d="M22 84V108H40"/>
+    <path d="M88 108H106V84"/>
+  </g>
+  <ellipse cx="64" cy="91.2" rx="24" ry="5.6" fill="#A8B0B8"/>
+  <ellipse cx="64" cy="89.2" rx="24" ry="4.8" fill="#E6EAEE"/>
+  <rect x="42" y="39.2" width="44" height="52" fill="url(#can-body)"/>
+  <ellipse cx="64" cy="39.2" rx="24" ry="7.2" fill="#B5BDC6"/>
+  <ellipse cx="64" cy="37.4" rx="24" ry="6.2" fill="url(#can-lid)"/>
+  <ellipse cx="64" cy="36.8" rx="15.4" ry="3.6" fill="#C8CFD6"/>
+  <ellipse cx="64" cy="36.4" rx="14.2" ry="2.9" fill="#F4F6F8"/>
+  <defs>
+    <linearGradient id="can-body" x1="42" y1="0" x2="86" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0F766E"/>
+      <stop offset="0.2" stop-color="#149E92"/>
+      <stop offset="0.5" stop-color="#0D9488"/>
+      <stop offset="0.82" stop-color="#0E7C72"/>
+      <stop offset="1" stop-color="#115E59"/>
+    </linearGradient>
+    <linearGradient id="can-lid" x1="64" y1="30" x2="64" y2="45" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8F9FA"/>
+      <stop offset="1" stop-color="#D4DAE0"/>
+    </linearGradient>
+  </defs>
+</svg>
