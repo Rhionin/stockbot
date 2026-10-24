@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -48,7 +49,9 @@ func (g *Groups) Seed(ctx context.Context, scope tenant.Scope) error {
 	defer tx.Rollback()
 
 	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, seededSetting).Scan(&existing)
+	err = tx.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), seededSetting).Scan(&existing)
 	if err == nil {
 		return nil
 	}
@@ -58,7 +61,9 @@ func (g *Groups) Seed(ctx context.Context, scope tenant.Scope) error {
 	if _, err := seedSuggestions(ctx, scope, tx); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings (key, value) VALUES (?, '1')`, seededSetting); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, '1')`,
+		scope.HouseholdID(), seededSetting); err != nil {
 		return fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -71,7 +76,7 @@ func seedSuggestions(ctx context.Context, scope tenant.Scope, tx *sql.Tx) ([]str
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
-	products, err := loadSeedProducts(ctx, tx)
+	products, err := loadSeedProducts(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -134,10 +139,14 @@ func seedSuggestions(ctx context.Context, scope tenant.Scope, tx *sql.Tx) ([]str
 	return created, nil
 }
 
-func loadSeedProducts(ctx context.Context, q querier) ([]seedProduct, error) {
+func loadSeedProducts(ctx context.Context, scope tenant.Scope, q querier) ([]seedProduct, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT id, name, COALESCE(unit_of_measure, ''), COALESCE(category, '')
-		FROM products ORDER BY id`)
+		SELECT p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''), COALESCE(p.category, '')
+		FROM products p
+		ORDER BY p.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
@@ -147,6 +156,9 @@ func loadSeedProducts(ctx context.Context, q querier) ([]seedProduct, error) {
 		var p seedProduct
 		if err := rows.Scan(&p.id, &p.name, &p.unit, &p.category); err != nil {
 			return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
+		}
+		if strings.TrimSpace(p.name) == "" {
+			continue
 		}
 		out = append(out, p)
 	}

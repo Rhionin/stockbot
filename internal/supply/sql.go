@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -20,25 +21,28 @@ const (
 	keyTargetValue = "supply_target_value"
 )
 
-func readPhaseAndMonths(ctx context.Context, tx *sql.Tx) (Phase, Months, error) {
-	phase, err := readPhase(ctx, tx)
+func readPhaseAndMonths(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (Phase, Months, error) {
+	phase, err := readPhase(ctx, scope, tx)
 	if err != nil {
 		return Phase{}, 0, err
 	}
-	months, err := readMonths(ctx, tx)
+	months, err := readMonths(ctx, scope, tx)
 	if err != nil {
 		return Phase{}, 0, err
 	}
 	return phase, months, nil
 }
 
-func readSettings(ctx context.Context, db *sql.DB) (Settings, error) {
+func readSettings(ctx context.Context, scope tenant.Scope, db *sql.DB) (Settings, error) {
+	if err := scope.Require(); err != nil {
+		return Settings{}, err
+	}
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return Settings{}, fmt.Errorf("could not read supply settings: %w", err)
 	}
 	defer tx.Rollback()
-	phase, months, err := readPhaseAndMonths(ctx, tx)
+	phase, months, err := readPhaseAndMonths(ctx, scope, tx)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -56,14 +60,13 @@ func readSettings(ctx context.Context, db *sql.DB) (Settings, error) {
 	return settings, nil
 }
 
-func readPhase(ctx context.Context, q queryer) (Phase, error) {
-	var raw string
-	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, keyStarted).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
+func readPhase(ctx context.Context, scope tenant.Scope, q queryer) (Phase, error) {
+	raw, err := readHouseholdSetting(ctx, scope, q, keyStarted)
+	if err != nil || raw == "" {
+		if err != nil {
+			return Phase{}, fmt.Errorf("could not read the supply start date: %w", err)
+		}
 		return Phase{}, nil
-	}
-	if err != nil {
-		return Phase{}, fmt.Errorf("could not read the supply start date: %w", err)
 	}
 	started, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
@@ -72,25 +75,20 @@ func readPhase(ctx context.Context, q queryer) (Phase, error) {
 	return Phase{started: started.UTC()}, nil
 }
 
-func readMonths(ctx context.Context, q queryer) (Months, error) {
-	var kind string
-	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, keyTargetKind).Scan(&kind)
-	if errors.Is(err, sql.ErrNoRows) || kind == "" {
-		return DefaultMonths, nil
-	}
+func readMonths(ctx context.Context, scope tenant.Scope, q queryer) (Months, error) {
+	kind, err := readHouseholdSetting(ctx, scope, q, keyTargetKind)
 	if err != nil {
 		return 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	if kind != string(restock.KindMonths) {
+	if kind == "" || kind != string(restock.KindMonths) {
 		return DefaultMonths, nil
 	}
-	var raw string
-	err = q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, keyTargetValue).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) || raw == "" {
-		return DefaultMonths, nil
-	}
+	raw, err := readHouseholdSetting(ctx, scope, q, keyTargetValue)
 	if err != nil {
 		return 0, fmt.Errorf("could not read the supply length: %w", err)
+	}
+	if raw == "" {
+		return DefaultMonths, nil
 	}
 	n, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
@@ -106,33 +104,43 @@ func readMonths(ctx context.Context, q queryer) (Months, error) {
 	return months, nil
 }
 
-func completeOpening(ctx context.Context, db *sql.DB, now time.Time) (Phase, error) {
+func completeOpening(ctx context.Context, scope tenant.Scope, db *sql.DB, now time.Time) (Phase, error) {
+	if err := scope.Require(); err != nil {
+		return Phase{}, err
+	}
 	stamp := now.UTC().Format(time.RFC3339)
+	household := scope.HouseholdID()
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value)
-		SELECT ?, ?
-		WHERE NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?)`,
-		keyStarted, stamp, keyStarted,
+		INSERT INTO household_settings (household_id, key, value)
+		SELECT ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM household_settings WHERE household_id = ? AND key = ?
+		)`,
+		household, keyStarted, stamp, household, keyStarted,
 	); err != nil {
 		return Phase{}, fmt.Errorf("could not save the supply start date: %w", err)
 	}
-	return readPhase(ctx, db)
+	return readPhase(ctx, scope, db)
 }
 
-func writeMonths(ctx context.Context, db *sql.DB, months Months) error {
+func writeMonths(ctx context.Context, scope tenant.Scope, db *sql.DB, months Months) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not save the supply length: %w", err)
 	}
 	defer tx.Rollback()
+	household := scope.HouseholdID()
 	for _, setting := range []struct{ key, value string }{
 		{keyTargetKind, string(restock.KindMonths)},
 		{keyTargetValue, strconv.Itoa(int(months))},
 	} {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO app_settings (key, value) VALUES (?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			setting.key, setting.value,
+			INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
+			ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
+			household, setting.key, setting.value,
 		); err != nil {
 			return fmt.Errorf("could not save the supply length: %w", err)
 		}
@@ -227,7 +235,7 @@ func wipeHousehold(ctx context.Context, scope tenant.Scope, db *sql.DB) error {
 			return fmt.Errorf("could not wipe inventory: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM app_settings WHERE key = ?`, keyStarted); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM household_settings WHERE household_id = ? AND key = ?`, household, keyStarted); err != nil {
 		return fmt.Errorf("could not wipe inventory: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -241,7 +249,7 @@ func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase)
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT i.id, i.product_id, p.name,
+		SELECT i.id, i.product_id, `+product.DisplayNameSQL("p")+`,
 			p.net_base_value, COALESCE(p.net_dimension, ''),
 			g.id, COALESCE(g.rule, ''), COALESCE(g.pinned_product_id, ''),
 			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, ''),
@@ -252,7 +260,7 @@ func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase)
 		LEFT JOIN product_group_members gm ON gm.product_id = i.product_id AND gm.household_id = i.household_id
 		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.household_id = i.household_id
 		WHERE i.household_id = ? AND i.shelved = 0
-		ORDER BY i.product_id, i.id`, scope.HouseholdID())
+		ORDER BY i.product_id, i.id`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read supply: %w", err)
 	}
@@ -579,6 +587,23 @@ func shoppingDeal(itemID, label string, noted time.Time, price, regular sql.Null
 
 type queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func readHouseholdSetting(ctx context.Context, scope tenant.Scope, q queryer, key string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	var raw string
+	err := q.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return raw, nil
 }
 
 // stripMonotonic drops the " m=+1.234" suffix time.Time.String appends when

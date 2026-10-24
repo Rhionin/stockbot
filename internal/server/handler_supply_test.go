@@ -299,7 +299,11 @@ func TestSupplyPolicy(t *testing.T) {
 			name: "wipe clears stock and the start date and keeps restock targets",
 			setup: func(env testEnv) {
 				beginUsing(env.T, env.DB, now.Add(-24*time.Hour))
-				if _, err := env.DB.Exec(`INSERT INTO app_settings (key, value) VALUES ('supply_target_kind', 'months'), ('supply_target_value', '4')`); err != nil {
+				if _, err := env.DB.Exec(`
+					INSERT INTO household_settings (household_id, key, value)
+					SELECT id, 'supply_target_kind', 'months' FROM households WHERE is_primary = 1
+					UNION ALL
+					SELECT id, 'supply_target_value', '4' FROM households WHERE is_primary = 1`); err != nil {
 					env.T.Fatalf("household default: %v", err)
 				}
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-wipe-supply", "Milk", "item-wipe-supply")

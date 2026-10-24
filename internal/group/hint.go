@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -155,12 +156,12 @@ func loadHintGroups(ctx context.Context, scope tenant.Scope, q querier) ([]hintG
 		return nil, nil, err
 	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT g.id, g.name, m.product_id, COALESCE(p.name, '')
+		SELECT g.id, g.name, m.product_id, COALESCE(`+product.DisplayNameSQL("p")+`, '')
 		FROM product_groups g
 		LEFT JOIN product_group_members m ON m.group_id = g.id AND m.household_id = g.household_id
 		LEFT JOIN products p ON p.id = m.product_id
 		WHERE g.household_id = ?
-		ORDER BY g.name, g.id`, scope.HouseholdID())
+		ORDER BY g.name, g.id`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not match this scan to a group: %w", err)
 	}
@@ -260,7 +261,7 @@ func (g *Groups) NoteFromScan(ctx context.Context, scope tenant.Scope, productID
 	defer tx.Rollback()
 
 	var name string
-	err = tx.QueryRowContext(ctx, `SELECT name FROM products WHERE id = ?`, productID).Scan(&name)
+	err = tx.QueryRowContext(ctx, `SELECT `+product.DisplayNameSQL("p")+` FROM products p WHERE p.id = ?`, scope.HouseholdID(), productID).Scan(&name)
 	if err == sql.ErrNoRows {
 		return missing("That product was not found.")
 	}

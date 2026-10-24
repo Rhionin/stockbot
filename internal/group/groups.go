@@ -557,19 +557,26 @@ func (g *Groups) MemberGroupID(ctx context.Context, scope tenant.Scope, productI
 	return id, nil
 }
 
-// DefaultRule is the account rule. A missing setting means same as what ran out.
-func (g *Groups) DefaultRule(ctx context.Context) (Kind, error) {
-	return readDefault(ctx, g.db)
+// DefaultRule is this household's rule. A missing setting means same as what ran out.
+func (g *Groups) DefaultRule(ctx context.Context, scope tenant.Scope) (Kind, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	return readDefault(ctx, scope, g.db)
 }
 
-// SetDefaultRule stores the account rule.
-func (g *Groups) SetDefaultRule(ctx context.Context, rule string) error {
+// SetDefaultRule stores this household's rule.
+func (g *Groups) SetDefaultRule(ctx context.Context, scope tenant.Scope, rule string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if !Valid(rule) {
 		return invalid("Pick one of the rules.")
 	}
 	_, err := g.db.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, settingRule, rule)
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
+		ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
+		scope.HouseholdID(), settingRule, rule)
 	if err != nil {
 		return fmt.Errorf("could not save the default rule: %w", err)
 	}
@@ -672,7 +679,7 @@ func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID st
 		if Valid(s.ProposedRule) {
 			rule = s.ProposedRule
 		} else {
-			def, err := readDefault(ctx, tx)
+			def, err := readDefault(ctx, scope, tx)
 			if err != nil {
 				return Group{}, err
 			}
@@ -797,7 +804,7 @@ func createInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name string
 	if err := scope.Require(); err != nil {
 		return "", err
 	}
-	rule, err := readDefault(ctx, tx)
+	rule, err := readDefault(ctx, scope, tx)
 	if err != nil {
 		return "", err
 	}
@@ -1008,7 +1015,7 @@ func overrideNotices(ctx context.Context, scope tenant.Scope, q querier, ids []s
 		return nil, nil
 	}
 	query := `
-		SELECT i.product_id, p.name,
+		SELECT i.product_id, ` + product.DisplayNameSQL("p") + `,
 			CASE WHEN t.kind = 'months' THEN t.value END,
 			CASE WHEN t.kind = 'amount' THEN t.value END,
 			p.net_base_value, COALESCE(p.net_dimension, '')
@@ -1016,8 +1023,8 @@ func overrideNotices(ctx context.Context, scope tenant.Scope, q querier, ids []s
 		JOIN items i ON i.id = t.item_id AND i.household_id = t.household_id
 		JOIN products p ON p.id = i.product_id
 		WHERE t.household_id = ? AND i.household_id = ? AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids)+2)
-	args = append(args, scope.HouseholdID(), scope.HouseholdID())
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID())
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -1231,7 +1238,7 @@ func loadMembers(ctx context.Context, scope tenant.Scope, q querier, groupID str
 	}
 	household := scope.HouseholdID()
 	rows, err := q.QueryContext(ctx, `
-		SELECT m.product_id, p.name,
+		SELECT m.product_id, `+product.DisplayNameSQL("p")+`,
 		       (SELECT COUNT(*) FROM item_instances ii
 		         JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
 		         WHERE i.product_id = m.product_id AND i.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL),
@@ -1250,8 +1257,8 @@ func loadMembers(ctx context.Context, scope tenant.Scope, q querier, groupID str
 		FROM product_group_members m
 		JOIN products p ON p.id = m.product_id
 		WHERE m.group_id = ? AND m.household_id = ?
-		ORDER BY p.name, m.product_id`,
-		household, household, household, household, household, household, household, household, groupID, household)
+		ORDER BY `+product.DisplayNameSQL("p")+`, m.product_id`,
+		household, household, household, household, household, household, household, household, household, groupID, household, household)
 	if err != nil {
 		return nil, fmt.Errorf("could not load the group: %w", err)
 	}
@@ -1373,9 +1380,14 @@ func nameKey(name string) (string, error) {
 	return key, nil
 }
 
-func readDefault(ctx context.Context, q querier) (Kind, error) {
+func readDefault(ctx context.Context, scope tenant.Scope, q querier) (Kind, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var raw string
-	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, settingRule).Scan(&raw)
+	err := q.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), settingRule).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return KindSameAsRanOut, nil
 	}
@@ -1586,13 +1598,13 @@ func suggestionMembers(ctx context.Context, scope tenant.Scope, q querier, id st
 		return nil, err
 	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT m.product_id, COALESCE(p.name, ''), m.included, m.caution,
+		SELECT m.product_id, COALESCE(`+product.DisplayNameSQL("p")+`, ''), m.included, m.caution,
 		       COALESCE(p.image_url, ''), COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''),
 		       p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM group_suggestion_members m
 		LEFT JOIN products p ON p.id = m.product_id
 		WHERE m.suggestion_id = ? AND m.household_id = ?
-		ORDER BY m.product_id`, id, scope.HouseholdID())
+		ORDER BY m.product_id`, scope.HouseholdID(), id, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not load suggestions: %w", err)
 	}

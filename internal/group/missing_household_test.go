@@ -40,6 +40,12 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
+		_, err := (*Groups)(nil).DefaultRule(context.Background(), tenant.Scope{})
+		if !errors.Is(err, tenant.ErrMissingHousehold) {
+			t.Fatalf("DefaultRule: %v", err)
+		}
+	}
+	{
 		err := (*Groups)(nil).Delete(context.Background(), tenant.Scope{}, "")
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("Delete: %v", err)
@@ -115,6 +121,12 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		err := (*Groups)(nil).Seed(context.Background(), tenant.Scope{})
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("Seed: %v", err)
+		}
+	}
+	{
+		err := (*Groups)(nil).SetDefaultRule(context.Background(), tenant.Scope{}, "same_as_ran_out")
+		if !errors.Is(err, tenant.ErrMissingHousehold) {
+			t.Fatalf("SetDefaultRule: %v", err)
 		}
 	}
 	{

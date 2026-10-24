@@ -119,11 +119,23 @@ var sqlAllow = []struct {
 }
 
 var (
-	tableRef   = regexp.MustCompile(`(?i)\b(?:from|join|update|into|table)\s+([a-z_][a-z0-9_]*)`)
-	scopedPred = regexp.MustCompile(`(?i)(?:\b[a-z_][a-z0-9_]*\.)?household_id\s*=\s*\?`)
-	insertHead = regexp.MustCompile(`(?i)^\s*insert\s+into\s+([a-z_][a-z0-9_]*)\s*\(([^)]*)\)`)
-	sqlStart   = regexp.MustCompile(`(?i)\b(select|insert|update|delete|with)\b`)
+	tableRef      = regexp.MustCompile(`(?i)\b(?:from|join|update|into|table)\s+([a-z_][a-z0-9_]*)`)
+	tableAliasRef = regexp.MustCompile(`(?i)\b(?:from|join|update|into|table)\s+([a-z_][a-z0-9_]*)(?:\s+(?:as\s+)?([a-z_][a-z0-9_]*))?`)
+	bareHousehold = regexp.MustCompile(`(?i)(?:^|[^\w.])household_id\b`)
+	sqlStart      = regexp.MustCompile(`(?i)\b(select|insert|update|delete|with)\b`)
 )
+
+// notAlias is the word after a table name that is SQL, not a table alias.
+var notAlias = map[string]bool{
+	"and": true, "as": true, "asc": true, "between": true, "by": true, "case": true,
+	"cross": true, "desc": true, "distinct": true, "else": true, "end": true,
+	"exists": true, "from": true, "full": true, "group": true, "having": true,
+	"in": true, "inner": true, "into": true, "is": true, "join": true, "left": true,
+	"like": true, "limit": true, "natural": true, "not": true, "null": true,
+	"on": true, "or": true, "order": true, "outer": true, "right": true,
+	"select": true, "set": true, "then": true, "union": true, "using": true,
+	"values": true, "when": true, "where": true,
+}
 
 // CheckStatement reports household tables this statement touches without a
 // bound household_id. An insert may name household_id in its column list.
@@ -146,30 +158,72 @@ func checkStatement(sqlText, file string) []string {
 }
 
 func checkOne(sqlText, file string) string {
-	tables := householdTablesIn(sqlText)
-	if len(tables) == 0 {
+	refs := householdRefs(sqlText)
+	if len(refs) == 0 {
 		return ""
 	}
 	if allowed(file, sqlText) {
 		return ""
 	}
-	if insertHead.MatchString(sqlText) {
-		m := insertHead.FindStringSubmatch(sqlText)
-		table := strings.ToLower(m[1])
-		cols := strings.ToLower(m[2])
-		if _, ok := householdSet()[table]; ok && strings.Contains(cols, "household_id") {
-			// The insert names its household. A following SELECT in the same
-			// statement still has to be checked when it is not this insert.
-			rest := insertHead.ReplaceAllString(sqlText, "")
-			if len(householdTablesIn(rest)) == 0 || scopedPred.MatchString(sqlText) {
-				return ""
-			}
+	if missing := unconstrainedRefs(sqlText, refs); len(missing) > 0 {
+		return fmt.Sprintf("unscoped household SQL on %s: %s", strings.Join(missing, ", "), oneLine(sqlText))
+	}
+	return ""
+}
+
+type hhRef struct {
+	table string
+	alias string
+}
+
+// householdRefs lists each household table and the alias the statement uses.
+// The same table under two aliases is two references. Each one has to name
+// household_id, so a join cannot ride on another table's predicate.
+func householdRefs(sqlText string) []hhRef {
+	set := householdSet()
+	seen := map[string]bool{}
+	var out []hhRef
+	for _, match := range tableAliasRef.FindAllStringSubmatch(sqlText, -1) {
+		table := strings.ToLower(match[1])
+		if !set[table] {
+			continue
 		}
+		alias := table
+		if len(match) > 2 && match[2] != "" && !notAlias[strings.ToLower(match[2])] {
+			alias = strings.ToLower(match[2])
+		}
+		key := table + "\x00" + alias
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, hhRef{table: table, alias: alias})
 	}
-	if scopedPred.MatchString(sqlText) {
-		return ""
+	return out
+}
+
+func unconstrainedRefs(sqlText string, refs []hhRef) []string {
+	bare := len(bareHousehold.FindAllString(sqlText, -1))
+	var missing []string
+	var pending []string
+	for _, ref := range refs {
+		if aliasScoped(sqlText, ref.alias) {
+			continue
+		}
+		if ref.alias != ref.table {
+			missing = append(missing, ref.alias)
+			continue
+		}
+		pending = append(pending, ref.table)
 	}
-	return fmt.Sprintf("unscoped household SQL on %s: %s", strings.Join(tables, ", "), oneLine(sqlText))
+	if bare < len(pending) {
+		missing = append(missing, pending...)
+	}
+	return missing
+}
+
+func aliasScoped(sqlText, alias string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(alias) + `\.household_id\b`).MatchString(sqlText)
 }
 
 func allowed(file, sqlText string) bool {

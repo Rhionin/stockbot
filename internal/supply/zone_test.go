@@ -48,10 +48,10 @@ func TestPlanFollowsTheLaterEventAcrossDST(t *testing.T) {
 		INSERT INTO product_group_members (product_id, group_id, household_id) VALUES
 			('cons-night', 'g-cons', ?), ('cons-day', 'g-cons', ?),
 			('stock-night', 'g-stock', ?), ('stock-day', 'g-stock', ?);
-		INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', '2020-01-01T00:00:00Z')`,
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', '2020-01-01T00:00:00Z')`,
 		household, household, household, household, household, household, household, household,
 		household, household, household, household,
-		household, household, household, household); err != nil {
+		household, household, household, household, household); err != nil {
 		t.Fatal(err)
 	}
 	consume := []struct {

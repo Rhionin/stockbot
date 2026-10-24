@@ -113,7 +113,7 @@ func TestHistoryCorrectionsReadBack(t *testing.T) {
 				mustInsertInstance(env, "old-a", "item-old", t1, nil, "")
 				mustInsertInstance(env, "old-b", "item-old", t1, &t3, "manual")
 				mustInsertInstance(env, "old-c", "item-old", t2, nil, "")
-				if _, err := env.DB.Exec(`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', 'yesterday')`); err != nil {
+				if _, err := env.DB.Exec(`INSERT INTO household_settings (household_id, key, value) SELECT id, 'onboarding_started_at', 'yesterday' FROM households WHERE is_primary = 1`); err != nil {
 					env.T.Fatalf("stamp: %v", err)
 				}
 				if _, err := env.DB.Exec(`

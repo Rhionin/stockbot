@@ -38,7 +38,8 @@ func TestGroupUsageAndPlanReadMonotonicConsumption(t *testing.T) {
 	}
 	started := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := conn.Exec(
-		`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`,
+		`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		household,
 		started.Format(time.RFC3339),
 	); err != nil {
 		t.Fatal(err)

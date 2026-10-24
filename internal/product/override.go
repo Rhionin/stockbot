@@ -14,13 +14,14 @@ import (
 )
 
 // DisplayNameSQL is the name one household sees for a product alias.
+// A blank override falls back to the shared catalog name.
 // The caller binds household id to the single placeholder.
 func DisplayNameSQL(alias string) string {
 	if alias == "" {
 		alias = "p"
 	}
 	return fmt.Sprintf(
-		`COALESCE((SELECT o.display_name FROM household_product_overrides o WHERE o.product_id = %s.id AND o.household_id = ?), %s.name)`,
+		`COALESCE(NULLIF((SELECT o.display_name FROM household_product_overrides o WHERE o.product_id = %s.id AND o.household_id = ?), ''), %s.name)`,
 		alias, alias,
 	)
 }

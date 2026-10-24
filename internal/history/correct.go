@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -199,9 +200,9 @@ func applyUndo(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id string, l
 	}
 	var productID, name string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT i.product_id, p.name
+		SELECT i.product_id, `+product.DisplayNameSQL("p")+`
 		FROM items i JOIN products p ON p.id = i.product_id
-		WHERE i.id = ? AND i.household_id = ?`, move.ItemID, scope.HouseholdID()).Scan(&productID, &name); err != nil {
+		WHERE i.id = ? AND i.household_id = ?`, scope.HouseholdID(), move.ItemID, scope.HouseholdID()).Scan(&productID, &name); err != nil {
 		return UndoEffect{}, err
 	}
 	onHand, err := countOnHand(ctx, scope, tx, []string{move.ItemID})

@@ -108,11 +108,11 @@ func (r *Pantry) getItemByProduct(ctx context.Context, scope tenant.Scope, produ
 	row := r.db.QueryRowContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
 		WHERE i.household_id = ? AND i.product_id = ?`,
-		scope.HouseholdID(), productID,
+		scope.HouseholdID(), scope.HouseholdID(), productID,
 	)
 
 	item, err := scanItem(row)
@@ -133,11 +133,11 @@ func (r *Pantry) getItemByID(ctx context.Context, scope tenant.Scope, itemID str
 	row := r.db.QueryRowContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
 		WHERE i.id = ? AND i.household_id = ?`,
-		itemID, scope.HouseholdID(),
+		scope.HouseholdID(), itemID, scope.HouseholdID(),
 	)
 
 	item, err := scanItem(row)
@@ -158,12 +158,12 @@ func (r *Pantry) ListItems(ctx context.Context, scope tenant.Scope) ([]Item, err
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
 		WHERE i.household_id = ? AND i.shelved = 0
-		ORDER BY p.name`,
-		scope.HouseholdID(),
+		ORDER BY `+product.DisplayNameSQL("p"),
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ListItems: %w", err)

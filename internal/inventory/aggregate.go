@@ -180,16 +180,17 @@ func (r *Pantry) groupSummaries(ctx context.Context, scope tenant.Scope) (map[st
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT g.id, g.name, g.rule, g.rule_confirmed, g.pinned_product_id,
 		       g.window_months, g.quantity_base_value, g.quantity_dimension,
-		       p.id, p.name,
+		       p.id, `+product.DisplayNameSQL("p")+`,
 		       COALESCE((SELECT i.id FROM items i WHERE i.product_id = p.id AND i.household_id = ? LIMIT 1), ''),
 		       COALESCE((SELECT COUNT(*) FROM item_instances ii
-		                  JOIN items i ON i.id = ii.item_id
+		                  JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
 		                  WHERE i.product_id = p.id AND i.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL), 0)
 		FROM product_group_members m
-		JOIN product_groups g ON g.id = m.group_id
+		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
 		JOIN products p ON p.id = m.product_id
 		WHERE g.household_id = ? AND m.household_id = ?
-		ORDER BY g.name, p.name, p.id`, householdID, householdID, householdID, householdID, householdID)
+		ORDER BY g.name, `+product.DisplayNameSQL("p")+`, p.id`,
+		householdID, householdID, householdID, householdID, householdID, householdID, householdID)
 	if err != nil {
 		return nil, fmt.Errorf("could not load groups for inventory: %w", err)
 	}
@@ -269,22 +270,37 @@ func (r *Pantry) attachBarcodes(ctx context.Context, scope tenant.Scope, groups 
 	}
 	householdID := scope.HouseholdID()
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT b.product_id, b.barcode
+		SELECT b.product_id, b.barcode, b.source
 		FROM barcodes b
-		JOIN product_group_members m ON m.product_id = b.product_id
-		JOIN product_groups g ON g.id = m.group_id
-		WHERE b.household_id = ? AND m.household_id = ? AND g.household_id = ?
-		ORDER BY b.barcode`, householdID, householdID, householdID)
+		JOIN product_group_members m ON m.product_id = b.product_id AND m.household_id = ?
+		JOIN product_groups g ON g.id = m.group_id AND g.household_id = ?
+		WHERE (b.household_id = ? OR (b.source = 'global' AND b.user_id = ''))
+		ORDER BY CASE b.source WHEN 'user_override' THEN 0 ELSE 1 END, b.barcode`,
+		householdID, householdID, householdID)
 	if err != nil {
 		return fmt.Errorf("could not load group barcodes: %w", err)
 	}
 	defer rows.Close()
 	codes := map[string][]string{}
+	seen := map[string]map[string]struct{}{}
+	claimed := map[string]struct{}{}
 	for rows.Next() {
-		var productID, barcode string
-		if err := rows.Scan(&productID, &barcode); err != nil {
+		var productID, barcode, source string
+		if err := rows.Scan(&productID, &barcode, &source); err != nil {
 			return fmt.Errorf("could not load group barcodes: %w", err)
 		}
+		if source == "user_override" {
+			claimed[barcode] = struct{}{}
+		} else if _, ok := claimed[barcode]; ok {
+			continue
+		}
+		if seen[productID] == nil {
+			seen[productID] = map[string]struct{}{}
+		}
+		if _, ok := seen[productID][barcode]; ok {
+			continue
+		}
+		seen[productID][barcode] = struct{}{}
 		codes[productID] = append(codes[productID], barcode)
 	}
 	if err := rows.Err(); err != nil {

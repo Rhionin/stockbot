@@ -47,7 +47,7 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 			('prod-oats', 'grp-staples', ?),
 			('prod-beans', 'grp-staples', ?),
 			('prod-bare', 'grp-solo', ?)`, household, household, household)
-	execHistory(t, db, `INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', 'yesterday')`)
+	execHistory(t, db, `INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', 'yesterday')`, household)
 	execHistory(t, db, `
 		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
 			('scan-in', ?, 'oats', ?, 'stock_in', 2, 'committed', 'prod-oats', ?),
