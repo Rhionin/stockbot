@@ -1,10 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -53,9 +51,6 @@ func (s *stage1) Middleware(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/setup" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			s.serveSetupPage(w, r, next)
-			return
-		}
-		if entry == app.EntryLAN && s.blockLAN(w, r) {
 			return
 		}
 		if gate, err := s.svc.LoadHouseholdGate(r.Context()); err == nil {
@@ -109,84 +104,13 @@ func (s *stage1) upgradeRequired(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (s *stage1) blockLAN(w http.ResponseWriter, r *http.Request) bool {
-	if token := bearerToken(r); strings.HasPrefix(token, "sbs_") {
-		writeStage1(w, unauthorizedSentinel())
-		return true
-	}
-	if lanRouteMissing(r) {
-		writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
-		return true
-	}
-	open, err := s.svc.LANOpen(r.Context())
-	if err != nil {
-		writeStage1(w, err)
-		return true
-	}
-	if open {
-		return false
-	}
-	if isDocument(r) {
-		if s.site.AppBaseURL != "" {
-			http.Redirect(w, r, s.site.AppBaseURL, http.StatusFound)
-			return true
-		}
-		return false
-	}
-	if lanStaysOpen(r) {
-		return false
-	}
-	if r.URL.Path == "/api/auth/session" || strings.HasPrefix(r.URL.Path, "/api/") {
-		writeStage1(w, unauthorizedSentinel())
-		return true
-	}
-	return false
-}
-
-func lanRouteMissing(r *http.Request) bool {
-	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/login":
-		return true
-	case r.Method == http.MethodPost && r.URL.Path == "/api/auth/reset":
-		return true
-	case r.Method == http.MethodPost && r.URL.Path == "/api/households":
-		return true
-	case r.Method == http.MethodPost && r.URL.Path == "/api/invites/accept" && acceptCarriesAccount(r):
-		return true
-	default:
-		return false
-	}
-}
-
-func acceptCarriesAccount(r *http.Request) bool {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		return false
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return bytes.Contains(body, []byte(`"account"`))
-}
-
-func lanStaysOpen(r *http.Request) bool {
-	switch r.URL.Path {
-	case "/api/config", "/api/build", "/health", "/api/telemetry/client", "/api/devices/pair/complete":
-		return true
-	}
-	return strings.HasPrefix(r.URL.Path, "/api/device/")
-}
-
 func (s *stage1) anonymousOpen(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/api/config", "/api/build", "/health", "/api/telemetry/client",
 		"/api/deploy-hook", "/brand/logo.png", "/terms", "/privacy":
 		return true
 	case "/api/telemetry":
-		entry, _ := app.EntryFrom(r.Context())
-		if entry != app.EntryLAN {
-			return true
-		}
-		open, err := s.svc.LANOpen(r.Context())
-		return err == nil && open
+		return true
 	}
 	if r.URL.Path == sentryTunnelPath {
 		return true
@@ -231,31 +155,14 @@ func (s *stage1) resolve(w http.ResponseWriter, r *http.Request, entry app.Entry
 		}
 		return p, true
 	}
-	if entry != app.EntryLAN {
-		if raw := sessionCookieValue(r, s.site); raw != "" {
-			p, _, err := s.svc.LookupSession(r.Context(), raw)
-			if err != nil {
-				writeStage1(w, err)
-				return auth.Principal{}, false
-			}
-			p.FromCookie = true
-			return p, true
-		}
-	}
-	if entry == app.EntryLAN {
-		open, err := s.svc.LANOpen(r.Context())
+	if raw := sessionCookieValue(r, s.site); raw != "" {
+		p, _, err := s.svc.LookupSession(r.Context(), raw)
 		if err != nil {
 			writeStage1(w, err)
 			return auth.Principal{}, false
 		}
-		if open {
-			p, _, err := s.svc.LANView(r.Context())
-			if err != nil {
-				writeStage1(w, err)
-				return auth.Principal{}, false
-			}
-			return p, true
-		}
+		p.FromCookie = true
+		return p, true
 	}
 	if entry == app.EntryPublic {
 		if p, ok := s.householdPrincipal(r); ok {
@@ -534,12 +441,8 @@ func eventStreamKey(r *http.Request) string {
 }
 
 func stage1ClientIP(r *http.Request) string {
-	entry, _ := app.EntryFrom(r.Context())
-	if entry == app.EntryPublic {
-		ip := strings.TrimSpace(r.Header.Get(clientIPHeader))
-		if ip != "" && !strings.ContainsAny(ip, " \t,") {
-			return ip
-		}
+	if ip := visitorIP(r); ip != "" {
+		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -602,8 +505,7 @@ func errorsAs(err error, target **auth.Error) bool {
 }
 
 func (s *stage1) setCookie(w http.ResponseWriter, r *http.Request, token string) {
-	entry, _ := app.EntryFrom(r.Context())
-	if entry == app.EntryLAN || token == "" {
+	if token == "" {
 		return
 	}
 	ck := s.site.SessionCookie()

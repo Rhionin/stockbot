@@ -204,7 +204,8 @@ func TestSentryTunnelUsesPantryClientIP(t *testing.T) {
 		t.Fatalf("repeat status = %d", rec.Code)
 	}
 
-	// X-Forwarded-For is not the client address. The same remote stays one bucket.
+	// Caddy replaces X-Forwarded-For with the visitor. Two visitors behind
+	// the same proxy address are two buckets. A repeat of the first is not.
 	shared := newSentryTunnel(SentryTunnelConfig{
 		IngestHost: "o1.ingest.example",
 		ProjectIDs: map[string]struct{}{"123": {}},
@@ -227,8 +228,17 @@ func TestSentryTunnelUsesPantryClientIP(t *testing.T) {
 	b.RemoteAddr = "10.0.0.8:4001"
 	bRec := httptest.NewRecorder()
 	shared.ServeHTTP(bRec, b)
-	if bRec.Code != http.StatusTooManyRequests {
-		t.Fatalf("forwarded-for status = %d, want one bucket for the proxy address", bRec.Code)
+	if bRec.Code != http.StatusNoContent {
+		t.Fatalf("forwarded-for status = %d, want a bucket per visitor", bRec.Code)
+	}
+	again := httptest.NewRequest(http.MethodPost, sentryTunnelPath, strings.NewReader(body))
+	again.Header.Set("Content-Type", sentryEnvelopeMediaType)
+	again.Header.Set("X-Forwarded-For", "203.0.113.5")
+	again.RemoteAddr = "10.0.0.8:4002"
+	againRec := httptest.NewRecorder()
+	shared.ServeHTTP(againRec, again)
+	if againRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeat visitor status = %d, want the first visitor's bucket", againRec.Code)
 	}
 }
 

@@ -59,7 +59,7 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 	}
 	setup := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
 		"setupCode": code, "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
-	}, app.EntryLAN, "")
+	}, app.EntryPublic, "")
 	if setup.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
 	}
@@ -81,7 +81,7 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 			t.Fatalf("%s produced no status", path)
 		}
 	}
-	lanTelemetry := stage1Do(handler, http.MethodGet, "/api/telemetry", "", nil, app.EntryLAN, "")
+	lanTelemetry := stage1Do(handler, http.MethodGet, "/api/telemetry", "", nil, app.EntryPublic, "")
 	if lanTelemetry.Code == http.StatusUnauthorized {
 		t.Fatalf("lan telemetry while the password is on: %d %s", lanTelemetry.Code, lanTelemetry.Body.String())
 	}
@@ -111,7 +111,7 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 	if bare.Code != http.StatusNoContent {
 		t.Fatalf("missing entry %d", bare.Code)
 	}
-	lanBearerReq := stage1Request(http.MethodGet, "/api/inventory", "", nil, app.EntryLAN, "")
+	lanBearerReq := stage1Request(http.MethodGet, "/api/inventory", "", nil, app.EntryPublic, "")
 	lanBearerReq.Header.Set("Authorization", "Bearer sbs_not-a-session")
 	lanBearer := httptest.NewRecorder()
 	handler.ServeHTTP(lanBearer, lanBearerReq)
@@ -143,7 +143,7 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 	if err := json.Unmarshal(done.Body.Bytes(), &paired); err != nil || paired.Token == "" {
 		t.Fatalf("token %s %v", done.Body.String(), err)
 	}
-	mismatch := stage1Request(http.MethodPost, "/api/device/heartbeat", "", map[string]any{"version": "1.2.3"}, app.EntryLAN, "")
+	mismatch := stage1Request(http.MethodPost, "/api/device/heartbeat", "", map[string]any{"version": "1.2.3"}, app.EntryPublic, "")
 	mismatch.Header.Set("Authorization", "Bearer "+paired.Token)
 	mismatch.Header.Set("X-Household-Id", "0190aaaa-aaaa-7000-8000-000000000099")
 	mismatchRec := httptest.NewRecorder()

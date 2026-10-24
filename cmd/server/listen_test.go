@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
-	"log"
 	"net"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +13,7 @@ import (
 
 func TestOpenListenersTagsEachEntry(t *testing.T) {
 	set, err := openListeners([]app.Listener{
-		{Addr: "127.0.0.1:0", Entry: app.EntryLAN},
+		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
 		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		entry, ok := app.EntryFrom(r.Context())
@@ -32,7 +29,7 @@ func TestOpenListenersTagsEachEntry(t *testing.T) {
 	if len(set.addrs) != 2 {
 		t.Fatalf("addrs = %v", set.addrs)
 	}
-	for i, want := range []string{string(app.EntryLAN), string(app.EntryPublic)} {
+	for i, want := range []string{string(app.EntryPublic), string(app.EntryPublic)} {
 		if got := readEntry(t, set.addrs[i]); got != want {
 			t.Fatalf("listener %s body = %q, want %q", set.addrs[i], got, want)
 		}
@@ -69,7 +66,7 @@ func TestOpenListenersClosesTheFirstWhenTheNextBindFails(t *testing.T) {
 	ln.Close()
 
 	_, err = openListeners([]app.Listener{
-		{Addr: addr, Entry: app.EntryLAN},
+		{Addr: addr, Entry: app.EntryPublic},
 		{Addr: "not-an-address", Entry: app.EntryPublic},
 	}, http.NewServeMux(), nil)
 	if err == nil {
@@ -87,16 +84,11 @@ func TestOpenListenersClosesTheFirstWhenTheNextBindFails(t *testing.T) {
 	}
 }
 
-func TestOpenListenersRegistersAndWarnsForALANAddress(t *testing.T) {
-	var logs bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(prev) })
-
+func TestOpenListenersRegistersTheServer(t *testing.T) {
 	var registered int
 	set, err := openListeners([]app.Listener{{
-		Addr:  "0.0.0.0:0",
-		Entry: app.EntryLAN,
+		Addr:  "127.0.0.1:0",
+		Entry: app.EntryPublic,
 	}}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), func(*http.Server) {
 		registered++
 	})
@@ -106,9 +98,6 @@ func TestOpenListenersRegistersAndWarnsForALANAddress(t *testing.T) {
 	t.Cleanup(set.close)
 	if registered != 1 {
 		t.Fatalf("registered %d servers", registered)
-	}
-	if !strings.Contains(logs.String(), "has no application login") {
-		t.Fatalf("log = %s", logs.String())
 	}
 }
 
@@ -179,7 +168,7 @@ func TestRunHTTPServersShutsThePeerDownWhenServeReturnsBeforeStop(t *testing.T) 
 	t.Cleanup(func() { shutdownTimeout = prev })
 
 	set, err := openListeners([]app.Listener{
-		{Addr: "127.0.0.1:0", Entry: app.EntryLAN},
+		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
 		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

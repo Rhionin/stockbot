@@ -200,3 +200,25 @@ ensure_app_base_url() {
   chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$env" || { rm -f "$tmp"; return 1; }
 }
+
+# retire_lan_host_helpers stops the LAN firewall and mDNS units. The app
+# listens on loopback, so those units no longer have a port to guard.
+# Best-effort: a missing unit or a missing systemctl does not fail setup.
+retire_lan_host_helpers() {
+  local unit_dir
+  unit_dir="${PANTRY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+  if [[ -n "${PANTRY_DIR:-}" && -x "${PANTRY_DIR}/firewall/pantry-lan-only.sh" ]]; then
+    "${PANTRY_DIR}/firewall/pantry-lan-only.sh" --remove || true
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now pantry-lan-only.service pantry-mdns.service || true
+    rm -f /etc/systemd/system/pantry-lan-only.service /etc/systemd/system/pantry-mdns.service || true
+    if [[ "$unit_dir" != "/etc/systemd/system" ]]; then
+      rm -f "$unit_dir/pantry-lan-only.service" "$unit_dir/pantry-mdns.service" || true
+    fi
+    systemctl daemon-reload || true
+  fi
+  if [[ -n "${PANTRY_DIR:-}" ]]; then
+    rm -rf "${PANTRY_DIR}/firewall" "${PANTRY_DIR}/mdns" "${PANTRY_DIR}/dns"
+  fi
+}

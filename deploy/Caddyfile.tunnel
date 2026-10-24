@@ -6,7 +6,9 @@
 # request was plain HTTP, and a redirect or the Kroger callback is built
 # as http://. Nothing here listens on the Pi's ports 80 or 443, and there
 # is no Let's Encrypt client. The route list below is the same one as
-# deploy/Caddyfile. Keep the two site blocks identical.
+# deploy/Caddyfile. Keep the two site blocks identical. Stockbot listens
+# on pantry:8080. header_up X-Forwarded-Proto https keeps that listener
+# on the public scheme.
 {
 	admin off
 	# cloudflared is the only TCP client, so the socket address is always
@@ -56,23 +58,33 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8081
+			reverse_proxy pantry:8080 {
+				header_up -X-Pantry-Entry
+				header_up X-Forwarded-For {client_ip}
+				header_up CF-Connecting-IP {client_ip}
+				header_up X-Pantry-Client-IP {client_ip}
+				header_up X-Forwarded-Proto https
+			}
 		}
 	}
 
 	# Exact path: /api/build only. The JSON is the running commit, the commit
 	# time, the image build time, a version tag, and the subject. None of
 	# those are secrets. Keep this handle with telemetry and the deploy hook,
-	# before the household site. This proxy does not forward the visitor
-	# address; the device route and the catch-all below do. The app leaves
-	# this path open on the public listener. Do not add other API paths to
-	# this matcher.
+	# before the household site. The app leaves this path open. Do not add
+	# other API paths to this matcher.
 	@build path /api/build
 	handle @build {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8081
+			reverse_proxy pantry:8080 {
+				header_up -X-Pantry-Entry
+				header_up X-Forwarded-For {client_ip}
+				header_up CF-Connecting-IP {client_ip}
+				header_up X-Pantry-Client-IP {client_ip}
+				header_up X-Forwarded-Proto https
+			}
 		}
 	}
 
@@ -86,7 +98,13 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8081
+			reverse_proxy pantry:8080 {
+				header_up -X-Pantry-Entry
+				header_up X-Forwarded-For {client_ip}
+				header_up CF-Connecting-IP {client_ip}
+				header_up X-Pantry-Client-IP {client_ip}
+				header_up X-Forwarded-Proto https
+			}
 		}
 	}
 
@@ -99,13 +117,19 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8081
+			reverse_proxy pantry:8080 {
+				header_up -X-Pantry-Entry
+				header_up X-Forwarded-For {client_ip}
+				header_up CF-Connecting-IP {client_ip}
+				header_up X-Pantry-Client-IP {client_ip}
+				header_up X-Forwarded-Proto https
+			}
 		}
 	}
 
 	# Device scan, heartbeat, and token rotation. These posts are small
 	# JSON. 64 KB is tighter than the site cap. The visitor address is
-	# forwarded so the public listener can rate-limit by client.
+	# forwarded so the listener can rate-limit by client.
 	# /api/devices (pairing) is not this prefix.
 	handle /api/device/* {
 		request_body {
@@ -114,16 +138,20 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8081 {
+			reverse_proxy pantry:8080 {
+				header_up -X-Pantry-Entry
+				header_up X-Forwarded-For {client_ip}
+				header_up CF-Connecting-IP {client_ip}
 				header_up X-Pantry-Client-IP {client_ip}
+				header_up X-Forwarded-Proto https
 			}
 		}
 	}
 
 	# Everything else is the household site. Caddy does not show a password
-	# prompt. Every handle on this site proxies to the public listener.
-	# The published LAN port is a different listener and is not this proxy.
-	# header_up replaces a visitor address supplied by the client.
+	# prompt. Every handle on this site proxies to pantry:8080.
+	# header_up replaces a visitor address supplied by the client and
+	# drops X-Pantry-Entry so the listener's own entry is the only one.
 	# POST /api/sentry-tunnel is answered before the household password so a
 	# login page can report a failure. It stays in this handle, which is what
 	# stamps the visitor address. Do not move it to a handle above.
@@ -136,9 +164,13 @@ http://{$PUBLIC_HOST} {
 			# until the stream ends, so the UI never updates live.
 			@events path /api/events
 			handle @events {
-				reverse_proxy pantry:8081 {
+				reverse_proxy pantry:8080 {
 					flush_interval -1
+					header_up -X-Pantry-Entry
+					header_up X-Forwarded-For {client_ip}
+					header_up CF-Connecting-IP {client_ip}
 					header_up X-Pantry-Client-IP {client_ip}
+					header_up X-Forwarded-Proto https
 				}
 			}
 
@@ -152,15 +184,23 @@ http://{$PUBLIC_HOST} {
 			# the same way the rest of the app does.
 			@serviceworker path /sw.js
 			handle @serviceworker {
-				reverse_proxy pantry:8081 {
+				reverse_proxy pantry:8080 {
+					header_up -X-Pantry-Entry
+					header_up X-Forwarded-For {client_ip}
+					header_up CF-Connecting-IP {client_ip}
 					header_up X-Pantry-Client-IP {client_ip}
+					header_up X-Forwarded-Proto https
 				}
 			}
 
 			handle {
 				encode gzip
-				reverse_proxy pantry:8081 {
+				reverse_proxy pantry:8080 {
+					header_up -X-Pantry-Entry
+					header_up X-Forwarded-For {client_ip}
+					header_up CF-Connecting-IP {client_ip}
 					header_up X-Pantry-Client-IP {client_ip}
+					header_up X-Forwarded-Proto https
 				}
 			}
 		}

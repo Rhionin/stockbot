@@ -222,9 +222,11 @@ assert_request_body_limits() {
   device=$(caddy_handle_block "$file" "handle /api/device/*")
   [[ -n "$device" ]] || fail "$file is missing handle /api/device/*"
   have "$device" "max_size 64KB" "$file device cap is 64KB"
-  lack "$device" "X-Pantry-Entry" "$file device handle must not stamp an entry header"
+  have "$device" "header_up -X-Pantry-Entry" "$file device handle strips a client entry header"
+  lack "$device" "header_up X-Pantry-Entry " "$file device handle must not stamp an entry header"
   have "$device" "header_up X-Pantry-Client-IP {client_ip}" "$file device handle passes the visitor address"
-  have "$device" "reverse_proxy pantry:8081" "$file device handle proxies to the public listener"
+  have "$device" "header_up X-Forwarded-For {client_ip}" "$file device handle forwards the visitor address"
+  have "$device" "reverse_proxy pantry:8080" "$file device handle proxies to the listener"
   lack "$device" "max_size 1MB" "$file device handle must not use the site cap"
   telemetry=$(caddy_handle_block "$file" "handle @telemetry")
   lack "$telemetry" "request_body" "$file telemetry handle stays under the 1MB site cap"
@@ -252,17 +254,19 @@ assert_request_body_limits() {
 assert_request_body_limits deploy/Caddyfile
 assert_request_body_limits deploy/Caddyfile.tunnel
 
-# Every public handle is the :8081 listener. A handle left on the LAN port
-# would be classed as LAN and could expose household activity publicly.
+# Every handle proxies to the one listener. A client-supplied entry header
+# is stripped. Stamping X-Pantry-Entry would not be the listener's entry.
 assert_public_listener() {
   local file="$1" text proxies targets
   text=$(cat "$file")
-  have "$text" "reverse_proxy pantry:8081" "$file proxies to the public listener"
-  lack "$text" "pantry:8080" "$file must not proxy to the LAN listener"
-  lack "$text" "X-Pantry-Entry" "$file must not stamp an entry header"
+  have "$text" "reverse_proxy pantry:8080" "$file proxies to the listener"
+  lack "$text" "pantry:8081" "$file must not proxy to a second listener"
+  have "$text" "header_up -X-Pantry-Entry" "$file strips a client entry header"
+  lack "$text" "header_up X-Pantry-Entry " "$file must not stamp an entry header"
+  lack "$text" "X-Pantry-Entry public" "$file must not stamp a public entry"
   proxies=$(grep -c 'reverse_proxy ' "$file" || true)
-  targets=$(grep -c 'reverse_proxy pantry:8081' "$file" || true)
-  [[ "$proxies" -ge 1 && "$proxies" == "$targets" ]] || fail "$file has a reverse_proxy that is not the public listener"
+  targets=$(grep -c 'reverse_proxy pantry:8080' "$file" || true)
+  [[ "$proxies" -ge 1 && "$proxies" == "$targets" ]] || fail "$file has a reverse_proxy that is not the listener"
 }
 
 assert_public_listener deploy/Caddyfile
@@ -278,8 +282,8 @@ grocy_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f 
 grocy_sync_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.grocy.yml --profile grocy-sync config)
 rm -f "$empty_env"
 
-# pantry publishes the LAN listener only. 8081 stays on the compose network.
-# PUBLIC_LISTEN_ADDR still names :8081, so the check is the ports list.
+# pantry publishes the listener on loopback only. Caddy dials pantry:8080
+# on the compose network, which is not this published host port.
 pantry_ports=$(awk '
   $0 ~ /^  pantry:$/ { in_s = 1; next }
   in_s && /^  [^ ]/ { in_s = 0 }
@@ -287,8 +291,10 @@ pantry_ports=$(awk '
   in_s && in_p && /^    [^ ]/ { in_p = 0 }
   in_s && in_p { print }
 ' <<< "$public_cfg")
-have "$pantry_ports" 'target: 8080' "pantry still publishes the LAN listener"
-lack "$pantry_ports" '8081' "pantry must not publish the public listener"
+have "$pantry_ports" 'target: 8080' "pantry publishes the listener"
+have "$pantry_ports" 'host_ip: 127.0.0.1' "pantry publishes on loopback"
+lack "$pantry_ports" '0.0.0.0' "pantry must not publish on every interface"
+lack "$pantry_ports" '8081' "pantry must not publish a second listener"
 have "$public_cfg" 'target: /run/setup' "pantry bind-mounts the setup directory"
 host_env=$(mktemp)
 printf '%s\n' 'PUBLIC_HOST=stockbot.rhionin.com' 'APP_BASE_URL=' > "$host_env"
@@ -370,10 +376,15 @@ lack "$tunnel_json" 'cj@example.com' "tunnel adapt must not configure an ACME ac
 lack "$tunnel_json" '"module": "acme"' "tunnel adapt must not request a certificate"
 lack "$acme_json" "http_basic" "certificate adapt must not use browser basic auth"
 lack "$tunnel_json" "http_basic" "tunnel adapt must not use browser basic auth"
-lack "$acme_json" "X-Pantry-Entry" "certificate adapt must not stamp an entry header"
-lack "$tunnel_json" "X-Pantry-Entry" "tunnel adapt must not stamp an entry header"
-have "$acme_json" "pantry:8081" "certificate adapt dials the public listener"
-have "$tunnel_json" "pantry:8081" "tunnel adapt dials the public listener"
+have "$acme_json" "X-Pantry-Entry" "certificate adapt strips the entry header"
+have "$tunnel_json" "X-Pantry-Entry" "tunnel adapt strips the entry header"
+lack "$acme_json" "X-Pantry-Entry public" "certificate adapt must not stamp an entry header"
+lack "$tunnel_json" "X-Pantry-Entry public" "tunnel adapt must not stamp an entry header"
+have "$acme_json" "pantry:8080" "certificate adapt dials the listener"
+have "$tunnel_json" "pantry:8080" "tunnel adapt dials the listener"
+lack "$acme_json" "pantry:8081" "certificate adapt must not dial a second listener"
+lack "$tunnel_json" "pantry:8081" "tunnel adapt must not dial a second listener"
+have "$tunnel_json" "X-Forwarded-Proto" "tunnel adapt sets the public scheme"
 # humanize sizes: 1MB is 1000000 bytes, 64KB is 64000. The device route is
 # the only place the tighter cap is compiled.
 have "$acme_json" '"max_size": 1000000' "certificate adapt enforces the 1MB site cap"

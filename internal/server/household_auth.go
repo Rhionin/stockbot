@@ -16,8 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"log/slog"
-
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
@@ -30,9 +28,9 @@ const (
 	// never sends it, so port 8080 stays open the way it is today.
 	entryHeader = "X-Pantry-Entry"
 	entryPublic = "public"
-	// clientIPHeader is the visitor address Caddy observed. header_up
-	// replaces a client-supplied value, so the rate limit cannot be rotated
-	// by forging X-Forwarded-For.
+	// clientIPHeader is the visitor address Caddy observed. Caddy also
+	// forwards CF-Connecting-IP and X-Forwarded-For, and header_up replaces
+	// a client-supplied value on the way in.
 	clientIPHeader = "X-Pantry-Client-IP"
 
 	sessionCookie   = "pantry_session"
@@ -121,15 +119,10 @@ func (a *HouseholdAuth) enforced(r *http.Request) bool {
 	if a == nil || (!a.Configured && !a.FailClosed) {
 		return false
 	}
-	// The listener is the entry. On :8080 a client-supplied X-Pantry-Entry
-	// is ignored and logged so a LAN request cannot claim the public site.
-	// A request with no listener still uses the header, which is how the
-	// current tests and the single-listener process tell the public site
-	// from the LAN until Caddy is cut over.
-	if entry, ok := app.EntryFrom(r.Context()); ok {
-		if entry == app.EntryLAN && strings.TrimSpace(r.Header.Get(entryHeader)) != "" {
-			slog.Info("X-Pantry-Entry ignored on the LAN listener")
-		}
+	// The listener is the entry. Stage 1 enforces the session on that
+	// request. A request with no listener still uses X-Pantry-Entry, which
+	// is how the household-password tests address the public site.
+	if _, ok := app.EntryFrom(r.Context()); ok {
 		return false
 	}
 	return r.Header.Get(entryHeader) == entryPublic
@@ -578,11 +571,8 @@ func basicCredentials(r *http.Request) (string, string, bool) {
 }
 
 func clientKey(r *http.Request) string {
-	ip := ""
-	if r.Header.Get(entryHeader) == entryPublic {
-		ip = strings.TrimSpace(r.Header.Get(clientIPHeader))
-	}
-	if ip == "" || strings.ContainsAny(ip, " \t,") {
+	ip := visitorIP(r)
+	if ip == "" {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			host = r.RemoteAddr
@@ -590,6 +580,40 @@ func clientKey(r *http.Request) string {
 		ip = host
 	}
 	return "ip:" + ip
+}
+
+// visitorIP is the client address Caddy forwarded. CF-Connecting-IP is the
+// Cloudflare visitor. X-Forwarded-For is the first address in that list.
+// X-Pantry-Client-IP remains for a proxy that still sets it. A value that
+// is not one IP is ignored so a forged list cannot rotate the rate limit.
+func visitorIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if ip := oneIP(r.Header.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	if ip := oneIP(firstForwarded(r.Header.Get("X-Forwarded-For"))); ip != "" {
+		return ip
+	}
+	return oneIP(r.Header.Get(clientIPHeader))
+}
+
+func firstForwarded(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	first, _, _ := strings.Cut(raw, ",")
+	return strings.TrimSpace(first)
+}
+
+func oneIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, " \t,") || net.ParseIP(raw) == nil {
+		return ""
+	}
+	return raw
 }
 
 type attemptLimiter struct {
