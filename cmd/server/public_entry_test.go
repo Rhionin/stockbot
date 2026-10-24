@@ -14,9 +14,9 @@ import (
 	"github.com/Rhionin/stockbot/internal/server"
 )
 
-// The public listener is the entry. A request with no X-Pantry-Entry header
-// is still the public site on :8081 and the open LAN on :8080.
-func TestUnauthenticatedInventoryFollowsTheListener(t *testing.T) {
+// The only listener is the public entry. A request with no session is
+// refused, and a client-supplied X-Pantry-Entry is not what makes it so.
+func TestUnauthenticatedInventoryRequiresASession(t *testing.T) {
 	t.Setenv("APP_BASE_URL", "https://stockbot.rhionin.com")
 	t.Setenv("PANTRY_AUTH_FILE", "")
 
@@ -30,19 +30,10 @@ func TestUnauthenticatedInventoryFollowsTheListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := site.Listeners()
-	var sawLAN, sawPublic bool
-	for i := range specs {
-		switch specs[i].Entry {
-		case app.EntryLAN:
-			sawLAN = true
-		case app.EntryPublic:
-			sawPublic = true
-		}
-		specs[i].Addr = "127.0.0.1:0"
+	if len(specs) != 1 || specs[0].Entry != app.EntryPublic {
+		t.Fatalf("listeners = %+v, want one public listener", specs)
 	}
-	if !sawLAN || !sawPublic {
-		t.Fatalf("listeners = %+v, want LAN and public when APP_BASE_URL is set", specs)
-	}
+	specs[0].Addr = "127.0.0.1:0"
 
 	dbPath := filepath.Join(t.TempDir(), "pantry.db")
 	sqlDB, readDB, err := app.OpenPantry(dbPath)
@@ -73,26 +64,28 @@ func TestUnauthenticatedInventoryFollowsTheListener(t *testing.T) {
 	t.Cleanup(set.close)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	for i, spec := range specs {
-		req, err := http.NewRequest(http.MethodGet, "http://"+set.addrs[i]+"/api/inventory", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if req.Header.Get("X-Pantry-Entry") != "" {
-			t.Fatal("probe set X-Pantry-Entry")
-		}
-		res, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, _ := io.ReadAll(res.Body)
-		res.Body.Close()
-		want := http.StatusOK
-		if spec.Entry == app.EntryPublic {
-			want = http.StatusUnauthorized
-		}
-		if res.StatusCode != want {
-			t.Fatalf("%s GET /api/inventory = %d %s, want %d", spec.Entry, res.StatusCode, body, want)
-		}
+	req, err := http.NewRequest(http.MethodGet, "http://"+set.addrs[0]+"/api/inventory", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Header.Get("X-Pantry-Entry") != "" {
+		t.Fatal("probe set X-Pantry-Entry")
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /api/inventory = %d %s, want 401", res.StatusCode, body)
+	}
+	health, err := client.Get("http://" + set.addrs[0] + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("GET /health = %d", health.StatusCode)
 	}
 }

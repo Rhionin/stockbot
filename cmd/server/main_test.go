@@ -106,28 +106,16 @@ func TestComposeDefaultsMatchMainGo(t *testing.T) {
 			goDefault:      "",
 		},
 		{
-			name:           "LAN_PEOPLE",
-			envVar:         "LAN_PEOPLE",
-			composeDefault: extractDefault(t, pantryService.Environment["LAN_PEOPLE"]),
-			goDefault:      app.DefaultLANPeople,
-		},
-		{
 			name:           "EXPO_MIN_VERSION",
 			envVar:         "EXPO_MIN_VERSION",
 			composeDefault: extractDefault(t, pantryService.Environment["EXPO_MIN_VERSION"]),
 			goDefault:      app.DefaultExpoMinVersion,
 		},
 		{
-			name:           "PUBLIC_LISTEN_ADDR",
-			envVar:         "PUBLIC_LISTEN_ADDR",
-			composeDefault: extractDefault(t, pantryService.Environment["PUBLIC_LISTEN_ADDR"]),
-			goDefault:      app.DefaultPublicListenAddr,
-		},
-		{
-			name:           "LAN_LISTEN_ADDR",
-			envVar:         "LAN_LISTEN_ADDR",
-			composeDefault: extractDefault(t, pantryService.Environment["LAN_LISTEN_ADDR"]),
-			goDefault:      app.DefaultLANListenAddr,
+			name:           "ADDR",
+			envVar:         "ADDR",
+			composeDefault: extractDefault(t, pantryService.Environment["ADDR"]),
+			goDefault:      app.DefaultListenAddr,
 		},
 	}
 
@@ -296,28 +284,4 @@ func composeBraceEnd(expr string, open int) int {
 		}
 	}
 	return -1
-}
-
-func TestUnauthenticatedListenWarning(t *testing.T) {
-	if got := unauthenticatedListenWarning(":8080"); got == "" {
-		t.Fatal("empty host should warn")
-	}
-	if got := unauthenticatedListenWarning("0.0.0.0:8080"); got == "" {
-		t.Fatal("wildcard should warn")
-	}
-	if got := unauthenticatedListenWarning("192.168.1.203:8080"); got == "" {
-		t.Fatal("LAN address should warn")
-	}
-	if got := unauthenticatedListenWarning("127.0.0.1:8080"); got != "" {
-		t.Fatalf("loopback warned: %q", got)
-	}
-	if got := unauthenticatedListenWarning("localhost:8080"); got != "" {
-		t.Fatalf("localhost warned: %q", got)
-	}
-	if got := unauthenticatedListenWarning("localhost"); got != "" {
-		t.Fatalf("localhost without a port warned: %q", got)
-	}
-	if got := unauthenticatedListenWarning("0.0.0.0"); got == "" {
-		t.Fatal("wildcard without a port should warn")
-	}
 }

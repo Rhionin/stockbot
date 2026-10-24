@@ -44,30 +44,30 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 		t.Fatalf("upgrade %d %s", oldClient.Code, oldClient.Body.String())
 	}
 
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d %s", rec.Code, rec.Body.String())
 	}
 	code, err := auth.ReadSetupCode(setupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := c.call(http.MethodPost, "/setup", map[string]string{"setupCode": code}, app.EntryPublic, nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("public setup %d", rec.Code)
+	if rec := c.call(http.MethodPost, "/setup", map[string]string{"setupCode": code}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("incomplete setup %d", rec.Code)
 	}
-	if rec := c.call(http.MethodPost, "/setup", map[string]string{"setupCode": "not-a-code"}, app.EntryLAN, nil); rec.Code != http.StatusBadRequest {
+	if rec := c.call(http.MethodPost, "/setup", map[string]string{"setupCode": "not-a-code"}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed setup %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": "AAAA-AAAA", "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusNotFound {
+	}, app.EntryPublic, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("bad setup code %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": "Ada Lovelace", "email": "Ada@Pantry.Test", "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusFound {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusFound {
 		t.Fatalf("setup redirect %d", rec.Code)
 	}
 
@@ -141,11 +141,6 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	}
 	if rec := c.call(http.MethodPost, "/api/invites/accept", map[string]any{"code": created.Code, "role": "owner", "account": map[string]string{"name": "Bea", "email": "bea@pantry.test", "password": "correct horse"}}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("role on accept %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := c.call(http.MethodPost, "/api/invites/accept", map[string]any{
-		"code": created.Code, "account": map[string]string{"name": "Bea", "email": "bea@pantry.test", "password": "correct horse"},
-	}, app.EntryLAN, nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("lan accept %d %s", rec.Code, rec.Body.String())
 	}
 	accepted := c.anon(http.MethodPost, "/api/invites/accept", map[string]any{
 		"code": created.Code, "account": map[string]string{"name": "Bea", "email": "bea@pantry.test", "password": "correct horse"},
@@ -231,9 +226,6 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if rec := c.call(http.MethodPost, "/api/auth/reset", map[string]string{"code": "sbr_missing", "password": "brand new horse"}, app.EntryPublic, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown reset %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/auth/reset", map[string]string{"code": resetCode, "password": "brand new horse"}, app.EntryLAN, nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("lan reset %d %s", rec.Code, rec.Body.String())
-	}
 	resetDone := c.call(http.MethodPost, "/api/auth/reset", map[string]string{"code": resetCode, "password": "brand new horse"}, app.EntryPublic, nil)
 	if resetDone.Code != http.StatusOK {
 		t.Fatalf("reset %d %s", resetDone.Code, resetDone.Body.String())
@@ -275,8 +267,8 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if err := json.Unmarshal(createdHouse.Body.Bytes(), &cabin); err != nil || cabin.ID == "" {
 		t.Fatalf("cabin %s", createdHouse.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/households", map[string]string{"name": "Other", "inviteCode": startInvite.Code}, app.EntryLAN, map[string]string{"Cookie": ada}); rec.Code != http.StatusNotFound {
-		t.Fatalf("lan create %d %s", rec.Code, rec.Body.String())
+	if rec := c.call(http.MethodPost, "/api/households", map[string]string{"name": "Other", "inviteCode": startInvite.Code}, app.EntryPublic, map[string]string{"Cookie": ada}); rec.Code != http.StatusNotFound && rec.Code != http.StatusConflict {
+		t.Fatalf("used invite %d %s", rec.Code, rec.Body.String())
 	}
 	switched := c.authed(http.MethodPost, "/api/auth/session/household", map[string]string{"householdId": cabin.ID})
 	if switched.Code != http.StatusOK || !strings.Contains(switched.Body.String(), cabin.ID) {
@@ -362,44 +354,44 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if rec := c.call(http.MethodGet, "/api/auth/session", nil, app.EntryPublic, dev); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("device on session %d %s", rec.Code, rec.Body.String())
 	}
-	beat := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3", "queued": 2, "droppedCount": 1}, app.EntryLAN, dev)
+	beat := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3", "queued": 2, "droppedCount": 1}, app.EntryPublic, dev)
 	if beat.Code != http.StatusOK || !strings.Contains(beat.Body.String(), `"rotateToken":false`) {
 		t.Fatalf("heartbeat %d %s", beat.Code, beat.Body.String())
 	}
-	one := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "000111222333", "direction": "stock_in", "unitCount": 2}, app.EntryLAN, dev)
+	one := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "000111222333", "direction": "stock_in", "unitCount": 2}, app.EntryPublic, dev)
 	if one.Code != http.StatusOK || !strings.Contains(one.Body.String(), `"accepted"`) {
 		t.Fatalf("scan %d %s", one.Code, one.Body.String())
 	}
-	dupScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "000111222333", "direction": "stock_in", "unitCount": 2}, app.EntryLAN, dev)
+	dupScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "000111222333", "direction": "stock_in", "unitCount": 2}, app.EntryPublic, dev)
 	if dupScan.Code != http.StatusOK || !strings.Contains(dupScan.Body.String(), `"duplicate"`) {
 		t.Fatalf("duplicate %d %s", dupScan.Code, dupScan.Body.String())
 	}
-	conflict := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "999", "direction": "stock_out", "unitCount": 1}, app.EntryLAN, dev)
+	conflict := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "999", "direction": "stock_out", "unitCount": 1}, app.EntryPublic, dev)
 	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), `"code":"conflict"`) {
 		t.Fatalf("conflict %d %s", conflict.Code, conflict.Body.String())
 	}
-	heart := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-heart", "heartbeat": true}, app.EntryLAN, dev)
+	heart := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-heart", "heartbeat": true}, app.EntryPublic, dev)
 	if heart.Code != http.StatusOK || !strings.Contains(heart.Body.String(), `"accepted"`) {
 		t.Fatalf("heartbeat scan %d %s", heart.Code, heart.Body.String())
 	}
 	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
 		{"id": "scan-bad", "direction": "sideways"},
 		{"id": "scan-2", "barcode": "444555666777", "direction": "stock_out"},
-	}}, app.EntryLAN, dev)
+	}}, app.EntryPublic, dev)
 	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"created"`) || !strings.Contains(batch.Body.String(), `"rejected"`) {
 		t.Fatalf("batch %d %s", batch.Code, batch.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []any{}, "id": "both"}, app.EntryLAN, dev); rec.Code != http.StatusBadRequest {
+	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []any{}, "id": "both"}, app.EntryPublic, dev); rec.Code != http.StatusBadRequest {
 		t.Fatalf("both shapes %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{}, app.EntryLAN, dev); rec.Code != http.StatusBadRequest {
+	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{}, app.EntryPublic, dev); rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty scan %d %s", rec.Code, rec.Body.String())
 	}
-	big := c.callRaw(http.MethodPost, "/api/device/scans", strings.Repeat("x", 64*1024+1), app.EntryLAN, dev)
+	big := c.callRaw(http.MethodPost, "/api/device/scans", strings.Repeat("x", 64*1024+1), app.EntryPublic, dev)
 	if big.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("too large %d %s", big.Code, big.Body.String())
 	}
-	rotated := c.call(http.MethodPost, "/api/device/token/rotate", map[string]any{}, app.EntryLAN, dev)
+	rotated := c.call(http.MethodPost, "/api/device/token/rotate", map[string]any{}, app.EntryPublic, dev)
 	if rotated.Code != http.StatusOK {
 		t.Fatalf("rotate %d %s", rotated.Code, rotated.Body.String())
 	}
@@ -409,16 +401,16 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if err := json.Unmarshal(rotated.Body.Bytes(), &nextTok); err != nil || nextTok.Token == "" {
 		t.Fatalf("next token %s", rotated.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryLAN, map[string]string{"Authorization": "Bearer " + nextTok.Token}); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryPublic, map[string]string{"Authorization": "Bearer " + nextTok.Token}); rec.Code != http.StatusOK {
 		t.Fatalf("new token %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryLAN, dev); rec.Code != http.StatusUnauthorized {
+	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryPublic, dev); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("old token after use %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.authed(http.MethodDelete, "/api/devices/"+paired.DeviceID, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke device %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryLAN, map[string]string{"Authorization": "Bearer " + nextTok.Token}); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.CodeDeviceRevoked) {
+	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryPublic, map[string]string{"Authorization": "Bearer " + nextTok.Token}); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.CodeDeviceRevoked) {
 		t.Fatalf("revoked device %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -452,17 +444,17 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if rec := c.authed(http.MethodPost, "/api/household/household-password/retire", nil); rec.Code != http.StatusOK {
 		t.Fatalf("retire again %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodGet, "/", nil, app.EntryLAN, nil); rec.Code != http.StatusFound {
-		t.Fatalf("lan redirect %d", rec.Code)
+	if rec := c.call(http.MethodGet, "/", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
+		t.Fatalf("home %d", rec.Code)
 	}
-	if rec := c.call(http.MethodGet, "/api/telemetry", nil, app.EntryLAN, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("lan telemetry %d %s", rec.Code, rec.Body.String())
+	if rec := c.call(http.MethodGet, "/api/telemetry", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
+		t.Fatalf("telemetry %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodGet, "/api/config", nil, app.EntryLAN, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"entry":"lan"`) {
-		t.Fatalf("lan config %d %s", rec.Code, rec.Body.String())
+	if rec := c.call(http.MethodGet, "/api/config", nil, app.EntryPublic, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"entry":"public"`) {
+		t.Fatalf("config %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"email": "ada@pantry.test", "password": "correct horse"}, app.EntryLAN, nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("lan login %d", rec.Code)
+	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"email": "ada@pantry.test", "password": "correct horse"}, app.EntryPublic, nil); rec.Code != http.StatusOK {
+		t.Fatalf("login %d %s", rec.Code, rec.Body.String())
 	}
 
 	foreign := stage1Request(http.MethodGet, "/api/household/settings", ada, nil, app.EntryPublic, "")
@@ -569,17 +561,17 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("recover page %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": recoverCode, "email": "bea@pantry.test", "newPassword": "recovered horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusNotFound {
+	}, app.EntryPublic, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("recover non-operator %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": recoverCode, "email": "ada@pantry.test", "newPassword": "recovered horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("recover %d %s", rec.Code, rec.Body.String())
 	}
 	openAccountEvents(t, svc, beaSession.User.ID)

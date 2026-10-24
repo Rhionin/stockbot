@@ -25,7 +25,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
 	c := &stage1Caller{t: t, h: handler}
 
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)
 	}
 	code, err := auth.ReadSetupCode(setupDir)
@@ -34,7 +34,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": "Nia North", "email": "nia@example.test", "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
 	login := c.call(http.MethodPost, "/api/auth/login", map[string]string{
@@ -83,7 +83,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	hub := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": hubCode.Code, "label": "Counter",
 		"hub": map[string]string{"kind": "pi_hub", "version": "1.2.3", "bootId": "boot-9"},
-	}, app.EntryLAN)
+	}, app.EntryPublic)
 	if hub.Code != http.StatusCreated || strings.Contains(hub.Body.String(), c.house) || !strings.Contains(hub.Body.String(), `"heartbeatSeconds":60`) || !strings.Contains(hub.Body.String(), `"config"`) {
 		t.Fatalf("hub complete %d %s", hub.Code, hub.Body.String())
 	}
@@ -108,7 +108,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	}); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("session on device route %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3", "queued": 4}, app.EntryLAN, map[string]string{
+	if rec := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3", "queued": 4}, app.EntryPublic, map[string]string{
 		"Authorization":  "Bearer " + paired.Token,
 		"X-Household-Id": "0190aaaa-bbbb-7000-8000-000000000099",
 	}); rec.Code != http.StatusNotFound {
@@ -116,7 +116,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	}
 	beat := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{
 		"version": "1.2.3", "bootId": "boot-9", "uptimeS": 3, "queued": 4, "droppedCount": 1, "clockSynced": true,
-	}, app.EntryLAN, dev)
+	}, app.EntryPublic, dev)
 	if beat.Code != http.StatusOK || !strings.Contains(beat.Body.String(), `"heartbeatSeconds":60`) || !strings.Contains(beat.Body.String(), `"rotateToken":false`) {
 		t.Fatalf("heartbeat %d %s", beat.Code, beat.Body.String())
 	}
@@ -128,26 +128,26 @@ func TestStage1DeviceAPI(t *testing.T) {
 	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
 		{"id": "s1", "barcode": "990000000099", "direction": "stock_in"},
 		{"id": "s-pair", "barcode": "SBP-0123-ABCD-G"},
-	}}, app.EntryLAN, dev)
+	}}, app.EntryPublic, dev)
 	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"created"`) || !strings.Contains(batch.Body.String(), `"rejected"`) {
 		t.Fatalf("batch %d %s", batch.Code, batch.Body.String())
 	}
 	dup := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
 		{"id": "s1", "barcode": "990000000099", "direction": "stock_in"},
 		{"id": "s1", "barcode": "111111111117", "direction": "stock_out"},
-	}}, app.EntryLAN, dev)
+	}}, app.EntryPublic, dev)
 	if dup.Code != http.StatusOK || !strings.Contains(dup.Body.String(), `"duplicate"`) || !strings.Contains(dup.Body.String(), `"conflict"`) {
 		t.Fatalf("retry %d %s", dup.Code, dup.Body.String())
 	}
 	solo := c.call(http.MethodPost, "/api/device/scans", map[string]any{
 		"id": "solo", "barcode": "12345670", "direction": "stock_in", "unitCount": 1,
-	}, app.EntryLAN, dev)
+	}, app.EntryPublic, dev)
 	if solo.Code != http.StatusOK || !strings.Contains(solo.Body.String(), `"accepted"`) {
 		t.Fatalf("single scan %d %s", solo.Code, solo.Body.String())
 	}
 	clash := c.call(http.MethodPost, "/api/device/scans", map[string]any{
 		"id": "solo", "barcode": "12345670", "direction": "stock_in", "unitCount": 2,
-	}, app.EntryLAN, dev)
+	}, app.EntryPublic, dev)
 	if clash.Code != http.StatusConflict || !strings.Contains(clash.Body.String(), `"code":"conflict"`) || !strings.Contains(clash.Body.String(), "scan id already used with different payload") {
 		t.Fatalf("single conflict %d %s", clash.Code, clash.Body.String())
 	}
@@ -159,7 +159,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	for i := range tooMany {
 		tooMany[i] = map[string]any{"id": "x", "barcode": "123"}
 	}
-	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": tooMany}, app.EntryLAN, dev); rec.Code != http.StatusBadRequest {
+	if rec := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": tooMany}, app.EntryPublic, dev); rec.Code != http.StatusBadRequest {
 		t.Fatalf("51 scans %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -191,7 +191,7 @@ func TestStage1DeviceAPI(t *testing.T) {
 	if rec := c.authed(http.MethodDelete, "/api/devices/"+paired.DeviceID, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke %d %s", rec.Code, rec.Body.String())
 	}
-	revoked := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryLAN, dev)
+	revoked := c.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1.2.3"}, app.EntryPublic, dev)
 	if revoked.Code != http.StatusUnauthorized || !strings.Contains(revoked.Body.String(), auth.CodeDeviceRevoked) {
 		t.Fatalf("revoked %d %s", revoked.Code, revoked.Body.String())
 	}
@@ -225,7 +225,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
 	c := &stage1Caller{t: t, h: handler}
 
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)
 	}
 	code, err := auth.ReadSetupCode(setupDir)
@@ -234,7 +234,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": "Nia North", "email": "nia@example.test", "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
 	login := c.call(http.MethodPost, "/api/auth/login", map[string]string{
@@ -257,7 +257,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	done := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": issued.Code, "label": "Counter",
 		"hub": map[string]string{"kind": "pi_hub", "version": "1.2.3", "bootId": "boot-edge"},
-	}, app.EntryLAN)
+	}, app.EntryPublic)
 	var paired struct {
 		Token string `json:"token"`
 	}
@@ -269,7 +269,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	late := now.Add(5*time.Minute + time.Second).Format(time.RFC3339)
 	okScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{
 		"id": "edge", "barcode": "12345670", "scannedAt": edge,
-	}, app.EntryLAN, dev)
+	}, app.EntryPublic, dev)
 	if okScan.Code != http.StatusOK || !strings.Contains(okScan.Body.String(), `"accepted"`) {
 		t.Fatalf("+5m %d %s", okScan.Code, okScan.Body.String())
 	}
@@ -284,7 +284,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	received := now.UTC().Format(time.RFC3339)
 	lateScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{
 		"id": "late", "barcode": "12345670", "scannedAt": late,
-	}, app.EntryLAN, dev)
+	}, app.EntryPublic, dev)
 	if lateScan.Code != http.StatusOK || !strings.Contains(lateScan.Body.String(), `"accepted"`) {
 		t.Fatalf("+5m1s %d %s", lateScan.Code, lateScan.Body.String())
 	}
@@ -296,7 +296,7 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	}
 	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
 		{"id": "batch-late", "barcode": "12345670", "scannedAt": late},
-	}}, app.EntryLAN, dev)
+	}}, app.EntryPublic, dev)
 	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"created"`) || strings.Contains(batch.Body.String(), `"rejected"`) {
 		t.Fatalf("batch +5m1s %d %s", batch.Code, batch.Body.String())
 	}

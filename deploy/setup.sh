@@ -10,12 +10,12 @@ set -euo pipefail
 # desired state without losing configuration.
 #
 # Usage:
-#   sudo ./setup.sh                  # Sync files, containers, Caddy, and firewall
+#   sudo ./setup.sh                  # Sync files, containers, and Caddy
 #   sudo ./setup.sh apply            # Same command, explicit name
 #   sudo ./setup.sh --with-updates   # ...and enable the auto-update timer and deploy hook
 #   sudo ./setup.sh publish --tunnel # Publish https://PUBLIC_HOST through Cloudflare Tunnel
 #   sudo ./setup.sh unpublish        # Stop the public proxy; LAN pantry keeps running
-#   sudo ./setup.sh firewall-off     # Remove the LAN port rule until the next setup
+#   sudo ./setup.sh firewall-off     # Remove leftover LAN firewall and mDNS units
 #   sudo ./setup.sh rule             # Regenerate udev rule for a new scanner
 #   sudo ./setup.sh status           # Diagnose the full chain from udev to health
 #   sudo ./setup.sh logs             # Follow container logs
@@ -45,8 +45,6 @@ fi
 
 # Determine script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/mdns/lan-ipv4.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/auth-migrate.sh"
 
@@ -155,7 +153,7 @@ copy_deploy_files() {
   log_info "Copying deployment files to ${PANTRY_DIR}..."
   mkdir -p "${PANTRY_DIR}"
   local item src dest
-  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel Caddyfile.legacy Caddyfile.tunnel.legacy publish-mode.sh auth-migrate.sh vapid-env.sh udev systemd firewall mdns dns; do
+  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel Caddyfile.legacy Caddyfile.tunnel.legacy publish-mode.sh auth-migrate.sh vapid-env.sh udev systemd; do
     src="$SCRIPT_DIR/$item"
     dest="${PANTRY_DIR}/$item"
     if [[ ! -e "$src" ]]; then
@@ -175,15 +173,6 @@ copy_deploy_files() {
   fi
   if [[ -f "${PANTRY_DIR}/systemd/pantry-backup.sh" ]]; then
     chmod +x "${PANTRY_DIR}/systemd/pantry-backup.sh"
-  fi
-  if [[ -f "${PANTRY_DIR}/firewall/pantry-lan-only.sh" ]]; then
-    chmod +x "${PANTRY_DIR}/firewall/pantry-lan-only.sh"
-  fi
-  if [[ -f "${PANTRY_DIR}/mdns/pantry-mdns.sh" ]]; then
-    chmod +x "${PANTRY_DIR}/mdns/pantry-mdns.sh"
-  fi
-  if [[ -f "${PANTRY_DIR}/dns/pantry-split-dns.sh" ]]; then
-    chmod +x "${PANTRY_DIR}/dns/pantry-split-dns.sh"
   fi
   log_success "Deployment files copied"
 }
@@ -333,176 +322,14 @@ prepare_public_profile() {
   return 0
 }
 
-# remove_lan_firewall deletes the HOST_PORT source filter and its systemd unit.
-remove_lan_firewall() {
-  if [[ -f "$PANTRY_DIR/firewall/pantry-lan-only.sh" ]]; then
-    "$PANTRY_DIR/firewall/pantry-lan-only.sh" --remove || true
-  fi
-  local unit_dir
-  unit_dir=$(systemd_unit_dir)
-  if [[ -f "$unit_dir/pantry-lan-only.service" ]]; then
-    systemctl disable --now pantry-lan-only.service || true
-    rm -f "$unit_dir/pantry-lan-only.service"
-    systemctl daemon-reload || true
-  fi
-}
-
-# apply_lan_firewall drops non-LAN clients on the published Stockbot port.
-# The safe default is on: compose publishes that port, and the public proxy
-# does not close it. PANTRY_LAN_FIREWALL=off removes the rule instead.
-# Sets firewall_applied=true when the rule is installed.
-apply_lan_firewall() {
-  local flag
-  flag=$(env_value PANTRY_LAN_FIREWALL)
-  flag=$(printf '%s' "$flag" | tr '[:upper:]' '[:lower:]')
-  case "$flag" in
-    off|false|0|no)
-      log_info "PANTRY_LAN_FIREWALL=$flag; removing any LAN-only rule so the published port stays reachable from any source"
-      remove_lan_firewall
-      firewall_applied=false
-      return 0
-      ;;
-  esac
-
-  local published=false
-  if [[ -f "$PANTRY_DIR/docker-compose.yml" ]] && grep -q '0\.0\.0\.0:.*:8080' "$PANTRY_DIR/docker-compose.yml"; then
-    published=true
-  fi
-  if [[ "$use_public" != true && "$published" != true ]]; then
-    log_info "Compose does not publish the Stockbot port and the public proxy is off; skipping the LAN firewall"
-    firewall_applied=false
-    return 0
-  fi
-
-  if [[ ! -f "$PANTRY_DIR/firewall/pantry-lan-only.sh" ]]; then
-    fatal "firewall/pantry-lan-only.sh is missing from $PANTRY_DIR"
-  fi
-  chmod +x "$PANTRY_DIR/firewall/pantry-lan-only.sh"
-
-  local unit_dir
-  unit_dir=$(systemd_unit_dir)
-  if [[ -f "$PANTRY_DIR/systemd/pantry-lan-only.service" ]]; then
-    mkdir -p "$unit_dir"
-    cp "$PANTRY_DIR/systemd/pantry-lan-only.service" "$unit_dir/pantry-lan-only.service"
-    systemctl daemon-reload
-    systemctl enable --now pantry-lan-only.service
-  else
-    "$PANTRY_DIR/firewall/pantry-lan-only.sh"
-  fi
-  firewall_applied=true
-  log_success "Published Stockbot port accepts LAN, loopback, and Tailscale sources"
-  log_info "Ports 80 and 443 are unchanged. Opt out with PANTRY_LAN_FIREWALL=off in $PANTRY_DIR/.env, then re-run sudo ./setup.sh"
-  return 0
-}
-
-# report_lan_access prints the address that works on home Wi-Fi.
-# The public hostname hangs there when the router does not NAT-hairpin
-# its own WAN address back to this Pi. Cellular traffic never takes that path.
-report_lan_access() {
-  local host_port="${1:-}" ip public_host
-  if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
-    host_port=8080
-  fi
-  if ip=$(lan_ipv4); then
-    log_info "LAN: http://${ip}:${host_port}"
-    # Advertise pantry.local only when this machine can publish it. A name
-    # that does not resolve is worse than the IP, which always works on the LAN.
-    if [[ "${PANTRY_SKIP_MDNS:-}" != 1 ]]; then
-      if [[ -f "$(systemd_unit_dir)/pantry-mdns.service" ]] || command -v avahi-publish-address >/dev/null 2>&1; then
-        log_info "LAN name: http://pantry.local:${host_port}"
-      fi
-    fi
-  else
-    log_info "LAN: http://<pi-address>:${host_port}"
-    local configured=""
-    if [[ -f "${PANTRY_DIR}/.env" ]]; then
-      configured=$({ grep '^PANTRY_LAN_IPV4=' "${PANTRY_DIR}/.env" || true; } | head -1 | cut -d= -f2- | tr -d '[:space:]')
-    fi
-    if [[ -n "${PANTRY_LAN_IPV4:-$configured}" ]]; then
-      log_warn "PANTRY_LAN_IPV4 must be a private IPv4 address such as 192.168.1.203"
-    else
-      log_info "Set PANTRY_LAN_IPV4 in ${PANTRY_DIR}/.env when this Pi's LAN address is not detected"
-    fi
-  fi
+# report_site prints the public URL. Certificate mode still depends on the
+# router hairpinning its own WAN address. Tunnel mode does not.
+report_site() {
+  local public_host mode
   public_host=$(env_value PUBLIC_HOST)
-  # Tunnel mode reaches Cloudflare from inside the house, so the public name
-  # does not depend on the router sending its own WAN address back to the Pi.
-  if [[ -n "$public_host" && "${publish_mode:-acme}" == acme ]]; then
-    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use the LAN address on this network. Cellular data still uses the public name and the shared password."
-  fi
-}
-
-# publish_lan_name registers pantry.local via Avahi when it is installed.
-# PANTRY_SKIP_MDNS=1 is the test harness; a Pi never sets it.
-publish_lan_name() {
-  local host_port="$1" unit_dir services_dir
-  if [[ "${PANTRY_SKIP_MDNS:-}" == 1 ]]; then
-    return 0
-  fi
-  if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
-    host_port=8080
-  fi
-  if [[ ! -x "$PANTRY_DIR/mdns/pantry-mdns.sh" ]]; then
-    log_warn "mdns/pantry-mdns.sh is missing; pantry.local was not published"
-    return 0
-  fi
-  if ! lan_ipv4 >/dev/null; then
-    log_warn "No private LAN address found, so pantry.local was not published. Set PANTRY_LAN_IPV4 in ${PANTRY_DIR}/.env"
-    return 0
-  fi
-  if ! command -v avahi-publish-address >/dev/null 2>&1; then
-    log_info "avahi-publish-address is not installed, so pantry.local was not published. On the Pi: sudo apt-get install -y avahi-daemon && sudo ./setup.sh"
-    return 0
-  fi
-
-  services_dir="${PANTRY_AVAHI_SERVICES_DIR:-}"
-  if [[ -z "$services_dir" && -d /etc/avahi/services ]]; then
-    services_dir=/etc/avahi/services
-  fi
-  # A failure to advertise the service must not abort setup. The IP URL
-  # still works, and the public proxy is already running by this point.
-  if [[ -n "$services_dir" ]] && mkdir -p "$services_dir" && [[ -w "$services_dir" ]]; then
-    cat > "${services_dir}/pantry-http.service" << EOF
-<?xml version="1.0" standalone='no'?>
-<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<service-group>
-  <name replace-wildcards="yes">Stockbot</name>
-  <service>
-    <type>_http._tcp</type>
-    <port>${host_port}</port>
-  </service>
-</service-group>
-EOF
-  elif [[ -n "$services_dir" ]]; then
-    log_warn "Could not write ${services_dir}/pantry-http.service. The LAN IP address still works."
-  fi
-
-  if [[ ! -f "$PANTRY_DIR/systemd/pantry-mdns.service" ]]; then
-    log_warn "systemd/pantry-mdns.service is missing; pantry.local was not published"
-    return 0
-  fi
-  unit_dir=$(systemd_unit_dir)
-  mkdir -p "$unit_dir"
-  cp "$PANTRY_DIR/systemd/pantry-mdns.service" "$unit_dir/pantry-mdns.service"
-  if ! systemctl daemon-reload \
-    || ! systemctl enable pantry-mdns.service \
-    || ! systemctl restart pantry-mdns.service; then
-    log_warn "Could not start pantry.local publishing. The LAN IP address still works."
-    return 0
-  fi
-  log_success "Published http://pantry.local:${host_port} on the LAN"
-}
-
-# apply_split_dns installs the optional single-name DNS answer.
-# Failure here must not stop the public proxy or the LAN port.
-apply_split_dns() {
-  if [[ ! -f "$PANTRY_DIR/dns/pantry-split-dns.sh" ]]; then
-    log_warn "dns/pantry-split-dns.sh is missing; split-horizon DNS was not configured"
-    return 0
-  fi
-  chmod +x "$PANTRY_DIR/dns/pantry-split-dns.sh"
-  if ! "$PANTRY_DIR/dns/pantry-split-dns.sh"; then
-    log_warn "Split-horizon DNS was not applied. Public HTTPS and the LAN port are unchanged."
+  mode="${publish_mode:-acme}"
+  if [[ -n "$public_host" && "$mode" == acme ]]; then
+    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use Cloudflare Tunnel for this hostname. Cellular data still uses the public name and the shared password."
   fi
 }
 
@@ -560,35 +387,30 @@ refresh_backup_unit() {
   log_success "Refreshed pantry-backup units"
 }
 
-# verify_public_sign_in asks Stockbot on the public listener. The published
-# LAN port answers /api/session with 200 even when the household password
-# file is unreadable, so that check has to reach :8081 inside the compose
-# network. A password file the container cannot read makes GET /api/session
-# return 503. A visitor who simply has not signed in gets 401.
+# verify_public_sign_in asks the loopback listener. A password file the
+# container cannot read makes GET /api/session return 503. A visitor who
+# has not signed in gets 401. Any other status means sign-in is not enforced.
 verify_public_sign_in() {
-  local public_port pantry_ip body code
-  public_port=$(env_value PUBLIC_LISTEN_ADDR)
-  public_port=${public_port:-:8081}
-  public_port=${public_port##*:}
-  if [[ ! "$public_port" =~ ^[0-9]+$ ]]; then
-    public_port=8081
-  fi
-  pantry_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{println}}{{end}}' "$(publish_container pantry)" 2>/dev/null | awk 'NF {print; exit}' || true)
-  if [[ ! "$pantry_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    pantry_ip=127.0.0.1
-  fi
+  local host_port body code
+  host_port=$(env_value HOST_PORT)
+  host_port=${host_port:-8080}
   body=$(mktemp)
   if ! code=$(curl -sS -o "$body" -w '%{http_code}' --max-time 10 \
-    "http://${pantry_ip}:${public_port}/api/session"); then
+    "http://127.0.0.1:${host_port}/api/session"); then
     rm -f "$body"
-    fatal "Could not check whether the public site can sign in."
+    fatal "Could not check whether the site can sign in."
   fi
   if [[ "$code" == "503" ]] || grep -q -F 'Sign-in is unavailable' "$body"; then
-    log_error "The public site cannot read ${PANTRY_DIR}/auth/household."
+    log_error "The site cannot read ${PANTRY_DIR}/auth/household."
     log_error "The pantry container runs as distroless nonroot (uid 65532) and cannot open a root-owned password file."
     log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
     rm -f "$body"
-    fatal "Sign-in is unavailable. The public site is up, but login will not work until that file is readable by uid 65532."
+    fatal "Sign-in is unavailable. The site is up, but login will not work until that file is readable by uid 65532."
+  fi
+  if [[ "$code" != "401" ]]; then
+    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
+    rm -f "$body"
+    fatal "Sign-in is not enforced on http://127.0.0.1:${host_port}/api/session."
   fi
   rm -f "$body"
 }
@@ -864,7 +686,7 @@ cmd_apply() {
   host_port=${host_port:-8080}
   local healthy=false
   while [[ $SECONDS -lt $deadline ]]; do
-    if curl -sf "http://localhost:$host_port/health" > /dev/null 2>&1; then
+    if curl -sf "http://127.0.0.1:$host_port/health" > /dev/null 2>&1; then
       healthy=true
       break
     fi
@@ -878,12 +700,8 @@ cmd_apply() {
   fi
   log_success "Stockbot is healthy"
 
-  if [[ "$use_public" == true ]]; then
-    verify_public_sign_in
-  fi
-
-  local firewall_applied=false
-  apply_lan_firewall
+  verify_public_sign_in
+  retire_lan_host_helpers
 
   if [[ "$with_updates" == true ]]; then
     log_info "Installing automatic-update systemd units (--with-updates)..."
@@ -905,36 +723,14 @@ cmd_apply() {
     log_info "Automatic updates were not changed (pass --with-updates to enable the timer)"
   fi
 
-  publish_lan_name "$host_port"
-  if [[ "$use_public" == true && "$publish_mode" == tunnel ]]; then
-    # An answer that points the public name at the Pi bypasses Cloudflare,
-    # and Caddy is not listening on the LAN address in this mode.
-    local split_flag
-    split_flag=$(env_value PANTRY_SPLIT_DNS)
-    split_flag=$(printf '%s' "$split_flag" | tr '[:upper:]' '[:lower:]')
-    case "$split_flag" in
-      on|true|yes|1)
-        log_warn "PANTRY_SPLIT_DNS is on. Tunnel mode needs $(env_value PUBLIC_HOST) to resolve to Cloudflare on home Wi-Fi too. Split-horizon DNS was removed. Set PANTRY_SPLIT_DNS=off in ${PANTRY_DIR}/.env."
-        ;;
-    esac
-    if [[ -f "$PANTRY_DIR/dns/pantry-split-dns.sh" ]]; then
-      "$PANTRY_DIR/dns/pantry-split-dns.sh" --remove || log_warn "Could not remove split-horizon DNS. Clients that use this Pi for DNS may still miss the tunnel."
-    fi
-  else
-    apply_split_dns
-  fi
-
   log_success "Stockbot setup complete"
-  report_lan_access "$host_port"
+  report_site
   if [[ "$use_public" == true && "$publish_mode" == tunnel ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel (shared password; the LAN address does not ask for it). Nothing on this Pi is listening on ports 80 or 443."
+    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel (shared password). Nothing on this Pi is listening on ports 80 or 443."
     log_info "In Zero Trust, the public hostname service URL is ${PANTRY_TUNNEL_ORIGIN}"
     log_info "Open that https URL on home Wi-Fi and on cellular, then remove the router's forwards for ports 80 and 443."
   elif [[ "$use_public" == true ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) (shared password; the LAN address does not ask for it)"
-  fi
-  if [[ "$firewall_applied" == true ]]; then
-    log_info "Non-LAN clients are blocked on port $host_port"
+    log_info "Public: https://$(env_value PUBLIC_HOST) (shared password)"
   fi
   log_info "Check: sudo ./setup.sh status"
 }
@@ -1234,7 +1030,7 @@ cmd_status() {
 
   # 7. Health check
   if [[ -n "${host_port:-}" ]]; then
-    if curl -sf "http://localhost:$host_port/health" | grep -q '"status":"ok"'; then
+    if curl -sf "http://127.0.0.1:$host_port/health" | grep -q '"status":"ok"'; then
       log_success "GET /health returns ok"
     else
       log_error "GET /health failed or timed out"
@@ -1282,7 +1078,7 @@ cmd_status() {
     log_info "Public internet access is not configured (PUBLIC_HOST is empty)"
   fi
 
-  report_lan_access "${host_port:-}"
+  report_site
 
   echo ""
   if [[ $failed -eq 0 ]]; then
@@ -1301,7 +1097,7 @@ cmd_unpublish() {
   if [[ ! -f ${PANTRY_DIR}/docker-compose.yml ]]; then
     fatal "Nothing installed at ${PANTRY_DIR}. Run 'sudo ./setup.sh' first"
   fi
-  log_info "Stopping the public HTTPS proxy and Cloudflare Tunnel. Stockbot keeps running on the LAN."
+  log_info "Stopping the public HTTPS proxy and Cloudflare Tunnel. Stockbot keeps running on loopback."
   docker compose --project-directory "${PANTRY_DIR}" -f "${PANTRY_DIR}/docker-compose.yml" --profile public stop caddy || true
   docker compose --project-directory "${PANTRY_DIR}" -f "${PANTRY_DIR}/docker-compose.yml" --profile public rm -f caddy || true
   if [[ -f "${PANTRY_DIR}/docker-compose.tunnel.yml" ]]; then
@@ -1315,9 +1111,9 @@ cmd_unpublish() {
 
 cmd_firewall_off() {
   require_root
-  remove_lan_firewall
-  log_success "Removed the LAN-only rule. The published port is reachable from any source again."
-  log_info "The next 'sudo ./setup.sh' installs that rule again unless PANTRY_LAN_FIREWALL=off is set in $PANTRY_DIR/.env."
+  retire_lan_host_helpers
+  log_success "Removed leftover LAN firewall and mDNS units."
+  log_info "Stockbot listens on 127.0.0.1 only. The next setup does not install those units again."
 }
 
 # ============================================================================
@@ -1431,10 +1227,10 @@ After git pull, from deploy/:
 
 That syncs this folder to /opt/pantry, starts the containers (including the
 public HTTPS proxy when PUBLIC_HOST is set and auth.caddy already exists),
-restarts Caddy so the current Caddyfile is loaded, and applies the LAN
-firewall on the published Stockbot port. It is safe to re-run. When
-CLOUDFLARE_TUNNEL_TOKEN is set, the same command publishes through
-Cloudflare Tunnel instead of ports 80 and 443.
+restarts Caddy so the current Caddyfile is loaded, and removes leftover LAN
+firewall and mDNS units. It is safe to re-run. When CLOUDFLARE_TUNNEL_TOKEN
+is set, the same command publishes through Cloudflare Tunnel instead of
+ports 80 and 443.
 
 COMMANDS:
   apply            Same as running setup.sh with no command.
@@ -1447,10 +1243,10 @@ COMMANDS:
                    that file already exists, and does not prompt for a password.
                    Pass --tunnel to publish through Cloudflare Tunnel. A token
                    already in .env selects tunnel without the flag.
-  firewall         Alias of apply. The LAN port rule is part of apply.
-  unpublish        Stop the HTTPS proxy. Stockbot keeps running on the LAN.
-  firewall-off     Remove the LAN port rule until the next setup. To leave it
-                   off, set PANTRY_LAN_FIREWALL=off in /opt/pantry/.env.
+  firewall         Alias of apply.
+  unpublish        Stop the HTTPS proxy. Stockbot keeps running on loopback.
+  firewall-off     Remove leftover LAN firewall and mDNS units. Setup does
+                   not install them again.
   rule             Regenerate and install udev rule for current scanner
   status           Diagnose the deployment chain and report issues
   logs             Follow container logs (Ctrl+C to stop)
@@ -1486,11 +1282,12 @@ NOTES:
   - Use 'sudo ./setup.sh logs' and GET /health for runtime introspection.
   - Existing .env values are preserved. PANTRY_IMAGE_TAG and HOST_PORT are
     never overwritten if already set.
-  - LAN http://<pi-address>:8080 keeps working. The firewall allows LAN,
-    loopback, and Tailscale, and does not change ports 80 or 443.
+  - Stockbot listens on 127.0.0.1:HOST_PORT. Browsers use https://PUBLIC_HOST.
+    The Wi-Fi address does not serve the app.
   - On home Wi-Fi, https://PUBLIC_HOST hangs when the router does not
-    hairpin NAT. Use the LAN address or http://pantry.local:8080.
-    Cellular data still uses the public name and the shared password.
+    hairpin NAT and the site is still on the certificate path. Use
+    Cloudflare Tunnel. Cellular data still uses the public name and the
+    shared password.
   - `sudo ./setup.sh publish --tunnel` avoids that hang. Caddy listens only
     for cloudflared, at http://caddy:80, and ports 80 and 443 stay closed.
     Empty CLOUDFLARE_TUNNEL_TOKEN to return to the certificate path. An empty

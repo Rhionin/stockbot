@@ -10,8 +10,8 @@ import (
 )
 
 // TestPublicProxyIsOptIn locks the deploy contract for internet access:
-// a normal compose up stays LAN-only, and the public profile is the only
-// thing that publishes 80/443 in front of the existing pantry service.
+// a normal compose up publishes Stockbot on loopback only, and the public
+// profile is the only thing that publishes 80/443 in front of it.
 func TestPublicProxyIsOptIn(t *testing.T) {
 	composePath := filepath.Join("..", "..", "deploy", "docker-compose.yml")
 	data, err := os.ReadFile(composePath)
@@ -40,13 +40,13 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		t.Fatal("pantry service missing")
 	}
 	if len(pantry.Profiles) != 0 {
-		t.Fatalf("pantry must stay in the default (LAN) project, got profiles %v", pantry.Profiles)
+		t.Fatalf("pantry must stay in the default project, got profiles %v", pantry.Profiles)
 	}
 	if !hasContainerPort(pantry.Ports, "8080") {
 		t.Fatalf("pantry must still publish the container port 8080, got %v", pantry.Ports)
 	}
-	if len(pantry.Ports) != 1 || !strings.HasPrefix(pantry.Ports[0], "0.0.0.0:") {
-		t.Fatalf("pantry must publish IPv4 only so a global IPv6 address is not an open API, got %v", pantry.Ports)
+	if len(pantry.Ports) != 1 || !strings.HasPrefix(pantry.Ports[0], "127.0.0.1:") {
+		t.Fatalf("pantry must publish on loopback, got %v", pantry.Ports)
 	}
 	if !hasExactPort(pantry.SecurityOpt, "no-new-privileges:true") {
 		t.Fatalf("pantry security_opt = %v", pantry.SecurityOpt)
@@ -87,7 +87,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(pantry.Environment["PANTRY_SESSION_SECRET"], "PANTRY_SESSION_SECRET") {
 		t.Fatalf("pantry must receive PANTRY_SESSION_SECRET from .env, got %q", pantry.Environment["PANTRY_SESSION_SECRET"])
 	}
-	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST", "SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TUNNEL_PROJECT_IDS", "SENTRY_TUNNEL_PUBLIC_KEYS", "APP_BASE_URL", "APP_NAME", "SESSION_COOKIE_NAME", "COOKIE_DOMAIN", "EMAIL_FROM", "LAN_PEOPLE", "EXPO_MIN_VERSION", "PUBLIC_LISTEN_ADDR", "LAN_LISTEN_ADDR"} {
+	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST", "SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TUNNEL_PROJECT_IDS", "SENTRY_TUNNEL_PUBLIC_KEYS", "APP_BASE_URL", "APP_NAME", "SESSION_COOKIE_NAME", "COOKIE_DOMAIN", "EMAIL_FROM", "EXPO_MIN_VERSION", "ADDR"} {
 		if !strings.Contains(pantry.Environment[key], key) {
 			t.Fatalf("pantry must receive %s from .env, got %q", key, pantry.Environment[key])
 		}
@@ -135,12 +135,15 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"import Caddyfile.legacy",
 		"{$ACME_EMAIL}",
 		"X-Pantry-Client-IP {client_ip}",
+		"header_up -X-Pantry-Entry",
+		"header_up X-Forwarded-For {client_ip}",
+		"header_up X-Forwarded-Proto https",
 		"path /api/telemetry /api/telemetry/client",
 		"path /brand/logo.png /terms /privacy",
 		"path /api/events",
 		"Do not add other API paths to this matcher.",
 		"This is not an API exception.",
-		"reverse_proxy pantry:8081",
+		"reverse_proxy pantry:8080",
 		"flush_interval -1",
 		"route {",
 		"Strict-Transport-Security",
@@ -155,11 +158,11 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if strings.Contains(text, "import auth.caddy") || strings.Contains(text, "basic_auth") {
 		t.Fatal("Caddyfile must not challenge the browser with basic auth")
 	}
-	if strings.Contains(text, "pantry:8080") || strings.Contains(text, "X-Pantry-Entry") {
-		t.Fatal("Caddyfile must proxy to the public listener and must not stamp an entry header")
+	if strings.Contains(text, "pantry:8081") || strings.Contains(text, "header_up X-Pantry-Entry ") || strings.Contains(text, "X-Pantry-Entry public") {
+		t.Fatal("Caddyfile must proxy to pantry:8080 and must not stamp an entry header")
 	}
-	if strings.Count(text, "reverse_proxy") != strings.Count(text, "reverse_proxy pantry:8081") {
-		t.Fatal("every Caddyfile reverse_proxy must target pantry:8081")
+	if strings.Count(text, "reverse_proxy") != strings.Count(text, "reverse_proxy pantry:8080") {
+		t.Fatal("every Caddyfile reverse_proxy must target pantry:8080")
 	}
 	const householdSite = "# Everything else is the household site."
 	authAt := strings.Index(text, householdSite)
@@ -201,10 +204,10 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(deviceBlock, "max_size 64KB") {
 		t.Fatal("Caddyfile device handle must cap request bodies at 64KB")
 	}
-	if !strings.Contains(deviceBlock, "X-Pantry-Client-IP {client_ip}") || !strings.Contains(deviceBlock, "reverse_proxy pantry:8081") {
-		t.Fatal("Caddyfile device handle must proxy to the public listener and pass the visitor address")
+	if !strings.Contains(deviceBlock, "X-Pantry-Client-IP {client_ip}") || !strings.Contains(deviceBlock, "reverse_proxy pantry:8080") || !strings.Contains(deviceBlock, "header_up -X-Pantry-Entry") {
+		t.Fatal("Caddyfile device handle must proxy to pantry:8080, strip the entry header, and pass the visitor address")
 	}
-	if strings.Contains(deviceBlock, "X-Pantry-Entry") {
+	if strings.Contains(deviceBlock, "header_up X-Pantry-Entry ") {
 		t.Fatal("Caddyfile device handle must not stamp an entry header")
 	}
 	authedMatchers := pathMatchers(text[authAt:])
@@ -264,9 +267,9 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"sync_household_credential",
 		"ensure_session_secret",
 		"pull pantry",
-		"PANTRY_LAN_FIREWALL",
+		"retire_lan_host_helpers",
+		"127.0.0.1",
 		"${1:-apply}",
-		"pantry.local",
 		"Home Wi-Fi cannot open https://",
 		"does not hairpin NAT",
 	} {
@@ -278,14 +281,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		t.Fatal("setup.sh must not prompt for BASIC_AUTH_PASSWORD; an existing auth.caddy is kept")
 	}
 
-	if !strings.Contains(envText, "\nPANTRY_LAN_FIREWALL=on\n") {
-		t.Fatal(".env.example must default the LAN firewall on so setup can opt out explicitly")
-	}
-	if !strings.Contains(envText, "\nPANTRY_LAN_IPV4=\n") {
-		t.Fatal(".env.example must leave PANTRY_LAN_IPV4 empty so detection stays the default")
-	}
-	if !strings.Contains(envText, "\nPANTRY_SPLIT_DNS=off\n") {
-		t.Fatal(".env.example must leave split-horizon DNS off so setup does not start a resolver")
+	if strings.Contains(envText, "PANTRY_LAN_FIREWALL") || strings.Contains(envText, "PANTRY_LAN_IPV4") || strings.Contains(envText, "PANTRY_SPLIT_DNS") || strings.Contains(envText, "LAN_PEOPLE") || strings.Contains(envText, "PUBLIC_LISTEN_ADDR") || strings.Contains(envText, "LAN_LISTEN_ADDR") {
+		t.Fatal(".env.example must not document the removed LAN listener settings")
 	}
 
 	updater, err := os.ReadFile(filepath.Join("..", "..", "deploy", "systemd", "pantry-update.sh"))
@@ -320,20 +317,19 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	readmeText := string(readme)
 	for _, want := range []string{
-		"Home Wi-Fi hangs on the public name",
-		"http://pantry.local:8080",
-		"Gryphon Connect",
-		"NAT loopback",
-		"PANTRY_SPLIT_DNS=on",
-		"Do not forward port 53",
-		"Do not forward port 8080",
+		"https://stockbot.rhionin.com",
+		"127.0.0.1",
+		"Cloudflare Tunnel",
 	} {
 		if !strings.Contains(readmeText, want) {
 			t.Fatalf("deploy README missing %q", want)
 		}
 	}
-	if !strings.Contains(text, "Do not publish port 8080") {
-		t.Fatal("Caddyfile must keep the warning that port 8080 is not the hairpin workaround")
+	if strings.Contains(readmeText, "http://pantry.local:8080") || strings.Contains(readmeText, "pantry-lan-only") || strings.Contains(readmeText, "pantry-mdns") {
+		t.Fatal("deploy README must not tell operators to use the removed LAN address or units")
+	}
+	if !strings.Contains(text, "Do not publish") || !strings.Contains(text, "port 8080") {
+		t.Fatal("Caddyfile must keep the warning that port 8080 stays off the Pi's other interfaces")
 	}
 	if strings.Contains(text, "trusted_proxies") {
 		t.Fatal("certificate Caddyfile must not trust forwarded headers; that is tunnel mode only")
@@ -369,19 +365,21 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"admin off",
 		"trusted_proxies static 10.77.77.2/32",
 		"client_ip_headers Cf-Connecting-Ip",
-		"reverse_proxy pantry:8081",
+		"reverse_proxy pantry:8080",
 		"X-Pantry-Client-IP {client_ip}",
+		"header_up -X-Pantry-Entry",
+		"header_up X-Forwarded-Proto https",
 		"(security_headers)",
 	} {
 		if !strings.Contains(tunnelText, want) {
 			t.Fatalf("Caddyfile.tunnel missing %q", want)
 		}
 	}
-	if strings.Contains(tunnelText, "pantry:8080") || strings.Contains(tunnelText, "X-Pantry-Entry") {
-		t.Fatal("Caddyfile.tunnel must proxy to the public listener and must not stamp an entry header")
+	if strings.Contains(tunnelText, "pantry:8081") || strings.Contains(tunnelText, "header_up X-Pantry-Entry ") || strings.Contains(tunnelText, "X-Pantry-Entry public") {
+		t.Fatal("Caddyfile.tunnel must proxy to pantry:8080 and must not stamp an entry header")
 	}
-	if strings.Count(tunnelText, "reverse_proxy") != strings.Count(tunnelText, "reverse_proxy pantry:8081") {
-		t.Fatal("every Caddyfile.tunnel reverse_proxy must target pantry:8081")
+	if strings.Count(tunnelText, "reverse_proxy") != strings.Count(tunnelText, "reverse_proxy pantry:8080") {
+		t.Fatal("every Caddyfile.tunnel reverse_proxy must target pantry:8080")
 	}
 	if strings.Contains(tunnelText, "{$ACME_EMAIL}") || strings.Contains(tunnelText, "email ") {
 		t.Fatal("tunnel Caddyfile must not request a certificate")

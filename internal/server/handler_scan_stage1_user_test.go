@@ -158,7 +158,7 @@ func TestScanCreateDerivesUserIDFromPrincipal(t *testing.T) {
 	}
 }
 
-func TestStage1LANScanOmitsUserID(t *testing.T) {
+func TestStage1ScanRequiresASession(t *testing.T) {
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "pantry.db"))
 	svc := auth.NewService(db, t.TempDir())
 	site, err := app.LoadRuntimeConfig(func(key string) string {
@@ -174,24 +174,16 @@ func TestStage1LANScanOmitsUserID(t *testing.T) {
 
 	created := stage1Do(handler, http.MethodPost, "/api/scans", "", map[string]string{
 		"barcode": "121212121212", "direction": "stock_out",
-	}, app.EntryLAN, "")
-	if created.Code != http.StatusCreated {
+	}, app.EntryPublic, "")
+	if created.Code != http.StatusUnauthorized {
 		t.Fatalf("create = %d %s", created.Code, created.Body.String())
 	}
-	var entry scan.ScanEntry
-	if err := json.Unmarshal(created.Body.Bytes(), &entry); err != nil {
-		t.Fatal(err)
-	}
-	if entry.UserID != "lan" {
-		t.Fatalf("lan userId = %q", entry.UserID)
-	}
-
-	listed := stage1Do(handler, http.MethodGet, "/api/scans", "", nil, app.EntryLAN, "")
-	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "121212121212") {
+	listed := stage1Do(handler, http.MethodGet, "/api/scans", "", nil, app.EntryPublic, "")
+	if listed.Code != http.StatusUnauthorized {
 		t.Fatalf("list = %d %s", listed.Code, listed.Body.String())
 	}
-	history := stage1Do(handler, http.MethodGet, "/api/scans/history", "", nil, app.EntryLAN, "")
-	if history.Code != http.StatusOK {
+	history := stage1Do(handler, http.MethodGet, "/api/scans/history", "", nil, app.EntryPublic, "")
+	if history.Code != http.StatusUnauthorized {
 		t.Fatalf("history = %d %s", history.Code, history.Body.String())
 	}
 }

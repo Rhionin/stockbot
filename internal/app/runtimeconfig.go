@@ -12,34 +12,23 @@ import (
 )
 
 // These are the Stage-1 defaults from the multi-household design (§10).
-// APP_BASE_URL is not filled in when the variable is empty: a process
-// without it is LAN-only and does not open the public listener. The Pi
+// APP_BASE_URL is not filled in when the variable is empty. The process
+// still listens once, and that listener requires a session. The Pi
 // deployment sets DefaultAppBaseURL. Renaming the site or the product is
 // a change to these settings, not to call sites.
 const (
 	DefaultAppBaseURL        = "https://stockbot.rhionin.com"
 	DefaultAppName           = "Stockbot"
 	DefaultSessionCookieName = "__Host-stockbot_session"
-	DefaultLANPeople         = LANPeopleRedirect
 	DefaultExpoMinVersion    = "1.0.0"
-	DefaultPublicListenAddr  = ":8081"
-	DefaultLANListenAddr     = ":8080"
+	DefaultListenAddr        = ":8080"
 )
 
-// How people on the LAN are treated after the household password is retired.
-// redirect sends browsers to AppBaseURL. signin is the later LAN-cookie
-// option and does not change Stage-1 behavior.
-const (
-	LANPeopleRedirect = "redirect"
-	LANPeopleSignIn   = "signin"
-)
-
-// Entry is which listener accepted a request. The listener is the only
-// signal: a LAN client cannot claim the public entry.
+// Entry is the authenticated site. The process binds one listener, and
+// every request on it is this entry.
 type Entry string
 
 const (
-	EntryLAN    Entry = "lan"
 	EntryPublic Entry = "public"
 )
 
@@ -61,7 +50,7 @@ func EntryFrom(ctx context.Context) (Entry, bool) {
 		return "", false
 	}
 	entry, ok := ctx.Value(entryKey{}).(Entry)
-	return entry, ok && (entry == EntryLAN || entry == EntryPublic)
+	return entry, ok && entry == EntryPublic
 }
 
 // Listener is one address the process binds, and the entry it represents.
@@ -91,31 +80,26 @@ type RuntimeConfig struct {
 	PublicHost     string
 	CookieDomain   string
 	EmailFrom      string
-	LANPeople      string
 	ExpoMinVersion string
 
-	sessionCookieName     string
-	publicListenAddr      string
-	lanListenAddr         string
-	publicListenerEnabled bool
+	sessionCookieName string
+	listenAddr        string
 }
 
-// LoadRuntimeConfig reads the Stage-1 site settings. An empty APP_BASE_URL
-// leaves the public listener unbound. A set APP_BASE_URL refuses to start
-// when the public listener is turned off. getenv may be nil, which loads
-// the defaults.
+// LoadRuntimeConfig reads the Stage-1 site settings. The process binds
+// one listener. ADDR is that address, defaulting to :8080. An old
+// LAN_LISTEN_ADDR is used only when ADDR is empty. PUBLIC_LISTEN_ADDR
+// and LAN_PEOPLE are ignored, so a previous Pi env does not open a
+// second listener. getenv may be nil, which loads the defaults.
 func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
 	cfg := RuntimeConfig{
-		AppName:               DefaultAppName,
-		LANPeople:             DefaultLANPeople,
-		ExpoMinVersion:        DefaultExpoMinVersion,
-		sessionCookieName:     DefaultSessionCookieName,
-		publicListenAddr:      DefaultPublicListenAddr,
-		lanListenAddr:         DefaultLANListenAddr,
-		publicListenerEnabled: true,
+		AppName:           DefaultAppName,
+		ExpoMinVersion:    DefaultExpoMinVersion,
+		sessionCookieName: DefaultSessionCookieName,
+		listenAddr:        DefaultListenAddr,
 	}
 
 	origin, host, err := normalizeBaseURL(getenv("APP_BASE_URL"))
@@ -160,16 +144,6 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		cfg.EmailFrom = raw
 	}
 
-	switch strings.ToLower(strings.TrimSpace(getenv("LAN_PEOPLE"))) {
-	case "":
-	case LANPeopleRedirect:
-		cfg.LANPeople = LANPeopleRedirect
-	case LANPeopleSignIn:
-		cfg.LANPeople = LANPeopleSignIn
-	default:
-		return RuntimeConfig{}, errors.New("LAN_PEOPLE must be redirect or signin")
-	}
-
 	if raw := strings.TrimSpace(getenv("EXPO_MIN_VERSION")); raw != "" {
 		if _, ok := parseSemver(raw); !ok {
 			return RuntimeConfig{}, errors.New("EXPO_MIN_VERSION must be a version such as 1.0.0")
@@ -177,35 +151,11 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		cfg.ExpoMinVersion = raw
 	}
 
-	lanRaw := strings.TrimSpace(getenv("LAN_LISTEN_ADDR"))
-	if lanRaw == "" {
-		lanRaw = strings.TrimSpace(getenv("ADDR"))
+	addr, err := configuredListenAddr(getenv)
+	if err != nil {
+		return RuntimeConfig{}, err
 	}
-	if lanRaw == "" {
-		lanRaw = DefaultLANListenAddr
-	}
-	if listenerDisabled(lanRaw) || !validListenAddr(lanRaw) {
-		return RuntimeConfig{}, errors.New("LAN_LISTEN_ADDR must be a host:port address such as :8080")
-	}
-	cfg.lanListenAddr = lanRaw
-
-	if pubRaw := strings.TrimSpace(getenv("PUBLIC_LISTEN_ADDR")); pubRaw != "" {
-		if listenerDisabled(pubRaw) {
-			cfg.publicListenerEnabled = false
-			cfg.publicListenAddr = ""
-		} else if !validListenAddr(pubRaw) {
-			return RuntimeConfig{}, errors.New("PUBLIC_LISTEN_ADDR must be a host:port address such as :8081, or off")
-		} else {
-			cfg.publicListenAddr = pubRaw
-		}
-	}
-
-	if cfg.AppBaseURL != "" && !cfg.publicListenerEnabled {
-		return RuntimeConfig{}, errors.New("APP_BASE_URL is set, but the public listener is off. Set PUBLIC_LISTEN_ADDR to an address such as :8081")
-	}
-	if cfg.publicListenerEnabled && cfg.AppBaseURL != "" && listenConflict(cfg.lanListenAddr, cfg.publicListenAddr) {
-		return RuntimeConfig{}, errors.New("PUBLIC_LISTEN_ADDR and LAN_LISTEN_ADDR must be different addresses")
-	}
+	cfg.listenAddr = addr
 
 	if err := cfg.checkPublicHost(getenv("PUBLIC_HOST")); err != nil {
 		return RuntimeConfig{}, err
@@ -213,28 +163,30 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	return cfg, nil
 }
 
-// Listeners is the set of addresses to bind. The public listener is
-// included only when APP_BASE_URL is set and the listener is enabled, so
-// a LAN-only server does not need :8081.
-func (c RuntimeConfig) Listeners() []Listener {
-	out := []Listener{{Addr: c.lanListenAddr, Entry: EntryLAN}}
-	if c.AppBaseURL != "" && c.publicListenerEnabled && c.publicListenAddr != "" {
-		out = append(out, Listener{Addr: c.publicListenAddr, Entry: EntryPublic})
+// configuredListenAddr is ADDR, or LAN_LISTEN_ADDR when ADDR is empty.
+// PUBLIC_LISTEN_ADDR is not a second bind.
+func configuredListenAddr(getenv func(string) string) (string, error) {
+	raw := strings.TrimSpace(getenv("ADDR"))
+	if raw == "" || listenerDisabled(raw) {
+		raw = strings.TrimSpace(getenv("LAN_LISTEN_ADDR"))
 	}
-	return out
+	if raw == "" || listenerDisabled(raw) {
+		return DefaultListenAddr, nil
+	}
+	if !validListenAddr(raw) {
+		return "", errors.New("ADDR must be a host:port address such as :8080")
+	}
+	return raw, nil
 }
 
-// PublicListenerEnabled reports whether a public address may be bound.
-// It stays true when PUBLIC_LISTEN_ADDR is unset. APP_BASE_URL still has
-// to be set before Listeners includes that address.
-func (c RuntimeConfig) PublicListenerEnabled() bool {
-	return c.publicListenerEnabled
-}
-
-// PublicListenAddr is the configured public address, or empty when the
-// public listener is turned off.
-func (c RuntimeConfig) PublicListenAddr() string {
-	return c.publicListenAddr
+// Listeners is the one address to bind. Every request on it is the
+// public entry, so a session is required for the app and the API.
+func (c RuntimeConfig) Listeners() []Listener {
+	addr := c.listenAddr
+	if addr == "" {
+		addr = DefaultListenAddr
+	}
+	return []Listener{{Addr: addr, Entry: EntryPublic}}
 }
 
 // SessionCookie is the cookie to set for a personal session.
@@ -453,19 +405,6 @@ func validListenAddr(raw string) bool {
 	}
 	_, ok := validCookieDomain(host)
 	return ok
-}
-
-func listenConflict(a, b string) bool {
-	ah, ap, aerr := net.SplitHostPort(a)
-	bh, bp, berr := net.SplitHostPort(b)
-	if aerr != nil || berr != nil || ap != bp {
-		return false
-	}
-	return (unspecifiedHost(ah) || unspecifiedHost(bh)) || strings.EqualFold(ah, bh)
-}
-
-func unspecifiedHost(host string) bool {
-	return host == "" || host == "0.0.0.0" || host == "::" || host == "[::]"
 }
 
 type semver struct {

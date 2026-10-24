@@ -497,31 +497,11 @@ func (s *Service) householdPasswordView(ctx context.Context, householdID string)
 	return view, nil
 }
 
-// LANView is the :8080 principal while the shared password is on.
-func (s *Service) LANView(ctx context.Context) (Principal, SessionView, error) {
-	scope, err := PrimaryScope(ctx, s.db)
-	if err != nil {
-		return Principal{}, SessionView{}, AsError(err)
-	}
-	view, err := s.householdPasswordView(ctx, scope.HouseholdID())
-	if err != nil {
-		return Principal{}, SessionView{}, err
-	}
-	view.Kind = "lan"
-	return Principal{
-		Kind:        "lan",
-		HouseholdID: scope.HouseholdID(),
-		Role:        "member",
-	}, view, nil
-}
-
 // HouseholdGate is the shared password as it is stored now.
 // On is public shared-password sign-in: state on and a nonempty hash.
-// LANOpen is :8080 before retirement. A missing row is still open.
-// Retirement (state off) closes the LAN even while the hash remains for restore.
+// Retirement (state off) keeps the hash so it can be restored.
 type HouseholdGate struct {
 	On           bool
-	LANOpen      bool
 	User         string
 	Hash         []byte
 	Secret       []byte
@@ -538,7 +518,7 @@ func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) 
 		SELECT login_name, COALESCE(pw_hash, ''), COALESCE(session_key, ''), state, COALESCE(restore_until, '')
 		FROM household_password WHERE household_id = ?`, scope.HouseholdID()).Scan(&login, &hash, &key, &state, &until)
 	if err == sql.ErrNoRows {
-		return HouseholdGate{LANOpen: true}, nil
+		return HouseholdGate{}, nil
 	}
 	if err != nil {
 		return HouseholdGate{}, AsError(err)
@@ -546,7 +526,6 @@ func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) 
 	secret, _ := base64.StdEncoding.DecodeString(key)
 	return HouseholdGate{
 		On:           state == "on" && hash != "",
-		LANOpen:      state == "on",
 		User:         login,
 		Hash:         []byte(hash),
 		Secret:       secret,
@@ -562,16 +541,6 @@ func (s *Service) HouseholdPasswordOn(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return gate.On, nil
-}
-
-// LANOpen reports whether :8080 still serves household 1 without a personal session.
-// No household_password row, or state on, stays open. State off (retired) closes it.
-func (s *Service) LANOpen(ctx context.Context) (bool, error) {
-	gate, err := s.LoadHouseholdGate(ctx)
-	if err != nil {
-		return false, err
-	}
-	return gate.LANOpen, nil
 }
 
 // CheckHouseholdPassword reports whether the shared household password matches.
