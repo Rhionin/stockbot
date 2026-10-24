@@ -20,6 +20,7 @@ var pragmaAllowlist = map[string]string{
 	"internal/backup/snapshot.go":          "backup integrity and page checks",
 	"internal/grocysync/mapdb.go":          "grocy file busy timeout",
 	"internal/grocysync/backfill.go":       "grocy stock_log shape and busy timeout",
+	"internal/auth/purge.go":               "purge secure_delete, checkpoint, and table discovery",
 }
 
 func TestPortableSQL(t *testing.T) {

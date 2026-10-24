@@ -14,6 +14,65 @@ import (
 	"github.com/Rhionin/stockbot/internal/auth"
 )
 
+func TestAdminExportAndPurgeRejectBadArguments(t *testing.T) {
+	root := t.TempDir()
+	if err := runAdmin([]string{"export", "--household"}); err == nil {
+		t.Fatal("household flag without an id succeeded")
+	}
+	if err := runAdmin([]string{"export", "--out"}); err == nil {
+		t.Fatal("out flag without a path succeeded")
+	}
+	if err := runAdmin([]string{"export", "--verbose"}); err == nil {
+		t.Fatal("unknown export flag succeeded")
+	}
+
+	t.Setenv("DB_PATH", filepath.Join(root, "pantry?.db"))
+	if err := runAdmin([]string{"export", "--household", "h", "--out", filepath.Join(root, "out.zip")}); err == nil {
+		t.Fatal("export opened a file that is not a database")
+	}
+	if err := runAdmin([]string{"purge"}); err == nil {
+		t.Fatal("purge opened a file that is not a database")
+	}
+	if err := runAdmin([]string{"setup-code"}); err == nil {
+		t.Fatal("setup-code opened a file that is not a database")
+	}
+
+	dbPath := filepath.Join(root, "pantry.db")
+	t.Setenv("DB_PATH", dbPath)
+	t.Setenv("SETUP_DIR", filepath.Join(root, "setup"))
+	if err := os.Mkdir(filepath.Join(root, "setup"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAdmin([]string{"setup-code"}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, readDB, err := app.OpenPantry(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var household string
+	if err := sqlDB.QueryRow(`SELECT value FROM app_settings WHERE key = 'primary_household_id'`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.Close()
+	readDB.Close()
+
+	asDir := filepath.Join(root, "out-dir")
+	if err := os.Mkdir(asDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAdmin([]string{"export", "--household", household, "--out", asDir}); err == nil {
+		t.Fatal("export wrote a zip onto a directory")
+	}
+	parentFile := filepath.Join(root, "parent-file")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAdmin([]string{"export", "--household", household, "--out", filepath.Join(parentFile, "nested.zip")}); err == nil {
+		t.Fatal("export created a directory through a file")
+	}
+}
+
 func TestAdminSetupCodeIssuesAndRecovers(t *testing.T) {
 	if err := runAdmin(nil); err == nil {
 		t.Fatal("missing command succeeded")

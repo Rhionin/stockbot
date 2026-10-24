@@ -247,6 +247,148 @@ func seedTwoHouseholds(t *testing.T, db *sql.DB) {
 		('inv-north', 'join_household', ?, 'invite-hash-sentinel-q7', '2026-04-01T00:00:00Z')`, northID)
 }
 
+func TestBuildExportEdgesAndCancellation(t *testing.T) {
+	db := openExportDB(t)
+	when := time.Date(2026, 4, 2, 15, 4, 5, 0, time.UTC)
+	if _, err := Build(context.Background(), db, "", when); err != ErrNotFound {
+		t.Fatal("empty id was not not-found")
+	}
+	if _, err := Build(context.Background(), db, "0190aaaa-bbbb-7000-8000-000000000099", when); err != ErrNotFound {
+		t.Fatal("missing household was not not-found")
+	}
+
+	const (
+		edgeID = "0190aaaa-bbbb-7000-8000-0000000000c3"
+		valID  = "0190aaaa-bbbb-7000-8000-0000000000c4"
+	)
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+	}
+	exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'edge-pantry-z9', '', '2026-01-01T00:00:00Z', 'edge-channel-q7', 0)`, edgeID)
+	exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'value-pantry-z9', 'auto', '2026-01-01T00:00:00Z', 'value-channel-q7', 0)`, valID)
+	exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES ('p-edge', 'edge-catalog-q7', '', '')`)
+	exec(`INSERT INTO items (id, user_id, product_id, household_id, target_quantity, created_at)
+		VALUES ('i-edge', 'acct-edge', 'p-edge', ?, NULL, '')`, edgeID)
+	exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES (?, 'i-edge', 'amount', 1.5)`, edgeID)
+	exec(`INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, household_id, created_at)
+		VALUES ('n-edge', 'i-edge', '2026-01-02 15:04:05', 'soon', ?, '')`, edgeID)
+	exec(`INSERT INTO product_groups (id, user_id, name, name_key, household_id)
+		VALUES ('g-edge', 'acct-edge', 'edge-group-q7', 'edge-group-q7', ?)`, edgeID)
+	exec(`INSERT INTO categories (id, household_id, name, name_key)
+		VALUES ('c-edge', ?, 'edge-cat-q7', 'edge-cat-q7')`, edgeID)
+	exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'supply_target_kind', 'months')`, edgeID)
+	exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'supply_target_value', '4')`, valID)
+
+	bundle, err := Build(context.Background(), db, edgeID, when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := bundle.Document
+	if doc.Settings.RestockMode != "auto" || doc.Settings.SupplyDefault != "months" {
+		t.Fatalf("settings %+v", doc.Settings)
+	}
+	if len(doc.Products) != 1 || len(doc.Products[0].Barcodes) != 0 {
+		t.Fatalf("barcodes %+v", doc.Products)
+	}
+	if len(doc.Groups) != 1 || len(doc.Groups[0].ProductIDs) != 0 || doc.Groups[0].Name != "edge-group-q7" {
+		t.Fatalf("groups %+v", doc.Groups)
+	}
+	if len(doc.Categories) != 1 || len(doc.Categories[0].ItemIDs) != 0 {
+		t.Fatalf("categories %+v", doc.Categories)
+	}
+	if doc.Items[0].CreatedAt != "" || doc.Items[0].StockTarget == nil || *doc.Items[0].StockTarget != 1.5 {
+		t.Fatalf("item %+v", doc.Items[0])
+	}
+	rows := readCSV(t, bundle.ItemsCSV)
+	if len(rows) != 2 || rows[1][3] != "soon" || rows[1][6] != "1.5" {
+		t.Fatalf("items csv %+v", rows)
+	}
+	if !strings.Contains(string(bundle.JSON), `"barcodes":[]`) || !strings.Contains(string(bundle.JSON), `"productIds":[]`) {
+		t.Fatalf("empty slices were omitted\n%s", bundle.JSON)
+	}
+
+	valueOnly, err := Build(context.Background(), db, valID, when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valueOnly.Document.Settings.SupplyDefault != "4" || len(valueOnly.Document.Products) != 0 {
+		t.Fatalf("value-only %+v", valueOnly.Document.Settings)
+	}
+
+	ids := newLocalIDs()
+	if ids.assign("prod", "") != "" || ids.get("prod", "") != "" {
+		t.Fatal("empty source was kept")
+	}
+	if ids.assign("prod", "p-edge") != "prod_1" || ids.assign("prod", "p-edge") != "prod_1" {
+		t.Fatal("local id was not stable")
+	}
+	if ids.get("item", "i-edge") != "item_1" || ids.source("item", "item_1") != "i-edge" {
+		t.Fatal("get did not assign a missing id")
+	}
+	if trimFloat(2) != "2" || trimFloat(1.5) != "1.5" {
+		t.Fatal("trimFloat")
+	}
+	if rfc3339("") != "" || rfc3339("soon") != "soon" || rfc3339("2026-01-02") != "2026-01-02T00:00:00Z" {
+		t.Fatal("rfc3339")
+	}
+	if dateOnly("soon") != "soon" || dateOnly("2026-01-02T00:00:00Z") != "2026-01-02" {
+		t.Fatal("dateOnly")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Build(ctx, db, edgeID, when); err == nil {
+		t.Fatal("cancelled build succeeded")
+	}
+	if _, err := loadProducts(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled products")
+	}
+	if _, err := loadOverrides(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled overrides")
+	}
+	if _, err := loadGlobalBarcodes(ctx, db, []string{"p-edge"}); err == nil {
+		t.Fatal("cancelled barcodes")
+	}
+	if _, err := loadItems(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled items")
+	}
+	if _, err := loadInstances(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled instances")
+	}
+	if _, err := loadScans(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled scans")
+	}
+	if _, err := loadShopping(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled shopping")
+	}
+	if _, err := loadMoves(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled moves")
+	}
+	if _, _, err := loadGroups(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled groups")
+	}
+	if _, _, err := loadCategories(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled categories")
+	}
+	if _, err := loadItemCategory(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled item category")
+	}
+	if _, err := loadItemGroup(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled item group")
+	}
+	if _, err := loadItemTarget(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled item target")
+	}
+	if _, err := loadSupplyDefault(ctx, db, edgeID); err == nil {
+		t.Fatal("cancelled supply")
+	}
+}
+
 func readCSV(t *testing.T, raw []byte) [][]string {
 	t.Helper()
 	rows, err := csv.NewReader(bytes.NewReader(raw)).ReadAll()

@@ -313,6 +313,114 @@ func TestDeleteHouseholdThenAccountDelete(t *testing.T) {
 	}
 }
 
+func TestLifecycleEdgesAndPurgeGuards(t *testing.T) {
+	if !safeIdent("household_settings") || safeIdent("") || safeIdent("has space") || safeIdent("a-b") {
+		t.Fatal("safeIdent")
+	}
+	db := openAuthDB(t)
+	if _, _, err := deleteHouseholdTable(context.Background(), db, "bad name", "x"); err == nil {
+		t.Fatal("unsafe table was purged")
+	}
+	var none *Service
+	if result, err := none.PurgeDue(context.Background()); err != nil || result.Households != 0 {
+		t.Fatalf("nil purge %+v %v", result, err)
+	}
+	none.RunPurge(context.Background(), time.Hour)
+
+	svc := NewService(db, t.TempDir())
+	ctx := context.Background()
+	when := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return when })
+	if err := svc.RedeemSetup(ctx, mustSetup(t, svc), "Nia North", "nia@pantry.test", "correct horse", ""); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'nia@pantry.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	house := primary.HouseholdID()
+	gone, err := svc.HouseholdGone(ctx, "0190aaaa-bbbb-7000-8000-000000000099")
+	if err != nil || !gone {
+		t.Fatalf("missing household gone=%v %v", gone, err)
+	}
+	expectCode(t, svc.ExportAllowed(ctx, "no-such-user", house), CodeNotFound)
+	expectCode(t, svc.DeleteAccount(ctx, "no-such-user", "nia@pantry.test"), CodeUnauthorized)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := svc.HouseholdGone(cancelled, house); err == nil {
+		t.Fatal("cancelled household lookup succeeded")
+	}
+	if err := svc.ExportAllowed(cancelled, userID, house); err == nil {
+		t.Fatal("cancelled export check succeeded")
+	}
+	if _, err := svc.DeleteHousehold(cancelled, userID, house, "Primary"); err == nil {
+		t.Fatal("cancelled delete succeeded")
+	}
+	if _, err := svc.RestoreHousehold(cancelled, userID, house); err == nil {
+		t.Fatal("cancelled restore succeeded")
+	}
+	if err := svc.DeleteAccount(cancelled, userID, "nia@pantry.test"); err == nil {
+		t.Fatal("cancelled account delete succeeded")
+	}
+	if _, err := svc.PurgeDue(cancelled); err == nil {
+		t.Fatal("cancelled purge succeeded")
+	}
+	if _, err := svc.DeleteHousehold(ctx, userID, house, "Primary"); err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, take2(svc.DeleteHousehold(ctx, userID, house, "Primary")), CodeNotFound)
+	if _, err := db.Exec(`UPDATE households SET purge_after = 'not-a-stamp' WHERE id = ?`, house); err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, take2(svc.RestoreHousehold(ctx, userID, house)), CodeNotFound)
+	expectCode(t, svc.ExportAllowed(ctx, userID, house), CodeNotFound)
+	open, err := svc.restoreOpen(ctx, db, "0190aaaa-bbbb-7000-8000-000000000099")
+	if err != nil || open {
+		t.Fatalf("missing restore window %v %v", open, err)
+	}
+	if err := svc.RecordExport(ctx, "", userID, house); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err := db.QueryRow(`SELECT actor_kind FROM audit_log WHERE action = 'export.downloaded' AND household_id = ?`, house).Scan(&kind); err != nil || kind != "account" {
+		t.Fatalf("actor kind %q %v", kind, err)
+	}
+	if _, err := memberIDs(cancelled, db, house); err == nil {
+		t.Fatal("cancelled member lookup succeeded")
+	}
+
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	done := make(chan struct{})
+	go func() {
+		svc.RunPurge(stopped, 0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pre-cancelled purge did not return")
+	}
+
+	ticking, stopTick := context.WithCancel(context.Background())
+	ticked := make(chan struct{})
+	go func() {
+		svc.RunPurge(ticking, 5*time.Millisecond)
+		close(ticked)
+	}()
+	time.Sleep(40 * time.Millisecond)
+	stopTick()
+	select {
+	case <-ticked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ticking purge did not stop")
+	}
+}
+
 func TestRunPurgeStopsWhenCancelled(t *testing.T) {
 	db := openAuthDB(t)
 	svc := NewService(db, t.TempDir())
