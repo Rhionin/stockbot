@@ -23,10 +23,10 @@ import {
   UnreachableError,
   type CommitScanResponse,
   type ScanListEntry,
-} from '../../api/contract';
+} from '@stockbot/shared/contract';
 import { dismissUndo, showUndo } from '../restock/undo';
 import { clearOfflineNotice } from './offlineNotice';
-import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '../../types';
+import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '@stockbot/shared/types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';

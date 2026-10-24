@@ -35,7 +35,7 @@ import {
   saveItemDeal,
   setShoppingListAdjustment,
 } from '../../api/client';
-import type { InventoryItem, ProviderInfo, ShoppingListEntry } from '../../types';
+import type { InventoryItem, ProviderInfo, ShoppingListEntry } from '@stockbot/shared/types';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from '../restock/StopDialog';
@@ -47,7 +47,7 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';

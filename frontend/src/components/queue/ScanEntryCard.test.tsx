@@ -11,7 +11,7 @@ const authNotConfigured = JSON.parse(
   readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
 ) as { code: string };
 import { formatExpiryDate } from './queueUtils';
-import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
+import type { ItemInstanceWithStatus, ScanEntry } from '@stockbot/shared/types';
 
 const entry: ScanEntry = {
   id: 'scan-1',

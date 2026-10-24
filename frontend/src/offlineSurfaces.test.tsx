@@ -3,10 +3,10 @@ import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
-import { BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from './api/contract';
+import { BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
-import type { ScanEntry } from './types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   readonly url: string;

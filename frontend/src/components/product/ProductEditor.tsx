@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Anchor, Button, Stack, Text, TextInput } from '@mantine/core';
 import { getProduct, updateProduct } from '../../api/client';
-import type { ProductDetail, ProductWriteInput } from '../../types';
+import type { ProductDetail, ProductWriteInput } from '@stockbot/shared/types';
 import { ContributeFields, type ContributeChoice } from './ContributeFields';
 import { NetSizeFields } from './NetSizeFields';
 import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from './netSize';
 import { showShareNotice } from './shareNotice';
 import { SupplyOverride } from './SupplyOverride';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ProductEditorProps {
   productId: string;

@@ -7,7 +7,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import { ItemRow } from './ItemRow';
-import type { InventoryItem } from '../../types';
+import type { InventoryItem } from '@stockbot/shared/types';
 
 const styleDir = dirname(fileURLToPath(import.meta.url));
 const menuCss = [

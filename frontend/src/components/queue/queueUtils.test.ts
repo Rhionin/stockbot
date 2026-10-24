@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import type { ProcessingNotice, ScanEntry, ScanStatus } from '../../types';
+import type { ProcessingNotice, ScanEntry, ScanStatus } from '@stockbot/shared/types';
 import { addProcessingNotice, batchTimeBounds, formatBatchScanCount, formatBatchTimeRange, formatReviewCount, getEntriesForView, groupScansIntoBatches, isValidUnitCount, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll, isBatchEligible } from './queueUtils';
 
 const DISPLAYABLE_SCAN_STATUSES: ScanStatus[] = ['pending', 'flagged', 'qr'];

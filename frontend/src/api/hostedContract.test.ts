@@ -15,7 +15,7 @@ import {
   type HouseholdSettings,
   type InviteCreateRequest,
   type LiveHint,
-} from './contract';
+} from '@stockbot/shared/contract';
 
 // Pins the union to a real member so a deleted code fails typecheck.
 const sampleCode: HostedErrorCode = 'busy';
@@ -23,7 +23,7 @@ const sampleHint: LiveHint = { type: 'scans', cursor: 'cursor' };
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const doc = readFileSync(resolve(root, 'docs/design/api-contract.md'), 'utf8');
-const source = readFileSync(resolve(root, 'frontend/src/api/contract.ts'), 'utf8');
+const source = readFileSync(resolve(root, 'shared/contract.ts'), 'utf8');
 
 // Sentences already shipped, locked by PR #320, or approved by PM on PR #364.
 const existingSentences: Record<string, string> = {

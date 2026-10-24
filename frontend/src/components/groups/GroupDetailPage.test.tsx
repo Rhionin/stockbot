@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
-import type { InventoryItem, Product, ProductGroup } from '../../types';
+import type { InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { GroupDetailPage } from './GroupDetailPage';
 
 const json = (body: unknown, status = 200) =>

@@ -1,6 +1,6 @@
 import { DEFAULT_THEME, mergeMantineTheme } from '@mantine/core';
 import { describe, expect, it } from 'vitest';
-import { contrastRatio, flatten } from './contrast';
+import { contrastRatio, flatten } from '@stockbot/shared/contrast';
 import { cssVariablesResolver, theme } from './theme';
 
 const fullTheme = mergeMantineTheme(DEFAULT_THEME, theme);

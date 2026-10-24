@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { getInventoryList } from '../../api/client';
-import { OFFLINE_SENTENCE } from '../../api/contract';
+import { OFFLINE_SENTENCE } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BatchReviewPanel } from './BatchReviewPanel';
 

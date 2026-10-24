@@ -3,12 +3,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
 import { getInventoryList } from '../../api/client';
-import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { InventoryPage } from '../inventory/InventoryPage';
 import { ScanQueuePage } from './ScanQueuePage';
 import { MemoryRouter } from 'react-router-dom';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];

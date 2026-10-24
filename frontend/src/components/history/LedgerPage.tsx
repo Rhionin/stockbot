@@ -3,8 +3,8 @@ import {
   ActionIcon, Alert, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput, Title,
 } from '@mantine/core';
 import { getHouseholdHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { inlineFailure, pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
-import type { LedgerMove } from '../../types';
+import { inlineFailure, pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '@stockbot/shared/contract';
+import type { LedgerMove } from '@stockbot/shared/types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
 import {
   deltaName, deltaText, directionWord, formatMoveClock, groupMovesByDay, ledgerEmptyCopy, quantityPrompt, undoCopy,

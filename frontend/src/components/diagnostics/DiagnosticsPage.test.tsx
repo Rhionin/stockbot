@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AUTH_NOT_CONFIGURED_SENTENCE, notifyApiSuccess, offlineBannerActive, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../api/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, notifyApiSuccess, offlineBannerActive, OFFLINE_SENTENCE, raiseOfflineBanner } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { DiagnosticsPage } from './DiagnosticsPage';
 

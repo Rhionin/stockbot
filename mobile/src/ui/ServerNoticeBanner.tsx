@@ -1,12 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { serverNoticeText, subscribeOfflineBanner } from '../../../frontend/src/api/contract';
+import { serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import {
   NOTICE_BANNER_EDGE,
   NOTICE_BANNER_RADIUS,
   NOTICE_BANNER_TEXT,
   NOTICE_BANNER_TINT,
-} from '../../../frontend/src/noticeBanner';
+} from '@stockbot/shared/noticeBanner';
 import { fonts } from './theme';
 
 // The same inset on every tab: just below the status bar, inset from the screen edge.

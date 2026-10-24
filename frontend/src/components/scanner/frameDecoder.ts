@@ -38,7 +38,7 @@ declare global {
   }
 }
 
-export { DEFAULT_BARCODE_FORMATS } from './barcodeFormats';
+export { DEFAULT_BARCODE_FORMATS } from '@stockbot/shared/barcodeFormats';
 
 async function formatsForNativeDetector(requested: readonly string[]): Promise<string[]> {
   const Detector = window.BarcodeDetector;

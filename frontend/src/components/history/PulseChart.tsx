@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LedgerMove } from '../../types';
+import type { LedgerMove } from '@stockbot/shared/types';
 import {
   buildPulseSeries, pulseCount, pulseDateTicks, pulseDayFor, pulseDays, pulseEmptyCopy, pulseLegend,
   pulsePlot, pulseRanges, pulseSidePaths, pulseStartLabel, pulseSummary, pulseTickLabel, pulseYTicks,

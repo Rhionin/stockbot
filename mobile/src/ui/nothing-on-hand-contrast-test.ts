@@ -1,11 +1,11 @@
-import { contrastRatio } from '../../../frontend/src/contrast';
+import { contrastRatio } from '@stockbot/shared/contrast';
 import {
   confirmSkipsNothingOnHand,
   nothingOnHandPill,
   NOTHING_ON_HAND_BODY,
   NOTHING_ON_HAND_TITLE,
   shelfHasNothingOnHand,
-} from '../../../frontend/src/api/contract';
+} from '@stockbot/shared/contract';
 import { colors } from './theme';
 
 const page = '#FFFFFF';

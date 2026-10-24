@@ -1,13 +1,13 @@
 import { useSyncExternalStore } from 'react';
 import { Alert } from '@mantine/core';
-import { serverNoticeText, subscribeOfflineBanner } from '../../api/contract';
+import { serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import {
   NOTICE_BANNER_EDGE,
   NOTICE_BANNER_RADIUS,
   NOTICE_BANNER_TEXT,
   NOTICE_BANNER_TINT,
   NOTICE_SCREEN_PADDING_INLINE,
-} from '../../noticeBanner';
+} from '@stockbot/shared/noticeBanner';
 
 const bannerStyle = {
   flexShrink: 0,

@@ -14,11 +14,11 @@ import {
   NOTHING_ON_HAND_TITLE,
   NO_SPACE_SENTENCE,
   type BatchCommitResponse,
-} from '../../../frontend/src/api/contract';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
+} from '@stockbot/shared/contract';
+import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
-import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '../../../frontend/src/noticeBanner';
+import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 

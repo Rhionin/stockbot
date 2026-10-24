@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Stack, VisuallyHidden } from '@mantine/core';
 import { batchCommitScanEntries } from '../../api/client';
-import { ServerNoticeError, UnreachableError, type BatchCommitResponse } from '../../api/contract';
+import { ServerNoticeError, UnreachableError, type BatchCommitResponse } from '@stockbot/shared/contract';
 import { clearOfflineNotice } from './offlineNotice';
 
 export interface BatchReviewPanelProps {

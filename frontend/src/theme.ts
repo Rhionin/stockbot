@@ -7,7 +7,7 @@ import {
   type MantineColorsTuple,
   type MantineTheme,
 } from '@mantine/core';
-import { flatten, readableLightShade, readableShade, towardContrast } from './contrast';
+import { flatten, readableLightShade, readableShade, towardContrast } from '@stockbot/shared/contrast';
 
 // Shade 6 is the filled brand teal from the locked mark (#0D9488).
 const teal: MantineColorsTuple = [

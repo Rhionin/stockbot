@@ -3,7 +3,7 @@
 // auto-clear after a period of scanner inactivity (Requirement 1.5).
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { SegmentedControl } from '@mantine/core';
-import type { ScanDirection } from '../../types';
+import type { ScanDirection } from '@stockbot/shared/types';
 
 // A pre-selected scan direction stays in effect until 5 minutes have elapsed
 // since the last recorded scan (Requirement 1.5).

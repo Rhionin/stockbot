@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import { Card, Checkbox, VisuallyHidden } from '@mantine/core';
-import type { ScanEntry } from '../../types';
-import { nothingOnHandPill } from '../../api/contract';
+import type { ScanEntry } from '@stockbot/shared/types';
+import { nothingOnHandPill } from '@stockbot/shared/contract';
 import {
   batchTimeBounds,
   formatBatchScanCount,

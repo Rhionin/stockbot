@@ -4,14 +4,14 @@ import {
   ActionIcon, Alert, Anchor, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
 import { getGroupHistory, getItemHistory, setMoveQuantity, undoMove } from '../../api/client';
-import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '../../api/contract';
-import type { HistoryMove, HistoryView } from '../../types';
+import { pairStockInMoveId, pairUndoCopy, pairUndoHideLine, quantityLocked } from '@stockbot/shared/contract';
+import type { HistoryMove, HistoryView } from '@stockbot/shared/types';
 import {
   daysLeftLabel, deltaName, deltaText, formatMoveWhen, formatPaceNumber, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,
 } from './format';
 import { usePairHideLine } from './pairUndoPreview';
 import '../groups/groups.css';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import './history.css';
 
 type Filter = 'recent' | 'in' | 'out';

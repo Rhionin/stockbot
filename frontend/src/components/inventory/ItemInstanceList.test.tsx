@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import type { ItemInstanceWithStatus } from '../../types';
+import type { ItemInstanceWithStatus } from '@stockbot/shared/types';
 import { ItemInstanceList } from './ItemInstanceList';
 
 const DAY_MS = 24 * 60 * 60 * 1000;

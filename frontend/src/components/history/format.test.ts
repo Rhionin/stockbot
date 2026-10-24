@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { quantityLocked } from '../../api/contract';
+import { quantityLocked } from '@stockbot/shared/contract';
 import {
   dayHeading, daysLeftLabel, deltaName, deltaText, directionWord, formatMoveClock, formatMoveWhen, formatPaceNumber,
   groupMovesByDay, ledgerEmptyCopy, moveTitle, onHandLabel, quantityPrompt, trendLabel, undoCopy,

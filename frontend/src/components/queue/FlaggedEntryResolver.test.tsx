@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { clearOfflineBanner } from '../../api/contract';
+import { clearOfflineBanner } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
-import type { Product, ScanEntry } from '../../types';
+import type { Product, ScanEntry } from '@stockbot/shared/types';
 
 HTMLElement.prototype.scrollIntoView = vi.fn();
 

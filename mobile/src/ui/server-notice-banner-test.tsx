@@ -2,8 +2,8 @@ import type { ReactElement } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, fireEvent, render } from '@testing-library/react-native';
-import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '../../../frontend/src/api/contract';
-import type { ScanEntry } from '../../../frontend/src/types';
+import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
+import type { ScanEntry } from '@stockbot/shared/types';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { createStockbotClient } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
@@ -154,8 +154,30 @@ function insetAmount(value: unknown): number | string {
   return 'set';
 }
 
+// React Native lays a column out from the top. These main-axis values move
+// the banner downward even when every padding edge is zero. On a row the
+// same values only slide children sideways, so they stay legal.
+const PUSHES_OFF_TOP = new Set([
+  'flex-end',
+  'center',
+  'space-between',
+  'space-around',
+  'space-evenly',
+]);
+
+function pushesBannerOffTop(chain: readonly LaidOut[]): boolean {
+  return chain.some((ancestor) => {
+    const flat = (StyleSheet.flatten(ancestor.props.style as never) ?? {}) as Record<string, unknown>;
+    const direction = flat.flexDirection;
+    const vertical = direction == null || direction === 'column' || direction === 'column-reverse';
+    return vertical && typeof flat.justifyContent === 'string' && PUSHES_OFF_TOP.has(flat.justifyContent);
+  });
+}
+
 function expectBannerClearOfPadding(banner: LaidOut) {
-  for (const ancestor of ancestors(banner)) {
+  const chain = ancestors(banner);
+  expect(pushesBannerOffTop(chain)).toBe(false);
+  for (const ancestor of chain) {
     for (const layer of styleLayers(ancestor.props.style)) {
       for (const key of EDGE_KEYS) {
         expect(insetAmount(layer[key])).toBe(0);
@@ -383,6 +405,17 @@ describe('mobile server notice banner', () => {
     { name: 'marginHorizontal', style: { marginHorizontal: 4 } },
     { name: 'paddingVertical', style: { paddingVertical: 4 } },
     { name: 'marginVertical', style: { marginVertical: 4 } },
+    { name: 'flex-end paddingBottom', style: { justifyContent: 'flex-end', paddingBottom: 12 } },
+    { name: 'flex-end marginBottom', style: { justifyContent: 'flex-end', marginBottom: 8 } },
+    { name: 'flex-end paddingBlockEnd', style: { justifyContent: 'flex-end', paddingBlockEnd: 4 } },
+    { name: 'column flex-end', style: { justifyContent: 'flex-end' } },
+    { name: 'column center', style: { justifyContent: 'center' } },
+    { name: 'column space-between', style: { justifyContent: 'space-between' } },
+    { name: 'column space-around', style: { justifyContent: 'space-around' } },
+    { name: 'column space-evenly', style: { justifyContent: 'space-evenly' } },
+    { name: 'explicit column center', style: { flexDirection: 'column', justifyContent: 'center' } },
+    { name: 'column-reverse flex-end', style: { flexDirection: 'column-reverse', justifyContent: 'flex-end' } },
+    { name: 'layered column center', style: [{ flexDirection: 'column' }, { justifyContent: 'center' }] },
   ])('rejects $name', async ({ style }) => {
     const view = await render(
       <View style={style as never}>
@@ -395,6 +428,21 @@ describe('mobile server notice banner', () => {
   it('allows bottom padding and an unset top', async () => {
     const view = await render(
       <View style={{ paddingBottom: 12, paddingTop: undefined, marginBottom: 8, paddingBlockEnd: 4 }}>
+        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
+      </View>,
+    );
+    expectBannerClearOfPadding(view.getByTestId('server-notice-banner'));
+  });
+
+  it.each([
+    { name: 'row flex-end', style: { flexDirection: 'row', justifyContent: 'flex-end' } },
+    { name: 'row center with bottom padding', style: { flexDirection: 'row', justifyContent: 'center', paddingBottom: 12 } },
+    { name: 'row-reverse space-between', style: { flexDirection: 'row-reverse', justifyContent: 'space-between' } },
+    { name: 'layered row flex-end', style: [{ flexDirection: 'row' }, { justifyContent: 'flex-end' }] },
+    { name: 'column flex-start', style: { flexDirection: 'column', justifyContent: 'flex-start' } },
+  ])('allows $name', async ({ style }) => {
+    const view = await render(
+      <View style={style as never}>
         <ServerNoticeBanner text={OFFLINE_SENTENCE} />
       </View>,
     );

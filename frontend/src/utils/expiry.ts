@@ -1,5 +1,5 @@
 // Pure function mirroring internal/inventory/expiry.go's ComputeExpiryStatus.
-import type { ExpiryStatus } from '../types';
+import type { ExpiryStatus } from '@stockbot/shared/types';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 

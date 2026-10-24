@@ -1,4 +1,4 @@
-import type { ItemInstanceWithStatus, ProcessingNotice, ScanDirection, ScanEntry, ScanStatus } from '../../types';
+import type { ItemInstanceWithStatus, ProcessingNotice, ScanDirection, ScanEntry, ScanStatus } from '@stockbot/shared/types';
 
 const DISPLAYABLE_SCAN_STATUSES: ScanStatus[] = ['pending', 'flagged', 'qr'];
 

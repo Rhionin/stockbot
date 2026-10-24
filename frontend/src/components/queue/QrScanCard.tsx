@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Button } from '@mantine/core';
 import { updateScanEntry } from '../../api/client';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 import { qrPreview } from './qrPreview';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import './qr-scan.css';
 
 export interface QrScanCardProps {

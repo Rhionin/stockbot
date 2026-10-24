@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Button, Group, Stack, Text } from '@mantine/core';
 import { exportShoppingList, resolveUnknownProvision } from '../../api/client';
-import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '../../types';
+import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
 import { provisionQuantity, summarizeNames } from './outcome';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ProvisionButtonProps {
   provider: ProviderInfo | null;

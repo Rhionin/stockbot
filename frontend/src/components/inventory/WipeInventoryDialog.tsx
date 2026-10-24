@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { WIPE_INVENTORY_CONFIRMATION, wipeInventory } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface WipeInventoryDialogProps {
   onWiped: () => void;

@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState, type Ref } from 'react';
 import { Button, Group, NumberInput, Text } from '@mantine/core';
-import type { GroupTarget, ProductGroup } from '../../types';
+import type { GroupTarget, ProductGroup } from '@stockbot/shared/types';
 import { clampMonth, type SeesawDraft, type SeesawEnd, type SeesawPin, type SeesawView } from './seesaw';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 // Material Symbols "keep" (push pin), Apache-2.0.
 function PinIcon() {

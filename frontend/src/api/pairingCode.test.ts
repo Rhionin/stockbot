@@ -8,7 +8,7 @@ import {
   isProductBarcode,
   looksLikePairingCode,
   normalizePairingCode,
-} from './contract';
+} from '@stockbot/shared/contract';
 
 interface PairingVector {
   input: string;

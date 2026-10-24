@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export function TargetEditor({
   opened,

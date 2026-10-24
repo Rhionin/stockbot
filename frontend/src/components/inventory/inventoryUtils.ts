@@ -1,4 +1,4 @@
-import type { InventoryItem } from '../../types';
+import type { InventoryItem } from '@stockbot/shared/types';
 
 export interface InventoryCluster {
   key: string;

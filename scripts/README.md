@@ -56,7 +56,7 @@ python3 scripts/count-tests.py diff /tmp/base/metrics.json /tmp/head/metrics.jso
 
 | | What counts |
 | --- | --- |
-| Test LOC | Go `*_test.go`. Web unit: `frontend/src/**/*.test.{ts,tsx}` and `frontend/src/test-setup.ts`. |
+| Test LOC | Go `*_test.go`. Web unit: `frontend/src/**/*.test.{ts,tsx}`, `frontend/src/test-setup.ts`, and `shared/**/*.test.ts`. |
 | Covered prod LOC | Go: code lines inside a `-coverpkg` coverprofile block with count > 0. Web: code lines that start a statement with hits > 0 in Vitest v8 `coverage-final.json`. |
 | E2E | `frontend/e2e/**/*.ts`, reported on its own and left out of unit density. |
 | Excluded | `node_modules`, `vendor`, `dist`, `build`, `coverage`, `testdata/`, `fixtures/`, `__snapshots__/`, `*.snap`, `*.bak`, `*.d.ts`, and Go files whose header is `// Code generated … DO NOT EDIT.` |

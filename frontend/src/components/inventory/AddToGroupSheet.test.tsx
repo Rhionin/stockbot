@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
-import type { GroupSuggestion, ProductGroup } from '../../types';
+import type { GroupSuggestion, ProductGroup } from '@stockbot/shared/types';
 import { AddToGroupSheet } from './AddToGroupSheet';
 
 const json = (body: unknown, status = 200) =>

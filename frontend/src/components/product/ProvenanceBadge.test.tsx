@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it } from 'vitest';
 import { ProvenanceBadge } from './ProvenanceBadge';
-import type { ExternalSource } from '../../types';
+import type { ExternalSource } from '@stockbot/shared/types';
 
 describe('ProvenanceBadge', () => {
   it('renders openfoodfacts with mapped name and accessible name', () => {

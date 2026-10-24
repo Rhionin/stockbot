@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Stack, Table, Text, Title } from '@mantine/core';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, inlineFailure, notifyApiSuccess, raiseOfflineBanner, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse } from '../../api/contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, inlineFailure, notifyApiSuccess, raiseOfflineBanner, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse } from '@stockbot/shared/contract';
 
 interface LatencySnapshot {
   count: number;

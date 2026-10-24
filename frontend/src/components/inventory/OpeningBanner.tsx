@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Group, Text } from '@mantine/core';
 import { completeOnboarding } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface OpeningBannerProps {
   onComplete: () => void;

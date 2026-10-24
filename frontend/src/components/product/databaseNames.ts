@@ -1,4 +1,4 @@
-import type { ExternalSource } from '../../types';
+import type { ExternalSource } from '@stockbot/shared/types';
 
 export const DATABASE_NAMES: Record<ExternalSource, string> = {
   openfoodfacts: 'Open Food Facts',

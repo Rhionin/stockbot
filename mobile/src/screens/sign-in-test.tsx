@@ -2,7 +2,7 @@ import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
-import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '../../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import SignInRoute from '../app/sign-in';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';

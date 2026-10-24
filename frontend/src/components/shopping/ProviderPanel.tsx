@@ -4,8 +4,8 @@ import {
   authorizeProvider,
   resetProviderLedger,
 } from '../../api/client';
-import type { ProviderInfo } from '../../types';
-import { inlineFailure } from '../../api/contract';
+import type { ProviderInfo } from '@stockbot/shared/types';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ProviderPanelProps {
   providers: ProviderInfo[];

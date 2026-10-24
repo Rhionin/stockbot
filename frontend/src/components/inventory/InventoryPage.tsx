@@ -6,8 +6,8 @@ import {
   addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
 } from '../../api/client';
-import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '../../api/contract';
-import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
+import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '@stockbot/shared/contract';
+import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
 import { AddToGroupSheet } from './AddToGroupSheet';

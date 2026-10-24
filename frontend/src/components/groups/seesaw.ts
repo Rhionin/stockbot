@@ -1,4 +1,4 @@
-import type { NetDimension, ProductGroup } from '../../types';
+import type { NetDimension, ProductGroup } from '@stockbot/shared/types';
 import { formatAmount, onHandOunces, type MemberPackage } from './copy';
 
 export type SeesawPin = 'amount' | 'time';

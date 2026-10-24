@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderInfo } from '../../types';
+import type { ProviderInfo } from '@stockbot/shared/types';
 import { CredentialsDialog } from './CredentialsDialog';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({

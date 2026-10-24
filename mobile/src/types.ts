@@ -1,1 +1,1 @@
-export type { ScanDirection, ScanStatus } from '../../frontend/src/types';
+export type { ScanDirection, ScanStatus } from '@stockbot/shared/types';

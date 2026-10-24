@@ -4,7 +4,7 @@ import { Alert, Anchor, Badge, Button, Checkbox, Group, Loader, Stack, Text, Tit
 import { applyCategorySuggestions, dismissCategorySuggestions, getCategorySuggestions } from '../../api/client';
 import type { SuggestionCard } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import './restock.css';
 
 export function SuggestionsPage() {

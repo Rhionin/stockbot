@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as telemetry from '../telemetry/client';
 import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
-import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from './contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 
 const authNotConfigured = JSON.parse(
   readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),

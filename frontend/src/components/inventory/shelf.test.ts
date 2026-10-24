@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '../../types';
+import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { buildShelf, filterShelf, groupsForShelf, suggestedDestinations } from './shelf';
 
 const product = (id: string, name: string, extra: Partial<Product> = {}): Product => ({

@@ -2,7 +2,7 @@
 // refuse getUserMedia on plain HTTP (a phone hitting a home server by IP), so
 // the page explains that instead of prompting.
 
-export { RESCAN_COOLDOWN_MS, shouldAcceptScan, type PriorScan } from './scanTiming';
+export { RESCAN_COOLDOWN_MS, shouldAcceptScan, type PriorScan } from '@stockbot/shared/scanTiming';
 
 export const SCAN_INTERVAL_MS = 250;
 export const CAMERA_START_TIMEOUT_MS = 8000;

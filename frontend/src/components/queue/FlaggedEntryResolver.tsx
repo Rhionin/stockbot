@@ -15,13 +15,13 @@ import {
   listProducts,
   updateScanEntry,
 } from '../../api/client';
-import { CODE_LINK_TARGET_GONE } from '../../api/contract';
-import type { Product, ProductWriteInput, ScanEntry } from '../../types';
+import { CODE_LINK_TARGET_GONE } from '@stockbot/shared/contract';
+import type { Product, ProductWriteInput, ScanEntry } from '@stockbot/shared/types';
 import { ContributeFields, type ContributeChoice } from '../product/ContributeFields';
 import { NetSizeFields } from '../product/NetSizeFields';
 import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from '../product/netSize';
 import { showShareNotice } from '../product/shareNotice';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface FlaggedEntryResolverProps {
   entry: ScanEntry;

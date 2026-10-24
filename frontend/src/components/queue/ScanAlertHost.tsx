@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { ProcessingFailure, ScanEntry } from '../../types';
+import type { ProcessingFailure, ScanEntry } from '@stockbot/shared/types';
 import { openScanAlert, showScanAlert } from './browserScanAlert';
 import { directionFromAlertURL, ensurePushSubscription, releasePushSubscription, scanAlertsPreferred, setBackgroundAlerts } from './pushAlerts';
 import { ScanAttention, type AttentionNotice } from './scanAttention';

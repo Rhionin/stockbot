@@ -105,7 +105,7 @@ jobs:
         run: npm ci
       
       - name: Type check
-        run: npx tsc -b
+        run: npm run typecheck
       
       - name: Lint code
         run: npm run lint

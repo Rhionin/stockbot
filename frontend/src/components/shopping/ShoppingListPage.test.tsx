@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InventoryItem, ShoppingListEntry } from '../../types';
+import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import { ShoppingListPage } from './ShoppingListPage';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({

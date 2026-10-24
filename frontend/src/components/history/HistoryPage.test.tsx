@@ -3,7 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../api/client';
-import type { HistoryView } from '../../types';
+import type { HistoryView } from '@stockbot/shared/types';
 import { HistoryPage } from './HistoryPage';
 
 const view: HistoryView = {

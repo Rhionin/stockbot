@@ -1,4 +1,4 @@
-import type { ProcessingFailure, ScanDirection, ScanEntry } from '../../types';
+import type { ProcessingFailure, ScanDirection, ScanEntry } from '@stockbot/shared/types';
 import { qrPreview } from './qrPreview';
 import { BATCH_GAP_MS } from './queueUtils';
 

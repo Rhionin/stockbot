@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { AUTH_SETUP_SENTENCE } from '../../../frontend/src/api/contract';
+import { AUTH_SETUP_SENTENCE } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { colors, fonts } from '../ui/theme';
 

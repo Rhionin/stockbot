@@ -1,5 +1,5 @@
 import { Card, Group, Loader, Stack, Text, Title } from '@mantine/core';
-import type { ProcessingNotice } from '../../types';
+import type { ProcessingNotice } from '@stockbot/shared/types';
 
 export interface ProcessingScanCardProps {
   notice: ProcessingNotice;

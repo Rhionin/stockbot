@@ -8,7 +8,7 @@ import type { CategorySummary, RestockItem, RestockPreview, RestockTarget } from
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from './StopDialog';
 import { TargetEditor } from './TargetEditor';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import './restock.css';
 
 function Kebab() {

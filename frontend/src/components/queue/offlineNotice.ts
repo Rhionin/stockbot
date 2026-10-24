@@ -1,4 +1,4 @@
-import { clearOfflineBanner } from '../../api/contract';
+import { clearOfflineBanner } from '@stockbot/shared/contract';
 
 export function clearOfflineNotice(): void {
   clearOfflineBanner();
