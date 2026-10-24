@@ -2,12 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import wranglerConfig from '../wrangler.jsonc?raw';
 
+import * as workerEntry from '../src/index';
 import worker, {
-  FRESHNESS_MS,
-  OVER_AGE_MS,
-  REMINDER_MS,
-  STATE_KEY,
-  UPTIME_TIMEOUT_MS,
   backupDue,
   backupPrefixes,
   buildRawMime,
@@ -27,6 +23,13 @@ import worker, {
   type R2BucketLike,
   type WatchBindings,
 } from '../src/index';
+import {
+  FRESHNESS_MS,
+  OVER_AGE_MS,
+  REMINDER_MS,
+  STATE_KEY,
+  UPTIME_TIMEOUT_MS,
+} from '../src/watch';
 
 const NOW = Date.parse('2026-10-24T12:00:00.000Z');
 const HOUR = 3600 * 1000;
@@ -63,10 +66,25 @@ class MemoryStore implements ObjectStore {
   }
 }
 
+function assertDeliverableMime(raw: string): void {
+  const normalized = raw.replace(/\r\n/g, '\n');
+  const date = /^Date: (.+)$/m.exec(normalized);
+  const messageId = /^Message-ID: (<[^<>\s]+@[^<>\s]+>)$/m.exec(normalized);
+  if (!date || Number.isNaN(Date.parse(date[1].trim())) || !messageId) {
+    throw new Error('invalid message-id');
+  }
+}
+
 class Inbox {
   sent: unknown[] = [];
 
   async send(message: unknown): Promise<void> {
+    const raw = typeof message === 'string'
+      ? message
+      : message && typeof message === 'object' && 'raw' in message && typeof message.raw === 'string'
+        ? message.raw
+        : '';
+    assertDeliverableMime(raw);
     this.sent.push(message);
   }
 
@@ -144,7 +162,7 @@ describe('uptime', () => {
     expect(seen.init?.method).toBe('GET');
     expect(seen.init?.redirect).toBe('manual');
     expect(seen.init?.signal).toBeInstanceOf(AbortSignal);
-    expect(UPTIME_TIMEOUT_MS).toBe(10_000);
+    expect(UPTIME_TIMEOUT_MS).toBe(10 * 1000);
   });
 
   it('rejects a non-200 response without copying the body', async () => {
@@ -210,7 +228,7 @@ describe('backup freshness, manifest, size, and retention', () => {
   });
 
   it('keeps a snapshot exactly 26 hours old', async () => {
-    expect(FRESHNESS_MS).toBe(26 * 3600 * 1000);
+    expect(FRESHNESS_MS).toBe(26 * 60 * 60 * 1000);
     expect(await atAge(FRESHNESS_MS)).toEqual({ ok: true, reason: '' });
   });
 
@@ -301,7 +319,7 @@ describe('backup freshness, manifest, size, and retention', () => {
   });
 
   it('keeps an object exactly 15 days old and one a millisecond younger', async () => {
-    expect(OVER_AGE_MS).toBe(15 * 24 * 3600 * 1000);
+    expect(OVER_AGE_MS).toBe(15 * 24 * 60 * 60 * 1000);
     for (const age of [OVER_AGE_MS, OVER_AGE_MS - 1]) {
       const store = new MemoryStore();
       seedSnapshot(store, key, NOW - HOUR, 80);
@@ -389,6 +407,32 @@ describe('backup freshness, manifest, size, and retention', () => {
   });
 });
 
+describe('timing constants', () => {
+  it('uses the documented durations', () => {
+    expect(REMINDER_MS).toBe(6 * 60 * 60 * 1000);
+    expect(FRESHNESS_MS).toBe(26 * 60 * 60 * 1000);
+    expect(OVER_AGE_MS).toBe(15 * 24 * 60 * 60 * 1000);
+    expect(UPTIME_TIMEOUT_MS).toBe(10 * 1000);
+  });
+});
+
+describe('worker entry', () => {
+  it('exports only the handler and functions', () => {
+    for (const [name, value] of Object.entries(workerEntry)) {
+      if (name === 'default') {
+        expect(value).toEqual(expect.objectContaining({
+          scheduled: expect.any(Function),
+          fetch: expect.any(Function),
+        }));
+        continue;
+      }
+      expect(typeof value, name).toBe('function');
+    }
+    expect(workerEntry.default.scheduled).toBeTypeOf('function');
+    expect(workerEntry.default.fetch).toBeTypeOf('function');
+  });
+});
+
 describe('alert dedup', () => {
   it('emails uptime once, stays quiet through the cooldown, reminds, then resolves', async () => {
     const store = new MemoryStore();
@@ -429,6 +473,8 @@ describe('alert dedup', () => {
     const alert = inbox.raws()[0] ?? '';
     expect(alert).toContain('To: rhionin@gmail.com');
     expect(alert).toContain('From: pantry-pi-watch@rhionin.com');
+    expect(alert).toContain(`Date: ${new Date(NOW).toUTCString()}\r\n`);
+    expect(alert).toMatch(/^Message-ID: <[0-9a-f-]{36}@rhionin\.com>\r$/m);
     expect(alert).toContain(`at: ${formatInstant(NOW)}`);
     expect(alert).toContain('reason: HTTP 503');
     expect(alert).toContain('target: https://stockbot.rhionin.com/api/build');
@@ -514,8 +560,10 @@ describe('alert dedup', () => {
     expect(pings).toEqual([]);
 
     const failing: string[] = [];
-    const failPing = (async (input: RequestInfo | URL) => {
+    const failPing = (async (input: RequestInfo | URL, init?: RequestInit) => {
       failing.push(String(input));
+      expect(init?.method).toBe('POST');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       return new Response('', { status: 599 });
     }) as typeof fetch;
     const errors: string[] = [];
@@ -542,6 +590,104 @@ describe('alert dedup', () => {
     ]);
     expect(errors.join('\n')).not.toContain('hc-ping.example');
   });
+
+  it('keeps a failing backup state unchanged on a non-hourly tick', async () => {
+    const store = new MemoryStore();
+    const backup = {
+      status: 'failing',
+      failingSince: '2026-10-24T06:00:00.000Z',
+      lastAlertAt: '2026-10-24T06:00:00.000Z',
+      reason: 'no backup snapshot in nightly/ or manual/',
+    };
+    await store.putText(STATE_KEY, JSON.stringify({
+      version: 1,
+      updatedAt: '2026-10-24T06:00:00.000Z',
+      uptime: { status: 'ok', failingSince: null, lastAlertAt: null, reason: '' },
+      backup,
+    }));
+    await runWatch(bindings(store, new Inbox()), {
+      nowMs: Date.parse('2026-10-24T12:05:00.000Z'),
+      runBackup: false,
+      fetchImpl: jsonFetch(200, '{}'),
+    });
+    const saved = JSON.parse(store.objects.get(STATE_KEY)?.body ?? '{}') as { backup: typeof backup };
+    expect(saved.backup).toEqual(backup);
+  });
+
+  it('pings and checks backups when the uptime email throws, then retries the alert', async () => {
+    const store = new MemoryStore();
+    const inbox = new Inbox();
+    const pings: string[] = [];
+    const pingImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      pings.push(String(input));
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    let sends = 0;
+    const env = bindings(store, inbox, {
+      HC_UPTIME_URL: 'https://hc-ping.example/uptime',
+      HC_BACKUP_URL: 'https://hc-ping.example/backup',
+      send: async (message) => {
+        sends += 1;
+        if (sends === 1) {
+          const err = new Error('transient');
+          err.name = 'EmailRoutingError';
+          throw err;
+        }
+        await inbox.send(message);
+      },
+    });
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((arg) => String(arg)).join(' '));
+    };
+    const hour = Date.parse('2026-10-24T12:00:00.000Z');
+    let report: Awaited<ReturnType<typeof runWatch>> | undefined;
+    try {
+      report = await runWatch(env, {
+        nowMs: hour,
+        runBackup: true,
+        fetchImpl: jsonFetch(500, ''),
+        pingImpl,
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(report?.uptime).toMatchObject({ ok: false, email: 'alert', emailError: 'EmailRoutingError' });
+    expect(pings).toEqual([
+      'https://hc-ping.example/uptime/fail',
+      'https://hc-ping.example/backup/fail',
+    ]);
+    expect(errors.join('\n')).toContain('EmailRoutingError');
+    expect(errors.join('\n')).not.toContain('hc-ping.example');
+    const saved = JSON.parse(store.objects.get(STATE_KEY)?.body ?? '') as {
+      uptime: { status: string; failingSince: string | null; lastAlertAt: string | null };
+      backup: { status: string; reason: string };
+    };
+    expect(saved.uptime).toEqual({ status: 'ok', failingSince: null, lastAlertAt: null, reason: '' });
+    expect(saved.backup.status).toBe('failing');
+    expect(saved.backup.reason).toContain('no backup snapshot');
+    expect(inbox.subjects()).toEqual(['[ALERT] pantry-pi-watch backup']);
+
+    await runWatch(env, {
+      nowMs: hour + 5 * 60 * 1000,
+      runBackup: false,
+      fetchImpl: jsonFetch(500, ''),
+      pingImpl,
+    });
+    expect(inbox.subjects()).toEqual([
+      '[ALERT] pantry-pi-watch backup',
+      '[ALERT] pantry-pi-watch uptime',
+    ]);
+    const retried = JSON.parse(store.objects.get(STATE_KEY)?.body ?? '') as {
+      uptime: { status: string; lastAlertAt: string };
+      backup: { status: string; reason: string };
+    };
+    expect(retried.uptime.status).toBe('failing');
+    expect(retried.uptime.lastAlertAt).toBe(new Date(hour + 5 * 60 * 1000).toISOString());
+    expect(retried.backup).toEqual(saved.backup);
+  });
 });
 
 describe('email adapter', () => {
@@ -559,12 +705,15 @@ describe('email adapter', () => {
       to: 'rhionin@gmail.com',
       subject: 'Hello\r\nBcc: evil@example.com',
       text: 'status: ok',
+      sentAtMs: NOW,
     }, MimeMessage as EmailMessageCtor);
     const message = inbox.sent[0] as MimeMessage;
     expect(message).toBeInstanceOf(MimeMessage);
     expect(message.from).toBe('pantry-pi-watch@rhionin.com');
     expect(message.to).toBe('rhionin@gmail.com');
     expect(message.raw).toContain('Subject: Hello Bcc: evil@example.com\r\n');
+    expect(message.raw).toContain(`Date: ${new Date(NOW).toUTCString()}\r\n`);
+    expect(message.raw).toMatch(/^Message-ID: <[0-9a-f-]{36}@rhionin\.com>\r$/m);
     expect(message.raw).not.toMatch(/^Bcc:/m);
     expect(message.raw).toContain('\r\n\r\nstatus: ok');
   });
@@ -575,10 +724,22 @@ describe('email adapter', () => {
       to: 'rhionin@gmail.com',
       subject: '[ALERT] pantry-pi-watch uptime',
       text: 'check: uptime',
+      sentAtMs: NOW,
     });
     expect(raw.startsWith('From: pantry-pi-watch@rhionin.com\r\n')).toBe(true);
     expect(raw).toContain('Subject: [ALERT] pantry-pi-watch uptime\r\n');
+    expect(raw).toContain(`Date: ${new Date(NOW).toUTCString()}\r\n`);
+    expect(raw).toMatch(/^Message-ID: <[0-9a-f-]{36}@rhionin\.com>\r$/m);
     expect(raw).toContain('\r\n\r\ncheck: uptime');
+  });
+
+  it('rejects a message workerd would reject for a missing Date or Message-ID', async () => {
+    const inbox = new Inbox();
+    const bare = 'From: a@rhionin.com\r\nTo: b@rhionin.com\r\nSubject: x\r\n\r\nbody';
+    await expect(inbox.send(bare)).rejects.toThrow('invalid message-id');
+    const dated = `${bare.replace('\r\n\r\n', `\r\nDate: ${new Date(NOW).toUTCString()}\r\n\r\n`)}`;
+    await expect(inbox.send(dated)).rejects.toThrow('invalid message-id');
+    await expect(inbox.send(`Message-ID: <not-an-id>\r\n${bare}`)).rejects.toThrow('invalid message-id');
   });
 });
 

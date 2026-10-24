@@ -8,11 +8,6 @@ import {
 } from './watch';
 
 export {
-  FRESHNESS_MS,
-  OVER_AGE_MS,
-  REMINDER_MS,
-  STATE_KEY,
-  UPTIME_TIMEOUT_MS,
   backupDue,
   backupPrefixes,
   buildRawMime,

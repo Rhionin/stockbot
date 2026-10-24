@@ -53,6 +53,7 @@ export interface OutboundEmail {
   to: string;
   subject: string;
   text: string;
+  sentAtMs?: number;
 }
 
 export interface EmailMessageLike {
@@ -97,6 +98,7 @@ export interface CheckReport {
   ok: boolean;
   reason: string;
   email: AlertKind | null;
+  emailError?: string;
 }
 
 export interface RunReport {
@@ -198,10 +200,13 @@ export function transition(prev: CheckState | undefined, result: CheckResult, no
 }
 
 export function buildRawMime(email: OutboundEmail): string {
+  const sentAt = new Date(email.sentAtMs ?? Date.now()).toUTCString();
   const headers = [
     `From: ${oneLine(email.from)}`,
     `To: ${oneLine(email.to)}`,
     `Subject: ${oneLine(email.subject)}`,
+    `Date: ${oneLine(sentAt)}`,
+    `Message-ID: <${crypto.randomUUID()}@${oneLine(messageDomain(email.from))}>`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
     'Content-Transfer-Encoding: 8bit',
@@ -396,37 +401,65 @@ export async function runWatch(env: WatchBindings, options: RunOptions): Promise
 
   const uptime = await checkUptime(env.TARGET_URL, fetchImpl);
   const uptimeDecision = transition(state.uptime, uptime, options.nowMs);
-  if (uptimeDecision.email) {
-    await sendNotice(env, ctor, 'uptime', uptimeDecision, uptime, options.nowMs, state.uptime.failingSince);
-  }
-  state.uptime = uptimeDecision.next;
+  const uptimeCommit = await commitCheck(
+    env,
+    ctor,
+    'uptime',
+    state.uptime,
+    uptime,
+    uptimeDecision,
+    options.nowMs,
+  );
+  state.uptime = uptimeCommit.state;
   state.updatedAt = new Date(options.nowMs).toISOString();
-  logCheck('uptime', uptime.ok, uptimeDecision.email);
+  logCheck('uptime', uptime.ok, uptimeCommit.report.emailError ? null : uptimeCommit.report.email);
   await writeWatchState(env.BACKUPS, state);
   await pingHealthcheck(env.HC_UPTIME_URL, uptime.ok, pingImpl);
 
   if (!options.runBackup) {
-    return {
-      uptime: { ok: uptime.ok, reason: uptime.reason, email: uptimeDecision.email },
-      backup: { skipped: true },
-    };
+    return { uptime: uptimeCommit.report, backup: { skipped: true } };
   }
 
   const backup = await checkBackups(env.BACKUPS, options.nowMs, backupPrefixes(env.BACKUP_DRILL_PREFIX));
   const backupDecision = transition(state.backup, backup, options.nowMs);
-  if (backupDecision.email) {
-    await sendNotice(env, ctor, 'backup', backupDecision, backup, options.nowMs, state.backup.failingSince);
-  }
-  state.backup = backupDecision.next;
+  const backupCommit = await commitCheck(
+    env,
+    ctor,
+    'backup',
+    state.backup,
+    backup,
+    backupDecision,
+    options.nowMs,
+  );
+  state.backup = backupCommit.state;
   state.updatedAt = new Date(options.nowMs).toISOString();
-  logCheck('backup', backup.ok, backupDecision.email);
+  logCheck('backup', backup.ok, backupCommit.report.emailError ? null : backupCommit.report.email);
   await writeWatchState(env.BACKUPS, state);
   await pingHealthcheck(env.HC_BACKUP_URL, backup.ok, pingImpl);
 
-  return {
-    uptime: { ok: uptime.ok, reason: uptime.reason, email: uptimeDecision.email },
-    backup: { ok: backup.ok, reason: backup.reason, email: backupDecision.email },
-  };
+  return { uptime: uptimeCommit.report, backup: backupCommit.report };
+}
+
+async function commitCheck(
+  env: WatchBindings,
+  ctor: EmailMessageCtor | null,
+  check: 'uptime' | 'backup',
+  prior: CheckState,
+  result: CheckResult,
+  decision: Transition,
+  nowMs: number,
+): Promise<{ state: CheckState; report: CheckReport }> {
+  const report: CheckReport = { ok: result.ok, reason: result.reason, email: decision.email };
+  if (!decision.email) return { state: decision.next, report };
+  try {
+    await sendNotice(env, ctor, check, decision, result, nowMs, prior.failingSince);
+    return { state: decision.next, report };
+  } catch (err) {
+    const emailError = errorName(err);
+    console.error(JSON.stringify({ message: 'could not send watch email', check, error: emailError }));
+    report.emailError = emailError;
+    return { state: prior, report };
+  }
 }
 
 function sinceFor(kind: AlertKind, priorSince: string | null, nextSince: string | null): string | null {
@@ -480,6 +513,7 @@ function composeEmail(
     to: env.ALERT_TO,
     subject: `${tag} pantry-pi-watch ${check}${reminder}`,
     text: lines.join('\n'),
+    sentAtMs: nowMs,
   };
 }
 
@@ -590,6 +624,12 @@ function parseManifest(raw: string): ParsedManifest {
   } catch {
     return { valid: false };
   }
+}
+
+function messageDomain(from: string): string {
+  const at = from.lastIndexOf('@');
+  const domain = at >= 0 ? from.slice(at + 1).trim() : '';
+  return domain || 'rhionin.com';
 }
 
 function oneLine(value: string): string {
