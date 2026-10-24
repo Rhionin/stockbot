@@ -443,7 +443,7 @@ func requiresPrincipal(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/api/auth/login", "/api/auth/reset", "/api/invites/preview", "/api/invites/accept",
+	case "/api/auth/login", "/api/auth/callback", "/api/auth/reset", "/api/invites/preview", "/api/invites/accept",
 		"/api/devices/pair/complete", "/setup", "/api/auth/session", "/api/config":
 		return false
 	}
