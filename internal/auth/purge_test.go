@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -25,6 +26,8 @@ func (r *recordKick) Kick(householdID, userID string) {
 	defer r.mu.Unlock()
 	r.hits = append(r.hits, householdID+"|"+userID)
 }
+
+func (r *recordKick) DropSession(string) {}
 
 func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
@@ -78,9 +81,9 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 	if !result.SecureDelete {
 		t.Fatal("secure_delete was off")
 	}
-	var flag int
-	if err := db.QueryRow(`PRAGMA secure_delete`).Scan(&flag); err != nil || flag != 1 {
-		t.Fatalf("pragma %d %v", flag, err)
+	var secure int
+	if err := db.QueryRow(`PRAGMA secure_delete`).Scan(&secure); err != nil || secure != 0 {
+		t.Fatalf("secure_delete left on (%d, %v)", secure, err)
 	}
 	if result.Households != 1 || result.Largest != purgeBatch || result.Largest > 1000 || result.Batches < 2 || result.Passwords < 2 {
 		t.Fatalf("result %+v", result)
@@ -292,8 +295,21 @@ func TestDeleteHouseholdThenAccountDelete(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM reset_links WHERE user_id = ?`, adaID).Scan(&users); err != nil || users != 0 {
 		t.Fatalf("resets %d", users)
 	}
-	sum := sha256.Sum256([]byte(adaID))
-	pseudo := "deleted:" + hex.EncodeToString(sum[:8])
+	var keyHex string
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'audit_pseudonym_key'`).Scan(&keyHex); err != nil {
+		t.Fatal(err)
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(adaID))
+	pseudo := "deleted:" + hex.EncodeToString(mac.Sum(nil)[:8])
+	unsalted := sha256.Sum256([]byte(adaID))
+	if pseudo == "deleted:"+hex.EncodeToString(unsalted[:8]) {
+		t.Fatal("pseudonym is unsalted sha256")
+	}
 	var actor string
 	if err := db.QueryRow(`SELECT actor_id FROM audit_log WHERE action = 'account.deleted'`).Scan(&actor); err != nil || actor != pseudo {
 		t.Fatalf("account audit actor %q want %q (%v)", actor, pseudo, err)
@@ -418,6 +434,109 @@ func TestLifecycleEdgesAndPurgeGuards(t *testing.T) {
 	case <-ticked:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ticking purge did not stop")
+	}
+}
+
+func TestPurgeAfterIsThirtyDays(t *testing.T) {
+	db := openAuthDB(t)
+	svc := NewService(db, t.TempDir())
+	ctx := context.Background()
+	when := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return when })
+	if err := svc.RedeemSetup(ctx, mustSetup(t, svc), "Nia North", "nia@pantry.test", "correct horse", ""); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'nia@pantry.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	house := primary.HouseholdID()
+	if _, err := svc.DeleteHousehold(ctx, userID, house, "Primary"); err != nil {
+		t.Fatal(err)
+	}
+	var deletedAt, purgeAfter string
+	if err := db.QueryRow(`SELECT deleted_at, purge_after FROM households WHERE id = ?`, house).Scan(&deletedAt, &purgeAfter); err != nil {
+		t.Fatal(err)
+	}
+	want := stamp(when.Add(30 * 24 * time.Hour))
+	if deletedAt != stamp(when) || purgeAfter != want {
+		t.Fatalf("deleted %s purge %s want %s", deletedAt, purgeAfter, want)
+	}
+	when = when.Add(29 * 24 * time.Hour)
+	result, err := svc.PurgeDue(ctx)
+	if err != nil || result.Households != 0 {
+		t.Fatalf("29d purge %+v %v", result, err)
+	}
+	var left int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM households WHERE id = ?`, house).Scan(&left); err != nil || left != 1 {
+		t.Fatalf("household at 29d %d %v", left, err)
+	}
+	when = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC).Add(30*24*time.Hour + time.Second)
+	result, err = svc.PurgeDue(ctx)
+	if err != nil || result.Households != 1 {
+		t.Fatalf("30d+1s purge %+v %v", result, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM households WHERE id = ?`, house).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("household after cutoff %d %v", left, err)
+	}
+}
+
+func TestRetiredPasswordPurgeWaitsSevenDays(t *testing.T) {
+	db := openAuthDB(t)
+	svc := NewService(db, t.TempDir())
+	ctx := context.Background()
+	when := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return when })
+	if err := svc.RedeemSetup(ctx, mustSetup(t, svc), "Nia North", "nia@pantry.test", "correct horse", ""); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'nia@pantry.test'`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	house := primary.HouseholdID()
+	if _, err := db.Exec(`INSERT INTO household_password (household_id, pw_hash, state, session_key) VALUES (?, 'pass-hash-q7', 'on', 'pass-session-q7')`, house); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RetireHouseholdPassword(ctx, userID, house); err != nil {
+		t.Fatal(err)
+	}
+	var until string
+	if err := db.QueryRow(`SELECT restore_until FROM household_password WHERE household_id = ?`, house).Scan(&until); err != nil {
+		t.Fatal(err)
+	}
+	if until != stamp(when.Add(7*24*time.Hour)) {
+		t.Fatalf("restore_until %s", until)
+	}
+	when = when.Add(6*24*time.Hour + 23*time.Hour)
+	result, err := svc.PurgeDue(ctx)
+	if err != nil || result.Passwords != 0 {
+		t.Fatalf("early purge %+v %v", result, err)
+	}
+	var hash string
+	if err := db.QueryRow(`SELECT COALESCE(pw_hash, '') FROM household_password WHERE household_id = ?`, house).Scan(&hash); err != nil || hash == "" {
+		t.Fatalf("hash cleared early %q %v", hash, err)
+	}
+	when = time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).Add(7*24*time.Hour - time.Second)
+	result, err = svc.PurgeDue(ctx)
+	if err != nil || result.Passwords != 0 {
+		t.Fatalf("one second early %+v %v", result, err)
+	}
+	when = time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).Add(7 * 24 * time.Hour)
+	result, err = svc.PurgeDue(ctx)
+	if err != nil || result.Passwords != 1 {
+		t.Fatalf("cutoff purge %+v %v", result, err)
+	}
+	if err := db.QueryRow(`SELECT COALESCE(pw_hash, '') FROM household_password WHERE household_id = ?`, house).Scan(&hash); err != nil || hash != "" {
+		t.Fatalf("hash remained %q %v", hash, err)
 	}
 }
 

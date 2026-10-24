@@ -51,7 +51,7 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 		t.Fatalf("settings %+v", doc.Settings)
 	}
 
-	if len(doc.Products) != 1 || doc.Products[0].ID != "prod_1" || doc.Products[0].Name != "north-typed-q7" {
+	if len(doc.Products) != 1 || doc.Products[0].ID != "p-north" || doc.Products[0].Name != "north-typed-q7" {
 		t.Fatalf("products %+v", doc.Products)
 	}
 	if doc.Products[0].Category != "dry" || doc.Products[0].UnitOfMeasure != "each" {
@@ -60,14 +60,14 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 	if strings.Join(doc.Products[0].Barcodes, ",") != "global-bc-q7" {
 		t.Fatalf("barcodes %+v", doc.Products[0].Barcodes)
 	}
-	if len(doc.BarcodeOverrides) != 1 || doc.BarcodeOverrides[0].Barcode != "north-override-bc-q7" || doc.BarcodeOverrides[0].ProductID != "prod_1" {
+	if len(doc.BarcodeOverrides) != 1 || doc.BarcodeOverrides[0].Barcode != "north-override-bc-q7" || doc.BarcodeOverrides[0].ProductID != "p-north" {
 		t.Fatalf("overrides %+v", doc.BarcodeOverrides)
 	}
 
-	if len(doc.Items) != 2 || doc.Items[0].ID != "item_1" || doc.Items[1].ID != "item_2" {
+	if len(doc.Items) != 2 || doc.Items[0].ID != "i-1" || doc.Items[1].ID != "i-2" {
 		t.Fatalf("items %+v", doc.Items)
 	}
-	if doc.Items[0].ProductID != "prod_1" || doc.Items[0].Category == nil || *doc.Items[0].Category != "north-cat-q7" {
+	if doc.Items[0].ProductID != "p-north" || doc.Items[0].Category == nil || *doc.Items[0].Category != "north-cat-q7" {
 		t.Fatalf("item category %+v", doc.Items[0])
 	}
 	if doc.Items[0].Group == nil || *doc.Items[0].Group != "north-group-q7" || doc.Items[0].StockTarget == nil || *doc.Items[0].StockTarget != 4 {
@@ -76,32 +76,35 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 	if doc.Items[1].StockTarget == nil || *doc.Items[1].StockTarget != 1 {
 		t.Fatalf("second target %+v", doc.Items[1])
 	}
-	if len(doc.ItemInstances) != 2 || doc.ItemInstances[0].ID != "inst_1" || doc.ItemInstances[0].ItemID != "item_1" {
+	if len(doc.ItemInstances) != 2 || doc.ItemInstances[0].ID != "n-1" || doc.ItemInstances[0].ItemID != "i-1" {
 		t.Fatalf("instances %+v", doc.ItemInstances)
 	}
 	if doc.ItemInstances[0].ExpiresAt == nil || *doc.ItemInstances[0].ExpiresAt != "2026-06-01T00:00:00Z" {
 		t.Fatalf("expires %+v", doc.ItemInstances[0])
 	}
-	if len(doc.ScanEntries) != 1 || doc.ScanEntries[0].ID != "scan_1" || doc.ScanEntries[0].Barcode != "scan-north-q7" {
+	if len(doc.ScanEntries) != 1 || doc.ScanEntries[0].ID != "s-north" || doc.ScanEntries[0].Barcode != "scan-north-q7" {
 		t.Fatalf("scans %+v", doc.ScanEntries)
 	}
-	if doc.ScanEntries[0].ProductID == nil || *doc.ScanEntries[0].ProductID != "prod_1" {
+	if doc.ScanEntries[0].ProductID == nil || *doc.ScanEntries[0].ProductID != "p-north" {
 		t.Fatalf("scan product %+v", doc.ScanEntries[0])
 	}
-	if len(doc.ShoppingListItems) != 1 || doc.ShoppingListItems[0].ID != "shop_1" || doc.ShoppingListItems[0].Quantity != 3 {
+	if len(doc.ShoppingListItems) != 1 || doc.ShoppingListItems[0].ID != "shop-north" || doc.ShoppingListItems[0].Quantity != 3 {
 		t.Fatalf("shopping %+v", doc.ShoppingListItems)
 	}
-	if len(doc.StockMoves) != 1 || doc.StockMoves[0].ID != "move_1" || doc.StockMoves[0].ScanEntryID == nil || *doc.StockMoves[0].ScanEntryID != "scan_1" {
+	if len(doc.StockMoves) != 1 || doc.StockMoves[0].ID != "m-north" || doc.StockMoves[0].ScanEntryID == nil || *doc.StockMoves[0].ScanEntryID != "s-north" {
 		t.Fatalf("moves %+v", doc.StockMoves)
 	}
-	if len(doc.Groups) != 1 || doc.Groups[0].ID != "grp_1" || doc.Groups[0].Name != "north-group-q7" || strings.Join(doc.Groups[0].ProductIDs, ",") != "prod_1" {
+	if len(doc.Groups) != 1 || doc.Groups[0].ID != "g-north" || doc.Groups[0].Name != "north-group-q7" || strings.Join(doc.Groups[0].ProductIDs, ",") != "p-north" {
 		t.Fatalf("groups %+v", doc.Groups)
 	}
-	if len(doc.Categories) != 1 || doc.Categories[0].ID != "cat_1" || strings.Join(doc.Categories[0].ItemIDs, ",") != "item_1" {
+	if len(doc.Categories) != 1 || doc.Categories[0].ID != "c-north" || strings.Join(doc.Categories[0].ItemIDs, ",") != "i-1" {
 		t.Fatalf("categories %+v", doc.Categories)
 	}
-	if again.Document.Items[0].ID != "item_1" || again.Document.Products[0].ID != "prod_1" {
-		t.Fatal("local ids changed between builds")
+	if again.Document.Items[0].ID != "i-1" || again.Document.Products[0].ID != "p-north" {
+		t.Fatal("ids changed between builds")
+	}
+	if !strings.Contains(string(bundle.JSON), `"supplyDefault":"months:2"`) {
+		t.Fatal("supplyDefault was omitted")
 	}
 
 	items := readCSV(t, bundle.ItemsCSV)
@@ -133,7 +136,7 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 	for _, secret := range []string{
 		"south-pantry-z9", "south-typed-q7", "south-catalog-q7", "unused-catalog-q7",
 		"north-catalog-q7", "foreign-typed-q7", "south-override-bc-q7", "scan-south-q7",
-		"south-group-q7", "south-cat-q7", "south-shop-q7",
+		"south-group-q7", "south-cat-q7", "south-shop-q7", "foreign-global-q7",
 		"channel-sentinel-q7", "sbd_", "sbs_", "pw-hash-sentinel-q7", "session-key-sentinel-q7",
 		"secret-setting-q7", "nia@pantry.test", "invite-hash-sentinel-q7", "device-label-q7",
 		"memberships", "channel_key", "device_tokens", "household_password", "password_resets",
@@ -142,9 +145,14 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 			t.Fatalf("export contains %q", secret)
 		}
 	}
-	for _, id := range []string{"p-north", "p-south", "p-unused", "i-1", "i-2", "g-north", "g-south"} {
+	for _, id := range []string{"p-north", "i-1", "i-2", "n-1", "s-north", "shop-north", "m-north", "g-north", "c-north"} {
+		if !strings.Contains(string(bundle.JSON), `"`+id+`"`) {
+			t.Fatalf("preserved id %s missing from json", id)
+		}
+	}
+	for _, id := range []string{"p-south", "p-unused", "g-south", "item_1", "prod_1"} {
 		if strings.Contains(string(bundle.JSON), `"`+id+`"`) {
-			t.Fatalf("source id %s leaked into json", id)
+			t.Fatalf("foreign or remapped id %s leaked into json", id)
 		}
 	}
 
@@ -152,7 +160,7 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(south.JSON), "south-typed-q7") || !strings.Contains(string(south.JSON), "foreign-typed-q7") || strings.Contains(string(south.JSON), "north-typed-q7") || strings.Contains(string(south.JSON), "north-cat-q7") {
+	if !strings.Contains(string(south.JSON), "south-typed-q7") || !strings.Contains(string(south.JSON), "foreign-typed-q7") || strings.Contains(string(south.JSON), "north-typed-q7") || strings.Contains(string(south.JSON), "north-cat-q7") || strings.Contains(string(south.JSON), "global-bc-q7") || !strings.Contains(string(south.JSON), "foreign-global-q7") {
 		t.Fatalf("south export mixed names %s", south.JSON)
 	}
 	if _, err := Build(context.Background(), db, "0190aaaa-bbbb-7000-8000-000000000099", when); err != ErrNotFound {
@@ -199,8 +207,9 @@ func seedTwoHouseholds(t *testing.T, db *sql.DB) {
 		(?, 'p-south', 'south-typed-q7', '2026-01-01T00:00:00Z')`, northID, southID, southID)
 	exec(`INSERT INTO barcodes (barcode, product_id, source, user_id, household_id) VALUES
 		('global-bc-q7', 'p-north', 'global', '', ?),
+		('foreign-global-q7', 'p-north', 'global', '', ?),
 		('north-override-bc-q7', 'p-north', 'user_override', 'acct-north', ?),
-		('south-override-bc-q7', 'p-south', 'user_override', 'acct-south', ?)`, northID, northID, southID)
+		('south-override-bc-q7', 'p-south', 'user_override', 'acct-south', ?)`, northID, southID, northID, southID)
 	exec(`INSERT INTO items (id, user_id, product_id, household_id, target_quantity, created_at) VALUES
 		('i-1', 'acct-north', 'p-north', ?, 9, '2026-01-02T00:00:00Z'),
 		('i-2', 'acct-north-b', 'p-north', ?, 1, '2026-01-03T00:00:00Z'),
@@ -271,7 +280,7 @@ func TestBuildExportEdgesAndCancellation(t *testing.T) {
 		VALUES (?, 'edge-pantry-z9', '', '2026-01-01T00:00:00Z', 'edge-channel-q7', 0)`, edgeID)
 	exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
 		VALUES (?, 'value-pantry-z9', 'auto', '2026-01-01T00:00:00Z', 'value-channel-q7', 0)`, valID)
-	exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES ('p-edge', 'edge-catalog-q7', '', '')`)
+	exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES ('p-edge', '=edge-catalog-q7', '', '')`)
 	exec(`INSERT INTO items (id, user_id, product_id, household_id, target_quantity, created_at)
 		VALUES ('i-edge', 'acct-edge', 'p-edge', ?, NULL, '')`, edgeID)
 	exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES (?, 'i-edge', 'amount', 1.5)`, edgeID)
@@ -305,8 +314,11 @@ func TestBuildExportEdgesAndCancellation(t *testing.T) {
 		t.Fatalf("item %+v", doc.Items[0])
 	}
 	rows := readCSV(t, bundle.ItemsCSV)
-	if len(rows) != 2 || rows[1][3] != "soon" || rows[1][6] != "1.5" {
+	if len(rows) != 2 || rows[1][0] != "'=edge-catalog-q7" || rows[1][3] != "soon" || rows[1][6] != "1.5" {
 		t.Fatalf("items csv %+v", rows)
+	}
+	if csvCell("-1") != "-1" || csvCell("+cmd") != "'+cmd" || csvCell("@cmd") != "'@cmd" || csvCell("\tcmd") != "'\tcmd" || csvCell("\rcmd") != "'\rcmd" || csvCell("plain") != "plain" {
+		t.Fatal("csvCell")
 	}
 	if !strings.Contains(string(bundle.JSON), `"barcodes":[]`) || !strings.Contains(string(bundle.JSON), `"productIds":[]`) {
 		t.Fatalf("empty slices were omitted\n%s", bundle.JSON)
@@ -320,16 +332,6 @@ func TestBuildExportEdgesAndCancellation(t *testing.T) {
 		t.Fatalf("value-only %+v", valueOnly.Document.Settings)
 	}
 
-	ids := newLocalIDs()
-	if ids.assign("prod", "") != "" || ids.get("prod", "") != "" {
-		t.Fatal("empty source was kept")
-	}
-	if ids.assign("prod", "p-edge") != "prod_1" || ids.assign("prod", "p-edge") != "prod_1" {
-		t.Fatal("local id was not stable")
-	}
-	if ids.get("item", "i-edge") != "item_1" || ids.source("item", "item_1") != "i-edge" {
-		t.Fatal("get did not assign a missing id")
-	}
 	if trimFloat(2) != "2" || trimFloat(1.5) != "1.5" {
 		t.Fatal("trimFloat")
 	}
@@ -351,7 +353,7 @@ func TestBuildExportEdgesAndCancellation(t *testing.T) {
 	if _, err := loadOverrides(ctx, db, edgeID); err == nil {
 		t.Fatal("cancelled overrides")
 	}
-	if _, err := loadGlobalBarcodes(ctx, db, []string{"p-edge"}); err == nil {
+	if _, err := loadGlobalBarcodes(ctx, db, edgeID, []string{"p-edge"}); err == nil {
 		t.Fatal("cancelled barcodes")
 	}
 	if _, err := loadItems(ctx, db, edgeID); err == nil {

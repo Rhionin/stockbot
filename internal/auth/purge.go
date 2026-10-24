@@ -29,9 +29,20 @@ func (s *Service) PurgeDue(ctx context.Context) (PurgeResult, error) {
 	if s == nil || s.db == nil {
 		return result, nil
 	}
+	var previous int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA secure_delete`).Scan(&previous); err != nil {
+		return result, AsError(err)
+	}
 	if _, err := s.db.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
 		return result, AsError(err)
 	}
+	defer func() {
+		restore := "OFF"
+		if previous == 1 {
+			restore = "ON"
+		}
+		_, _ = s.db.ExecContext(context.Background(), `PRAGMA secure_delete = `+restore)
+	}()
 	var flag int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA secure_delete`).Scan(&flag); err != nil {
 		return result, AsError(err)

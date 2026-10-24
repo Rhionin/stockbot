@@ -7,11 +7,19 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/export"
 	"github.com/google/uuid"
 )
 
 const exportTTL = 15 * time.Minute
+
+// One household keeps a few recent bundles. The server keeps a small pile
+// so a flood of exports cannot hold every household's zip in memory.
+const (
+	maxHouseholdExports = 3
+	maxServerExports    = 24
+)
 
 type savedExport struct {
 	id          string
@@ -21,8 +29,9 @@ type savedExport struct {
 }
 
 type exportJobs struct {
-	mu   sync.Mutex
-	jobs map[string]*savedExport
+	mu       sync.Mutex
+	jobs     map[string]*savedExport
+	building map[string]int
 }
 
 func (s *stage1) serveCreateExport(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +39,11 @@ func (s *stage1) serveCreateExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bundle, ok := s.buildExport(w, r, p.UserID, p.HouseholdID)
+	if !s.beginExport(w, p.HouseholdID) {
+		return
+	}
+	defer s.endExport(p.HouseholdID)
+	bundle, ok := s.buildExport(w, r, p.HouseholdID)
 	if !ok {
 		return
 	}
@@ -110,7 +123,7 @@ func (s *stage1) serveHouseholdExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bundle, ok := s.buildExport(w, r, p.UserID, p.HouseholdID)
+	bundle, ok := s.buildExport(w, r, p.HouseholdID)
 	if !ok {
 		return
 	}
@@ -141,7 +154,7 @@ func (s *stage1) ownerHousehold(w http.ResponseWriter, r *http.Request, househol
 	return p, true
 }
 
-func (s *stage1) buildExport(w http.ResponseWriter, r *http.Request, userID, householdID string) (export.Bundle, bool) {
+func (s *stage1) buildExport(w http.ResponseWriter, r *http.Request, householdID string) (export.Bundle, bool) {
 	bundle, err := export.Build(r.Context(), s.db(), householdID, s.svc.Now())
 	if err != nil {
 		if errors.Is(err, export.ErrNotFound) {
@@ -151,8 +164,52 @@ func (s *stage1) buildExport(w http.ResponseWriter, r *http.Request, userID, hou
 		writeStage1(w, err)
 		return export.Bundle{}, false
 	}
-	_ = userID
 	return bundle, true
+}
+
+func (s *stage1) beginExport(w http.ResponseWriter, householdID string) bool {
+	s.exports.mu.Lock()
+	defer s.exports.mu.Unlock()
+	s.sweepExportsLocked()
+	if s.exports.building[householdID] > 0 || s.exportCountLocked(householdID) >= maxHouseholdExports || s.exportCountLocked("") >= maxServerExports {
+		writeStage1(w, &auth.Error{Code: auth.CodeBusy, Message: clientmsg.Busy})
+		return false
+	}
+	if s.exports.building == nil {
+		s.exports.building = map[string]int{}
+	}
+	s.exports.building[householdID]++
+	return true
+}
+
+func (s *stage1) endExport(householdID string) {
+	s.exports.mu.Lock()
+	defer s.exports.mu.Unlock()
+	if s.exports.building[householdID] > 0 {
+		s.exports.building[householdID]--
+	}
+}
+
+func (s *stage1) exportCountLocked(householdID string) int {
+	n := 0
+	for _, saved := range s.exports.jobs {
+		if householdID == "" || saved.householdID == householdID {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *stage1) sweepExportsLocked() {
+	if s.exports.jobs == nil || s.svc == nil {
+		return
+	}
+	now := s.svc.Now()
+	for id, saved := range s.exports.jobs {
+		if !now.Before(saved.expires) {
+			delete(s.exports.jobs, id)
+		}
+	}
 }
 
 func (s *stage1) auditExport(w http.ResponseWriter, r *http.Request, householdID string) bool {
@@ -195,12 +252,7 @@ func (s *stage1) saveExport(householdID string, bundle export.Bundle) *savedExpo
 	if s.exports.jobs == nil {
 		s.exports.jobs = map[string]*savedExport{}
 	}
-	now := s.svc.Now()
-	for id, saved := range s.exports.jobs {
-		if !now.Before(saved.expires) {
-			delete(s.exports.jobs, id)
-		}
-	}
+	s.sweepExportsLocked()
 	s.exports.jobs[job.id] = job
 	return job
 }

@@ -30,9 +30,9 @@ type Bundle struct {
 	Document    Document
 }
 
-// Document is Export format v1. Ids inside it are export-local (prod_1, item_1).
-// They are assigned by sorting the household's own ids, so the same rows always
-// produce the same local ids.
+// Document is Export format v1. Item, instance, scan, shopping-list, move,
+// group, and category ids are the household's own ids, unchanged. Product ids
+// stay the catalog ids the household already stored. Import remaps products.
 type Document struct {
 	SchemaVersion     int                `json:"schemaVersion"`
 	ImportID          string             `json:"importId"`
@@ -142,7 +142,7 @@ type Category struct {
 // Settings is the allowlist. channel_key is never a field.
 type Settings struct {
 	RestockMode   string `json:"restockMode"`
-	SupplyDefault string `json:"supplyDefault,omitempty"`
+	SupplyDefault string `json:"supplyDefault"`
 }
 
 type rawItem struct {
@@ -225,35 +225,9 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 	if err != nil {
 		return Bundle{}, err
 	}
-	globals, err := loadGlobalBarcodes(ctx, db, productIDs(products))
+	globals, err := loadGlobalBarcodes(ctx, db, householdID, productIDs(products))
 	if err != nil {
 		return Bundle{}, err
-	}
-
-	ids := newLocalIDs()
-	for _, id := range sortedKeys(products) {
-		ids.assign("prod", id)
-	}
-	for _, row := range items {
-		ids.assign("item", row.id)
-	}
-	for _, row := range instances {
-		ids.assign("inst", row.id)
-	}
-	for _, row := range scans {
-		ids.assign("scan", row.id)
-	}
-	for _, row := range shopping {
-		ids.assign("shop", row.id)
-	}
-	for _, row := range moves {
-		ids.assign("move", row.id)
-	}
-	for _, id := range sortedKeys(groups) {
-		ids.assign("grp", id)
-	}
-	for _, id := range sortedKeys(categories) {
-		ids.assign("cat", id)
 	}
 
 	doc := Document{
@@ -278,13 +252,13 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 		row := products[id]
 		barcodes := append([]string(nil), globals[id]...)
 		doc.Products = append(doc.Products, Product{
-			ID: ids.get("prod", id), Name: row.name, Category: row.category,
+			ID: id, Name: row.name, Category: row.category,
 			UnitOfMeasure: row.unit, Barcodes: barcodes,
 		})
 	}
 	for _, row := range overrides {
 		doc.BarcodeOverrides = append(doc.BarcodeOverrides, BarcodeOverride{
-			Barcode: row.barcode, ProductID: ids.get("prod", row.productID),
+			Barcode: row.barcode, ProductID: row.productID,
 		})
 	}
 	for _, row := range items {
@@ -293,14 +267,14 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 			target = sql.NullFloat64{Float64: v, Valid: true}
 		}
 		doc.Items = append(doc.Items, Item{
-			ID: ids.get("item", row.id), ProductID: ids.get("prod", row.productID),
+			ID: row.id, ProductID: row.productID,
 			Category: opt(itemCategory[row.id]), Group: opt(itemGroup[row.productID]),
 			StockTarget: floatPtr(target), CreatedAt: rfc3339(row.createdAt),
 		})
 	}
 	for _, row := range instances {
 		doc.ItemInstances = append(doc.ItemInstances, ItemInstance{
-			ID: ids.get("inst", row.id), ItemID: ids.get("item", row.itemID),
+			ID: row.id, ItemID: row.itemID,
 			StockInAt: rfc3339(row.stockIn), ExpiresAt: optTime(row.expires),
 			RemovedAt: optTime(row.removed), RemovalReason: optNull(row.reason),
 			CreatedAt: rfc3339(row.created),
@@ -308,53 +282,47 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 	}
 	for _, row := range scans {
 		entry := ScanEntry{
-			ID: ids.get("scan", row.id), Barcode: row.barcode, ScannedAt: rfc3339(row.scannedAt),
+			ID: row.id, Barcode: row.barcode, ScannedAt: rfc3339(row.scannedAt),
 			Direction: optNull(row.direction), UnitCount: row.unitCount, ExpiresAt: optTime(row.expires),
 			Status: row.status, CommittedAt: optTime(row.committed), CreatedAt: rfc3339(row.createdAt),
 		}
 		if row.productID.Valid && row.productID.String != "" {
-			entry.ProductID = opt(ids.get("prod", row.productID.String))
+			entry.ProductID = opt(row.productID.String)
 		}
 		doc.ScanEntries = append(doc.ScanEntries, entry)
 	}
 	for _, row := range shopping {
 		doc.ShoppingListItems = append(doc.ShoppingListItems, ShoppingListItem{
-			ID: ids.get("shop", row.id), ItemID: ids.get("item", row.itemID),
+			ID: row.id, ItemID: row.itemID,
 			Quantity: row.quantity, Source: row.source, PurchasedAt: optTime(row.purchased),
 			CreatedAt: rfc3339(row.createdAt),
 		})
 	}
 	for _, row := range moves {
 		move := StockMove{
-			ID: ids.get("move", row.id), ItemID: ids.get("item", row.itemID),
-			ProductID: ids.get("prod", row.productID), Direction: row.direction,
+			ID: row.id, ItemID: row.itemID,
+			ProductID: row.productID, Direction: row.direction,
 			Quantity: row.quantity, At: rfc3339(row.at), Source: row.source,
 			CreatedAt: rfc3339(row.createdAt),
 		}
 		if row.scanID.Valid && row.scanID.String != "" {
-			move.ScanEntryID = opt(ids.get("scan", row.scanID.String))
+			move.ScanEntryID = opt(row.scanID.String)
 		}
 		doc.StockMoves = append(doc.StockMoves, move)
 	}
 	for _, id := range sortedKeys(groups) {
-		var productIDs []string
-		for _, productID := range members[id] {
-			productIDs = append(productIDs, ids.get("prod", productID))
-		}
+		productIDs := append([]string(nil), members[id]...)
 		if productIDs == nil {
 			productIDs = []string{}
 		}
-		doc.Groups = append(doc.Groups, Group{ID: ids.get("grp", id), Name: groups[id], ProductIDs: productIDs})
+		doc.Groups = append(doc.Groups, Group{ID: id, Name: groups[id], ProductIDs: productIDs})
 	}
 	for _, id := range sortedKeys(categories) {
-		var itemIDs []string
-		for _, itemID := range links[id] {
-			itemIDs = append(itemIDs, ids.get("item", itemID))
-		}
+		itemIDs := append([]string(nil), links[id]...)
 		if itemIDs == nil {
 			itemIDs = []string{}
 		}
-		doc.Categories = append(doc.Categories, Category{ID: ids.get("cat", id), Name: categories[id], ItemIDs: itemIDs})
+		doc.Categories = append(doc.Categories, Category{ID: id, Name: categories[id], ItemIDs: itemIDs})
 	}
 	for i := range doc.Products {
 		if doc.Products[i].Barcodes == nil {
@@ -366,11 +334,11 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 	if err != nil {
 		return Bundle{}, err
 	}
-	itemsCSV, err := itemsCSV(doc, instances, items, overrides, globals, ids)
+	itemsCSV, err := itemsCSV(doc, instances, items, overrides, globals)
 	if err != nil {
 		return Bundle{}, err
 	}
-	shoppingCSV, err := shoppingCSV(doc, items)
+	shoppingCSV, err := shoppingCSV(doc)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -441,13 +409,13 @@ func loadOverrides(ctx context.Context, db *sql.DB, householdID string) ([]overr
 	return out, rows.Err()
 }
 
-func loadGlobalBarcodes(ctx context.Context, db *sql.DB, productIDs []string) (map[string][]string, error) {
+func loadGlobalBarcodes(ctx context.Context, db *sql.DB, householdID string, productIDs []string) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, id := range productIDs {
 		rows, err := db.QueryContext(ctx, `
 			SELECT barcode FROM barcodes
-			WHERE product_id = ? AND source = 'global' AND user_id = '' AND household_id IS NOT NULL
-			ORDER BY barcode`, id)
+			WHERE product_id = ? AND source = 'global' AND user_id = '' AND household_id = ?
+			ORDER BY barcode`, id, householdID)
 		if err != nil {
 			return nil, err
 		}
@@ -756,7 +724,7 @@ func loadSupplyDefault(ctx context.Context, db *sql.DB, householdID string) (str
 	return vals["supply_target_kind"], nil
 }
 
-func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides []overrideRow, globals map[string][]string, ids *localIDs) ([]byte, error) {
+func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides []overrideRow, globals map[string][]string) ([]byte, error) {
 	onHand := map[string]int{}
 	expires := map[string]string{}
 	for _, row := range instances {
@@ -783,7 +751,7 @@ func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides 
 	}
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	if err := w.Write([]string{"name", "barcode", "on-hand count", "expires", "category", "group", "stock target"}); err != nil {
+	if err := w.Write(csvRow([]string{"name", "barcode", "on-hand count", "expires", "category", "group", "stock target"})); err != nil {
 		return nil, err
 	}
 	names := map[string]string{}
@@ -791,7 +759,7 @@ func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides 
 		names[product.ID] = product.Name
 	}
 	for _, item := range doc.Items {
-		source := sourceByItem[ids.source("item", item.ID)]
+		source := sourceByItem[item.ID]
 		barcode := overrideBarcode[source.productID]
 		if barcode == "" && len(globals[source.productID]) > 0 {
 			barcode = globals[source.productID][0]
@@ -800,10 +768,10 @@ func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides 
 		if item.StockTarget != nil {
 			target = trimFloat(*item.StockTarget)
 		}
-		if err := w.Write([]string{
+		if err := w.Write(csvRow([]string{
 			names[item.ProductID], barcode, fmt.Sprintf("%d", onHand[source.id]), expires[source.id],
 			deref(item.Category), deref(item.Group), target,
-		}); err != nil {
+		})); err != nil {
 			return nil, err
 		}
 	}
@@ -811,7 +779,7 @@ func itemsCSV(doc Document, instances []rawInstance, items []rawItem, overrides 
 	return buf.Bytes(), w.Error()
 }
 
-func shoppingCSV(doc Document, items []rawItem) ([]byte, error) {
+func shoppingCSV(doc Document) ([]byte, error) {
 	sourceItem := map[string]string{}
 	for _, item := range doc.Items {
 		sourceItem[item.ID] = item.ProductID
@@ -822,12 +790,11 @@ func shoppingCSV(doc Document, items []rawItem) ([]byte, error) {
 	}
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	if err := w.Write([]string{"name", "quantity"}); err != nil {
+	if err := w.Write(csvRow([]string{"name", "quantity"})); err != nil {
 		return nil, err
 	}
-	_ = items
 	for _, line := range doc.ShoppingListItems {
-		if err := w.Write([]string{names[sourceItem[line.ItemID]], fmt.Sprintf("%d", line.Quantity)}); err != nil {
+		if err := w.Write(csvRow([]string{names[sourceItem[line.ItemID]], fmt.Sprintf("%d", line.Quantity)})); err != nil {
 			return nil, err
 		}
 	}
@@ -861,43 +828,55 @@ func zipFiles(doc, items, shopping []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-type localIDs struct {
-	next    map[string]int
-	local   map[string]string
-	sources map[string]string
+// csvRow neutralizes cells a spreadsheet would treat as formulas.
+// A numeric literal is left alone so counts and targets stay numbers.
+func csvRow(cells []string) []string {
+	out := make([]string, len(cells))
+	for i, cell := range cells {
+		out[i] = csvCell(cell)
+	}
+	return out
 }
 
-func newLocalIDs() *localIDs {
-	return &localIDs{next: map[string]int{}, local: map[string]string{}, sources: map[string]string{}}
+func csvCell(value string) string {
+	if value == "" || numericLiteral(value) {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	default:
+		return value
+	}
 }
 
-func (m *localIDs) assign(kind, source string) string {
-	if source == "" {
-		return ""
+func numericLiteral(value string) bool {
+	if value == "" {
+		return false
 	}
-	key := kind + "\x00" + source
-	if id, ok := m.local[key]; ok {
-		return id
+	i := 0
+	if value[0] == '-' {
+		i++
+		if i >= len(value) {
+			return false
+		}
 	}
-	m.next[kind]++
-	id := fmt.Sprintf("%s_%d", kind, m.next[kind])
-	m.local[key] = id
-	m.sources[kind+"\x00"+id] = source
-	return id
-}
-
-func (m *localIDs) get(kind, source string) string {
-	if source == "" {
-		return ""
+	dot := false
+	digits := 0
+	for ; i < len(value); i++ {
+		switch value[i] {
+		case '.':
+			if dot {
+				return false
+			}
+			dot = true
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			digits++
+		default:
+			return false
+		}
 	}
-	if id, ok := m.local[kind+"\x00"+source]; ok {
-		return id
-	}
-	return m.assign(kind, source)
-}
-
-func (m *localIDs) source(kind, local string) string {
-	return m.sources[kind+"\x00"+local]
+	return digits > 0
 }
 
 func sortedKeys[V any](in map[string]V) []string {

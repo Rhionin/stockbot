@@ -533,6 +533,13 @@ func (s *Service) AuthenticateDevice(ctx context.Context, token string) (Princip
 	if !found {
 		return Principal{}, unauthorized()
 	}
+	gone, err := s.HouseholdGone(ctx, row.HouseholdID)
+	if err != nil {
+		return Principal{}, err
+	}
+	if gone {
+		return Principal{}, unauthorized()
+	}
 	if row.RevokedAt != "" {
 		return Principal{}, fail(CodeDeviceRevoked, SentenceDeviceRevoked)
 	}

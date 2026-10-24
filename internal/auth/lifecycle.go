@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -110,9 +112,9 @@ func (s *Service) DeleteHousehold(ctx context.Context, userID, householdID, conf
 		nowStamp, purge, key, householdID); err != nil {
 		return HouseholdDetail{}, AsError(err)
 	}
-	// revoked_at makes a presented device token answer device_revoked.
-	// The token row stays until purge so that answer is still possible.
-	// superseded_at marks the token revoked as well.
+	// revoked_at makes a presented device token answer device_revoked
+	// once the household is restored. While it is soft-deleted, the
+	// token answers unauthorized. The token row stays until purge.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE devices SET revoked_at = ? WHERE household_id = ? AND revoked_at IS NULL`,
 		nowStamp, householdID); err != nil {
@@ -270,7 +272,10 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, confirmation string
 	if _, err := tx.ExecContext(ctx, `DELETE FROM reset_links WHERE user_id = ?`, userID); err != nil {
 		return AsError(err)
 	}
-	pseudo := pseudonym(userID)
+	pseudo, err := s.pseudonymFor(ctx, tx, userID)
+	if err != nil {
+		return AsError(err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE audit_log SET actor_id = ? WHERE actor_id = ?`, pseudo, userID); err != nil {
 		return AsError(err)
@@ -320,9 +325,37 @@ func memberIDs(ctx context.Context, q queryer, householdID string) ([]string, er
 	return out, rows.Err()
 }
 
-func pseudonym(userID string) string {
-	sum := sha256.Sum256([]byte(userID))
-	return "deleted:" + hex.EncodeToString(sum[:8])
+func (s *Service) pseudonymFor(ctx context.Context, q queryer, userID string) (string, error) {
+	key, err := auditPseudonymKey(ctx, q)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(userID))
+	return "deleted:" + hex.EncodeToString(mac.Sum(nil)[:8]), nil
+}
+
+// auditPseudonymKey is the install secret for deleted-account audit ids.
+// A raw user id is not enough to recompute the pseudonym.
+func auditPseudonymKey(ctx context.Context, q queryer) ([]byte, error) {
+	const setting = "audit_pseudonym_key"
+	var raw string
+	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, setting).Scan(&raw)
+	if err == sql.ErrNoRows {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, err
+		}
+		raw = hex.EncodeToString(buf)
+		if _, err := q.ExecContext(ctx, `INSERT INTO app_settings (key, value) VALUES (?, ?)`, setting, raw); err != nil {
+			if scanErr := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, setting).Scan(&raw); scanErr != nil {
+				return nil, err
+			}
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(raw)
 }
 
 // LastOwnerSentence is the account-delete copy for one household name.

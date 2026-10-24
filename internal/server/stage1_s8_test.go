@@ -213,7 +213,7 @@ func TestStage1SoftDeleteRestorePurgeAndDeviceRevoke(t *testing.T) {
 		t.Fatalf("deleted audit %d %v", audits, err)
 	}
 	beat := owner.call(http.MethodPost, "/api/device/heartbeat", map[string]any{"version": "1"}, app.EntryPublic, map[string]string{"Authorization": "Bearer " + paired.Token})
-	if beat.Code != http.StatusUnauthorized || !strings.Contains(beat.Body.String(), `"code":"device_revoked"`) {
+	if beat.Code != http.StatusUnauthorized || !strings.Contains(beat.Body.String(), `"code":"unauthorized"`) {
 		t.Fatalf("heartbeat %d %s", beat.Code, beat.Body.String())
 	}
 	if rec := owner.authed(http.MethodGet, "/api/inventory", nil); rec.Code != http.StatusNotFound {
@@ -416,6 +416,20 @@ func stage1Owner(t *testing.T, name, email string) (*sql.DB, *auth.Service, http
 	}
 	owner.house = *session.ActiveHouseholdID
 	return db, svc, handler, owner, owner.house, session.User.ID
+}
+
+func TestStage1ExportBusyWhenTheHouseholdSlotIsFull(t *testing.T) {
+	_, _, _, owner, _, _ := stage1Owner(t, "Nia North", "nia@pantry.test")
+	for i := 0; i < maxHouseholdExports; i++ {
+		rec := owner.authed(http.MethodPost, "/api/export", nil)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("export %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	busy := owner.authed(http.MethodPost, "/api/export", nil)
+	if busy.Code != http.StatusServiceUnavailable || !strings.Contains(busy.Body.String(), `"code":"busy"`) {
+		t.Fatalf("flood %d %s", busy.Code, busy.Body.String())
+	}
 }
 
 func execSQL(t *testing.T, db *sql.DB, query string, args ...any) {
