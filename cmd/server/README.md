@@ -17,16 +17,13 @@ go run ./cmd/server
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `ADDR` | `:8080` | LAN listen address when `LAN_LISTEN_ADDR` is unset |
-| `APP_BASE_URL` | empty | Public origin (`https://host`, no path). Empty stays LAN-only and does not bind the public listener. The Pi deployment value is `https://stockbot.rhionin.com`. Invite, reset, and pair links, and the Origin check, use this value |
+| `ADDR` | `:8080` | The one listen address. `LAN_LISTEN_ADDR` fills it only when `ADDR` is empty. `PUBLIC_LISTEN_ADDR` is ignored |
+| `APP_BASE_URL` | empty | Public origin (`https://host`, no path). The Pi deployment value is `https://stockbot.rhionin.com`. Invite, reset, and pair links, and the Origin check, use this value |
 | `APP_NAME` | `Stockbot` | Product name. A rename is this setting |
 | `SESSION_COOKIE_NAME` | `__Host-stockbot_session` | Personal-session cookie. `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`. The `__Host-` prefix is removed when `COOKIE_DOMAIN` is set |
 | `COOKIE_DOMAIN` | empty | Host-only when empty. A parent domain lets a later HTTPS hostname share the cookie |
 | `EMAIL_FROM` | empty | Sender address. Empty until a mailer exists |
-| `LAN_PEOPLE` | `redirect` | `redirect` sends LAN browsers to `APP_BASE_URL` after the household password is retired. `signin` is reserved for a later LAN session |
 | `EXPO_MIN_VERSION` | `1.0.0` | Oldest Expo version. `expo/<version>` below it is `426 upgrade_required` |
-| `PUBLIC_LISTEN_ADDR` | `:8081` | Public entry. Bound only when `APP_BASE_URL` is set. `off` disables it, and startup then fails if `APP_BASE_URL` is set |
-| `LAN_LISTEN_ADDR` | `:8080` | LAN entry. Overrides `ADDR` when set |
 | `DB_PATH` | `pantry.db` | SQLite database path |
 | `PRODUCT_CACHE_TTL` | `720h` | Product cache TTL before refresh |
 | `PRODUCT_MISS_TTL` | `168h` | Miss cache TTL before retry |
@@ -69,9 +66,9 @@ For Raspberry Pi deployment with a USB barcode scanner:
 3. The container will automatically reconnect if the scanner is unplugged
    and replugged
 
-Public HTTPS, for a hostname you own, is an optional step on top of that LAN install. See `deploy/README.md` (Public Internet access). The public site asks for one shared password. A few exact paths stay open: the timing snapshot at `https://<your-host>/api/telemetry`, plus `https://<your-host>/brand/logo.png`, `https://<your-host>/terms`, and `https://<your-host>/privacy`.
+Public HTTPS is how browsers reach Stockbot. See `deploy/README.md`. The site asks for one shared password. A few exact paths stay open: the timing snapshot at `https://<your-host>/api/telemetry`, plus `https://<your-host>/brand/logo.png`, `https://<your-host>/terms`, and `https://<your-host>/privacy`.
 
-On the same LAN as the Pi, that public hostname hangs when the router does not hairpin traffic aimed at its own WAN address. Cellular data is outside that path, so the same URL loads there. From home Wi-Fi, open `http://<pi-ip>:8080` (or `http://pantry.local:8080` after setup publishes it). That LAN listener has no password. Cloudflare Tunnel is the supported way to make the public hostname work on home Wi-Fi without a port forward. Details and the Gryphon steps are in `deploy/README.md`.
+On the certificate path, that public hostname hangs on home Wi-Fi when the router does not hairpin traffic aimed at its own WAN address. Cellular data is outside that path, so the same URL loads there. Cloudflare Tunnel is how the public hostname works on home Wi-Fi without a port forward. The Pi publishes port 8080 on `127.0.0.1` only, for health checks. Details are in `deploy/README.md`.
 
 ### Health Endpoint
 
@@ -177,9 +174,9 @@ call the ingest host itself.
 
 The route is open before household login, including on the login page, and
 it does not accept the sync token as a credential. No other route is opened
-with it. The client IP on the public listener (`:8081`) is the address Caddy
-records in `X-Pantry-Client-IP`. The LAN listener uses the connection
-address. `X-Forwarded-For` is not used. The envelope is not written to the log.
+with it. The client IP is `CF-Connecting-IP`, then the first address in
+`X-Forwarded-For`, then `X-Pantry-Client-IP`, then the connection address.
+Caddy replaces those headers. The envelope is not written to the log.
 
 SDK configuration uses the tunnel option `'/api/sentry-tunnel'`.
 

@@ -29,7 +29,7 @@ func TestMemberRevokesJoinInviteAndOperatorRevokesStart(t *testing.T) {
 	}
 	setup := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
-	}, app.EntryLAN, nil)
+	}, app.EntryPublic, nil)
 	if setup.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
 	}

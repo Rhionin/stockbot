@@ -29,6 +29,12 @@
   padding: 0;
 }
 
+/* The name sits on the app header. The light-mode teal fails on the dark header. */
+[data-mantine-color-scheme='dark'] .household-switch-name,
+[data-mantine-color-scheme='dark'] .household-switch-link {
+  color: var(--stock-full-ink);
+}
+
 .household-page {
   max-width: 42rem;
 }

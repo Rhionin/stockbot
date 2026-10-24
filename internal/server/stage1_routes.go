@@ -16,7 +16,7 @@ import (
 )
 
 // WithStage1 turns on personal sessions, setup, and household membership.
-// The listeners pass an entry so the chain can tell LAN from the public site.
+// The listener marks every request as the public entry.
 func WithStage1(svc *auth.Service, site app.RuntimeConfig) Option {
 	return func(c *config) {
 		c.stage1svc = svc
@@ -1335,11 +1335,6 @@ func (s *stage1) serveDeleteAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *stage1) serveSetupPage(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	entry, _ := app.EntryFrom(r.Context())
-	if entry != app.EntryLAN {
-		writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
-		return
-	}
 	if err := s.svc.Ensure(r.Context()); err != nil {
 		writeStage1(w, err)
 		return
@@ -1374,11 +1369,6 @@ type setupBody struct {
 }
 
 func (s *stage1) serveSetupPost(w http.ResponseWriter, r *http.Request) {
-	entry, _ := app.EntryFrom(r.Context())
-	if entry != app.EntryLAN {
-		writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
-		return
-	}
 	var body setupBody
 	if !readStage1(w, r, &body) {
 		return

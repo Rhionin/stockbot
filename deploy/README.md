@@ -8,11 +8,11 @@ The public site is `https://stockbot.rhionin.com`. The previous name `pantry.rhi
 
 The Go module is `github.com/Rhionin/stockbot`. The Pi keeps the names from the first install. Changing them would point at a different directory, image, volume, or Grocy record.
 
-- LAN name `pantry.local` and Avahi file `pantry-http.service`. The on-screen mDNS label is Stockbot.
+- The public site is `https://stockbot.rhionin.com`. Health checks on the Pi use `http://127.0.0.1:8080`.
 - Directory `/opt/pantry`. That directory name is the Compose project. Grocy on this Pi is `/home/pantrybot/grocy`.
 - Images `ghcr.io/rhionin/pantry` and `ghcr.io/rhionin/pantry-grocy-sync`. Containers `pantry`, `pantry-caddy`, `pantry-cloudflared`, and `pantry-grocy-sync`. Volume `pantry-data`. Database `/data/pantry.db`.
 - Compose service `pantry`. The sidecar calls it at `http://pantry:8080`. Docker network `pantry_cf-tunnel`.
-- Scanner node `/dev/input/pantry-scanner`, udev rule `99-pantry-scanner.rules`, and units `pantry-update.service`, `pantry-update.path`, `pantry-update.timer`, `pantry-lan-only.service`, and `pantry-mdns.service`.
+- Scanner node `/dev/input/pantry-scanner`, udev rule `99-pantry-scanner.rules`, and units `pantry-update.service`, `pantry-update.path`, and `pantry-update.timer`.
 - Headers `X-Pantry-Deploy-Timestamp`, `X-Pantry-Deploy-Signature`, and `X-Pantry-Client-IP`. The Caddy basic-auth realm stays `Pantry`. The shared login username stays `pantry`.
 - Environment variables and Actions secrets that start with `PANTRY_`.
 - Browser keys `pantry-scan-alerts`, `pantry-scan-alert-open`, and `pantry-scan-alert-direction`, and notification tags that start with `pantry-scan-`.
@@ -33,7 +33,7 @@ New to this? Follow these steps in order on your Raspberry Pi and you'll have St
    sudo ./setup.sh
    ```
 
-   This installs Docker if needed, copies the deployment files into `/opt/pantry`, creates your configuration, installs the scanner udev rule, starts Stockbot, and waits until it reports healthy. It is safe to re-run: it never overwrites configuration values you already set. When `PUBLIC_HOST` is already set and `/opt/pantry/auth.caddy` exists, it also keeps the public HTTPS proxy on the current compose file and Caddyfile, and it applies the LAN firewall on the published Stockbot port. `install`, `publish`, and `firewall` are the same command.
+   This installs Docker if needed, copies the deployment files into `/opt/pantry`, creates your configuration, installs the scanner udev rule, starts Stockbot, and waits until it reports healthy. It is safe to re-run: it never overwrites configuration values you already set. When `PUBLIC_HOST` is already set and `/opt/pantry/auth.caddy` exists, it also keeps the public HTTPS proxy on the current compose file and Caddyfile, and it removes leftover LAN firewall and mDNS units. `install`, `publish`, and `firewall` are the same command. Stockbot listens once, with sign-in required. Compose publishes that port on `127.0.0.1` only.
 
 4. **Check it works.** The installer already polled `/health` for you, but you can confirm any time. This should print `{"status":"ok"}`:
 
@@ -41,7 +41,7 @@ New to this? Follow these steps in order on your Raspberry Pi and you'll have St
    curl http://localhost:8080/health
    ```
 
-   You can also open `http://<pi-ip-address>:8080` in a web browser on any device on the same network. After setup, `sudo ./setup.sh status` prints that address. When Avahi is installed it also publishes `http://pantry.local:8080`. If `https://stockbot.rhionin.com` hangs on home Wi-Fi and loads on cellular, the router is not hairpinning; use the LAN address. See [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name).
+   Open `https://stockbot.rhionin.com`. The Pi's Wi-Fi address does not serve Stockbot. `http://127.0.0.1:8080/health` is the local health check. If the public name hangs on home Wi-Fi and loads on cellular, the router is not hairpinning; use Cloudflare Tunnel. See [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name).
 
 5. **See the full picture.** Run the diagnostic any time to see the whole chain from udev rule to scan ingestion:
 
@@ -59,9 +59,9 @@ After `git pull` on the Pi, from `deploy/`:
 sudo ./setup.sh
 ```
 
-That one command is the whole update. It copies `deploy/` to `/opt/pantry`, pulls the Stockbot image when the public site is on, starts the containers from the compose file you just pulled (including the public HTTPS proxy when `PUBLIC_HOST` is set and `/opt/pantry/auth.caddy` is already there), restarts Caddy so the current `Caddyfile` is what is serving, applies the LAN firewall for the published Stockbot port, and republishes `pantry.local` when Avahi is installed. When `CLOUDFLARE_TUNNEL_TOKEN` is set, the same command keeps the tunnel profile instead of ports 80 and 443. The public hostname shows the in-app login page. These paths stay reachable with no login: `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`. Run it again any time. Existing `.env` values stay, an existing `auth.caddy` is not regenerated, and the session secret in `.env` is not replaced, so phones that are already signed in stay signed in. A site that is already on the public internet stays there. LAN `http://<pi-ip>:8080` stays up and still does not ask for a password. On the certificate path, the public name still hangs on home Wi-Fi until the router hairpins or you use the LAN address; see [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). Tunnel mode does not have that hang.
+That one command is the whole update. It copies `deploy/` to `/opt/pantry`, pulls the Stockbot image when the public site is on, starts the containers from the compose file you just pulled (including the public HTTPS proxy when `PUBLIC_HOST` is set and `/opt/pantry/auth.caddy` is already there), restarts Caddy so the current `Caddyfile` is what is serving, and removes leftover LAN firewall and mDNS units. Port 8080 stays on `127.0.0.1`. When `CLOUDFLARE_TUNNEL_TOKEN` is set, the same command keeps the tunnel profile instead of ports 80 and 443. The public hostname shows the in-app login page. These paths stay reachable with no login: `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`. Run it again any time. Existing `.env` values stay, an existing `auth.caddy` is not regenerated, and the session secret in `.env` is not replaced, so phones that are already signed in stay signed in. A site that is already on the public internet stays there. LAN `http://<pi-ip>:8080` stays up and still does not ask for a password. On the certificate path, the public name still hangs on home Wi-Fi until the router hairpins or you use the LAN address; see [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). Tunnel mode does not have that hang.
 
-`sudo ./setup.sh firewall-off` removes the port rule until the next setup. To leave it off, set `PANTRY_LAN_FIREWALL=off` in `/opt/pantry/.env` and run `sudo ./setup.sh` again.
+`sudo ./setup.sh firewall-off` removes leftover LAN firewall and mDNS units. Setup does not install them again. Port 8080 stays on `127.0.0.1`.
 
 **The scanner is optional at every step.** Stockbot starts and serves the web UI whether or not a barcode scanner is attached, and you can connect or disconnect the scanner at any time — see [Headless Scanner Input](#headless-scanner-input).
 
@@ -202,7 +202,7 @@ UDP 443 is optional. It enables HTTP/3. The site works with only the two TCP for
 
 Do not forward port 8080. Leave UPnP off, and delete any other forward you are not using.
 
-The published Stockbot port is IPv4-only (`0.0.0.0`). That keeps a global IPv6 address on the Pi from answering on 8080. It does not stop a router forward: a forwarded packet is still addressed to the Pi's LAN IPv4 address, and Docker's userland proxy accepts it. `ufw` does not close that port either. Docker accepts the connection in its own proxy and, separately, DNATs it around the `INPUT` chain `ufw` edits.
+Stockbot's port is published on `127.0.0.1` only. A router forward of 8080 does not reach it. Do not add one.
 
 If `sudo ufw status` says `active`, allow the proxy ports. Leave a firewall that is currently inactive turned off. Enabling it without an SSH allow rule can lock you out of the Pi.
 
@@ -212,7 +212,7 @@ sudo ufw allow 443/tcp
 sudo ufw allow 443/udp
 ```
 
-`sudo ./setup.sh` also drops non-LAN clients that reach the Stockbot port (loopback, private LAN, and Tailscale `100.64.0.0/10` stay allowed; ports 80 and 443 are not changed). That runs whenever compose publishes the port, which the stock file always does, and whenever the public proxy is on. Set `PANTRY_LAN_FIREWALL=off` in `/opt/pantry/.env` and run `sudo ./setup.sh` again to leave the port reachable from any source. `sudo ./setup.sh firewall-off` removes the rule only until the next setup. Do not forward port 8080 either way. The router rule above is the one that matters for the public site.
+`sudo ./setup.sh` removes leftover LAN firewall and mDNS units if they are still installed. Port 8080 stays on `127.0.0.1`. The router forwards for 80 and 443 are what the certificate path uses. Cloudflare Tunnel does not need them.
 
 ### 3. Point stockbot.rhionin.com at this Pi
 
@@ -300,23 +300,16 @@ On the certificate path, `https://stockbot.rhionin.com` loads on cellular and si
 
 That inside-the-house path is NAT hairpin (also called NAT loopback or NAT reflection). The router has to send a connection aimed at its own WAN address back to `192.168.1.203`. Many home routers drop or ignore that connection instead of refusing it, so the browser hangs rather than showing an error. Nothing on the Pi can answer a packet that never arrives. This repository does not change the Gryphon.
 
-**Use this on home Wi-Fi.** It does not go through the router, and it does not ask for the shared password:
+**Use `https://stockbot.rhionin.com`.** The Wi-Fi address does not serve Stockbot. `http://127.0.0.1:8080/health` on the Pi is the local health check, and it is not reachable from a phone. Sign-in is required on the public name. Do not forward port 8080.
 
-| From a phone on this Wi-Fi | What it is |
-|-----------------------------|------------|
-| `http://192.168.1.203:8080` | Stockbot on the Pi's LAN address. `sudo ./setup.sh status` prints the address it detected. |
-| `http://pantry.local:8080` | The same port, published with mDNS when Avahi is installed. |
-
-`192.168.1.203` is this Pi's reserved LAN address. If `status` prints a different address, use that one. If it prints a Docker bridge (often `172.17.0.1`), set `PANTRY_LAN_IPV4` to the Pi's real LAN address in `/opt/pantry/.env` and run `sudo ./setup.sh` again. Do not forward port 8080. That listener has no password.
-
-Raspberry Pi OS usually already runs Avahi (`raspberrypi.local`). `sudo ./setup.sh` adds `pantry.local` and an HTTP service advertisement when `avahi-publish-address` is on the Pi. If status never mentions a published name:
+The Pi does not publish a local name for Stockbot. Browsers use `https://stockbot.rhionin.com`. Health checks on the Pi use `http://127.0.0.1:8080`.
 
 ```bash
 sudo apt-get install -y avahi-daemon
 sudo ./setup.sh
 ```
 
-Phones and computers that resolve `.local` (current iOS, Android, macOS, and Windows) can then open `http://pantry.local:8080` without knowing the IP. A DHCP reservation for the Pi still matters: mDNS follows the address setup detected, and a later address change is picked up the next time `pantry-mdns.service` starts (`sudo ./setup.sh` restarts it).
+Phones and computers that resolve `.local` (current iOS, Android, macOS, and Windows) can then open `https://stockbot.rhionin.com` without knowing the IP. A DHCP reservation for the Pi still matters: mDNS follows the address setup detected, and a later address change is picked up the next time `the removed mDNS unit` starts (`sudo ./setup.sh` restarts it).
 
 **Gryphon, if you want the public name itself to work on Wi-Fi.** Gryphon Connect is the only admin. Gryphon does not ship a browser admin page. This deploy does not turn anything on in that app.
 
@@ -369,7 +362,7 @@ sudo docker compose --profile public logs --tail=80 caddy
 | Certificate error mentioning timeout, connection refused, or `404` from another site | Port 80 is not reaching this Pi. Re-check the router forward and that no other program is bound to port 80. |
 | Browser warning, certificate name mismatch | `PUBLIC_HOST` and the Squarespace host are not the same name. They must match exactly. |
 | `https://` works at home but not on cellular | The phone is still using the LAN address, or the forward is wrong. Test on cellular. |
-| `https://` hangs on home Wi-Fi and loads on cellular | The router is not hairpinning. Stockbot is reachable at `http://<pi-ip>:8080` and, when Avahi is installed, `http://pantry.local:8080`. See [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). |
+| `https://` hangs on home Wi-Fi and loads on cellular | The router is not hairpinning. Stockbot is reachable at `http://<pi-ip>:8080` and, when Avahi is installed, `https://stockbot.rhionin.com`. See [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). |
 | Browser shows the login page, or curl gets `401` JSON | The shared password is missing or does not match the hash in `auth.caddy`. A request with no password is supposed to be rejected, except `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`, which are public. A browser page load shows the login page. An API call with no cookie and no `Authorization: Basic` header returns `401` JSON. Edit `BASIC_AUTH_PASSWORD`, remove `/opt/pantry/auth.caddy`, and run `sudo ./setup.sh`. Do not delete `auth/household` by itself; setup copies it from `auth.caddy`. |
 | UI loads, but the scan queue never updates live | `/api/events` is being buffered. `deploy/Caddyfile` must keep `flush_interval -1` on that path. Run `sudo ./setup.sh` after pulling a fresh `Caddyfile`. |
 
@@ -377,7 +370,7 @@ sudo docker compose --profile public logs --tail=80 caddy
 
 This is the way `https://stockbot.rhionin.com` works on home Wi-Fi and on cellular when the Gryphon does not hairpin, without forwarding ports 80 or 443. The Pi opens an outbound connection to Cloudflare. The tunnel **pantry-pi** (`9e158cce-4d31-4881-82f3-d905af6164e7`) already exists and is remotely managed, so the Pi only runs `cloudflared` with `CLOUDFLARE_TUNNEL_TOKEN`. Do not create a second tunnel, and do not add a local ingress file. An empty token leaves Let's Encrypt, the Gryphon forwards, and the Dynu dynamic DNS client exactly as they are. The login page asks for the same household password, and these paths stay public: `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`. Do not point the tunnel at port 8080. That port has no password. Do not turn on Cloudflare Access for this hostname. The login page already asks for the password, and Access would be a second login.
 
-LAN `http://192.168.1.203:8080` and `http://pantry.local:8080` keep working the whole time, with no password. Use them if the public name is down during the cutover.
+LAN `http://192.168.1.203:8080` and `https://stockbot.rhionin.com` keep working the whole time, with no password. Use them if the public name is down during the cutover.
 
 The token is a secret. It lives only in `/opt/pantry/.env`. Do not commit it, and do not wrap it in quotes.
 
@@ -513,7 +506,7 @@ Smaller rollback, DNS stays at Cloudflare:
 3. In Cloudflare DNS, add an A record: name `stockbot`, value the address from `curl -4 https://ifconfig.me` on the Pi.
 4. On the Pi, empty `CLOUDFLARE_TUNNEL_TOKEN` in `/opt/pantry/.env`. Leave `PUBLIC_HOST=stockbot.rhionin.com`. Set `PUBLISH_MODE=acme` or leave it empty. A non-empty token keeps tunnel mode, so the token line has to be empty. Set `ACME_EMAIL` if it is empty.
 5. Run `sudo ./setup.sh`. That stops cloudflared and starts Caddy on ports 80 and 443 again. The certificate volume from the earlier certificate path is still there.
-6. Test on cellular. Home Wi-Fi hangs on the public name again. Use `http://192.168.1.203:8080` or `http://pantry.local:8080` on that network.
+6. Test on cellular. Home Wi-Fi hangs on the public name again. Use `http://192.168.1.203:8080` or `https://stockbot.rhionin.com` on that network.
 7. Leave the **pantry-pi** tunnel in the dashboard. Emptying the token stops only the connector on the Pi.
 
 To move DNS back to Dynu, after the smaller rollback is working, copy every record Cloudflare is serving (website, mail, and `stockbot`) into Dynu first, and point `stockbot` at the WAN address again. Copy `pantry` too if that name is still published. Then set the registrar nameservers back to Dynu's, confirm `dig +short NS rhionin.com` and `dig +short stockbot.rhionin.com A`, and turn the Dynu update client back on if you stopped it. Only then turn DNSSEC back on if you want it. With the token empty, that dynamic DNS client is what keeps the port-forward site on the current home IP.
@@ -572,17 +565,15 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PANTRY_IMAGE_TAG` | `latest` | Container image tag to deploy. Use `latest` for newest build, `master` for master branch, or full commit SHA to pin version |
-| `HOST_PORT` | `8080` | IPv4 port for the LAN site. The container still listens on 8080. Published on `0.0.0.0` only, not IPv6. Do not forward this port on the router |
+| `HOST_PORT` | `8080` | Loopback port on the Pi. Compose publishes `127.0.0.1:HOST_PORT`. It is not the Wi-Fi address |
 | `PUBLIC_HOST` | empty | Hostname for the public HTTPS proxy, such as `stockbot.rhionin.com`. Empty keeps the install LAN-only. No `https://`. Setup does not replace a value that is already set |
-| `APP_BASE_URL` | empty | Public origin, such as `https://stockbot.rhionin.com`, with no path. When this is empty and `PUBLIC_HOST` is a hostname, setup and the updater set `https://PUBLIC_HOST`, and Compose does the same if `.env` has not been updated yet. A value already set is kept. Empty `PUBLIC_HOST` (LAN-only) leaves this empty, and the process does not bind `PUBLIC_LISTEN_ADDR`. When set, it must be the same host as `PUBLIC_HOST`, and startup fails if the public listener is off |
+| `APP_BASE_URL` | empty | Public origin, such as `https://stockbot.rhionin.com`, with no path. When this is empty and `PUBLIC_HOST` is a hostname, setup and the updater set `https://PUBLIC_HOST`, and Compose does the same if `.env` has not been updated yet. A value already set is kept. Empty `PUBLIC_HOST` leaves this empty. When set, it must be the same host as `PUBLIC_HOST` |
 | `APP_NAME` | `Stockbot` | Product name used for the title and alert fallback. A rename is this value |
 | `SESSION_COOKIE_NAME` | `__Host-stockbot_session` | Personal-session cookie name. `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`. The `__Host-` prefix is dropped when `COOKIE_DOMAIN` is set |
 | `COOKIE_DOMAIN` | empty | Empty keeps the cookie host-only. Set a parent hostname so a later HTTPS name can share it |
 | `EMAIL_FROM` | empty | Sender address for a later mailer. Empty sends nothing |
-| `LAN_PEOPLE` | `redirect` | `redirect` is the LAN behavior after the household password is retired. `signin` is reserved and not used yet |
+| `ADDR` | `:8080` | The one listen address inside the container |
 | `EXPO_MIN_VERSION` | `1.0.0` | Oldest Expo build this server accepts |
-| `PUBLIC_LISTEN_ADDR` | `:8081` | Public listener inside the compose network. It is bound only when `APP_BASE_URL` is set. `off` disables it |
-| `LAN_LISTEN_ADDR` | `:8080` | LAN listener. This is the port compose publishes. It overrides `ADDR` when set |
 | `LEGACY_PUBLIC_HOST` | empty | Previous hostname that redirects to `PUBLIC_HOST`, such as `pantry.rhionin.com`. Empty serves `PUBLIC_HOST` only. Setup writes the redirect and ignores a value that matches `PUBLIC_HOST` or includes a scheme |
 | `PUBLISH_MODE` | empty | `tunnel` selects Cloudflare Tunnel and requires `CLOUDFLARE_TUNNEL_TOKEN`. Empty or `acme` is the certificate path, unless that token is set — a non-empty token selects tunnel on its own |
 | `CLOUDFLARE_TUNNEL_TOKEN` | empty | Token for the existing tunnel pantry-pi. Empty keeps Let's Encrypt, the Gryphon forwards, and the Dynu update client. Secret. The hostname's service URL is `http://caddy:80` |
@@ -597,9 +588,6 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `SENTRY_ENVIRONMENT` | empty | Optional label sent with errors. Empty means `production` when `SENTRY_DSN` is set |
 | `SENTRY_TUNNEL_PROJECT_IDS` | empty | Comma-separated project ids `POST /api/sentry-tunnel` may forward. Empty leaves that route hidden |
 | `SENTRY_TUNNEL_PUBLIC_KEYS` | empty | Optional comma-separated DSN public keys the tunnel accepts. Empty does not check the key. Set this in `/opt/pantry/.env` only |
-| `PANTRY_LAN_FIREWALL` | `on` | `off` leaves `HOST_PORT` reachable from any source. Any other value, including empty, installs the LAN-only rule when compose publishes that port or the public proxy is on |
-| `PANTRY_LAN_IPV4` | empty | Private LAN address of the Pi, such as `192.168.1.203`. Empty detects it. Set this when detection prints a Docker bridge instead of the address phones should open |
-| `PANTRY_SPLIT_DNS` | `off` | `on` answers `PUBLIC_HOST` with `PANTRY_LAN_IPV4` from dnsmasq on the Pi. Public DNS and the shared password stay as they are. Leave off unless clients use the Pi for DNS. Do not forward port 53 |
 | `PRODUCT_CACHE_TTL` | `720h` | How long to cache product lookups (720h = 30 days) |
 | `PRODUCT_MISS_TTL` | `168h` | How long to cache "not found" results (168h = 7 days) |
 | `DISABLE_EXTERNAL_PRODUCT_LOOKUP` | `false` | Set to `true` to disable external API calls for product information. This also keeps product contribution local |

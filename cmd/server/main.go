@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -195,7 +194,7 @@ func start(stop <-chan struct{}) error {
 		return fmt.Errorf("config: %w", err)
 	}
 	if site.AppBaseURL == "" {
-		log.Printf("site: %s, LAN only", site.AppName)
+		log.Printf("site: %s", site.AppName)
 	} else {
 		log.Printf("site: %s at %s", site.AppName, site.AppBaseURL)
 	}
@@ -427,9 +426,7 @@ func loadPushConfig() push.Config {
 }
 
 // loadHouseholdGate reads the shared password from the database. The Caddy
-// file is only the one-time import source. A missing hash fails closed on
-// the public hostname. The LAN listener never sends X-Pantry-Entry, so it
-// stays open.
+// file is only the one-time import source. A missing hash fails closed.
 func loadHouseholdGate(db *sql.DB) *server.HouseholdAuth {
 	household, err := server.HouseholdAuthFromDB(context.Background(), db)
 	if err != nil {
@@ -445,8 +442,7 @@ func loadHouseholdGate(db *sql.DB) *server.HouseholdAuth {
 }
 
 // loadHouseholdAuth always returns a gate. An unset, empty, or unreadable
-// password file fails closed on the public hostname instead of serving it
-// with no login. The LAN listener never sends X-Pantry-Entry, so it stays open.
+// password file fails closed instead of serving the site with no login.
 func loadHouseholdAuth() *server.HouseholdAuth {
 	path := strings.TrimSpace(os.Getenv("PANTRY_AUTH_FILE"))
 	if path == "" {
@@ -464,23 +460,6 @@ func loadHouseholdAuth() *server.HouseholdAuth {
 		log.Printf("household login: the public site signs in as %s", household.Username)
 	}
 	return household
-}
-
-// unauthenticatedListenWarning reports when addr is reachable beyond this
-// process's loopback interface. The LAN listener has no login of its own;
-// that is intentional, and a router forward of this port is not.
-func unauthenticatedListenWarning(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	if host == "localhost" {
-		return ""
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return ""
-	}
-	return fmt.Sprintf("warning: %s has no application login; it is meant for the LAN. Do not forward this port from the router", addr)
 }
 
 type disabledExternalLookup struct{}

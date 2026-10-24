@@ -393,7 +393,7 @@ func stage1Owner(t *testing.T, name, email string) (*sql.DB, *auth.Service, http
 	site := stage1Site(t)
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
 	owner := &stage1Caller{t: t, h: handler}
-	if rec := owner.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := owner.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)
 	}
 	code, err := auth.ReadSetupCode(setupDir)
@@ -402,7 +402,7 @@ func stage1Owner(t *testing.T, name, email string) (*sql.DB, *auth.Service, http
 	}
 	if rec := owner.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": name, "email": email, "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
 	login := owner.call(http.MethodPost, "/api/auth/login", map[string]string{"email": email, "password": "correct horse"}, app.EntryPublic, nil)

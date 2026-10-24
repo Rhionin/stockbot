@@ -21,8 +21,7 @@ type listenerSet struct {
 }
 
 // openListeners binds every address in specs and starts serving handler.
-// Each request's context carries the listener's entry. A LAN address that
-// is not loopback logs the existing unauthenticated-port warning.
+// Each request's context carries the listener's entry.
 func openListeners(specs []app.Listener, handler http.Handler, register func(*http.Server)) (listenerSet, error) {
 	if len(specs) == 0 {
 		return listenerSet{}, errors.New("no listener is configured")
@@ -50,11 +49,6 @@ func openListeners(specs []app.Listener, handler http.Handler, register func(*ht
 		set.lns = append(set.lns, ln)
 		set.addrs = append(set.addrs, ln.Addr().String())
 		log.Printf("listening on %s (%s)", ln.Addr().String(), entry)
-		if entry == app.EntryLAN {
-			if warning := unauthenticatedListenWarning(spec.Addr); warning != "" {
-				log.Print(warning)
-			}
-		}
 	}
 	// Serve only after every address bound. Starting it inside the loop lets
 	// Server.Close drop an earlier socket when a later bind fails, which hides

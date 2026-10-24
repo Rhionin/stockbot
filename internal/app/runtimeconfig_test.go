@@ -28,21 +28,18 @@ func TestLoadRuntimeConfigDefaults(t *testing.T) {
 	if DefaultAppBaseURL != "https://stockbot.rhionin.com" {
 		t.Fatalf("documented Pi origin = %q", DefaultAppBaseURL)
 	}
-	if cfg.LANPeople != LANPeopleRedirect || cfg.ExpoMinVersion != DefaultExpoMinVersion {
-		t.Fatalf("lan %q expo %q", cfg.LANPeople, cfg.ExpoMinVersion)
+	if cfg.ExpoMinVersion != DefaultExpoMinVersion {
+		t.Fatalf("expo %q", cfg.ExpoMinVersion)
 	}
 	if cfg.EmailFrom != "" || cfg.CookieDomain != "" {
 		t.Fatalf("mail %q domain %q", cfg.EmailFrom, cfg.CookieDomain)
-	}
-	if !cfg.PublicListenerEnabled() || cfg.PublicListenAddr() != DefaultPublicListenAddr {
-		t.Fatalf("public listener %+v", cfg)
 	}
 	cookie := cfg.SessionCookie()
 	if cookie.Name != DefaultSessionCookieName || cookie.Domain != "" || cookie.Path != "/" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie %+v", cookie)
 	}
 	listeners := cfg.Listeners()
-	if len(listeners) != 1 || listeners[0].Addr != DefaultLANListenAddr || listeners[0].Entry != EntryLAN {
+	if len(listeners) != 1 || listeners[0].Addr != DefaultListenAddr || listeners[0].Entry != EntryPublic {
 		t.Fatalf("listeners %+v", listeners)
 	}
 	if cfg.AbsoluteURL("/invite/abc") != "" || cfg.AllowsOrigin("https://pantry.example") {
@@ -60,7 +57,8 @@ func TestLoadRuntimeConfigPiOriginAndListeners(t *testing.T) {
 		"APP_NAME":            "  Northwind  ",
 		"EMAIL_FROM":          "notices@pantry.example",
 		"EXPO_MIN_VERSION":    "1.2",
-		"LAN_PEOPLE":          "SIGNIN",
+		"LAN_PEOPLE":          "signin",
+		"PUBLIC_LISTEN_ADDR":  ":8081",
 		"SESSION_COOKIE_NAME": DefaultSessionCookieName,
 		"COOKIE_DOMAIN":       ".rhionin.com",
 	}))
@@ -70,7 +68,7 @@ func TestLoadRuntimeConfigPiOriginAndListeners(t *testing.T) {
 	if cfg.AppBaseURL != DefaultAppBaseURL || cfg.PublicHost != "stockbot.rhionin.com" {
 		t.Fatalf("origin %q host %q", cfg.AppBaseURL, cfg.PublicHost)
 	}
-	if cfg.AppName != "Northwind" || cfg.EmailFrom != "notices@pantry.example" || cfg.LANPeople != LANPeopleSignIn || cfg.ExpoMinVersion != "1.2" {
+	if cfg.AppName != "Northwind" || cfg.EmailFrom != "notices@pantry.example" || cfg.ExpoMinVersion != "1.2" {
 		t.Fatalf("identity %+v", cfg)
 	}
 	cookie := cfg.SessionCookie()
@@ -78,7 +76,7 @@ func TestLoadRuntimeConfigPiOriginAndListeners(t *testing.T) {
 		t.Fatalf("cookie %+v", cookie)
 	}
 	listeners := cfg.Listeners()
-	if len(listeners) != 2 || listeners[0].Entry != EntryLAN || listeners[0].Addr != ":8080" || listeners[1].Entry != EntryPublic || listeners[1].Addr != ":8081" {
+	if len(listeners) != 1 || listeners[0].Entry != EntryPublic || listeners[0].Addr != ":8080" {
 		t.Fatalf("listeners %+v", listeners)
 	}
 	if !cfg.AllowsOrigin("HTTPS://STOCKBOT.RHIONIN.COM") || cfg.AllowsOrigin("https://evil.example") {
@@ -95,26 +93,23 @@ func TestLoadRuntimeConfigPiOriginAndListeners(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfigLANOnlySkipsPublicListener(t *testing.T) {
+func TestLoadRuntimeConfigADDRIsTheOnlyListener(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(envFrom(map[string]string{
-		"PUBLIC_LISTEN_ADDR": "off",
+		"PUBLIC_LISTEN_ADDR": ":8081",
+		"LAN_LISTEN_ADDR":    ":9091",
 		"ADDR":               "127.0.0.1:9090",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PublicListenerEnabled() || cfg.PublicListenAddr() != "" {
-		t.Fatalf("public listener stayed on: %+v", cfg)
-	}
 	listeners := cfg.Listeners()
-	if len(listeners) != 1 || listeners[0].Addr != "127.0.0.1:9090" || listeners[0].Entry != EntryLAN {
+	if len(listeners) != 1 || listeners[0].Addr != "127.0.0.1:9090" || listeners[0].Entry != EntryPublic {
 		t.Fatalf("listeners %+v", listeners)
 	}
 }
 
-func TestLoadRuntimeConfigLANListenAddrOverridesADDR(t *testing.T) {
+func TestLoadRuntimeConfigLANListenAddrFillsEmptyADDR(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(envFrom(map[string]string{
-		"ADDR":                ":9090",
 		"LAN_LISTEN_ADDR":     "127.0.0.1:9091",
 		"APP_BASE_URL":        "https://pantry.example:8443",
 		"PUBLIC_LISTEN_ADDR":  ":9443",
@@ -133,7 +128,7 @@ func TestLoadRuntimeConfigLANListenAddrOverridesADDR(t *testing.T) {
 	if cfg.AppBaseURL != "https://pantry.example:8443" || cfg.PublicHost != "pantry.example" {
 		t.Fatalf("origin %q host %q", cfg.AppBaseURL, cfg.PublicHost)
 	}
-	if len(listeners) != 2 || listeners[0].Addr != "127.0.0.1:9091" || listeners[1].Addr != ":9443" {
+	if len(listeners) != 1 || listeners[0].Addr != "127.0.0.1:9091" || listeners[0].Entry != EntryPublic {
 		t.Fatalf("listeners %+v", listeners)
 	}
 }
@@ -144,13 +139,10 @@ func TestLoadRuntimeConfigRejects(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{name: "public listener off", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "PUBLIC_LISTEN_ADDR": "disabled"}, want: "public listener is off"},
-		{name: "same listener", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "LAN_LISTEN_ADDR": ":8080", "PUBLIC_LISTEN_ADDR": "0.0.0.0:8080"}, want: "different addresses"},
 		{name: "path in base URL", env: map[string]string{"APP_BASE_URL": "https://pantry.example/invite"}, want: "no path"},
 		{name: "user in base URL", env: map[string]string{"APP_BASE_URL": "https://ada@pantry.example"}, want: "no path"},
 		{name: "bad scheme", env: map[string]string{"APP_BASE_URL": "ftp://pantry.example"}, want: "http or https"},
 		{name: "host mismatch", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "PUBLIC_HOST": "other.example"}, want: "PUBLIC_HOST must match"},
-		{name: "bad lan people", env: map[string]string{"LAN_PEOPLE": "open"}, want: "redirect or signin"},
 		{name: "bad expo version", env: map[string]string{"EXPO_MIN_VERSION": "latest"}, want: "1.0.0"},
 		{name: "bad cookie domain", env: map[string]string{"COOKIE_DOMAIN": "https://pantry.example"}, want: "hostname"},
 		{name: "domain is not the public host", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "COOKIE_DOMAIN": "other.example"}, want: "parent"},
@@ -159,14 +151,14 @@ func TestLoadRuntimeConfigRejects(t *testing.T) {
 		{name: "app name", env: map[string]string{"APP_NAME": "North\nwind"}, want: "line breaks"},
 		{name: "email", env: map[string]string{"EMAIL_FROM": "not-an-email"}, want: "email address"},
 		{name: "lan address", env: map[string]string{"LAN_LISTEN_ADDR": "8080"}, want: "host:port"},
-		{name: "public address", env: map[string]string{"PUBLIC_LISTEN_ADDR": "http://pantry.example"}, want: "host:port"},
-		{name: "listen port zero", env: map[string]string{"LAN_LISTEN_ADDR": ":0"}, want: "host:port"},
-		{name: "listen port too high", env: map[string]string{"PUBLIC_LISTEN_ADDR": ":65536", "APP_BASE_URL": "https://pantry.example"}, want: "host:port"},
+		{name: "addr", env: map[string]string{"ADDR": "http://pantry.example"}, want: "host:port"},
+		{name: "listen port zero", env: map[string]string{"ADDR": ":0"}, want: "host:port"},
+		{name: "listen port too high", env: map[string]string{"ADDR": ":65536", "APP_BASE_URL": "https://pantry.example"}, want: "host:port"},
 		{name: "base URL port zero", env: map[string]string{"APP_BASE_URL": "https://pantry.example:0"}, want: "http or https"},
 		{name: "base URL port too high", env: map[string]string{"APP_BASE_URL": "https://pantry.example:65536"}, want: "http or https"},
 		{name: "bare query", env: map[string]string{"APP_BASE_URL": "https://pantry.example?"}, want: "no path"},
 		{name: "one part version", env: map[string]string{"EXPO_MIN_VERSION": "2"}, want: "1.0.0"},
-		{name: "wildcard and interface", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "LAN_LISTEN_ADDR": ":8080", "PUBLIC_LISTEN_ADDR": "127.0.0.1:8080"}, want: "different addresses"},
+		{name: "old public address is ignored", env: map[string]string{"APP_BASE_URL": "not a url", "PUBLIC_LISTEN_ADDR": "http://pantry.example"}, want: "http or https"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,7 +218,7 @@ func TestLoadRuntimeConfigStripsDefaultPorts(t *testing.T) {
 		t.Fatalf("origin %q host %q", cfg.AppBaseURL, cfg.PublicHost)
 	}
 	listeners := cfg.Listeners()
-	if len(listeners) != 2 || listeners[0].Addr != "[::1]:9090" || listeners[1].Addr != "[::1]:9091" {
+	if len(listeners) != 1 || listeners[0].Addr != "[::1]:9090" || listeners[0].Entry != EntryPublic {
 		t.Fatalf("listeners %+v", listeners)
 	}
 	if !cfg.AllowsOrigin("https://pantry.example") {

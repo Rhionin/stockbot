@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -81,10 +80,9 @@ func TestStartServesHealthUntilStopped(t *testing.T) {
 	}
 }
 
-func TestStartServesThePublicAndLANListeners(t *testing.T) {
+func TestStartServesTheListener(t *testing.T) {
 	quietSite(t)
-	lan := freeAddr(t)
-	public := freeAddr(t)
+	addr := freeAddr(t)
 	dir := t.TempDir()
 	hash, err := bcrypt.GenerateFromPassword([]byte("sample-passphrase-1"), bcrypt.MinCost)
 	if err != nil {
@@ -95,8 +93,7 @@ func TestStartServesThePublicAndLANListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DB_PATH", filepath.Join(dir, "pantry.db"))
-	t.Setenv("LAN_LISTEN_ADDR", lan)
-	t.Setenv("PUBLIC_LISTEN_ADDR", public)
+	t.Setenv("ADDR", addr)
 	t.Setenv("APP_BASE_URL", "https://pantry.example.test")
 	t.Setenv("APP_NAME", "Pantry Test")
 	t.Setenv("DISABLE_KROGER", "true")
@@ -115,7 +112,7 @@ func TestStartServesThePublicAndLANListeners(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- start(stop) }()
 
-	waitHealth(t, lan, done)
+	waitHealth(t, addr, done)
 	close(stop)
 	select {
 	case err := <-done:
@@ -153,14 +150,14 @@ func TestProcessMainStopsWhenTheProcessIsSignaled(t *testing.T) {
 		signal.Reset(os.Interrupt, syscall.SIGTERM)
 	})
 	waitHealth(t, lan, nil)
-	mode, err := http.Post("http://"+lan+"/api/scanner/mode", "application/json", bytes.NewReader([]byte(`{"mode":"stock_out"}`)))
+	health, err := http.Get("http://" + lan + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(mode.Body)
-	mode.Body.Close()
-	if mode.StatusCode != http.StatusOK {
-		t.Fatalf("scanner mode = %d %s", mode.StatusCode, body)
+	body, _ := io.ReadAll(health.Body)
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("health = %d %s", health.StatusCode, body)
 	}
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
