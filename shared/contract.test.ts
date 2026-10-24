@@ -32,6 +32,7 @@ import {
   formatPartialRemoval,
   INVALID_BODY_PREFIX,
   INVALID_CREDENTIALS_SENTENCE,
+  SESSION_EXPIRED_SENTENCE,
   INVALID_PATH_PREFIX,
   INVALID_REPORT_SENTENCE,
   METHOD_NOT_ALLOWED_SENTENCE,
@@ -359,6 +360,7 @@ describe('app-facing error codes', () => {
     expect(CODE_UNAUTHORIZED).toBe('unauthorized');
     expect(SIGN_IN_REQUIRED_SENTENCE).toBe('Sign in required.');
     expect(INVALID_CREDENTIALS_SENTENCE).toBe('The username or password is incorrect.');
+    expect(SESSION_EXPIRED_SENTENCE).toBe('Sign in to continue.');
     expect(SYNC_TOKEN_INVALID_SENTENCE).toBe('The sync token is not valid.');
     expect(CODE_NOT_FOUND).toBe('not_found');
     expect(SIGN_IN_NOT_USED_SENTENCE).toBe('Sign-in is not used on this address.');
@@ -757,5 +759,45 @@ describe('offline banner', () => {
     expect(applyHttpResponse(503, '   ')).toBe('offline');
     expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
     notifyApiSuccess();
+  });
+
+  it('shows updating until offline, no_space, or a success clears it', () => {
+    expect(applyHttpResponse(503, `  ${CODE_UPDATING}  `)).toBe('updating');
+    expect(serverNoticeText()).toBe(UPDATING_SENTENCE);
+    expect(offlineBannerActive()).toBe(false);
+
+    expect(applyHttpResponse(503, 'no_space')).toBe('stockbot');
+    expect(serverNoticeText()).toBe('');
+
+    expect(applyHttpResponse(503, CODE_UPDATING)).toBe('updating');
+    expect(applyHttpResponse(503, '')).toBe('offline');
+    expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+
+    expect(applyHttpResponse(503, CODE_UPDATING)).toBe('updating');
+    expect(serverNoticeText()).toBe(UPDATING_SENTENCE);
+    notifyApiSuccess();
+    expect(serverNoticeText()).toBe('');
+
+    expect(applyHttpResponse(503, CODE_UPDATING)).toBe('updating');
+    expect(applyHttpResponse(200, '')).toBe('stockbot');
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('keeps a coded gateway response off the offline banner', () => {
+    for (const code of ['provider_unavailable', 'updating', 'busy', 'no_space', 'auth_not_configured', 'internal']) {
+      notifyApiSuccess();
+      const status = code === 'provider_unavailable' ? 502 : 503;
+      const disposition = applyHttpResponse(status, code);
+      expect(serverNoticeText()).not.toBe(OFFLINE_SENTENCE);
+      if (code === 'updating') expect(disposition).toBe('updating');
+      else if (code === 'auth_not_configured') expect(disposition).toBe('auth');
+      else expect(disposition).toBe('stockbot');
+    }
+    notifyApiSuccess();
+    for (const status of [502, 503, 504, 530]) {
+      expect(applyHttpResponse(status, '')).toBe('offline');
+      expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
+      notifyApiSuccess();
+    }
   });
 });

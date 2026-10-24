@@ -3,7 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
-import { BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
+import { BUSY_SENTENCE, NO_SPACE_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import type { ScanEntry } from '@stockbot/shared/types';
@@ -60,6 +60,44 @@ describe('offline surfaces', () => {
     expect(await screen.findByRole('heading', { name: 'Scan queue' })).toBeInTheDocument();
     expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
     expect(screen.getAllByTestId('server-notice-banner')).toHaveLength(1);
+  });
+
+  it('shows updating in the banner until the next success', () => {
+    render(
+      <MantineProvider>
+        <ServerNoticeBanner />
+      </MantineProvider>,
+    );
+    act(() => {
+      applyHttpResponse(503, 'updating');
+    });
+    expect(screen.getByTestId('server-notice-banner')).toHaveTextContent(UPDATING_SENTENCE);
+    act(() => {
+      notifyApiSuccess();
+    });
+    expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
+  });
+
+  it('lets no_space replace updating and offline replace the queue sentence', () => {
+    render(
+      <MantineProvider>
+        <ServerNoticeBanner text={NO_SPACE_SENTENCE} />
+      </MantineProvider>,
+    );
+    act(() => {
+      applyHttpResponse(503, 'updating');
+    });
+    expect(screen.getByText(UPDATING_SENTENCE)).toBeVisible();
+    act(() => {
+      applyHttpResponse(503, 'no_space');
+    });
+    expect(screen.queryByText(UPDATING_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.getByText(NO_SPACE_SENTENCE)).toBeVisible();
+    act(() => {
+      applyHttpResponse(503, '');
+    });
+    expect(screen.getByText(OFFLINE_SENTENCE)).toBeVisible();
+    expect(screen.queryByText(NO_SPACE_SENTENCE)).not.toBeInTheDocument();
   });
 
   it('replaces the auth sentence with the busy sentence', () => {

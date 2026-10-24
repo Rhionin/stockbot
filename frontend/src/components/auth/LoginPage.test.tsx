@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { INVALID_CREDENTIALS_SENTENCE, MISSING_CREDENTIALS_SENTENCE, SIGN_IN_NOT_USED_SENTENCE } from '@stockbot/shared/contract';
 import { LoginPage } from './LoginPage';
 
 const renderLogin = (onSignedIn: () => void = () => undefined) => render(
@@ -56,6 +57,24 @@ describe('LoginPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Too many sign-in attempts. Try again later.');
     expect(onSignedIn).not.toHaveBeenCalled();
+    expect(screen.getByRole('form', { name: 'Sign in' })).toBeVisible();
+  });
+
+  it.each([
+    { name: 'wrong credentials', status: 401, code: 'unauthorized', error: INVALID_CREDENTIALS_SENTENCE },
+    { name: 'sign-in not used', status: 404, code: 'not_found', error: SIGN_IN_NOT_USED_SENTENCE },
+    { name: 'missing fields', status: 400, code: 'validation', error: MISSING_CREDENTIALS_SENTENCE },
+    { name: 'too many attempts', status: 429, code: 'rate_limited', error: 'Too many sign-in attempts. Try again later.' },
+  ])('shows $name on the form', async ({ status, code, error }) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error, code }),
+      { status, headers: { 'Content-Type': 'application/json', 'Retry-After': '30' } },
+    ))));
+    renderLogin();
+    fireEvent.change(screen.getByLabelText(/Username/), { target: { value: 'pantry' } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'nope' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(error);
     expect(screen.getByRole('form', { name: 'Sign in' })).toBeVisible();
   });
 });

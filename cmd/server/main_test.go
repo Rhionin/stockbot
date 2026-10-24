@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"gopkg.in/yaml.v3"
 )
 
@@ -78,6 +79,60 @@ func TestComposeDefaultsMatchMainGo(t *testing.T) {
 			envVar:         "HEADLESS_USER_ID",
 			composeDefault: extractDefault(t, pantryService.Environment["HEADLESS_USER_ID"]),
 			goDefault:      "user-1", // from loadScanListenerConfig
+		},
+		{
+			name:           "APP_BASE_URL",
+			envVar:         "APP_BASE_URL",
+			composeDefault: extractDefault(t, pantryService.Environment["APP_BASE_URL"]),
+			goDefault:      "",
+		},
+		{
+			name:           "APP_NAME",
+			envVar:         "APP_NAME",
+			composeDefault: extractDefault(t, pantryService.Environment["APP_NAME"]),
+			goDefault:      app.DefaultAppName,
+		},
+		{
+			name:           "SESSION_COOKIE_NAME",
+			envVar:         "SESSION_COOKIE_NAME",
+			composeDefault: extractDefault(t, pantryService.Environment["SESSION_COOKIE_NAME"]),
+			goDefault:      app.DefaultSessionCookieName,
+		},
+		{
+			name:           "COOKIE_DOMAIN",
+			envVar:         "COOKIE_DOMAIN",
+			composeDefault: extractDefault(t, pantryService.Environment["COOKIE_DOMAIN"]),
+			goDefault:      "",
+		},
+		{
+			name:           "EMAIL_FROM",
+			envVar:         "EMAIL_FROM",
+			composeDefault: extractDefault(t, pantryService.Environment["EMAIL_FROM"]),
+			goDefault:      "",
+		},
+		{
+			name:           "LAN_PEOPLE",
+			envVar:         "LAN_PEOPLE",
+			composeDefault: extractDefault(t, pantryService.Environment["LAN_PEOPLE"]),
+			goDefault:      app.DefaultLANPeople,
+		},
+		{
+			name:           "EXPO_MIN_VERSION",
+			envVar:         "EXPO_MIN_VERSION",
+			composeDefault: extractDefault(t, pantryService.Environment["EXPO_MIN_VERSION"]),
+			goDefault:      app.DefaultExpoMinVersion,
+		},
+		{
+			name:           "PUBLIC_LISTEN_ADDR",
+			envVar:         "PUBLIC_LISTEN_ADDR",
+			composeDefault: extractDefault(t, pantryService.Environment["PUBLIC_LISTEN_ADDR"]),
+			goDefault:      app.DefaultPublicListenAddr,
+		},
+		{
+			name:           "LAN_LISTEN_ADDR",
+			envVar:         "LAN_LISTEN_ADDR",
+			composeDefault: extractDefault(t, pantryService.Environment["LAN_LISTEN_ADDR"]),
+			goDefault:      app.DefaultLANListenAddr,
 		},
 	}
 

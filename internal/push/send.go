@@ -112,7 +112,7 @@ func (s *Sender) deliverAll(ctx context.Context, notice Notice, subs []Subscript
 	if len(send) == 0 {
 		return
 	}
-	payload, err := pushPayload(notice)
+	payload, err := pushPayloadFor(notice, s.cfg.AppName)
 	if err != nil {
 		log.Printf("scan alerts: could not encode a notification")
 		return

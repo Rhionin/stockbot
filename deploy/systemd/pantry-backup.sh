@@ -13,6 +13,10 @@
 # data volume. The EXIT trap deletes that directory even when the container
 # is killed. The plaintext file is removed once the upload is verified.
 #
+# Docker mounts --tmpfs as root:root. On Docker 29 that directory is mode
+# 0700 even with --user 65532:65532, so the container user cannot chmod it
+# and preflight fails. uid and gid on the mount make it writable by 65532.
+#
 # auth.caddy and .env backup copies are archived when they exist as regular
 # files. The live .env is not in that list. Extra paths come only from
 # ${PANTRY_DIR}/backup/secrets-paths, which the installer writes from
@@ -199,7 +203,7 @@ cleanup_stage() {
     --security-opt no-new-privileges \
     --pids-limit 64 \
     --memory 128m \
-    --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700 \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700,uid=65532,gid=65532 \
     --volume "${volume}:/data" \
     --entrypoint /usr/local/bin/stockbot-backup \
     "$image" cleanup-stage -db /data/pantry.db 9>&- || true
@@ -217,7 +221,7 @@ run_locked() {
     --security-opt no-new-privileges \
     --pids-limit 64 \
     --memory 128m \
-    --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700 \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700,uid=65532,gid=65532 \
     --volume "${volume}:/data" \
     --volume "${PANTRY_DIR}/secrets/backup:/run/secrets/backup:ro" \
     --volume "${PANTRY_DIR}/backup:/etc/backup:ro" \
@@ -243,7 +247,7 @@ if [[ -n "$secret_stage" ]]; then
 fi
 
 run_locked \
-  --tmpfs /run/stockbot-backup:rw,noexec,nosuid,size=64m,mode=0700 \
+  --tmpfs /run/stockbot-backup:rw,noexec,nosuid,size=64m,mode=0700,uid=65532,gid=65532 \
   "${docker_extra[@]}" \
   "$image" run \
   --db /data/pantry.db \

@@ -16,12 +16,13 @@ import {
   scanCommitPath,
   scansQuery,
   applyHttpResponse,
-  AUTH_NOT_CONFIGURED_SENTENCE,
-  CODE_AUTH_NOT_CONFIGURED,
+  noticeForDisposition,
   notifyApiSuccess,
   raiseOfflineBanner,
+  readItemId,
+  readOnHand,
   SERVER_ERROR_FALLBACK,
-  ServerNoticeError,
+  stockbotCode,
   UnreachableError,
   unreachableFrom,
   unreadableResponse,
@@ -32,6 +33,7 @@ import type {
   ScanDirection,
   ScanEntry,
   ScannerConfig,
+  TargetConflictMember,
 } from '@stockbot/shared/types';
 
 // The public hostname's login name. See deploy/README.md.
@@ -41,13 +43,30 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly suggestions: PantryLinkSuggestion[];
+  readonly itemId: string;
+  readonly onHand: number | undefined;
+  readonly provider: string;
+  readonly members: TargetConflictMember[];
 
-  constructor(status: number, message: string, code = '', suggestions: PantryLinkSuggestion[] = []) {
+  constructor(
+    status: number,
+    message: string,
+    code = '',
+    suggestions: PantryLinkSuggestion[] = [],
+    itemId = '',
+    onHand?: number,
+    provider = '',
+    members: TargetConflictMember[] = [],
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.suggestions = suggestions;
+    this.itemId = itemId;
+    this.onHand = onHand;
+    this.provider = provider;
+    this.members = members;
   }
 }
 
@@ -108,12 +127,18 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       if (res.status === 401) options.onUnauthorized?.();
       const parsed = await readError(res);
       const disposition = applyHttpResponse(res.status, parsed.code);
-      if (disposition === 'offline') throw new UnreachableError();
-      if (disposition === 'auth') {
-        throw new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
-      }
-      const message = res.status === 401 ? 'That password was rejected.' : parsed.message;
-      throw new ApiError(res.status, message, parsed.code, parsed.suggestions);
+      const notice = noticeForDisposition(disposition);
+      if (notice !== null) throw notice;
+      throw new ApiError(
+        res.status,
+        parsed.message,
+        parsed.code,
+        parsed.suggestions,
+        parsed.itemId,
+        parsed.onHand,
+        parsed.provider,
+        parsed.members,
+      );
     }
 
     let text: string;
@@ -199,15 +224,43 @@ function failureMessage(status: number, errorField: unknown, statusText: string)
   return statusText || 'The request failed.';
 }
 
-async function readError(res: Response): Promise<{ message: string; code: string; suggestions: PantryLinkSuggestion[] }> {
+interface ParsedError {
+  message: string;
+  code: string;
+  suggestions: PantryLinkSuggestion[];
+  itemId: string;
+  onHand: number | undefined;
+  provider: string;
+  members: TargetConflictMember[];
+}
+
+async function readError(res: Response): Promise<ParsedError> {
+  const empty: ParsedError = {
+    message: failureMessage(res.status, undefined, res.statusText),
+    code: '',
+    suggestions: [],
+    itemId: '',
+    onHand: undefined,
+    provider: '',
+    members: [],
+  };
   try {
-    const body = (await res.json()) as { error?: unknown; code?: string; suggestions?: PantryLinkSuggestion[] };
+    const body = (await res.json()) as {
+      error?: unknown;
+      suggestions?: PantryLinkSuggestion[];
+      provider?: unknown;
+      members?: TargetConflictMember[];
+    };
     return {
       message: failureMessage(res.status, body.error, res.statusText),
-      code: body.code ?? '',
+      code: stockbotCode(body),
       suggestions: body.suggestions ?? [],
+      itemId: readItemId(body),
+      onHand: readOnHand(body),
+      provider: typeof body.provider === 'string' ? body.provider : '',
+      members: body.members ?? [],
     };
   } catch {
-    return { message: failureMessage(res.status, undefined, res.statusText), code: '', suggestions: [] };
+    return empty;
   }
 }

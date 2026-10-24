@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import type { ProviderInfo } from '@stockbot/shared/types';
+import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { ProviderPanel } from './ProviderPanel';
 
 const provider = (overrides: Partial<ProviderInfo>): ProviderInfo => ({
@@ -33,6 +35,7 @@ const expectCredentialsStayOffTheRow = () => {
 
 describe('ProviderPanel', () => {
   afterEach(() => {
+    notifyApiSuccess();
     vi.unstubAllGlobals();
   });
   it('offers Connect when the provider is configured and disconnected', () => {
@@ -81,5 +84,24 @@ describe('ProviderPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     await screen.findByRole('button', { name: 'Connect' });
     expect(assign).toHaveBeenCalledWith('https://api.kroger.com/oauth?state=abc');
+  });
+
+  it('shows a provider outage inline and leaves the banner down', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      error: "Kroger isn't responding. Try again later.",
+      code: 'provider_unavailable',
+      provider: 'Kroger',
+    }), { status: 502, headers: { 'Content-Type': 'application/json' } }))));
+    render(
+      <MantineProvider>
+        <ServerNoticeBanner />
+        <ProviderPanel providers={[provider({ connectionState: 'disconnected' })]} onChanged={() => undefined} />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText("Kroger isn't responding. Try again later.")).toBeVisible();
+    expect(screen.queryByTestId('server-notice-banner')).not.toBeInTheDocument();
+    expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
+    expect(screen.queryByText('Unable to start the connection.')).not.toBeInTheDocument();
   });
 });
