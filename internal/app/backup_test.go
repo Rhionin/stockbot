@@ -488,8 +488,8 @@ SELECT * FROM shelve_migration_should_not_exist;
 	if !columnExists(t, conn, "items", "shelved") {
 		t.Fatal("retry did not add shelved")
 	}
-	if !triggerExists(t, conn, "unshelve_item_on_stock_in") {
-		t.Fatal("retry did not add the unshelve trigger")
+	if triggerExists(t, conn, "unshelve_item_on_stock_in") {
+		t.Fatal("unshelve trigger remained after the household update")
 	}
 	if err := RunMigrations(conn); err != nil {
 		t.Fatalf("startup after 020: %v", err)

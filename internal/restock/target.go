@@ -27,6 +27,10 @@ const (
 // It is the same id items.user_id and product_groups.user_id already use.
 const HouseholdID = "user-1"
 
+// primaryHouseholdSQL is household 1. household_id columns store that uuid.
+// items.user_id and product_groups.user_id stay HouseholdID.
+const primaryHouseholdSQL = `(SELECT id FROM households WHERE is_primary = 1)`
+
 // Target is a months window or a fixed amount. Value 0 means don't restock.
 type Target struct {
 	Kind  Kind    `json:"kind"`

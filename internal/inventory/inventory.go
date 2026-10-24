@@ -206,7 +206,12 @@ func (r *Pantry) AddInstance(ctx context.Context, instance ItemInstance) (*ItemI
 		instance.ID = uuid.NewString()
 	}
 
-	_, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO item_instances (id, item_id, stock_in_at, expires_at)
 		 VALUES (?, ?, ?, ?)`,
 		instance.ID,
@@ -215,6 +220,12 @@ func (r *Pantry) AddInstance(ctx context.Context, instance ItemInstance) (*ItemI
 		nullableTime(instance.ExpiresAt),
 	)
 	if err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
+	if err := UnshelveItem(ctx, tx, instance.ItemID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("AddInstance: %w", err)
 	}
 
@@ -226,6 +237,18 @@ func (r *Pantry) AddInstance(ctx context.Context, instance ItemInstance) (*ItemI
 	r.publishInventoryEvent(ctx, instance.ItemID)
 
 	return addedInstance, nil
+}
+
+// UnshelveItem puts a wiped item back on the shelf. Stocking a unit used to
+// do this in a database trigger. The insert and this update share one
+// transaction, so a failure leaves the item hidden.
+func UnshelveItem(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, itemID string) error {
+	if _, err := q.ExecContext(ctx, `UPDATE items SET shelved = 0 WHERE id = ?`, itemID); err != nil {
+		return fmt.Errorf("could not put the item back on the shelf: %w", err)
+	}
+	return nil
 }
 
 // RemoveInstance marks an item instance as removed by setting removed_at

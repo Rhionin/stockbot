@@ -53,7 +53,7 @@ func TestGroupHandlers(t *testing.T) {
 				mustGroupProduct(env, "p1", "Small")
 				mustGroupProduct(env, "p2", "Large")
 				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1'), ('item-p2', 'user-1', 'p2')`)
-				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4), ('user-1', 'item-p2', 'months', 2)`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-p1', 'amount', 4), ((SELECT id FROM households WHERE is_primary = 1), 'item-p2', 'months', 2)`)
 				base, _, err := product.BaseFromAmount(12, "fl oz")
 				if err != nil {
 					env.T.Fatal(err)
@@ -114,7 +114,7 @@ func TestGroupHandlers(t *testing.T) {
 			setup: func(env testEnv) {
 				mustGroupProduct(env, "p1", "Small")
 				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1')`)
-				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4)`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-p1', 'amount', 4)`)
 				mustExec(env, `UPDATE products SET net_dimension = 'volume' WHERE id = 'p1'`)
 			},
 			httpExchange: httpExchange{

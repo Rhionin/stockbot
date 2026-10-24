@@ -78,6 +78,8 @@ func TestRunMigrations_LogsAppliedMigrationsOnFreshDB(t *testing.T) {
 		"001_initial_schema.sql",
 		"002_backfill_orphaned_products.sql",
 		"003_add_product_image_url.sql",
+		"022a_household_tables.sql",
+		"022f_drop_triggers.sql",
 	} {
 		want := "applied migration: " + name
 		if !strings.Contains(output, want) {

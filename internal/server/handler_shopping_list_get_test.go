@@ -193,7 +193,7 @@ func setSupplyQuantity(t *testing.T, db *sql.DB, productID string, qty int) {
 	t.Helper()
 	res, err := db.ExecContext(context.Background(),
 		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT i.user_id, i.id, 'amount', ?
+		 SELECT (SELECT id FROM households WHERE is_primary = 1), i.id, 'amount', ?
 		 FROM items i
 		 WHERE i.product_id = ? AND i.user_id = 'user-1'
 		 ON CONFLICT(household_id, item_id) DO UPDATE SET kind = 'amount', value = excluded.value`,

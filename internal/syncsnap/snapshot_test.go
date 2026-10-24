@@ -76,12 +76,12 @@ func TestBuildPrefersItemTargets(t *testing.T) {
 			('item-beans', 'user-1', 'beans');
 		INSERT INTO products (id, name) VALUES ('salt', 'Salt');
 		INSERT INTO items (id, user_id, product_id) VALUES ('item-salt', 'user-1', 'salt');
-		INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-salt', 'user-1', 'Spices', 'spices');
-		INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ('user-1', 'cat-salt', 'months', 0);
-		INSERT INTO item_categories (household_id, item_id, category_id, source) VALUES ('user-1', 'item-salt', 'cat-salt', 'user');
+		INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-salt', (SELECT id FROM households WHERE is_primary = 1), 'Spices', 'spices');
+		INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'cat-salt', 'months', 0);
+		INSERT INTO item_categories (household_id, item_id, category_id, source) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-salt', 'cat-salt', 'user');
 		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES
-			('user-1', 'item-chips', 'amount', 4.6),
-			('user-1', 'item-beans', 'months', 0);
+			((SELECT id FROM households WHERE is_primary = 1), 'item-chips', 'amount', 4.6),
+			((SELECT id FROM households WHERE is_primary = 1), 'item-beans', 'months', 0);
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +122,8 @@ func TestBuildSkipsShelvedItems(t *testing.T) {
 			('item-milk', 'user-1', 'milk', 4),
 			('item-bread', 'user-1', 'bread', 2);
 		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES
-			('user-1', 'item-milk', 'amount', 4),
-			('user-1', 'item-bread', 'amount', 2);
+			((SELECT id FROM households WHERE is_primary = 1), 'item-milk', 'amount', 4),
+			((SELECT id FROM households WHERE is_primary = 1), 'item-bread', 'amount', 2);
 		INSERT INTO item_instances (id, item_id, stock_in_at) VALUES
 			('inst-milk', 'item-milk', '2026-01-01'),
 			('inst-milk-out', 'item-milk', '2026-01-02'),

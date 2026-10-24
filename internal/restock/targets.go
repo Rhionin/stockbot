@@ -99,6 +99,10 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	if household == "" {
 		household = HouseholdID
 	}
+	householdID, err := resolveHouseholdID(ctx, q, household)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	home, err := readHousehold(ctx, q)
 	if err != nil {
 		return Snapshot{}, err
@@ -107,10 +111,10 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachStoredTargets(ctx, q, household, items); err != nil {
+	if err := attachStoredTargets(ctx, q, householdID, items); err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachCategories(ctx, q, household, items); err != nil {
+	if err := attachCategories(ctx, q, householdID, items); err != nil {
 		return Snapshot{}, err
 	}
 
@@ -177,7 +181,7 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	snap.AppliesTo = applies
 	snap.ItemCount = len(snap.Items)
 
-	categories, err := loadCategoryRows(ctx, q, household)
+	categories, err := loadCategoryRows(ctx, q, householdID)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -198,7 +202,7 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	if snap.Categories == nil {
 		snap.Categories = []CategorySummary{}
 	}
-	cards, err := suggest(ctx, q, household, snap.Items)
+	cards, err := suggest(ctx, q, householdID, snap.Items)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -232,7 +236,7 @@ func (t *Targets) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func (t *Targets) ensureStarters(ctx context.Context) error {
 	var count int
-	if err := t.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE household_id = ?`, HouseholdID).Scan(&count); err != nil {
+	if err := t.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE household_id = `+primaryHouseholdSQL).Scan(&count); err != nil {
 		return fmt.Errorf("could not read categories: %w", err)
 	}
 	if count > 0 {
@@ -250,8 +254,8 @@ func (t *Targets) ensureStarters(ctx context.Context) error {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO categories (id, household_id, name, name_key) VALUES (?, ?, ?, ?)`,
-			uuid.NewString(), HouseholdID, name, key)
+			INSERT INTO categories (id, household_id, name, name_key) VALUES (?, `+primaryHouseholdSQL+`, ?, ?)`,
+			uuid.NewString(), name, key)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				return nil
@@ -321,8 +325,8 @@ func (t *Targets) ItemTarget(ctx context.Context, itemID string) (*Target, error
 	var kind string
 	var value float64
 	err := t.db.QueryRowContext(ctx, `
-		SELECT kind, value FROM item_targets WHERE household_id = ? AND item_id = ?`,
-		HouseholdID, itemID).Scan(&kind, &value)
+		SELECT kind, value FROM item_targets WHERE household_id = `+primaryHouseholdSQL+` AND item_id = ?`,
+		itemID).Scan(&kind, &value)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -344,9 +348,9 @@ func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) err
 	}
 	_, err = t.db.ExecContext(ctx, `
 		INSERT INTO item_targets (household_id, item_id, kind, value)
-		VALUES (?, ?, ?, ?)
+		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?)
 		ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		HouseholdID, itemID, string(target.Kind), target.Value)
+		itemID, string(target.Kind), target.Value)
 	if err != nil {
 		return fmt.Errorf("could not save the restock target: %w", err)
 	}
@@ -355,7 +359,7 @@ func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) err
 
 // ClearItem removes the item target so a broader one applies.
 func (t *Targets) ClearItem(ctx context.Context, itemID string) error {
-	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, HouseholdID, itemID); err != nil {
+	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = `+primaryHouseholdSQL+` AND item_id = ?`, itemID); err != nil {
 		return fmt.Errorf("could not clear the restock target: %w", err)
 	}
 	return nil
@@ -382,7 +386,7 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 		return err
 	}
 	if target == nil {
-		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, HouseholdID, categoryID)
+		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = `+primaryHouseholdSQL+` AND category_id = ?`, categoryID)
 		if err != nil {
 			return fmt.Errorf("could not clear the category target: %w", err)
 		}
@@ -394,9 +398,9 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 	}
 	_, err = t.db.ExecContext(ctx, `
 		INSERT INTO category_targets (household_id, category_id, kind, value)
-		VALUES (?, ?, ?, ?)
+		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?)
 		ON CONFLICT (household_id, category_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		HouseholdID, categoryID, string(prepared.Kind), prepared.Value)
+		categoryID, string(prepared.Kind), prepared.Value)
 	if err != nil {
 		return fmt.Errorf("could not save the category target: %w", err)
 	}
@@ -471,8 +475,8 @@ func (t *Targets) CreateCategory(ctx context.Context, name string) (CategorySumm
 	}
 	id := uuid.NewString()
 	_, err = t.db.ExecContext(ctx, `
-		INSERT INTO categories (id, household_id, name, name_key) VALUES (?, ?, ?, ?)`,
-		id, HouseholdID, strings.TrimSpace(name), key)
+		INSERT INTO categories (id, household_id, name, name_key) VALUES (?, `+primaryHouseholdSQL+`, ?, ?)`,
+		id, strings.TrimSpace(name), key)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return CategorySummary{}, fmt.Errorf("A category named %s already exists.", strings.TrimSpace(name))
@@ -489,8 +493,8 @@ func (t *Targets) RenameCategory(ctx context.Context, id, name string) error {
 		return err
 	}
 	result, err := t.db.ExecContext(ctx, `
-		UPDATE categories SET name = ?, name_key = ? WHERE id = ? AND household_id = ?`,
-		strings.TrimSpace(name), key, id, HouseholdID)
+		UPDATE categories SET name = ?, name_key = ? WHERE id = ? AND household_id = `+primaryHouseholdSQL,
+		strings.TrimSpace(name), key, id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return fmt.Errorf("A category named %s already exists.", strings.TrimSpace(name))
@@ -517,13 +521,9 @@ func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
 	for _, query := range []string{
 		`DELETE FROM item_categories WHERE category_id = ?`,
 		`DELETE FROM category_targets WHERE category_id = ?`,
-		`DELETE FROM categories WHERE id = ? AND household_id = ?`,
+		`DELETE FROM categories WHERE id = ? AND household_id = ` + primaryHouseholdSQL,
 	} {
-		args := []any{id}
-		if strings.Contains(query, "household_id") {
-			args = append(args, HouseholdID)
-		}
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
 			return fmt.Errorf("could not delete the category: %w", err)
 		}
 	}
@@ -548,7 +548,7 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id, source, confirmed_at, removed_at FROM item_categories
-		WHERE household_id = ? AND category_id = ?`, HouseholdID, id)
+		WHERE household_id = `+primaryHouseholdSQL+` AND category_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
 	}
@@ -573,9 +573,9 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 	for _, item := range moved {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO item_categories (household_id, item_id, category_id, source, confirmed_at, removed_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			VALUES (`+primaryHouseholdSQL+`, ?, ?, ?, ?, ?)
 			ON CONFLICT (household_id, item_id, category_id) DO NOTHING`,
-			HouseholdID, item.item, intoID, item.source, nullableTime(item.confirmed), nullableTime(item.removed))
+			item.item, intoID, item.source, nullableTime(item.confirmed), nullableTime(item.removed))
 		if err != nil {
 			return fmt.Errorf("could not merge the categories: %w", err)
 		}
@@ -615,12 +615,12 @@ func (t *Targets) membership(ctx context.Context, itemID, categoryID, source str
 	}
 	_, err := t.db.ExecContext(ctx, `
 		INSERT INTO item_categories (household_id, item_id, category_id, source, confirmed_at, removed_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?, ?, ?)
 		ON CONFLICT (household_id, item_id, category_id) DO UPDATE SET
 			source = excluded.source,
 			confirmed_at = excluded.confirmed_at,
 			removed_at = excluded.removed_at`,
-		HouseholdID, itemID, categoryID, source, time.Now().UTC(), removedAt)
+		itemID, categoryID, source, time.Now().UTC(), removedAt)
 	if err != nil {
 		return fmt.Errorf("could not update the category: %w", err)
 	}
@@ -653,7 +653,11 @@ func (t *Targets) Suggestions(ctx context.Context) ([]SuggestionCard, error) {
 	if err != nil {
 		return nil, err
 	}
-	return suggest(ctx, t.db, HouseholdID, snap.Items)
+	householdID, err := resolveHouseholdID(ctx, t.db, HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+	return suggest(ctx, t.db, householdID, snap.Items)
 }
 
 // ApplySuggestions adds the chosen items to a category.
@@ -669,7 +673,11 @@ func (t *Targets) ApplySuggestions(ctx context.Context, category string, itemIDs
 	if err != nil {
 		return err
 	}
-	cards, err := suggest(ctx, t.db, HouseholdID, snap.Items)
+	householdID, err := resolveHouseholdID(ctx, t.db, HouseholdID)
+	if err != nil {
+		return err
+	}
+	cards, err := suggest(ctx, t.db, householdID, snap.Items)
 	if err != nil {
 		return err
 	}
@@ -703,9 +711,9 @@ func (t *Targets) DismissSuggestions(ctx context.Context, category string, itemI
 	for _, itemID := range itemIDs {
 		if _, err := t.db.ExecContext(ctx, `
 			INSERT INTO category_suggestion_dismissals (household_id, item_id, category_key)
-			VALUES (?, ?, ?)
+			VALUES (`+primaryHouseholdSQL+`, ?, ?)
 			ON CONFLICT (household_id, item_id, category_key) DO NOTHING`,
-			HouseholdID, itemID, key); err != nil {
+			itemID, key); err != nil {
 			return fmt.Errorf("could not dismiss the suggestion: %w", err)
 		}
 	}
@@ -742,26 +750,26 @@ func (t *Targets) SaveOffTags(ctx context.Context, productID string, categories,
 func CopyLegacy(ctx context.Context, q Queryer) error {
 	statements := []string{
 		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT i.user_id, i.id,
+		 SELECT ` + primaryHouseholdSQL + `, i.id,
 		   CASE WHEN o.window_months IS NOT NULL THEN 'months' ELSE 'amount' END,
 		   CASE WHEN o.window_months IS NOT NULL THEN o.window_months ELSE MIN(o.quantity, 999) END
 		 FROM supply_overrides o
 		 JOIN items i ON i.product_id = o.product_id
 		 WHERE NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.product_id = o.product_id)
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = i.user_id AND t.item_id = i.id)
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)
 		   AND (o.window_months IS NOT NULL OR (o.quantity IS NOT NULL AND o.quantity > 0))`,
 		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT i.user_id, i.id, 'months', 0
+		 SELECT ` + primaryHouseholdSQL + `, i.id, 'months', 0
 		 FROM product_group_members m
 		 JOIN items i ON i.product_id = m.product_id
 		 WHERE m.no_restock = 1
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = i.user_id AND t.item_id = i.id)`,
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)`,
 		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT i.user_id, i.id, 'amount', MIN(i.target_quantity, 999)
+		 SELECT ` + primaryHouseholdSQL + `, i.id, 'amount', MIN(i.target_quantity, 999)
 		 FROM items i
 		 WHERE i.target_quantity > 0
 		   AND COALESCE(i.replenishment_mode, 'target') = 'target'
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = i.user_id AND t.item_id = i.id)
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)
 		   AND NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.product_id = i.product_id)
 		   AND NOT EXISTS (SELECT 1 FROM supply_overrides o WHERE o.product_id = i.product_id)`,
 	}
@@ -955,7 +963,7 @@ func (t *Targets) categoryByName(ctx context.Context, name string) (string, erro
 		return "", err
 	}
 	var id string
-	err = t.db.QueryRowContext(ctx, `SELECT id FROM categories WHERE household_id = ? AND name_key = ?`, HouseholdID, key).Scan(&id)
+	err = t.db.QueryRowContext(ctx, `SELECT id FROM categories WHERE household_id = `+primaryHouseholdSQL+` AND name_key = ?`, key).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -1170,7 +1178,7 @@ func ensureItem(ctx context.Context, q Queryer, itemID string) error {
 
 func ensureCategory(ctx context.Context, q Queryer, id string) error {
 	var name string
-	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = ?`, id, HouseholdID).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = `+primaryHouseholdSQL, id).Scan(&name)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("That category isn't in the household.")
 	}
@@ -1182,7 +1190,7 @@ func ensureCategory(ctx context.Context, q Queryer, id string) error {
 
 func categoryName(ctx context.Context, q Queryer, id string) (string, error) {
 	var name string
-	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = ?`, id, HouseholdID).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = `+primaryHouseholdSQL, id).Scan(&name)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("That category isn't in the household.")
 	}
@@ -1190,6 +1198,45 @@ func categoryName(ctx context.Context, q Queryer, id string) (string, error) {
 		return "", fmt.Errorf("could not read the category: %w", err)
 	}
 	return name, nil
+}
+
+// resolveHouseholdID maps the legacy user id onto household 1.
+// Any other id is already a household id and is left alone.
+func resolveHouseholdID(ctx context.Context, q Queryer, household string) (string, error) {
+	if household != "" && household != HouseholdID {
+		return household, nil
+	}
+	return PrimaryID(ctx, q)
+}
+
+// PrimaryID is household 1, the household that existing rows moved into.
+func PrimaryID(ctx context.Context, q Queryer) (string, error) {
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT id FROM households WHERE is_primary = 1`).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("could not find the household: %w", err)
+	}
+	return id, nil
+}
+
+// DeleteItem removes an item and its restock target in one transaction.
+// The database trigger that used to do this is gone.
+func DeleteItem(ctx context.Context, db *sql.DB, itemID string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not delete the item: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_targets WHERE item_id = ?`, itemID); err != nil {
+		return fmt.Errorf("could not delete the item: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE id = ?`, itemID); err != nil {
+		return fmt.Errorf("could not delete the item: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("could not delete the item: %w", err)
+	}
+	return nil
 }
 
 func nameKey(name string) (string, error) {

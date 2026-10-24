@@ -113,7 +113,7 @@ A 4xx stays a 4xx when that 4xx is already decided. The response reports the
 client error, including when the cause is a database lock or a full disk.
 
 Some conflicts are decided only after the write transaction starts. Under
-write contention those requests can wait up to 3 seconds and then come back
+write contention those requests can wait up to 2 seconds and then come back
 as a busy 503. That covers renaming a group to a name that already exists,
 and adding a product that is already in another group.
 

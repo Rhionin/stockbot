@@ -447,13 +447,13 @@ func (g *Groups) SetMemberRestock(ctx context.Context, groupID, productID string
 	if noRestock {
 		_, err = g.db.ExecContext(ctx, `
 			INSERT INTO item_targets (household_id, item_id, kind, value)
-			VALUES (?, ?, 'months', 0)
+			VALUES ((SELECT id FROM households WHERE is_primary = 1), ?, 'months', 0)
 			ON CONFLICT (household_id, item_id) DO UPDATE SET kind = 'months', value = 0`,
-			householdUser, itemID)
+			itemID)
 	} else {
 		_, err = g.db.ExecContext(ctx, `
-			DELETE FROM item_targets WHERE household_id = ? AND item_id = ? AND value = 0`,
-			householdUser, itemID)
+			DELETE FROM item_targets WHERE household_id = (SELECT id FROM households WHERE is_primary = 1) AND item_id = ? AND value = 0`,
+			itemID)
 	}
 	if err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
@@ -935,9 +935,9 @@ func overrideNotices(ctx context.Context, q querier, ids []string) ([]OverrideNo
 			CASE WHEN t.kind = 'amount' THEN t.value END,
 			p.net_base_value, COALESCE(p.net_dimension, '')
 		FROM item_targets t
-		JOIN items i ON i.id = t.item_id AND i.user_id = t.household_id
+		JOIN items i ON i.id = t.item_id AND i.user_id = ?
 		JOIN products p ON p.id = i.product_id
-		WHERE t.household_id = ? AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
+		WHERE t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
 	args := make([]any, 0, len(ids)+1)
 	args = append(args, householdUser)
 	for _, id := range ids {
@@ -1151,8 +1151,8 @@ func loadMembers(ctx context.Context, q querier, groupID string) ([]Member, erro
 		       (SELECT MAX(s.at) FROM stock_in_events s WHERE s.product_id = m.product_id),
 		       COALESCE((
 		         SELECT 1 FROM item_targets t
-		         JOIN items it ON it.id = t.item_id AND it.user_id = t.household_id
-		         WHERE it.product_id = m.product_id AND t.household_id = ? AND t.value = 0
+		         JOIN items it ON it.id = t.item_id AND it.user_id = ?
+		         WHERE it.product_id = m.product_id AND t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND t.value = 0
 		         LIMIT 1
 		       ), 0)
 		FROM product_group_members m

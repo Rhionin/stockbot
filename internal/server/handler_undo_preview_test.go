@@ -532,23 +532,23 @@ func TestMoveUserIDIsAnExactHouseholdOrOmitted(t *testing.T) {
 
 func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
-	db, err := app.OpenSQLite(path)
+	db, readDB, err := app.OpenPantry(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { readDB.Close() })
 	var mode string
 	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "delete" {
+	if mode != "wal" {
 		t.Fatalf("journal_mode = %s", mode)
 	}
 	var busy int
 	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
 		t.Fatal(err)
 	}
-	if busy != 3000 || db.Stats().MaxOpenConnections != 1 {
+	if busy != 2000 || db.Stats().MaxOpenConnections != 1 {
 		t.Fatalf("busy_timeout %d pool %d", busy, db.Stats().MaxOpenConnections)
 	}
 	if err := app.RunMigrations(db); err != nil {

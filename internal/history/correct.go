@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/google/uuid"
 )
 
@@ -274,6 +275,11 @@ func addStockInUnits(ctx context.Context, tx *sql.Tx, move moveRow, extra int) e
 			VALUES (?, ?, ?, ?, ?)`,
 			uuid.NewString(), move.ItemID, move.At, expiresAt, move.ID,
 		); err != nil {
+			return err
+		}
+	}
+	if extra > 0 {
+		if err := inventory.UnshelveItem(ctx, tx, move.ItemID); err != nil {
 			return err
 		}
 	}

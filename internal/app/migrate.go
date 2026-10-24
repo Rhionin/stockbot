@@ -65,7 +65,20 @@ func RunMigrations(db *sql.DB) error {
 	sort.Strings(files)
 
 	applied := 0
+	householdDone := false
 	for _, name := range files {
+		// 022a–022f commit together. They do not copy the pantry file.
+		if isHouseholdMigration(name) {
+			if !householdDone {
+				n, err := applyHouseholdMigrations(db)
+				if err != nil {
+					return err
+				}
+				applied += n
+				householdDone = true
+			}
+			continue
+		}
 		// Check if already applied.
 		var count int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, name).Scan(&count); err != nil {

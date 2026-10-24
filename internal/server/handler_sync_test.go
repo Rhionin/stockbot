@@ -162,7 +162,7 @@ func seedSyncSnapshot(env testEnv) {
 		`INSERT INTO product_groups (id, user_id, name, name_key, rule, pinned_product_id, quantity_base_value, quantity_dimension) VALUES
 			('g2', 'user-1', 'Zest', 'zest', 'favorite', 'p-zest', 500, 'volume')`,
 		`INSERT INTO product_group_members (product_id, group_id, no_restock) VALUES ('p-zest', 'g2', 0)`,
-		`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-zest', 'months', 0)`,
+		`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-zest', 'months', 0)`,
 		`INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, group_id) VALUES
 			('line-open', 'user-1', 'item-chick', 2, 'auto', 'g1')`,
 		`INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, purchased_at) VALUES

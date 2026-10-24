@@ -251,8 +251,9 @@ func (r *Catalog) MarkRefreshed(ctx context.Context, id string, refreshedAt time
 // For global entries pass userID = "".
 func (r *Catalog) UpsertBarcodeMapping(ctx context.Context, barcode, productID, source, userID string) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO barcodes (barcode, product_id, source, user_id)
-		 VALUES (?, ?, ?, ?)`,
+		`INSERT INTO barcodes (barcode, product_id, source, user_id)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT (barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
 		barcode, productID, source, userID,
 	)
 	if err != nil {

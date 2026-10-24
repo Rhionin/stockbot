@@ -44,7 +44,7 @@ func TestSupplyPolicy(t *testing.T) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-qty", "Flour", "item-day29-qty")
 				setSupplyQuantity(env.T, env.DB, "prod-day29-qty", 12)
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-day29-window", "Sugar", "item-day29-window")
-				if _, err := env.DB.Exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-day29-window', 'months', 6)`); err != nil {
+				if _, err := env.DB.Exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-day29-window', 'months', 6)`); err != nil {
 					env.T.Fatalf("window target: %v", err)
 				}
 				insertConsumptionEvent(env.T, env.DB, "ce-day29-window", "item-day29-window", now.Add(-1*24*time.Hour))
@@ -304,10 +304,10 @@ func TestSupplyPolicy(t *testing.T) {
 				}
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-wipe-supply", "Milk", "item-wipe-supply")
 				setSupplyQuantity(env.T, env.DB, "prod-wipe-supply", 8)
-				if _, err := env.DB.Exec(`INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-wipe', 'user-1', 'Wipe pantry', 'wipe pantry')`); err != nil {
+				if _, err := env.DB.Exec(`INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-wipe', (SELECT id FROM households WHERE is_primary = 1), 'Wipe pantry', 'wipe pantry')`); err != nil {
 					env.T.Fatalf("category: %v", err)
 				}
-				if _, err := env.DB.Exec(`INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ('user-1', 'cat-wipe', 'amount', 2)`); err != nil {
+				if _, err := env.DB.Exec(`INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'cat-wipe', 'amount', 2)`); err != nil {
 					env.T.Fatalf("category target: %v", err)
 				}
 				if _, err := env.DB.Exec(`INSERT INTO product_groups (id, user_id, name, name_key, rule, window_months) VALUES ('group-wipe', 'user-1', 'Wipe group', 'wipe group', 'same_as_ran_out', 2)`); err != nil {

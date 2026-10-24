@@ -2,6 +2,7 @@ package restock
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := db.Exec(`DELETE FROM items WHERE id = ?`, "item-salt"); err != nil {
+	if err := DeleteItem(ctx, db, "item-salt"); err != nil {
 		t.Fatalf("setup: deleting the item: %v", err)
 	}
 
@@ -62,4 +63,13 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 			t.Fatalf("household target = %+v", snap.Household)
 		}
 	})
+}
+
+func TestDeleteItemReportsAClosedDatabase(t *testing.T) {
+	_, db := newTestTargets(t)
+	db.Close()
+	err := DeleteItem(context.Background(), db, "item-sample")
+	if err == nil || !strings.Contains(err.Error(), "could not delete the item") {
+		t.Fatalf("err = %v", err)
+	}
 }
