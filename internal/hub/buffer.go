@@ -35,9 +35,10 @@ type Buffer struct {
 	cap  int
 }
 
-// OpenBuffer opens or creates the queue at path.
+// OpenBuffer opens or creates the queue at path. The file is the hub's own
+// queue, in WAL mode, and is not the server database that has to stay portable.
 func OpenBuffer(path string) (*Buffer, error) {
-	db, err := app.OpenSQLite(path)
+	db, err := app.OpenSQLite(path + "?_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +54,9 @@ func OpenBuffer(path string) (*Buffer, error) {
 
 func (b *Buffer) migrate() error {
 	_, err := b.db.Exec(`
-		PRAGMA journal_mode=WAL;
 		CREATE TABLE IF NOT EXISTS scans (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			id TEXT NOT NULL UNIQUE,
+			id TEXT PRIMARY KEY,
+			seq INTEGER NOT NULL,
 			barcode TEXT NOT NULL,
 			direction TEXT NOT NULL,
 			unit_count INTEGER NOT NULL,
@@ -65,6 +65,7 @@ func (b *Buffer) migrate() error {
 			boot_id TEXT NOT NULL DEFAULT '',
 			clock_synced INTEGER NOT NULL DEFAULT 0
 		);
+		CREATE INDEX IF NOT EXISTS scans_seq ON scans(seq);
 		CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -99,6 +100,10 @@ func (b *Buffer) Enqueue(row queuedScan) (int, error) {
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM scans`).Scan(&n); err != nil {
 		return 0, err
 	}
+	var nextSeq int64
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM scans`).Scan(&nextSeq); err != nil {
+		return 0, err
+	}
 	dropped := 0
 	for n >= b.cap {
 		res, err := tx.Exec(`DELETE FROM scans WHERE seq = (SELECT seq FROM scans ORDER BY seq ASC LIMIT 1)`)
@@ -120,9 +125,9 @@ func (b *Buffer) Enqueue(row queuedScan) (int, error) {
 		row.UnitCount = 1
 	}
 	if _, err := tx.Exec(`
-		INSERT INTO scans (id, barcode, direction, unit_count, scanned_at, captured_mono, boot_id, clock_synced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		row.ID, row.Barcode, row.Direction, row.UnitCount, row.ScannedAt, row.CapturedMono, row.BootID, synced); err != nil {
+		INSERT INTO scans (id, seq, barcode, direction, unit_count, scanned_at, captured_mono, boot_id, clock_synced)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.ID, nextSeq, row.Barcode, row.Direction, row.UnitCount, row.ScannedAt, row.CapturedMono, row.BootID, synced); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return 0, errors.New("that scan is already queued")
 		}
