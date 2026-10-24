@@ -88,7 +88,13 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// published immediately after the client's request returns cannot slip
 	// through the gap between headers being sent and the subscription being
 	// registered. The stream is this household only.
-	messages, unsubscribe := h.Broadcaster.SubscribeHousehold(householdID, principal.UserID, principal.Kind)
+	var messages <-chan events.Message
+	var unsubscribe func()
+	if householdID == "" {
+		messages, unsubscribe = h.Broadcaster.Subscribe()
+	} else {
+		messages, unsubscribe = h.Broadcaster.SubscribeHousehold(householdID, principal.UserID, principal.Kind)
+	}
 	defer unsubscribe()
 
 	w.Header().Set("Content-Type", "text/event-stream")

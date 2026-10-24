@@ -1,9 +1,14 @@
 package server
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // maxQuarantined is the number of routes still waiting on per-household
@@ -93,6 +98,16 @@ var isolationCases = map[string]isolationCase{
 		reason: "another household's scan id is the same 404 as a missing scan, and the body names nothing",
 		check:  checkLinkSuggestionsHideForeignScan,
 	},
+	"GET /api/scans/mode": {
+		kind:   kindListLeak,
+		reason: "scanner mode is one slot per household and device, so another household's direction is not this response",
+		check:  checkScannerModeStaysInHousehold,
+	},
+	"POST /api/scans/mode": {
+		kind:   kindWriteScope,
+		reason: "setting scanner mode writes only the caller's household and device slot",
+		check:  checkScannerModeStaysInHousehold,
+	},
 }
 
 func checkPreviewHidesForeignMove(t *testing.T, fx *twoHouseholds) {
@@ -111,6 +126,95 @@ func checkPreviewHidesForeignMove(t *testing.T, fx *twoHouseholds) {
 		assertNoLeak(t, rec.Body.Bytes(), fx.Birch)
 		assertNoLeak(t, rec.Body.Bytes(), fx.Alder)
 	}
+}
+
+// checkScannerModeStaysInHousehold proves a mode change on one household
+// does not move the other household, including a same device id on both.
+// The check resets both slots first because the suite shares one handler.
+func checkScannerModeStaysInHousehold(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	const device = "hub-7"
+	setScannerMode(t, fx, fx.Alder, "", "stock_in")
+	setScannerMode(t, fx, fx.Birch, "", "stock_in")
+	setScannerMode(t, fx, fx.Alder, device, "stock_in")
+	setScannerMode(t, fx, fx.Birch, device, "stock_in")
+
+	setScannerMode(t, fx, fx.Alder, "", "stock_out")
+	if got := readScannerMode(t, fx, fx.Birch, ""); got != "stock_in" {
+		t.Fatalf("birch default mode = %s after alder switched to stock_out", got)
+	}
+	if got := readScannerMode(t, fx, fx.Alder, device); got != "stock_in" {
+		t.Fatalf("alder device %s mode = %s after the default slot changed", device, got)
+	}
+	setScannerMode(t, fx, fx.Alder, device, "stock_out")
+	if got := readScannerMode(t, fx, fx.Birch, device); got != "stock_in" {
+		t.Fatalf("birch device %s mode = %s after alder set the same device id", device, got)
+	}
+	if got := readScannerMode(t, fx, fx.Alder, ""); got != "stock_out" {
+		t.Fatalf("alder default mode = %s, want stock_out", got)
+	}
+}
+
+func setScannerMode(t *testing.T, fx *twoHouseholds, h fixtureHousehold, device, mode string) {
+	t.Helper()
+	body := `{"mode":"` + mode + `"}`
+	if device != "" {
+		body = `{"mode":"` + mode + `","deviceId":"` + device + `"}`
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/scans/mode", strings.NewReader(body))
+	stampHousehold(t, req, h)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	raw, err := io.ReadAll(rec.Result().Body)
+	if err != nil {
+		t.Fatalf("read mode write: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/scans/mode %s status %d body %s", h.Name, rec.Code, raw)
+	}
+	assertNoLeak(t, raw, fx.Alder)
+	assertNoLeak(t, raw, fx.Birch)
+	var got scannerModeResponse
+	if err := json.Unmarshal(raw, &got); err != nil || string(got.Mode) != mode {
+		t.Fatalf("POST /api/scans/mode %s = %s (%v)", h.Name, raw, err)
+	}
+}
+
+func readScannerMode(t *testing.T, fx *twoHouseholds, h fixtureHousehold, device string) string {
+	t.Helper()
+	path := "/api/scans/mode"
+	if device != "" {
+		path += "?deviceId=" + device
+	}
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	stampHousehold(t, req, h)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	raw, err := io.ReadAll(rec.Result().Body)
+	if err != nil {
+		t.Fatalf("read mode: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/scans/mode %s status %d body %s", h.Name, rec.Code, raw)
+	}
+	assertNoLeak(t, raw, fx.Alder)
+	assertNoLeak(t, raw, fx.Birch)
+	var got scannerModeResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("GET /api/scans/mode %s: %v body %s", h.Name, err, raw)
+	}
+	return string(got.Mode)
+}
+
+func stampHousehold(t *testing.T, req *http.Request, h fixtureHousehold) {
+	t.Helper()
+	scope, err := tenant.New(h.ID)
+	if err != nil {
+		t.Fatalf("scope %s: %v", h.Name, err)
+	}
+	user1Principal{household: h}.Apply(req)
+	cloned := req.WithContext(tenant.WithScope(req.Context(), scope))
+	*req = *cloned
 }
 
 func checkLinkSuggestionsHideForeignScan(t *testing.T, fx *twoHouseholds) {
