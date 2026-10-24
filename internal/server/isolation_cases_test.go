@@ -133,26 +133,51 @@ func checkPreviewHidesForeignMove(t *testing.T, fx *twoHouseholds) {
 // The check resets both slots first because the suite shares one handler.
 func checkScannerModeStaysInHousehold(t *testing.T, fx *twoHouseholds) {
 	t.Helper()
-	const device = "hub-7"
+	const alderDevice = "01901111-1111-7000-8000-000000000d11"
+	const birchDevice = "01902222-2222-7000-8000-000000000d22"
+	insertModeDevice(t, fx, fx.Alder, alderDevice)
+	insertModeDevice(t, fx, fx.Birch, birchDevice)
 	setScannerMode(t, fx, fx.Alder, "", "stock_in")
 	setScannerMode(t, fx, fx.Birch, "", "stock_in")
-	setScannerMode(t, fx, fx.Alder, device, "stock_in")
-	setScannerMode(t, fx, fx.Birch, device, "stock_in")
+	setScannerMode(t, fx, fx.Alder, alderDevice, "stock_in")
+	setScannerMode(t, fx, fx.Birch, birchDevice, "stock_in")
 
 	setScannerMode(t, fx, fx.Alder, "", "stock_out")
 	if got := readScannerMode(t, fx, fx.Birch, ""); got != "stock_in" {
 		t.Fatalf("birch default mode = %s after alder switched to stock_out", got)
 	}
-	if got := readScannerMode(t, fx, fx.Alder, device); got != "stock_in" {
-		t.Fatalf("alder device %s mode = %s after the default slot changed", device, got)
+	if got := readScannerMode(t, fx, fx.Alder, alderDevice); got != "stock_in" {
+		t.Fatalf("alder device %s mode = %s after the default slot changed", alderDevice, got)
 	}
-	setScannerMode(t, fx, fx.Alder, device, "stock_out")
-	if got := readScannerMode(t, fx, fx.Birch, device); got != "stock_in" {
-		t.Fatalf("birch device %s mode = %s after alder set the same device id", device, got)
+	setScannerMode(t, fx, fx.Alder, alderDevice, "stock_out")
+	if got := readScannerMode(t, fx, fx.Birch, birchDevice); got != "stock_in" {
+		t.Fatalf("birch device mode = %s after alder switched its own device", got)
 	}
 	if got := readScannerMode(t, fx, fx.Alder, ""); got != "stock_out" {
 		t.Fatalf("alder default mode = %s, want stock_out", got)
 	}
+	if code := scannerModeStatus(t, fx, fx.Birch, alderDevice); code != http.StatusNotFound {
+		t.Fatalf("birch read alder's device: %d", code)
+	}
+}
+
+func insertModeDevice(t *testing.T, fx *twoHouseholds, h fixtureHousehold, id string) {
+	t.Helper()
+	_, err := fx.DB.Exec(`
+		INSERT OR IGNORE INTO devices (id, household_id, kind, label, created_at)
+		VALUES (?, ?, 'pi_hub', 'Counter', '2026-04-04T00:00:00Z')`, id, h.ID)
+	if err != nil {
+		t.Fatalf("device %s: %v", id, err)
+	}
+}
+
+func scannerModeStatus(t *testing.T, fx *twoHouseholds, h fixtureHousehold, device string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/scans/mode?deviceId="+device, nil)
+	stampHousehold(t, req, h)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	return rec.Code
 }
 
 func setScannerMode(t *testing.T, fx *twoHouseholds, h fixtureHousehold, device, mode string) {

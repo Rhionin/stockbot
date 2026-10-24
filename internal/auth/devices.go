@@ -478,7 +478,6 @@ func (s *Service) RevokeDevice(ctx context.Context, userID, householdID, deviceI
 		return AsError(err)
 	}
 	if s.hints != nil {
-		s.hints.PublishHint(householdID, "rekey")
 		s.hints.PublishHint(householdID, "devices")
 	}
 	return nil

@@ -20,8 +20,11 @@ func TestChangeViewKeepsAFullReadWhenTheDatabaseIsMissing(t *testing.T) {
 	if err != nil || !strings.Contains(string(raw), `"items":[]`) || !strings.Contains(string(raw), `"changed":true`) {
 		t.Fatalf("nil items = %s %v", raw, err)
 	}
-	if !(changeView{Since: "v1.since"}).NoStore() {
-		t.Fatal("an unchanged cursor was cacheable")
+	if !(changeView{Since: "v1.since"}).NoStore() || !(changeView{Since: "v1.since", Changed: true}).NoStore() {
+		t.Fatal("a since response was cacheable")
+	}
+	if (changeView{}).NoStore() {
+		t.Fatal("a full read was marked no-store")
 	}
 	quiet, err := (changeView{Since: "v1.since", Cursor: "v1.now"}).RawJSON()
 	if err != nil || strings.Contains(string(quiet), "items") || !strings.Contains(string(quiet), `"changed":false`) {
@@ -41,10 +44,8 @@ func TestScannerModeWithoutABookUsesTheSharedSlot(t *testing.T) {
 	if book.For(context.Background(), "", "") != shared {
 		t.Fatal("an empty household did not use the primary direct slot")
 	}
-	other := book.For(context.Background(), "house-north", "hub-7")
-	other.Set(scan.StockOut)
-	if shared.Get() != scan.StockIn || book.For(context.Background(), "house-north", "hub-7").Get() != scan.StockOut {
-		t.Fatal("a device slot moved the primary scanner")
+	if book.For(context.Background(), "house-north", "hub-7") != nil {
+		t.Fatal("an unverified device id opened a slot")
 	}
 
 	handler := &ScannerModeHandler{}
@@ -65,13 +66,18 @@ func TestScannerModeWithoutABookUsesTheSharedSlot(t *testing.T) {
 		Body:       scannerModeRequest{Mode: scan.StockOut},
 		RawRequest: req,
 		Context:    tenant.WithScope(req.Context(), scope),
+	}); err == nil {
+		t.Fatal("an unknown device id was accepted")
+	}
+	plain := httptest.NewRequest(http.MethodPost, "/api/scans/mode", nil)
+	if _, err := booked.Handle(Request[scannerModeRequest, struct{}]{
+		Body:       scannerModeRequest{Mode: scan.StockOut},
+		RawRequest: plain,
+		Context:    tenant.WithScope(plain.Context(), scope),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if booked.Book.For(context.Background(), scope.HouseholdID(), "hub-7").Get() != scan.StockOut {
-		t.Fatal("query device id did not select a slot")
-	}
-	got, err := booked.Get(Request[struct{}, struct{}]{RawRequest: req, Context: tenant.WithScope(req.Context(), scope)})
+	got, err := booked.Get(Request[struct{}, struct{}]{RawRequest: plain, Context: tenant.WithScope(plain.Context(), scope)})
 	if err != nil || got.Mode != scan.StockOut {
 		t.Fatalf("get = %+v %v", got, err)
 	}

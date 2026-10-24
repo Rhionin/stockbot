@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,7 @@ func (p user1Principal) Apply(*http.Request) {
 type twoHouseholds struct {
 	T       *testing.T
 	Handler http.Handler
+	DB      *sql.DB
 	Alder   fixtureHousehold
 	Birch   fixtureHousehold
 }
@@ -93,7 +95,7 @@ func newTwoHouseholds(t *testing.T) *twoHouseholds {
 	handler, env := setupTestWithDB(t)
 	seedHousehold(t, env, alder)
 	seedHousehold(t, env, birch)
-	return &twoHouseholds{T: t, Handler: handler, Alder: alder, Birch: birch}
+	return &twoHouseholds{T: t, Handler: handler, DB: env.DB, Alder: alder, Birch: birch}
 }
 
 func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {

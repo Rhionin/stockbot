@@ -79,15 +79,20 @@ func TestScannerModeStaysInsideHouseholdAndDevice(t *testing.T) {
 	book := newModeBook(shared, "house-1", nil, events.NewBroadcaster())
 	ctx := context.Background()
 	primary := book.For(ctx, "house-1", "")
-	other := book.For(ctx, "house-2", "device-a")
-	sibling := book.For(ctx, "house-2", "device-b")
+	other := book.For(ctx, "house-2", "")
+	if other == nil || other == primary {
+		t.Fatal("another household shared the primary scanner")
+	}
+	if book.For(ctx, "house-2", "device-a") != nil {
+		t.Fatal("an unverified device id opened a slot")
+	}
 	primary.Set("stock_out")
-	if other.Get() != "stock_in" || sibling.Get() != "stock_in" {
-		t.Fatalf("other %s sibling %s", other.Get(), sibling.Get())
+	if other.Get() != "stock_in" {
+		t.Fatalf("other %s", other.Get())
 	}
 	other.Set("stock_out")
-	if primary.Get() != "stock_out" || sibling.Get() != "stock_in" {
-		t.Fatalf("primary %s sibling %s", primary.Get(), sibling.Get())
+	if primary.Get() != "stock_out" {
+		t.Fatalf("primary %s", primary.Get())
 	}
 	if book.For(ctx, "house-1", "default") != shared {
 		t.Fatal("primary default left the shared scanner")
@@ -133,8 +138,8 @@ func TestChangesSinceReportsADeletedShoppingLine(t *testing.T) {
 	changed := httptest.NewRequest(http.MethodGet, "/api/shopping-list?since="+cursor, nil)
 	changedRec := httptest.NewRecorder()
 	handler.ServeHTTP(changedRec, changed)
-	if changedRec.Code != http.StatusOK || !strings.Contains(changedRec.Body.String(), `"changed":true`) {
-		t.Fatalf("deleted %d %s", changedRec.Code, changedRec.Body.String())
+	if changedRec.Code != http.StatusOK || changedRec.Header().Get("Cache-Control") != "no-store" || !strings.Contains(changedRec.Body.String(), `"changed":true`) {
+		t.Fatalf("deleted %d %s %s", changedRec.Code, changedRec.Header().Get("Cache-Control"), changedRec.Body.String())
 	}
 	if strings.Contains(changedRec.Body.String(), line.ID) {
 		t.Fatalf("deleted line still listed %s", changedRec.Body.String())

@@ -93,7 +93,7 @@ func TestLiveHubKickClosesOnlyTheMatchingStream(t *testing.T) {
 	}
 }
 
-func TestRekeyHintUsesTheDevicesCursorAndDropsOversizedHints(t *testing.T) {
+func TestDevicesHintOmitsCursorAndDropsOversizedHints(t *testing.T) {
 	b := events.NewBroadcaster()
 	b.SetCursor(func(_, scope string) string {
 		if scope == "devices" {
@@ -104,9 +104,11 @@ func TestRekeyHintUsesTheDevicesCursorAndDropsOversizedHints(t *testing.T) {
 	sub, cancel := b.SubscribeHousehold("house-north", "user-north", "account")
 	defer cancel()
 	b.PublishHint("house-north", "rekey")
+	assertNoMessage(t, sub)
+	b.Publish(context.Background(), "house-north", events.LiveHint{Type: "devices", Cursor: "v1.devices"}, nil)
 	msg := recvMessage(t, sub)
-	if !strings.Contains(string(msg.Data), `"type":"rekey"`) || !strings.Contains(string(msg.Data), `"cursor":"v1.devices"`) {
-		t.Fatalf("rekey %s", msg.Data)
+	if !strings.Contains(string(msg.Data), `"type":"devices"`) || strings.Contains(string(msg.Data), `"cursor"`) {
+		t.Fatalf("devices hint %s", msg.Data)
 	}
 	b.SetCursor(func(_, _ string) string {
 		return strings.Repeat("x", 1100)
@@ -171,7 +173,7 @@ func TestLiveHubInterfaceCopiesFramesAndIgnoresANilHub(t *testing.T) {
 	}
 	hub.Publish(context.Background(), "house-north", events.LiveHint{Type: "devices", Cursor: "v1.after"}, nil)
 	last := recvEvent(t, frames)
-	if last.EventType != "hint" || !strings.Contains(string(last.Data), `"type":"devices"`) {
+	if last.EventType != "hint" || !strings.Contains(string(last.Data), `"type":"devices"`) || strings.Contains(string(last.Data), `"cursor"`) {
 		t.Fatalf("stream closed after a full buffer: %+v %s", last.EventType, last.Data)
 	}
 }

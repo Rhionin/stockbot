@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
@@ -59,6 +60,10 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		ctx = h.Shutdown.Context(ctx)
 	}
 	principal, _ := auth.PrincipalFrom(r.Context())
+	if principal.Kind == "account" && strings.TrimSpace(principal.HouseholdID) == "" {
+		writeJSON(w, http.StatusBadRequest, errorPayload{Error: auth.SentenceValidation, Code: codeValidation})
+		return
+	}
 	householdID := principal.HouseholdID
 	if scope, err := requestScope(r.Context()); err == nil && householdID == "" {
 		householdID = scope.HouseholdID()
@@ -93,7 +98,7 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if householdID == "" {
 		messages, unsubscribe = h.Broadcaster.Subscribe()
 	} else {
-		messages, unsubscribe = h.Broadcaster.SubscribeHousehold(householdID, principal.UserID, principal.Kind)
+		messages, unsubscribe = h.Broadcaster.SubscribeSession(householdID, principal.UserID, principal.Kind, principal.SessionID)
 	}
 	defer unsubscribe()
 

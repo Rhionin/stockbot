@@ -657,7 +657,7 @@ func openAccountEvents(t *testing.T, svc *auth.Service, userID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: userID}))
+	req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: userID, HouseholdID: "house-north"}))
 	handler := &EventsHandler{Broadcaster: events.NewBroadcaster(), Streams: svc.Streams(), Keepalive: time.Hour}
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})

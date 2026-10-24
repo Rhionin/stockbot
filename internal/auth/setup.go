@@ -248,8 +248,7 @@ func (s *Service) RedeemSetup(ctx context.Context, setupCode, name, email, passw
 	}
 	s.clearHealth()
 	if recover {
-		s.streams.Kick(UserStreamKey(operatorID))
-		s.kickLive("", operatorID)
+		s.endAccountStreams(operatorID)
 	}
 	return nil
 }

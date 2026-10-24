@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
@@ -198,9 +199,9 @@ func (h *ScannerModeHandler) Handle(req Request[scannerModeRequest, struct{}]) (
 	if device == "" && req.RawRequest != nil {
 		device = req.RawRequest.URL.Query().Get("deviceId")
 	}
-	mode := h.pick(req.Context, device)
-	if mode == nil {
-		return scannerModeResponse{}, InternalError(tenant.ErrMissingHousehold)
+	mode, err := h.pick(req.Context, device)
+	if err != nil {
+		return scannerModeResponse{}, err
 	}
 	mode.Set(req.Body.Mode)
 	return scannerModeResponse{Mode: req.Body.Mode}, nil
@@ -211,27 +212,35 @@ func (h *ScannerModeHandler) Get(req Request[struct{}, struct{}]) (scannerModeRe
 	if req.RawRequest != nil {
 		device = req.RawRequest.URL.Query().Get("deviceId")
 	}
-	mode := h.pick(req.Context, device)
-	if mode == nil {
-		return scannerModeResponse{}, InternalError(tenant.ErrMissingHousehold)
+	mode, err := h.pick(req.Context, device)
+	if err != nil {
+		return scannerModeResponse{}, err
 	}
 	return scannerModeResponse{Mode: mode.Get()}, nil
 }
 
-func (h *ScannerModeHandler) pick(ctx context.Context, device string) *scannerMode {
+func (h *ScannerModeHandler) pick(ctx context.Context, device string) (*scannerMode, error) {
+	device = strings.TrimSpace(device)
+	explicit := device != "" && device != "default"
 	if h != nil && h.Book != nil {
 		household := ""
 		if scope, err := requestScope(ctx); err == nil {
 			household = scope.HouseholdID()
 		}
 		if slot := h.Book.For(ctx, household, device); slot != nil {
-			return slot
+			return slot, nil
+		}
+		if explicit {
+			return nil, NotFound(auth.SentenceNotFound)
 		}
 	}
-	if h != nil {
-		return h.Mode
+	if explicit {
+		return nil, NotFound(auth.SentenceNotFound)
 	}
-	return nil
+	if h != nil && h.Mode != nil {
+		return h.Mode, nil
+	}
+	return nil, InternalError(tenant.ErrMissingHousehold)
 }
 
 // ScannerConfigHandler implements GET /api/scanner/config, exposing the
@@ -309,13 +318,17 @@ func (b *modeBook) For(ctx context.Context, household, device string) *scannerMo
 	if household == "" {
 		household = b.primary
 	}
+	explicit := device != "" && device != "default"
 	direct := b.directID(ctx, household)
-	if device == "" || device == "default" {
+	if !explicit {
 		if direct != "" {
 			device = direct
 		} else {
 			device = "default"
 		}
+	} else if !b.deviceOpen(ctx, household, device) {
+		b.forget(household, device)
+		return nil
 	}
 	if household == b.primary && (device == "default" || device == direct) {
 		return b.shared
@@ -328,12 +341,32 @@ func (b *modeBook) For(ctx context.Context, household, device string) *scannerMo
 	}
 	house := household
 	slot := newScannerMode(func(d scan.ScanDirection) {
-		if b.events != nil {
+		if b.events != nil && house == b.primary {
 			b.events.PublishScannerModeFor(house, d)
 		}
 	})
 	b.slots[key] = slot
 	return slot
+}
+
+func (b *modeBook) forget(household, device string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	delete(b.slots, household+"\n"+device)
+	b.mu.Unlock()
+}
+
+func (b *modeBook) deviceOpen(ctx context.Context, household, device string) bool {
+	if b == nil || b.db == nil || household == "" || device == "" {
+		return false
+	}
+	var one int
+	err := b.db.QueryRowContext(ctx, `
+		SELECT 1 FROM devices
+		WHERE id = ? AND household_id = ? AND revoked_at IS NULL`, device, household).Scan(&one)
+	return err == nil
 }
 
 func (b *modeBook) directID(ctx context.Context, household string) string {

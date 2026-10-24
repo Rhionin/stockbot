@@ -134,8 +134,8 @@ func TestStage1DeviceAPI(t *testing.T) {
 		t.Fatalf("unchanged devices %d %s %s", same.Code, same.Header().Get("Cache-Control"), same.Body.String())
 	}
 	stale := c.authed(http.MethodGet, "/api/devices?since="+url.QueryEscape(changes.Cursor(c.house, changes.ScopeDevices, 0)), nil)
-	if stale.Code != http.StatusOK || !strings.Contains(stale.Body.String(), `"changed":true`) || !strings.Contains(stale.Body.String(), `"devices"`) || !strings.Contains(stale.Body.String(), `"queued":4`) {
-		t.Fatalf("stale devices %d %s", stale.Code, stale.Body.String())
+	if stale.Code != http.StatusOK || stale.Header().Get("Cache-Control") != "no-store" || !strings.Contains(stale.Body.String(), `"changed":true`) || !strings.Contains(stale.Body.String(), `"devices"`) || !strings.Contains(stale.Body.String(), `"queued":4`) {
+		t.Fatalf("stale devices %d %s %s", stale.Code, stale.Header().Get("Cache-Control"), stale.Body.String())
 	}
 	otherCursor := c.authed(http.MethodGet, "/api/devices?since="+url.QueryEscape(changes.Cursor("other-household", changes.ScopeDevices, 0)), nil)
 	if otherCursor.Code != http.StatusOK || !strings.Contains(otherCursor.Body.String(), `"changed":true`) || !strings.Contains(otherCursor.Body.String(), `"devices"`) {

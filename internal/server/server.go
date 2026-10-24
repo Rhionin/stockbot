@@ -714,7 +714,7 @@ func newAPIMux(
 			stockOut: scannerConfig.StockOutBarcode,
 		}
 		cfg.stage1svc.SetHints(broadcaster)
-		cfg.stage1svc.SetLive(broadcaster.Hub())
+		cfg.stage1svc.SetLive(broadcaster)
 		sender := push.NewSender(pushSubscriptions, pushCfg)
 		cfg.stage1svc.SetOperatorPush(func(ctx context.Context, note auth.OperatorNote) {
 			sender.NotifyOperators(ctx, push.Notice{

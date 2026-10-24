@@ -13,6 +13,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
@@ -1554,5 +1555,26 @@ func TestCreateScanEntry_RescanBecomesMostRecent(t *testing.T) {
 	}
 	if held.UnitCount != 3 {
 		t.Errorf("UnitCount after older timestamp: want 3, got %d", held.UnitCount)
+	}
+}
+
+func TestCreateScanEntryMovesTheScansCursor(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	ctx := context.Background()
+	before, err := changes.Current(ctx, db, scope.HouseholdID(), changes.ScopeScans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "123456789012", ScannedAt: time.Now().UTC(), UnitCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Changed || out.Cursor == before {
+		t.Fatalf("scans cursor did not move: before %s after %+v", before, out)
 	}
 }
