@@ -106,6 +106,10 @@
 }
 
 @media print {
+  * {
+    transform: none !important;
+  }
+
   body * {
     visibility: hidden;
   }
@@ -115,8 +119,30 @@
     visibility: visible;
   }
 
+  .mantine-Modal-root,
+  .mantine-Modal-inner,
+  .mantine-Modal-content,
+  .mantine-Modal-body {
+    position: static !important;
+    transform: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+
   .pairing-sheet {
-    position: absolute;
-    inset: 24px auto auto 24px;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 100000 !important;
+    width: auto;
+    max-width: 720px;
+    padding: 24px;
+    background: #fff;
+  }
+
+  .pairing-sheet .mantine-Group-root {
+    display: none !important;
   }
 }

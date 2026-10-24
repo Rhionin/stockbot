@@ -178,32 +178,59 @@ const install = async (page: Page) => {
   })
 }
 
-const shot = async (page: Page, name: string) => {
-  for (const width of [390, 1280]) {
-    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
-    await page.screenshot({ path: `${shots}/${name}-${width}.png`, fullPage: true })
-  }
+const resetStage = () => {
+  stage.kind = 'signed_out'
+  stage.role = 'owner'
+  stage.passwordSignIn = false
+  stage.olderAppDevices = 3
+  stage.householdPasswordEnabled = true
+  stage.restoreUntil = null
+  stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
+  stage.deletedAt = null
+  stage.pairingExpired = false
 }
 
+const settleDialog = async (page: Page) => {
+  await page.waitForFunction(() => {
+    const dialog = document.querySelector('[role="dialog"]')
+    if (!(dialog instanceof HTMLElement)) return false
+    let node: HTMLElement | null = dialog
+    while (node) {
+      if (Number(getComputedStyle(node).opacity) < 0.99) return false
+      node = node.parentElement
+    }
+    return true
+  })
+}
+
+const shot = async (page: Page, name: string, width: number, fullPage = true) => {
+  if ((await page.getByRole('dialog').count()) > 0) await settleDialog(page)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.screenshot({ path: `${shots}/${name}-${width}.png`, fullPage })
+}
+
+for (const width of [390, 1280]) {
 test.describe('stage-1 household screens', () => {
   test.beforeAll(() => {
     mkdirSync(shots, { recursive: true })
   })
 
-  test('sign-in, changeover, households, devices, and export', async ({ page }) => {
+  test(`sign-in, changeover, households, devices, and export at ${width}`, async ({ page }) => {
+    resetStage()
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
     await install(page)
     await page.goto('/')
     await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
-    await shot(page, 'sign-in-c2a3')
+    await shot(page, 'sign-in-c2a3', width)
 
     stage.passwordSignIn = true
     await page.reload()
     await expect(page.getByRole('button', { name: 'Sign in with the household password' })).toBeVisible()
     await page.getByRole('button', { name: 'Sign in with the household password' }).click()
-    await page.getByLabel('Household password').fill('shared-secret')
+    await page.getByRole('textbox', { name: 'Household password' }).fill('shared-secret')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('status').filter({ hasText: 'shared household password' })).toBeVisible()
-    await shot(page, 'banner-c2a1')
+    await shot(page, 'banner-c2a1', width)
 
     stage.kind = 'account'
     stage.role = 'owner'
@@ -211,66 +238,70 @@ test.describe('stage-1 household screens', () => {
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
     await expect(page.getByText(olderWarning(3))).toBeVisible()
-    await shot(page, 'retire-n3')
+    await shot(page, 'retire-n3', width, false)
     await page.getByRole('button', { name: 'Cancel' }).click()
 
     stage.olderAppDevices = 0
     await page.getByRole('button', { name: 'Menu' }).click()
-    await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
     await expect(page.getByText(/older app version/)).toHaveCount(0)
-    await shot(page, 'retire-n0')
+    await shot(page, 'retire-n0', width, false)
     await page.getByRole('button', { name: 'Turn off' }).click()
 
     await page.getByRole('button', { name: 'Menu' }).click()
-    await page.getByRole('menuitem', { name: 'Household' }).click()
+    await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Pantry' })).toBeVisible()
     await expect(page.getByRole('combobox', { name: 'Household' })).toBeVisible()
-    await shot(page, 'switcher')
+    await shot(page, 'switcher', width)
     await expect(page.getByRole('button', { name: 'Make owner' })).toBeVisible()
     await page.getByRole('button', { name: 'Create invite' }).click()
     await expect(page.getByText(/Invite link:/)).toBeVisible()
     await page.getByRole('button', { name: 'Revoke invite' }).first().click()
     await expect(page.getByText('Cancelled')).toBeVisible()
-    await shot(page, 'members-invites')
+    await shot(page, 'members-invites', width)
 
     await page.getByRole('button', { name: 'Export household' }).click()
     await expect(page.getByRole('link', { name: 'Download JSON' })).toBeVisible()
     await expect(page.getByText('Your household will be permanently deleted after 30 days.')).toBeVisible()
-    await shot(page, 'export-delete')
+    await shot(page, 'export-delete', width)
 
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Devices' }).click()
     await expect(page.getByText('Kitchen hub')).toBeVisible()
     await expect(page.getByText(/Offline/)).toBeVisible()
-    await shot(page, 'devices')
-    await page.getByRole('listitem').filter({ hasText: 'Kitchen hub' }).getByRole('button', { name: 'Disconnect' }).click()
-    await expect(page.getByText("Disconnect Kitchen hub? 3 scans it hasn't sent yet will be lost.")).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Disconnect' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
-    await shot(page, 'disconnect-n3')
-    await page.getByRole('button', { name: 'Cancel' }).click()
+    await shot(page, 'devices', width)
+    const kitchen = page.getByRole('listitem').filter({ hasText: 'Kitchen hub' })
+    await kitchen.getByRole('button', { name: 'Disconnect' }).click()
+    const queuedDialog = page.getByRole('dialog', { name: 'Disconnect hub' })
+    await expect(queuedDialog.getByText("Disconnect Kitchen hub? 3 scans it hasn't sent yet will be lost.")).toBeVisible()
+    await expect(queuedDialog.getByRole('button', { name: 'Disconnect' })).toBeVisible()
+    await expect(queuedDialog.getByRole('button', { name: 'Disconnect' })).toHaveClass(/household-danger/)
+    await expect(queuedDialog.getByRole('button', { name: 'Cancel' })).toBeVisible()
+    await shot(page, 'disconnect-n3', width, false)
+    await queuedDialog.getByRole('button', { name: 'Cancel' }).click()
     await page.getByRole('listitem').filter({ hasText: 'Shed hub' }).getByRole('button', { name: 'Disconnect' }).click()
-    await expect(page.getByText('Disconnect Shed hub?')).toBeVisible()
-    await expect(page.getByText(/scans it hasn't sent/)).toHaveCount(0)
-    await shot(page, 'disconnect-n0')
-    await page.getByRole('button', { name: 'Cancel' }).click()
+    const emptyDialog = page.getByRole('dialog', { name: 'Disconnect hub' })
+    await expect(emptyDialog.getByText('Disconnect Shed hub?')).toBeVisible()
+    await expect(emptyDialog.getByText(/scans it hasn't sent/)).toHaveCount(0)
+    await shot(page, 'disconnect-n0', width, false)
+    await emptyDialog.getByRole('button', { name: 'Disconnect' }).click()
+    await expect(page.getByText('Shed hub was disconnected.')).toBeVisible()
 
     await page.getByRole('button', { name: 'Pair a hub' }).click()
     await expect(page.getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
     await expect(page.getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Print pairing code' })).toBeVisible()
     await expect(page.getByText(/No printer\? Plug a USB keyboard/)).toBeVisible()
-    await shot(page, 'pairing')
+    await shot(page, 'pairing', width, false)
     await page.emulateMedia({ media: 'print' })
-    await shot(page, 'pairing-print')
+    await page.locator('.pairing-sheet').screenshot({ path: `${shots}/pairing-print-${width}.png` })
     await page.emulateMedia({ media: 'screen' })
-    await page.getByRole('button', { name: 'Close' }).click()
+    await page.locator('.pairing-sheet').getByRole('button', { name: 'Close' }).click()
 
     stage.pairingExpired = true
     await page.getByRole('button', { name: 'Pair a hub' }).click()
     await expect(page.getByText('This code expired. Get a new one.')).toBeVisible()
-    await shot(page, 'pairing-expired')
+    await shot(page, 'pairing-expired', width, false)
 
     stage.role = 'member'
     stage.kind = 'account'
@@ -280,3 +311,4 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByRole('button', { name: 'Make owner' })).toHaveCount(0)
   })
 })
+}
