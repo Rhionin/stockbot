@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -166,7 +167,11 @@ func (s *Service) RevokeInvite(ctx context.Context, actor, householdID, inviteID
 			return notFound()
 		}
 	} else {
-		if ownerHouse == "" || (householdID != "" && householdID != ownerHouse) {
+		householdID = strings.TrimSpace(householdID)
+		if householdID == "" {
+			return failField(CodeValidation, "X-Household-Id is required.", "householdId")
+		}
+		if householdID != ownerHouse {
 			return notFound()
 		}
 		role, deleted, ok, err := s.membershipRole(ctx, s.db, actor, ownerHouse)
@@ -176,7 +181,7 @@ func (s *Service) RevokeInvite(ctx context.Context, actor, householdID, inviteID
 			}
 			return notFound()
 		}
-		if role != "owner" {
+		if role != "owner" && role != "member" {
 			return fail(CodeForbiddenRole, SentenceForbidden)
 		}
 	}
