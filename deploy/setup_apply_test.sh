@@ -319,7 +319,8 @@ pub_mode=$(stat -c '%a' "$pub/auth/household")
 have "$LAST_CHOWN" "65532:65532 $pub/auth" "setup chowns the auth directory to uid 65532"
 have "$LAST_CHOWN" "65532:65532 $pub/auth/household" "setup chowns the household file to uid 65532"
 lack "$LAST_CURL" "X-Pantry-Entry" "public setup probes sign-in without an entry header"
-have "$LAST_CURL" "/api/session" "public setup probes /api/session"
+have "$LAST_CURL" ":8081/api/session" "public setup probes the public listener"
+lack "$LAST_CURL" ":8080/api/session" "public setup does not probe the LAN listener"
 grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "public setup did not set APP_BASE_URL from PUBLIC_HOST"
 pub_setup_mode=$(stat -c '%a' "$pub/setup")
 [[ "$pub_setup_mode" == "2750" ]] || fail "public setup dir mode is $pub_setup_mode, want 2750"
@@ -779,6 +780,8 @@ CURL_SESSION_CODE=503 \
 have "$LAST_OUT" "Sign-in is unavailable" "unavailable sign-in is a loud error"
 have "$LAST_OUT" "uid 65532" "unavailable sign-in names the container user"
 lack "$LAST_CURL" "X-Pantry-Entry" "unavailable probe does not send an entry header"
+have "$LAST_CURL" ":8081/api/session" "unavailable probe uses the public listener"
+lack "$LAST_CURL" ":8080/api/session" "unavailable probe does not use the LAN listener"
 
 # pantry-update.sh copies the hash, via the same function, before compose up.
 updater="$ROOT/deploy/systemd/pantry-update.sh"

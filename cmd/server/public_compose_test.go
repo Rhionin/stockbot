@@ -108,6 +108,19 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 			t.Fatalf("pantry must not publish 8081, got %v", pantry.Ports)
 		}
 	}
+	appBaseExpr := pantry.Environment["APP_BASE_URL"]
+	if !strings.Contains(appBaseExpr, "${PUBLIC_HOST:+https://${PUBLIC_HOST}}") {
+		t.Fatalf("APP_BASE_URL = %q, want the PUBLIC_HOST fallback", appBaseExpr)
+	}
+	if got := expandCompose(t, appBaseExpr, nil); got != "" {
+		t.Fatalf("APP_BASE_URL with PUBLIC_HOST unset = %q, want empty", got)
+	}
+	if got := expandCompose(t, appBaseExpr, map[string]string{"PUBLIC_HOST": "stockbot.rhionin.com"}); got != "https://stockbot.rhionin.com" {
+		t.Fatalf("APP_BASE_URL from PUBLIC_HOST = %q", got)
+	}
+	if got := expandCompose(t, appBaseExpr, map[string]string{"APP_BASE_URL": "https://operator.example", "PUBLIC_HOST": "stockbot.rhionin.com"}); got != "https://operator.example" {
+		t.Fatalf("a set APP_BASE_URL expanded to %q", got)
+	}
 	if !hasExactPort(caddy.SecurityOpt, "no-new-privileges:true") {
 		t.Fatalf("caddy security_opt = %v", caddy.SecurityOpt)
 	}

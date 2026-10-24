@@ -75,6 +75,11 @@ func TestOpenListenersClosesTheFirstWhenTheNextBindFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("bad address started")
 	}
+	rebind, rebindErr := net.Listen("tcp", addr)
+	if rebindErr != nil {
+		t.Fatalf("first listener stayed open after the second bind failed: %v", rebindErr)
+	}
+	rebind.Close()
 	conn, dialErr := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 	if dialErr == nil {
 		conn.Close()

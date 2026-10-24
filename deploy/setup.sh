@@ -560,16 +560,26 @@ refresh_backup_unit() {
   log_success "Refreshed pantry-backup units"
 }
 
-# verify_public_sign_in asks Stockbot on the published LAN port. The public
-# listener is only on the compose network. A password file the container
-# cannot read makes GET /api/session return 503. A visitor who simply has
-# not signed in gets 401.
+# verify_public_sign_in asks Stockbot on the public listener. The published
+# LAN port answers /api/session with 200 even when the household password
+# file is unreadable, so that check has to reach :8081 inside the compose
+# network. A password file the container cannot read makes GET /api/session
+# return 503. A visitor who simply has not signed in gets 401.
 verify_public_sign_in() {
-  local port="$1"
-  local body code
+  local public_port pantry_ip body code
+  public_port=$(env_value PUBLIC_LISTEN_ADDR)
+  public_port=${public_port:-:8081}
+  public_port=${public_port##*:}
+  if [[ ! "$public_port" =~ ^[0-9]+$ ]]; then
+    public_port=8081
+  fi
+  pantry_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{println}}{{end}}' "$(publish_container pantry)" 2>/dev/null | awk 'NF {print; exit}' || true)
+  if [[ ! "$pantry_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    pantry_ip=127.0.0.1
+  fi
   body=$(mktemp)
   if ! code=$(curl -sS -o "$body" -w '%{http_code}' --max-time 10 \
-    "http://127.0.0.1:${port}/api/session"); then
+    "http://${pantry_ip}:${public_port}/api/session"); then
     rm -f "$body"
     fatal "Could not check whether the public site can sign in."
   fi
@@ -869,7 +879,7 @@ cmd_apply() {
   log_success "Stockbot is healthy"
 
   if [[ "$use_public" == true ]]; then
-    verify_public_sign_in "$host_port"
+    verify_public_sign_in
   fi
 
   local firewall_applied=false
