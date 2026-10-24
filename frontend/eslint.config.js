@@ -6,8 +6,8 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 // ESLint's base path is the directory of the config file it loads. shared/
-// is outside this package, so shared/eslint.config.mjs loads this export
-// with shared/ as the base path. Relative imports inside shared/ do not
+// is outside this package, so repo-root eslint.config.mjs loads this export
+// with the repo as the base path. Relative imports inside shared/ do not
 // match the frontend or mobile segments.
 export const sharedLintConfig = defineConfig([
   {

@@ -2,7 +2,7 @@ import { fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useState } from 'react';
 import { Pressable, Text } from 'react-native';
-import { OFFLINE_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
+import { INVALID_CREDENTIALS_SENTENCE, OFFLINE_SENTENCE, SESSION_EXPIRED_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import SignInRoute from '../app/sign-in';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
@@ -85,13 +85,13 @@ describe('ConnectionForm', () => {
         lede="Scan the pantry from the phone."
         submitLabel="Connect"
         onSubmit={async () => {
-          throw new Error('That password was rejected.');
+          throw new Error(INVALID_CREDENTIALS_SENTENCE);
         }}
       />,
     );
 
     await fireEvent.press(screen.getByLabelText('Connect'));
-    expect(await screen.findByText('That password was rejected.')).toBeTruthy();
+    expect(await screen.findByText(INVALID_CREDENTIALS_SENTENCE)).toBeTruthy();
   });
 });
 
@@ -136,9 +136,45 @@ describe('session sign-in', () => {
 
     await fireEvent.press(await screen.findByLabelText('Connect now'));
 
-    expect(await screen.findByText('That password was rejected.')).toBeTruthy();
+    expect(await screen.findByText(INVALID_CREDENTIALS_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('That password was rejected.')).toBeNull();
     expect(screen.queryByText('Ready')).toBeNull();
     expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('shows the session sentence when a signed-in request is rejected', async () => {
+    let calls = 0;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return jsonResponse(200, { required: true, username: 'pantry' });
+      return jsonResponse(401, { error: 'Sign in required.', code: 'unauthorized' });
+    });
+
+    function Probe() {
+      const session = useSession();
+      if (session.status === 'loading') return <Text>Loading</Text>;
+      if (session.status === 'signedOut') return <Text>{session.error || 'Signed out'}</Text>;
+      return (
+        <Pressable
+          accessibilityLabel="Reload"
+          onPress={() => { void session.client.listPending().catch(() => undefined); }}
+        >
+          <Text>Ready</Text>
+        </Pressable>
+      );
+    }
+
+    const screen = await renderScreen(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>,
+    );
+    await fireEvent.press(await screen.findByLabelText('Connect now'));
+    expect(await screen.findByText('Ready')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Reload'));
+    expect(await screen.findByText(SESSION_EXPIRED_SENTENCE)).toBeTruthy();
+    expect(screen.queryByText('That password was rejected.')).toBeNull();
+    expect(screen.queryByText('Sign in required.')).toBeNull();
   });
 
   it('shows the offline sentence when connect cannot reach the server', async () => {

@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, fireEvent, render } from '@testing-library/react-native';
-import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
+import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE, applyHttpResponse, notifyApiSuccess, raiseAuthNotConfiguredBanner, raiseOfflineBanner } from '@stockbot/shared/contract';
 import type { ScanEntry } from '@stockbot/shared/types';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { createStockbotClient } from '../api/client';
@@ -169,7 +169,8 @@ function pushesBannerOffTop(chain: readonly LaidOut[]): boolean {
   return chain.some((ancestor) => {
     const flat = (StyleSheet.flatten(ancestor.props.style as never) ?? {}) as Record<string, unknown>;
     const direction = flat.flexDirection;
-    const vertical = direction == null || direction === 'column' || direction === 'column-reverse';
+    if (direction === 'column-reverse') return true;
+    const vertical = direction == null || direction === 'column';
     return vertical && typeof flat.justifyContent === 'string' && PUSHES_OFF_TOP.has(flat.justifyContent);
   });
 }
@@ -415,6 +416,7 @@ describe('mobile server notice banner', () => {
     { name: 'column space-evenly', style: { justifyContent: 'space-evenly' } },
     { name: 'explicit column center', style: { flexDirection: 'column', justifyContent: 'center' } },
     { name: 'column-reverse flex-end', style: { flexDirection: 'column-reverse', justifyContent: 'flex-end' } },
+    { name: 'v24', style: { flexDirection: 'column-reverse' } },
     { name: 'layered column center', style: [{ flexDirection: 'column' }, { justifyContent: 'center' }] },
   ])('rejects $name', async ({ style }) => {
     const view = await render(
@@ -454,6 +456,19 @@ describe('mobile server notice banner', () => {
     const mark = view.getByText('!', { includeHiddenElements: true });
     expect(mark.parent?.props.accessibilityElementsHidden).toBe(true);
     expect(mark.parent?.props.importantForAccessibility).toBe('no-hide-descendants');
+  });
+
+  it('shows updating and clears it after a success', async () => {
+    const view = await render(<ServerNoticeBanner />);
+    await act(async () => {
+      applyHttpResponse(503, 'updating');
+    });
+    expect(view.getByText(UPDATING_SENTENCE)).toBeTruthy();
+    await act(async () => {
+      notifyApiSuccess();
+    });
+    expect(view.queryByText(UPDATING_SENTENCE)).toBeNull();
+    expect(view.queryByTestId('server-notice-banner')).toBeNull();
   });
 
   it('replaces the auth sentence with the queue sentence', async () => {

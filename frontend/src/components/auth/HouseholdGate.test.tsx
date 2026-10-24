@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
+import { OFFLINE_SENTENCE, SESSION_EXPIRED_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
+import { listProducts } from '../../api/client';
 import { HouseholdGate } from './HouseholdGate';
 
 const authNotConfigured = JSON.parse(
@@ -268,6 +269,27 @@ describe('HouseholdGate', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(calls).toBe(4);
     resolveLater(auth());
+  });
+
+  it('shows the session sentence when a signed-in request is rejected', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/session')) return Promise.resolve(json({ required: true, username: 'pantry' }));
+      if (url.endsWith('/api/products')) {
+        return Promise.resolve(json({ error: 'Sign in required.', code: 'unauthorized' }, 401));
+      }
+      return Promise.resolve(json([]));
+    }));
+    render(
+      <MantineProvider>
+        <HouseholdGate>
+          <button type="button" onClick={() => { void listProducts(); }}>Load products</button>
+        </HouseholdGate>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Load products' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(SESSION_EXPIRED_SENTENCE);
+    expect(screen.queryByRole('button', { name: 'Load products' })).not.toBeInTheDocument();
   });
 
   it('opens the app after a successful sign-in', async () => {
