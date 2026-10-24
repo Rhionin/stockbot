@@ -717,6 +717,42 @@ func TestOverAgeBoundary(t *testing.T) {
 	}
 }
 
+func TestOverAgeUsesServerClock(t *testing.T) {
+	server := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
+	const uploaded = "secrets/just.tar.age"
+	const kept = "nightly/kept.pantry.db.gz.age"
+
+	// The Pi is 2 hours fast, inside the 12 hour skew limit. The only
+	// database backup is 15 days minus 1 hour on the server, so it is kept
+	// and it is not over-age. The same instant is past 15 days on the Pi.
+	// rejectOverAge must use the server clock.
+	fast := newMemStore(func() time.Time { return server })
+	fast.putAt(uploaded, []byte("u"), server)
+	fast.putAt(kept, []byte("k"), server.Add(-15*24*time.Hour+time.Hour))
+	runner := &Runner{Store: fast, Now: func() time.Time { return server.Add(2 * time.Hour) }}
+	if err := runner.sweep(context.Background(), []string{uploaded}); err != nil {
+		t.Fatalf("over-age used the Pi clock: %v", err)
+	}
+	if _, ok := fast.objs[kept]; !ok {
+		t.Fatal("a backup under 15 days on the server was deleted")
+	}
+
+	// The Pi is 2 hours slow. The newest database backup is one second past
+	// 15 days on the server. The Pi clock would still call it under 15 days
+	// and the sweep would succeed.
+	slowStore := newMemStore(func() time.Time { return server })
+	slowStore.putAt(uploaded, []byte("u"), server)
+	slowStore.putAt(kept, []byte("k"), server.Add(-15*24*time.Hour-time.Second))
+	slow := &Runner{Store: slowStore, Now: func() time.Time { return server.Add(-2 * time.Hour) }}
+	err := slow.sweep(context.Background(), []string{uploaded})
+	if ExitCode(err) != ExitSweep || !strings.Contains(err.Error(), "15 days") {
+		t.Fatalf("over-age used the slow Pi clock: %v", err)
+	}
+	if _, ok := slowStore.objs[kept]; !ok {
+		t.Fatal("the over-age backup was deleted instead of refused")
+	}
+}
+
 func TestOverAgeRemainsExit30(t *testing.T) {
 	now := time.Date(2026, 10, 23, 9, 30, 0, 0, time.UTC)
 	store := newMemStore(func() time.Time { return now })

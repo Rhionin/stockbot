@@ -229,6 +229,7 @@ type fakeS3 struct {
 	putCalls      int
 	deletes       int
 	now           time.Time
+	omitDate      bool
 }
 
 func newFakeS3() *fakeS3 {
@@ -242,11 +243,17 @@ func newFakeS3() *fakeS3 {
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	omitDate := f.omitDate
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		f.auth = auth
 	}
 	f.headers = r.Header.Clone()
 	f.mu.Unlock()
+	if omitDate {
+		// A nil Date tells net/http not to insert one. The backup clock
+		// has to fail closed when the server sends no time.
+		w.Header()["Date"] = nil
+	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	bucket, key, _ := strings.Cut(path, "/")
@@ -401,6 +408,39 @@ func xmlEscape(s string) string {
 	var buf bytes.Buffer
 	_ = xml.EscapeText(&buf, []byte(s))
 	return buf.String()
+}
+
+func TestS3MissingDateFailsClosed(t *testing.T) {
+	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	fake := newFakeS3()
+	fake.now = now
+	fake.omitDate = true
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	store, err := NewS3Store(srv.URL, "pantry-pi-backups", "FILEKEY123", "file-secret-value", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	put := func(key string) {
+		t.Helper()
+		body := []byte(key)
+		sum := sha256.Sum256(body)
+		if err := store.Put(ctx, Upload{Key: key, Body: bytes.NewReader(body), Size: int64(len(body)), SHA256: sum[:]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Fresh on the server, and only 2 hours old on the Pi. A fallback to
+	// the Pi clock would accept it. No Date header must be a clock failure.
+	put("nightly/fresh.pantry.db.gz.age")
+	put("nightly/fresh.manifest.json")
+	if _, err := store.ServerNow(ctx); ExitCode(err) != ExitSweep || AlertClass(err) != "clock" {
+		t.Fatalf("ServerNow err = %v class %s", err, AlertClass(err))
+	}
+	runner := &Runner{Store: store, Now: func() time.Time { return now.Add(2 * time.Hour) }}
+	if err := runner.CheckStale(ctx); ExitCode(err) != ExitSweep || AlertClass(err) != "clock" {
+		t.Fatalf("CheckStale err = %v class %s", err, AlertClass(err))
+	}
 }
 
 func TestHealthPingAndFilesystemStage(t *testing.T) {

@@ -31,21 +31,36 @@ printf '%s\n' "$after" | grep -q '2026-11-01 10:30:00 UTC' || fail "1 Nov did no
 printf '%s\n' "$spring_before" | grep -q '2027-03-13 10:30:00 UTC' || fail "13 Mar did not resolve to 10:30Z: $spring_before"
 printf '%s\n' "$spring_after" | grep -q '2027-03-14 09:30:00 UTC' || fail "14 Mar did not resolve to 09:30Z: $spring_after"
 
+# sd_booted is /run/systemd/system. Without it, verify tries to create
+# /run/systemd and fails with "Permission denied" on a container. That
+# text is not a unit problem, and matching verify's error text can hide
+# one. Skip when systemd is not booted.
+if [[ ! -d /run/systemd/system ]]; then
+  echo "SKIP: systemd is not booted; systemd-analyze verify was not run" >&2
+  exit 0
+fi
+
+# ExecStart and WorkingDirectory are the Pi install. They are absent on a
+# build machine, so verify would stop at the missing file. Check a copy
+# whose paths exist; the timer and the other service keys are unchanged.
+verify_dir=$(mktemp -d)
+cp "$unit" "$ROOT/deploy/systemd/pantry-backup.service" "$verify_dir/"
+if [[ ! -x /opt/pantry/systemd/pantry-backup.sh || ! -d /opt/pantry ]]; then
+  sed -i \
+    -e 's|^ExecStart=.*|ExecStart=/bin/true|' \
+    -e 's|^WorkingDirectory=.*|WorkingDirectory=/tmp|' \
+    "$verify_dir/pantry-backup.service"
+fi
 set +e
-verify=$(systemd-analyze verify "$unit" "$ROOT/deploy/systemd/pantry-backup.service" 2>&1)
+verify=$(systemd-analyze verify "$verify_dir/pantry-backup.timer" "$verify_dir/pantry-backup.service" 2>&1)
 verify_rc=$?
 set -e
+rm -rf "$verify_dir"
 if printf '%s\n' "$verify" | grep -q 'Unknown key'; then
   printf '%s\n' "$verify" >&2
   fail "systemd-analyze verify reported an unknown key"
 fi
 if [[ "$verify_rc" -ne 0 ]]; then
-  # The unit's ExecStart path is /opt/pantry, which is not installed here.
-  # A host without systemd cannot verify either. Say so instead of failing.
-  if printf '%s\n' "$verify" | grep -Eq 'No such file or directory|not been booted|Failed to connect to bus|Host is down|System has not been booted'; then
-    echo "SKIP: systemd-analyze verify could not run on this host" >&2
-  else
-    printf '%s\n' "$verify" >&2
-    fail "systemd-analyze verify could not run"
-  fi
+  printf '%s\n' "$verify" >&2
+  fail "systemd-analyze verify failed"
 fi
