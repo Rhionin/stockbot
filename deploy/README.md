@@ -574,6 +574,15 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `PANTRY_IMAGE_TAG` | `latest` | Container image tag to deploy. Use `latest` for newest build, `master` for master branch, or full commit SHA to pin version |
 | `HOST_PORT` | `8080` | IPv4 port for the LAN site. The container still listens on 8080. Published on `0.0.0.0` only, not IPv6. Do not forward this port on the router |
 | `PUBLIC_HOST` | empty | Hostname for the public HTTPS proxy, such as `stockbot.rhionin.com`. Empty keeps the install LAN-only. No `https://`. Setup does not replace a value that is already set |
+| `APP_BASE_URL` | empty | Public origin, such as `https://stockbot.rhionin.com`, with no path. Empty keeps the process LAN-only and does not bind `PUBLIC_LISTEN_ADDR`. When set, it must be the same host as `PUBLIC_HOST`, and startup fails if the public listener is off |
+| `APP_NAME` | `Stockbot` | Product name used for the title and alert fallback. A rename is this value |
+| `SESSION_COOKIE_NAME` | `__Host-stockbot_session` | Personal-session cookie name. `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`. The `__Host-` prefix is dropped when `COOKIE_DOMAIN` is set |
+| `COOKIE_DOMAIN` | empty | Empty keeps the cookie host-only. Set a parent hostname so a later HTTPS name can share it |
+| `EMAIL_FROM` | empty | Sender address for a later mailer. Empty sends nothing |
+| `LAN_PEOPLE` | `redirect` | `redirect` is the LAN behavior after the household password is retired. `signin` is reserved and not used yet |
+| `EXPO_MIN_VERSION` | `1.0.0` | Oldest Expo build this server accepts |
+| `PUBLIC_LISTEN_ADDR` | `:8081` | Public listener inside the compose network. It is bound only when `APP_BASE_URL` is set. `off` disables it |
+| `LAN_LISTEN_ADDR` | `:8080` | LAN listener. This is the port compose publishes. It overrides `ADDR` when set |
 | `LEGACY_PUBLIC_HOST` | empty | Previous hostname that redirects to `PUBLIC_HOST`, such as `pantry.rhionin.com`. Empty serves `PUBLIC_HOST` only. Setup writes the redirect and ignores a value that matches `PUBLIC_HOST` or includes a scheme |
 | `PUBLISH_MODE` | empty | `tunnel` selects Cloudflare Tunnel and requires `CLOUDFLARE_TUNNEL_TOKEN`. Empty or `acme` is the certificate path, unless that token is set — a non-empty token selects tunnel on its own |
 | `CLOUDFLARE_TUNNEL_TOKEN` | empty | Token for the existing tunnel pantry-pi. Empty keeps Let's Encrypt, the Gryphon forwards, and the Dynu update client. Secret. The hostname's service URL is `http://caddy:80` |

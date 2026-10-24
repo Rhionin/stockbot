@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -228,5 +229,30 @@ func TestQRNoticePayloadNamesTheDomain(t *testing.T) {
 	}
 	if strings.Contains(string(longPayload), text) {
 		t.Fatal("payload included the full QR text")
+	}
+}
+
+func TestPushPayloadUsesConfiguredAppName(t *testing.T) {
+	payload, err := pushPayloadFor(Notice{URL: "/"}, "Northwind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire wireNotice
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Title != "Northwind" || wire.URL != "/" {
+		t.Fatalf("wire = %#v", wire)
+	}
+
+	fallback, err := pushPayload(Notice{URL: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(fallback, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Title != app.DefaultAppName {
+		t.Fatalf("title = %q", wire.Title)
 	}
 }
