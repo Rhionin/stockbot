@@ -39,7 +39,25 @@ describe('setup, invites, and import', () => {
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'long-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
     expect(await screen.findByRole('status')).toHaveTextContent('The account is ready. Sign in at https://app.example.');
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', 'https://app.example');
     expect(bodies[0]).toEqual({ setupCode: 'setup-code', name: 'Ada', email: 'ada@example.com', password: 'long-password' });
+  });
+
+  it('links back to sign-in on this origin when the server has no public address', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/setup' && init?.method === 'POST') return Promise.resolve(json({}));
+      if (url === '/api/config') return Promise.reject(new Error('offline'));
+      return Promise.reject(new Error(url));
+    }));
+    render(<MantineProvider><SetupPage /></MantineProvider>);
+    fireEvent.change(screen.getByLabelText(/^Setup code/), { target: { value: 'setup-code' } });
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Ada' } });
+    fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
+    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'long-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save account' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('The account is ready. Sign-in is not set up on this server yet.');
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/');
   });
 
   it('accepts a start-household invite with the restock question', async () => {

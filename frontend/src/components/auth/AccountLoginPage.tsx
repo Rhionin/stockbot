@@ -5,6 +5,7 @@ import {
   HOSTED_ERROR_SENTENCES,
   HOUSEHOLD_PASSWORD_LINK,
   PASSWORD_TOO_SHORT,
+  SETUP_PATH,
   hostedErrorSentence,
   inlineFailure,
   type HostedErrorCode,
@@ -134,6 +135,9 @@ export const AccountLoginPage = ({
             </Stack>
           </form>
         )}
+        <Text className="login-setup-link">
+          <Anchor href={SETUP_PATH}>Set up Stockbot</Anchor>
+        </Text>
       </section>
     </main>
   );

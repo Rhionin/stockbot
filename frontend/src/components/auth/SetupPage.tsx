@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
-import { Alert, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { PASSWORD_TOO_SHORT, hostedErrorSentence, inlineFailure } from '@stockbot/shared/contract';
 import { ApiError, getLiveConfig, submitSetup } from '../../api/client';
+import './LoginPage.css';
 
 export const SetupPage = () => {
   const [setupCode, setSetupCode] = useState('');
@@ -11,6 +12,7 @@ export const SetupPage = () => {
   const [recover, setRecover] = useState(false);
   const [error, setError] = useState('');
   const [ready, setReady] = useState('');
+  const [signInHref, setSignInHref] = useState('/');
   const [pending, setPending] = useState(false);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -32,6 +34,7 @@ export const SetupPage = () => {
       } catch {
         next = '';
       }
+      setSignInHref(next || '/');
       setReady(next === ''
         ? 'The account is ready. Sign-in is not set up on this server yet.'
         : `The account is ready. Sign in at ${next}.`);
@@ -46,13 +49,18 @@ export const SetupPage = () => {
   return (
     <main className="login-screen">
       <section className="login-card" aria-labelledby="setup-title">
-        <Title id="setup-title" order={1} size="h2">Set up Stockbot</Title>
+        <Title id="setup-title" className="login-brand" order={1} size="h2">Set up Stockbot</Title>
         <Text className="login-lede">
           {recover
             ? 'Enter the recovery code from the server, then choose a new password.'
             : 'Enter the setup code from the server, then create the operator account.'}
         </Text>
-        {ready !== '' ? <Text role="status">{ready}</Text> : (
+        {ready !== '' ? (
+          <Stack className="login-ready" gap="sm" align="center">
+            <Text role="status" ta="center">{ready}</Text>
+            <Anchor href={signInHref}>Sign in</Anchor>
+          </Stack>
+        ) : (
           <form aria-label="Setup" onSubmit={(event) => { void submit(event); }}>
             <Stack gap="sm">
               {error !== '' && <Alert color="red" variant="light" role="alert">{error}</Alert>}
