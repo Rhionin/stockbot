@@ -341,3 +341,28 @@ func TestConsumptionEventsStayInTheirHousehold(t *testing.T) {
 		t.Fatalf("cedar event = %+v", cedarEvents)
 	}
 }
+
+func TestListConsumedAtByItems(t *testing.T) {
+	log, conn := newTestConsumptionLog(t)
+	ctx := context.Background()
+	scope := primaryScope(t, conn)
+	empty, err := log.ListConsumedAtByItems(ctx, scope, nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty %#v err %v", empty, err)
+	}
+	itemID := createTestItem(t, conn, ctx, scope, "prod-times", "Timed oats")
+	when := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := log.InsertConsumptionEvent(ctx, scope, suggestion.ConsumptionEvent{ItemID: itemID, ConsumedAt: when}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := log.ListConsumedAtByItems(ctx, scope, []string{itemID, "item-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[itemID]) != 1 || !got[itemID][0].Equal(when) {
+		t.Fatalf("times %#v", got)
+	}
+	if _, ok := got["item-2"]; ok {
+		t.Fatal("item-2 had events")
+	}
+}

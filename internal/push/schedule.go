@@ -46,7 +46,7 @@ func (s *Subscriptions) SaveBatchAlert(ctx context.Context, scope tenant.Scope, 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO scan_alert_schedule (household_id, direction, due_at, scan_ids)
 		VALUES (?, ?, ?, ?)
-		ON CONFLICT(direction) DO UPDATE SET
+		ON CONFLICT(household_id, direction) DO UPDATE SET
 			due_at = excluded.due_at,
 			scan_ids = excluded.scan_ids
 		WHERE scan_alert_schedule.household_id = excluded.household_id`,

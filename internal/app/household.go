@@ -31,15 +31,19 @@ func isHouseholdMigration(name string) bool {
 	return len(base) == 4 || base[4] == '_'
 }
 
+// householdMigrationNames is the stage-1 set applied in one transaction.
+// Tests replace it to simulate a missing embedded file.
+var householdMigrationNames = []string{
+	"022a_household_tables.sql",
+	"022b_household_columns.sql",
+	"022c_household_backfill.sql",
+	"022d_household_literals.sql",
+	"022e_household_device.sql",
+	"022f_drop_triggers.sql",
+}
+
 func householdMigrationFiles() []string {
-	return []string{
-		"022a_household_tables.sql",
-		"022b_household_columns.sql",
-		"022c_household_backfill.sql",
-		"022d_household_literals.sql",
-		"022e_household_device.sql",
-		"022f_drop_triggers.sql",
-	}
+	return householdMigrationNames
 }
 
 // applyHouseholdMigrations runs 022a through 022f in one transaction.

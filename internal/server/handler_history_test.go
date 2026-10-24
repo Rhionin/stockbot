@@ -331,7 +331,8 @@ func TestHistoryHandler(t *testing.T) {
 				seedShelfItem(env, "prod-peas", "Chickpeas", "item-peas")
 				seedShelfItem(env, "prod-milk", "Milk", "item-milk")
 				seedShelfItem(env, "prod-salsa", "Secret Salsa", "item-salsa")
-				if _, err := env.DB.Exec(`UPDATE items SET user_id = 'user-2' WHERE id = 'item-salsa'`); err != nil {
+				cedar := cedarHousehold(env.T, env.DB)
+				if _, err := env.DB.Exec(`UPDATE items SET household_id = ? WHERE id = 'item-salsa'`, cedar); err != nil {
 					env.T.Fatalf("other household: %v", err)
 				}
 				if _, err := env.DB.Exec(`UPDATE products SET image_url = ? WHERE id = 'prod-oats'`, "https://images.example.com/oats.jpg"); err != nil {
@@ -353,6 +354,9 @@ func TestHistoryHandler(t *testing.T) {
 				insertStockMove(env, "move-peas", "item-peas", "prod-peas", "out", 1, time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC), "scan")
 				insertStockMove(env, "move-milk", "item-milk", "prod-milk", "in", 2, time.Date(2026, 10, 14, 15, 0, 0, 0, time.UTC), "scan")
 				insertStockMove(env, "move-salsa", "item-salsa", "prod-salsa", "in", 1, time.Date(2026, 10, 14, 16, 0, 0, 0, time.UTC), "manual")
+				if _, err := env.DB.Exec(`UPDATE stock_moves SET household_id = ? WHERE id = 'move-salsa'`, cedar); err != nil {
+					env.T.Fatalf("other household move: %v", err)
+				}
 			},
 			httpExchange: httpExchange{
 				method:         "GET",

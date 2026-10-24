@@ -2,10 +2,12 @@ package app
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -251,6 +253,302 @@ func TestHouseholdMigrationDoesNotSnapshotThePantryFile(t *testing.T) {
 	}
 }
 
+func TestHouseholdMigrationStopsWhenOnlyPartlyRecorded(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`DELETE FROM schema_migrations WHERE filename = '022c_household_backfill.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	err = RunMigrations(conn)
+	if err == nil || !strings.Contains(err.Error(), "only partly recorded") {
+		t.Fatalf("RunMigrations err = %v", err)
+	}
+	if !tableExists(t, conn, "households") {
+		t.Fatal("partial stop removed households")
+	}
+}
+
+func TestHouseholdMigrationSeedErrorStopsBeforeTheChange(t *testing.T) {
+	orig := beforeHouseholdMigration
+	t.Cleanup(func() { beforeHouseholdMigration = orig })
+	beforeHouseholdMigration = func(*sql.DB) error {
+		return fmt.Errorf("synthetic pantry was not ready")
+	}
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	err = RunMigrations(conn)
+	if err == nil || !strings.Contains(err.Error(), "synthetic pantry was not ready") {
+		t.Fatalf("RunMigrations err = %v", err)
+	}
+	if tableExists(t, conn, "households") {
+		t.Fatal("households were created after the seed failed")
+	}
+}
+
+func TestHouseholdMigrationRollsBackWhenCountsChange(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{
+			name:  "extra product",
+			extra: "INSERT INTO products (id, name) VALUES ('prod-extra', 'Extra sample');",
+			want:  "products had",
+		},
+		{
+			name:  "extra settings",
+			extra: "INSERT INTO app_settings (key, value) VALUES ('extra_a', '1'), ('extra_b', '2');",
+			want:  "app_settings had",
+		},
+		{
+			name:  "blank token",
+			extra: "-- {{leftover}}",
+			want:  "still has a blank",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := prepareMigrationSQL
+			t.Cleanup(func() { prepareMigrationSQL = orig })
+			prepareMigrationSQL = func(name, sqlText string) string {
+				if name != "022e_household_device.sql" {
+					return sqlText
+				}
+				return sqlText + "\n" + tc.extra + "\n"
+			}
+			conn, err := OpenSQLite(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { conn.Close() })
+			err = RunMigrations(conn)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("RunMigrations err = %v", err)
+			}
+			if tableExists(t, conn, "households") {
+				t.Fatal("households remained after the count check failed")
+			}
+		})
+	}
+}
+
+func TestHouseholdMigrationAbortsAForeignHouseholdID(t *testing.T) {
+	orig := beforeHouseholdMigration
+	t.Cleanup(func() { beforeHouseholdMigration = orig })
+	beforeHouseholdMigration = func(db *sql.DB) error {
+		_, err := db.Exec(`INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-other', 'other-house', 'Sample shelf', 'sample shelf')`)
+		return err
+	}
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	err = RunMigrations(conn)
+	if err == nil || !strings.Contains(err.Error(), "categories.household_id: 1 rows outside the first household") {
+		t.Fatalf("RunMigrations err = %v", err)
+	}
+	if strings.Contains(err.Error(), "other-house") {
+		t.Fatalf("abort named a household: %v", err)
+	}
+	if tableExists(t, conn, "households") {
+		t.Fatal("households table remained after abort")
+	}
+}
+
+func TestHouseholdTokensAndNames(t *testing.T) {
+	id := uuid.Must(uuid.NewV7()).String()
+	issued := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).Format(time.RFC3339)
+	channel := "0123456789abcdef0123456789abcdef"
+	replace, err := householdReplacer(id, id, issued, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := replace("{{household}} {{device}} {{issued}} {{channel}}")
+	if got != id+" "+id+" "+issued+" "+channel {
+		t.Fatalf("replaced %s", got)
+	}
+	if _, err := householdReplacer(strings.ToUpper(id), id, issued, channel); err == nil {
+		t.Fatal("uppercase household id was accepted")
+	}
+	if _, err := householdReplacer(id, id, "2026-01-02T03:04:05-07:00", channel); err == nil {
+		t.Fatal("offset timestamp was accepted")
+	}
+	if _, err := householdReplacer(id, id, issued, "zzzz"); err == nil {
+		t.Fatal("short channel was accepted")
+	}
+	if !validChannel(channel) || validChannel(channel+"0") || validChannel("abcd") || validChannel("gggggggggggggggggggggggggggggggg") {
+		t.Fatal("channel check")
+	}
+	hexed, err := randomHex(16)
+	if err != nil || len(hexed) != 32 {
+		t.Fatalf("hex %q %v", hexed, err)
+	}
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"022a_household_tables.sql", true},
+		{"022f_drop_triggers.sql", true},
+		{"022a.sql", true},
+		{"022_backfill_unshelve.sql", false},
+		{"022g_nope.sql", false},
+		{"023a_nope.sql", false},
+	} {
+		if isHouseholdMigration(tc.name) != tc.want {
+			t.Errorf("%s = %v", tc.name, !tc.want)
+		}
+	}
+	if quoteIdent(`a"b`) != `"a""b"` {
+		t.Fatalf("quote %s", quoteIdent(`a"b`))
+	}
+}
+
+func TestCountOutsideReportsAMissingTable(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	tx, err := conn.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	_, err = countOutside(tx, "no_such_table", "user_id")
+	if err == nil || !strings.Contains(err.Error(), "could not check this pantry") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestApplyHouseholdMigrationsNeedsTheMigrationTable(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, err := applyHouseholdMigrations(conn); err == nil || !strings.Contains(err.Error(), "check migration") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHouseholdMigrationStopsWhenTheEmbeddedFileIsMissing(t *testing.T) {
+	orig := householdMigrationNames
+	t.Cleanup(func() { householdMigrationNames = orig })
+	householdMigrationNames = []string{
+		"022a_missing.sql", "022b_missing.sql", "022c_missing.sql",
+		"022d_missing.sql", "022e_missing.sql", "022f_missing.sql",
+	}
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := applyMigrationsExcept(conn, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyHouseholdMigrations(conn); err == nil || !strings.Contains(err.Error(), "read embedded migration") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHouseholdMigrationStopsWhenTheDatabaseCloses(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := applyMigrationsExcept(conn, ""); err != nil {
+		t.Fatal(err)
+	}
+	orig := beforeHouseholdMigration
+	t.Cleanup(func() { beforeHouseholdMigration = orig })
+	beforeHouseholdMigration = func(db *sql.DB) error { return db.Close() }
+	if err := RunMigrations(conn); err == nil {
+		t.Fatal("a closed database continued the household update")
+	}
+}
+
+func TestHouseholdMigrationStopsWhenTheRecordCannotBeSaved(t *testing.T) {
+	orig := prepareMigrationSQL
+	t.Cleanup(func() { prepareMigrationSQL = orig })
+	prepareMigrationSQL = func(name, sqlText string) string {
+		sqlText = orig(name, sqlText)
+		if name == "022f_drop_triggers.sql" {
+			return sqlText + "\nDROP TABLE schema_migrations;"
+		}
+		return sqlText
+	}
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	err = RunMigrations(conn)
+	if err == nil || !strings.Contains(err.Error(), "apply migration") {
+		t.Fatalf("err = %v", err)
+	}
+	var n int
+	if scanErr := conn.QueryRow(`SELECT COUNT(*) FROM households`).Scan(&n); scanErr == nil && n != 0 {
+		t.Fatalf("households = %d after a failed record", n)
+	}
+}
+
+func TestHouseholdGuardReportsATableItCannotRead(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := applyMigrationsExcept(conn, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`DROP TABLE items`); err != nil {
+		t.Fatal(err)
+	}
+	err = RunMigrations(conn)
+	if err == nil || !strings.Contains(err.Error(), "could not check this pantry") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTableCountsReportsAFinishedTransaction(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, err := conn.Exec(`CREATE TABLE schema_migrations (filename TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tableCounts(tx); err == nil || !strings.Contains(err.Error(), "could not count pantry rows") {
+		t.Fatalf("counts: %v", err)
+	}
+	if err := checkHouseholdCounts(tx, map[string]int{"schema_migrations": 0}); err == nil {
+		t.Fatal("a finished transaction was counted")
+	}
+	if err := guardSingleHousehold(tx); err == nil {
+		t.Fatal("a finished transaction was checked")
+	}
+}
+
 func seedSyntheticPantry(db *sql.DB) error {
 	_, err := db.Exec(`
 		INSERT INTO products (id, name) VALUES ('prod-sample', 'Sample oats'), ('prod-other', 'Sample rice');
@@ -303,4 +601,22 @@ func seedSyntheticPantry(db *sql.DB) error {
 		INSERT INTO barcode_misses (barcode, checked_at) VALUES ('0000000000099', '2026-01-01T00:00:00Z');
 	`)
 	return err
+}
+
+func TestHouseholdReplacerRejectsUnsafeValues(t *testing.T) {
+	id := uuid.Must(uuid.NewV7()).String()
+	issued := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).Format(time.RFC3339)
+	channel := "0123456789abcdef0123456789abcdef"
+	if _, err := householdReplacer("", id, issued, channel); err == nil {
+		t.Fatal("empty household id was accepted")
+	}
+	if _, err := householdReplacer(id, id, issued, "abcd"); err == nil {
+		t.Fatal("short hex channel was accepted")
+	}
+	if validChannel("abcd") {
+		t.Fatal("abcd is not a channel key")
+	}
+	if _, err := householdReplacer(id, id, issued, channel); err != nil {
+		t.Fatal(err)
+	}
 }

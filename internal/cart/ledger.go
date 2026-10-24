@@ -57,7 +57,7 @@ func (l *Ledger) ListForProvider(ctx context.Context, scope tenant.Scope, p Prov
 // existing transaction, so the advance is atomic with the caller's other
 // statements (clearing adjustments) and never contends for a second connection
 // against a single-connection SQLite pool.
-// The advance is an INSERT ... ON CONFLICT(provider_id, item_id) DO UPDATE SET
+// The advance is an INSERT ... ON CONFLICT(household_id, provider_id, item_id) DO UPDATE SET
 // requested_quantity = requested_quantity + excluded.requested_quantity, performing
 // the read-modify-write in SQL so no lost update is possible.
 // ledger_boundary is absent from the SET list, expressing "an advance moves no boundary"
@@ -71,7 +71,7 @@ func (l *Ledger) AdvanceTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO fulfillment_ledger (household_id, provider_id, item_id, requested_quantity, ledger_boundary)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(provider_id, item_id) DO UPDATE SET
+		 ON CONFLICT(household_id, provider_id, item_id) DO UPDATE SET
 		     requested_quantity = fulfillment_ledger.requested_quantity + excluded.requested_quantity
 		 WHERE fulfillment_ledger.ledger_boundary = ? AND fulfillment_ledger.household_id = ?`,
 		scope.HouseholdID(), string(provider), itemID, qty, boundary, boundary, scope.HouseholdID())
@@ -138,7 +138,7 @@ func (l *Ledger) ResetForItemTx(ctx context.Context, scope tenant.Scope, tx *sql
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO fulfillment_ledger (household_id, provider_id, item_id, requested_quantity, ledger_boundary)
 		 VALUES (?, ?, ?, 0, ?)
-		 ON CONFLICT(provider_id, item_id) DO UPDATE SET
+		 ON CONFLICT(household_id, provider_id, item_id) DO UPDATE SET
 		     requested_quantity = 0, ledger_boundary = ?
 		 WHERE fulfillment_ledger.household_id = ?`,
 		scope.HouseholdID(), string(provider), itemID, at, at, scope.HouseholdID())

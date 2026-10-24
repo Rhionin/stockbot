@@ -53,7 +53,7 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 			('scan-in', ?, 'oats', ?, 'stock_in', 2, 'committed', 'prod-oats', ?),
 			('scan-out', ?, 'oats', ?, 'stock_out', 1, 'committed', 'prod-oats', ?)`,
 		household, t1, household, household, t4, household)
-	execHistory(t, db, `INSERT INTO stock_in_events (product_id, at, household_id) VALUES ('prod-oats', ?, ?)`, t1, household)
+	execHistory(t, db, `INSERT INTO stock_in_events (id, product_id, at, household_id) VALUES (1, 'prod-oats', ?, ?)`, t1, household)
 	execHistory(t, db, `
 		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, removed_at, removal_reason, household_id) VALUES
 			('inst-e', 'item-oats', ?, NULL, ?, 'manual', ?),

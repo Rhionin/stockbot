@@ -145,7 +145,7 @@ func TestGroupHandlers(t *testing.T) {
 				started := now.Add(-90 * 24 * time.Hour)
 				firstIn := started.Add(time.Second)
 				mustExec(env, `INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`, started.Format(time.RFC3339))
-				mustExec(env, `INSERT INTO stock_in_events (product_id, at) VALUES ('p1', ?)`, firstIn)
+				mustExec(env, `INSERT INTO stock_in_events (id, product_id, at) VALUES (1, 'p1', ?)`, firstIn)
 				mustExec(env, `INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c1', 'item-1', ?)`, firstIn.Add(30*24*time.Hour))
 				mustExec(env, `INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c2', 'item-1', ?)`, firstIn.Add(60*24*time.Hour))
 			},

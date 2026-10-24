@@ -671,7 +671,7 @@ func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"scan-field-a", "scan-field-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -778,7 +778,7 @@ func TestBatchCommitUpdateOnlyFullDiskIsNoSpace(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -805,7 +805,7 @@ func TestBatchCommitUpdateOnlyReadBusyStopsEarly(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -825,7 +825,7 @@ func TestBatchCommitUpdateOnlyOtherErrorStays500(t *testing.T) {
 	queue := &updateOnlyStorageQueue{t: t, err: errors.New("disk melted")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody([]string{"scan-upd-a"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody([]string{"scan-upd-a"}))
 	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, clientmsg.Generic) {
 		t.Fatalf("status %d %s", res.code, res.body)
 	}
@@ -843,7 +843,7 @@ func TestBatchCommitRereadAfterUpdateFailsPerItem(t *testing.T) {
 	queue := &rereadQueue{t: t, readErr: errors.New("reread failed")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -868,7 +868,7 @@ func TestBatchCommitRereadFindsCardGone(t *testing.T) {
 	queue := &rereadQueue{t: t, gone: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -896,7 +896,7 @@ func TestBatchCommitCanceledLogsOnce(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: cancelQueue{}}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-cancel-a", "scan-cancel-b"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-cancel-a", "scan-cancel-b"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)

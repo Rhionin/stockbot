@@ -1,6 +1,8 @@
 package server
 
 import (
+	"strings"
+
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
 )
@@ -35,10 +37,10 @@ func (h *UpdateHandler) Handle(req Request[productWriteBody, updateProductPathPa
 		return productWriteResponse{}, err
 	}
 
-	var prod product.Product
-	if existing != nil {
-		prod = *existing
+	if existing == nil {
+		return productWriteResponse{}, NotFound("product not found")
 	}
+	prod := *existing
 	prod.ID = req.PathParams.ID
 	prod.Name = req.Body.Name
 	prod.Category = req.Body.Category
@@ -49,8 +51,12 @@ func (h *UpdateHandler) Handle(req Request[productWriteBody, updateProductPathPa
 	if err := h.Catalog.UpdateDetails(req.Context, prod); err != nil {
 		return productWriteResponse{}, inputOrInternal(err)
 	}
-	if err := h.Catalog.SaveDisplayName(req.Context, scope, prod.ID, req.Body.Name); err != nil {
-		return productWriteResponse{}, inputOrInternal(err)
+	// The same name leaves the public catalog name free for the next refresh.
+	// A different name stays on this household's override.
+	if strings.TrimSpace(existing.Name) != strings.TrimSpace(req.Body.Name) {
+		if err := h.Catalog.SaveDisplayName(req.Context, scope, prod.ID, req.Body.Name); err != nil {
+			return productWriteResponse{}, inputOrInternal(err)
+		}
 	}
 
 	stored, err := h.Catalog.ProductFor(req.Context, scope, prod.ID)

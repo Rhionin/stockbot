@@ -245,7 +245,7 @@ func TestLoadLastConsumed(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('c1', ?, 'item-1', ?)`, scope.HouseholdID(), when); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, product_id, at) VALUES (?, 'p1', ?)`, scope.HouseholdID(), when.Add(-time.Hour)); err != nil {
+	if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, 1, 'p1', ?)`, scope.HouseholdID(), when.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	view, err := groups.Create(ctx, scope, "Beans", []string{"p1"}, nil)

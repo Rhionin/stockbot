@@ -110,16 +110,6 @@ func (r *Catalog) CreateProduct(ctx context.Context, product Product) error {
 	if err != nil {
 		return fmt.Errorf("CreateProduct: %w", err)
 	}
-	if source == SourceUser {
-		_, err = r.db.ExecContext(ctx, `
-			INSERT INTO household_product_overrides (household_id, product_id, display_name, updated_at)
-			SELECT id, ?, ?, ? FROM households WHERE is_primary = 1`,
-			product.ID, product.Name, time.Now().UTC().Format(time.RFC3339),
-		)
-		if err != nil {
-			return fmt.Errorf("CreateProduct: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -359,7 +349,7 @@ func (r *Catalog) UpsertBarcodeMapping(ctx context.Context, barcode, productID, 
 		 VALUES (?, ?, ?, ?, COALESCE(
 		     (SELECT id FROM households WHERE id = ?),
 		     (SELECT id FROM households WHERE is_primary = 1)))
-		 ON CONFLICT (barcode, source, user_id) DO UPDATE SET
+		 ON CONFLICT (household_id, barcode, source, user_id) DO UPDATE SET
 		     product_id = excluded.product_id,
 		     household_id = excluded.household_id`,
 		barcode, productID, source, userID, userID,

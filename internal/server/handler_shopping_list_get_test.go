@@ -211,7 +211,8 @@ func setSupplyQuantity(t *testing.T, db *sql.DB, productID string, qty int) {
 func insertStockIn(t *testing.T, db *sql.DB, productID string, at time.Time) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO stock_in_events (product_id, at) VALUES (?, ?)`,
+		`INSERT INTO stock_in_events (id, product_id, at)
+		 SELECT COALESCE(MAX(id), 0) + 1, ?, ? FROM stock_in_events`,
 		productID, at.UTC(),
 	); err != nil {
 		t.Fatalf("insertStockIn: %v", err)

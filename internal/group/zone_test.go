@@ -24,11 +24,11 @@ func TestGroupLastEventsFollowTheLaterInstantAcrossDST(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item', ?, ?, 'p1')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	for _, at := range []time.Time{earlier, later} {
+	for i, at := range []time.Time{earlier, later} {
 		if _, err := db.Exec(`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES (?, ?, 'item', ?)`, at.Format(time.RFC3339), scope.HouseholdID(), at); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, product_id, at) VALUES (?, 'p1', ?)`, scope.HouseholdID(), at); err != nil {
+		if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, ?, 'p1', ?)`, scope.HouseholdID(), i+1, at); err != nil {
 			t.Fatal(err)
 		}
 	}

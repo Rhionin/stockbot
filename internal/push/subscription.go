@@ -88,7 +88,7 @@ func (s *Subscriptions) Save(ctx context.Context, scope tenant.Scope, sub Subscr
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO push_subscriptions (endpoint, household_id, p256dh, auth, origin, user_id, device_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(endpoint) DO UPDATE SET
+		ON CONFLICT(household_id, endpoint) DO UPDATE SET
 			p256dh = excluded.p256dh,
 			auth = excluded.auth,
 			origin = CASE WHEN excluded.origin != '' THEN excluded.origin ELSE push_subscriptions.origin END,

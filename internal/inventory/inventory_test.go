@@ -971,7 +971,7 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 		t.Fatalf("settings: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO stock_in_events (product_id, at, household_id) VALUES ('prod-1', ?, ?)`, now, scope.HouseholdID()); err != nil {
+		INSERT INTO stock_in_events (id, product_id, at, household_id) VALUES (1, 'prod-1', ?, ?)`, now, scope.HouseholdID()); err != nil {
 		t.Fatalf("stock-in: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -1255,6 +1255,77 @@ func TestCrossHouseholdCannotSeeOrChangeTheOtherPantry(t *testing.T) {
 	}
 	if again.ID != itemA.ID {
 		t.Fatalf("A's lookup returned %s", again.ID)
+	}
+}
+
+func TestListAndItemSettings(t *testing.T) {
+	pantry, catalog, db := newTestPantry(t)
+	ctx := context.Background()
+	scope := scopeOf(t, db)
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-1", Name: "Oats"}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := pantry.GetOrCreateItem(ctx, scope, "prod-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qty, err := pantry.GetTargetQuantity(ctx, scope, item.ID)
+	if err != nil || qty != nil {
+		t.Fatalf("empty target qty=%v err=%v", qty, err)
+	}
+	mode, err := pantry.GetReplenishmentMode(ctx, scope, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET target_quantity = 4, replenishment_mode = '' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	qty, err = pantry.GetTargetQuantity(ctx, scope, item.ID)
+	if err != nil || qty == nil || *qty != 4 {
+		t.Fatalf("qty=%v err=%v", qty, err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, scope, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("blank mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET replenishment_mode = 'nope' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, scope, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("invalid mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET replenishment_mode = 'replenish' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, scope, item.ID)
+	if err != nil || mode != inventory.ReplenishMode {
+		t.Fatalf("replenish mode %s err %v", mode, err)
+	}
+	if _, err := pantry.GetTargetQuantity(ctx, scope, "missing"); err == nil {
+		t.Fatal("missing item returned a target")
+	}
+	if _, err := pantry.GetReplenishmentMode(ctx, scope, "missing"); err == nil {
+		t.Fatal("missing item returned a mode")
+	}
+
+	added, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{ItemID: item.ID, StockInAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{ItemID: item.ID, StockInAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE item_instances SET removed_at = ? WHERE id = ?`, time.Now().UTC(), gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := pantry.List(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != added.ID {
+		t.Fatalf("listed %+v", listed)
 	}
 }
 

@@ -335,6 +335,59 @@ func TestOpenPantryRejectsMemory(t *testing.T) {
 	}
 }
 
+func TestOpenPantryRejectsANonFilePath(t *testing.T) {
+	for _, path := range []string{"", "pantry.db?mode=ro", "pantry.db\x00"} {
+		writer, reader, err := OpenPantry(path)
+		if err == nil {
+			writer.Close()
+			reader.Close()
+			t.Fatalf("opened %q", path)
+		}
+		if !strings.Contains(err.Error(), "file path") {
+			t.Fatalf("%q: %v", path, err)
+		}
+	}
+}
+
+func TestOpenSQLiteReaderRejectsANonFilePath(t *testing.T) {
+	for _, path := range []string{"", ":memory:", "pantry.db?mode=ro", "pantry.db\x00"} {
+		db, err := OpenSQLiteReader(path)
+		if err == nil {
+			db.Close()
+			t.Fatalf("opened %q", path)
+		}
+		if !strings.Contains(err.Error(), "file path") {
+			t.Fatalf("%q: %v", path, err)
+		}
+	}
+}
+
+func TestSQLiteLockingLeavesAnExplicitTimeout(t *testing.T) {
+	got := withSQLiteLocking("file.db?_timeout=1&_txlock=deferred")
+	if strings.Contains(got, "busy_timeout") || strings.Contains(got, "immediate") {
+		t.Fatalf("explicit lock was rewritten: %s", got)
+	}
+	plain := withSQLiteLocking("file.db")
+	if !strings.Contains(plain, "busy_timeout(2000)") || !strings.Contains(plain, "_txlock=immediate") {
+		t.Fatalf("plain: %s", plain)
+	}
+	if dsnReadOnly("file:db?mode&_pragma=query_only(1)") != true {
+		t.Fatal("query_only was not read-only")
+	}
+	if dsnReadOnly("file:db") {
+		t.Fatal("plain file was read-only")
+	}
+	if pragmaName(" Busy_Timeout = 1 ") != "busy_timeout" {
+		t.Fatalf("pragma %s", pragmaName(" Busy_Timeout = 1 "))
+	}
+	if dsnSetsBusyTimeout("file.db?mode&_timeout=1") != true {
+		t.Fatal("a timeout alias was ignored")
+	}
+	if dsnSetsBusyTimeout("file.db?mode") {
+		t.Fatal("a flag without a value counted as a timeout")
+	}
+}
+
 func TestOpenSQLiteReadOnlyTransactionStaysDeferred(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	db, err := OpenSQLite(path)

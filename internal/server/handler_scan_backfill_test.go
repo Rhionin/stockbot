@@ -481,7 +481,8 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 	assertNoStockEvents(t, env.DB, itemID, product.ID)
 	var override string
 	if err := env.DB.QueryRow(`
-		SELECT product_id FROM barcodes WHERE barcode = '011110000000' AND source = 'user_override' AND user_id = 'user-1'`).Scan(&override); err != nil {
+		SELECT product_id FROM barcodes WHERE barcode = '011110000000' AND source = 'user_override' AND household_id = ?`,
+		primaryScope(t, env.DB).HouseholdID()).Scan(&override); err != nil {
 		t.Fatal(err)
 	}
 	if override != product.ID {
@@ -554,7 +555,7 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 			WHERE barcode = '033330000000' AND source = 'user_override' AND product_id = ?`, product.ID).Scan(&overrideUser); err != nil {
 			t.Fatal(err)
 		}
-		if overrideUser != "user-1" {
+		if overrideUser != primaryScope(t, env.DB).HouseholdID() {
 			t.Fatalf("override user = %s", overrideUser)
 		}
 	})
@@ -725,11 +726,12 @@ func TestBackfillIsHouseholdScoped(t *testing.T) {
 	finishOpening(env)
 	at := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	seedShelfItem(env, "prod-shared", "Shared", "item-user-1")
-	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-user-2', 'user-2', 'prod-shared')`); err != nil {
+	cedar := cedarHousehold(t, env.DB)
+	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-user-2', 'user-2', 'prod-shared', ?)`, cedar); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"u2-1", "u2-2"} {
-		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES (?, 'item-user-2', ?)`, id, at); err != nil {
+		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at, household_id) VALUES (?, 'item-user-2', ?, ?)`, id, at, cedar); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -762,10 +764,10 @@ func TestBackfillIsHouseholdScoped(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-only-2', 'user-2', 'prod-only-2')`); err != nil {
+		if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-only-2', 'user-2', 'prod-only-2', ?)`, cedar); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('only-2', 'item-only-2', ?)`, at); err != nil {
+		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at, household_id) VALUES ('only-2', 'item-only-2', ?, ?)`, at, cedar); err != nil {
 			t.Fatal(err)
 		}
 		seedScanAt(env, "scan-only-other", "prod-only-2", scan.StockOut, 1, at.Add(time.Hour))

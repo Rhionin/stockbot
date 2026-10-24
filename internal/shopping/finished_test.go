@@ -88,7 +88,7 @@ func TestStoredStockInFinishesTheLine(t *testing.T) {
 			if _, err := tx.Exec(`DELETE FROM stock_in_events WHERE household_id = ?`, household); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tx.Exec(`INSERT INTO stock_in_events (household_id, product_id, at) VALUES (?, 'prod-fin', ?)`, household, tt.stockIn); err != nil {
+			if _, err := tx.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, 1, 'prod-fin', ?)`, household, tt.stockIn); err != nil {
 				t.Fatal(err)
 			}
 			added, err := parseStoredTime(tt.added)

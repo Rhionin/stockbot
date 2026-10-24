@@ -305,6 +305,13 @@ func seedLinkCard(env testEnv) {
 	if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-shelved'`); err != nil {
 		env.T.Fatal(err)
 	}
+	cedar := cedarHousehold(env.T, env.DB)
+	if _, err := env.DB.Exec(`UPDATE items SET household_id = ? WHERE id = 'item-twin'`, cedar); err != nil {
+		env.T.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`UPDATE item_instances SET household_id = ? WHERE item_id = 'item-twin'`, cedar); err != nil {
+		env.T.Fatal(err)
+	}
 	productID := "prod-off"
 	seedLooseScan(env, "scan-pears", "011110828385", scan.StockOut, 1, &productID, scan.Pending, now)
 }

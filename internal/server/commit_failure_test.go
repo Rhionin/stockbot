@@ -96,7 +96,7 @@ func TestCommitFailuresHideDatabaseErrors(t *testing.T) {
 			mux.HandleFunc("POST /api/inventory/{itemId}/stock-out", HandleJSON((&InventoryStockOutHandler{Queue: queue}).Handle))
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
+			withRequestScope(t, nil, mux).ServeHTTP(rec, req)
 			body, err := io.ReadAll(rec.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -297,7 +297,7 @@ func TestBatchLinkTargetGoneIsNotLogged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scans/batch-commit", strings.NewReader(`{"scanEntryIds":["scan-stale"],"commit":true}`)))
+	withRequestScope(t, nil, mux).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scans/batch-commit", strings.NewReader(`{"scanEntryIds":["scan-stale"],"commit":true}`)))
 	body := rec.Body.String()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d body %s", rec.Code, body)

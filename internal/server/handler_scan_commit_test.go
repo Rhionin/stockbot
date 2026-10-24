@@ -871,8 +871,8 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				// The barcode override mapping is not exposed by any list endpoint.
 				var productID string
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"123456789999", "user-resolve-1",
+					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"123456789999", primaryScope(env.T, env.DB).HouseholdID(),
 				).Scan(&productID); err != nil {
 					env.T.Fatalf("query override: %v", err)
 				}
@@ -894,9 +894,10 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				}); err != nil {
 					env.T.Fatalf("CreateProduct 2: %v", err)
 				}
+				household := primaryScope(env.T, env.DB).HouseholdID()
 				if _, err := env.DB.ExecContext(context.Background(),
-					`INSERT INTO barcodes (barcode, product_id, source, user_id) VALUES (?, ?, 'user_override', ?)`,
-					"888999000111", "prod-resolve-2a", "user-resolve-2"); err != nil {
+					`INSERT INTO barcodes (barcode, product_id, source, user_id, household_id) VALUES (?, ?, 'user_override', ?, ?)`,
+					"888999000111", "prod-resolve-2a", household, household); err != nil {
 					env.T.Fatalf("create existing override: %v", err)
 				}
 				scanRepo := scan.NewQueue(env.DB)
@@ -916,9 +917,10 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 			},
 			afterRequest: func(env testEnv) {
 				var productID string
+				household := primaryScope(env.T, env.DB).HouseholdID()
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"888999000111", "user-resolve-2",
+					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"888999000111", household,
 				).Scan(&productID); err != nil {
 					env.T.Fatalf("query override: %v", err)
 				}
@@ -927,8 +929,8 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				}
 				var count int
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT COUNT(*) FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"888999000111", "user-resolve-2",
+					`SELECT COUNT(*) FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"888999000111", household,
 				).Scan(&count); err != nil {
 					env.T.Fatalf("count overrides: %v", err)
 				}

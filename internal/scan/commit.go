@@ -227,8 +227,9 @@ func (r *Queue) recordStockInTx(ctx context.Context, scope tenant.Scope, tx *sql
 	}
 	if trackRestock && r.Supply != nil {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO stock_in_events (product_id, at, household_id) VALUES (?, ?, ?)`,
-			productID, at, scope.HouseholdID(),
+			INSERT INTO stock_in_events (household_id, id, product_id, at)
+			VALUES (?, COALESCE((SELECT MAX(id) FROM stock_in_events WHERE household_id = ?), 0) + 1, ?, ?)`,
+			scope.HouseholdID(), scope.HouseholdID(), productID, at,
 		); err != nil {
 			return nil, fmt.Errorf("record stock-in: %w", err)
 		}
@@ -1202,7 +1203,7 @@ func linkBarcode(ctx context.Context, scope tenant.Scope, tx *sql.Tx, barcode, p
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO barcodes (barcode, product_id, source, user_id, household_id)
 		VALUES (?, ?, 'user_override', ?, ?)
-		ON CONFLICT(barcode, source, user_id) DO UPDATE SET
+		ON CONFLICT(household_id, barcode, source, user_id) DO UPDATE SET
 			product_id = excluded.product_id,
 			household_id = excluded.household_id`,
 		barcode, productID, scope.HouseholdID(), scope.HouseholdID(),

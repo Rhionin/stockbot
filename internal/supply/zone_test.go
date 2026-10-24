@@ -75,8 +75,8 @@ func TestPlanFollowsTheLaterEventAcrossDST(t *testing.T) {
 		{"stock-night", later},
 		{"stock-day", between},
 	}
-	for _, row := range stock {
-		if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, product_id, at) VALUES (?, ?, ?)`, household, row.product, row.at); err != nil {
+	for i, row := range stock {
+		if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, ?, ?, ?)`, household, i+1, row.product, row.at); err != nil {
 			t.Fatal(err)
 		}
 	}

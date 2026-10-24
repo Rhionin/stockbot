@@ -10,7 +10,29 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-// withHouseholdScope marks a request as household 1's. Handlers that are
+// withRequestScope attaches a household to a handler that is not behind the
+// server middleware. A database uses household 1. A fake queue gets a valid
+// id and does not read it.
+func withRequestScope(t *testing.T, db *sql.DB, next http.Handler) http.Handler {
+	t.Helper()
+	var scope tenant.Scope
+	var err error
+	if db != nil {
+		scope, err = auth.PrimaryScope(context.Background(), db)
+	} else {
+		scope, err = tenant.New(cedarHouseholdID)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cloned := r.WithContext(tenant.WithScope(r.Context(), scope))
+		*r = *cloned
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withHouseholdScope marks a request as a second household. Handlers that are
 // invoked without the server middleware still need a scope.
 func withHouseholdScope(t *testing.T, r *http.Request) *http.Request {
 	t.Helper()

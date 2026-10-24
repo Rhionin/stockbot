@@ -165,10 +165,26 @@ func krogerBatchSize() int {
 }
 
 func main() {
+	stop := make(chan struct{})
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		close(stop)
+	}()
+	if err := start(stop); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// start opens the pantry, binds the listeners, and serves until stop is
+// closed. Errors name the startup step so the process log stays the same
+// when main exits.
+func start(stop <-chan struct{}) error {
 	dbPath := envOrDefault("DB_PATH", "pantry.db")
 	site, err := app.LoadRuntimeConfig(os.Getenv)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 	if site.AppBaseURL == "" {
 		log.Printf("site: %s, LAN only", site.AppName)
@@ -178,7 +194,7 @@ func main() {
 
 	sqlDB, readDB, err := app.OpenPantry(dbPath)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer sqlDB.Close()
 	defer readDB.Close()
@@ -193,11 +209,11 @@ func main() {
 	// so a live /api/events tab does not hold the process for the whole budget.
 	listeners, err := openListeners(site.Listeners(), gate, streams.Register)
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
 
 	if err := app.RunMigrations(sqlDB); err != nil {
-		log.Fatalf("run migrations: %v", err)
+		return fmt.Errorf("run migrations: %w", err)
 	}
 	log.Println("migrations applied")
 	if err := server.ImportHouseholdPassword(context.Background(), sqlDB, os.Getenv("PANTRY_AUTH_FILE"), os.Getenv("PANTRY_SESSION_SECRET")); err != nil {
@@ -205,17 +221,17 @@ func main() {
 	}
 
 	if _, err := product.BackfillNetSizes(context.Background(), sqlDB); err != nil {
-		log.Fatalf("backfill product sizes: %v", err)
+		return fmt.Errorf("backfill product sizes: %w", err)
 	}
 	if err := auth.RejectRetiredHeadlessUser(context.Background(), sqlDB, os.Getenv(retiredScannerSetting())); err != nil {
-		log.Fatalf("scan listener: %v", err)
+		return fmt.Errorf("scan listener: %w", err)
 	}
 	primary, err := auth.PrimaryScope(context.Background(), sqlDB)
 	if err != nil {
-		log.Fatalf("household: %v", err)
+		return fmt.Errorf("household: %w", err)
 	}
 	if err := group.NewGroups(sqlDB).Seed(context.Background(), primary); err != nil {
-		log.Fatalf("seed group suggestions: %v", err)
+		return fmt.Errorf("seed group suggestions: %w", err)
 	}
 
 	catalog := product.NewCatalog(sqlDB)
@@ -321,7 +337,7 @@ func main() {
 	if listenerOK {
 		opts = append(opts, server.WithScannerStatus(listener.Status))
 	}
-	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)))
+	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)), server.WithReadDB(readDB))
 	handler, scanQueue := server.NewHandler(catalog, lookupService, refresher, sqlDB, opts...)
 	gate.use(handler)
 
@@ -333,16 +349,10 @@ func main() {
 		go listener.Run(context.Background())
 	}
 
-	stop := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigs
-		close(stop)
-	}()
 	if err := runHTTPServers(listeners.servers, listeners.serveErr, stop, server.FlushSentry); err != nil {
-		log.Fatalf("listen: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
+	return nil
 }
 
 // shutdownTimeout is how long Shutdown waits for handlers to return. SSE

@@ -56,6 +56,7 @@ type config struct {
 	deployHookPath   string
 	household        *HouseholdAuth
 	syncToken        string
+	readDB           *sql.DB
 	push             push.Config
 	sentryTunnel     SentryTunnelConfig
 	streamShutdown   *StreamShutdown
@@ -126,6 +127,14 @@ func WithContributor(contributor product.UpstreamContributor) Option {
 func WithScannerMode(mode *scannerMode) Option {
 	return func(c *config) {
 		c.scannerMode = mode
+	}
+}
+
+// WithReadDB uses the WAL read pool for queries that do not write.
+// A missing pool keeps those reads on the writer.
+func WithReadDB(db *sql.DB) Option {
+	return func(c *config) {
+		c.readDB = db
 	}
 }
 
@@ -226,7 +235,11 @@ func NewHandler(
 	// still asks a person to sign in. A wrong or missing token never falls
 	// through to the open LAN listener.
 	handler = syncGate(syncToken, handler)
-	handler = withPrimaryScope(db, handler)
+	readDB := db
+	if cfg != nil && cfg.readDB != nil {
+		readDB = cfg.readDB
+	}
+	handler = withPrimaryScope(readDB, handler)
 	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
@@ -446,10 +459,14 @@ func newAPIMux(
 	apiMux.HandleFunc("POST /api/inventory/wipe", HandleJSON(inventoryWipeHandler.Handle))
 
 	var syncToken string
+	readDB := db
 	if cfg != nil {
 		syncToken = cfg.syncToken
+		if cfg.readDB != nil {
+			readDB = cfg.readDB
+		}
 	}
-	apiMux.HandleFunc("GET /api/sync/snapshot", (&syncSnapshotHandler{DB: db, Token: syncToken}).ServeHTTP)
+	apiMux.HandleFunc("GET /api/sync/snapshot", (&syncSnapshotHandler{DB: readDB, Token: syncToken}).ServeHTTP)
 
 	historyHandler := &HistoryHandler{Journal: history.NewJournal(db), Pantry: pantry, Events: broadcaster}
 	apiMux.HandleFunc("GET /api/history", HandleJSON(historyHandler.Household))

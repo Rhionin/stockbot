@@ -161,7 +161,7 @@ func (r *Catalog) UpsertHouseholdBarcode(ctx context.Context, scope tenant.Scope
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO barcodes (barcode, product_id, source, user_id, household_id)
 		VALUES (?, ?, 'user_override', ?, ?)
-		ON CONFLICT (barcode, source, user_id) DO UPDATE SET
+		ON CONFLICT (household_id, barcode, source, user_id) DO UPDATE SET
 			product_id = excluded.product_id,
 			household_id = excluded.household_id`,
 		barcode, productID, scope.HouseholdID(), scope.HouseholdID(),
@@ -191,24 +191,47 @@ func (r *Catalog) ownsProduct(ctx context.Context, scope tenant.Scope, got *Prod
 	if got.Source != SourceUser {
 		return true, nil
 	}
-	var n int
+	var mine, others int
 	err := r.db.QueryRowContext(ctx, `
 		SELECT (
 			SELECT COUNT(*) FROM household_product_overrides
-			WHERE household_id = ? AND product_id = ?
+			WHERE product_id = ? AND household_id = ?
 		) + (
 			SELECT COUNT(*) FROM items
-			WHERE household_id = ? AND product_id = ?
+			WHERE product_id = ? AND household_id = ?
 		) + (
 			SELECT COUNT(*) FROM barcodes
-			WHERE household_id = ? AND product_id = ? AND source = 'user_override'
+			WHERE product_id = ? AND household_id = ? AND source = 'user_override'
+		),
+		(
+			SELECT COUNT(*) FROM household_product_overrides
+			WHERE product_id = ? AND household_id != ?
+		) + (
+			SELECT COUNT(*) FROM items
+			WHERE product_id = ? AND household_id != ?
+		) + (
+			SELECT COUNT(*) FROM barcodes
+			WHERE product_id = ? AND household_id != ? AND source = 'user_override'
 		)`,
-		scope.HouseholdID(), got.ID,
-		scope.HouseholdID(), got.ID,
-		scope.HouseholdID(), got.ID,
-	).Scan(&n)
+		got.ID, scope.HouseholdID(),
+		got.ID, scope.HouseholdID(),
+		got.ID, scope.HouseholdID(),
+		got.ID, scope.HouseholdID(),
+		got.ID, scope.HouseholdID(),
+		got.ID, scope.HouseholdID(),
+	).Scan(&mine, &others)
 	if err != nil {
 		return false, fmt.Errorf("could not read the product: %w", err)
 	}
-	return n > 0, nil
+	if mine > 0 {
+		return true, nil
+	}
+	if others > 0 {
+		return false, nil
+	}
+	var primary int
+	if err := r.db.QueryRowContext(ctx, `SELECT is_primary FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&primary); err != nil {
+		return false, fmt.Errorf("could not read the product: %w", err)
+	}
+	return primary == 1, nil
 }

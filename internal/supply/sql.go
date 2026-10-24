@@ -163,7 +163,7 @@ func writeOverride(ctx context.Context, scope tenant.Scope, db *sql.DB, id Produ
 	}
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO supply_overrides (household_id, product_id, window_months, quantity) VALUES (?, ?, ?, ?)
-		ON CONFLICT(product_id) DO UPDATE SET
+		ON CONFLICT(household_id, product_id) DO UPDATE SET
 			window_months = excluded.window_months,
 			quantity = excluded.quantity
 		WHERE supply_overrides.household_id = excluded.household_id`,
