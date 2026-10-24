@@ -346,7 +346,7 @@ func reviewStack(t *testing.T) (http.Handler, *auth.Service, *sql.DB) {
 	setupDir := t.TempDir()
 	svc := auth.NewService(db, setupDir)
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, stage1Site(t)))
-	if rec := stage1Do(handler, http.MethodGet, "/setup", "", nil, app.EntryLAN, ""); rec.Code != http.StatusOK {
+	if rec := stage1Do(handler, http.MethodGet, "/setup", "", nil, app.EntryPublic, ""); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)
 	}
 	code, err := auth.ReadSetupCode(setupDir)
@@ -355,7 +355,7 @@ func reviewStack(t *testing.T) (http.Handler, *auth.Service, *sql.DB) {
 	}
 	if rec := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
 		"setupCode": code, "name": "Owner Alpha", "email": "alpha@example.test", "password": "correct horse",
-	}, app.EntryLAN, ""); rec.Code != http.StatusOK {
+	}, app.EntryPublic, ""); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
 	return handler, svc, db
