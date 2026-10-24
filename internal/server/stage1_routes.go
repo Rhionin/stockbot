@@ -664,11 +664,25 @@ func (s *stage1) serveRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.svc.RevokeInvite(r.Context(), p.UserID, p.HouseholdID, r.PathValue("id"), p.Operator); err != nil {
+	if err := s.svc.RevokeInvite(r.Context(), p.UserID, revokeHouseholdID(r, p.HouseholdID), r.PathValue("id"), p.Operator); err != nil {
 		writeStage1(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeHouseholdID is the household a join invite must belong to.
+// A header wins over the session's active household. A start_household
+// invite ignores this value.
+func revokeHouseholdID(r *http.Request, active string) string {
+	header := strings.TrimSpace(r.Header.Get(householdHeader))
+	if header == "" {
+		return active
+	}
+	if id := canonicalID(header); id != "" {
+		return id
+	}
+	return header
 }
 
 type codeBody struct {
@@ -774,9 +788,45 @@ func (s *stage1) serveAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}{SessionView: result.Session, HouseholdID: result.HouseholdID, Name: result.Name, Role: result.Role})
 }
 
+// rejectOperatorInviteBody rejects a role, unknown fields, and invalid JSON.
+// An empty body and {} are the stage-1 request. email, when sent, is ignored.
+func rejectOperatorInviteBody(r *http.Request) error {
+	if r == nil || r.Body == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation}
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var body struct {
+		Email string          `json:"email"`
+		Role  json.RawMessage `json:"role"`
+	}
+	if err := dec.Decode(&body); err != nil {
+		return &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation}
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation}
+	}
+	if len(body.Role) > 0 {
+		return &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation, Field: "role"}
+	}
+	return nil
+}
+
 func (s *stage1) serveOperatorInvite(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.account(w, r)
 	if !ok {
+		return
+	}
+	if err := rejectOperatorInviteBody(r); err != nil {
+		writeStage1(w, err)
 		return
 	}
 	created, err := s.svc.CreateStartInvite(r.Context(), p.UserID, p.Operator)

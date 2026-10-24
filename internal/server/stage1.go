@@ -424,10 +424,26 @@ func needsHousehold(r *http.Request) bool {
 		"/api/telemetry/client", "/api/me", "/api/session", "/api/login", "/api/logout":
 		return false
 	}
+	// Revoke looks the invite up itself. A start_household invite ignores
+	// X-Household-Id, so a missing or foreign header must not fail here.
+	// A join_household invite still requires the header or the session's
+	// active household, and checks that inside RevokeInvite.
+	if revokeInvitePath(path) {
+		return false
+	}
 	if strings.HasPrefix(path, "/api/auth/") || strings.HasPrefix(path, "/api/device/") {
 		return false
 	}
 	return true
+}
+
+func revokeInvitePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/invites/")
+	if !ok {
+		return false
+	}
+	id, action, found := strings.Cut(rest, "/")
+	return found && id != "" && action == "revoke"
 }
 
 func allowsDeleted(r *http.Request) bool {
