@@ -81,6 +81,11 @@ for (const viewport of viewports) {
 
   test(`startup banner box at ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.route('**/api/auth/session', (route) => route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'not found' }),
+    }))
     await page.route('**/api/session', (route) => route.abort('internetdisconnected'))
     await page.goto('/')
     await expect(page.getByText(sentence)).toBeVisible()
@@ -89,6 +94,11 @@ for (const viewport of viewports) {
 
   test(`sign-in banner box at ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.route('**/api/auth/session', (route) => route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'not found' }),
+    }))
     await page.route('**/api/session', (route) => route.fulfill({
       status: 401,
       contentType: 'application/json',
