@@ -29,7 +29,7 @@ function NoticeIcon() {
 
 const shellSide = `max(0px, calc(${NOTICE_SCREEN_PADDING_INLINE}px - var(--mantine-spacing-xs)))`;
 
-// One banner. A server notice (offline, sign-in) wins over the queue's
+// One banner. A server notice (offline, updating, sign-in) wins over the queue's
 // busy or out-of-space sentence, so that spot never shows two banners.
 export function ServerNoticeBanner({
   text = '',

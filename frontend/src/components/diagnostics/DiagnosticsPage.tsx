@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Stack, Table, Text, Title } from '@mantine/core';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, inlineFailure, notifyApiSuccess, raiseOfflineBanner, ServerNoticeError, stockbotCode, UnreachableError, unreachableFrom, unreadableResponse } from '@stockbot/shared/contract';
+import { applyHttpResponse, inlineFailure, noticeForDisposition, notifyApiSuccess, raiseOfflineBanner, stockbotCode, unreachableFrom, unreadableResponse } from '@stockbot/shared/contract';
 
 interface LatencySnapshot {
   count: number;
@@ -134,8 +134,8 @@ export const DiagnosticsPage = () => {
             code = '';
           }
           const disposition = applyHttpResponse(res.status, code);
-          if (disposition === 'offline') throw new UnreachableError();
-          if (disposition === 'auth') throw new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
+          const notice = noticeForDisposition(disposition);
+          if (notice !== null) throw notice;
           throw new Error('Unable to load diagnostics.');
         }
         let text: string;

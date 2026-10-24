@@ -628,6 +628,56 @@ describe('nothing on hand queue', () => {
     });
   });
 
+  it('does not scroll again once the skipped banner clears', async () => {
+    const oats = scan({
+      id: 'scan-oats',
+      barcode: '333',
+      productId: 'prod-oats',
+      product: product('prod-oats', 'Oats'),
+    });
+    const rice = scan({
+      id: 'scan-rice',
+      barcode: '666',
+      productId: 'prod-rice',
+      product: product('prod-rice', 'Rice'),
+    });
+    const inbound = scan({
+      id: 'scan-in',
+      barcode: '777',
+      direction: 'stock_in',
+      productId: 'prod-beans',
+      product: product('prod-beans', 'Beans'),
+    });
+    renderQueue({
+      scans: [oats, rice, inbound],
+      inventory: [shelf('oats', 'Oats', 2), shelf('rice', 'Rice', 2), shelf('beans', 'Beans', 1)],
+      batchResult: {
+        updatedCount: 1,
+        committedIds: ['scan-oats'],
+        failedIds: ['scan-rice'],
+        failedReasons: ['Nothing on hand to take out.'],
+        failedCodes: ['none_on_hand'],
+      },
+    });
+    expect(await screen.findByRole('article', { name: 'Scan 333' })).toBeInTheDocument();
+    await confirmBatch(2);
+    const queue = document.querySelector('.scan-page-queue') as HTMLElement;
+    await waitFor(() => {
+      expect(document.querySelector('.scan-nothing-skipped')).not.toBeNull();
+      expect(queue.scrollTop).toBe(0);
+    });
+    queue.scrollTop = 240;
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    fireEvent.click(screen.getByRole('tab', { name: /Stock in/ }));
+    fireEvent.click(within(await screen.findByRole('article', { name: 'Scan 777' })).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => {
+      expect(document.querySelector('.scan-nothing-skipped')).toBeNull();
+    });
+    expect(queue.scrollTop).toBe(240);
+    expect(scrollTo).not.toHaveBeenCalled();
+    scrollTo.mockRestore();
+  });
+
   it('hides the skipped line while a batch still has a blocking failure', async () => {
     const oats = scan({
       id: 'scan-oats',

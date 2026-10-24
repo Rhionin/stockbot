@@ -960,4 +960,59 @@ describe('backfill card', () => {
       expect(onChanged).toHaveBeenCalled();
     }
   });
+
+  it('does not patch an unlinked scan before backfill when the product is still null', async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown;
+      calls.push({ method, url, body });
+      if (url.endsWith('/commit') && method === 'POST') {
+        const written = body as { backfill?: boolean };
+        if (written.backfill === true) {
+          return Promise.resolve(json({
+            removed: 1,
+            backfilled: 1,
+            itemId: 'item-sour',
+            backfill: { stockInMoveId: 'move-backfill', stockOutMoveId: 'move-out' },
+          }));
+        }
+        return Promise.resolve(json({ error: 'Nothing on hand to take out.', code: 'none_on_hand', onHand: 0 }, 409));
+      }
+      if (url === '/api/scans/scan-1' && method === 'PATCH') {
+        return Promise.resolve(json({ ...entry(false), status: 'pending', onHand: 0 }));
+      }
+      return Promise.resolve(json([]));
+    }));
+
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanEntryCard
+          entry={entry(false)}
+          selected={false}
+          onSelectedChange={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </MantineProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add it and take it out' }));
+    await waitFor(() => {
+      const posted = calls.find((call) => {
+        const written = call.body as { backfill?: boolean } | undefined;
+        return call.method === 'POST' && written?.backfill === true;
+      });
+      expect(posted?.body).toEqual({ backfill: true });
+    });
+    const patchAt = calls.findIndex((call) => call.method === 'PATCH' && call.url === '/api/scans/scan-1');
+    const backfillAt = calls.findIndex((call) => {
+      const written = call.body as { backfill?: boolean } | undefined;
+      return call.method === 'POST' && written?.backfill === true;
+    });
+    expect(patchAt).toBe(-1);
+    expect(backfillAt).toBeGreaterThanOrEqual(0);
+  });
 });

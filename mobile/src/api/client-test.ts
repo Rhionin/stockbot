@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, INVALID_CREDENTIALS_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 
@@ -51,11 +51,47 @@ describe('createStockbotClient', () => {
     expect(new Headers(init?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, password));
   });
 
-  it('rejects a wrong password without using the server wording', async () => {
-    const { client, onUnauthorized } = clientWith(jest.fn(async () => jsonResponse(401, { error: 'Sign in required.' })));
+  it('keeps the server sentence on a 401', async () => {
+    const { client, onUnauthorized } = clientWith(jest.fn(async () => jsonResponse(401, {
+      error: 'Sign in required.',
+      code: 'unauthorized',
+    })));
 
-    await expect(client.getSession()).rejects.toMatchObject({ status: 401, message: 'That password was rejected.' });
+    await expect(client.getSession()).rejects.toMatchObject({
+      status: 401,
+      code: 'unauthorized',
+      message: 'Sign in required.',
+    });
     expect(onUnauthorized).toHaveBeenCalled();
+  });
+
+  it('keeps the wrong-password sentence', async () => {
+    const { client } = clientWith(jest.fn(async () => jsonResponse(401, {
+      error: INVALID_CREDENTIALS_SENTENCE,
+      code: 'unauthorized',
+    })));
+
+    await expect(client.getSession()).rejects.toMatchObject({
+      status: 401,
+      code: 'unauthorized',
+      message: INVALID_CREDENTIALS_SENTENCE,
+    });
+  });
+
+  it('keeps item id and on hand from the error body', async () => {
+    const { client } = clientWith(jest.fn(async () => jsonResponse(409, {
+      error: 'Nothing on hand to take out.',
+      code: 'none_on_hand',
+      itemId: 'item-1',
+      onHand: 0,
+    })));
+
+    await expect(client.commitScan('scan-1')).rejects.toMatchObject({
+      status: 409,
+      code: 'none_on_hand',
+      itemId: 'item-1',
+      onHand: 0,
+    });
   });
 
   it.each([
@@ -135,6 +171,9 @@ describe('createStockbotClient', () => {
   it.each([
     { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.', notice: '' },
     { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved.", notice: '' },
+    { name: 'updating', status: 503, code: 'updating', message: UPDATING_SENTENCE, notice: UPDATING_SENTENCE },
+    { name: 'provider unavailable', status: 502, code: 'provider_unavailable', message: "Kroger isn't responding. Try again later.", notice: '' },
+    { name: 'coded 503 internal', status: 503, code: 'internal', message: 'Something went wrong. Try again.', notice: '' },
     { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.', notice: '' },
     { name: 'auth not configured', status: 503, code: authNotConfigured.code, message: AUTH_NOT_CONFIGURED_SENTENCE, notice: "Sign-in isn't set up yet." },
   ])('$name clears offline and keeps its own message', async ({ status, code, message, notice }) => {
@@ -150,6 +189,17 @@ describe('createStockbotClient', () => {
     }
     await expect(attempt).rejects.toMatchObject({ status, code, message });
     expect(offlineBannerActive()).toBe(false);
+    expect(serverNoticeText()).toBe('');
+  });
+
+  it('clears updating on the next success', async () => {
+    const { client } = clientWith(jest.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/api/session')) return jsonResponse(503, { error: UPDATING_SENTENCE, code: 'updating' });
+      return jsonResponse(200, []);
+    }));
+    await expect(client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    expect(serverNoticeText()).toBe(UPDATING_SENTENCE);
+    await client.listPending();
     expect(serverNoticeText()).toBe('');
   });
 

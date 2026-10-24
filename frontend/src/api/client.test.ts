@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as telemetry from '../telemetry/client';
 import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
-import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UPDATING_SENTENCE, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 
 const authNotConfigured = JSON.parse(
   readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
@@ -99,6 +99,9 @@ describe('api error messages', () => {
   it.each([
     { name: 'busy', status: 503, code: 'busy', message: 'Stockbot is busy right now. Try again in a moment.', notice: '' },
     { name: 'no_space', status: 507, code: 'no_space', message: "Stockbot is out of storage space, so this wasn't saved.", notice: '' },
+    { name: 'updating', status: 503, code: 'updating', message: UPDATING_SENTENCE, notice: UPDATING_SENTENCE },
+    { name: 'provider unavailable', status: 502, code: 'provider_unavailable', message: "Open Food Facts isn't responding. Try again later.", notice: '' },
+    { name: 'coded 503 internal', status: 503, code: 'internal', message: 'Something went wrong. Try again.', notice: '' },
     { name: 'item failure', status: 409, code: 'not_pending', message: 'That scan is no longer pending.', notice: '' },
     { name: 'coded 500', status: 500, code: 'internal', message: 'Something went wrong. Try again.', notice: '' },
     { name: 'auth not configured', status: 503, code: authNotConfigured.code, message: AUTH_NOT_CONFIGURED_SENTENCE, notice: "Sign-in isn't set up yet." },

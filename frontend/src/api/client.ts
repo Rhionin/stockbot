@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, linkSuggestionsPath, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from '@stockbot/shared/contract';
+import { applyHttpResponse, INVALID_CREDENTIALS_SENTENCE, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from '@stockbot/shared/contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -78,6 +78,7 @@ export class ApiError extends Error {
   readonly suggestions: PantryLinkSuggestion[];
   readonly itemId: string;
   readonly onHand: number | undefined;
+  readonly provider: string;
 
   constructor(
     status: number,
@@ -87,6 +88,7 @@ export class ApiError extends Error {
     suggestions: PantryLinkSuggestion[] = [],
     itemId = '',
     onHand?: number,
+    provider = '',
   ) {
     super(message);
     this.name = 'ApiError';
@@ -96,6 +98,7 @@ export class ApiError extends Error {
     this.suggestions = suggestions;
     this.itemId = itemId;
     this.onHand = onHand;
+    this.provider = provider;
   }
 }
 
@@ -130,6 +133,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     let suggestions: PantryLinkSuggestion[] = [];
     let itemId = '';
     let onHand: number | undefined;
+    let provider = '';
     try {
       const body = (await res.json()) as {
         error?: string;
@@ -138,6 +142,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
         suggestions?: PantryLinkSuggestion[];
         itemId?: string;
         onHand?: number;
+        provider?: string;
       };
       if (body.error) message = body.error;
       code = stockbotCode(body);
@@ -145,11 +150,12 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       suggestions = body.suggestions ?? [];
       itemId = readItemId(body);
       onHand = readOnHand(body);
+      provider = typeof body.provider === 'string' ? body.provider : '';
     } catch {
       // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw classifiedError(res.status, message, code, members, suggestions, itemId, onHand);
+    throw classifiedError(res.status, message, code, members, suggestions, itemId, onHand, provider);
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
@@ -185,11 +191,12 @@ function classifiedError(
   suggestions: PantryLinkSuggestion[] = [],
   itemId = '',
   onHand?: number,
+  provider = '',
 ): Error {
   const disposition = applyHttpResponse(status, code);
-  if (disposition === 'offline') return new UnreachableError();
-  if (disposition === 'auth') return new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
-  return new ApiError(status, message, code, members, suggestions, itemId, onHand);
+  const notice = noticeForDisposition(disposition);
+  if (notice !== null) return notice;
+  return new ApiError(status, message, code, members, suggestions, itemId, onHand, provider);
 }
 
 // --- Products ---
@@ -689,8 +696,9 @@ export async function getSession(): Promise<HouseholdSession> {
 
 function sessionFailure(status: number, code: string, errorText?: string): HouseholdSession {
   const disposition = applyHttpResponse(status, code);
-  if (disposition === 'offline') throw new UnreachableError();
-  if (disposition === 'auth') return { required: true, username: '', error: '' };
+  const notice = noticeForDisposition(disposition);
+  if (notice instanceof UnreachableError) throw notice;
+  if (notice !== null) return { required: true, username: '', error: '' };
   return { required: true, username: '', error: errorText || 'Sign-in is unavailable right now.' };
 }
 
@@ -702,7 +710,7 @@ export async function login(username: string, password: string): Promise<void> {
     body: JSON.stringify({ username, password }),
   });
   if (!res.ok) {
-    let message = 'The username or password is incorrect.';
+    let message = INVALID_CREDENTIALS_SENTENCE;
     let code = '';
     try {
       const body = (await res.json()) as { error?: string; code?: string };
