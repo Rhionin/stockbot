@@ -91,6 +91,31 @@ var sqlAllow = []struct {
 		snippet: "d.kind = 'direct'",
 		reason:  "resolves the seeded direct scanner; household id is the result",
 	},
+	{
+		file:    "internal/auth/lookup.go",
+		snippet: "m.user_id = ?",
+		reason:  "a person's memberships span households; the session already authenticated the person",
+	},
+	{
+		file:    "internal/auth/lookup.go",
+		snippet: "t.token_hash = ?",
+		reason:  "a device token is looked up by its hash; the household is stored on the token",
+	},
+	{
+		file:    "internal/auth/lookup.go",
+		snippet: "invites.code_hash = ?",
+		reason:  "an invite is looked up by its code hash; the household is stored on the invite",
+	},
+	{
+		file:    "internal/auth/lookup.go",
+		snippet: "pairing_codes.code_hash = ?",
+		reason:  "a pairing code is looked up by its hash; the household is the one that issued it",
+	},
+	{
+		file:    "internal/auth/invites.go",
+		snippet: "FROM invites WHERE id = ?",
+		reason:  "revoke loads one invite by id, including a start_household invite whose household is null; membership is checked before it is cancelled",
+	},
 }
 
 var (

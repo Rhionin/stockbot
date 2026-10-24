@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
+	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/go-json-experiment/json"
 	"golang.org/x/crypto/bcrypt"
@@ -116,7 +121,43 @@ func (a *HouseholdAuth) enforced(r *http.Request) bool {
 	if a == nil || (!a.Configured && !a.FailClosed) {
 		return false
 	}
+	// The listener is the entry. On :8080 a client-supplied X-Pantry-Entry
+	// is ignored and logged so a LAN request cannot claim the public site.
+	// A request with no listener still uses the header, which is how the
+	// current tests and the single-listener process tell the public site
+	// from the LAN until Caddy is cut over.
+	if entry, ok := app.EntryFrom(r.Context()); ok {
+		if entry == app.EntryLAN && strings.TrimSpace(r.Header.Get(entryHeader)) != "" {
+			slog.Info("X-Pantry-Entry ignored on the LAN listener")
+		}
+		return false
+	}
 	return r.Header.Get(entryHeader) == entryPublic
+}
+
+// legacyUsed reports whether the household-password routes are on this
+// request. A listener entry replaces the X-Pantry-Entry header. The public
+// listener still serves those routes while the shared password is on.
+func (a *HouseholdAuth) legacyUsed(r *http.Request) bool {
+	if a.enforced(r) {
+		return true
+	}
+	entry, ok := app.EntryFrom(r.Context())
+	return ok && entry == app.EntryPublic
+}
+
+type householdGateKey struct{}
+
+func withHouseholdGate(ctx context.Context, g auth.HouseholdGate) context.Context {
+	return context.WithValue(ctx, householdGateKey{}, g)
+}
+
+func householdGateFrom(ctx context.Context) (auth.HouseholdGate, bool) {
+	if ctx == nil {
+		return auth.HouseholdGate{}, false
+	}
+	g, ok := ctx.Value(householdGateKey{}).(auth.HouseholdGate)
+	return g, ok
 }
 
 // Middleware lets the LAN through unchanged. On the public hostname it
@@ -185,7 +226,11 @@ func (a *HouseholdAuth) Middleware(next http.Handler) http.Handler {
 
 // ServeSession tells the web UI whether this request must sign in.
 func (a *HouseholdAuth) ServeSession(w http.ResponseWriter, r *http.Request) {
-	if !a.enforced(r) {
+	if g, ok := householdGateFrom(r.Context()); ok && !g.On {
+		writeJSON(w, http.StatusOK, map[string]any{"required": false})
+		return
+	}
+	if !a.legacyUsed(r) {
 		writeJSON(w, http.StatusOK, map[string]any{"required": false})
 		return
 	}
@@ -217,7 +262,11 @@ func (a *HouseholdAuth) ServeSession(w http.ResponseWriter, r *http.Request) {
 
 // ServeLogin checks the household password and sets the session cookie.
 func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
-	if a == nil || !a.enforced(r) {
+	if g, ok := householdGateFrom(r.Context()); ok && !g.On {
+		writeAuthError(w, http.StatusNotFound, codeNotFound, "Sign-in is not used on this address.")
+		return
+	}
+	if a == nil || !a.legacyUsed(r) {
 		writeAuthError(w, http.StatusNotFound, codeNotFound, "Sign-in is not used on this address.")
 		return
 	}
@@ -239,16 +288,22 @@ func (a *HouseholdAuth) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		writeLimited(w, retry)
 		return
 	}
-	if !a.passwordMatches(body.Username, body.Password) {
+	if !a.passwordMatchesRequest(r, body.Username, body.Password) {
 		a.limiter.fail(a.nowTime(), key)
 		writeAuthError(w, http.StatusUnauthorized, codeUnauthorized, "The username or password is incorrect.")
 		return
 	}
 	a.limiter.reset(key)
 	exp := a.nowTime().Add(sessionLifetime)
+	userName := a.Username
+	secret := a.secret
+	if g, ok := householdGateFrom(r.Context()); ok && g.User != "" && len(g.Secret) > 0 {
+		userName = g.User
+		secret = g.Secret
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
-		Value:    a.sign(a.Username, exp),
+		Value:    signPayload(secret, userName, exp),
 		Path:     "/",
 		Expires:  exp,
 		MaxAge:   int(sessionLifetime.Seconds()),
@@ -275,6 +330,17 @@ func (a *HouseholdAuth) ServeLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
+func (a *HouseholdAuth) passwordMatchesRequest(r *http.Request, user, pass string) bool {
+	if g, ok := householdGateFrom(r.Context()); ok && len(g.Hash) > 0 {
+		sumUser := sha256.Sum256([]byte(user))
+		sumWant := sha256.Sum256([]byte(g.User))
+		userOK := subtle.ConstantTimeCompare(sumUser[:], sumWant[:]) == 1
+		err := bcrypt.CompareHashAndPassword(g.Hash, []byte(pass))
+		return userOK && err == nil
+	}
+	return a.passwordMatches(user, pass)
+}
+
 func (a *HouseholdAuth) passwordMatches(user, pass string) bool {
 	sumUser := sha256.Sum256([]byte(user))
 	sumWant := sha256.Sum256([]byte(a.Username))
@@ -284,10 +350,46 @@ func (a *HouseholdAuth) passwordMatches(user, pass string) bool {
 }
 
 func (a *HouseholdAuth) sign(user string, exp time.Time) string {
+	return signPayload(a.secret, user, exp)
+}
+
+func signPayload(secret []byte, user string, exp time.Time) string {
 	payload := []byte(user + "|" + strconv.FormatInt(exp.Unix(), 10))
-	mac := hmac.New(sha256.New, a.secret)
+	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write(payload)
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func pantryCookieOK(secret []byte, username string, now time.Time, raw string) bool {
+	if len(secret) == 0 || username == "" || raw == "" {
+		return false
+	}
+	payloadB64, macB64, ok := strings.Cut(raw, ".")
+	if !ok {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return false
+	}
+	got, err := base64.RawURLEncoding.DecodeString(macB64)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(payload)
+	if !hmac.Equal(got, mac.Sum(nil)) {
+		return false
+	}
+	user, expStr, ok := strings.Cut(string(payload), "|")
+	if !ok || user != username {
+		return false
+	}
+	expUnix, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil {
+		return false
+	}
+	return now.Before(time.Unix(expUnix, 0))
 }
 
 func (a *HouseholdAuth) sessionUser(r *http.Request) (string, bool) {

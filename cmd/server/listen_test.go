@@ -168,6 +168,52 @@ func TestRunHTTPServersClosesTheOthersWhenOneStops(t *testing.T) {
 	}
 }
 
+func TestRunHTTPServersShutsThePeerDownWhenServeReturnsBeforeStop(t *testing.T) {
+	prev := shutdownTimeout
+	shutdownTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = prev })
+
+	set, err := openListeners([]app.Listener{
+		{Addr: "127.0.0.1:0", Entry: app.EntryLAN},
+		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, addr := range set.addrs {
+		waitListening(t, addr)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- runHTTPServers(set.servers, set.serveErr, stop, func() {})
+	}()
+	if err := set.servers[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer listener was not shut down before stop closed")
+	}
+	select {
+	case <-stop:
+		t.Fatal("stop was closed")
+	default:
+	}
+	conn, dialErr := net.DialTimeout("tcp", set.addrs[1], 200*time.Millisecond)
+	if dialErr == nil {
+		conn.Close()
+		t.Fatal("peer listener accepted a connection after the other Serve returned")
+	}
+}
+
 func readEntry(t *testing.T, addr string) string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

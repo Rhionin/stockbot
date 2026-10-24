@@ -160,6 +160,13 @@ func TestLoadRuntimeConfigRejects(t *testing.T) {
 		{name: "email", env: map[string]string{"EMAIL_FROM": "not-an-email"}, want: "email address"},
 		{name: "lan address", env: map[string]string{"LAN_LISTEN_ADDR": "8080"}, want: "host:port"},
 		{name: "public address", env: map[string]string{"PUBLIC_LISTEN_ADDR": "http://pantry.example"}, want: "host:port"},
+		{name: "listen port zero", env: map[string]string{"LAN_LISTEN_ADDR": ":0"}, want: "host:port"},
+		{name: "listen port too high", env: map[string]string{"PUBLIC_LISTEN_ADDR": ":65536", "APP_BASE_URL": "https://pantry.example"}, want: "host:port"},
+		{name: "base URL port zero", env: map[string]string{"APP_BASE_URL": "https://pantry.example:0"}, want: "http or https"},
+		{name: "base URL port too high", env: map[string]string{"APP_BASE_URL": "https://pantry.example:65536"}, want: "http or https"},
+		{name: "bare query", env: map[string]string{"APP_BASE_URL": "https://pantry.example?"}, want: "no path"},
+		{name: "one part version", env: map[string]string{"EXPO_MIN_VERSION": "2"}, want: "1.0.0"},
+		{name: "wildcard and interface", env: map[string]string{"APP_BASE_URL": "https://pantry.example", "LAN_LISTEN_ADDR": ":8080", "PUBLIC_LISTEN_ADDR": "127.0.0.1:8080"}, want: "different addresses"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,6 +189,27 @@ func TestEntryFromContext(t *testing.T) {
 	}
 	if _, ok := EntryFrom(WithEntry(ctx, Entry("other"))); ok {
 		t.Fatal("an unknown entry was accepted")
+	}
+}
+
+func TestLoadRuntimeConfigStripsDefaultPortsAndKeepsExplicitPort(t *testing.T) {
+	cfg, err := LoadRuntimeConfig(envFrom(map[string]string{
+		"APP_BASE_URL": "http://pi.local:80",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppBaseURL != "http://pi.local" || cfg.PublicHost != "pi.local" {
+		t.Fatalf("origin %q host %q", cfg.AppBaseURL, cfg.PublicHost)
+	}
+	kept, err := LoadRuntimeConfig(envFrom(map[string]string{
+		"APP_BASE_URL": "http://pi.local:8080",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.AppBaseURL != "http://pi.local:8080" {
+		t.Fatalf("origin %q", kept.AppBaseURL)
 	}
 }
 
@@ -211,8 +239,11 @@ func TestExpoVersionTreatsMissingPartsAsZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ExpoUpgradeRequired("expo/1") || cfg.ExpoUpgradeRequired("expo/1.0") {
-		t.Fatal("1 and 1.0 were treated as older than 1.0.0")
+	if !cfg.ExpoUpgradeRequired("expo/1") {
+		t.Fatal("a one-part version was accepted")
+	}
+	if cfg.ExpoUpgradeRequired("expo/1.0") {
+		t.Fatal("1.0 was treated as older than 1.0.0")
 	}
 	if !cfg.ExpoUpgradeRequired("expo/0") {
 		t.Fatal("0 was not below 1.0.0")

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/brand"
 	"github.com/Rhionin/stockbot/internal/cart"
@@ -60,6 +61,9 @@ type config struct {
 	push             push.Config
 	sentryTunnel     SentryTunnelConfig
 	streamShutdown   *StreamShutdown
+	stage1svc        *auth.Service
+	site             app.RuntimeConfig
+	gate             *stage1
 }
 
 // Option is a functional option for NewHandler.
@@ -239,7 +243,11 @@ func NewHandler(
 	if cfg != nil && cfg.readDB != nil {
 		readDB = cfg.readDB
 	}
-	handler = withPrimaryScope(readDB, handler)
+	if cfg != nil && cfg.gate != nil {
+		handler = cfg.gate.Middleware(handler)
+	} else {
+		handler = withPrimaryScope(readDB, handler)
+	}
 	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
@@ -297,6 +305,11 @@ func newAPIMux(
 			scannerJSON, _ := json.Marshal(status)
 			response = fmt.Sprintf(`%s,"scanner":%s}`, response[:len(response)-1], scannerJSON)
 		}
+		if cfg != nil && cfg.stage1svc != nil {
+			if code := cfg.stage1svc.SetupHealth(r.Context()); code != "" {
+				response = fmt.Sprintf(`%s,"setupCode":%q}`, response[:len(response)-1], code)
+			}
+		}
 		fmt.Fprintln(w, response)
 	})
 
@@ -305,6 +318,9 @@ func newAPIMux(
 		streams = cfg.streamShutdown
 	}
 	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg, Shutdown: streams}
+	if cfg != nil && cfg.stage1svc != nil {
+		eventsHandler.Streams = cfg.stage1svc.Streams()
+	}
 	apiMux.HandleFunc("GET /api/events", eventsHandler.Handle)
 	// Caddy serves this exact path without the household password, beside
 	// telemetry, and isPublicPath leaves it open when X-Pantry-Entry is set.
@@ -665,6 +681,15 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/push/vapid-public-key", HandleJSON(pushHandler.PublicKey))
 	apiMux.HandleFunc("POST /api/push/subscriptions", HandleJSON(pushHandler.Save))
 	apiMux.HandleFunc("DELETE /api/push/subscriptions", HandleJSON(pushHandler.Delete))
+	if cfg != nil && cfg.stage1svc != nil {
+		cfg.gate = &stage1{
+			svc:      cfg.stage1svc,
+			site:     cfg.site,
+			stockIn:  scannerConfig.StockInBarcode,
+			stockOut: scannerConfig.StockOutBarcode,
+		}
+	}
+	registerStage1(apiMux, cfg)
 	// The listener uses the broadcaster this mux already publishes scans on,
 	// including scans from the headless reader when it shares that broadcaster.
 	if db != nil {

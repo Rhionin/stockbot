@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/telemetry"
@@ -25,6 +26,8 @@ type EventsHandler struct {
 	// Shutdown, when set, ends this stream during process shutdown so the
 	// listener does not wait out an open tab.
 	Shutdown *StreamShutdown
+	// Streams cancels a member's event stream when their access ends.
+	Streams *auth.Streams
 	// Keepalive is how often to write an SSE comment. Zero uses eventKeepalive.
 	Keepalive time.Duration
 }
@@ -49,6 +52,22 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+	if h.Shutdown != nil {
+		ctx = h.Shutdown.Context(ctx)
+	}
+	if h.Streams != nil {
+		if key := eventStreamKey(r); key != "" {
+			bound, err := h.Streams.Bind(ctx, key)
+			if err != nil {
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusTooManyRequests, errorPayload{Error: auth.SentenceRate, Code: codeRateLimited})
+				return
+			}
+			ctx = bound
+		}
+	}
+
 	// Subscribe before flushing the response headers. A client that observes
 	// the 200 OK is then guaranteed to already be subscribed, so an event
 	// published immediately after the client's request returns cannot slip
@@ -56,11 +75,6 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// registered.
 	messages, unsubscribe := h.Broadcaster.Subscribe()
 	defer unsubscribe()
-
-	ctx := r.Context()
-	if h.Shutdown != nil {
-		ctx = h.Shutdown.Context(ctx)
-	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
