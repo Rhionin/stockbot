@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -92,6 +92,45 @@ describe('setup, invites, and import', () => {
       account: { name: 'Ada', email: 'ada@example.com', password: 'long-password' },
       household: { name: 'Pantry', restockMode: 'ask_restock' },
     });
+  });
+
+  it('lets a signed-in account start a household from an invite', async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/invites/preview') {
+        return Promise.resolve(json({ kind: 'start_household', role: 'owner', expiresAt: '2026-05-01T00:00:00Z' }));
+      }
+      if (url === '/api/invites/accept') {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Promise.resolve(json({
+          user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
+          kind: 'account',
+          memberships: [],
+          households: [],
+          activeHouseholdId: 'hh-2',
+          operator: false,
+          householdId: 'hh-2',
+          name: 'Cabin',
+          role: 'owner',
+        }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    const onAccepted = vi.fn();
+    render(
+      <MantineProvider>
+        <MemoryRouter>
+          <InviteAcceptPage code="start-2" signedIn onAccepted={onAccepted} />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Start a household' })).toBeVisible();
+    expect(screen.queryByLabelText(/^Email/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Household name/), { target: { value: 'Cabin' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create household' }));
+    await waitFor(() => expect(onAccepted).toHaveBeenCalled());
+    expect(bodies[0]).toEqual({ code: 'start-2', household: { name: 'Cabin', restockMode: 'auto' } });
   });
 
   it('imports a file into an empty household', async () => {

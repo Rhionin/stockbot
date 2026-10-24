@@ -320,6 +320,16 @@ describe('changeover and household management', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Cabin' }));
     await waitFor(() => expect(replaceAuth).toHaveBeenCalledWith(expect.objectContaining({ activeHouseholdId: 'hh-2' })));
   });
+
+  it('shows one household as a name, not a menu', () => {
+    const auth = session('owner');
+    auth.households = [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
+    auth.memberships = [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
+    renderStage(<HouseholdSwitcher />, auth);
+    expect(screen.getByText('Pantry')).toHaveClass('household-switch-name');
+    expect(screen.queryByRole('combobox', { name: 'Household' })).not.toBeInTheDocument();
+    expect(document.querySelector('select')).toBeNull();
+  });
 });
 
 describe('devices, pairing, and live hints', () => {
@@ -404,6 +414,36 @@ describe('devices, pairing, and live hints', () => {
     fireEvent.click(screen.getByRole('button', { name: PRINT_PAIRING_CODE_LABEL }));
     expect(print).toHaveBeenCalled();
     expect(code128Bars(PAIRING).some(Boolean)).toBe(true);
+  });
+
+  it('hides disconnect from a member who can still pair and rename', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/devices') {
+        return Promise.resolve(json({ devices: [device({ id: 'hub', label: 'Kitchen hub' })] }));
+      }
+      return Promise.reject(new Error(String(input)));
+    }));
+    renderStage(<DevicesPage />, session('member'));
+    expect(await screen.findByRole('button', { name: 'Pair a hub' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
+  });
+
+  it('locks the code 128 checksum before the stop pattern', () => {
+    const bars = code128Bars('2345-6789');
+    expect(bars.length).toBeGreaterThan(100);
+    const widths: number[] = [];
+    let index = 0;
+    while (index < bars.length) {
+      const on = bars[index];
+      let run = 0;
+      while (index < bars.length && bars[index] === on) {
+        run += 1;
+        index += 1;
+      }
+      widths.push(run);
+    }
+    expect(widths.join('')).toBe('2112142232112211322212312132121221322231123121313112223211222113312331112');
   });
 
   it('says when a pairing code has expired', async () => {

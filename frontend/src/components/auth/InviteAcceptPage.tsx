@@ -16,13 +16,21 @@ const RESTOCK: { value: RestockMode; label: string }[] = [
   { value: 'ask_hold', label: 'Ask me, and hold the item until I answer' },
 ];
 
-export const InviteAcceptPage = ({ code: codeProp }: { code?: string }) => {
+export const InviteAcceptPage = ({
+  code: codeProp,
+  signedIn: signedInProp,
+  onAccepted,
+}: {
+  code?: string;
+  signedIn?: boolean;
+  onAccepted?: () => void;
+}) => {
   const params = useParams();
   const code = codeProp ?? params.code ?? '';
   const navigate = useNavigate();
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [error, setError] = useState('');
-  const [signedIn, setSignedIn] = useState(false);
+  const [signedIn, setSignedIn] = useState(signedInProp === true);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -39,13 +47,15 @@ export const InviteAcceptPage = ({ code: codeProp }: { code?: string }) => {
       const hosted = requestError instanceof ApiError ? requestError.code : '';
       setError(hosted !== '' ? hostedErrorSentence(hosted) : (inlineFailure(requestError, hostedErrorSentence('invite_expired')) ?? ''));
     });
-    void getSession().then(() => {
-      if (!cancelled) setSignedIn(currentAuthSession()?.kind === 'account');
-    }).catch(() => undefined);
+    if (signedInProp === undefined) {
+      void getSession().then(() => {
+        if (!cancelled) setSignedIn(currentAuthSession()?.kind === 'account');
+      }).catch(() => undefined);
+    }
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, signedInProp]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -53,19 +63,20 @@ export const InviteAcceptPage = ({ code: codeProp }: { code?: string }) => {
       setError(PASSWORD_TOO_SHORT);
       return;
     }
+    if (preview?.kind === 'start_household' && householdName.trim() === '') {
+      setError('Enter a household name.');
+      return;
+    }
     setPending(true);
     setError('');
     try {
-      await acceptInvite(signedIn
-        ? { code }
-        : {
-            code,
-            account: { name: name.trim(), email: email.trim(), password },
-            ...(preview?.kind === 'start_household'
-              ? { household: { name: householdName.trim(), restockMode } }
-              : {}),
-          });
-      navigate('/');
+      await acceptInvite({
+        code,
+        ...(signedIn ? {} : { account: { name: name.trim(), email: email.trim(), password } }),
+        ...(preview?.kind === 'start_household' ? { household: { name: householdName.trim(), restockMode } } : {}),
+      });
+      if (onAccepted) onAccepted();
+      else navigate('/');
     } catch (requestError) {
       const hosted = requestError instanceof ApiError ? requestError.code : '';
       setError(hosted !== '' ? hostedErrorSentence(hosted) : (inlineFailure(requestError, hostedErrorSentence('invite_expired')) ?? ''));
@@ -94,7 +105,7 @@ export const InviteAcceptPage = ({ code: codeProp }: { code?: string }) => {
                   <PasswordInput label="Password" value={password} onChange={(event) => setPassword(event.currentTarget.value)} required disabled={pending} />
                 </>
               )}
-              {preview.kind === 'start_household' && !signedIn && (
+              {preview.kind === 'start_household' && (
                 <>
                   <TextInput label="Household name" value={householdName} onChange={(event) => setHouseholdName(event.currentTarget.value)} required disabled={pending} />
                   <Radio.Group label="When a new item shows up" value={restockMode} onChange={(value) => setRestockMode(value as RestockMode)}>

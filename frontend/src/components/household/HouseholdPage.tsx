@@ -296,8 +296,12 @@ export function HouseholdPage() {
           <Group>
             <Button loading={exporting} onClick={() => { void exportHousehold(); }}>Export household</Button>
           </Group>
-          {exportLinks?.jsonUrl && <a href={exportLinks.jsonUrl}>Download JSON</a>}
-          {exportLinks?.csvUrl && <a href={exportLinks.csvUrl}>Download CSV</a>}
+          {(exportLinks?.jsonUrl || exportLinks?.csvUrl) && (
+            <Group gap="md">
+              {exportLinks?.jsonUrl && <a href={exportLinks.jsonUrl}>Download JSON</a>}
+              {exportLinks?.csvUrl && <a href={exportLinks.csvUrl}>Download CSV</a>}
+            </Group>
+          )}
           <label className="household-import">
             Import into an empty household
             <input

@@ -3,6 +3,8 @@ import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
+import { getSession, resetStage1Client } from '../../api/client';
+import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { ShoppingListPage } from './ShoppingListPage';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
@@ -272,5 +274,57 @@ describe('ShoppingListPage', () => {
       '/api/shopping-list/items/line-1/swap',
       expect.objectContaining({ method: 'POST' }),
     ));
+  });
+
+  it('reconnects the event stream when the household changes', async () => {
+    class FakeEventSource {
+      static instances: FakeEventSource[] = [];
+      closed = false;
+      readonly url: string;
+      constructor(url: string) {
+        this.url = url;
+        FakeEventSource.instances.push(this);
+      }
+      addEventListener() {}
+      close() {
+        this.closed = true;
+      }
+    }
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    resetStage1Client();
+    let loads = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/session') {
+        return Promise.resolve(jsonResponse({
+          user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
+          kind: 'account',
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
+      if (url === '/api/shopping-list') {
+        loads += 1;
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/providers' || url === '/api/inventory' || url === '/api/restock') {
+        return Promise.resolve(jsonResponse([]));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    await getSession();
+    renderPage();
+    await waitFor(() => expect(loads).toBeGreaterThan(0));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const first = FakeEventSource.instances[0];
+    const before = loads;
+    window.dispatchEvent(new Event(HOUSEHOLD_SWITCH_EVENT));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    expect(first?.closed).toBe(true);
+    expect(FakeEventSource.instances[1]?.url).toBe('/api/events');
+    await waitFor(() => expect(loads).toBeGreaterThan(before));
   });
 });
