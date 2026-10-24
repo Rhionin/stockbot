@@ -19,8 +19,6 @@ var setupCommit = func(tx *sql.Tx) error { return tx.Commit() }
 
 var setupCodeLine = regexp.MustCompile(`Stockbot setup code: ([0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4})`)
 
-const setupHost = "pi"
-
 func (s *Service) codePath() string { return filepath.Join(s.setupDir, "code") }
 func (s *Service) tmpPath() string  { return filepath.Join(s.setupDir, "code.tmp") }
 
@@ -481,7 +479,7 @@ func fileErr(err error) *Error {
 }
 
 func displayBody(code, mode string, issued time.Time) []byte {
-	text := "Stockbot setup code: " + code + " (open http://" + setupHost + ":8080/setup on your home network; expires in 24 h)\n" +
+	text := "Stockbot setup code: " + code + " (open /setup to finish setup; expires in 24 h)\n" +
 		"mode: " + mode + "\n" +
 		"issued_at: " + stamp(issued) + "\n"
 	return []byte(text)

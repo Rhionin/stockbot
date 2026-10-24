@@ -5,6 +5,7 @@ import {
   CHANGEOVER_SIGN_IN_NOTE,
   HOUSEHOLD_PASSWORD_LINK,
   PASSWORD_TOO_SHORT,
+  SETUP_PATH,
 } from '@stockbot/shared/contract';
 import { AccountLoginPage } from './AccountLoginPage';
 import { HouseholdGate } from './HouseholdGate';
@@ -55,6 +56,8 @@ describe('AccountLoginPage', () => {
     );
     expect(await screen.findByRole('note')).toHaveTextContent(CHANGEOVER_SIGN_IN_NOTE);
     expect(screen.queryByRole('button', { name: HOUSEHOLD_PASSWORD_LINK })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Set up Stockbot' })).toHaveAttribute('href', SETUP_PATH);
+    expect(document.body.textContent).not.toMatch(/pi:8080/);
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'short' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -90,6 +93,9 @@ describe('AccountLoginPage', () => {
       </MantineProvider>,
     );
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Set up Stockbot' })).toHaveAttribute('href', '/setup');
+    expect(document.body.innerHTML).not.toContain('http://pi:8080');
+    expect(document.body.innerHTML).not.toContain('pi:8080/setup');
     fireEvent.click(screen.getByRole('button', { name: HOUSEHOLD_PASSWORD_LINK }));
     const householdForm = screen.getByRole('form', { name: 'Household password' });
     fireEvent.change(within(householdForm).getByLabelText(/^Household password/), { target: { value: 'shared-secret' } });
