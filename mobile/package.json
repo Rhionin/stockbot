@@ -30,7 +30,7 @@
     "eslint-import-resolver-typescript": "^3.10.1",
     "jest": "^30.5.2",
     "jest-expo": "~58.0.11",
-    "typescript": "~6.0.3"
+    "typescript": "~7.0.2"
   },
   "scripts": {
     "start": "expo start",
