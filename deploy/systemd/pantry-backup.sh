@@ -6,7 +6,12 @@
 # BACKUP_REASON=manual into the EnvironmentFile, which overrides the unit.
 #
 # This waits on the same lock the updater takes:
-# ${PANTRY_DIR}/deploy-trigger/.lock. The updater's flock is unchanged.
+# ${PANTRY_DIR}/deploy-trigger/.lock. The updater holds that lock for the
+# whole pull. A pre-deploy backup is started from inside that script, so
+# flocking again would wait until the updater exits, and the updater is
+# waiting on this script. PANTRY_BACKUP_LOCK_HELD=1 means the caller
+# already holds the lock. This script then does not flock it. A backup
+# that is not started from the updater still takes the lock itself.
 #
 # The container stages the snapshot on a 64MiB tmpfs at /run/stockbot-backup
 # when the database plus headroom fits. Otherwise it stages on the pantry
@@ -177,19 +182,29 @@ if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
 fi
 chmod 755 "$PANTRY_DIR/deploy-trigger"
 
-exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
-if ! flock -w "$PANTRY_BACKUP_LOCK_WAIT" 9; then
-  echo "backup: could not take the deploy lock" >&2
-  ping_failure
-  exit 30
-fi
+# The updater holds this lock across the pre-deploy backup. Taking it
+# again from that child blocks until the updater exits, which is waiting
+# on this script. PANTRY_BACKUP_LOCK_HELD=1 means the caller already
+# holds the lock; do not flock it a second time. The caller's process
+# still drops the lock if it is killed. This script's EXIT trap removes
+# the container on a normal failure.
+if [[ "${PANTRY_BACKUP_LOCK_HELD:-}" == 1 ]]; then
+  echo "backup: deploy lock already held"
+else
+  exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
+  if ! flock -w "$PANTRY_BACKUP_LOCK_WAIT" 9; then
+    echo "backup: could not take the deploy lock" >&2
+    ping_failure
+    exit 30
+  fi
 
-# If this process is killed, the kernel drops the lock. The waiter below
-# then stops the container, which is not in this process's cgroup.
-(
-  flock -x 8 || exit 0
-  "$DOCKER" rm -f pantry-backup >/dev/null 2>&1 || true
-) 8>"$PANTRY_DIR/deploy-trigger/.lock" 9>&- &
+  # If this process is killed, the kernel drops the lock. The waiter below
+  # then stops the container, which is not in this process's cgroup.
+  (
+    flock -x 8 || exit 0
+    "$DOCKER" rm -f pantry-backup >/dev/null 2>&1 || true
+  ) 8>"$PANTRY_DIR/deploy-trigger/.lock" 9>&- &
+fi
 
 image=$("$DOCKER" inspect "$PANTRY_CONTAINER" --format '{{.Image}}' 9>&-)
 

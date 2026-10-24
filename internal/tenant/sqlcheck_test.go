@@ -139,6 +139,53 @@ func TestDirectScannerQueryIsAllowListed(t *testing.T) {
 	}
 }
 
+func TestUnscopedSQLReportStaysShort(t *testing.T) {
+	sqlText := "SELECT id FROM items WHERE note = '" + strings.Repeat("a", 220) + "'"
+	got := CheckStatement(sqlText)
+	if len(got) != 1 || !strings.Contains(got[0], "...") {
+		t.Fatalf("report = %v", got)
+	}
+}
+
+func TestScanRepoReportsParseErrorsAndUnscopedSQL(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "frontend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write("bad.go", "package p\nfunc (")
+	write("leak.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	write("leak_test.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	if err := os.WriteFile(filepath.Join(root, "frontend", "skip.go"), []byte("package p\nconst q = `SELECT id FROM items`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	problems, err := ScanRepo(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parse, sql bool
+	for _, problem := range problems {
+		if strings.Contains(problem, "bad.go") {
+			parse = true
+		}
+		if strings.Contains(problem, "leak.go") && strings.Contains(problem, "unscoped") {
+			sql = true
+		}
+		if strings.Contains(problem, "frontend") || strings.Contains(problem, "leak_test.go") {
+			t.Fatalf("skipped file reported: %s", problem)
+		}
+	}
+	if !parse || !sql {
+		t.Fatalf("problems = %v", problems)
+	}
+}
+
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

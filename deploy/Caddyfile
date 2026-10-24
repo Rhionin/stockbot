@@ -33,6 +33,15 @@
 import Caddyfile.legacy
 
 {$PUBLIC_HOST} {
+	# 1 MB covers every handle in this site: telemetry, the build
+	# identity, the deploy hook, and the public catch-all, which is
+	# where POST /api/sentry-tunnel stays. The app accepts 4 KiB on
+	# POST /api/telemetry/client and 256 KiB on the Sentry tunnel, so
+	# both fit under this cap and neither handle needs its own.
+	request_body {
+		max_size 1MB
+	}
+
 	# handle is first-match. This matcher is exact: /api/telemetry and
 	# /api/telemetry/client only. The snapshot has no barcodes, product names,
 	# or user ids, and the page posts timings here, so both stay reachable
@@ -86,6 +95,24 @@ import Caddyfile.legacy
 			import security_headers
 			encode gzip
 			reverse_proxy pantry:8080
+		}
+	}
+
+	# Device scan, heartbeat, and token rotation. These posts are small
+	# JSON. 64 KB is tighter than the site cap. The proxy headers match
+	# the public site, so the app still sees the visitor address.
+	# /api/devices (pairing) is not this prefix.
+	handle /api/device/* {
+		request_body {
+			max_size 64KB
+		}
+		route {
+			import security_headers
+			encode gzip
+			reverse_proxy pantry:8080 {
+				header_up X-Pantry-Entry public
+				header_up X-Pantry-Client-IP {client_ip}
+			}
 		}
 	}
 
