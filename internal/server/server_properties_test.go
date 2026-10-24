@@ -105,6 +105,7 @@ func isRegisteredGetPath(path string) bool {
 	switch path {
 	case "/api/products", "/api/products/lookup", "/api/scans", "/api/scans/history",
 		"/api/inventory", "/api/shopping-list", "/api/events", "/api/build",
+		"/api/scans/mode",
 		"/api/scanner/config", "/api/telemetry",
 		// POST-only. GET is 405 from the method pattern, not an unmatched path.
 		"/api/deploy-hook", "/api/login", "/api/logout",
@@ -152,11 +153,17 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
 		"/api/operator/household-invites", "/api/operator/alerts",
 		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
-		"/api/devices/abc",
+		"/api/devices/abc", "/api/sessions/abc",
 		"/api/device/scans", "/api/device/heartbeat", "/api/device/token/rotate",
-		"/api/households/abc", "/api/households/abc/restore",
+		"/api/households/abc", "/api/households/abc/restore", "/api/households/abc/export",
 		"/api/households/abc/members", "/api/households/abc/members/user",
 		"/api/households/abc/members/user/reset-link",
+		"/api/export", "/api/export/abc", "/api/export/abc/download",
+		"/api/export/abc/stockbot-export.json", "/api/export/abc/items.csv",
+		"/api/export/abc/shopping-list.csv",
+		"/api/household/exports", "/api/household/exports/abc",
+		"/api/household/exports/abc/download",
+		"/api/household/import/uploads", "/api/import", "/api/import/abc",
 	}
 	for _, path := range registered {
 		if !isRegisteredGetPath(path) {
@@ -166,7 +173,8 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 	unmatched := []string{
 		"/api/nope", "/api/households/abc/nope", "/api/invites/abc",
 		"/api/auth/nope", "/api/device/nope", "/api/devices/pair/abc/extra",
-		"/api/setup/code",
+		"/api/setup/code", "/api/export/abc/extra", "/api/household/exports/abc/extra",
+		"/api/import/abc/extra",
 	}
 	for _, path := range unmatched {
 		if isRegisteredGetPath(path) {
@@ -201,8 +209,13 @@ var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
 	`invites/(?:preview|accept|[^/]+/revoke)|` +
 	`operator/(?:household-invites|alerts)|` +
 	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +
+	`sessions/[^/]+|` +
 	`device/(?:scans|heartbeat|token/rotate)|` +
-	`households/[^/]+(?:/(?:restore|members(?:/[^/]+(?:/reset-link)?)?))?` +
+	`households/[^/]+(?:/(?:restore|export|members(?:/[^/]+(?:/reset-link)?)?))?|` +
+	`export(?:/[^/]+(?:/(?:download|stockbot-export\.json|items\.csv|shopping-list\.csv))?)?|` +
+	`import(?:/[^/]+)?|` +
+	`household/exports(?:/[^/]+(?:/download)?)?|` +
+	`household/import/uploads` +
 	`)$`)
 
 // TestHealthPathsNeverFallBack implements

@@ -91,7 +91,7 @@ func TestStage1AuthFlow(t *testing.T) {
 	}
 
 	me := stage1Do(handler, http.MethodDelete, "/api/me", rawCookie, map[string]string{"confirmation": "ada@pantry.test"}, app.EntryPublic, "")
-	if me.Code != http.StatusConflict || !strings.Contains(me.Body.String(), auth.SentenceLastOwner) {
+	if me.Code != http.StatusConflict || !strings.Contains(me.Body.String(), auth.LastOwnerSentence("Primary")) {
 		t.Fatalf("last owner = %d %s", me.Code, me.Body.String())
 	}
 

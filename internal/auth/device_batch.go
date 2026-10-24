@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/changes"
 )
 
 const (
@@ -105,6 +107,16 @@ func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInpu
 		freshDrop, err = s.insertAlert(ctx, tx, p.HouseholdID, alertScansDropped, true)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if len(created) > 0 {
+		if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeScans); err != nil {
+			return nil, AsError(err)
+		}
+	}
+	if touch.cameOnline {
+		if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeDevices); err != nil {
+			return nil, AsError(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

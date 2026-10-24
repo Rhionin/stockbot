@@ -87,7 +87,12 @@ func (s *Store) SaveDeal(ctx context.Context, scope tenant.Scope, deal Deal) err
 		return fmt.Errorf("could not save sale: unknown source %q", deal.Source)
 	}
 	household := scope.HouseholdID()
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not save sale: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO item_deals (household_id, user_id, item_id, price_cents, regular_price_cents, label, source, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, item_id) DO UPDATE SET
@@ -98,8 +103,10 @@ func (s *Store) SaveDeal(ctx context.Context, scope tenant.Scope, deal Deal) err
 		   updated_at = excluded.updated_at`,
 		household, household, deal.ItemID, nullableInt(deal.PriceCents), nullableInt(deal.RegularPriceCents),
 		deal.Label, deal.Source, time.Now().UTC(),
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("could not save sale: %w", err)
+	}
+	if err := s.commitList(ctx, tx, household); err != nil {
 		return fmt.Errorf("could not save sale: %w", err)
 	}
 	return nil
@@ -110,11 +117,18 @@ func (s *Store) DeleteDeal(ctx context.Context, scope tenant.Scope, itemID strin
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not clear sale: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM item_deals WHERE household_id = ? AND item_id = ?`,
 		scope.HouseholdID(), itemID,
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("could not clear sale: %w", err)
+	}
+	if err := s.commitList(ctx, tx, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not clear sale: %w", err)
 	}
 	return nil

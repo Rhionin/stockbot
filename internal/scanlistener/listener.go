@@ -303,7 +303,7 @@ func (l *ScanListener) createEntry(ctx context.Context, barcode string, directio
 		return
 	}
 
-	notice := scan.AnnounceProcessing(l.ProcessingPublisher, userID, barcode, &direction, scannedAt)
+	notice := scan.AnnounceProcessing(l.ProcessingPublisher, l.Scope.HouseholdID(), userID, barcode, &direction, scannedAt)
 
 	lookup, err := l.LookupService.Lookup(ctx, l.Scope, barcode)
 	if err != nil {

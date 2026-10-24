@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"strings"
-	"time"
 )
 
 // HouseholdDetail is one household the caller belongs to.
@@ -82,60 +81,6 @@ func (s *Service) RenameHousehold(ctx context.Context, userID, householdID, name
 		return HouseholdDetail{}, verr
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE households SET name = ? WHERE id = ?`, name, householdID); err != nil {
-		return HouseholdDetail{}, AsError(err)
-	}
-	return s.GetHousehold(ctx, userID, householdID)
-}
-
-func (s *Service) DeleteHousehold(ctx context.Context, userID, householdID, confirmation string) (HouseholdDetail, error) {
-	role, deleted, ok, err := s.membershipRole(ctx, s.db, userID, householdID)
-	if err != nil || !ok {
-		if err != nil {
-			return HouseholdDetail{}, err
-		}
-		return HouseholdDetail{}, notFound()
-	}
-	if deleted != "" {
-		return HouseholdDetail{}, notFound()
-	}
-	if role != "owner" {
-		return HouseholdDetail{}, fail(CodeForbiddenRole, SentenceForbidden)
-	}
-	var name string
-	if err := s.db.QueryRowContext(ctx, `SELECT name FROM households WHERE id = ?`, householdID).Scan(&name); err != nil {
-		return HouseholdDetail{}, AsError(err)
-	}
-	if !equalFoldTrim(confirmation, name) {
-		return HouseholdDetail{}, fail(CodeConfirm, SentenceConfirm)
-	}
-	now := s.clock()
-	purge := now.Add(30 * 24 * time.Hour)
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE households SET deleted_at = ?, purge_after = ? WHERE id = ?`,
-		stamp(now), stamp(purge), householdID); err != nil {
-		return HouseholdDetail{}, AsError(err)
-	}
-	detail, err := s.GetHousehold(ctx, userID, householdID)
-	if err != nil {
-		return HouseholdDetail{}, err
-	}
-	detail.Message = SentenceDeleteHouse
-	return detail, nil
-}
-
-func (s *Service) RestoreHousehold(ctx context.Context, userID, householdID string) (HouseholdDetail, error) {
-	role, deleted, ok, err := s.membershipRole(ctx, s.db, userID, householdID)
-	if err != nil || !ok || deleted == "" {
-		if err != nil {
-			return HouseholdDetail{}, err
-		}
-		return HouseholdDetail{}, notFound()
-	}
-	if role != "owner" {
-		return HouseholdDetail{}, fail(CodeForbiddenRole, SentenceForbidden)
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE households SET deleted_at = NULL, purge_after = NULL WHERE id = ?`, householdID); err != nil {
 		return HouseholdDetail{}, AsError(err)
 	}
 	return s.GetHousehold(ctx, userID, householdID)
@@ -229,7 +174,7 @@ func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, household
 		return HouseholdSettings{}, AsError(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM push_subscriptions WHERE household_id = ? AND user_id = ''`, householdID); err != nil {
+		DELETE FROM push_subscriptions WHERE household_id = ? AND (user_id IS NULL OR user_id = '')`, householdID); err != nil {
 		return HouseholdSettings{}, AsError(err)
 	}
 	if err := writeAudit(ctx, tx, householdID, "account", userID, "household_password_retire", "household", householdID, stamp(now)); err != nil {
@@ -238,7 +183,9 @@ func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, household
 	if err := tx.Commit(); err != nil {
 		return HouseholdSettings{}, AsError(err)
 	}
-	s.streams.Kick(HouseholdPasswordStreamKey())
+	s.streams.KickPrefix("hhpw:")
+	s.streams.KickHousehold(householdID, "")
+	s.kickLive(householdID, "")
 	return s.Settings(ctx, householdID)
 }
 
@@ -427,69 +374,8 @@ func (s *Service) RemoveMember(ctx context.Context, actor, householdID, target s
 	if err := tx.Commit(); err != nil {
 		return AsError(err)
 	}
-	s.streams.Kick(UserStreamKey(target))
-	return nil
-}
-
-func (s *Service) DeleteAccount(ctx context.Context, userID, confirmation string) error {
-	var email string
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT email_norm FROM users WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&email); err != nil {
-		if err == sql.ErrNoRows {
-			return unauthorized()
-		}
-		return AsError(err)
-	}
-	if !equalFoldTrim(confirmation, email) {
-		return fail(CodeConfirm, SentenceConfirm)
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return AsError(err)
-	}
-	defer tx.Rollback()
-	owned, err := liveOwnerHouseholds(ctx, tx, userID)
-	if err != nil {
-		return AsError(err)
-	}
-	for _, id := range owned {
-		var owners int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM memberships WHERE household_id = ? AND role = 'owner'`, id).Scan(&owners); err != nil {
-			return AsError(err)
-		}
-		if owners <= 1 {
-			return fail(CodeLastOwner, SentenceLastOwner)
-		}
-	}
-	mem, err := listMemberships(ctx, tx, userID)
-	if err != nil {
-		return AsError(err)
-	}
-	for _, m := range mem {
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM memberships WHERE household_id = ? AND user_id = ?`, m.HouseholdID, userID); err != nil {
-			return AsError(err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM push_subscriptions WHERE household_id = ? AND user_id = ?`, m.HouseholdID, userID); err != nil {
-			return AsError(err)
-		}
-	}
-	now := stamp(s.clock())
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, userID); err != nil {
-		return AsError(err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM reset_links WHERE user_id = ?`, userID); err != nil {
-		return AsError(err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID); err != nil {
-		return AsError(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return AsError(err)
-	}
-	s.streams.Kick(UserStreamKey(userID))
+	s.streams.KickHousehold(householdID, target)
+	s.kickLive(householdID, target)
 	return nil
 }
 

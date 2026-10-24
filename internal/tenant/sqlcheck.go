@@ -117,6 +117,11 @@ var sqlAllow = []struct {
 		snippet: "FROM invites WHERE id = ?",
 		reason:  "revoke loads one invite by id, including a start_household invite whose household is null; membership is checked before it is cancelled",
 	},
+	{
+		file:    "internal/auth/lifecycle.go",
+		snippet: "SET actor_id = ?",
+		reason:  "account deletion pseudonymises this person's actor_id in every household they touched; the user id is already authenticated",
+	},
 }
 
 var (

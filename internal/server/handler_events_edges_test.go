@@ -72,4 +72,36 @@ func TestEventsRefuseAnEleventhStreamAndAClosedWriter(t *testing.T) {
 	delivery := &EventsHandler{Telemetry: telemetry.NewRegistry()}
 	delivery.recordDelivery(events.Message{EventType: "scan"})
 	delivery.recordDelivery(events.Message{EventType: "scan", PublishedAt: time.Now(), IngestAt: time.Now()})
+
+	failing := &failAfterOK{ResponseRecorder: httptest.NewRecorder(), publish: func() {
+		broadcaster.PublishScannerModeEvent(scan.StockIn)
+	}}
+	req = httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	handler = &EventsHandler{Broadcaster: broadcaster, Telemetry: telemetry.NewRegistry(), Keepalive: time.Hour}
+	handler.Handle(failing, req)
+	if failing.n < 2 {
+		t.Fatalf("event write was not attempted (%d writes)", failing.n)
+	}
+}
+
+// failAfterOK accepts the connect comment and fails the next body write.
+type failAfterOK struct {
+	*httptest.ResponseRecorder
+	n       int
+	publish func()
+	once    sync.Once
+}
+
+func (f *failAfterOK) Write(p []byte) (int, error) {
+	f.n++
+	if f.n > 1 {
+		return 0, errors.New("client closed the stream")
+	}
+	return f.ResponseRecorder.Write(p)
+}
+
+func (f *failAfterOK) Flush() {
+	if f.publish != nil {
+		f.once.Do(f.publish)
+	}
 }

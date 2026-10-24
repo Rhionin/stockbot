@@ -295,7 +295,11 @@ func start(stop <-chan struct{}) error {
 	// scanner_mode, including the idle return to scan-out, and keeps the
 	// health status on the same direction the next scan will use.
 	scannerMode := server.NewScannerMode(func(d scan.ScanDirection) {
-		broadcaster.PublishScannerModeEvent(d)
+		if listenerOK && listener.Scope.HouseholdID() != "" {
+			broadcaster.PublishScannerModeFor(listener.Scope.HouseholdID(), d)
+		} else {
+			broadcaster.PublishScannerModeEvent(d)
+		}
 		if listenerOK {
 			listener.SetStatusMode(d)
 		}
@@ -370,6 +374,7 @@ func start(stop <-chan struct{}) error {
 		defer ticker.Stop()
 		directory.RunSweeper(sweepCtx, ticker.C)
 	}()
+	go directory.RunPurge(sweepCtx, 24*time.Hour)
 	gate.use(handler)
 
 	if listenerOK {

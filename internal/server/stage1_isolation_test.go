@@ -19,6 +19,7 @@ func init() {
 		{"GET /api/auth/session", kindListLeak},
 		{"POST /api/auth/login", kindWriteScope},
 		{"POST /api/auth/logout", kindWriteScope},
+		{"DELETE /api/sessions/{id}", kindForeignID},
 		{"POST /api/auth/reset", kindWriteScope},
 		{"POST /api/auth/session/household", kindWriteScope},
 		{"GET /api/auth/login", kindListLeak},
@@ -54,6 +55,19 @@ func init() {
 		{"POST /api/device/heartbeat", kindWriteScope},
 		{"POST /api/device/token/rotate", kindWriteScope},
 		{"DELETE /api/me", kindWriteScope},
+		{"POST /api/export", kindWriteScope},
+		{"GET /api/export/{id}", kindForeignID},
+		{"GET /api/export/{id}/download", kindForeignID},
+		{"GET /api/export/{id}/stockbot-export.json", kindForeignID},
+		{"GET /api/export/{id}/items.csv", kindForeignID},
+		{"GET /api/export/{id}/shopping-list.csv", kindForeignID},
+		{"POST /api/household/exports", kindWriteScope},
+		{"GET /api/household/exports/{id}", kindForeignID},
+		{"GET /api/household/exports/{id}/download", kindForeignID},
+		{"GET /api/households/{id}/export", kindForeignID},
+		{"POST /api/household/import/uploads", kindWriteScope},
+		{"POST /api/import", kindWriteScope},
+		{"GET /api/import/{id}", kindForeignID},
 	}
 	for _, route := range routes {
 		isolationCases[route.pattern] = isolationCase{

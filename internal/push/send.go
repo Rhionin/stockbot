@@ -61,20 +61,47 @@ func Listen(ctx context.Context, scope tenant.Scope, b *events.Broadcaster, send
 	if b == nil || sender == nil || !sender.cfg.CanSend() {
 		return
 	}
-	msgs, unsub := b.Subscribe()
+	msgs, unsub := b.SubscribeAll()
 	go func() {
 		defer unsub()
-		alerts := newAttention(func(notice Notice) {
-			go sender.Notify(context.Background(), scope, notice)
-		}, sender.cfg.settle(), realClock{}, scans)
-		alerts.scope = scope
-		if sender.subs != nil {
-			alerts.schedules = sender.subs
+		byHouse := map[string]*attention{}
+		ensure := func(id string) *attention {
+			if id == "" {
+				id = scope.HouseholdID()
+			}
+			if alerts := byHouse[id]; alerts != nil {
+				return alerts
+			}
+			house, err := tenant.New(id)
+			if err != nil {
+				house = scope
+			}
+			alerts := newAttention(func(notice Notice) {
+				go sender.Notify(context.Background(), house, notice)
+			}, sender.cfg.settle(), realClock{}, scans)
+			alerts.scope = house
+			if sender.subs != nil {
+				alerts.schedules = sender.subs
+			}
+			if id == scope.HouseholdID() {
+				alerts.rearm(ctx)
+			}
+			byHouse[id] = alerts
+			return alerts
 		}
-		alerts.rearm(ctx)
-		defer alerts.stop()
+		primary := ensure(scope.HouseholdID())
+		defer func() {
+			for _, alerts := range byHouse {
+				alerts.stop()
+			}
+		}()
 		for msg := range msgs {
-			alerts.handle(msg)
+			id := msg.HouseholdID
+			if id == "" {
+				primary.handle(msg)
+				continue
+			}
+			ensure(id).handle(msg)
 		}
 	}()
 }

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/changes"
 )
 
 type presence struct {
@@ -347,6 +349,9 @@ func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hub
 	if err := writeAudit(ctx, tx, row.HouseholdID, "device", deviceID, "device.paired", "device", deviceID, stamp(now)); err != nil {
 		return PairedDevice{}, AsError(err)
 	}
+	if err := changes.Bump(ctx, tx, row.HouseholdID, changes.ScopeDevices); err != nil {
+		return PairedDevice{}, AsError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return PairedDevice{}, AsError(err)
 	}
@@ -418,12 +423,26 @@ func (s *Service) RenameDevice(ctx context.Context, userID, householdID, deviceI
 		return DeviceView{}, err
 	}
 	now := stamp(s.clock())
-	if _, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DeviceView{}, AsError(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE devices SET label = ? WHERE id = ? AND household_id = ?`, label, deviceID, householdID); err != nil {
 		return DeviceView{}, AsError(err)
 	}
-	if err := writeAudit(ctx, s.db, householdID, "account", userID, "device.renamed", "device", deviceID, now); err != nil {
+	if err := writeAudit(ctx, tx, householdID, "account", userID, "device.renamed", "device", deviceID, now); err != nil {
 		return DeviceView{}, AsError(err)
+	}
+	if err := changes.Bump(ctx, tx, householdID, changes.ScopeDevices); err != nil {
+		return DeviceView{}, AsError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DeviceView{}, AsError(err)
+	}
+	if s.hints != nil {
+		s.hints.PublishHint(householdID, "devices")
 	}
 	return s.oneDevice(ctx, userID, householdID, deviceID)
 }
@@ -453,8 +472,8 @@ func (s *Service) RevokeDevice(ctx context.Context, userID, householdID, deviceI
 	if err := writeAudit(ctx, tx, householdID, "account", userID, "device.revoked", "device", deviceID, now); err != nil {
 		return AsError(err)
 	}
-	if s.hints != nil {
-		s.hints.PublishHint(householdID, "rekey")
+	if err := changes.Bump(ctx, tx, householdID, changes.ScopeDevices); err != nil {
+		return AsError(err)
 	}
 	if err := tx.Commit(); err != nil {
 		return AsError(err)
@@ -512,6 +531,13 @@ func (s *Service) AuthenticateDevice(ctx context.Context, token string) (Princip
 		return Principal{}, AsError(err)
 	}
 	if !found {
+		return Principal{}, unauthorized()
+	}
+	gone, err := s.HouseholdGone(ctx, row.HouseholdID)
+	if err != nil {
+		return Principal{}, err
+	}
+	if gone {
 		return Principal{}, unauthorized()
 	}
 	if row.RevokedAt != "" {
@@ -587,6 +613,9 @@ func (s *Service) RotateDeviceToken(ctx context.Context, token string) (RotatedT
 	if err := writeAudit(ctx, tx, p.HouseholdID, "device", p.DeviceID, "device.token_rotated", "device", p.DeviceID, stamp(now)); err != nil {
 		return RotatedToken{}, AsError(err)
 	}
+	if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeDevices); err != nil {
+		return RotatedToken{}, AsError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return RotatedToken{}, AsError(err)
 	}
@@ -640,8 +669,17 @@ func (s *Service) Heartbeat(ctx context.Context, p Principal, beat Heartbeat) (b
 			return false, err
 		}
 	}
-	if touch.cameOnline && s.hints != nil {
-		s.hints.PublishHint(p.HouseholdID, "devices")
+	if touch.cameOnline {
+		if tx, err := s.db.BeginTx(ctx, nil); err == nil {
+			if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeDevices); err != nil {
+				_ = tx.Rollback()
+			} else if err := tx.Commit(); err != nil {
+				_ = tx.Rollback()
+			}
+		}
+		if s.hints != nil {
+			s.hints.PublishHint(p.HouseholdID, "devices")
+		}
 	}
 	created, err := s.deviceTokenAge(ctx, p.HouseholdID, p.SessionID)
 	if err != nil {

@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/changes"
 )
 
 const (
@@ -182,7 +184,12 @@ func (s *Service) SweepOffline() []string {
 	for _, id := range ids {
 		house := s.presence.household(id)
 		if t, ok := s.presence.last(id); ok && house != "" {
-			_, _ = s.db.Exec(`UPDATE devices SET last_seen_at = ? WHERE id = ? AND household_id = ?`, stamp(t), id, house)
+			tx, err := s.db.Begin()
+			if err == nil {
+				_, _ = tx.Exec(`UPDATE devices SET last_seen_at = ? WHERE id = ? AND household_id = ?`, stamp(t), id, house)
+				_ = changes.Bump(context.Background(), tx, house, changes.ScopeDevices)
+				_ = tx.Commit()
+			}
 		}
 		if s.hints != nil && house != "" {
 			s.hints.PublishHint(house, "devices")

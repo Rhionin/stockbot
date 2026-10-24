@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -131,7 +132,7 @@ func (r *Queue) CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry
 			return err
 		}
 		if committed != nil {
-			r.Broadcaster.PublishScanEvent(*committed)
+			r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *committed)
 		}
 
 		if r.Pantry != nil {
@@ -140,7 +141,7 @@ func (r *Queue) CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry
 				return err
 			}
 			if invItem != nil {
-				r.Broadcaster.PublishInventoryEvent(*invItem)
+				r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 			}
 		}
 	}
@@ -243,6 +244,9 @@ func (r *Queue) recordStockInTx(ctx context.Context, scope tenant.Scope, tx *sql
 	if err := stampStockMoves(ctx, scope, tx, itemID); err != nil {
 		return nil, err
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return nil, err
+	}
 	return ids, nil
 }
 
@@ -320,6 +324,11 @@ func (r *Queue) removeStockOutUnitsTx(ctx context.Context, scope tenant.Scope, t
 	}
 	if err := stampStockMoves(ctx, scope, tx, itemID); err != nil {
 		return 0, err
+	}
+	if len(ids) > 0 {
+		if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+			return 0, err
+		}
 	}
 	return len(ids), nil
 }
@@ -517,7 +526,7 @@ func (r *Queue) publishInventory(ctx context.Context, scope tenant.Scope, itemID
 	if err != nil || invItem == nil {
 		return
 	}
-	r.Broadcaster.PublishInventoryEvent(*invItem)
+	r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 }
 
 func (r *Queue) readInstance(ctx context.Context, scope tenant.Scope, id string) (*inventory.ItemInstance, error) {
@@ -573,7 +582,9 @@ func (r *Queue) findOrCreateItem(ctx context.Context, scope tenant.Scope, tx *sq
 	if err != nil {
 		return "", fmt.Errorf("create item: %w", err)
 	}
-
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return "", fmt.Errorf("create item: %w", err)
+	}
 	return itemID, nil
 }
 
@@ -637,6 +648,9 @@ func claimPendingScan(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id st
 	}
 	if n == 0 {
 		return ErrNotPending
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return fmt.Errorf("update scan entry: %w", err)
 	}
 	return nil
 }
@@ -814,7 +828,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scope tenant.Scope, scanEntr
 			return 0, err
 		}
 		if committed != nil {
-			r.Broadcaster.PublishScanEvent(*committed)
+			r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *committed)
 		}
 
 		if r.Pantry != nil {
@@ -823,7 +837,7 @@ func (r *Queue) commitStockOut(ctx context.Context, scope tenant.Scope, scanEntr
 				return 0, err
 			}
 			if invItem != nil {
-				r.Broadcaster.PublishInventoryEvent(*invItem)
+				r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 			}
 		}
 	}
@@ -902,7 +916,7 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scope tenant.Scope, sca
 			return err
 		}
 		if resolved != nil {
-			r.Broadcaster.PublishScanEvent(*resolved)
+			r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *resolved)
 		}
 	}
 
@@ -1217,7 +1231,7 @@ func linkBarcode(ctx context.Context, scope tenant.Scope, tx *sql.Tx, barcode, p
 func (r *Queue) publishLinkedScan(ctx context.Context, scope tenant.Scope, id string, linkErr error) error {
 	if r.Broadcaster != nil {
 		if entry, err := r.GetScanEntry(ctx, scope, id); err == nil && entry != nil {
-			r.Broadcaster.PublishScanEvent(*entry)
+			r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *entry)
 		}
 	}
 	return linkErr
@@ -1232,7 +1246,7 @@ func (r *Queue) publishCommitted(ctx context.Context, scope tenant.Scope, scanID
 		return err
 	}
 	if committed != nil {
-		r.Broadcaster.PublishScanEvent(*committed)
+		r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *committed)
 	}
 	if r.Pantry == nil {
 		return nil
@@ -1242,7 +1256,7 @@ func (r *Queue) publishCommitted(ctx context.Context, scope tenant.Scope, scanID
 		return err
 	}
 	if invItem != nil {
-		r.Broadcaster.PublishInventoryEvent(*invItem)
+		r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 	}
 	return nil
 }
