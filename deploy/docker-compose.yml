@@ -8,6 +8,8 @@ services:
     # when the router forwards only 80 and 443. LAN clients still use the
     # Pi's IPv4 address. Binding here does not stop a router forward of
     # HOST_PORT; that packet still arrives on this address. See README.
+    # 8081 is the public listener. Caddy reaches it as pantry:8081 on the
+    # compose network. Do not publish 8081 on the host.
     ports:
       - "0.0.0.0:${HOST_PORT:-8080}:8080"
     security_opt:
@@ -68,11 +70,13 @@ services:
       PUBLIC_HOST: ${PUBLIC_HOST:-}
       LEGACY_PUBLIC_HOST: ${LEGACY_PUBLIC_HOST:-}
       # Empty APP_BASE_URL keeps this process LAN-only: it does not bind
-      # PUBLIC_LISTEN_ADDR. Set the public origin (https://host, no path)
-      # to require that listener. It must name the same host as PUBLIC_HOST.
-      # The public port stays on the compose network until the proxy is
-      # pointed at it. LAN_LISTEN_ADDR overrides ADDR when it is set.
-      APP_BASE_URL: ${APP_BASE_URL:-}
+      # PUBLIC_LISTEN_ADDR. When APP_BASE_URL is empty and PUBLIC_HOST is
+      # a hostname, Compose fills https://PUBLIC_HOST so an existing Pi
+      # binds the public listener before setup.sh is re-run. setup.sh and
+      # the updater write that same origin into .env and never replace one
+      # the operator already set. The public port stays on the compose
+      # network. LAN_LISTEN_ADDR overrides ADDR when it is set.
+      APP_BASE_URL: "${APP_BASE_URL:-${PUBLIC_HOST:+https://${PUBLIC_HOST}}}"
       APP_NAME: ${APP_NAME:-Stockbot}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-__Host-stockbot_session}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
@@ -88,6 +92,10 @@ services:
       # the distroless nonroot user. Docker would otherwise create it as root
       # and the hook could not write.
       - ./deploy-trigger:/deploy-trigger
+      # The server writes /run/setup/code at mode 0640. The host directory
+      # is uid 65532 and setgid so the Pi user can read the code. Read-write:
+      # a :ro mount would make that file unwritable.
+      - ./setup:/run/setup
       - ./auth:/etc/pantry/auth:ro
       # Bind-mount the /dev/input directory (not a single node) so that device
       # nodes udev creates later become visible inside the container without

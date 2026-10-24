@@ -244,6 +244,8 @@ probe_net=$(printf '%s\n' "$probe_line" | sed -n 's/.*--network \([^ ]*\).*/\1/p
 [[ "$probe_line" == *http://pantry-drill-* ]] || fail "probe did not use the drill container name"
 [[ "$log" == *"curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"* ]] || fail "probe image is not pinned by digest"
 [[ "$log" == *DISABLE_EXTERNAL_PRODUCT_LOOKUP=true* ]] || fail "external lookup was not disabled"
+tmpfs_owner="uid=$(id -u),gid=$(id -g)"
+[[ "$log" == *"--tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700,${tmpfs_owner}"* ]] || fail "verification tmpfs is not owned by the drill user: $log"
 [[ "$log" == *PANTRY_AUTH_FILE* ]] && fail "smoke set PANTRY_AUTH_FILE"
 [[ "$(cat "$work/out" "$work/err")" != *token-not-a-path* ]] || fail "secrets plaintext was printed"
 [[ "$(cat "$work/out" "$work/err")" != *AGE-SECRET-KEY-* ]] || fail "identity contents were printed"

@@ -7,8 +7,18 @@ next to `stockbot-server`. There is no second image.
 ## Where it runs
 
 The timer and the install script run on the Pi. They share the updater
-lock at `/opt/pantry/deploy-trigger/.lock`. The updater's own lock
-behavior is unchanged.
+lock at `/opt/pantry/deploy-trigger/.lock`. Before the updater recreates
+the pantry container for a new image, it runs this script with
+`pre-deploy` while it still holds that lock. It sets
+`PANTRY_BACKUP_LOCK_HELD=1` so this script does not flock the same file
+again. A backup that is not started from the updater takes the lock itself.
+
+`BACKUP_BEFORE_DEPLOY` controls that pre-deploy run. `warn` (the default)
+logs a failure and the deploy continues. `required` leaves the running
+containers in place and the updater exits non-zero. `off` skips the
+backup. Set it in the environment or in `/opt/pantry/.env`. A minute that
+does not change the pantry image does not take a backup. Phase A sets
+this to `required`.
 
 The restore drill runs only on CJ's own computer. It does not run on the
 Pi, a shared machine, or an agent. It never reads the live database.

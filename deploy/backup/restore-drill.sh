@@ -385,7 +385,7 @@ net="pantry-drill-$$"
   --network "$net" \
   --user "$(id -u):$(id -g)" \
   --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700 \
+  --tmpfs "/tmp:rw,noexec,nosuid,size=16m,mode=0700,uid=$(id -u),gid=$(id -g)" \
   -e DISABLE_EXTERNAL_PRODUCT_LOOKUP=true \
   -e SCAN_INPUT=stdin \
   -e ADDR=:8080 \

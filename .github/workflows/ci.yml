@@ -214,10 +214,36 @@ jobs:
           path: frontend/playwright-report
           retention-days: 7
 
+  watch-worker:
+    name: Watch worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/watch-worker
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: deploy/watch-worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
   docker:
     name: Build and push container image
     runs-on: ubuntu-latest
-    needs: [go, frontend, shell, e2e, denver]
+    needs: [go, frontend, shell, e2e, denver, watch-worker]
     # One publisher per master commit. Release reuses this workflow, and the
     # github context there is still the caller's push, so event_name cannot
     # tell the two runs apart. The reusable run passes publish_image skip

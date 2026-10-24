@@ -156,6 +156,8 @@ run_setup() {
     PANTRY_DIR="$pantry" \
     PANTRY_SYSTEMD_UNIT_DIR="$work/systemd" \
     PANTRY_SETUP_SKIP_ROOT=1 \
+    PANTRY_SETUP_GROUP='' \
+    SUDO_USER='' \
     PANTRY_SKIP_MDNS="${PANTRY_SKIP_MDNS:-1}" \
     PANTRY_AVAHI_SERVICES_DIR="${PANTRY_AVAHI_SERVICES_DIR:-$work/avahi}" \
     PANTRY_DNSMASQ_DIR="${PANTRY_DNSMASQ_DIR:-$work/dnsmasq}" \
@@ -282,6 +284,12 @@ lack "$(cat "$lan/Caddyfile.legacy")" "redir" "LAN snippet is not a redirect"
 lack "$(cat "$lan/Caddyfile.tunnel.legacy")" "redir" "LAN tunnel snippet is not a redirect"
 lack "$LAST_SYSTEMCTL" "pantry-mdns.service" "default test run does not install mDNS"
 grep -q '0\.0\.0\.0:.*:8080' "$lan/docker-compose.yml" || fail "compose must still publish the LAN port"
+lan_setup_mode=$(stat -c '%a' "$lan/setup")
+[[ "$lan_setup_mode" == "2750" ]] || fail "LAN setup dir mode is $lan_setup_mode, want 2750"
+lan_group=$(stat -c '%G' "$lan/.env")
+[[ "$lan_group" != root ]] || fail "test .env group is root; the operator-group chown cannot be checked"
+have "$LAST_CHOWN" "65532:${lan_group} $lan/setup" "LAN setup chowns the setup directory to uid 65532 and the operator group"
+grep -q '^APP_BASE_URL=$' "$lan/.env" || fail "LAN setup must leave APP_BASE_URL empty"
 
 # Existing auth.caddy is kept even when BASIC_AUTH_PASSWORD is empty or different.
 # The public profile stays on. The password line in .env is not rewritten.
@@ -310,8 +318,15 @@ pub_mode=$(stat -c '%a' "$pub/auth/household")
 [[ "$pub_mode" == "600" || "$pub_mode" == "640" ]] || fail "household file mode is $pub_mode, want 600 or 640"
 have "$LAST_CHOWN" "65532:65532 $pub/auth" "setup chowns the auth directory to uid 65532"
 have "$LAST_CHOWN" "65532:65532 $pub/auth/household" "setup chowns the household file to uid 65532"
-have "$LAST_CURL" "X-Pantry-Entry: public" "public setup probes sign-in with the public entry header"
-have "$LAST_CURL" "/api/session" "public setup probes /api/session"
+lack "$LAST_CURL" "X-Pantry-Entry" "public setup probes sign-in without an entry header"
+have "$LAST_CURL" ":8081/api/session" "public setup probes the public listener"
+lack "$LAST_CURL" ":8080/api/session" "public setup does not probe the LAN listener"
+grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "public setup did not set APP_BASE_URL from PUBLIC_HOST"
+pub_setup_mode=$(stat -c '%a' "$pub/setup")
+[[ "$pub_setup_mode" == "2750" ]] || fail "public setup dir mode is $pub_setup_mode, want 2750"
+have "$LAST_CHOWN" "65532:$(stat -c '%G' "$pub/.env") $pub/setup" "public setup chowns the setup directory"
+pub_env_mode=$(stat -c '%a' "$pub/.env")
+[[ "$pub_env_mode" == "600" ]] || fail "public .env mode is $pub_env_mode, want 600"
 pub_secret=$(grep '^PANTRY_SESSION_SECRET=' "$pub/.env" | cut -d= -f2-)
 [[ ${#pub_secret} -eq 64 ]] || fail "session secret was not saved (len ${#pub_secret})"
 have "$LAST_DOCKER" "pull pantry" "public setup pulls the image before dropping basic auth"
@@ -328,6 +343,7 @@ cmp "$pub/auth.caddy" "$pub/auth/household" || fail "second run changed the hous
 have "$LAST_CHOWN" "65532:65532 $pub/auth/household" "second run chowns an existing household file"
 pub_secret_again=$(grep '^PANTRY_SESSION_SECRET=' "$pub/.env" | cut -d= -f2-)
 [[ "$pub_secret_again" == "$pub_secret" ]] || fail "second run rotated the session secret"
+grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "second run replaced APP_BASE_URL"
 lack "$LAST_DOCKER" "hash-password" "second run hashed a password"
 
 # A different password in .env does not replace an existing hash.
@@ -763,7 +779,9 @@ CURL_SESSION_CODE=503 \
 [[ "$LAST_RC" -ne 0 ]] || fail "unavailable sign-in should fail setup"
 have "$LAST_OUT" "Sign-in is unavailable" "unavailable sign-in is a loud error"
 have "$LAST_OUT" "uid 65532" "unavailable sign-in names the container user"
-have "$LAST_CURL" "X-Pantry-Entry: public" "unavailable probe used the public entry header"
+lack "$LAST_CURL" "X-Pantry-Entry" "unavailable probe does not send an entry header"
+have "$LAST_CURL" ":8081/api/session" "unavailable probe uses the public listener"
+lack "$LAST_CURL" ":8080/api/session" "unavailable probe does not use the LAN listener"
 
 # pantry-update.sh copies the hash, via the same function, before compose up.
 updater="$ROOT/deploy/systemd/pantry-update.sh"
@@ -816,6 +834,138 @@ set -e
 [[ "$skip_rc" -eq 0 ]] || fail "PANTRY_SETUP_SKIP_ROOT should warn instead of failing chown, rc=$skip_rc"
 have "$(cat /tmp/pantry-chown-skip.out)" "[warn] Could not give" "skip-root chown failure is a warning"
 unset CURL_SESSION_CODE CURL_SESSION_BODY
+
+# An origin the operator already chose is kept. A hostname with a scheme
+# is not a PUBLIC_HOST, so the origin stays empty.
+kept_origin=$(mktemp -d)
+write_env "$kept_origin" \
+  "PUBLIC_HOST=pantry.example.com" \
+  "APP_BASE_URL=https://operator.example" \
+  "ACME_EMAIL=you@example.com" \
+  "BASIC_AUTH_PASSWORD=" \
+  "HOST_PORT=8080"
+chmod 600 "$kept_origin/.env"
+run_setup "$kept_origin"
+[[ "$LAST_RC" -eq 0 ]] || fail "custom origin setup exited $LAST_RC: $LAST_OUT"
+grep -q '^APP_BASE_URL=https://operator.example$' "$kept_origin/.env" || fail "setup replaced a custom APP_BASE_URL"
+[[ $(stat -c '%a' "$kept_origin/.env") == "600" ]] || fail "custom origin .env mode changed"
+
+bad_host=$(mktemp -d)
+write_env "$bad_host" \
+  "PUBLIC_HOST=https://stockbot.example.com" \
+  "ACME_EMAIL=you@example.com" \
+  "BASIC_AUTH_PASSWORD=" \
+  "HOST_PORT=8080"
+run_setup "$bad_host"
+[[ "$LAST_RC" -eq 0 ]] || fail "invalid PUBLIC_HOST setup exited $LAST_RC: $LAST_OUT"
+grep -q '^APP_BASE_URL=$' "$bad_host/.env" || fail "invalid PUBLIC_HOST must leave APP_BASE_URL empty"
+
+# chown clears setgid, so the mode is applied after the owner. Group
+# resolution: an explicit group, the sudo user, then rhionin, then uid 65532.
+sg_dir=$(mktemp -d)
+sg_log=$(mktemp)
+sg_bin=$(mktemp -d)
+cat > "$sg_bin/chown" << 'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CHOWN_LOG:?}"
+target=${*: -1}
+if [[ -d "$target" ]]; then
+  chmod 0750 "$target"
+fi
+exit 0
+EOF
+chmod +x "$sg_bin/chown"
+printf 'PUBLIC_HOST=\n' > "$sg_dir/.env"
+CHOWN_LOG="$sg_log" PANTRY_DIR="$sg_dir" PANTRY_SETUP_GROUP=operators \
+  PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$sg_bin:$PATH" \
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+sg_mode=$(stat -c '%a' "$sg_dir/setup")
+[[ "$sg_mode" == "2750" ]] || fail "setup dir mode after chown is $sg_mode, want 2750"
+have "$(cat "$sg_log")" "65532:operators $sg_dir/setup" "setup group override is the chown group"
+
+sudo_dir=$(mktemp -d)
+sudo_log=$(mktemp)
+sudo_bin=$(mktemp -d)
+cat > "$sudo_bin/chown" << 'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CHOWN_LOG:?}"
+exit 0
+EOF
+cat > "$sudo_bin/id" << 'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-gn" && "$2" == "cj" ]]; then
+  printf '%s\n' rhionin
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$sudo_bin/chown" "$sudo_bin/id"
+printf 'PUBLIC_HOST=\n' > "$sudo_dir/.env"
+CHOWN_LOG="$sudo_log" PANTRY_DIR="$sudo_dir" PANTRY_SETUP_GROUP='' \
+  PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER=cj PATH="$sudo_bin:$PATH" \
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+have "$(cat "$sudo_log")" "65532:rhionin $sudo_dir/setup" "setup dir uses the sudo user's group"
+
+fallback_dir=$(mktemp -d)
+fallback_log=$(mktemp)
+fallback_bin=$(mktemp -d)
+cat > "$fallback_bin/chown" << 'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CHOWN_LOG:?}"
+exit 0
+EOF
+cat > "$fallback_bin/stat" << 'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-c" && "$2" == "%g" ]]; then
+  printf '0\n'
+  exit 0
+fi
+if [[ "$1" == "-c" && "$2" == "%G" ]]; then
+  printf 'root\n'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+cat > "$fallback_bin/getent" << 'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "group" && "$2" == "rhionin" ]]; then
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$fallback_bin/chown" "$fallback_bin/stat" "$fallback_bin/getent"
+printf 'PUBLIC_HOST=\n' > "$fallback_dir/.env"
+CHOWN_LOG="$fallback_log" PANTRY_DIR="$fallback_dir" PANTRY_SETUP_GROUP='' \
+  PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$fallback_bin:$PATH" \
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+have "$(cat "$fallback_log")" "65532:rhionin $fallback_dir/setup" "setup dir falls back to group rhionin"
+
+numeric_log=$(mktemp)
+cat > "$fallback_bin/getent" << 'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$fallback_bin/getent"
+CHOWN_LOG="$numeric_log" PANTRY_DIR="$fallback_dir" PANTRY_SETUP_GROUP='' \
+  PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$fallback_bin:$PATH" \
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+have "$(cat "$numeric_log")" "65532:65532 $fallback_dir/setup" "setup dir falls back to uid 65532"
+
+mode_dir=$(mktemp -d)
+printf 'PUBLIC_HOST=stockbot.example\nAPP_BASE_URL=\n' > "$mode_dir/.env"
+chmod 640 "$mode_dir/.env"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+grep -q '^APP_BASE_URL=https://stockbot.example$' "$mode_dir/.env" || fail "empty APP_BASE_URL was not filled from PUBLIC_HOST"
+[[ $(stat -c '%a' "$mode_dir/.env") == "640" ]] || fail "filling APP_BASE_URL changed .env mode"
+printf 'PUBLIC_HOST=stockbot.example\nAPP_BASE_URL=https://keep.example\n' > "$mode_dir/.env"
+chmod 600 "$mode_dir/.env"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+grep -q '^APP_BASE_URL=https://keep.example$' "$mode_dir/.env" || fail "ensure_app_base_url replaced a set origin"
+[[ $(stat -c '%a' "$mode_dir/.env") == "600" ]] || fail "keeping APP_BASE_URL changed .env mode"
+printf 'PUBLIC_HOST=\n' > "$mode_dir/.env"
+chmod 600 "$mode_dir/.env"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+grep -q '^APP_BASE_URL=' "$mode_dir/.env" && fail "LAN ensure_app_base_url invented an origin"
 
 # Scanner udev rules match the input parent's id/vendor and id/product.
 # udev imports ID_VENDOR_ID / ID_MODEL_ID only for a device with a USB

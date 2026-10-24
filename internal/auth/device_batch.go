@@ -156,9 +156,6 @@ func prepareScan(item ScanInput, now time.Time) preparedScan {
 	if item.ScannedAtInvalid {
 		return preparedScan{reject: ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}}
 	}
-	if item.HasScannedAt && !withinScanWindow(now, item.ScannedAt) {
-		return preparedScan{reject: ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation, Message: "scannedAt out of range"}}
-	}
 	if !item.HasBarcode {
 		return preparedScan{reject: ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}}
 	}
