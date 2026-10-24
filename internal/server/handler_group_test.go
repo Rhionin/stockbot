@@ -628,6 +628,92 @@ func TestGroupHandlers(t *testing.T) {
 				},
 			),
 		},
+		{
+			name: "preview applies a quantity, a window, and a cleared target",
+			httpExchange: httpExchange{
+				method: http.MethodPost,
+				path:   "/api/groups/preview",
+				body: `{
+					"rule":"favorite",
+					"pinnedProductId":"a",
+					"members":[
+						{"productId":"a","name":"Big","netBaseValue":400,"netDimension":"mass","onHand":1},
+						{"productId":"b","name":"Small","netBaseValue":200,"netDimension":"mass","onHand":0}
+					],
+					"target":{"quantity":28,"dimension":"mass"},
+					"rate":{"perDay":0.2,"ok":true}
+				}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.productId", value: "a"},
+					{path: "$.buy", value: float64(1)},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A","onHand":1}],
+						"target":{"windowMonths":2},
+						"rate":{"perDay":0.2,"ok":true,"itemCount":true}
+					}`,
+					expectedStatus: http.StatusOK,
+					bodyContains:   []string{"this counts items"},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A","netBaseValue":29.5735295625,"netDimension":"volume","onHand":0}],
+						"target":{"quantity":8,"dimension":"volume"}
+					}`,
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.productId", value: "a"}},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"clear":true},
+						"rate":{"perDay":0,"ok":false}
+					}`,
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.buy", value: float64(0)}},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"quantity":0}
+					}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"more than zero"},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"windowMonths":2,"quantity":8}
+					}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"Choose a window"},
+				},
+			),
+		},
 	})
 }
 

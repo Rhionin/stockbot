@@ -512,8 +512,12 @@ func (s *Service) LANView(ctx context.Context) (Principal, SessionView, error) {
 }
 
 // HouseholdGate is the shared password as it is stored now.
+// On is public shared-password sign-in: state on and a nonempty hash.
+// LANOpen is :8080 before retirement. A missing row is still open.
+// Retirement (state off) closes the LAN even while the hash remains for restore.
 type HouseholdGate struct {
 	On           bool
+	LANOpen      bool
 	User         string
 	Hash         []byte
 	Secret       []byte
@@ -530,7 +534,7 @@ func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) 
 		SELECT login_name, COALESCE(pw_hash, ''), COALESCE(session_key, ''), state, COALESCE(restore_until, '')
 		FROM household_password WHERE household_id = ?`, scope.HouseholdID()).Scan(&login, &hash, &key, &state, &until)
 	if err == sql.ErrNoRows {
-		return HouseholdGate{}, nil
+		return HouseholdGate{LANOpen: true}, nil
 	}
 	if err != nil {
 		return HouseholdGate{}, AsError(err)
@@ -538,6 +542,7 @@ func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) 
 	secret, _ := base64.StdEncoding.DecodeString(key)
 	return HouseholdGate{
 		On:           state == "on" && hash != "",
+		LANOpen:      state == "on",
 		User:         login,
 		Hash:         []byte(hash),
 		Secret:       secret,
@@ -546,12 +551,23 @@ func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) 
 }
 
 // HouseholdPasswordOn reports whether household 1 still signs in with the shared password.
+// A missing row is off: public sign-in fails closed until a hash is stored.
 func (s *Service) HouseholdPasswordOn(ctx context.Context) (bool, error) {
 	gate, err := s.LoadHouseholdGate(ctx)
 	if err != nil {
 		return false, err
 	}
 	return gate.On, nil
+}
+
+// LANOpen reports whether :8080 still serves household 1 without a personal session.
+// No household_password row, or state on, stays open. State off (retired) closes it.
+func (s *Service) LANOpen(ctx context.Context) (bool, error) {
+	gate, err := s.LoadHouseholdGate(ctx)
+	if err != nil {
+		return false, err
+	}
+	return gate.LANOpen, nil
 }
 
 // CheckHouseholdPassword reports whether the shared household password matches.

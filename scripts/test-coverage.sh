@@ -2,13 +2,13 @@
 set -e
 
 # Minimum required line coverage percentage.
-# 84.9 is the clean ./... total after the stage-1 household migrations,
-# WAL read pool, and shared-password import, including the public brand
-# mark and legal pages.
+# 85.1 is the clean ./... total after stage-1 sign-in. :8080 stays open
+# until the household password is retired, and the added handler tests
+# cover the cart, scan, and sync branches that the fresh database reaches.
 # A cached go test run, or several packages writing one profile at once, can
 # report a different total. Do not ratchet from that result. -p 1 keeps the
 # merged profile to a single writer.
-COVERAGE_THRESHOLD=84.9
+COVERAGE_THRESHOLD=85.1
 
 # Colors for output
 RED='\033[0;31m'

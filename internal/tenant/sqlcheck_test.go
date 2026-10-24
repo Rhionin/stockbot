@@ -55,6 +55,26 @@ func TestUnscopedSQLLintRejectsEveryHouseholdTable(t *testing.T) {
 	}
 }
 
+func TestHouseholdTablesInListsEachHouseholdTableOnce(t *testing.T) {
+	got := householdTablesIn(`
+		SELECT id FROM items i
+		JOIN items ON items.id = i.id
+		JOIN products p ON p.id = i.product_id
+		UPDATE categories SET name = name`)
+	want := map[string]bool{"items": true, "categories": true}
+	if len(got) != len(want) {
+		t.Fatalf("tables = %v", got)
+	}
+	for _, name := range got {
+		if !want[name] {
+			t.Fatalf("tables = %v", got)
+		}
+	}
+	if householdTablesIn("SELECT 1") != nil {
+		t.Fatal("sql with no table named a household table")
+	}
+}
+
 func TestUnscopedSQLLintAllowsGlobalCatalog(t *testing.T) {
 	for table := range GlobalTables {
 		sqlText := "SELECT id, name FROM " + table + " WHERE id = ?"

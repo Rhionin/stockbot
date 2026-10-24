@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -121,6 +124,51 @@ func TestStartServesThePublicAndLANListeners(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("server did not shut down")
+	}
+}
+
+func TestProcessMainStopsWhenTheProcessIsSignaled(t *testing.T) {
+	quietSite(t)
+	lan := freeAddr(t)
+	dir := t.TempDir()
+	t.Setenv("DB_PATH", filepath.Join(dir, "pantry.db"))
+	t.Setenv("SETUP_DIR", dir)
+	t.Setenv("LAN_LISTEN_ADDR", lan)
+	t.Setenv("PUBLIC_LISTEN_ADDR", "off")
+	t.Setenv("DISABLE_EXTERNAL_PRODUCT_LOOKUP", "true")
+	t.Setenv("DISABLE_KROGER", "true")
+	t.Setenv("STOCK_IN_CONTROL_BARCODE", "STOCK_IN")
+	t.Setenv("STOCK_OUT_CONTROL_BARCODE", "STOCK_OUT")
+	t.Setenv("SCANNER_DEVICE", filepath.Join(dir, "missing-scanner"))
+	t.Setenv("PANTRY_AUTH_FILE", filepath.Join(dir, "missing-auth"))
+	t.Setenv("SENTRY_DSN", "https://public@sentry.example/1")
+	t.Setenv("HEADLESS_USER_ID", "user-1")
+
+	done := make(chan struct{})
+	go func() {
+		main()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		signal.Reset(os.Interrupt, syscall.SIGTERM)
+	})
+	waitHealth(t, lan, nil)
+	mode, err := http.Post("http://"+lan+"/api/scanner/mode", "application/json", bytes.NewReader([]byte(`{"mode":"stock_out"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(mode.Body)
+	mode.Body.Close()
+	if mode.StatusCode != http.StatusOK {
+		t.Fatalf("scanner mode = %d %s", mode.StatusCode, body)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("main did not return after SIGTERM")
 	}
 }
 

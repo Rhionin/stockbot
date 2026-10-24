@@ -249,6 +249,62 @@ func TestConsiderProductJoinsAnExistingGroup(t *testing.T) {
 	}
 }
 
+func TestAcceptJoinsAnExistingGroupAndRenamesANewOne(t *testing.T) {
+	groups, catalog, db := newTestGroups(t)
+	ctx := context.Background()
+	scope := scopeOf(t, db)
+	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
+	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
+	created, err := groups.Create(ctx, scope, "Cut green beans", []string{"gv"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	cards, err := groups.ListSuggestions(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := cardByTitle(t, cards, "Cut green beans")
+	if card.ExistingGroupID != created.ID {
+		t.Fatalf("existing group = %q", card.ExistingGroupID)
+	}
+	if _, err := groups.Accept(ctx, scope, card.ID, nil, &TargetInput{Window: intPtr(2), Quantity: floatPtr(8)}, ""); err == nil {
+		t.Fatal("accepted a target that sets two fields")
+	}
+	joined, err := groups.Accept(ctx, scope, card.ID, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.ID != created.ID {
+		t.Fatalf("joined group = %s, want %s", joined.ID, created.ID)
+	}
+	if _, err := groups.Accept(ctx, scope, card.ID, nil, nil, ""); err == nil {
+		t.Fatal("accepted a suggestion that was already settled")
+	}
+
+	mustProduct(t, catalog, "oats", "Rolled Oats")
+	mustProduct(t, catalog, "quick", "Quick Oats")
+	if _, err := db.Exec(`
+		INSERT INTO group_suggestions (id, user_id, household_id, kind, title, status)
+		VALUES ('sug-oats', 'user-1', ?, 'looks_alike', 'Oats', 'open')`, scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO group_suggestion_members (suggestion_id, product_id, included)
+		VALUES ('sug-oats', 'oats', 1), ('sug-oats', 'quick', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := groups.Accept(ctx, scope, "sug-oats", []string{"oats"}, &TargetInput{Clear: true}, "Breakfast oats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "Breakfast oats" {
+		t.Fatalf("name = %q", renamed.Name)
+	}
+}
+
+func floatPtr(n float64) *float64 { return &n }
+
 func sameIDs(a, b []Suggestion) bool {
 	if len(a) != len(b) {
 		return false

@@ -262,6 +262,60 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			},
 		},
 		{
+			name: "swap refuses a blank product, a missing line, and a line that is not a group",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-manual", "Oats", "item-manual")
+				insertManualShoppingItem(env.T, env.DB, "line-manual", "user-1", "item-manual", 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/line-manual/swap",
+				body:           `{"itemId":""}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				bodyContains:   []string{"Choose a product in this group."},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/items/missing-line/swap",
+					body:           `{"itemId":"item-manual"}`,
+					expectedStatus: http.StatusNotFound,
+					bodyContains:   []string{"not found"},
+				},
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/items/line-manual/swap",
+					body:           `{"itemId":"item-manual"}`,
+					expectedStatus: http.StatusUnprocessableEntity,
+					bodyContains:   []string{"That shopping line is not a group."},
+				},
+			),
+		},
+		{
+			name:  "swap refuses a product outside the group",
+			setup: beans,
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/fill",
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-peas", "Peas", "item-peas")
+				handler := stagedCartHandler(env)
+				body := exchangeJSON(env.T, handler, http.MethodGet, "/api/shopping-list", ``, http.StatusOK)
+				var rows []struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal(body, &rows); err != nil {
+					env.T.Fatal(err)
+				}
+				if len(rows) != 1 {
+					env.T.Fatalf("rows: %#v", rows)
+				}
+				exchangeJSON(env.T, handler, http.MethodPost, "/api/shopping-list/items/"+rows[0].ID+"/swap", `{"itemId":"item-peas"}`, http.StatusUnprocessableEntity)
+			},
+		},
+		{
 			name:  "a removed group line stays gone",
 			setup: beans,
 			httpExchange: httpExchange{

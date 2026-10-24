@@ -111,12 +111,12 @@ func (s *stage1) blockLAN(w http.ResponseWriter, r *http.Request) bool {
 		writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
 		return true
 	}
-	on, err := s.svc.HouseholdPasswordOn(r.Context())
+	open, err := s.svc.LANOpen(r.Context())
 	if err != nil {
 		writeStage1(w, err)
 		return true
 	}
-	if on {
+	if open {
 		return false
 	}
 	if isDocument(r) {
@@ -178,8 +178,8 @@ func (s *stage1) anonymousOpen(r *http.Request) bool {
 		if entry != app.EntryLAN {
 			return true
 		}
-		on, err := s.svc.HouseholdPasswordOn(r.Context())
-		return err == nil && on
+		open, err := s.svc.LANOpen(r.Context())
+		return err == nil && open
 	}
 	if r.URL.Path == sentryTunnelPath {
 		return true
@@ -236,12 +236,12 @@ func (s *stage1) resolve(w http.ResponseWriter, r *http.Request, entry app.Entry
 		}
 	}
 	if entry == app.EntryLAN {
-		on, err := s.svc.HouseholdPasswordOn(r.Context())
+		open, err := s.svc.LANOpen(r.Context())
 		if err != nil {
 			writeStage1(w, err)
 			return auth.Principal{}, false
 		}
-		if on {
+		if open {
 			p, _, err := s.svc.LANView(r.Context())
 			if err != nil {
 				writeStage1(w, err)
