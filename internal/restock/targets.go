@@ -100,7 +100,7 @@ func Load(ctx context.Context, scope tenant.Scope, q Queryer) (Snapshot, error) 
 	if err := scope.Require(); err != nil {
 		return Snapshot{}, err
 	}
-	home, err := readHousehold(ctx, q)
+	home, err := readHousehold(ctx, scope, q)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -314,10 +314,10 @@ func (t *Targets) SetHousehold(ctx context.Context, scope tenant.Scope, target T
 		return fmt.Errorf("could not save the household default: %w", err)
 	}
 	defer tx.Rollback()
-	if err := putSetting(ctx, tx, "supply_target_kind", string(target.Kind)); err != nil {
+	if err := putSetting(ctx, scope, tx, "supply_target_kind", string(target.Kind)); err != nil {
 		return err
 	}
-	if err := putSetting(ctx, tx, "supply_target_value", strconv.FormatFloat(target.Value, 'f', -1, 64)); err != nil {
+	if err := putSetting(ctx, scope, tx, "supply_target_value", strconv.FormatFloat(target.Value, 'f', -1, 64)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -968,7 +968,10 @@ func loadBarcodes(ctx context.Context, scope tenant.Scope, q Queryer) (map[strin
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT product_id, barcode FROM barcodes WHERE household_id = ? ORDER BY product_id, barcode`, scope.HouseholdID())
+	rows, err := q.QueryContext(ctx, `
+		SELECT product_id, barcode FROM barcodes
+		WHERE household_id = ? OR (source = 'global' AND user_id = '')
+		ORDER BY product_id, CASE source WHEN 'user_override' THEN 0 ELSE 1 END, barcode`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read barcodes: %w", err)
 	}
@@ -1058,7 +1061,7 @@ func loadItems(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]*
 		return nil, err
 	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT i.id, i.product_id, p.name, COALESCE(p.unit_of_measure, ''),
+		SELECT i.id, i.product_id, `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''),
 			COALESCE(g.id, ''), COALESCE(g.name, ''),
 			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, '')
 		FROM items i
@@ -1066,7 +1069,8 @@ func loadItems(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]*
 		LEFT JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id
 		LEFT JOIN product_groups g ON g.id = m.group_id AND g.household_id = i.household_id
 		WHERE i.household_id = ? AND i.shelved = 0
-		ORDER BY p.name, i.id`, scope.HouseholdID())
+		ORDER BY `+product.DisplayNameSQL("p")+`, i.id`,
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read restock targets: %w", err)
 	}
@@ -1183,12 +1187,15 @@ func loadCategoryRows(ctx context.Context, scope tenant.Scope, q Queryer) ([]cat
 	return out, rows.Err()
 }
 
-func readHousehold(ctx context.Context, q Queryer) (Target, error) {
-	kind, err := readSetting(ctx, q, "supply_target_kind")
+func readHousehold(ctx context.Context, scope tenant.Scope, q Queryer) (Target, error) {
+	if err := scope.Require(); err != nil {
+		return Target{}, err
+	}
+	kind, err := readSetting(ctx, scope, q, "supply_target_kind")
 	if err != nil {
 		return Target{}, fmt.Errorf("could not read the household default: %w", err)
 	}
-	value, err := readSetting(ctx, q, "supply_target_value")
+	value, err := readSetting(ctx, scope, q, "supply_target_value")
 	if err != nil {
 		return Target{}, fmt.Errorf("could not read the household default: %w", err)
 	}
@@ -1201,9 +1208,14 @@ func readHousehold(ctx context.Context, q Queryer) (Target, error) {
 	return Target{Kind: KindMonths, Value: 3}, nil
 }
 
-func readSetting(ctx context.Context, q Queryer, key string) (string, error) {
+func readSetting(ctx context.Context, scope tenant.Scope, q Queryer, key string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var value string
-	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
+	err := q.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -1213,10 +1225,14 @@ func readSetting(ctx context.Context, q Queryer, key string) (string, error) {
 	return value, nil
 }
 
-func putSetting(ctx context.Context, q Queryer, key, value string) error {
+func putSetting(ctx context.Context, scope tenant.Scope, q Queryer, key, value string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	_, err := q.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value) VALUES (?, ?)
-		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
+		ON CONFLICT (household_id, key) DO UPDATE SET value = excluded.value`,
+		scope.HouseholdID(), key, value)
 	if err != nil {
 		return fmt.Errorf("could not save the household default: %w", err)
 	}

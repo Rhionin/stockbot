@@ -72,6 +72,29 @@ func TestUnscopedSQLLintAllowsGlobalCatalog(t *testing.T) {
 	}
 }
 
+func TestUnscopedSQLLintRequiresEveryJoinedHouseholdTable(t *testing.T) {
+	open := `
+		SELECT ic.item_id, c.name
+		FROM item_categories ic
+		JOIN categories c ON c.id = ic.category_id
+		WHERE ic.household_id = ?`
+	got := CheckStatement(open)
+	if len(got) == 0 {
+		t.Fatal("a joined household table without household_id was allowed")
+	}
+	if !strings.Contains(got[0], "c") {
+		t.Fatalf("report %q did not name the unconstrained alias", got[0])
+	}
+	scoped := `
+		SELECT ic.item_id, c.name
+		FROM item_categories ic
+		JOIN categories c ON c.id = ic.category_id AND c.household_id = ic.household_id
+		WHERE ic.household_id = ?`
+	if got := CheckStatement(scoped); len(got) != 0 {
+		t.Fatalf("scoped join rejected: %v", got)
+	}
+}
+
 func TestUnscopedSQLLintAllowsPreMigrationGuard(t *testing.T) {
 	sqlText := "SELECT COUNT(*) FROM items WHERE user_id NOT IN ('legacy', '')"
 	if got := checkStatement(sqlText, "internal/app/household.go"); len(got) != 0 {

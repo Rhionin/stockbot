@@ -273,11 +273,11 @@ func (r *Queue) GetScanEntry(ctx context.Context, scope tenant.Scope, id string)
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
 		WHERE se.household_id = ? AND se.id = ?`,
-		scope.HouseholdID(), id,
+		scope.HouseholdID(), scope.HouseholdID(), id,
 	)
 
 	entry, err := scanScanEntry(row, false)
@@ -307,13 +307,13 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, scope tenant.Scope, 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
 		WHERE se.household_id = ? AND se.user_id = ? AND se.barcode = ? AND se.direction IS ? AND se.status IN ('pending', 'flagged')
 		ORDER BY se.scanned_at ASC, se.id ASC
 		LIMIT 1`,
-		scope.HouseholdID(), userID, barcode, nullableString(directionStr),
+		scope.HouseholdID(), scope.HouseholdID(), userID, barcode, nullableString(directionStr),
 	)
 
 	entry, err := scanScanEntry(row, false)
@@ -340,7 +340,7 @@ func (r *Queue) ListScanEntries(ctx context.Context, scope tenant.Scope, status 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count,
+			p.id, ` + product.DisplayNameSQL("p") + `, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count,
 			CASE
 				WHEN se.direction = 'stock_out' AND i.id IS NOT NULL THEN
 					CASE WHEN i.shelved != 0 THEN 0 ELSE COALESCE(on_hand_counts.n, 0) END
@@ -356,7 +356,7 @@ func (r *Queue) ListScanEntries(ctx context.Context, scope tenant.Scope, status 
 		) AS on_hand_counts ON on_hand_counts.item_id = i.id
 		WHERE se.household_id = ?`
 
-	args := []any{scope.HouseholdID(), scope.HouseholdID()}
+	args := []any{scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID()}
 
 	if status != "" {
 		query += ` AND se.status = ?`

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -75,10 +76,10 @@ func productView(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID str
 	var base sql.NullFloat64
 	var pack sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
-		SELECT p.name, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
+		SELECT `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.id = ? AND i.household_id = ?`, itemID, scope.HouseholdID()).Scan(&name, &unit, &base, &dimension, &pack)
+		WHERE i.id = ? AND i.household_id = ?`, scope.HouseholdID(), itemID, scope.HouseholdID()).Scan(&name, &unit, &base, &dimension, &pack)
 	if err == sql.ErrNoRows {
 		return View{}, &NotFoundError{Message: "That product was not found."}
 	}
@@ -128,7 +129,7 @@ func groupView(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID stri
 		JOIN products p ON p.id = m.product_id
 		LEFT JOIN items i ON i.product_id = p.id AND i.household_id = ?
 		WHERE m.group_id = ? AND m.household_id = ?
-		ORDER BY p.name, p.id`, scope.HouseholdID(), groupID, scope.HouseholdID())
+		ORDER BY `+product.DisplayNameSQL("p")+`, p.id`, scope.HouseholdID(), groupID, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return View{}, err
 	}
@@ -229,13 +230,13 @@ func listMoves(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemIDs []st
 		return []Move{}, nil
 	}
 	query := `
-		SELECT m.id, m.direction, m.quantity, m.at, m.source, m.product_id, p.name
+		SELECT m.id, m.direction, m.quantity, m.at, m.source, m.product_id, ` + product.DisplayNameSQL("p") + `
 		FROM stock_moves m
 		JOIN products p ON p.id = m.product_id
 		WHERE m.household_id = ? AND m.item_id IN (` + placeholders(len(itemIDs)) + `)
 		ORDER BY ` + historyListOrder + `
 		LIMIT ?`
-	args := append([]any{scope.HouseholdID()}, idsAsArgs(itemIDs)...)
+	args := append([]any{scope.HouseholdID(), scope.HouseholdID()}, idsAsArgs(itemIDs)...)
 	args = append(args, trailLimit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {

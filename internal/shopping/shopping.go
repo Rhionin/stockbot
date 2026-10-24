@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -455,13 +456,14 @@ func (s *Store) fillGroupMembers(ctx context.Context, scope tenant.Scope, items 
 		return items, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.group_id, i.id, p.id, p.name
+		SELECT m.group_id, i.id, p.id, `+product.DisplayNameSQL("p")+`
 		FROM product_group_members m
 		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
 		JOIN items i ON i.product_id = m.product_id AND i.household_id = m.household_id
 		JOIN products p ON p.id = m.product_id
 		WHERE m.household_id = ?
-		ORDER BY p.name, i.id`, scope.HouseholdID())
+		ORDER BY `+product.DisplayNameSQL("p")+`, i.id`,
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read product groups: %w", err)
 	}

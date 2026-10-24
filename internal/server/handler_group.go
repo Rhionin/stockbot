@@ -395,7 +395,11 @@ func (h *GroupHandler) SkipSuggestion(req Request[struct{}, groupIDParams]) (NoC
 }
 
 func (h *GroupHandler) GetDefaultRule(req Request[struct{}, struct{}]) (*defaultRuleResponse, error) {
-	rule, err := h.Groups.DefaultRule(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	rule, err := h.Groups.DefaultRule(req.Context, scope)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -403,7 +407,11 @@ func (h *GroupHandler) GetDefaultRule(req Request[struct{}, struct{}]) (*default
 }
 
 func (h *GroupHandler) PutDefaultRule(req Request[defaultRuleBody, struct{}]) (*defaultRuleResponse, error) {
-	if err := h.Groups.SetDefaultRule(req.Context, req.Body.Rule); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Groups.SetDefaultRule(req.Context, scope, req.Body.Rule); err != nil {
 		return nil, groupErr(err)
 	}
 	return &defaultRuleResponse{Rule: req.Body.Rule}, nil

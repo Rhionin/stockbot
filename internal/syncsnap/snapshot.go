@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/group"
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -103,7 +104,7 @@ func Build(ctx context.Context, scope tenant.Scope, db *sql.DB, now time.Time) (
 		return Snapshot{}, err
 	}
 	snap := emptySnapshot(now)
-	products, err := loadProducts(ctx, db)
+	products, err := loadProducts(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -177,12 +178,16 @@ func emptySnapshot(now time.Time) Snapshot {
 	}
 }
 
-func loadProducts(ctx context.Context, db *sql.DB) ([]Product, error) {
+func loadProducts(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]Product, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, name, COALESCE(category, ''), COALESCE(unit_of_measure, ''),
-		       net_base_value, COALESCE(net_dimension, ''), pack_count
-		FROM products
-		ORDER BY name, id`)
+		SELECT p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''),
+		       p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
+		FROM products p
+		ORDER BY `+product.DisplayNameSQL("p")+`, p.id`,
+		scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +222,7 @@ func attachBarcodes(ctx context.Context, scope tenant.Scope, db *sql.DB, byID ma
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT barcode, product_id, source FROM barcodes
-		WHERE household_id = ?
+		WHERE household_id = ? OR (source = 'global' AND user_id = '')
 		ORDER BY barcode, source`, scope.HouseholdID())
 	if err != nil {
 		return err

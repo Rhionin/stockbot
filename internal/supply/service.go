@@ -220,7 +220,7 @@ func (s *Service) GroupUsage(ctx context.Context, scope tenant.Scope, groupID st
 	}
 	defer tx.Rollback()
 
-	phase, _, err := readPhaseAndMonths(ctx, tx)
+	phase, _, err := readPhaseAndMonths(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +252,7 @@ func (s *Service) Plan(ctx context.Context, scope tenant.Scope, now time.Time) (
 	}
 	defer tx.Rollback()
 
-	phase, months, err := readPhaseAndMonths(ctx, tx)
+	phase, months, err := readPhaseAndMonths(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *Service) Complete(ctx context.Context, scope tenant.Scope, now time.Tim
 	if err := scope.Require(); err != nil {
 		return Phase{}, err
 	}
-	return completeOpening(ctx, s.db, now.UTC())
+	return completeOpening(ctx, scope, s.db, now.UTC())
 }
 
 // Settings reads the banner and settings-page model.
@@ -280,7 +280,7 @@ func (s *Service) Settings(ctx context.Context, scope tenant.Scope) (Settings, e
 	if err := scope.Require(); err != nil {
 		return Settings{}, err
 	}
-	return readSettings(ctx, s.db)
+	return readSettings(ctx, scope, s.db)
 }
 
 // OpeningTx reports whether the household is still taking the opening snapshot.
@@ -291,7 +291,7 @@ func (s *Service) OpeningTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx)
 	if err := scope.Require(); err != nil {
 		return false, err
 	}
-	phase, err := readPhase(ctx, tx)
+	phase, err := readPhase(ctx, scope, tx)
 	if err != nil {
 		return false, err
 	}
@@ -306,7 +306,7 @@ func (s *Service) SetMonths(ctx context.Context, scope tenant.Scope, m Months) e
 	if _, err := ParseMonths(int(m)); err != nil {
 		return err
 	}
-	return writeMonths(ctx, s.db, m)
+	return writeMonths(ctx, scope, s.db, m)
 }
 
 // SetOverride with a zero Override deletes the product's row.

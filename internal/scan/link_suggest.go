@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -84,14 +85,14 @@ func (r *Queue) suggestLinks(ctx context.Context, scope tenant.Scope, q linkQuer
 	excludeProductID := ""
 	if scanEntry.ProductID != nil {
 		excludeProductID = *scanEntry.ProductID
-		err := q.QueryRowContext(ctx, `SELECT name FROM products WHERE id = ?`, excludeProductID).Scan(&scannedName)
+		err := q.QueryRowContext(ctx, `SELECT `+product.DisplayNameSQL("p")+` FROM products p WHERE p.id = ?`, scope.HouseholdID(), excludeProductID).Scan(&scannedName)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("scanned product name: %w", err)
 		}
 	}
 
 	rows, err := q.QueryContext(ctx, `
-		SELECT i.id, p.id, p.name,
+		SELECT i.id, p.id, `+product.DisplayNameSQL("p")+`,
 			(SELECT COUNT(*) FROM item_instances ii
 			 WHERE ii.household_id = ? AND ii.item_id = i.id AND ii.removed_at IS NULL),
 			COALESCE((
@@ -100,13 +101,20 @@ func (r *Queue) suggestLinks(ctx context.Context, scope tenant.Scope, q linkQuer
 				WHERE b.product_id = p.id
 				  AND (
 				        (b.source = 'user_override' AND b.household_id = ?)
-				     OR (b.source = 'global' AND b.user_id = '')
+				     OR (b.source = 'global' AND b.user_id = ''
+				         AND NOT EXISTS (
+				           SELECT 1 FROM barcodes ovr
+				           WHERE ovr.barcode = b.barcode
+				             AND ovr.source = 'user_override'
+				             AND ovr.household_id = ?
+				         ))
 				  )
+				ORDER BY CASE b.source WHEN 'user_override' THEN 0 ELSE 1 END, b.barcode
 			), '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
 		WHERE i.household_id = ? AND i.shelved = 0`,
-		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(),
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list link candidates: %w", err)

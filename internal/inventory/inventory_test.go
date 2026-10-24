@@ -966,8 +966,15 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 	}
 
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?), ('supply_months', '4')`,
-		now.UTC().Format(time.RFC3339)); err != nil {
+		INSERT INTO household_settings (household_id, key, value) VALUES
+			(?, 'onboarding_started_at', ?),
+			(?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), now.UTC().Format(time.RFC3339),
+		other.HouseholdID(), now.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO app_settings (key, value) VALUES ('supply_months', '4')`); err != nil {
 		t.Fatalf("settings: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -1046,7 +1053,8 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 	assertCountArgs(t, db, `SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ?`, 1, other.HouseholdID())
 	assertCount(t, db, `SELECT COUNT(*) FROM scan_entries`, 1)
 	assertCountArgs(t, db, `SELECT COUNT(*) FROM item_instances WHERE household_id = ?`, 0, scope.HouseholdID())
-	assertCount(t, db, `SELECT COUNT(*) FROM app_settings WHERE key = 'onboarding_started_at'`, 0)
+	assertCountArgs(t, db, `SELECT COUNT(*) FROM household_settings WHERE household_id = ? AND key = 'onboarding_started_at'`, 0, scope.HouseholdID())
+	assertCountArgs(t, db, `SELECT COUNT(*) FROM household_settings WHERE household_id = ? AND key = 'onboarding_started_at'`, 1, other.HouseholdID())
 	assertCount(t, db, `SELECT COUNT(*) FROM app_settings WHERE key = 'supply_months' AND value = '4'`, 1)
 	assertCount(t, db, `SELECT COUNT(*) FROM supply_overrides WHERE product_id = 'prod-1' AND quantity = 4`, 1)
 	assertCountArgs(t, db, `SELECT COUNT(*) FROM brand_preferences WHERE household_id = ?`, 1, scope.HouseholdID())

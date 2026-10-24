@@ -65,7 +65,7 @@ func (j *Journal) Household(ctx context.Context, scope tenant.Scope, filter Ledg
 	if err != nil {
 		return Ledger{}, err
 	}
-	setupAt, err := readSetupAt(ctx, tx)
+	setupAt, err := readSetupAt(ctx, scope, tx)
 	if err != nil {
 		return Ledger{}, err
 	}
@@ -75,9 +75,14 @@ func (j *Journal) Household(ctx context.Context, scope tenant.Scope, filter Ledg
 	return Ledger{Moves: moves, SetupAt: setupAt}, nil
 }
 
-func readSetupAt(ctx context.Context, tx *sql.Tx) (string, error) {
+func readSetupAt(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = 'onboarding_started_at'`).Scan(&raw)
+	err := tx.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = 'onboarding_started_at'`,
+		scope.HouseholdID()).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -109,19 +114,20 @@ func listHousehold(ctx context.Context, scope tenant.Scope, tx *sql.Tx, directio
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
+	nameSQL := product.DisplayNameSQL("p")
 	filter := ""
-	args := []any{scope.HouseholdID()}
+	args := []any{scope.HouseholdID(), scope.HouseholdID()}
 	if direction != "" {
 		filter += ` AND m.direction = ?`
 		args = append(args, direction)
 	}
 	if query != "" {
-		filter += ` AND (INSTR(LOWER(p.name), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(g.name, '')), LOWER(?)) > 0)`
-		args = append(args, query, query)
+		filter += ` AND (INSTR(LOWER(` + nameSQL + `), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(g.name, '')), LOWER(?)) > 0)`
+		args = append(args, scope.HouseholdID(), query, query)
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.id, m.direction, m.quantity, m.at, m.source,
-			m.product_id, p.name, COALESCE(p.image_url, ''),
+			m.product_id, `+nameSQL+`, COALESCE(p.image_url, ''),
 			COALESCE(g.id, ''), COALESCE(g.name, '')
 		FROM stock_moves m
 		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
