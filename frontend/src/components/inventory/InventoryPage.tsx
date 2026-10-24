@@ -4,10 +4,11 @@ import { trackEventSource } from '../../telemetry/client';
 import { Alert, Button, Drawer, Group, Loader, Stack, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
 import {
   addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
-  listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget,
+  listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget, stage1AuthActive,
 } from '../../api/client';
 import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
+import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
 import { AddToGroupSheet } from './AddToGroupSheet';
@@ -136,8 +137,16 @@ export const InventoryPage = () => {
   }, [offlineLoad, loadInventory]);
 
   useEffect(() => {
-    const eventSource = new EventSource('/api/events');
-    trackEventSource(eventSource);
+    let eventSource: EventSource | null = null;
+    let poll = 0;
+    let stopped = false;
+    const connect = () => {
+      if (stopped) return;
+      if (poll !== 0) window.clearInterval(poll);
+      poll = 0;
+      eventSource?.close();
+      eventSource = new EventSource('/api/events');
+      trackEventSource(eventSource);
     eventSource.addEventListener('inventory', (message) => {
       const inventoryItem = JSON.parse((message as MessageEvent).data) as InventoryItem;
       const current = itemsRef.current;
@@ -149,7 +158,37 @@ export const InventoryPage = () => {
       }
       setInventoryItems((rows) => mergeInventoryEvent(rows, inventoryItem));
     });
-    return () => eventSource.close();
+    eventSource.addEventListener('hint', (message) => {
+      let hint: { type?: string };
+      try {
+        hint = JSON.parse((message as MessageEvent).data) as { type?: string };
+      } catch {
+        return;
+      }
+      if (hint.type !== 'stock' && hint.type !== 'rekey') return;
+      if (document.visibilityState === 'hidden') return;
+      void loadInventory(true);
+    });
+    eventSource.onerror = () => {
+      if (!stage1AuthActive() || poll !== 0 || document.visibilityState === 'hidden') return;
+      poll = window.setInterval(() => {
+        if (document.visibilityState === 'hidden') return;
+        void loadInventory(true);
+      }, 10_000);
+    };
+    };
+    const onSwitch = () => {
+      void loadInventory(true);
+      if (stage1AuthActive()) connect();
+    };
+    connect();
+    window.addEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+    return () => {
+      stopped = true;
+      window.removeEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+      if (poll !== 0) window.clearInterval(poll);
+      eventSource?.close();
+    };
   }, [loadInventory]);
 
   const rescan = useCallback(async () => {

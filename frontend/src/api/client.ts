@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { applyHttpResponse, INVALID_CREDENTIALS_SENTENCE, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from '@stockbot/shared/contract';
+import { ACCOUNT_PATH, applyHttpResponse, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_RESET_PATH, AUTH_SESSION_PATH, CONFIG_PATH, DEVICES_PAIR_PATH, DEVICES_PATH, EXPORT_PATH, HOUSEHOLD_PASSWORD_RESTORE_PATH, HOUSEHOLD_PASSWORD_RETIRE_PATH, HOUSEHOLD_SETTINGS_PATH, HOUSEHOLDS_PATH, IMPORT_PATH, IMPORT_UPLOADS_PATH, INVALID_CREDENTIALS_SENTENCE, INVITE_ACCEPT_PATH, INVITE_PREVIEW_PATH, INVITES_PATH, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, OPERATOR_HOUSEHOLD_INVITES_PATH, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, SETUP_PATH, stockbotCode, SWITCH_HOUSEHOLD_PATH, TELEMETRY_PATH, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type AcceptInviteRequest, type AcceptInviteResponse, type AuthSession, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type CreateHouseholdRequest, type CreateHouseholdResponse, type DeleteAccountRequest, type DeleteHouseholdRequest, type Device, type DeviceListResponse, type ExportJob, type ExportJobCreated, type Household, type HouseholdDeleted, type HouseholdSettings, type ImportJob, type ImportJobCreated, type ImportUploadCreated, type InviteCreated, type InviteListResponse, type InvitePreview, type LinkSuggestionsResponse, type LiveConfig, type LoginRequest, type Member, type MemberListResponse, type PairingCode, type PairingLookup, type RenameDeviceRequest, type ResetLinkCreated, type ResetPasswordRequest, type ScanListEntry, type SwitchHouseholdRequest, type UndoPreview } from '@stockbot/shared/contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -64,6 +64,74 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 let onUnauthorized: (() => void) | null = null;
 
+let stagedAuth: AuthSession | null = null;
+let stage1Known = false;
+
+export function currentAuthSession(): AuthSession | null {
+  return stagedAuth;
+}
+
+export function stage1AuthActive(): boolean {
+  return stage1Known;
+}
+
+export function resetStage1Client(): void {
+  stagedAuth = null;
+  stage1Known = false;
+}
+
+function rememberAuth(session: AuthSession | null): void {
+  stagedAuth = session;
+  if (session !== null) stage1Known = true;
+}
+
+const HOUSEHOLD_HEADER_OMIT = new Set([
+  '/api/config',
+  '/api/build',
+  '/api/health',
+  '/api/invites/preview',
+  '/api/invites/accept',
+  '/api/devices/pair/complete',
+  '/api/operator/household-invites',
+  '/api/households',
+  '/api/me',
+]);
+
+function dropUserId(path: string, options?: RequestInit): { path: string; init?: RequestInit } {
+  if (!stage1AuthActive()) return { path, init: options };
+  let nextPath = path;
+  const queryAt = path.indexOf('?');
+  if (queryAt >= 0) {
+    const params = new URLSearchParams(path.slice(queryAt + 1));
+    if (params.has('userId')) {
+      params.delete('userId');
+      const rest = params.toString();
+      nextPath = rest === '' ? path.slice(0, queryAt) : `${path.slice(0, queryAt)}?${rest}`;
+    }
+  }
+  if (typeof options?.body !== 'string') return { path: nextPath, init: options };
+  try {
+    const parsed = JSON.parse(options.body) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || !('userId' in parsed)) {
+      return { path: nextPath, init: options };
+    }
+    const copy = { ...(parsed as Record<string, unknown>) };
+    delete copy.userId;
+    return { path: nextPath, init: { ...options, body: JSON.stringify(copy) } };
+  } catch {
+    return { path: nextPath, init: options };
+  }
+}
+
+function withHouseholdHeader(path: string, headers: Headers): void {
+  const householdId = stagedAuth?.activeHouseholdId;
+  if (!householdId) return;
+  const route = path.split('?')[0] ?? path;
+  if (!route.startsWith('/api/') || route.startsWith('/api/auth/')) return;
+  if (HOUSEHOLD_HEADER_OMIT.has(route)) return;
+  if (!headers.has('X-Household-Id')) headers.set('X-Household-Id', householdId);
+}
+
 // The login gate registers this so an expired session returns to the login page.
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   onUnauthorized = handler;
@@ -103,16 +171,18 @@ export class ApiError extends Error {
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const headers = new Headers(options?.headers);
-  if (options?.body !== undefined) {
+  const scoped = dropUserId(path, options);
+  const headers = new Headers(scoped.init?.headers);
+  if (scoped.init?.body !== undefined) {
     headers.set('Content-Type', 'application/json');
   }
+  withHouseholdHeader(scoped.path, headers);
 
   const started = performance.now();
-  const route = path.split('?')[0] ?? path;
+  const route = scoped.path.split('?')[0] ?? scoped.path;
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}${path}`, { ...options, headers, credentials: 'same-origin' });
+    res = await fetch(`${BASE_URL}${scoped.path}`, { ...scoped.init, headers, credentials: 'same-origin' });
   } catch (error) {
     reportApiResult(route, 0, performance.now() - started, started);
     const unreachable = unreachableFrom(error);
@@ -664,17 +734,34 @@ async function fetchResponse(path: string, init?: RequestInit): Promise<Response
   }
 }
 
-export async function getSession(): Promise<HouseholdSession> {
-  const res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
+function isAuthSession(body: unknown): body is AuthSession {
+  if (typeof body !== 'object' || body === null) return false;
+  const kind = (body as { kind?: unknown }).kind;
+  return kind === 'signed_out' || kind === 'account' || kind === 'household_password' || kind === 'lan';
+}
+
+function authToHousehold(auth: AuthSession): HouseholdSession {
+  if (auth.kind === 'signed_out') return { required: true, username: '', error: '' };
+  if (auth.kind === 'lan') return { required: false, username: '', error: '' };
+  const username = auth.user?.email || auth.user?.name || 'household';
+  return { required: true, username, error: '' };
+}
+
+function isLegacySession(body: unknown): body is { required?: boolean; username?: string; error?: string; code?: string } {
+  return typeof body === 'object' && body !== null && !Array.isArray(body) && ('required' in body || 'username' in body);
+}
+
+async function readSessionResponse(res: Response): Promise<{ kind: 'auth'; session: HouseholdSession } | { kind: 'legacy'; session: HouseholdSession } | { kind: 'unknown' } | { kind: 'failure'; session: HouseholdSession }> {
   if (res.status === 401) {
+    rememberAuth(null);
     applyHttpResponse(res.status, '');
-    return { required: true, username: '', error: '' };
+    return { kind: 'failure', session: { required: true, username: '', error: '' } };
   }
   let text: string;
   try {
     text = await res.text();
   } catch (error) {
-    if (!res.ok) return sessionFailure(res.status, '');
+    if (!res.ok) return { kind: 'failure', session: sessionFailure(res.status, '') };
     throw unreadableResponse(error);
   }
   let body: { required?: boolean; username?: string; error?: string; code?: string } = {};
@@ -682,16 +769,46 @@ export async function getSession(): Promise<HouseholdSession> {
     try {
       body = JSON.parse(text) as { required?: boolean; username?: string; error?: string; code?: string };
     } catch (error) {
-      if (!res.ok) return sessionFailure(res.status, '');
+      if (!res.ok) return { kind: 'failure', session: sessionFailure(res.status, '') };
       throw unreadableResponse(error);
     }
   }
-  if (!res.ok) return sessionFailure(res.status, stockbotCode(body), body.error);
-  notifyApiSuccess();
-  if (!body.required) {
-    return { required: false, username: '', error: '' };
+  if (!res.ok) {
+    rememberAuth(null);
+    return { kind: 'failure', session: sessionFailure(res.status, stockbotCode(body), body.error) };
   }
-  return { required: true, username: body.username ?? '', error: '' };
+  notifyApiSuccess();
+  if (isAuthSession(body)) {
+    rememberAuth(body);
+    return { kind: 'auth', session: authToHousehold(body) };
+  }
+  if (!isLegacySession(body)) return { kind: 'unknown' };
+  rememberAuth(null);
+  if (!body.required) return { kind: 'legacy', session: { required: false, username: '', error: '' } };
+  return { kind: 'legacy', session: { required: true, username: body.username ?? '', error: '' } };
+}
+
+export async function getSession(): Promise<HouseholdSession> {
+  let primary: Response | null = null;
+  try {
+    primary = await fetchResponse(AUTH_SESSION_PATH, { credentials: 'same-origin' });
+  } catch (error) {
+    // A missing route is a 404. A mock that rejects an unknown URL, or any
+    // other non-network failure, still has the legacy session route.
+    if (error instanceof UnreachableError) throw error;
+  }
+  let res = primary;
+  if (res === null || res.status === 404) {
+    res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
+  }
+  const parsed = await readSessionResponse(res);
+  if (parsed.kind !== 'unknown') return parsed.session;
+  if (res === primary) {
+    const fallback = await readSessionResponse(await fetchResponse(SESSION_PATH, { credentials: 'same-origin' }));
+    if (fallback.kind !== 'unknown') return fallback.session;
+  }
+  rememberAuth(null);
+  return { required: false, username: '', error: '' };
 }
 
 function sessionFailure(status: number, code: string, errorText?: string): HouseholdSession {
@@ -725,7 +842,8 @@ export async function login(username: string, password: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  const res = await fetchResponse('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  const path = stage1AuthActive() ? AUTH_LOGOUT_PATH : '/api/logout';
+  const res = await fetchResponse(path, { method: 'POST', credentials: 'same-origin' });
   if (!res.ok) {
     let code: string;
     try {
@@ -842,4 +960,203 @@ export function dismissCategorySuggestions(category: string, itemIds: string[]):
     method: 'POST',
     body: JSON.stringify({ category, itemIds }),
   });
+}
+
+async function authPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchResponse(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = INVALID_CREDENTIALS_SENTENCE;
+    let code = '';
+    try {
+      const parsed = (await res.json()) as { error?: string; code?: string };
+      if (parsed.error) message = parsed.error;
+      code = stockbotCode(parsed);
+    } catch {
+      // Status is enough when the body is empty.
+    }
+    throw classifiedError(res.status, message, code);
+  }
+  notifyApiSuccess();
+  const text = await res.text();
+  return (text === '' ? undefined : JSON.parse(text)) as T;
+}
+
+export async function loginAccount(body: LoginRequest): Promise<AuthSession> {
+  const session = await authPost<AuthSession>(AUTH_LOGIN_PATH, body);
+  if (isAuthSession(session)) rememberAuth(session);
+  return session;
+}
+
+export function getLiveConfig(): Promise<LiveConfig> {
+  return apiFetch(CONFIG_PATH);
+}
+
+export function switchHousehold(householdId: string): Promise<AuthSession> {
+  const body: SwitchHouseholdRequest = { householdId };
+  return apiFetch<AuthSession>(SWITCH_HOUSEHOLD_PATH, { method: 'POST', body: JSON.stringify(body) }).then((session) => {
+    if (isAuthSession(session)) rememberAuth(session);
+    return session;
+  });
+}
+
+export function resetPassword(body: ResetPasswordRequest): Promise<AuthSession> {
+  return authPost<AuthSession>(AUTH_RESET_PATH, body).then((session) => {
+    if (isAuthSession(session)) rememberAuth(session);
+    return session;
+  });
+}
+
+export function submitSetup(body: { setupCode: string; name?: string; email: string; password?: string; newPassword?: string }): Promise<{ redirect?: string }> {
+  return authPost(SETUP_PATH, body);
+}
+
+export function getHouseholdSettings(): Promise<HouseholdSettings> {
+  return apiFetch(HOUSEHOLD_SETTINGS_PATH);
+}
+
+export function retireHouseholdPassword(): Promise<HouseholdSettings> {
+  return apiFetch(HOUSEHOLD_PASSWORD_RETIRE_PATH, { method: 'POST' });
+}
+
+export function restoreHouseholdPassword(): Promise<HouseholdSettings> {
+  return apiFetch(HOUSEHOLD_PASSWORD_RESTORE_PATH, { method: 'POST' });
+}
+
+export function listHouseholds(): Promise<AuthSession['memberships']> {
+  return apiFetch<{ households: AuthSession['memberships'] }>(HOUSEHOLDS_PATH).then((body) => body.households);
+}
+
+export function createHousehold(body: CreateHouseholdRequest): Promise<CreateHouseholdResponse> {
+  return apiFetch(HOUSEHOLDS_PATH, { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getHousehold(id: string): Promise<Household> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(id)}`);
+}
+
+export function renameHousehold(id: string, name: string): Promise<Household> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteHousehold(id: string, confirmation: string): Promise<HouseholdDeleted> {
+  const body: DeleteHouseholdRequest = { confirmation };
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body: JSON.stringify(body),
+  });
+}
+
+export function restoreHousehold(id: string): Promise<Household> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+}
+
+export function listMembers(householdId: string): Promise<Member[]> {
+  return apiFetch<MemberListResponse>(`${HOUSEHOLDS_PATH}/${encodeURIComponent(householdId)}/members`).then((body) => body.members);
+}
+
+export function changeMemberRole(householdId: string, userId: string, role: Member['role']): Promise<Member> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(householdId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export function removeMember(householdId: string, userId: string): Promise<void> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(householdId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function createResetLink(householdId: string, userId: string): Promise<ResetLinkCreated> {
+  return apiFetch(`${HOUSEHOLDS_PATH}/${encodeURIComponent(householdId)}/members/${encodeURIComponent(userId)}/reset-link`, {
+    method: 'POST',
+  });
+}
+
+export function createInvite(body: { email?: string; role?: 'member' | 'owner' }): Promise<InviteCreated> {
+  return apiFetch(INVITES_PATH, { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function listInvites(): Promise<InviteListResponse['invites']> {
+  return apiFetch<InviteListResponse>(INVITES_PATH).then((body) => body.invites);
+}
+
+export function revokeInvite(id: string): Promise<void> {
+  return apiFetch(`${INVITES_PATH}/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+}
+
+export function previewInvite(code: string): Promise<InvitePreview> {
+  return authPost(INVITE_PREVIEW_PATH, { code });
+}
+
+export function acceptInvite(body: AcceptInviteRequest): Promise<AcceptInviteResponse> {
+  return authPost<AcceptInviteResponse>(INVITE_ACCEPT_PATH, body).then((session) => {
+    if (isAuthSession(session)) rememberAuth(session);
+    return session;
+  });
+}
+
+export function createOperatorHouseholdInvite(): Promise<InviteCreated> {
+  return apiFetch(OPERATOR_HOUSEHOLD_INVITES_PATH, { method: 'POST' });
+}
+
+export function startPairing(): Promise<PairingCode> {
+  return apiFetch(DEVICES_PAIR_PATH, { method: 'POST' });
+}
+
+export function getPairing(pairingId: string): Promise<PairingLookup> {
+  return apiFetch(`${DEVICES_PAIR_PATH}/${encodeURIComponent(pairingId)}`);
+}
+
+export function listDevices(): Promise<Device[]> {
+  return apiFetch<DeviceListResponse>(DEVICES_PATH).then((body) => body.devices);
+}
+
+export function renameDevice(id: string, label: string): Promise<Device> {
+  const body: RenameDeviceRequest = { label };
+  return apiFetch(`${DEVICES_PATH}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+export function revokeDevice(id: string): Promise<void> {
+  return apiFetch(`${DEVICES_PATH}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function startExport(): Promise<ExportJobCreated> {
+  return apiFetch(EXPORT_PATH, { method: 'POST' });
+}
+
+export function getExportJob(id: string): Promise<ExportJob> {
+  return apiFetch(`${EXPORT_PATH}/${encodeURIComponent(id)}`);
+}
+
+export function createImportUpload(contentLength: number): Promise<ImportUploadCreated> {
+  return apiFetch(IMPORT_UPLOADS_PATH, { method: 'POST', body: JSON.stringify({ contentLength }) });
+}
+
+export function startImport(importId: string, key: string): Promise<ImportJobCreated> {
+  return apiFetch(IMPORT_PATH, { method: 'POST', body: JSON.stringify({ importId, key }) });
+}
+
+export function getImportJob(id: string): Promise<ImportJob> {
+  return apiFetch(`${IMPORT_PATH}/${encodeURIComponent(id)}`);
+}
+
+export function deleteAccount(confirmation: string): Promise<void> {
+  const body: DeleteAccountRequest = { confirmation };
+  return apiFetch(ACCOUNT_PATH, { method: 'DELETE', body: JSON.stringify(body) });
+}
+
+export function getChangeoverTelemetry(): Promise<{ olderAppDevices?: number }> {
+  return apiFetch(TELEMETRY_PATH);
 }

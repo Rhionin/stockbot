@@ -5,6 +5,7 @@ import { disconnectProvider, listProviders, listSuggestions } from '../../api/cl
 import { useHouseholdSession } from '../auth/householdSession';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { BuildStamp } from '../build/BuildStamp';
+import { useHouseholdPassword } from '../household/HouseholdPasswordMenu';
 import { CredentialsDialog } from '../shopping/CredentialsDialog';
 import { inlineFailure } from '@stockbot/shared/contract';
 
@@ -73,6 +74,8 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
     }
   };
 
+  const stage1 = session.auth?.kind === 'account' || session.auth?.kind === 'household_password';
+  const householdPassword = useHouseholdPassword(opened && stage1);
   const editable = providers.filter(canEditCredentials);
   const editing = editable.find((provider) => provider.id === editingId) ?? null;
 
@@ -133,6 +136,13 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
           )}
           <Menu.Item onClick={() => navigate('/inventory?filter=groups&rescan=1')}>Look for more groups</Menu.Item>
           <Menu.Item onClick={() => navigate('/diagnostics')}>Diagnostics</Menu.Item>
+          {stage1 && (
+            <>
+              <Menu.Item onClick={() => { setOpened(false); navigate('/household'); }}>Household</Menu.Item>
+              <Menu.Item onClick={() => { setOpened(false); navigate('/devices'); }}>Devices</Menu.Item>
+              {householdPassword.items}
+            </>
+          )}
           <div className="app-menu-about">
             <Menu.Divider />
             <Menu.Item onClick={() => navigate('/settings')}>Settings</Menu.Item>
@@ -171,6 +181,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
         disconnecting={editing !== null && disconnectingId === editing.id}
         disconnectError={disconnectError}
       />
+      {householdPassword.dialogs}
     </>
   );
 };
