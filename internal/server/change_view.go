@@ -20,7 +20,7 @@ type changeView struct {
 }
 
 func (v changeView) NoStore() bool {
-	return v.Since != "" && !v.Changed
+	return v.Since != ""
 }
 
 func (v changeView) RawJSON() ([]byte, error) {

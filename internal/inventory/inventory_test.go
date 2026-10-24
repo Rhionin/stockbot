@@ -12,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/supply"
@@ -1350,5 +1351,30 @@ func assertCountArgs(t *testing.T, db *sql.DB, query string, want int, args ...a
 	}
 	if got != want {
 		t.Fatalf("count %s: got %d, want %d", query, got, want)
+	}
+}
+
+func TestAddInstanceMovesTheStockCursor(t *testing.T) {
+	pantry, catalog, db := newTestPantry(t)
+	ctx := context.Background()
+	scope := scopeOf(t, db)
+	createTestProduct(t, catalog, ctx, "prod-widget-a", "Widget A")
+	item, err := pantry.GetOrCreateItem(ctx, scope, "prod-widget-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := changes.Current(ctx, db, scope.HouseholdID(), changes.ScopeStock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{ItemID: item.ID, StockInAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeStock, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Changed || out.Cursor == before {
+		t.Fatalf("stock cursor did not move: before %s after %+v", before, out)
 	}
 }

@@ -19,6 +19,7 @@ func init() {
 		{"GET /api/auth/session", kindListLeak},
 		{"POST /api/auth/login", kindWriteScope},
 		{"POST /api/auth/logout", kindWriteScope},
+		{"DELETE /api/sessions/{id}", kindForeignID},
 		{"POST /api/auth/reset", kindWriteScope},
 		{"POST /api/auth/session/household", kindWriteScope},
 		{"GET /api/auth/login", kindListLeak},

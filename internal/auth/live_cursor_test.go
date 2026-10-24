@@ -11,6 +11,8 @@ func TestDeviceRenameAndRevokeAdvanceTheDevicesCursor(t *testing.T) {
 	db := openAuthDB(t)
 	ctx := context.Background()
 	svc := NewService(db, t.TempDir())
+	hints := &hintLog{}
+	svc.SetHints(hints)
 	primary, err := PrimaryScope(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -57,5 +59,13 @@ func TestDeviceRenameAndRevokeAdvanceTheDevicesCursor(t *testing.T) {
 	}
 	if revoked <= renamed {
 		t.Fatalf("revoke version %d, renamed %d", revoked, renamed)
+	}
+	for _, kind := range hints.items {
+		if kind == "rekey" {
+			t.Fatalf("device revoke published rekey: %v", hints.items)
+		}
+	}
+	if len(hints.items) == 0 || hints.items[len(hints.items)-1] != "devices" {
+		t.Fatalf("hints %v", hints.items)
 	}
 }

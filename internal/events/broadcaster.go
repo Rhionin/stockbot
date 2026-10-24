@@ -54,6 +54,7 @@ type subscriber struct {
 	householdID string
 	userID      string
 	kind        string
+	sessionID   string
 	all         bool
 	legacy      bool
 }
@@ -108,7 +109,17 @@ func (b *Broadcaster) Subscribe() (<-chan Message, func()) {
 
 // SubscribeHousehold returns events for one household.
 func (b *Broadcaster) SubscribeHousehold(householdID, userID, kind string) (<-chan Message, func()) {
-	return b.add(&subscriber{householdID: householdID, userID: userID, kind: kind})
+	return b.subscribe(householdID, userID, kind, "")
+}
+
+// SubscribeSession returns one household's events for a single session.
+// DropSession closes that session without touching the account's other sessions.
+func (b *Broadcaster) SubscribeSession(householdID, userID, kind, sessionID string) (<-chan Message, func()) {
+	return b.subscribe(householdID, userID, kind, sessionID)
+}
+
+func (b *Broadcaster) subscribe(householdID, userID, kind, sessionID string) (<-chan Message, func()) {
+	return b.add(&subscriber{householdID: householdID, userID: userID, kind: kind, sessionID: sessionID})
 }
 
 // SubscribeAll returns every household's events. The scan-alert fanout uses it.
@@ -209,12 +220,24 @@ func (h liveHub) Kick(householdID, userID string) {
 	}
 }
 
+// DropSession closes streams for one session hash.
+func (h liveHub) DropSession(sessionID string) {
+	if h.b != nil {
+		h.b.DropSession(sessionID)
+	}
+}
+
 // Publish delivers a hint, and an optional legacy payload, to one household.
 func (b *Broadcaster) Publish(ctx context.Context, householdID string, hint LiveHint, legacy any) {
 	if b == nil || householdID == "" || hint.Type == "" {
 		return
 	}
-	if hint.Cursor == "" {
+	if hint.Type == "rekey" {
+		return
+	}
+	if hint.Type == "devices" {
+		hint.Cursor = ""
+	} else if hint.Cursor == "" {
 		hint.Cursor = b.hintCursor(householdID, hint.Type)
 	}
 	b.publish("hint", hint, time.Time{}, householdID)
@@ -233,13 +256,9 @@ func (b *Broadcaster) hintCursor(householdID, kind string) string {
 	if cursor == nil {
 		return ""
 	}
-	scope := kind
-	if kind == "rekey" {
-		scope = "devices"
-	}
-	switch scope {
-	case "scans", "stock", "list", "devices":
-		return cursor(householdID, scope)
+	switch kind {
+	case "scans", "stock", "list":
+		return cursor(householdID, kind)
 	default:
 		return ""
 	}
@@ -265,6 +284,22 @@ func (b *Broadcaster) SubscribePrincipal(p Principal) (<-chan Event, func()) {
 // Kick closes streams for one member of a household. An empty household closes
 // that user's streams in every household. An empty user closes household-password
 // streams in the household.
+// DropSession closes streams opened for one session. Other sessions stay up.
+func (b *Broadcaster) DropSession(sessionID string) {
+	if b == nil || sessionID == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id, sub := range b.subscribers {
+		if sub.sessionID != sessionID {
+			continue
+		}
+		close(sub.ch)
+		delete(b.subscribers, id)
+	}
+}
+
 func (b *Broadcaster) Kick(householdID, userID string) {
 	if b == nil || (householdID == "" && userID == "") {
 		return

@@ -183,7 +183,7 @@ func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, household
 	if err := tx.Commit(); err != nil {
 		return HouseholdSettings{}, AsError(err)
 	}
-	s.streams.Kick(HouseholdPasswordStreamKey())
+	s.streams.KickPrefix("hhpw:")
 	s.streams.KickHousehold(householdID, "")
 	s.kickLive(householdID, "")
 	return s.Settings(ctx, householdID)
