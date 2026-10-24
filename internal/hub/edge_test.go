@@ -210,8 +210,8 @@ func TestWatchdogRestoreFailure(t *testing.T) {
 	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	_, _ = ChronySynced(ctx, nil)
-	if (&Client{}).http() == nil {
-		t.Fatal("default client")
+	if got := (&Client{}).http().Timeout; got != defaultHTTPTimeout {
+		t.Fatalf("default timeout = %s", got)
 	}
 	c := &Client{BaseURL: "http://127.0.0.1", HTTP: nil}
 	if err := c.do(context.Background(), http.MethodPost, "/x", "", map[string]any{"n": make(chan int)}, nil); err == nil {
@@ -305,6 +305,16 @@ func TestCLIWatchdogAndKeyFile(t *testing.T) {
 		"--state", statePath, "--buffer", bufferPath, "--releases", root,
 	}, errReader{}, io.Discard, &stderr) != 1 {
 		t.Fatal("stdin error should exit 1")
+	}
+}
+
+func TestRestartFlagRewrite(t *testing.T) {
+	got := replaceFlag([]string{"stockbot-hub", "--version", "1.0.0", "--version=old", "--state", "s"}, "version", "1.2.0")
+	if strings.Join(got, " ") != "stockbot-hub --version 1.2.0 --version=1.2.0 --state s" {
+		t.Fatalf("args = %q", got)
+	}
+	if err := restartInto(filepath.Join(t.TempDir(), "missing-hub")); err == nil {
+		t.Fatal("missing binary replaced this process")
 	}
 }
 

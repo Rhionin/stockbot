@@ -3,11 +3,14 @@ package hub
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
@@ -78,6 +81,7 @@ func mainWith(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		PublicKey:   key,
 		Stdin:       stdin,
 		Now:         time.Now,
+		OnRestart:   restartInto,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -107,10 +111,58 @@ func mainWith(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if err := h.Run(ctx); err != nil {
+		if errors.Is(err, ErrRestart) {
+			return 0
+		}
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
 	return 0
+}
+
+// restartInto replaces this process with the staged binary. HUB_VERSION is
+// the release directory name so the new process's version matches the pending
+// update and a healthy heartbeat can clear it.
+func restartInto(binary string) error {
+	version := filepath.Base(filepath.Dir(binary))
+	if version == "" || version == "." || version == string(filepath.Separator) {
+		return errors.New("the staged hub has no version")
+	}
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "HUB_VERSION=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "HUB_VERSION="+version)
+	argv := append([]string(nil), os.Args...)
+	argv = replaceFlag(argv, "version", version)
+	if err := syscall.Exec(binary, argv, env); err != nil {
+		return errors.New("the staged hub did not start")
+	}
+	return nil
+}
+
+func replaceFlag(argv []string, name, value string) []string {
+	dash := "--" + name
+	out := make([]string, 0, len(argv)+2)
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == dash {
+			out = append(out, dash, value)
+			if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, dash+"=") {
+			out = append(out, dash+"="+value)
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

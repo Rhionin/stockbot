@@ -118,11 +118,15 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// defaultHTTPTimeout bounds a device call so a stalled server cannot pin a
+// hub goroutine. Callers can replace Client.HTTP with their own client.
+const defaultHTTPTimeout = 15 * time.Second
+
 func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
 func (c *Client) url(path string) string {

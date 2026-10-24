@@ -327,6 +327,226 @@ func TestFlushStatusesBackoffAndRevoke(t *testing.T) {
 	}
 }
 
+func TestUnknownStatusStaysQueued(t *testing.T) {
+	if !terminalStatus("rejected") || !terminalStatus("created") || !terminalStatus("accepted") || !terminalStatus("duplicate") || !terminalStatus("conflict") {
+		t.Fatal("known statuses should leave the queue")
+	}
+	if terminalStatus("retry") || terminalStatus("") || terminalStatus("RETRY") {
+		t.Fatal("unknown status was treated as terminal")
+	}
+	api := &fakeAPI{}
+	h, _ := newTestHub(t, api, nil)
+	if err := h.Pair(context.Background(), "SBP-0123-ABCD-G"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.HandleLine(context.Background(), "012345678905"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.buf.Peek(1)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(err)
+	}
+	api.scanStatus = map[string]string{rows[0].ID: "retry"}
+	if err := h.FlushAll(context.Background()); err == nil {
+		t.Fatal("unknown status was accepted")
+	}
+	if depth, _ := h.Queued(); depth != 1 {
+		t.Fatalf("retry left the queue: %d", depth)
+	}
+	api.scanStatus[rows[0].ID] = "rejected"
+	if err := h.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if depth, _ := h.Queued(); depth != 0 {
+		t.Fatal("rejected scan stayed queued")
+	}
+}
+
+func TestRunBuffersWhileServerIsDown(t *testing.T) {
+	api := &fakeAPI{offlineScans: 100, failStatus: http.StatusServiceUnavailable}
+	start := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
+	now := start
+	pr, pw := io.Pipe()
+	t.Cleanup(func() {
+		_ = pw.Close()
+		_ = pr.Close()
+	})
+	wakes := make(chan chan time.Time, 8)
+	var restarted string
+	h, _ := newTestHub(t, api, func(o *Options) {
+		o.Now = func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return now
+		}
+		o.Stdin = pr
+		o.Rand = func() float64 { return 0 }
+		o.Sleep = func(context.Context, time.Duration) error {
+			t.Error("Run slept inside a retry")
+			return errors.New("run must not sleep")
+		}
+		o.After = func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			select {
+			case wakes <- ch:
+			default:
+			}
+			return ch
+		}
+		o.OnRestart = func(path string) error {
+			restarted = path
+			return nil
+		}
+	})
+	if err := h.Pair(context.Background(), "SBP-0123-ABCD-G"); err != nil {
+		t.Fatal(err)
+	}
+	prev := filepath.Join(h.releaseRoot, "releases", "1.0.0")
+	if err := os.MkdirAll(prev, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	next := filepath.Join(h.releaseRoot, "releases", "9.9.9")
+	if err := os.MkdirAll(next, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := swapLink(filepath.Join(h.releaseRoot, "current"), next); err != nil {
+		t.Fatal(err)
+	}
+	h.state.Pending = &PendingUpdate{
+		Version: "9.9.9", PreviousVersion: "1.0.0", PreviousPath: prev,
+		Deadline: start.Add(30 * time.Second),
+	}
+	if err := h.persist(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+
+	for _, code := range []string{"111111111117", "222222222224", "333333333331"} {
+		if _, err := io.WriteString(pw, code+"\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		depth, _ := h.Queued()
+		if depth == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued %d while the server was down", depth)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(api.beats) == 0 {
+		t.Fatal("startup heartbeat did not run")
+	}
+
+	wake := latestWake(t, wakes)
+	clockMu.Lock()
+	now = start.Add(HeartbeatInterval)
+	clockMu.Unlock()
+	wake <- time.Now()
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		api.mu.Lock()
+		n := len(api.beats)
+		var queued int
+		if n > 0 {
+			queued = api.beats[n-1].Queued
+		}
+		api.mu.Unlock()
+		if n >= 2 && queued == 3 && h.RollbackPending() && currentTarget(t, h.releaseRoot) == prev {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("beats %d queued %d rollback %v current %s", n, queued, h.RollbackPending(), currentTarget(t, h.releaseRoot))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	api.mu.Lock()
+	api.offlineScans = 0
+	api.mu.Unlock()
+	clockMu.Lock()
+	now = now.Add(time.Minute)
+	clockMu.Unlock()
+	wake = latestWake(t, wakes)
+	wake <- time.Now()
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		depth, _ := h.Queued()
+		if depth == 0 && len(api.batches) > 0 {
+			break
+		}
+		select {
+		case extra := <-wakes:
+			extra <- time.Now()
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue %d batches %d after recovery", depth, len(api.batches))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	seen := map[string]int{}
+	api.mu.Lock()
+	batches := append([]batchRequest(nil), api.batches...)
+	api.mu.Unlock()
+	for _, batch := range batches {
+		for _, scan := range batch.Scans {
+			seen[scan.Barcode]++
+		}
+	}
+	for _, code := range []string{"111111111117", "222222222224", "333333333331"} {
+		if seen[code] != 1 {
+			t.Fatalf("barcode %s sent %d times", code, seen[code])
+		}
+	}
+	if restarted != "" {
+		t.Fatal("offline run restarted")
+	}
+	_ = pw.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("run did not return after stdin closed")
+	}
+}
+
+func latestWake(t *testing.T, wakes <-chan chan time.Time) chan time.Time {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	var wake chan time.Time
+	for {
+		select {
+		case ch := <-wakes:
+			wake = ch
+		case <-timer.C:
+			t.Fatal("run did not schedule a wake")
+		}
+		for {
+			select {
+			case ch := <-wakes:
+				wake = ch
+			default:
+				return wake
+			}
+		}
+	}
+}
+
 func TestHeartbeatControlBarcodeAndIdle(t *testing.T) {
 	api := &fakeAPI{}
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)

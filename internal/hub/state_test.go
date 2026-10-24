@@ -155,6 +155,35 @@ func TestBufferCapDropsOldest(t *testing.T) {
 	}
 }
 
+func TestAckDroppedSubtractsTheReportedSnapshot(t *testing.T) {
+	buf := openTestBuffer(t)
+	for i := 0; i < BufferCap+3; i++ {
+		if _, err := buf.Enqueue(queuedScan{
+			ID: idOf(i), Barcode: barcodeOf(i), Direction: "stock_in", UnitCount: 1, CapturedMono: int64(i), BootID: "boot",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reported, err := buf.Dropped()
+	if err != nil || reported != 3 {
+		t.Fatalf("reported = %d %v", reported, err)
+	}
+	if _, err := buf.Enqueue(queuedScan{
+		ID: idOf(BufferCap + 3), Barcode: barcodeOf(BufferCap + 3), Direction: "stock_in", UnitCount: 1, CapturedMono: 1, BootID: "boot",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := buf.Dropped(); got != 4 {
+		t.Fatalf("in-flight drop = %d", got)
+	}
+	if err := buf.AckDropped(reported); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := buf.Dropped(); got != 1 {
+		t.Fatalf("remaining dropped = %d", got)
+	}
+}
+
 func openTestBuffer(t *testing.T) *Buffer {
 	t.Helper()
 	buf, err := OpenBuffer(filepath.Join(t.TempDir(), "buffer.sqlite"))

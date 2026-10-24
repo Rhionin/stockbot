@@ -44,10 +44,16 @@ func ParsePublicKey(raw string) (ed25519.PublicKey, error) {
 }
 
 // VerifyRelease checks the advertised SHA-256 and an Ed25519 signature over
-// the artifact bytes. A tampered file or a signature from another key fails.
-func VerifyRelease(pub ed25519.PublicKey, artifact []byte, shaHex, sigText string) error {
+// the canonical manifest (version, newline, lowercase sha256 hex). Signing
+// the digest together with the version stops a valid older artifact from
+// being replayed under a different version string. A tampered file, a
+// mismatched version, or a signature from another key fails.
+func VerifyRelease(pub ed25519.PublicKey, version string, artifact []byte, shaHex, sigText string) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return errors.New("that release key is not an Ed25519 public key")
+	}
+	if strings.TrimSpace(version) == "" {
+		return errors.New("that update has no version")
 	}
 	if len(artifact) == 0 {
 		return errors.New("that update is empty")
@@ -61,10 +67,72 @@ func VerifyRelease(pub ed25519.PublicKey, artifact []byte, shaHex, sigText strin
 	if err != nil {
 		return err
 	}
-	if !ed25519.Verify(pub, artifact, sig) {
+	if !ed25519.Verify(pub, releaseManifest(version, got), sig) {
 		return errors.New("that update signature is not valid")
 	}
 	return nil
+}
+
+func releaseManifest(version, shaHex string) []byte {
+	return []byte(strings.TrimSpace(version) + "\n" + strings.ToLower(strings.TrimSpace(shaHex)))
+}
+
+// newerRelease reports whether next is strictly newer than current.
+// Dotted numeric versions compare numerically, so 1.10 is newer than 1.9.
+// Any other distinct version string is accepted; an equal version is not.
+func newerRelease(current, next string) bool {
+	next = strings.TrimSpace(next)
+	current = strings.TrimSpace(current)
+	if next == "" || next == current {
+		return false
+	}
+	left, leftOK := dottedVersion(current)
+	right, rightOK := dottedVersion(next)
+	if !leftOK || !rightOK {
+		return true
+	}
+	n := len(left)
+	if len(right) > n {
+		n = len(right)
+	}
+	for i := 0; i < n; i++ {
+		var a, b int
+		if i < len(left) {
+			a = left[i]
+		}
+		if i < len(right) {
+			b = right[i]
+		}
+		if b > a {
+			return true
+		}
+		if b < a {
+			return false
+		}
+	}
+	return false
+}
+
+func dottedVersion(value string) ([]int, bool) {
+	if value == "" {
+		return nil, false
+	}
+	parts := strings.Split(value, ".")
+	nums := make([]int, len(parts))
+	for i, part := range parts {
+		if part == "" {
+			return nil, false
+		}
+		n := 0
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return nil, false
+			}
+			n = n*10 + int(c-'0')
+		}
+		nums[i] = n
+	}
+	return nums, true
 }
 
 func decodeSig(text string) ([]byte, error) {
@@ -77,9 +145,10 @@ func decodeSig(text string) ([]byte, error) {
 	return nil, errors.New("that update signature is not valid")
 }
 
-func signRelease(priv ed25519.PrivateKey, artifact []byte) (shaHex, sig string) {
+func signRelease(priv ed25519.PrivateKey, version string, artifact []byte) (shaHex, sig string) {
 	sum := sha256.Sum256(artifact)
-	return hex.EncodeToString(sum[:]), base64.StdEncoding.EncodeToString(ed25519.Sign(priv, artifact))
+	hexSum := hex.EncodeToString(sum[:])
+	return hexSum, base64.StdEncoding.EncodeToString(ed25519.Sign(priv, releaseManifest(version, hexSum)))
 }
 
 // stageRelease writes the artifact under releases/<version> and points the

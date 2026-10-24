@@ -36,6 +36,10 @@ var ErrBadPairingCheck = errors.New("that pairing code doesn't match its check c
 // and the unsent queue is kept.
 var ErrRevoked = errors.New("this hub was disconnected and needs to pair again")
 
+// ErrRestart means a release was staged and this process should exit so the
+// supervisor starts the binary at current. The running version does not change.
+var ErrRestart = errors.New("the hub is restarting into the staged release")
+
 // Options configures a hub process. Zero values use the production defaults.
 type Options struct {
 	ServerURL   string
@@ -55,27 +59,33 @@ type Options struct {
 	Rand        func() float64
 	Log         *slog.Logger
 	SelfCheck   func(context.Context, string) error
+	// OnRestart is called with the staged binary after it passes its self-check.
+	// Production execs that binary. Tests record the path. A nil hook still
+	// returns ErrRestart so Run can exit for a supervisor restart.
+	OnRestart func(binaryPath string) error
 	// Lines is optional input. Run reads it when set; otherwise it reads Stdin.
 	Stdin io.Reader
 }
 
 // Hub is one paired (or waiting-to-pair) scanner gateway.
 type Hub struct {
-	mu          sync.Mutex
-	opts        Options
-	state       State
-	buf         *Buffer
-	client      *Client
-	scanner     *mode
-	bootID      string
-	prevBoot    string
-	prevUptime  int64
-	version     string
-	started     time.Time
-	lastBeat    time.Time
-	log         *slog.Logger
-	pub         ed25519.PublicKey
-	releaseRoot string
+	mu           sync.Mutex
+	opts         Options
+	state        State
+	buf          *Buffer
+	client       *Client
+	scanner      *mode
+	bootID       string
+	prevBoot     string
+	prevUptime   int64
+	version      string
+	started      time.Time
+	lastBeat     time.Time
+	flushAttempt int
+	flushAfter   time.Time
+	log          *slog.Logger
+	pub          ed25519.PublicKey
+	releaseRoot  string
 }
 
 // Open loads credentials and the scan buffer.
@@ -359,19 +369,16 @@ func (h *Hub) applyConfig(cfg HubConfig) {
 
 // FlushAll sends queued scans oldest-first in batches of 50. Network errors,
 // 429, and 5xx wait with exponential backoff and jitter. A 401 wipes the token.
+// The lock is not held across the request or the wait, so a caller that shares
+// the hub can keep buffering. Run does not use this loop; it flushes one batch
+// and schedules the next attempt so scan intake stays responsive.
 func (h *Hub) FlushAll(ctx context.Context) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.flushAll(ctx)
-}
-
-func (h *Hub) flushAll(ctx context.Context) error {
 	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		n, err := h.flushOnce(ctx)
+		n, err := h.flushPass(ctx)
 		if err != nil {
 			if errors.Is(err, ErrRevoked) {
 				return err
@@ -394,19 +401,26 @@ func (h *Hub) flushAll(ctx context.Context) error {
 	}
 }
 
-func (h *Hub) flushOnce(ctx context.Context) (int, error) {
+// flushPass posts one batch. The device token and the queue snapshot are
+// taken under the lock; the HTTP call and any retry wait happen without it.
+func (h *Hub) flushPass(ctx context.Context) (int, error) {
+	h.mu.Lock()
 	if !h.paired() {
+		h.mu.Unlock()
 		return 0, errors.New("pair this hub before it can send scans")
 	}
 	rows, err := h.buf.Peek(BatchSize)
 	if err != nil {
+		h.mu.Unlock()
 		return 0, err
 	}
 	dropped, err := h.buf.Dropped()
 	if err != nil {
+		h.mu.Unlock()
 		return 0, err
 	}
 	if len(rows) == 0 {
+		h.mu.Unlock()
 		return 0, nil
 	}
 	payload := batchRequest{DroppedCount: dropped, Scans: make([]scanPayload, 0, len(rows))}
@@ -424,7 +438,14 @@ func (h *Hub) flushOnce(ctx context.Context) (int, error) {
 		}
 		payload.Scans = append(payload.Scans, item)
 	}
-	resp, err := h.client.Scans(ctx, h.state.Token, payload)
+	token := h.state.Token
+	client := h.client
+	h.mu.Unlock()
+
+	resp, err := client.Scans(ctx, token, payload)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err != nil {
 		if revoked(err) {
 			if wipeErr := h.unpair(); wipeErr != nil {
@@ -459,7 +480,7 @@ func terminalStatus(status string) bool {
 	case "created", "accepted", "duplicate", "conflict", "rejected":
 		return true
 	default:
-		return status != ""
+		return false
 	}
 }
 
@@ -489,27 +510,26 @@ func (h *Hub) touchContact() {
 // before it is staged.
 func (h *Hub) Beat(ctx context.Context) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.beat(ctx)
-}
-
-func (h *Hub) beat(ctx context.Context) error {
 	if !h.paired() {
+		h.mu.Unlock()
 		return errors.New("pair this hub before it can check in")
 	}
 	queued, err := h.buf.Depth()
 	if err != nil {
+		h.mu.Unlock()
 		return err
 	}
 	dropped, err := h.buf.Dropped()
 	if err != nil {
+		h.mu.Unlock()
 		return err
 	}
 	uptime := int(h.now().Sub(h.started).Seconds())
 	if uptime < 0 {
 		uptime = 0
 	}
-	resp, err := h.client.Heartbeat(ctx, h.state.Token, beatRequest{
+	token := h.state.Token
+	req := beatRequest{
 		Version:      h.version,
 		BootID:       h.bootID,
 		UptimeS:      uptime,
@@ -517,22 +537,33 @@ func (h *Hub) beat(ctx context.Context) error {
 		DroppedCount: dropped,
 		ClockSynced:  h.clockSynced(ctx),
 		Rollback:     h.state.Rollback,
-	})
+	}
+	client := h.client
+	h.mu.Unlock()
+
+	resp, err := client.Heartbeat(ctx, token, req)
+
+	h.mu.Lock()
 	if err != nil {
 		if revoked(err) {
 			if wipeErr := h.unpair(); wipeErr != nil {
+				h.mu.Unlock()
 				return wipeErr
 			}
+			h.mu.Unlock()
 			return ErrRevoked
 		}
+		h.mu.Unlock()
 		return err
 	}
 	if err := h.buf.AckDropped(dropped); err != nil {
+		h.mu.Unlock()
 		return err
 	}
 	if h.state.Rollback {
 		h.state.Rollback = false
 		if err := h.persist(); err != nil {
+			h.mu.Unlock()
 			return err
 		}
 	}
@@ -541,31 +572,47 @@ func (h *Hub) beat(ctx context.Context) error {
 	if h.state.Pending != nil && h.version == h.state.Pending.Version && h.now().Before(h.state.Pending.Deadline) {
 		h.state.Pending = nil
 		if err := h.persist(); err != nil {
+			h.mu.Unlock()
 			return err
 		}
 		if h.releaseRoot != "" {
 			pruneReleases(h.releaseRoot)
 		}
 	}
-	if resp.RotateToken {
+	rotate := resp.RotateToken
+	var update *Release
+	if resp.Update != nil && resp.Update.Version != "" && resp.Update.Version != h.version {
+		offered := *resp.Update
+		update = &offered
+	}
+	h.mu.Unlock()
+	if rotate {
 		if err := h.rotate(ctx); err != nil {
 			return err
 		}
 	}
-	if resp.Update != nil && resp.Update.Version != "" && resp.Update.Version != h.version {
-		if err := h.applyUpdate(ctx, *resp.Update); err != nil {
-			h.log.Info("update not installed", "version", resp.Update.Version)
-			return err
+	if update != nil {
+		if err := h.applyUpdate(ctx, *update); err != nil {
+			if errors.Is(err, ErrRestart) {
+				return err
+			}
+			h.log.Info("update not installed", "version", update.Version)
 		}
 	}
 	return nil
 }
 
 func (h *Hub) rotate(ctx context.Context) error {
-	next, err := h.client.Rotate(ctx, h.state.Token)
+	h.mu.Lock()
+	token := h.state.Token
+	client := h.client
+	h.mu.Unlock()
+	next, err := client.Rotate(ctx, token)
 	if err != nil {
 		return err
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	prev := h.state.Token
 	h.state.Token = next
 	if err := h.persist(); err != nil {
@@ -579,53 +626,81 @@ func (h *Hub) rotate(ctx context.Context) error {
 // ApplyUpdate downloads, verifies, and stages a release. The watchdog deadline
 // is 120 seconds from now. A failed self-check restores the previous binary.
 func (h *Hub) ApplyUpdate(ctx context.Context, rel Release) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	return h.applyUpdate(ctx, rel)
 }
 
 func (h *Hub) applyUpdate(ctx context.Context, rel Release) error {
+	h.mu.Lock()
+	if !newerRelease(h.version, rel.Version) {
+		h.mu.Unlock()
+		return errors.New("that update is not newer than this hub")
+	}
 	if len(h.pub) != ed25519.PublicKeySize {
+		h.mu.Unlock()
 		return errors.New("updates are not installed because no release key is configured")
 	}
 	if h.releaseRoot == "" {
+		h.mu.Unlock()
 		return errors.New("updates are not installed because no release directory is configured")
 	}
-	artifact, err := h.client.Download(ctx, rel.URL)
+	pub := h.pub
+	root := h.releaseRoot
+	client := h.client
+	running := h.version
+	h.mu.Unlock()
+
+	artifact, err := client.Download(ctx, rel.URL)
 	if err != nil {
 		return err
 	}
-	if err := VerifyRelease(h.pub, artifact, rel.SHA256, rel.Sig); err != nil {
+	if err := VerifyRelease(pub, rel.Version, artifact, rel.SHA256, rel.Sig); err != nil {
 		return err
 	}
-	binary, previous, err := stageRelease(h.releaseRoot, rel.Version, artifact)
+
+	h.mu.Lock()
+	if !newerRelease(h.version, rel.Version) {
+		h.mu.Unlock()
+		return errors.New("that update is not newer than this hub")
+	}
+	binary, previous, err := stageRelease(root, rel.Version, artifact)
 	if err != nil {
+		h.mu.Unlock()
 		return err
 	}
-	prevVersion := h.version
 	h.state.Pending = &PendingUpdate{
 		Version:         rel.Version,
-		PreviousVersion: prevVersion,
+		PreviousVersion: running,
 		PreviousPath:    previous,
 		Binary:          binary,
 		Deadline:        h.now().Add(WatchdogLimit),
 	}
 	if err := h.persist(); err != nil {
+		h.mu.Unlock()
 		return err
 	}
 	check := h.opts.SelfCheck
 	if check == nil {
 		check = defaultSelfCheck
 	}
+	hook := h.opts.OnRestart
+	h.mu.Unlock()
+
 	if err := check(ctx, binary); err != nil {
-		if rbErr := h.rollback(); rbErr != nil {
+		h.mu.Lock()
+		rbErr := h.rollback()
+		h.mu.Unlock()
+		if rbErr != nil {
 			return rbErr
 		}
 		return err
 	}
-	h.version = rel.Version
 	h.log.Info("staged hub update", "version", rel.Version)
-	return nil
+	if hook != nil {
+		if err := hook(binary); err != nil {
+			return err
+		}
+	}
+	return ErrRestart
 }
 
 // EvaluateWatchdog rolls back when the pending release has not heartbeated
@@ -634,13 +709,7 @@ func (h *Hub) EvaluateWatchdog(now time.Time) (bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pending := h.state.Pending
-	if pending == nil {
-		return false, nil
-	}
-	if h.version == pending.Version && now.Before(pending.Deadline) {
-		return false, nil
-	}
-	if now.Before(pending.Deadline) {
+	if pending == nil || now.Before(pending.Deadline) {
 		return false, nil
 	}
 	if err := h.rollback(); err != nil {
@@ -663,9 +732,8 @@ func (h *Hub) rollback() error {
 			return err
 		}
 	}
-	if pending.PreviousVersion != "" {
-		h.version = pending.PreviousVersion
-	}
+	// h.version stays the version this process started with. The restored
+	// binary reports its own version after the supervisor starts it.
 	h.state.Pending = nil
 	h.state.Rollback = true
 	h.log.Info("rolled back hub update")
@@ -697,24 +765,25 @@ func (h *Hub) Version() string {
 }
 
 // Run reads scanner lines and heartbeats every 60 seconds until ctx ends or
-// the input closes. A nil input heartbeats until ctx ends.
+// the input closes. A nil input heartbeats until ctx ends. Scans are stored
+// before any network attempt. A retryable flush failure schedules the next
+// attempt and returns to the loop so later scans, heartbeats, and the update
+// watchdog are not stuck behind backoff.
 func (h *Hub) Run(ctx context.Context) error {
 	lines := make(chan string)
 	errc := make(chan error, 1)
 	if h.opts.Stdin != nil {
 		go readLines(ctx, h.opts.Stdin, lines, errc)
 	}
-	if h.Paired() {
-		if err := h.Beat(ctx); err != nil && !errors.Is(err, ErrRevoked) {
-			h.log.Info("heartbeat did not reach the server")
-		}
+	if _, err := h.EvaluateWatchdog(h.now()); err != nil {
+		h.log.Info("update watchdog could not roll back")
+	}
+	if err := h.beatIfPaired(ctx); err != nil {
+		return err
 	}
 	nextBeat := h.now().Add(HeartbeatInterval)
 	for {
-		wait := nextBeat.Sub(h.now())
-		if wait < 0 {
-			wait = 0
-		}
+		wait := h.wakeIn(nextBeat)
 		timer := h.after(wait)
 		select {
 		case <-ctx.Done():
@@ -728,23 +797,105 @@ func (h *Hub) Run(ctx context.Context) error {
 			if err := h.HandleLine(ctx, line); err != nil {
 				h.log.Info("scan not stored", "err", err.Error())
 			}
-			if h.Paired() {
-				if err := h.FlushAll(ctx); err != nil && !errors.Is(err, ErrRevoked) {
-					h.log.Info("scans stay queued")
-				}
+			if h.flushBlocked() {
+				continue
+			}
+			if err := h.pump(ctx); err != nil {
+				return err
 			}
 		case <-timer:
-			if h.Paired() {
-				if err := h.Beat(ctx); err != nil && !errors.Is(err, ErrRevoked) {
-					h.log.Info("heartbeat did not reach the server")
+			if h.flushDue(h.now()) {
+				if err := h.pump(ctx); err != nil {
+					return err
 				}
+			}
+			if !h.now().Before(nextBeat) {
+				if err := h.beatIfPaired(ctx); err != nil {
+					return err
+				}
+				nextBeat = h.now().Add(HeartbeatInterval)
 			}
 			if _, err := h.EvaluateWatchdog(h.now()); err != nil {
 				h.log.Info("update watchdog could not roll back")
 			}
-			nextBeat = h.now().Add(HeartbeatInterval)
 		}
 	}
+}
+
+func (h *Hub) beatIfPaired(ctx context.Context) error {
+	if !h.Paired() {
+		return nil
+	}
+	err := h.Beat(ctx)
+	if errors.Is(err, ErrRestart) {
+		return err
+	}
+	if err != nil && !errors.Is(err, ErrRevoked) {
+		h.log.Info("heartbeat did not reach the server")
+	}
+	return nil
+}
+
+func (h *Hub) wakeIn(nextBeat time.Time) time.Duration {
+	now := h.now()
+	wait := nextBeat.Sub(now)
+	h.mu.Lock()
+	if !h.flushAfter.IsZero() {
+		if flushWait := h.flushAfter.Sub(now); flushWait < wait {
+			wait = flushWait
+		}
+	}
+	h.mu.Unlock()
+	if wait < 0 {
+		return 0
+	}
+	return wait
+}
+
+func (h *Hub) flushBlocked() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.flushAfter.IsZero() && h.now().Before(h.flushAfter)
+}
+
+func (h *Hub) flushDue(now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.flushAfter.IsZero() && !now.Before(h.flushAfter)
+}
+
+// pump sends one batch when a flush is allowed. A retryable failure records
+// the next attempt time and does not sleep.
+func (h *Hub) pump(ctx context.Context) error {
+	if !h.Paired() {
+		return nil
+	}
+	n, err := h.flushPass(ctx)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err == nil {
+		h.flushAttempt = 0
+		if n > 0 {
+			if depth, derr := h.buf.Depth(); derr == nil && depth > 0 {
+				h.flushAfter = h.now()
+				return nil
+			}
+		}
+		h.flushAfter = time.Time{}
+		return nil
+	}
+	if errors.Is(err, ErrRevoked) {
+		return nil
+	}
+	if !retryable(err) {
+		h.log.Info("scans stay queued")
+		return nil
+	}
+	wait := Backoff(h.flushAttempt, h.opts.Rand, retryAfterOf(err))
+	h.flushAttempt++
+	h.flushAfter = h.now().Add(wait)
+	h.log.Info("will retry sending scans", "wait", wait.String())
+	return nil
 }
 
 func (h *Hub) after(d time.Duration) <-chan time.Time {

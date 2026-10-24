@@ -20,6 +20,12 @@ func ageMs(nowMono, capturedMono int64) int64 {
 // restartedAge adds the previous boot's remaining uptime to this boot.
 // The monotonic clock starts over when the process starts, so a scan captured
 // in an earlier boot keeps the uptime recorded for that boot.
+//
+// On a Pi without a battery-backed RTC, wall-clock time spent while the
+// process is stopped cannot be measured monotonically. scannedAt covers a
+// clock that was synced at capture. ageMs across a restart is a lower bound:
+// the age recorded before the process stopped, plus the monotonic time since
+// this process started. Downtime itself is not added.
 func restartedAge(prevUptime, capturedMono, nowMono int64) int64 {
 	waited := prevUptime - capturedMono
 	if waited < 0 {

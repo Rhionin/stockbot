@@ -23,9 +23,12 @@ func TestVerifyRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte("#!/bin/sh\necho ok\n")
-	sum, sig := signRelease(priv, body)
-	if err := VerifyRelease(pub, body, sum, sig); err != nil {
+	sum, sig := signRelease(priv, "1.2.0", body)
+	if err := VerifyRelease(pub, "1.2.0", body, sum, sig); err != nil {
 		t.Fatal(err)
+	}
+	if err := VerifyRelease(pub, "1.3.0", body, sum, sig); err == nil {
+		t.Fatal("signature for 1.2.0 was accepted as 1.3.0")
 	}
 	if _, err := ParsePublicKey(base64.StdEncoding.EncodeToString(pub)); err != nil {
 		t.Fatal(err)
@@ -41,28 +44,37 @@ func TestVerifyRelease(t *testing.T) {
 	}
 	tampered := append([]byte{}, body...)
 	tampered[0] ^= 0xff
-	if err := VerifyRelease(pub, tampered, sum, sig); err == nil {
+	if err := VerifyRelease(pub, "1.2.0", tampered, sum, sig); err == nil {
 		t.Fatal("tampered artifact accepted")
 	}
 	_, priv2, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum2, sig2 := signRelease(priv2, body)
-	if err := VerifyRelease(pub, body, sum2, sig2); err == nil {
+	sum2, sig2 := signRelease(priv2, "1.2.0", body)
+	if err := VerifyRelease(pub, "1.2.0", body, sum2, sig2); err == nil {
 		t.Fatal("wrong key accepted")
 	}
-	if err := VerifyRelease(pub, body, "00", sig); err == nil {
+	if err := VerifyRelease(pub, "1.2.0", body, "00", sig); err == nil {
 		t.Fatal("bad digest accepted")
 	}
-	if err := VerifyRelease(pub, nil, sum, sig); err == nil {
+	if err := VerifyRelease(pub, "1.2.0", nil, sum, sig); err == nil {
 		t.Fatal("empty artifact")
 	}
-	if err := VerifyRelease(nil, body, sum, sig); err == nil {
+	if err := VerifyRelease(nil, "1.2.0", body, sum, sig); err == nil {
 		t.Fatal("missing key")
 	}
-	if err := VerifyRelease(pub, body, sum, "%%%"); err == nil {
+	if err := VerifyRelease(pub, "1.2.0", body, sum, "%%%"); err == nil {
 		t.Fatal("bad signature encoding")
+	}
+	if err := VerifyRelease(pub, " ", body, sum, sig); err == nil {
+		t.Fatal("blank version")
+	}
+	if newerRelease("1.0.0", "1.0.0") || newerRelease("1.2.0", "1.1.0") || newerRelease("1.9.0", "1.10.0") == false {
+		t.Fatal("version order")
+	}
+	if !newerRelease("s12", "1.0.0") || newerRelease("1.0", "1.0.0") {
+		t.Fatal("non-numeric or equal dotted versions")
 	}
 	if _, _, err := stageRelease(t.TempDir(), "../evil", body); err == nil {
 		t.Fatal("version with a path was stored")
@@ -72,8 +84,13 @@ func TestVerifyRelease(t *testing.T) {
 func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 	api := &fakeAPI{}
 	now := time.Date(2026, 10, 24, 18, 0, 0, 0, time.UTC)
+	var restarted string
 	h, logs := newTestHub(t, api, func(o *Options) {
 		o.Now = func() time.Time { return now }
+		o.OnRestart = func(path string) error {
+			restarted = path
+			return nil
+		}
 	})
 	if err := h.Pair(context.Background(), "SBP-0123-ABCD-G"); err != nil {
 		t.Fatal(err)
@@ -87,14 +104,47 @@ func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 	bad := []byte("#!/bin/sh\nexit 1\n")
 	api.artifact = good
 
-	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.1.0", h.ServerURL(), api, good)); err != nil {
+	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.0.0", h.ServerURL(), api, good)); err == nil || !strings.Contains(err.Error(), "not newer") {
+		t.Fatalf("equal version = %v", err)
+	}
+	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "0.9.0", h.ServerURL(), api, good)); err == nil {
+		t.Fatal("downgrade was installed")
+	}
+	replay := releaseFor(t, priv, "1.0.0", h.ServerURL(), api, good)
+	replay.Version = "1.2.0"
+	if err := h.ApplyUpdate(context.Background(), replay); err == nil {
+		t.Fatal("replayed signature under a new version")
+	}
+
+	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.1.0", h.ServerURL(), api, good)); !errors.Is(err, ErrRestart) {
 		t.Fatal(err)
 	}
-	if h.Version() != "1.1.0" || h.PendingVersion() != "1.1.0" {
-		t.Fatalf("version %s pending %s", h.Version(), h.PendingVersion())
+	if h.Version() != "1.0.0" || h.PendingVersion() != "1.1.0" {
+		t.Fatalf("running version changed: version %s pending %s", h.Version(), h.PendingVersion())
+	}
+	if !strings.Contains(restarted, "1.1.0") {
+		t.Fatalf("restart hook = %s", restarted)
 	}
 	if target := currentTarget(t, h.releaseRoot); !strings.Contains(target, "1.1.0") {
 		t.Fatalf("current -> %s", target)
+	}
+	if err := h.Beat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.PendingVersion() != "1.1.0" {
+		t.Fatal("the old process cleared the pending update")
+	}
+
+	opts := h.opts
+	root := h.releaseRoot
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Version = "1.1.0"
+	h = openHub(t, opts)
+	h.pub = pub
+	if h.Version() != "1.1.0" {
+		t.Fatalf("new process version %s", h.Version())
 	}
 	if err := h.Beat(context.Background()); err != nil {
 		t.Fatal(err)
@@ -103,23 +153,42 @@ func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 		t.Fatal("healthy heartbeat left the watchdog armed")
 	}
 
-	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.2.0", h.ServerURL(), api, good)); err != nil {
-		t.Fatal(err)
+	for _, version := range []string{"1.2.0", "1.3.0"} {
+		if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, version, h.ServerURL(), api, good)); !errors.Is(err, ErrRestart) {
+			t.Fatalf("%s: %v", version, err)
+		}
+		if h.Version() == version {
+			t.Fatalf("process adopted %s without restarting", version)
+		}
+		opts = h.opts
+		if err := h.Close(); err != nil {
+			t.Fatal(err)
+		}
+		opts.Version = version
+		h = openHub(t, opts)
+		h.pub = pub
+		if err := h.Beat(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if h.PendingVersion() != "" || h.Version() != version {
+			t.Fatalf("confirmed %s pending %s version %s", version, h.PendingVersion(), h.Version())
+		}
 	}
-	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.3.0", h.ServerURL(), api, good)); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Beat(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(h.releaseRoot, "releases", "1.1.0")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "releases", "1.1.0")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old release kept: %v", err)
 	}
 
 	stagedAt := now
-	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.4.0", h.ServerURL(), api, good)); err != nil {
+	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.4.0", h.ServerURL(), api, good)); !errors.Is(err, ErrRestart) {
 		t.Fatal(err)
 	}
+	opts = h.opts
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Version = "1.4.0"
+	h = openHub(t, opts)
+	h.pub = pub
 	if rolled, err := h.EvaluateWatchdog(stagedAt.Add(WatchdogLimit - time.Second)); err != nil || rolled {
 		t.Fatalf("early watchdog rolled=%v %v", rolled, err)
 	}
@@ -136,14 +205,14 @@ func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 	if !strings.Contains(currentTarget(t, h.releaseRoot), "1.3.0") {
 		t.Fatalf("current = %s", currentTarget(t, h.releaseRoot))
 	}
-	if h.Version() != "1.3.0" || !h.RollbackPending() {
+	if h.Version() != "1.4.0" || !h.RollbackPending() {
 		t.Fatalf("version %s rollback %v", h.Version(), h.RollbackPending())
 	}
 	if err := h.Beat(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	last := api.beats[len(api.beats)-1]
-	if !last.Rollback || last.Version != "1.3.0" {
+	if !last.Rollback || last.Version != "1.4.0" {
 		t.Fatalf("rollback heartbeat = %+v", last)
 	}
 	if h.RollbackPending() {
@@ -153,11 +222,14 @@ func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 		t.Fatal("logs included the token")
 	}
 
-	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.5.0", h.ServerURL(), api, bad)); err == nil {
+	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.5.0", h.ServerURL(), api, bad)); err == nil || errors.Is(err, ErrRestart) {
 		t.Fatal("failed self-check was activated")
 	}
 	if strings.Contains(currentTarget(t, h.releaseRoot), "1.5.0") || !h.RollbackPending() {
 		t.Fatalf("self-check rollback current=%s flag=%v", currentTarget(t, h.releaseRoot), h.RollbackPending())
+	}
+	if h.Version() != "1.4.0" {
+		t.Fatalf("self-check changed running version to %s", h.Version())
 	}
 
 	rel := releaseFor(t, priv, "1.6.0", h.ServerURL(), api, good)
@@ -178,16 +250,26 @@ func TestSignedUpdateRollbackWithin120s(t *testing.T) {
 	if err := h.ApplyUpdate(context.Background(), rel); err == nil {
 		t.Fatal("update without a key")
 	}
-	root := h.releaseRoot
+	savedRoot := h.releaseRoot
 	h.releaseRoot = ""
 	h.pub = pub
 	if err := h.ApplyUpdate(context.Background(), releaseFor(t, priv, "1.8.0", h.ServerURL(), api, good)); err == nil {
 		t.Fatal("update without a directory")
 	}
-	h.releaseRoot = root
+	h.releaseRoot = savedRoot
 	if err := defaultSelfCheck(context.Background(), ""); err == nil {
 		t.Fatal("empty self-check")
 	}
+}
+
+func openHub(t *testing.T, opts Options) *Hub {
+	t.Helper()
+	h, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	return h
 }
 
 func TestTokenRotationIsDurableBeforeReuse(t *testing.T) {
@@ -325,7 +407,7 @@ func TestClientErrors(t *testing.T) {
 func releaseFor(t *testing.T, priv ed25519.PrivateKey, version, base string, api *fakeAPI, body []byte) Release {
 	t.Helper()
 	api.artifact = append([]byte(nil), body...)
-	sum, sig := signRelease(priv, body)
+	sum, sig := signRelease(priv, version, body)
 	return Release{Version: version, URL: base + "/artifact", SHA256: sum, Sig: sig}
 }
 
