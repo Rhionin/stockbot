@@ -30,13 +30,13 @@ func TestHubOfflineFlushReachesDeviceAPI(t *testing.T) {
 			http.Error(w, "offline", http.StatusServiceUnavailable)
 			return
 		}
-		r = r.WithContext(app.WithEntry(r.Context(), app.EntryLAN))
+		r = r.WithContext(app.WithEntry(r.Context(), app.EntryPublic))
 		handler.ServeHTTP(w, r)
 	}))
 	defer proxy.Close()
 
 	c := &stage1Caller{t: t, h: handler}
-	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)
 	}
 	code, err := auth.ReadSetupCode(setupDir)
@@ -45,7 +45,7 @@ func TestHubOfflineFlushReachesDeviceAPI(t *testing.T) {
 	}
 	if rec := c.call(http.MethodPost, "/setup", map[string]string{
 		"setupCode": code, "name": "Nia North", "email": "nia@example.test", "password": "correct horse",
-	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+	}, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
 	}
 	login := c.call(http.MethodPost, "/api/auth/login", map[string]string{
