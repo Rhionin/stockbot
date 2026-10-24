@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -50,13 +52,13 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	if req.Body.Barcode == "" {
 		return Created{}, BadRequest("barcode is required")
 	}
-	if req.Body.UserID == "" {
-		return Created{}, BadRequest("userId is required")
-	}
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return Created{}, err
 	}
+	// Stage-1 clients drop userId once a session exists. A supplied id still
+	// wins so older callers keep their own actor.
+	req.Body.UserID = scanActorID(req.Context, scope, req.Body.UserID)
 
 	// A product barcode with no direction takes the server's current mode, which
 	// is already scan-out when scan-in has been idle for 5 minutes. Naming a
@@ -107,4 +109,22 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	log.Printf("scan queued: id=%s barcode=%q direction=%s status=%s unitCount=%d", created.ID, created.Barcode, directionLabel(created.Direction), created.Status, created.UnitCount)
 
 	return Created{Value: created}, nil
+}
+
+// scanActorID names who scanned. A body userId is kept. Otherwise the
+// principal's account id, then its kind (lan, device, household password),
+// then the household itself.
+func scanActorID(ctx context.Context, scope tenant.Scope, supplied string) string {
+	if id := strings.TrimSpace(supplied); id != "" {
+		return id
+	}
+	if p, ok := auth.PrincipalFrom(ctx); ok {
+		if p.UserID != "" {
+			return p.UserID
+		}
+		if p.Kind != "" {
+			return string(p.Kind)
+		}
+	}
+	return scope.HouseholdID()
 }

@@ -278,11 +278,8 @@ do not include `field`.
 | same | `:76` | `invalid direction value` |
 | `POST /api/scans/{id}/commit` | `handler_scan_commit.go:41` | `scan entry id is required` |
 | same | `:75` | `linking a barcode is only available when scanning out` |
-| `POST /api/scans` | `handler_scan_create.go:50` | `barcode is required` |
-| same | `:53` | `userId is required` |
-| `GET /api/scans/history` | `handler_scan_history.go:19` | `userId query parameter is required` |
-| `GET /api/scans` | `handler_scan_list.go:23` | `userId query parameter is required` |
-| same | `:28` | `invalid status value` |
+| `POST /api/scans` | `handler_scan_create.go:52` | `barcode is required` |
+| `GET /api/scans` | `handler_scan_list.go:24` | `invalid status value` |
 | `PATCH /api/scans/{id}` | `handler_scan_update.go:32` | `scan entry id is required` |
 | same | `:39` | `invalid status value` |
 | same | `:47` | `invalid direction value` |

@@ -16,13 +16,9 @@ type ScanListHandler struct {
 }
 
 func (h *ScanListHandler) Handle(req Request[struct{}, struct{}]) ([]scan.ScanEntry, error) {
-	// Extract status from query params
+	// Extract status from query params. userId is ignored: the queue is
+	// household-scoped, and Stage-1 clients omit the query parameter.
 	statusParam := req.RawRequest.URL.Query().Get("status")
-	userIDParam := req.RawRequest.URL.Query().Get("userId")
-
-	if userIDParam == "" {
-		return nil, BadRequest("userId query parameter is required")
-	}
 
 	status := scan.ScanStatus(statusParam)
 	if statusParam != "" && status != scan.Pending && status != scan.Flagged && status != scan.Committed && status != scan.Cancelled && status != scan.QR {
