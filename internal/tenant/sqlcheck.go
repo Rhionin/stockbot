@@ -41,6 +41,7 @@ var HouseholdTables = []string{
 	"item_targets",
 	"items",
 	"memberships",
+	"operator_alerts",
 	"pairing_codes",
 	"product_contributions",
 	"product_group_members",
@@ -236,6 +237,21 @@ func allowed(file, sqlText string) bool {
 		}
 	}
 	return false
+}
+
+func householdTablesIn(sqlText string) []string {
+	set := householdSet()
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range tableAliasRef.FindAllStringSubmatch(sqlText, -1) {
+		name := strings.ToLower(match[1])
+		if !set[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 func householdSet() map[string]bool {

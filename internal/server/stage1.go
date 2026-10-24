@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -31,6 +32,11 @@ type stage1 struct {
 
 func (s *stage1) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s != nil && s.svc != nil {
+			r = r.WithContext(withStorageAlert(r.Context(), func(ctx context.Context, householdID, kind string) {
+				_ = s.svc.RecordOperatorAlert(ctx, householdID, kind)
+			}))
+		}
 		entry, hasEntry := app.EntryFrom(r.Context())
 		if !hasEntry {
 			s.attachPrimary(r)

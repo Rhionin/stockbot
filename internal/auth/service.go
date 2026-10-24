@@ -27,6 +27,10 @@ type Service struct {
 
 	healthMu    sync.Mutex
 	setupHealth string
+
+	hints         HintBus
+	operatorPush  OperatorPush
+	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
 }
 
 // NewService uses the pantry database. setupDir is the display-file directory.

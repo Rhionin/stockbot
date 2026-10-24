@@ -19,22 +19,17 @@ const qrPreviewRunes = 48
 // barcode. A product barcode is ASCII digits only and at most 14 characters.
 // A URL, any letter, space, or symbol, or a longer digit string is a QR payload.
 func IsQRPayload(raw string) bool {
-	value := strings.TrimSpace(raw)
+	value := TrimASCII(raw)
 	if value == "" {
 		return false
 	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return true
-		}
-	}
-	return len(value) > maxGTINDigits
+	return !IsProductBarcode(raw)
 }
 
 // QRPreview is the short text shown for a QR payload: the URL host, or the
 // payload cut on a rune boundary. An empty payload previews as empty.
 func QRPreview(raw string) string {
-	value := strings.TrimSpace(raw)
+	value := TrimASCII(raw)
 	if value == "" {
 		return ""
 	}
@@ -49,7 +44,7 @@ func QRPreview(raw string) string {
 func NewQREntry(userID, barcode string, direction *ScanDirection, scannedAt time.Time) ScanEntry {
 	return ScanEntry{
 		UserID:    userID,
-		Barcode:   strings.TrimSpace(barcode),
+		Barcode:   TrimASCII(barcode),
 		ScannedAt: scannedAt,
 		Direction: direction,
 		UnitCount: 1,

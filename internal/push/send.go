@@ -107,6 +107,37 @@ func (s *Sender) Notify(ctx context.Context, scope tenant.Scope, notice Notice) 
 	s.deliverAll(ctx, scope, notice, subs)
 }
 
+// NotifyOperators pushes one operator note. Names are cleared so a scan
+// batch cannot be copied onto this alert. Nothing is sent without VAPID
+// keys or a test Post hook.
+func (s *Sender) NotifyOperators(ctx context.Context, notice Notice) {
+	if s == nil || s.subs == nil || !s.cfg.CanSend() {
+		return
+	}
+	notice.Names = nil
+	notice.Count = 0
+	rows, err := s.subs.ListOperator(ctx)
+	if err != nil {
+		log.Printf("operator alerts: could not read push subscriptions: %v", err)
+		return
+	}
+	grouped := map[string][]Subscription{}
+	var order []string
+	for _, row := range rows {
+		if _, ok := grouped[row.HouseholdID]; !ok {
+			order = append(order, row.HouseholdID)
+		}
+		grouped[row.HouseholdID] = append(grouped[row.HouseholdID], row.Subscription)
+	}
+	for _, id := range order {
+		scope, err := tenant.New(id)
+		if err != nil {
+			continue
+		}
+		s.deliverAll(ctx, scope, notice, grouped[id])
+	}
+}
+
 // deliverAll sends notice to the subscriptions selectForSend keeps.
 func (s *Sender) deliverAll(ctx context.Context, scope tenant.Scope, notice Notice, subs []Subscription) {
 	send, drop := selectForSend(subs, s.cfg)

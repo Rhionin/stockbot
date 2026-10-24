@@ -78,8 +78,13 @@ func (s *Subscriptions) Save(ctx context.Context, scope tenant.Scope, sub Subscr
 	sub.Auth = strings.TrimSpace(sub.Auth)
 	sub.Origin = canonicalHost(sub.Origin)
 	sub.DeviceID = strings.TrimSpace(sub.DeviceID)
-	// user_id stays required. The household is the tenant stored in that column.
-	sub.UserID = scope.HouseholdID()
+	// user_id stays required. A signed-in person keeps their account id so an
+	// operator subscription can be found later. An empty id stores the household.
+	if strings.TrimSpace(sub.UserID) == "" {
+		sub.UserID = scope.HouseholdID()
+	} else {
+		sub.UserID = strings.TrimSpace(sub.UserID)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save push subscription: %w", err)
@@ -174,6 +179,43 @@ func (s *Subscriptions) List(ctx context.Context, scope tenant.Scope) ([]Subscri
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list push subscriptions: %w", err)
+	}
+	return out, nil
+}
+
+// OperatorSubscription is a browser registered by an operator account.
+type OperatorSubscription struct {
+	Subscription
+	HouseholdID string
+}
+
+// ListOperator returns subscriptions whose user_id is an operator account.
+func (s *Subscriptions) ListOperator(ctx context.Context) ([]OperatorSubscription, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("list operator push subscriptions")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT push_subscriptions.endpoint, push_subscriptions.p256dh, push_subscriptions.auth,
+		       push_subscriptions.origin, push_subscriptions.user_id, push_subscriptions.device_id,
+		       push_subscriptions.household_id
+		FROM push_subscriptions
+		JOIN users ON users.id = push_subscriptions.user_id
+		WHERE users.operator = 1 AND users.deleted_at IS NULL AND push_subscriptions.household_id != ''
+		ORDER BY push_subscriptions.created_at, push_subscriptions.endpoint`)
+	if err != nil {
+		return nil, fmt.Errorf("list operator push subscriptions: %w", err)
+	}
+	defer rows.Close()
+	var out []OperatorSubscription
+	for rows.Next() {
+		var sub OperatorSubscription
+		if err := rows.Scan(&sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.Origin, &sub.UserID, &sub.DeviceID, &sub.HouseholdID); err != nil {
+			return nil, fmt.Errorf("list operator push subscriptions: %w", err)
+		}
+		out = append(out, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list operator push subscriptions: %w", err)
 	}
 	return out, nil
 }

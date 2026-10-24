@@ -150,7 +150,7 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 		"/api/household/household-password/retire",
 		"/api/household/household-password/restore",
 		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
-		"/api/operator/household-invites",
+		"/api/operator/household-invites", "/api/operator/alerts",
 		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
 		"/api/devices/abc",
 		"/api/device/scans", "/api/device/heartbeat", "/api/device/token/rotate",
@@ -179,6 +179,12 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /api/me = %d, want 405", rec.Code)
 	}
+	alerts := httptest.NewRequest(http.MethodPost, "/api/operator/alerts", nil)
+	alertsRec := httptest.NewRecorder()
+	handler.ServeHTTP(alertsRec, alerts)
+	if alertsRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/operator/alerts = %d, want 405", alertsRec.Code)
+	}
 }
 
 // stage1RegisteredPath matches every route registerStage1 puts on the mux,
@@ -193,7 +199,7 @@ var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
 	`auth/(?:session(?:/household)?|login|logout|reset|callback)|` +
 	`household/settings|household/household-password/(?:retire|restore)|` +
 	`invites/(?:preview|accept|[^/]+/revoke)|` +
-	`operator/household-invites|` +
+	`operator/(?:household-invites|alerts)|` +
 	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +
 	`device/(?:scans|heartbeat|token/rotate)|` +
 	`households/[^/]+(?:/(?:restore|members(?:/[^/]+(?:/reset-link)?)?))?` +

@@ -73,7 +73,9 @@ func NewPairingCode() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "SBP-" + payload[:4] + "-" + payload[4:] + "-" + string(checkCharacter(payload)), nil
+	// Same check character the scan classifier accepts.
+	check := checkCharacter(payload)
+	return "SBP-" + payload[:4] + "-" + payload[4:] + "-" + string(check), nil
 }
 
 func crockfordBits(nBits int) (string, error) {
@@ -172,16 +174,19 @@ func NormalizePairingCode(raw string) (code string, wellFormed, checkOK bool) {
 	trimmed := trimASCII(raw)
 	var b strings.Builder
 	for _, r := range trimmed {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r - 'a' + 'A')
-		case r == 'O':
-			b.WriteByte('0')
-		case r == 'I' || r == 'L':
-			b.WriteByte('1')
-		default:
-			b.WriteRune(r)
+		if r > 127 {
+			return "", false, false
 		}
+		if r >= 'a' && r <= 'z' {
+			r = r - 'a' + 'A'
+		}
+		switch r {
+		case 'O':
+			r = '0'
+		case 'I', 'L':
+			r = '1'
+		}
+		b.WriteRune(r)
 	}
 	folded := b.String()
 	if !pairingPattern(folded) {

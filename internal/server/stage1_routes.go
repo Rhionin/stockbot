@@ -5,9 +5,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/scan"
 )
 
 // WithStage1 turns on personal sessions, setup, and household membership.
@@ -55,6 +57,7 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("POST /api/invites/preview", gate.servePreviewInvite)
 	apiMux.HandleFunc("POST /api/invites/accept", gate.serveAcceptInvite)
 	apiMux.HandleFunc("POST /api/operator/household-invites", gate.serveOperatorInvite)
+	apiMux.HandleFunc("GET /api/operator/alerts", gate.serveOperatorAlerts)
 	apiMux.HandleFunc("POST /api/devices/pair", gate.serveStartPairing)
 	apiMux.HandleFunc("GET /api/devices/pair/{id}", gate.servePairingStatus)
 	apiMux.HandleFunc("POST /api/devices/pair/complete", gate.serveCompletePairing)
@@ -888,11 +891,11 @@ func (s *stage1) serveCompletePairing(w http.ResponseWriter, r *http.Request) {
 		writeStage1(w, err)
 		return
 	}
-	var hubKind, hubVersion string
+	var hubKind, hubVersion, bootID string
 	if body.Hub != nil {
-		hubKind, hubVersion = body.Hub.Kind, body.Hub.Version
+		hubKind, hubVersion, bootID = body.Hub.Kind, body.Hub.Version, body.Hub.BootID
 	}
-	paired, err := s.svc.CompletePairing(r.Context(), body.Code, body.Label, hubKind, hubVersion)
+	paired, err := s.svc.CompletePairing(r.Context(), body.Code, body.Label, hubKind, hubVersion, bootID)
 	if err == nil || countsAttempt(err) {
 		_ = s.svc.NotePairIP(ip)
 	}
@@ -902,10 +905,11 @@ func (s *stage1) serveCompletePairing(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := struct {
 		DeviceID         string `json:"deviceId"`
+		Label            string `json:"label,omitempty"`
 		Token            string `json:"token"`
 		Config           any    `json:"config,omitempty"`
 		HeartbeatSeconds int    `json:"heartbeatSeconds,omitempty"`
-	}{DeviceID: paired.DeviceID, Token: paired.Token}
+	}{DeviceID: paired.DeviceID, Label: paired.Label, Token: paired.Token}
 	if paired.Hub {
 		resp.Config = s.hubConfig()
 		resp.HeartbeatSeconds = 60
@@ -965,11 +969,18 @@ func (s *stage1) serveRenameDevice(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body nameBody
+	var body struct {
+		Label string `json:"label"`
+		Name  string `json:"name"`
+	}
 	if !readStage1(w, r, &body) {
 		return
 	}
-	device, err := s.svc.RenameDevice(r.Context(), p.UserID, p.HouseholdID, r.PathValue("id"), body.Name)
+	label := body.Label
+	if strings.TrimSpace(label) == "" {
+		label = body.Name
+	}
+	device, err := s.svc.RenameDevice(r.Context(), p.UserID, p.HouseholdID, r.PathValue("id"), label)
 	if err != nil {
 		writeStage1(w, err)
 		return
@@ -1029,28 +1040,31 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 	if hasScans {
 		var batch struct {
 			Scans []struct {
-				ID        string `json:"id"`
-				Barcode   string `json:"barcode"`
-				Direction string `json:"direction"`
-				UnitCount int    `json:"unitCount"`
+				ID        string          `json:"id"`
+				Barcode   string          `json:"barcode"`
+				ScannedAt json.RawMessage `json:"scannedAt"`
+				Direction *string         `json:"direction"`
+				UnitCount int             `json:"unitCount"`
+				AgeMs     *int64          `json:"ageMs"`
+				BootID    string          `json:"bootId"`
 			} `json:"scans"`
 			DroppedCount int `json:"droppedCount"`
 		}
-		if err := json.Unmarshal(body, &batch); err != nil {
+		if err := json.Unmarshal(body, &batch); err != nil || batch.DroppedCount < 0 {
 			writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
 			return
 		}
 		items := make([]auth.ScanInput, 0, len(batch.Scans))
 		for _, item := range batch.Scans {
-			items = append(items, auth.ScanInput{
-				ID: item.ID, Barcode: item.Barcode, Direction: item.Direction,
-				UnitCount: item.UnitCount, HasBarcode: item.Barcode != "",
-			})
+			items = append(items, scanInputFrom(item.ID, item.Barcode, item.ScannedAt, item.Direction, item.UnitCount, false, item.AgeMs, item.BootID))
 		}
-		results, err := s.svc.IngestScans(r.Context(), p, items)
+		results, err := s.svc.IngestScans(r.Context(), p, items, batch.DroppedCount)
 		if err != nil {
 			writeStage1(w, err)
 			return
+		}
+		if results == nil {
+			results = []auth.ScanResult{}
 		}
 		writeJSON(w, http.StatusOK, struct {
 			Results []auth.ScanResult `json:"results"`
@@ -1059,22 +1073,43 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var one struct {
-		ID        string `json:"id"`
-		Barcode   string `json:"barcode"`
-		Direction string `json:"direction"`
-		UnitCount int    `json:"unitCount"`
-		Heartbeat bool   `json:"heartbeat"`
+		ID        string          `json:"id"`
+		Barcode   string          `json:"barcode"`
+		ScannedAt json.RawMessage `json:"scannedAt"`
+		Direction *string         `json:"direction"`
+		UnitCount int             `json:"unitCount"`
+		Heartbeat bool            `json:"heartbeat"`
+		AgeMs     *int64          `json:"ageMs"`
+		BootID    string          `json:"bootId"`
 	}
-	if err := json.Unmarshal(body, &one); err != nil || one.ID == "" {
+	if err := json.Unmarshal(body, &one); err != nil {
 		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
 		return
 	}
-	results, err := s.svc.IngestScans(r.Context(), p, []auth.ScanInput{{
-		ID: one.ID, Barcode: one.Barcode, Direction: one.Direction,
-		UnitCount: one.UnitCount, Heartbeat: one.Heartbeat, HasBarcode: one.Barcode != "",
-	}})
+	item := scanInputFrom(one.ID, one.Barcode, one.ScannedAt, one.Direction, one.UnitCount, one.Heartbeat, one.AgeMs, one.BootID)
+	if rejectSingleScan(item) {
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
+		return
+	}
+	results, err := s.svc.IngestScans(r.Context(), p, []auth.ScanInput{item}, 0)
 	if err != nil {
 		writeStage1(w, err)
+		return
+	}
+	if len(results) == 0 {
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
+		return
+	}
+	if results[0].Status == "rejected" {
+		msg := auth.SentenceValidation
+		if results[0].Message != "" {
+			msg = results[0].Message
+		}
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: msg})
+		return
+	}
+	if results[0].Status == "conflict" {
+		writeStage1(w, &auth.Error{Code: auth.CodeConflict, Message: "scan id already used with different payload"})
 		return
 	}
 	status := results[0].Status
@@ -1088,6 +1123,64 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 	}{ID: results[0].ID, Status: status, Cursor: results[0].Cursor})
 }
 
+func scanInputFrom(id, barcode string, scannedAt json.RawMessage, direction *string, unit int, heartbeat bool, age *int64, bootID string) auth.ScanInput {
+	item := auth.ScanInput{
+		ID: id, Barcode: barcode, UnitCount: unit, Heartbeat: heartbeat,
+		HasBarcode: scan.TrimASCII(barcode) != "", AgeMs: age, BootID: bootID,
+	}
+	if direction != nil {
+		item.Direction = *direction
+	}
+	if len(scannedAt) == 0 || string(scannedAt) == "null" {
+		return item
+	}
+	var text string
+	if err := json.Unmarshal(scannedAt, &text); err != nil {
+		item.ScannedAtInvalid = true
+		return item
+	}
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		item.ScannedAtInvalid = true
+		return item
+	}
+	item.HasScannedAt = true
+	item.ScannedAt = at
+	return item
+}
+
+func rejectSingleScan(item auth.ScanInput) bool {
+	if item.ID == "" || item.ScannedAtInvalid {
+		return true
+	}
+	if item.Heartbeat && !item.HasBarcode {
+		return false
+	}
+	if !item.HasBarcode {
+		return true
+	}
+	barcode := scan.TrimASCII(item.Barcode)
+	if barcode == "" || len(barcode) > 64 || !printableScan(barcode) || scan.LooksLikePairingCode(item.Barcode) {
+		return true
+	}
+	if item.Direction != "" && item.Direction != "stock_in" && item.Direction != "stock_out" {
+		return true
+	}
+	if item.UnitCount < 0 || item.UnitCount > 999 {
+		return true
+	}
+	return false
+}
+
+func printableScan(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x21 || value[i] > 0x7E {
+			return false
+		}
+	}
+	return true
+}
+
 type heartbeatBody struct {
 	Version      string `json:"version"`
 	BootID       string `json:"bootId"`
@@ -1095,6 +1188,7 @@ type heartbeatBody struct {
 	Queued       int    `json:"queued"`
 	DroppedCount int    `json:"droppedCount"`
 	ClockSynced  bool   `json:"clockSynced"`
+	Rollback     bool   `json:"rollback"`
 }
 
 func (s *stage1) serveHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -1106,7 +1200,11 @@ func (s *stage1) serveHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !readStage1(w, r, &body) {
 		return
 	}
-	rotate, err := s.svc.NoteContact(r.Context(), p, body.Version, body.Queued, body.DroppedCount)
+	rotate, err := s.svc.Heartbeat(r.Context(), p, auth.Heartbeat{
+		Version: body.Version, BootID: body.BootID, UptimeS: body.UptimeS,
+		Queued: body.Queued, Dropped: body.DroppedCount, ClockSynced: body.ClockSynced,
+		Rollback: body.Rollback,
+	})
 	if err != nil {
 		writeStage1(w, err)
 		return
@@ -1135,8 +1233,27 @@ func (s *stage1) serveRotateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
-		Token string `json:"token"`
-	}{Token: next})
+		Token      string `json:"token"`
+		GraceUntil string `json:"graceUntil,omitempty"`
+	}{Token: next.Token, GraceUntil: next.GraceUntil})
+}
+
+func (s *stage1) serveOperatorAlerts(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.account(w, r)
+	if !ok {
+		return
+	}
+	list, err := s.svc.ListOperatorAlerts(r.Context(), p.UserID)
+	if err != nil {
+		writeStage1(w, err)
+		return
+	}
+	if list == nil {
+		list = []auth.OperatorAlert{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Alerts []auth.OperatorAlert `json:"alerts"`
+	}{Alerts: list})
 }
 
 func (s *stage1) serveDeleteAccount(w http.ResponseWriter, r *http.Request) {
