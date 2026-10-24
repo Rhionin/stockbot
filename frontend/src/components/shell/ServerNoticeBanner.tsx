@@ -7,7 +7,6 @@ import {
   NOTICE_BANNER_TEXT,
   NOTICE_BANNER_TINT,
   NOTICE_SCREEN_PADDING_INLINE,
-  NOTICE_SCREEN_PADDING_TOP,
 } from '../../noticeBanner';
 
 const bannerStyle = {
@@ -48,14 +47,9 @@ export function ServerNoticeBanner({
   if (shown === '') return null;
   const detail = notice === '' ? partial : '';
   let className: string | undefined;
-  let screenInset: { marginTop?: number; marginRight: number | string; marginLeft: number | string } | undefined;
+  let screenInset: { marginRight: string; marginLeft: string } | undefined;
   if (inset) {
     className = 'server-notice-inset';
-    screenInset = {
-      marginTop: NOTICE_SCREEN_PADDING_TOP,
-      marginRight: NOTICE_SCREEN_PADDING_INLINE,
-      marginLeft: NOTICE_SCREEN_PADDING_INLINE,
-    };
   } else if (shell) {
     className = 'server-notice-shell';
     screenInset = { marginRight: shellSide, marginLeft: shellSide };

@@ -5,7 +5,12 @@ import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from '../../App';
 import { notifyApiSuccess, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../api/contract';
-import { NOTICE_SCREEN_PADDING_INLINE, NOTICE_SCREEN_PADDING_TOP } from '../../noticeBanner';
+import {
+  NOTICE_SCREEN_PADDING_INLINE,
+  NOTICE_SCREEN_PADDING_INLINE_VAR,
+  NOTICE_SCREEN_PADDING_TOP,
+  NOTICE_SCREEN_PADDING_TOP_VAR,
+} from '../../noticeBanner';
 import { HouseholdGate } from '../auth/HouseholdGate';
 import { ServerNoticeBanner } from './ServerNoticeBanner';
 
@@ -49,6 +54,61 @@ function desktopShellMargin(css: string): { left: string; right: string; importa
     }
   }
   return undefined;
+}
+
+function loginRule(selector: string): CSSStyleRule {
+  const css = readFileSync(join(process.cwd(), 'src/components/auth/LoginPage.css'), 'utf8');
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(css);
+  for (const rule of sheet.cssRules) {
+    if (rule instanceof CSSStyleRule && rule.selectorText === selector) return rule;
+  }
+  throw new Error(`missing ${selector}`);
+}
+
+function published(name: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (value === '') throw new Error(`${name} is unset`);
+  return value;
+}
+
+// jsdom leaves max(var(), env(safe-area)) unresolved. Chromium paints that max,
+// and with no notch the safe area is 0, so the variable is the used value.
+function paints(declaration: string): string {
+  const resolved = declaration
+    .replace(/var\((--[\w-]+)\)/g, (_, name: string) => published(name))
+    .replace(/env\(safe-area-inset-[a-z-]+\)/g, '0px');
+  const max = /^max\((.+),\s*(.+)\)$/.exec(resolved.trim());
+  if (!max) return resolved.trim();
+  const px = (part: string) => {
+    const match = /^(-?\d+(?:\.\d+)?)px$/.exec(part.trim());
+    if (!match) throw new Error(`cannot paint ${declaration}`);
+    return Number(match[1]);
+  };
+  return `${Math.max(px(max[1]), px(max[2]))}px`;
+}
+
+function expectPainted(rule: CSSStyleRule, property: string, variable: string, pixels: number) {
+  const declaration = rule.style.getPropertyValue(property);
+  expect(declaration).toContain(`var(${variable})`);
+  expect(declaration).not.toMatch(/\d+px/);
+  expect(rule.style.getPropertyPriority(property)).toBe('important');
+  expect(paints(declaration)).toBe(`${pixels}px`);
+}
+
+function expectLoginScreenPadding(main: Element) {
+  expect(main).toHaveClass('login-screen');
+  expect((main as HTMLElement).style.padding).toBe('');
+  expect((main as HTMLElement).style.paddingTop).toBe('');
+  const rule = loginRule('.login-screen');
+  expectPainted(rule, 'padding-top', NOTICE_SCREEN_PADDING_TOP_VAR, NOTICE_SCREEN_PADDING_TOP);
+  expectPainted(rule, 'padding-bottom', NOTICE_SCREEN_PADDING_TOP_VAR, NOTICE_SCREEN_PADDING_TOP);
+  expect(rule.style.getPropertyValue('padding-right')).toBe(`var(${NOTICE_SCREEN_PADDING_INLINE_VAR})`);
+  expect(rule.style.getPropertyValue('padding-left')).toBe(`var(${NOTICE_SCREEN_PADDING_INLINE_VAR})`);
+  expect(paints(rule.style.getPropertyValue('padding-right'))).toBe(`${NOTICE_SCREEN_PADDING_INLINE}px`);
+  expect(paints(rule.style.getPropertyValue('padding-left'))).toBe(`${NOTICE_SCREEN_PADDING_INLINE}px`);
+  expect(published(NOTICE_SCREEN_PADDING_TOP_VAR)).toBe(`${NOTICE_SCREEN_PADDING_TOP}px`);
+  expect(published(NOTICE_SCREEN_PADDING_INLINE_VAR)).toBe(`${NOTICE_SCREEN_PADDING_INLINE}px`);
 }
 
 function painted(color: string): string {
@@ -98,14 +158,7 @@ describe('server notice banner', () => {
       </MantineProvider>,
     );
     const banner = await screen.findByTestId('server-notice-banner');
-    const main = banner.closest('main');
-    expect(main).toHaveClass('login-screen');
-    expect(main).toHaveStyle({
-      paddingTop: '24px',
-      paddingRight: '20px',
-      paddingBottom: '24px',
-      paddingLeft: '20px',
-    });
+    expectLoginScreenPadding(banner.closest('main')!);
     expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
   });
 
@@ -120,12 +173,7 @@ describe('server notice banner', () => {
     );
     const banner = await screen.findByTestId('server-notice-banner');
     expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
-    expect(banner.closest('main')).toHaveStyle({
-      paddingTop: `${NOTICE_SCREEN_PADDING_TOP}px`,
-      paddingRight: `${NOTICE_SCREEN_PADDING_INLINE}px`,
-      paddingBottom: `${NOTICE_SCREEN_PADDING_TOP}px`,
-      paddingLeft: `${NOTICE_SCREEN_PADDING_INLINE}px`,
-    });
+    expectLoginScreenPadding(banner.closest('main')!);
   });
 
   it('insets the sign-in banner by the screen padding', async () => {
@@ -148,11 +196,13 @@ describe('server notice banner', () => {
     const banner = await screen.findByTestId('server-notice-banner');
     expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
     expect(banner).toHaveClass('server-notice-inset');
-    expect(banner).toHaveStyle({
-      marginTop: `${NOTICE_SCREEN_PADDING_TOP}px`,
-      marginRight: `${NOTICE_SCREEN_PADDING_INLINE}px`,
-      marginLeft: `${NOTICE_SCREEN_PADDING_INLINE}px`,
-    });
+    expect(banner.style.marginTop).toBe('');
+    expect(banner.style.marginRight).toBe('');
+    expect(banner.style.marginLeft).toBe('');
+    const inset = loginRule('.server-notice-inset');
+    expectPainted(inset, 'margin-top', NOTICE_SCREEN_PADDING_TOP_VAR, NOTICE_SCREEN_PADDING_TOP);
+    expectPainted(inset, 'margin-right', NOTICE_SCREEN_PADDING_INLINE_VAR, NOTICE_SCREEN_PADDING_INLINE);
+    expectPainted(inset, 'margin-left', NOTICE_SCREEN_PADDING_INLINE_VAR, NOTICE_SCREEN_PADDING_INLINE);
   });
 
   it('gives the inventory banner 20px sides on a phone shell and lines it up from sm', async () => {

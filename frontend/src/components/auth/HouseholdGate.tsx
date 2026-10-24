@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, serverNoticeText, UnreachableError } from '../../api/contract';
-import { NOTICE_SCREEN_PADDING_INLINE, NOTICE_SCREEN_PADDING_TOP } from '../../noticeBanner';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { HouseholdSessionContext } from './householdSession';
@@ -9,13 +8,6 @@ import './LoginPage.css';
 
 const RETRY_START_MS = 1000;
 const RETRY_CAP_MS = 30_000;
-
-const screenInset = {
-  paddingTop: NOTICE_SCREEN_PADDING_TOP,
-  paddingRight: NOTICE_SCREEN_PADDING_INLINE,
-  paddingBottom: NOTICE_SCREEN_PADDING_TOP,
-  paddingLeft: NOTICE_SCREEN_PADDING_INLINE,
-};
 
 export const HouseholdGate = ({ children }: { children: ReactNode }) => {
   const [phase, setPhase] = useState<'checking' | 'offline' | 'login' | 'setup' | 'app'>('checking');
@@ -92,7 +84,7 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
 
   if (phase === 'checking' || phase === 'offline') {
     return (
-      <main className={phase === 'offline' ? 'login-screen login-screen--offline' : 'login-screen'} style={screenInset} aria-busy="true">
+      <main className={phase === 'offline' ? 'login-screen login-screen--offline' : 'login-screen'} aria-busy="true">
         {phase === 'offline' && <ServerNoticeBanner />}
         <p className="login-brand">Stockbot</p>
       </main>
@@ -101,7 +93,7 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
 
   if (phase === 'setup') {
     return (
-      <main className="login-screen login-screen--offline" style={screenInset}>
+      <main className="login-screen login-screen--offline">
         <ServerNoticeBanner />
         <p className="login-setup-sentence">{AUTH_SETUP_SENTENCE}</p>
         <button type="button" className="login-setup-retry" onClick={() => { recheckRef.current?.(); }}>

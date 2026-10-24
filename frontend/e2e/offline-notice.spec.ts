@@ -3,8 +3,6 @@ import { expect, test, type Page } from '@playwright/test'
 import { createKnownProduct, resetToStockIn, scanBarcode } from './helpers'
 
 const sentence = "Can't reach Stockbot. Check your connection and try again."
-const shotDir = '/opt/cursor/artifacts'
-mkdirSync(shotDir, { recursive: true })
 
 const shots = [
   { width: 390, height: 844, scheme: 'light' as const, action: 'confirm' as const, file: 'web_offline_confirm_390_light.png' },
@@ -24,8 +22,10 @@ const cancelPending = async (page: Page) => {
 }
 
 for (const shot of shots) {
-  test(`offline ${shot.action} at ${shot.width} ${shot.scheme}`, async ({ page, request }) => {
+  test(`offline ${shot.action} at ${shot.width} ${shot.scheme}`, async ({ page, request }, testInfo) => {
     test.setTimeout(90_000)
+    const shotDir = process.env.OFFLINE_SHOT_DIR ?? testInfo.outputDir
+    mkdirSync(shotDir, { recursive: true })
     const barcode = `373${shot.width}${shot.scheme === 'dark' ? '1' : '0'}${shot.action === 'remove' ? '2' : '1'}`
     await createKnownProduct(request, {
       barcode,
