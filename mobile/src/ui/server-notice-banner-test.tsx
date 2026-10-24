@@ -109,13 +109,57 @@ function ancestors(node: LaidOut): LaidOut[] {
   return chain;
 }
 
+const EDGE_KEYS = [
+  'padding',
+  'paddingTop',
+  'paddingVertical',
+  'paddingBlock',
+  'paddingBlockStart',
+  'paddingLeft',
+  'paddingRight',
+  'paddingStart',
+  'paddingEnd',
+  'paddingHorizontal',
+  'paddingInline',
+  'paddingInlineStart',
+  'paddingInlineEnd',
+  'margin',
+  'marginTop',
+  'marginVertical',
+  'marginBlock',
+  'marginBlockStart',
+  'marginLeft',
+  'marginRight',
+  'marginStart',
+  'marginEnd',
+  'marginHorizontal',
+  'marginInline',
+  'marginInlineStart',
+  'marginInlineEnd',
+] as const;
+
+function styleLayers(style: unknown): Record<string, unknown>[] {
+  if (style == null || typeof style === 'boolean') return [];
+  if (Array.isArray(style)) return style.flatMap((entry) => styleLayers(entry));
+  if (typeof style === 'number') {
+    return [(StyleSheet.flatten(style as never) ?? {}) as Record<string, unknown>];
+  }
+  if (typeof style === 'object') return [style as Record<string, unknown>];
+  return [];
+}
+
+function insetAmount(value: unknown): number | string {
+  if (value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  return 'set';
+}
+
 function expectBannerClearOfPadding(banner: LaidOut) {
   for (const ancestor of ancestors(banner)) {
-    const flat = (StyleSheet.flatten(ancestor.props.style as never) ?? {}) as Record<string, unknown>;
-    for (const [key, value] of Object.entries(flat)) {
-      if (!key.startsWith('padding') && !key.startsWith('margin')) continue;
-      // A percent string is an inset, and +4 with -4 does not cancel.
-      expect({ key, value }).toEqual({ key, value: 0 });
+    for (const layer of styleLayers(ancestor.props.style)) {
+      for (const key of EDGE_KEYS) {
+        expect(insetAmount(layer[key])).toBe(0);
+      }
     }
   }
 }
@@ -331,24 +375,30 @@ describe('mobile server notice banner', () => {
     expect(padding(body?.props.style).top).toBe(0);
   });
 
-  it('treats a percent padding as an inset', async () => {
+  it.each([
+    { name: 'percent padding', style: { padding: '4%' } },
+    { name: 'offsetting margins', style: { marginLeft: 4, marginRight: -4 } },
+    { name: 'padding shorthand', style: { padding: 4 } },
+    { name: 'paddingStart', style: { paddingStart: 4 } },
+    { name: 'marginHorizontal', style: { marginHorizontal: 4 } },
+    { name: 'paddingVertical', style: { paddingVertical: 4 } },
+    { name: 'marginVertical', style: { marginVertical: 4 } },
+  ])('rejects $name', async ({ style }) => {
     const view = await render(
-      <View style={{ padding: '4%' }}>
+      <View style={style as never}>
         <ServerNoticeBanner text={OFFLINE_SENTENCE} />
       </View>,
     );
-    const banner = view.getByTestId('server-notice-banner');
-    expect(() => expectBannerClearOfPadding(banner)).toThrow();
+    expect(() => expectBannerClearOfPadding(view.getByTestId('server-notice-banner'))).toThrow();
   });
 
-  it('rejects offsetting margins', async () => {
+  it('allows bottom padding and an unset top', async () => {
     const view = await render(
-      <View style={{ marginLeft: 4, marginRight: -4 }}>
+      <View style={{ paddingBottom: 12, paddingTop: undefined, marginBottom: 8, paddingBlockEnd: 4 }}>
         <ServerNoticeBanner text={OFFLINE_SENTENCE} />
       </View>,
     );
-    const banner = view.getByTestId('server-notice-banner');
-    expect(() => expectBannerClearOfPadding(banner)).toThrow();
+    expectBannerClearOfPadding(view.getByTestId('server-notice-banner'));
   });
 
   it('hides the exclamation icon from TalkBack', async () => {

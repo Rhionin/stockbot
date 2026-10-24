@@ -4,9 +4,10 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  padding: 24px 20px;
-  padding-top: max(24px, env(safe-area-inset-top)) !important;
-  padding-bottom: max(24px, env(safe-area-inset-bottom)) !important;
+  padding-top: max(var(--notice-screen-padding-top), env(safe-area-inset-top)) !important;
+  padding-right: var(--notice-screen-padding-inline);
+  padding-bottom: max(var(--notice-screen-padding-top), env(safe-area-inset-bottom)) !important;
+  padding-left: var(--notice-screen-padding-inline);
   background:
     radial-gradient(900px 420px at 50% -80px, #e5f3f1 0%, transparent 60%),
     #f4f7f6;
@@ -19,12 +20,11 @@
   align-items: stretch;
 }
 
-/* A notice above the centered form uses the same inset. The safe-area line
-   wins over the inline margin on a notched screen. */
+/* A notice above the centered form uses the same inset, including the notch. */
 .server-notice-inset {
-  margin-top: max(24px, env(safe-area-inset-top)) !important;
-  margin-right: 20px !important;
-  margin-left: 20px !important;
+  margin-top: max(var(--notice-screen-padding-top), env(safe-area-inset-top)) !important;
+  margin-right: var(--notice-screen-padding-inline) !important;
+  margin-left: var(--notice-screen-padding-inline) !important;
 }
 
 .login-screen--offline .login-brand {

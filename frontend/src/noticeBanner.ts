@@ -8,5 +8,14 @@ export const NOTICE_BANNER_EDGE = '#EF4444';
 export const NOTICE_BANNER_RADIUS = 4;
 
 // Same inset the sign-in screen already gives its content.
+// LoginPage.css reads these variables, including the safe-area override,
+// so the rendered inset and the tests share this one pair of numbers.
 export const NOTICE_SCREEN_PADDING_TOP = 24;
 export const NOTICE_SCREEN_PADDING_INLINE = 20;
+export const NOTICE_SCREEN_PADDING_TOP_VAR = '--notice-screen-padding-top';
+export const NOTICE_SCREEN_PADDING_INLINE_VAR = '--notice-screen-padding-inline';
+
+if (typeof document !== 'undefined' && document.documentElement) {
+  document.documentElement.style.setProperty(NOTICE_SCREEN_PADDING_TOP_VAR, `${NOTICE_SCREEN_PADDING_TOP}px`);
+  document.documentElement.style.setProperty(NOTICE_SCREEN_PADDING_INLINE_VAR, `${NOTICE_SCREEN_PADDING_INLINE}px`);
+}

@@ -2,8 +2,11 @@ import { expect, test, type Page } from '@playwright/test'
 
 const sentence = "Can't reach Stockbot. Check your connection and try again."
 
+// 900 sits between the 48em shell inset and the 64em scan column.
+// Moving either breakpoint across it changes the banner box.
 const viewports = [
   { width: 390, height: 844, shell: 20 },
+  { width: 900, height: 800, shell: 15 },
   { width: 1280, height: 800, shell: 15 },
 ]
 
@@ -25,6 +28,12 @@ function expectSides(box: { x: number; y: number; width: number }, side: number,
   expect(box.x).toBe(side)
   expect(box.width).toBe(viewport - side * 2)
   expect(box.y).toBeGreaterThan(0)
+}
+
+function expectGate(box: { x: number; y: number; width: number }, viewport: number) {
+  expect(box.x).toBe(20)
+  expect(box.width).toBe(viewport - 40)
+  expect(box.y).toBe(24)
 }
 
 for (const viewport of viewports) {
@@ -56,7 +65,7 @@ for (const viewport of viewports) {
     await page.route('**/api/session', (route) => route.abort('internetdisconnected'))
     await page.goto('/')
     await expect(page.getByText(sentence)).toBeVisible()
-    expectSides(await bannerBox(page), 20, viewport.width)
+    expectGate(await bannerBox(page), viewport.width)
   })
 
   test(`sign-in banner box at ${viewport.width}`, async ({ page }) => {
@@ -72,6 +81,6 @@ for (const viewport of viewports) {
     await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByText(sentence)).toBeVisible()
-    expectSides(await bannerBox(page), 20, viewport.width)
+    expectGate(await bannerBox(page), viewport.width)
   })
 }
