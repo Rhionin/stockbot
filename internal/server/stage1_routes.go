@@ -1142,7 +1142,15 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(results) == 0 || results[0].Status == "rejected" {
-		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
+		msg := auth.SentenceValidation
+		if results[0].Message != "" {
+			msg = results[0].Message
+		}
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: msg})
+		return
+	}
+	if results[0].Status == "conflict" {
+		writeStage1(w, &auth.Error{Code: auth.CodeConflict, Message: "scan id already used with different payload"})
 		return
 	}
 	status := results[0].Status

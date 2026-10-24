@@ -579,6 +579,32 @@ func listOrFail(t *testing.T, svc *Service, userID, house string) []DeviceView {
 	return list
 }
 
+func TestRotatedTokenExpiresWhenUnused(t *testing.T) {
+	ctx, svc, userID, house := bootDeviceAPI(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return now })
+	pair, err := svc.StartPairing(ctx, userID, house)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired, err := svc.CompletePairing(ctx, pair.Code, "Counter", "pi_hub", "1.2.3", "boot-grace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := svc.RotateDeviceToken(ctx, paired.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AuthenticateDevice(ctx, paired.Token); err != nil {
+		t.Fatal("old token rejected inside the grace window")
+	}
+	now = now.Add(24*time.Hour + time.Second)
+	expectCode(t, take2(svc.AuthenticateDevice(ctx, paired.Token)), CodeUnauthorized)
+	if _, err := svc.AuthenticateDevice(ctx, next.Token); err != nil {
+		t.Fatalf("unused new token: %v", err)
+	}
+}
+
 func containsHint(items []string, kind string) bool {
 	for _, item := range items {
 		if item == kind {
