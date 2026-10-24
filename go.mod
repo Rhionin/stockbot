@@ -2,6 +2,8 @@ module github.com/Rhionin/stockbot
 
 go 1.26.0
 
+ignore ./infra/node_modules
+
 require (
 	filippo.io/age v1.2.1
 	github.com/SherClockHolmes/webpush-go v1.4.0

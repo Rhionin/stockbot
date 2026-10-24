@@ -1,2 +1,5 @@
 # The Expo app is not part of the server or grocy-sync images.
 mobile/
+
+# The CDK app is not part of the server or grocy-sync images.
+infra/
