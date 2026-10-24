@@ -22,6 +22,9 @@ func newTestQueueInternal(t *testing.T) (*Queue, *sql.DB, tenant.Scope) {
 	if err != nil {
 		t.Fatalf("open in-memory SQLite: %v", err)
 	}
+	// One connection keeps the schema. A second :memory: connection is an
+	// empty database, and a canceled query can check that one out of the pool.
+	conn.SetMaxOpenConns(1)
 	t.Cleanup(func() { conn.Close() })
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
