@@ -760,6 +760,8 @@ sudo docker volume inspect pantry-data
 
 Nightly backups are encrypted and uploaded from the Pi. Plaintext copies are not written to the home directory. Setup, the timer, and the restore drill are documented in [deploy/backup/README.md](backup/README.md).
 
+A Cloudflare Worker outside the Pi watches `GET /api/build` and the age of those R2 objects. It emails when the Pi is down or a backup is stale. Deploy and the alert drill are documented in [deploy/watch-worker/README.md](watch-worker/README.md).
+
 A disaster restore onto the Pi is a manual step and is not part of the drill. Stop the pantry container, copy the verified database to `/data/pantry.db` as uid 65532, remove any `-wal`, `-shm`, and `-journal` files beside it, start the stack, and check `GET /api/build`. Do that only with an explicit go-ahead. The drill never touches the Pi or the live database.
 
 ### Host Directory Access (Alternative)
