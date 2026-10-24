@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"testing"
 )
 
 //go:embed migrations/*.sql
@@ -18,6 +19,16 @@ var migrationsFS embed.FS
 // prepareMigrationSQL returns the SQL applied for a migration. Tests replace
 // it to append a statement that fails partway through.
 var prepareMigrationSQL = func(_ string, sqlText string) string { return sqlText }
+
+// showMigrationProgress is set by tests that check the wording of the
+// progress lines. Test binaries leave it false: each fresh database would
+// otherwise reprint every migration filename, and one failure dumps that
+// backlog into the CI log. The server process always logs.
+var showMigrationProgress bool
+
+func migrationProgressOn() bool {
+	return showMigrationProgress || !testing.Testing()
+}
 
 // RunMigrations applies all numbered .sql files embedded in the migrations
 // directory, in lexicographic order, skipping any that have already been
@@ -100,11 +111,13 @@ func RunMigrations(db *sql.DB) error {
 			return fmt.Errorf("apply migration %q: %w", name, err)
 		}
 
-		log.Printf("applied migration: %s", name)
+		if migrationProgressOn() {
+			log.Printf("applied migration: %s", name)
+		}
 		applied++
 	}
 
-	if applied == 0 {
+	if applied == 0 && migrationProgressOn() {
 		log.Println("schema up to date, no migrations applied")
 	}
 
