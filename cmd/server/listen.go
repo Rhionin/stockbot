@@ -49,15 +49,22 @@ func openListeners(specs []app.Listener, handler http.Handler, register func(*ht
 		set.servers = append(set.servers, srv)
 		set.lns = append(set.lns, ln)
 		set.addrs = append(set.addrs, ln.Addr().String())
-		go func(srv *http.Server, ln net.Listener) {
-			set.serveErr <- srv.Serve(ln)
-		}(srv, ln)
 		log.Printf("listening on %s (%s)", ln.Addr().String(), entry)
 		if entry == app.EntryLAN {
 			if warning := unauthenticatedListenWarning(spec.Addr); warning != "" {
 				log.Print(warning)
 			}
 		}
+	}
+	// Serve only after every address bound. Starting it inside the loop lets
+	// Server.Close drop an earlier socket when a later bind fails, which hides
+	// a missing close of s.lns.
+	for i := range set.servers {
+		srv := set.servers[i]
+		ln := set.lns[i]
+		go func(srv *http.Server, ln net.Listener) {
+			set.serveErr <- srv.Serve(ln)
+		}(srv, ln)
 	}
 	return set, nil
 }

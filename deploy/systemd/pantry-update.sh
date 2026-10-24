@@ -215,6 +215,14 @@ echo "pantry update: lock acquired"
 
 # shellcheck disable=SC1091
 source "$PANTRY_DIR/auth-migrate.sh"
+if ! prepare_setup_dir; then
+  echo "Could not prepare ${PANTRY_DIR}/setup for the setup code" >&2
+  exit 1
+fi
+if ! ensure_app_base_url; then
+  echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
+  exit 1
+fi
 if ! sync_household_credential; then
   echo "Could not copy the household password hash; leaving containers unchanged." >&2
   exit 1

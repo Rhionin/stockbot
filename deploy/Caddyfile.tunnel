@@ -56,23 +56,23 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8080
+			reverse_proxy pantry:8081
 		}
 	}
 
 	# Exact path: /api/build only. The JSON is the running commit, the commit
 	# time, the image build time, a version tag, and the subject. None of
 	# those are secrets. Keep this handle with telemetry and the deploy hook,
-	# before the household site. Like those handles, this proxy does not set
-	# X-Pantry-Entry or X-Pantry-Client-IP; the catch-all below is what marks
-	# the public site. The app also leaves this path open when that header
-	# is present. Do not add other API paths to this matcher.
+	# before the household site. This proxy does not forward the visitor
+	# address; the device route and the catch-all below do. The app leaves
+	# this path open on the public listener. Do not add other API paths to
+	# this matcher.
 	@build path /api/build
 	handle @build {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8080
+			reverse_proxy pantry:8081
 		}
 	}
 
@@ -86,7 +86,7 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8080
+			reverse_proxy pantry:8081
 		}
 	}
 
@@ -99,13 +99,13 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8080
+			reverse_proxy pantry:8081
 		}
 	}
 
 	# Device scan, heartbeat, and token rotation. These posts are small
-	# JSON. 64 KB is tighter than the site cap. The proxy headers match
-	# the public site, so the app still sees the visitor address.
+	# JSON. 64 KB is tighter than the site cap. The visitor address is
+	# forwarded so the public listener can rate-limit by client.
 	# /api/devices (pairing) is not this prefix.
 	handle /api/device/* {
 		request_body {
@@ -114,18 +114,16 @@ http://{$PUBLIC_HOST} {
 		route {
 			import security_headers
 			encode gzip
-			reverse_proxy pantry:8080 {
-				header_up X-Pantry-Entry public
+			reverse_proxy pantry:8081 {
 				header_up X-Pantry-Client-IP {client_ip}
 			}
 		}
 	}
 
 	# Everything else is the household site. Caddy does not show a password
-	# prompt. Stockbot asks for the same username and password when it sees
-	# X-Pantry-Entry, and the handles above stay open. header_up replaces a
-	# value supplied by the client, so the LAN port cannot be made to look
-	# like the public site by omitting the header on the way through Caddy.
+	# prompt. Every handle on this site proxies to the public listener.
+	# The published LAN port is a different listener and is not this proxy.
+	# header_up replaces a visitor address supplied by the client.
 	# POST /api/sentry-tunnel is answered before the household password so a
 	# login page can report a failure. It stays in this handle, which is what
 	# stamps the visitor address. Do not move it to a handle above.
@@ -138,9 +136,8 @@ http://{$PUBLIC_HOST} {
 			# until the stream ends, so the UI never updates live.
 			@events path /api/events
 			handle @events {
-				reverse_proxy pantry:8080 {
+				reverse_proxy pantry:8081 {
 					flush_interval -1
-					header_up X-Pantry-Entry public
 					header_up X-Pantry-Client-IP {client_ip}
 				}
 			}
@@ -155,16 +152,14 @@ http://{$PUBLIC_HOST} {
 			# the same way the rest of the app does.
 			@serviceworker path /sw.js
 			handle @serviceworker {
-				reverse_proxy pantry:8080 {
-					header_up X-Pantry-Entry public
+				reverse_proxy pantry:8081 {
 					header_up X-Pantry-Client-IP {client_ip}
 				}
 			}
 
 			handle {
 				encode gzip
-				reverse_proxy pantry:8080 {
-					header_up X-Pantry-Entry public
+				reverse_proxy pantry:8081 {
 					header_up X-Pantry-Client-IP {client_ip}
 				}
 			}

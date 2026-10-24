@@ -95,6 +95,32 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !hasExactPort(pantry.Volumes, "./auth:/etc/pantry/auth:ro") {
 		t.Fatalf("pantry must mount the household password directory, got %v", pantry.Volumes)
 	}
+	if !hasExactPort(pantry.Volumes, "./setup:/run/setup") {
+		t.Fatalf("pantry must mount the setup directory read-write, got %v", pantry.Volumes)
+	}
+	for _, vol := range pantry.Volumes {
+		if strings.Contains(vol, "/run/setup") && strings.HasSuffix(vol, ":ro") {
+			t.Fatalf("setup mount must be read-write, got %q", vol)
+		}
+	}
+	for _, port := range pantry.Ports {
+		if strings.Contains(port, "8081") {
+			t.Fatalf("pantry must not publish 8081, got %v", pantry.Ports)
+		}
+	}
+	appBaseExpr := pantry.Environment["APP_BASE_URL"]
+	if !strings.Contains(appBaseExpr, "${PUBLIC_HOST:+https://${PUBLIC_HOST}}") {
+		t.Fatalf("APP_BASE_URL = %q, want the PUBLIC_HOST fallback", appBaseExpr)
+	}
+	if got := expandCompose(t, appBaseExpr, nil); got != "" {
+		t.Fatalf("APP_BASE_URL with PUBLIC_HOST unset = %q, want empty", got)
+	}
+	if got := expandCompose(t, appBaseExpr, map[string]string{"PUBLIC_HOST": "stockbot.rhionin.com"}); got != "https://stockbot.rhionin.com" {
+		t.Fatalf("APP_BASE_URL from PUBLIC_HOST = %q", got)
+	}
+	if got := expandCompose(t, appBaseExpr, map[string]string{"APP_BASE_URL": "https://operator.example", "PUBLIC_HOST": "stockbot.rhionin.com"}); got != "https://operator.example" {
+		t.Fatalf("a set APP_BASE_URL expanded to %q", got)
+	}
 	if !hasExactPort(caddy.SecurityOpt, "no-new-privileges:true") {
 		t.Fatalf("caddy security_opt = %v", caddy.SecurityOpt)
 	}
@@ -108,14 +134,13 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"{$PUBLIC_HOST}",
 		"import Caddyfile.legacy",
 		"{$ACME_EMAIL}",
-		"X-Pantry-Entry public",
 		"X-Pantry-Client-IP {client_ip}",
 		"path /api/telemetry /api/telemetry/client",
 		"path /brand/logo.png /terms /privacy",
 		"path /api/events",
 		"Do not add other API paths to this matcher.",
 		"This is not an API exception.",
-		"reverse_proxy pantry:8080",
+		"reverse_proxy pantry:8081",
 		"flush_interval -1",
 		"route {",
 		"Strict-Transport-Security",
@@ -129,6 +154,12 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	if strings.Contains(text, "import auth.caddy") || strings.Contains(text, "basic_auth") {
 		t.Fatal("Caddyfile must not challenge the browser with basic auth")
+	}
+	if strings.Contains(text, "pantry:8080") || strings.Contains(text, "X-Pantry-Entry") {
+		t.Fatal("Caddyfile must proxy to the public listener and must not stamp an entry header")
+	}
+	if strings.Count(text, "reverse_proxy") != strings.Count(text, "reverse_proxy pantry:8081") {
+		t.Fatal("every Caddyfile reverse_proxy must target pantry:8081")
 	}
 	const householdSite = "# Everything else is the household site."
 	authAt := strings.Index(text, householdSite)
@@ -170,8 +201,11 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(deviceBlock, "max_size 64KB") {
 		t.Fatal("Caddyfile device handle must cap request bodies at 64KB")
 	}
-	if !strings.Contains(deviceBlock, "X-Pantry-Entry public") || !strings.Contains(deviceBlock, "X-Pantry-Client-IP {client_ip}") {
-		t.Fatal("Caddyfile device handle must use the public site proxy headers")
+	if !strings.Contains(deviceBlock, "X-Pantry-Client-IP {client_ip}") || !strings.Contains(deviceBlock, "reverse_proxy pantry:8081") {
+		t.Fatal("Caddyfile device handle must proxy to the public listener and pass the visitor address")
+	}
+	if strings.Contains(deviceBlock, "X-Pantry-Entry") {
+		t.Fatal("Caddyfile device handle must not stamp an entry header")
 	}
 	authedMatchers := pathMatchers(text[authAt:])
 	if strings.Join(authedMatchers, "\n") != "path /api/events\npath /sw.js" {
@@ -335,12 +369,19 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"admin off",
 		"trusted_proxies static 10.77.77.2/32",
 		"client_ip_headers Cf-Connecting-Ip",
-		"X-Pantry-Entry public",
+		"reverse_proxy pantry:8081",
+		"X-Pantry-Client-IP {client_ip}",
 		"(security_headers)",
 	} {
 		if !strings.Contains(tunnelText, want) {
 			t.Fatalf("Caddyfile.tunnel missing %q", want)
 		}
+	}
+	if strings.Contains(tunnelText, "pantry:8080") || strings.Contains(tunnelText, "X-Pantry-Entry") {
+		t.Fatal("Caddyfile.tunnel must proxy to the public listener and must not stamp an entry header")
+	}
+	if strings.Count(tunnelText, "reverse_proxy") != strings.Count(tunnelText, "reverse_proxy pantry:8081") {
+		t.Fatal("every Caddyfile.tunnel reverse_proxy must target pantry:8081")
 	}
 	if strings.Contains(tunnelText, "{$ACME_EMAIL}") || strings.Contains(tunnelText, "email ") {
 		t.Fatal("tunnel Caddyfile must not request a certificate")

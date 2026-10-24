@@ -565,6 +565,9 @@ EOF
 
   cat > "$bin/chown" << 'EOF'
 #!/usr/bin/env bash
+if [[ -n "${CHOWN_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$CHOWN_LOG"
+fi
 exit 0
 EOF
 
@@ -606,6 +609,7 @@ run_update() {
   : > "$work/docker.log"
   : > "$work/curl.log"
   : > "$work/sequence.log"
+  : > "$work/chown.log"
 
   local -a extra_env=()
   if [[ -n "${STUB_ROLLBACK_HEALTH_BODY:-}" ]]; then
@@ -672,6 +676,9 @@ run_update() {
     STUB_ABSENT_REFS="${STUB_ABSENT_REFS:-}" \
     PANTRY_DIR="$pantry" \
     PANTRY_SETUP_SKIP_ROOT=1 \
+    PANTRY_SETUP_GROUP='' \
+    SUDO_USER='' \
+    CHOWN_LOG="$work/chown.log" \
     PANTRY_TEST_PROJECT_PREFIX="${PANTRY_TEST_PROJECT_PREFIX:-}" \
     PANTRY_UPDATE_HEALTH_TIMEOUT="${PANTRY_UPDATE_HEALTH_TIMEOUT:-0}" \
     PANTRY_UPDATE_HEALTH_INTERVAL="${PANTRY_UPDATE_HEALTH_INTERVAL:-1}" \
@@ -691,6 +698,7 @@ run_update() {
   LAST_DOCKER=$(cat "$work/docker.log")
   LAST_CURL=$(cat "$work/curl.log")
   LAST_SEQUENCE=$(cat "$work/sequence.log")
+  LAST_CHOWN=$(cat "$work/chown.log")
   rm -rf "$work"
 }
 
@@ -735,6 +743,28 @@ env_unchanged() {
   cmp -s "$pantry/.env" "$pantry/.env.orig" || fail "update rewrote .env"
 }
 
+# expected_setup_group follows setup_dir_group. run_update clears
+# PANTRY_SETUP_GROUP and SUDO_USER. The decoy namespace maps the runner
+# to root, so the .env group is root and the fallback applies.
+expected_setup_group() {
+  local pantry="$1" group gid path
+  for path in "$pantry/.env" "$pantry"; do
+    if [[ -e "$path" ]]; then
+      gid=$(stat -c '%g' "$path" 2>/dev/null || true)
+      group=$(stat -c '%G' "$path" 2>/dev/null || true)
+      if [[ -n "$group" && "$group" != root && "$gid" != 0 ]]; then
+        printf '%s' "$group"
+        return 0
+      fi
+    fi
+  done
+  if getent group rhionin >/dev/null 2>&1; then
+    printf '%s' rhionin
+    return 0
+  fi
+  printf '%s' 65532
+}
+
 # normalize_update_docker strips fixture paths from a docker log so two
 # runs can be compared. The pre-deploy backup copies config secrets into
 # a fresh directory; that name is not part of the compose argv.
@@ -776,6 +806,10 @@ lack "$LAST_CURL" "stockbot.rhionin.com" "healthy run does not use the public ho
 lack "$LAST_DOCKER" "rm -f pantry-caddy" "a fixture pantry dir does not remove pantry-caddy"
 lack "$LAST_DOCKER" "rm -f pantry-cloudflared" "a fixture pantry dir does not remove pantry-cloudflared"
 env_unchanged "$healthy"
+healthy_setup_mode=$(stat -c '%a' "$healthy/setup")
+[[ "$healthy_setup_mode" == "2750" ]] || fail "LAN update setup dir mode is $healthy_setup_mode, want 2750"
+have "$LAST_CHOWN" "65532:$(expected_setup_group "$healthy") $healthy/setup" "LAN update chowns the setup directory to uid 65532 and the operator group"
+grep -q '^APP_BASE_URL=' "$healthy/.env" && fail "LAN update must leave APP_BASE_URL unset"
 [[ ! -e "$healthy/.update-rejected-digest" ]] || fail "healthy run recorded a rejected digest"
 record_line=$(line_of "$LAST_DOCKER" "sha256:runpantry")
 pull_line=$(line_of "$LAST_DOCKER" " pull")
@@ -813,6 +847,29 @@ lack "$LAST_OUT" "PANTRY UPDATE FAILED" "unchanged pull does not roll back"
 env_unchanged "$noop"
 [[ ! -e "$noop/.update-rejected-digest" ]] || fail "unchanged pull recorded a rejected digest"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# An origin the operator already set is left alone, including its mode.
+kept_origin=$(mktemp -d)
+prepare_pantry "$kept_origin"
+cat > "$kept_origin/.env" << 'EOF'
+HOST_PORT=8080
+PUBLIC_HOST=stockbot.example
+APP_BASE_URL=https://operator.example
+PANTRY_IMAGE_TAG=latest
+VAPID_PUBLIC_KEY=test-public
+VAPID_PRIVATE_KEY=test-private
+VAPID_SUBJECT=mailto:pantry@localhost
+EOF
+cp "$kept_origin/.env" "$kept_origin/.env.orig"
+chmod 600 "$kept_origin/.env"
+write_images "$kept_origin/images.tsv" \
+  sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+run_update "$kept_origin"
+[[ "$LAST_RC" -eq 0 ]] || fail "custom origin update exited $LAST_RC: $LAST_OUT"
+grep -q '^APP_BASE_URL=https://operator.example$' "$kept_origin/.env" || fail "update replaced a custom APP_BASE_URL"
+[[ $(stat -c '%a' "$kept_origin/.env") == "600" ]] || fail "custom origin update changed .env mode from 0600"
+env_unchanged "$kept_origin"
 
 # Health is ok but /api/build is a different commit: roll back, exit non-zero,
 # and do not retry that digest on the next run.
@@ -1089,6 +1146,7 @@ VAPID_PRIVATE_KEY=test-private
 VAPID_SUBJECT=mailto:pantry@localhost
 EOF
 cp "$proxied/.env" "$proxied/.env.orig"
+chmod 600 "$proxied/.env"
 write_images "$proxied/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:newcaddy caddy@sha256:newcaddy
@@ -1098,7 +1156,13 @@ run_update "$proxied"
 [[ "$LAST_RC" -eq 0 ]] || fail "caddy probe should exit 0: $LAST_OUT"
 have "$LAST_CURL" "--resolve stockbot.example:443:127.0.0.1" "caddy probe uses --resolve"
 have "$LAST_CURL" "https://stockbot.example/api/build" "caddy probe requests /api/build"
-env_unchanged "$proxied"
+grep -q '^APP_BASE_URL=https://stockbot.example$' "$proxied/.env" || fail "update did not set APP_BASE_URL from PUBLIC_HOST"
+[[ $(stat -c '%a' "$proxied/.env") == "600" ]] || fail "update changed .env mode from 0600"
+proxied_setup_mode=$(stat -c '%a' "$proxied/setup")
+[[ "$proxied_setup_mode" == "2750" ]] || fail "public update setup dir mode is $proxied_setup_mode, want 2750"
+have "$LAST_CHOWN" "65532:$(expected_setup_group "$proxied") $proxied/setup" "public update chowns the setup directory"
+grep -v '^APP_BASE_URL=' "$proxied/.env" > "$proxied/.env.without"
+cmp -s "$proxied/.env.without" "$proxied/.env.orig" || fail "update rewrote .env beyond APP_BASE_URL"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # Not enough free space skips the deploy before any container is recreated.
@@ -1476,7 +1540,9 @@ have "$LAST_CURL" "--resolve stockbot.example:80:10.77.77.3" "tunnel probe resol
 have "$LAST_CURL" "http://stockbot.example/api/build" "tunnel probe requests the site Caddyfile.tunnel serves"
 lack "$LAST_CURL" "http://10.77.77.3/api/build" "tunnel probe does not send the pinned address as Host"
 have "$LAST_OUT" "reachable before recreate" "tunnel reachability is decided on the old stack"
-env_unchanged "$tunnel_ok"
+grep -q '^APP_BASE_URL=https://stockbot.example$' "$tunnel_ok/.env" || fail "tunnel update did not set APP_BASE_URL from PUBLIC_HOST"
+grep -v '^APP_BASE_URL=' "$tunnel_ok/.env" > "$tunnel_ok/.env.without"
+cmp -s "$tunnel_ok/.env.without" "$tunnel_ok/.env.orig" || fail "tunnel update rewrote .env beyond APP_BASE_URL"
 
 tunnel_skip=$(mktemp -d)
 prepare_pantry "$tunnel_skip"
