@@ -29,6 +29,7 @@ type Service struct {
 	setupHealth string
 
 	hints         HintBus
+	live          liveKicker
 	operatorPush  OperatorPush
 	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
 }
@@ -62,6 +63,32 @@ func (s *Service) SetClock(now func() time.Time) {
 }
 
 func (s *Service) Streams() *Streams { return s.streams }
+
+// DB is the pantry database. Changes-since reads versions from it.
+func (s *Service) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
+// liveKicker closes SSE streams. The events hub implements it.
+type liveKicker interface {
+	Kick(householdID, userID string)
+}
+
+// SetLive closes matching event streams when a member or session ends.
+func (s *Service) SetLive(k liveKicker) {
+	if s != nil {
+		s.live = k
+	}
+}
+
+func (s *Service) kickLive(householdID, userID string) {
+	if s != nil && s.live != nil {
+		s.live.Kick(householdID, userID)
+	}
+}
 
 func (s *Service) Limiter() *Limiter { return s.limits }
 

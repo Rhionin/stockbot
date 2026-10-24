@@ -11,7 +11,10 @@ import (
 const streamCap = 10
 
 type streamCancel struct {
-	cancel context.CancelFunc
+	cancel      context.CancelFunc
+	householdID string
+	userID      string
+	kind        string
 }
 
 // Streams cancels GET /api/events when a person is signed out, removed,
@@ -27,6 +30,12 @@ func NewStreams() *Streams {
 
 // Bind attaches ctx to key. The eleventh live stream for that key is refused.
 func (s *Streams) Bind(ctx context.Context, key string) (context.Context, error) {
+	return s.BindLive(ctx, key, "", "", "")
+}
+
+// BindLive attaches ctx to key and records who the stream belongs to.
+// KickHousehold uses that record. The eleventh live stream for key is refused.
+func (s *Streams) BindLive(ctx context.Context, key, householdID, userID, kind string) (context.Context, error) {
 	if s == nil || key == "" {
 		return ctx, nil
 	}
@@ -40,7 +49,7 @@ func (s *Streams) Bind(ctx context.Context, key string) (context.Context, error)
 		return nil, rateLimited(time.Second)
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	entry := &streamCancel{cancel: cancel}
+	entry := &streamCancel{cancel: cancel, householdID: householdID, userID: userID, kind: kind}
 	if live == nil {
 		live = map[*streamCancel]struct{}{}
 		s.byKey[key] = live
@@ -56,6 +65,37 @@ func (s *Streams) Bind(ctx context.Context, key string) (context.Context, error)
 		s.mu.Unlock()
 	}()
 	return ctx, nil
+}
+
+// KickHousehold closes streams for one member of a household.
+// An empty household closes that user's streams in every household.
+// An empty user closes household-password streams in the household.
+func (s *Streams) KickHousehold(householdID, userID string) {
+	if s == nil || (householdID == "" && userID == "") {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, live := range s.byKey {
+		for entry := range live {
+			if streamMatch(entry, householdID, userID) {
+				entry.cancel()
+			}
+		}
+	}
+}
+
+func streamMatch(entry *streamCancel, householdID, userID string) bool {
+	if entry == nil {
+		return false
+	}
+	if userID != "" && householdID != "" {
+		return entry.userID == userID && entry.householdID == householdID
+	}
+	if userID != "" {
+		return entry.userID == userID
+	}
+	return entry.householdID == householdID && entry.kind == "household_password"
 }
 
 // Kick ends every stream registered under key.

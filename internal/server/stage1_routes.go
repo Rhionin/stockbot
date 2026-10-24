@@ -7,8 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"database/sql"
+
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
 
@@ -19,6 +22,13 @@ func WithStage1(svc *auth.Service, site app.RuntimeConfig) Option {
 		c.stage1svc = svc
 		c.site = site
 	}
+}
+
+func (s *stage1) db() *sql.DB {
+	if s == nil || s.svc == nil {
+		return nil
+	}
+	return s.svc.DB()
 }
 
 func registerStage1(apiMux *http.ServeMux, cfg *config) {
@@ -959,9 +969,31 @@ func (s *stage1) serveListDevices(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []auth.DeviceView{}
 	}
+	since := strings.TrimSpace(r.URL.Query().Get("since"))
+	if since == "" {
+		writeJSON(w, http.StatusOK, struct {
+			Devices []auth.DeviceView `json:"devices"`
+		}{Devices: list})
+		return
+	}
+	out, err := changes.Compare(r.Context(), s.db(), p.HouseholdID, changes.ScopeDevices, since)
+	if err != nil {
+		writeStage1(w, err)
+		return
+	}
+	if !out.Changed {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, struct {
+			Cursor  string `json:"cursor"`
+			Changed bool   `json:"changed"`
+		}{Cursor: out.Cursor, Changed: false})
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
+		Cursor  string            `json:"cursor"`
+		Changed bool              `json:"changed"`
 		Devices []auth.DeviceView `json:"devices"`
-	}{Devices: list})
+	}{Cursor: out.Cursor, Changed: true, Devices: list})
 }
 
 func (s *stage1) serveRenameDevice(w http.ResponseWriter, r *http.Request) {

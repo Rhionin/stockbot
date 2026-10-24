@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
+	"database/sql"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // scannerIdleTimeout is how long scan-in stays selected with no product-scan
@@ -171,10 +176,12 @@ type ScannerConfig struct {
 // browser switch and a headless control barcode reach subscribers the same way.
 type ScannerModeHandler struct {
 	Mode *scannerMode
+	Book *modeBook
 }
 
 type scannerModeRequest struct {
-	Mode scan.ScanDirection `json:"mode"`
+	Mode     scan.ScanDirection `json:"mode"`
+	DeviceID string             `json:"deviceId"`
 }
 
 type scannerModeResponse struct {
@@ -187,10 +194,44 @@ func (h *ScannerModeHandler) Handle(req Request[scannerModeRequest, struct{}]) (
 	default:
 		return scannerModeResponse{}, BadRequest("mode must be stock_in or stock_out")
 	}
-
-	h.Mode.Set(req.Body.Mode)
-
+	device := req.Body.DeviceID
+	if device == "" && req.RawRequest != nil {
+		device = req.RawRequest.URL.Query().Get("deviceId")
+	}
+	mode := h.pick(req.Context, device)
+	if mode == nil {
+		return scannerModeResponse{}, InternalError(tenant.ErrMissingHousehold)
+	}
+	mode.Set(req.Body.Mode)
 	return scannerModeResponse{Mode: req.Body.Mode}, nil
+}
+
+func (h *ScannerModeHandler) Get(req Request[struct{}, struct{}]) (scannerModeResponse, error) {
+	device := ""
+	if req.RawRequest != nil {
+		device = req.RawRequest.URL.Query().Get("deviceId")
+	}
+	mode := h.pick(req.Context, device)
+	if mode == nil {
+		return scannerModeResponse{}, InternalError(tenant.ErrMissingHousehold)
+	}
+	return scannerModeResponse{Mode: mode.Get()}, nil
+}
+
+func (h *ScannerModeHandler) pick(ctx context.Context, device string) *scannerMode {
+	if h != nil && h.Book != nil {
+		household := ""
+		if scope, err := requestScope(ctx); err == nil {
+			household = scope.HouseholdID()
+		}
+		if slot := h.Book.For(ctx, household, device); slot != nil {
+			return slot
+		}
+	}
+	if h != nil {
+		return h.Mode
+	}
+	return nil
 }
 
 // ScannerConfigHandler implements GET /api/scanner/config, exposing the
@@ -200,6 +241,7 @@ func (h *ScannerModeHandler) Handle(req Request[scannerModeRequest, struct{}]) (
 type ScannerConfigHandler struct {
 	Config ScannerConfig
 	Mode   *scannerMode
+	Book   *modeBook
 	// Status reports the headless capture path. Nil means no listener is
 	// configured, which the response reports as disconnected.
 	Status func() scanlistener.Status
@@ -214,7 +256,15 @@ type scannerConfigResponse struct {
 
 func (h *ScannerConfigHandler) Handle(req Request[struct{}, struct{}]) (scannerConfigResponse, error) {
 	currentMode := scan.StockIn
-	if h.Mode != nil {
+	if h.Book != nil {
+		household := ""
+		if scope, err := requestScope(req.Context); err == nil {
+			household = scope.HouseholdID()
+		}
+		if slot := h.Book.For(req.Context, household, ""); slot != nil {
+			currentMode = slot.Get()
+		}
+	} else if h.Mode != nil {
 		currentMode = h.Mode.Get()
 	}
 	connected := false
@@ -227,4 +277,76 @@ func (h *ScannerConfigHandler) Handle(req Request[struct{}, struct{}]) (scannerC
 		CurrentMode:     currentMode,
 		Connected:       connected,
 	}, nil
+}
+
+// modeBook keeps one scanner direction per household and device.
+// Household 1's direct scanner is the shared value the headless listener uses.
+type modeBook struct {
+	shared  *scannerMode
+	primary string
+	db      *sql.DB
+	events  *events.Broadcaster
+	mu      sync.Mutex
+	slots   map[string]*scannerMode
+}
+
+func newModeBook(shared *scannerMode, primary string, db *sql.DB, broadcaster *events.Broadcaster) *modeBook {
+	return &modeBook{
+		shared:  shared,
+		primary: primary,
+		db:      db,
+		events:  broadcaster,
+		slots:   map[string]*scannerMode{},
+	}
+}
+
+func (b *modeBook) For(ctx context.Context, household, device string) *scannerMode {
+	if b == nil || b.shared == nil {
+		return nil
+	}
+	household = strings.TrimSpace(household)
+	device = strings.TrimSpace(device)
+	if household == "" {
+		household = b.primary
+	}
+	direct := b.directID(ctx, household)
+	if device == "" || device == "default" {
+		if direct != "" {
+			device = direct
+		} else {
+			device = "default"
+		}
+	}
+	if household == b.primary && (device == "default" || device == direct) {
+		return b.shared
+	}
+	key := household + "\n" + device
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if slot := b.slots[key]; slot != nil {
+		return slot
+	}
+	house := household
+	slot := newScannerMode(func(d scan.ScanDirection) {
+		if b.events != nil {
+			b.events.PublishScannerModeFor(house, d)
+		}
+	})
+	b.slots[key] = slot
+	return slot
+}
+
+func (b *modeBook) directID(ctx context.Context, household string) string {
+	if b == nil || b.db == nil || household == "" {
+		return ""
+	}
+	var id string
+	err := b.db.QueryRowContext(ctx, `
+		SELECT id FROM devices
+		WHERE household_id = ? AND kind = 'direct' AND revoked_at IS NULL
+		ORDER BY created_at LIMIT 1`, household).Scan(&id)
+	if err != nil {
+		return ""
+	}
+	return id
 }

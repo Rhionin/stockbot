@@ -120,7 +120,7 @@ func TestResubscribeReplacesThatDeviceAndKeepsARowWithNoOrigin(t *testing.T) {
 	if _, ok := endpoints[older.Endpoint]; ok {
 		t.Fatalf("older endpoint kept: %#v", got)
 	}
-	if endpoints[next.Endpoint].Origin != "stockbot.rhionin.com" || endpoints[next.Endpoint].DeviceID != "phone-a" || endpoints[next.Endpoint].UserID != scope.HouseholdID() {
+	if endpoints[next.Endpoint].Origin != "stockbot.rhionin.com" || endpoints[next.Endpoint].DeviceID != "phone-a" || endpoints[next.Endpoint].UserID != "" {
 		t.Fatalf("new row = %#v", endpoints[next.Endpoint])
 	}
 	for _, keep := range []string{otherDevice.Endpoint, live.Endpoint} {
@@ -153,7 +153,7 @@ func TestResaveStampsOriginOnTheLiveRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Endpoint != live.Endpoint || got[0].Origin != "stockbot.rhionin.com" || got[0].Auth != "auth-rotated" || got[0].UserID != scope.HouseholdID() || got[0].DeviceID != "phone-a" {
+	if len(got) != 1 || got[0].Endpoint != live.Endpoint || got[0].Origin != "stockbot.rhionin.com" || got[0].Auth != "auth-rotated" || got[0].UserID != "" || got[0].DeviceID != "phone-a" {
 		t.Fatalf("live row = %#v", got)
 	}
 }
@@ -177,7 +177,7 @@ func TestKeyRefreshKeepsOriginUserAndDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Auth != "auth-rotated" || got[0].Origin != "stockbot.rhionin.com" || got[0].UserID != scope.HouseholdID() || got[0].DeviceID != "phone-a" {
+	if len(got) != 1 || got[0].Auth != "auth-rotated" || got[0].Origin != "stockbot.rhionin.com" || got[0].UserID != "" || got[0].DeviceID != "phone-a" {
 		t.Fatalf("stored = %#v", got)
 	}
 }

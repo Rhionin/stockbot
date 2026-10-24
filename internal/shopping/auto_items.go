@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -103,7 +104,7 @@ func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines 
 	if err := deleteUnplannedAuto(ctx, scope, tx, keep); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitList(ctx, tx, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not save shopping list updates: %w", err)
 	}
 	return nil
@@ -485,9 +486,13 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 			return err
 		}
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
+	s.noteList(scope.HouseholdID())
 	return nil
 }
 

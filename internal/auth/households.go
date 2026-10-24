@@ -229,7 +229,7 @@ func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, household
 		return HouseholdSettings{}, AsError(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM push_subscriptions WHERE household_id = ? AND user_id = ''`, householdID); err != nil {
+		DELETE FROM push_subscriptions WHERE household_id = ? AND (user_id IS NULL OR user_id = '')`, householdID); err != nil {
 		return HouseholdSettings{}, AsError(err)
 	}
 	if err := writeAudit(ctx, tx, householdID, "account", userID, "household_password_retire", "household", householdID, stamp(now)); err != nil {
@@ -239,6 +239,8 @@ func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, household
 		return HouseholdSettings{}, AsError(err)
 	}
 	s.streams.Kick(HouseholdPasswordStreamKey())
+	s.streams.KickHousehold(householdID, "")
+	s.kickLive(householdID, "")
 	return s.Settings(ctx, householdID)
 }
 
@@ -427,7 +429,8 @@ func (s *Service) RemoveMember(ctx context.Context, actor, householdID, target s
 	if err := tx.Commit(); err != nil {
 		return AsError(err)
 	}
-	s.streams.Kick(UserStreamKey(target))
+	s.streams.KickHousehold(householdID, target)
+	s.kickLive(householdID, target)
 	return nil
 }
 
@@ -490,6 +493,7 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, confirmation string
 		return AsError(err)
 	}
 	s.streams.Kick(UserStreamKey(userID))
+	s.kickLive("", userID)
 	return nil
 }
 

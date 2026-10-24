@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
@@ -110,7 +111,12 @@ func completeOpening(ctx context.Context, scope tenant.Scope, db *sql.DB, now ti
 	}
 	stamp := now.UTC().Format(time.RFC3339)
 	household := scope.HouseholdID()
-	if _, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Phase{}, fmt.Errorf("could not save the supply start date: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO household_settings (household_id, key, value)
 		SELECT ?, ?, ?
 		WHERE NOT EXISTS (
@@ -118,6 +124,12 @@ func completeOpening(ctx context.Context, scope tenant.Scope, db *sql.DB, now ti
 		)`,
 		household, keyStarted, stamp, household, keyStarted,
 	); err != nil {
+		return Phase{}, fmt.Errorf("could not save the supply start date: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, household, changes.ScopeStock); err != nil {
+		return Phase{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Phase{}, fmt.Errorf("could not save the supply start date: %w", err)
 	}
 	return readPhase(ctx, scope, db)
@@ -145,6 +157,9 @@ func writeMonths(ctx context.Context, scope tenant.Scope, db *sql.DB, months Mon
 			return fmt.Errorf("could not save the supply length: %w", err)
 		}
 	}
+	if err := changes.Bump(ctx, tx, household, changes.ScopeStock); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not save the supply length: %w", err)
 	}
@@ -157,7 +172,18 @@ func writeOverride(ctx context.Context, scope tenant.Scope, db *sql.DB, id Produ
 	}
 	household := scope.HouseholdID()
 	if o.kind == overrideInherit {
-		if _, err := db.ExecContext(ctx, `DELETE FROM supply_overrides WHERE household_id = ? AND product_id = ?`, household, string(id)); err != nil {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("could not clear the supply override: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM supply_overrides WHERE household_id = ? AND product_id = ?`, household, string(id)); err != nil {
+			return fmt.Errorf("could not clear the supply override: %w", err)
+		}
+		if err := changes.Bump(ctx, tx, household, changes.ScopeStock); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("could not clear the supply override: %w", err)
 		}
 		return nil
@@ -169,15 +195,25 @@ func writeOverride(ctx context.Context, scope tenant.Scope, db *sql.DB, id Produ
 	if units, ok := o.Quantity(); ok {
 		qty = int(units)
 	}
-	_, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not save the supply override: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO supply_overrides (household_id, product_id, window_months, quantity) VALUES (?, ?, ?, ?)
 		ON CONFLICT(household_id, product_id) DO UPDATE SET
 			window_months = excluded.window_months,
 			quantity = excluded.quantity
 		WHERE supply_overrides.household_id = excluded.household_id`,
 		household, string(id), window, qty,
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("could not save the supply override: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, household, changes.ScopeStock); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not save the supply override: %w", err)
 	}
 	return nil
@@ -237,6 +273,9 @@ func wipeHousehold(ctx context.Context, scope tenant.Scope, db *sql.DB) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM household_settings WHERE household_id = ? AND key = ?`, household, keyStarted); err != nil {
 		return fmt.Errorf("could not wipe inventory: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, household, changes.ScopeStock, changes.ScopeList); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not wipe inventory: %w", err)

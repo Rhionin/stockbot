@@ -21,7 +21,7 @@ func TestPublish_MarshalErrorNotifiesObserver(t *testing.T) {
 	broadcaster.SetObserver(obs)
 
 	// A channel cannot be encoded as JSON, so publish fails before any send.
-	broadcaster.publish("scan", make(chan int), time.Time{})
+	broadcaster.publish("scan", make(chan int), time.Time{}, "")
 
 	if obs.failed != "scan" {
 		t.Fatalf("marshal failure event = %q, want scan", obs.failed)

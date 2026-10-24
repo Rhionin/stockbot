@@ -647,6 +647,7 @@ func (s *Service) ResetPassword(ctx context.Context, code, password, kind string
 		return SessionView{}, AsError(err)
 	}
 	s.streams.Kick(UserStreamKey(userID))
+	s.kickLive("", userID)
 	view, err := s.accountView(ctx, s.db, userID, active)
 	if err != nil {
 		return SessionView{}, err

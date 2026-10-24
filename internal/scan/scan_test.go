@@ -1093,11 +1093,11 @@ type fakeBroadcaster struct {
 	inventoryEvents []inventory.InventoryItem
 }
 
-func (f *fakeBroadcaster) PublishScanEvent(entry scan.ScanEntry) {
+func (f *fakeBroadcaster) PublishScanEvent(householdID string, entry scan.ScanEntry) {
 	f.scanEvents = append(f.scanEvents, entry)
 }
 
-func (f *fakeBroadcaster) PublishInventoryEvent(item inventory.InventoryItem) {
+func (f *fakeBroadcaster) PublishInventoryEvent(householdID string, item inventory.InventoryItem) {
 	f.inventoryEvents = append(f.inventoryEvents, item)
 }
 
@@ -1260,8 +1260,8 @@ type cancelAfterPublish struct {
 	cancel context.CancelFunc
 }
 
-func (c *cancelAfterPublish) PublishScanEvent(entry scan.ScanEntry) {
-	c.fakeBroadcaster.PublishScanEvent(entry)
+func (c *cancelAfterPublish) PublishScanEvent(householdID string, entry scan.ScanEntry) {
+	c.fakeBroadcaster.PublishScanEvent(householdID, entry)
 	c.cancel()
 }
 

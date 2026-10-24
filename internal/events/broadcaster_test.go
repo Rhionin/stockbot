@@ -54,7 +54,7 @@ func TestSubscribe_PublishScanEvent_DeliversOneMessage(t *testing.T) {
 	defer unsubscribe()
 
 	entry := scan.ScanEntry{ID: "scan-1", Barcode: "000000000001"}
-	broadcaster.PublishScanEvent(entry)
+	broadcaster.PublishScanEvent("", entry)
 
 	msg := recvMessage(t, ch)
 	if msg.EventType != "scan" {
@@ -76,7 +76,7 @@ func TestSubscribe_PublishInventoryEvent_DeliversOneMessage(t *testing.T) {
 	defer unsubscribe()
 
 	item := inventory.InventoryItem{Item: inventory.Item{ID: "item-1"}, InstanceCount: 2}
-	broadcaster.PublishInventoryEvent(item)
+	broadcaster.PublishInventoryEvent("", item)
 
 	msg := recvMessage(t, ch)
 	if msg.EventType != "inventory" {
@@ -100,7 +100,7 @@ func TestPublish_DeliversToTwoIndependentSubscribers(t *testing.T) {
 	defer unsubB()
 
 	entry := scan.ScanEntry{ID: "scan-2"}
-	broadcaster.PublishScanEvent(entry)
+	broadcaster.PublishScanEvent("", entry)
 
 	for _, ch := range []<-chan events.Message{chA, chB} {
 		msg := recvMessage(t, ch)
@@ -123,7 +123,7 @@ func TestUnsubscribe_StopsDeliveryToThatSubscriberOnly(t *testing.T) {
 	unsubA()
 
 	entry := scan.ScanEntry{ID: "scan-3"}
-	broadcaster.PublishScanEvent(entry)
+	broadcaster.PublishScanEvent("", entry)
 
 	assertNoMessage(t, chA)
 	recvMessage(t, chB)
@@ -132,7 +132,7 @@ func TestUnsubscribe_StopsDeliveryToThatSubscriberOnly(t *testing.T) {
 func TestPublishBeforeSubscribe_NotObservedByLaterSubscriber(t *testing.T) {
 	broadcaster := events.NewBroadcaster()
 
-	broadcaster.PublishScanEvent(scan.ScanEntry{ID: "scan-4"})
+	broadcaster.PublishScanEvent("", scan.ScanEntry{ID: "scan-4"})
 
 	ch, unsubscribe := broadcaster.Subscribe()
 	defer unsubscribe()
@@ -150,14 +150,14 @@ func TestPublish_DropsSubscriberWithFullBuffer(t *testing.T) {
 	// Fill slow's buffer to capacity without draining it, while draining
 	// keeps reading so it never fills.
 	for i := 0; i < subscriberBuffer; i++ {
-		broadcaster.PublishScanEvent(scan.ScanEntry{ID: fmt.Sprintf("scan-%d", i)})
+		broadcaster.PublishScanEvent("", scan.ScanEntry{ID: fmt.Sprintf("scan-%d", i)})
 		recvMessage(t, draining)
 	}
 
 	// slow's buffer is now full, so this publish overflows it: the
 	// Broadcaster drops slow (closing its channel) but still delivers to draining.
 	overflow := scan.ScanEntry{ID: "scan-overflow"}
-	broadcaster.PublishScanEvent(overflow)
+	broadcaster.PublishScanEvent("", overflow)
 
 	// slow's channel is closed, but its buffer still holds the
 	// subscriberBuffer messages queued before the overflow; drain those

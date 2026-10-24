@@ -147,7 +147,7 @@ func (h *HistoryHandler) publish(ctx context.Context, scope tenant.Scope, itemID
 	if err != nil || item == nil {
 		return
 	}
-	h.Events.PublishInventoryEvent(*item)
+	h.Events.PublishInventoryEvent(scope.HouseholdID(), *item)
 }
 
 func historyHTTP(err error) error {

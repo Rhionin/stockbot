@@ -754,7 +754,7 @@ type fakeBroadcaster struct {
 	published []inventory.InventoryItem
 }
 
-func (f *fakeBroadcaster) PublishInventoryEvent(item inventory.InventoryItem) {
+func (f *fakeBroadcaster) PublishInventoryEvent(householdID string, item inventory.InventoryItem) {
 	f.published = append(f.published, item)
 }
 
