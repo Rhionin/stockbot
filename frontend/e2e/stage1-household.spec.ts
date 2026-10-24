@@ -1,9 +1,12 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { formatPairingCode } from '../../shared/contract'
 
 const PAIRING = formatPairingCode('23456789')
-const shots = '/cursor/stores/self/383'
+// GitHub Actions has no writable /cursor/stores/self. STAGE1_SCREENSHOT_DIR
+// overrides the directory when a run should keep the images somewhere else.
+const shots = process.env.STAGE1_SCREENSHOT_DIR
+  || (existsSync('/cursor/stores/self') ? '/cursor/stores/self/383' : '')
 
 const olderWarning = (count: number) =>
   `${count} devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.`
@@ -204,6 +207,7 @@ const settleDialog = async (page: Page) => {
 }
 
 const shot = async (page: Page, name: string, width: number, fullPage = true) => {
+  if (!shots) return
   if ((await page.getByRole('dialog').count()) > 0) await settleDialog(page)
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.screenshot({ path: `${shots}/${name}-${width}.png`, fullPage })
@@ -212,7 +216,7 @@ const shot = async (page: Page, name: string, width: number, fullPage = true) =>
 for (const width of [390, 1280]) {
 test.describe('stage-1 household screens', () => {
   test.beforeAll(() => {
-    mkdirSync(shots, { recursive: true })
+    if (shots) mkdirSync(shots, { recursive: true })
   })
 
   test(`sign-in, changeover, households, devices, and export at ${width}`, async ({ page }) => {
@@ -294,7 +298,8 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByText(/No printer\? Plug a USB keyboard/)).toBeVisible()
     await shot(page, 'pairing', width, false)
     await page.emulateMedia({ media: 'print' })
-    await page.locator('.pairing-sheet').screenshot({ path: `${shots}/pairing-print-${width}.png` })
+    await expect(page.locator('.pairing-sheet')).toBeVisible()
+    if (shots) await page.locator('.pairing-sheet').screenshot({ path: `${shots}/pairing-print-${width}.png` })
     await page.emulateMedia({ media: 'screen' })
     await page.locator('.pairing-sheet').getByRole('button', { name: 'Close' }).click()
 
