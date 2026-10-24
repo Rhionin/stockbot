@@ -40,9 +40,11 @@ class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onerror: ((event: Event) => void) | null = null;
   closed = false;
+  readonly url: string;
   private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
 
-  constructor(readonly url: string) {
+  constructor(url: string) {
+    this.url = url;
     FakeEventSource.instances.push(this);
   }
 

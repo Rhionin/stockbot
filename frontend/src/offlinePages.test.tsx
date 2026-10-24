@@ -159,7 +159,7 @@ describe('offline sentence appears once on each page', () => {
       run: async () => {
         vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
         shell(
-          <HouseholdSessionContext.Provider value={{ required: false, logout: () => undefined }}>
+          <HouseholdSessionContext.Provider value={{ required: false, logout: () => undefined, auth: null, replaceAuth: () => undefined }}>
             <AppMenu onCredentialsChanged={() => undefined} />
           </HouseholdSessionContext.Provider>,
         );
