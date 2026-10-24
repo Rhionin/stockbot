@@ -14,6 +14,12 @@ type presence struct {
 	dbAt   map[string]time.Time
 	wasOn  map[string]bool
 	queued map[string]int
+	house  map[string]string
+}
+
+type contact struct {
+	write      bool
+	cameOnline bool
 }
 
 func newPresence() *presence {
@@ -22,24 +28,32 @@ func newPresence() *presence {
 		dbAt:   map[string]time.Time{},
 		wasOn:  map[string]bool{},
 		queued: map[string]int{},
+		house:  map[string]string{},
 	}
 }
 
 func (p *presence) touch(id string, now time.Time) (write bool) {
+	return p.note(id, "", now).write
+}
+
+func (p *presence) note(id, household string, now time.Time) contact {
 	if p == nil || id == "" {
-		return false
+		return contact{}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	prev := p.wasOn[id]
 	p.seen[id] = now
 	p.wasOn[id] = true
-	last := p.dbAt[id]
-	if !prev || last.IsZero() || now.Sub(last) >= presenceSave {
-		p.dbAt[id] = now
-		return true
+	if household != "" {
+		p.house[id] = household
 	}
-	return false
+	last := p.dbAt[id]
+	write := !prev || last.IsZero() || now.Sub(last) >= presenceSave
+	if write {
+		p.dbAt[id] = now
+	}
+	return contact{write: write, cameOnline: !prev}
 }
 
 func (p *presence) markOffline(id string) {
@@ -80,6 +94,37 @@ func (p *presence) queue(id string) (int, bool) {
 	return n, ok
 }
 
+func (p *presence) household(id string) string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.house[id]
+}
+
+// dueOffline flips hubs whose last contact is at least window old.
+func (p *presence) dueOffline(now time.Time, window time.Duration) []string {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for id, on := range p.wasOn {
+		if !on {
+			continue
+		}
+		seen, ok := p.seen[id]
+		if !ok || now.Sub(seen) < window {
+			continue
+		}
+		p.wasOn[id] = false
+		out = append(out, id)
+	}
+	return out
+}
+
 // PairingCode is a new code a hub can type.
 type PairingCode struct {
 	Code         string `json:"code"`
@@ -100,31 +145,50 @@ type PairingStatus struct {
 
 // DeviceView is one paired device.
 type DeviceView struct {
-	ID         string  `json:"id"`
-	Label      string  `json:"label"`
-	CreatedAt  string  `json:"createdAt"`
-	LastSeenAt *string `json:"lastSeenAt"`
-	RevokedAt  *string `json:"revokedAt"`
-	Kind       string  `json:"kind"`
-	Online     bool    `json:"online"`
-	Queued     *int    `json:"queued,omitempty"`
+	ID           string  `json:"id"`
+	Label        string  `json:"label"`
+	Name         string  `json:"name,omitempty"`
+	CreatedAt    string  `json:"createdAt"`
+	LastSeenAt   *string `json:"lastSeenAt"`
+	RevokedAt    *string `json:"revokedAt"`
+	Kind         string  `json:"kind"`
+	Online       bool    `json:"online"`
+	Queued       *int    `json:"queued,omitempty"`
+	QueuedScans  *int    `json:"queuedScans,omitempty"`
+	DroppedTotal int     `json:"droppedTotal"`
+	DroppedCount int     `json:"droppedCount"`
+	Version      string  `json:"version,omitempty"`
 }
 
 // PairedDevice is the one-time token from pairing complete.
 type PairedDevice struct {
-	DeviceID string
-	Token    string
-	Hub      bool
+	DeviceID    string
+	HouseholdID string
+	Label       string
+	Token       string
+	Hub         bool
+}
+
+// RotatedToken is the one-time replacement bearer. GraceUntil is when the
+// previous token stops working if the new one is never used.
+type RotatedToken struct {
+	Token      string
+	GraceUntil string
 }
 
 // ScanInput is one device scan.
 type ScanInput struct {
-	ID         string
-	Barcode    string
-	Direction  string
-	UnitCount  int
-	Heartbeat  bool
-	HasBarcode bool
+	ID               string
+	Barcode          string
+	Direction        string
+	UnitCount        int
+	Heartbeat        bool
+	HasBarcode       bool
+	HasScannedAt     bool
+	ScannedAt        time.Time
+	ScannedAtInvalid bool
+	AgeMs            *int64
+	BootID           string
 }
 
 // ScanResult is one item outcome.
@@ -133,6 +197,18 @@ type ScanResult struct {
 	Status string `json:"status"`
 	Code   string `json:"code,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
+	ScanID string `json:"scanId,omitempty"`
+}
+
+// Heartbeat is one hub check-in.
+type Heartbeat struct {
+	Version     string
+	BootID      string
+	UptimeS     int
+	Queued      int
+	Dropped     int
+	ClockSynced bool
+	Rollback    bool
 }
 
 func (s *Service) StartPairing(ctx context.Context, userID, householdID string) (PairingCode, error) {
@@ -188,7 +264,7 @@ func (s *Service) PairingStatus(ctx context.Context, userID, householdID, id str
 	return out, nil
 }
 
-func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hubVersion string) (PairedDevice, error) {
+func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hubVersion, bootID string) (PairedDevice, error) {
 	norm, well, checkOK := NormalizePairingCode(code)
 	if !well {
 		return PairedDevice{}, validation()
@@ -256,9 +332,9 @@ func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hub
 		return PairedDevice{}, notFound()
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO devices (id, household_id, kind, label, created_at, hub_version)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		deviceID, row.HouseholdID, kind, label, stamp(now), hubVersion); err != nil {
+		INSERT INTO devices (id, household_id, kind, label, created_at, hub_version, boot_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		deviceID, row.HouseholdID, kind, label, stamp(now), hubVersion, bootID); err != nil {
 		return PairedDevice{}, AsError(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -267,10 +343,16 @@ func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hub
 		newID(), deviceID, row.HouseholdID, HashOpaque(token), DevicePrefix(token), stamp(now)); err != nil {
 		return PairedDevice{}, AsError(err)
 	}
+	if err := writeAudit(ctx, tx, row.HouseholdID, "device", deviceID, "device.paired", "device", deviceID, stamp(now)); err != nil {
+		return PairedDevice{}, AsError(err)
+	}
 	if err := tx.Commit(); err != nil {
 		return PairedDevice{}, AsError(err)
 	}
-	return PairedDevice{DeviceID: deviceID, Token: token, Hub: hub}, nil
+	if s.hints != nil {
+		s.hints.PublishHint(row.HouseholdID, "devices")
+	}
+	return PairedDevice{DeviceID: deviceID, HouseholdID: row.HouseholdID, Label: label, Token: token, Hub: hub}, nil
 }
 
 func (s *Service) ListDevices(ctx context.Context, userID, householdID string) ([]DeviceView, error) {
@@ -281,7 +363,8 @@ func (s *Service) ListDevices(ctx context.Context, userID, householdID string) (
 		return nil, notFound()
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, label, kind, created_at, COALESCE(last_seen_at, ''), COALESCE(revoked_at, '')
+		SELECT id, label, kind, created_at, COALESCE(last_seen_at, ''), COALESCE(revoked_at, ''),
+		       COALESCE(hub_version, ''), queued, dropped_total
 		FROM devices WHERE household_id = ? ORDER BY created_at`, householdID)
 	if err != nil {
 		return nil, AsError(err)
@@ -291,24 +374,35 @@ func (s *Service) ListDevices(ctx context.Context, userID, householdID string) (
 	out := []DeviceView{}
 	for rows.Next() {
 		var d DeviceView
-		var seen, revoked string
-		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.CreatedAt, &seen, &revoked); err != nil {
+		var seen, revoked, version string
+		var queued, dropped int
+		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.CreatedAt, &seen, &revoked, &version, &queued, &dropped); err != nil {
 			return nil, AsError(err)
 		}
+		d.Name = d.Label
+		d.Version = version
+		d.DroppedTotal = dropped
+		d.DroppedCount = dropped
 		d.RevokedAt = strPtr(revoked)
 		if t, ok := s.presence.last(d.ID); ok {
 			stamp := stamp(t)
 			d.LastSeenAt = &stamp
-			d.Online = revoked == "" && now.Sub(t) <= onlineWindow
+			d.Online = revoked == "" && now.Sub(t) < onlineWindow
 		} else if seen != "" {
 			d.LastSeenAt = &seen
 			if at, ok := parseStamp(seen); ok {
-				d.Online = revoked == "" && now.Sub(at) <= onlineWindow
+				d.Online = revoked == "" && now.Sub(at) < onlineWindow
 			}
 		}
-		if n, ok := s.presence.queue(d.ID); ok {
-			d.Queued = &n
+		if d.Kind == "direct" && revoked == "" {
+			d.Online = true
 		}
+		if n, ok := s.presence.queue(d.ID); ok {
+			queued = n
+		}
+		q := queued
+		d.Queued = &q
+		d.QueuedScans = &q
 		out = append(out, d)
 	}
 	return out, AsError(rows.Err())
@@ -322,8 +416,12 @@ func (s *Service) RenameDevice(ctx context.Context, userID, householdID, deviceI
 	if err != nil {
 		return DeviceView{}, err
 	}
+	now := stamp(s.clock())
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE devices SET label = ? WHERE id = ? AND household_id = ?`, label, deviceID, householdID); err != nil {
+		return DeviceView{}, AsError(err)
+	}
+	if err := writeAudit(ctx, s.db, householdID, "account", userID, "device.renamed", "device", deviceID, now); err != nil {
 		return DeviceView{}, AsError(err)
 	}
 	return s.oneDevice(ctx, userID, householdID, deviceID)
@@ -351,8 +449,17 @@ func (s *Service) RevokeDevice(ctx context.Context, userID, householdID, deviceI
 	if _, err := tx.ExecContext(ctx, `UPDATE households SET channel_key = ? WHERE id = ?`, key, householdID); err != nil {
 		return AsError(err)
 	}
+	if err := writeAudit(ctx, tx, householdID, "account", userID, "device.revoked", "device", deviceID, now); err != nil {
+		return AsError(err)
+	}
+	if s.hints != nil {
+		s.hints.PublishHint(householdID, "rekey")
+	}
 	if err := tx.Commit(); err != nil {
 		return AsError(err)
+	}
+	if s.hints != nil {
+		s.hints.PublishHint(householdID, "devices")
 	}
 	return nil
 }
@@ -447,19 +554,20 @@ func (s *Service) deviceTokenAge(ctx context.Context, householdID, tokenID strin
 
 // RotateDeviceToken issues a new token. The previous one stays valid for 24h
 // or until this new token is used, whichever comes first.
-func (s *Service) RotateDeviceToken(ctx context.Context, token string) (string, error) {
+func (s *Service) RotateDeviceToken(ctx context.Context, token string) (RotatedToken, error) {
 	p, err := s.AuthenticateDevice(ctx, token)
 	if err != nil {
-		return "", err
+		return RotatedToken{}, err
 	}
 	next, err := NewDeviceToken()
 	if err != nil {
-		return "", AsError(err)
+		return RotatedToken{}, AsError(err)
 	}
 	now := s.clock()
+	grace := now.Add(tokenGrace)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", AsError(err)
+		return RotatedToken{}, AsError(err)
 	}
 	defer tx.Rollback()
 	id := newID()
@@ -467,137 +575,76 @@ func (s *Service) RotateDeviceToken(ctx context.Context, token string) (string, 
 		INSERT INTO device_tokens (id, device_id, household_id, token_hash, prefix, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		id, p.DeviceID, p.HouseholdID, HashOpaque(next), DevicePrefix(next), stamp(now)); err != nil {
-		return "", AsError(err)
+		return RotatedToken{}, AsError(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE device_tokens SET superseded_at = ?, grace_until = ?
 		WHERE device_id = ? AND household_id = ? AND id != ? AND superseded_at IS NULL`,
-		stamp(now), stamp(now.Add(tokenGrace)), p.DeviceID, p.HouseholdID, id); err != nil {
-		return "", AsError(err)
+		stamp(now), stamp(grace), p.DeviceID, p.HouseholdID, id); err != nil {
+		return RotatedToken{}, AsError(err)
+	}
+	if err := writeAudit(ctx, tx, p.HouseholdID, "device", p.DeviceID, "device.token_rotated", "device", p.DeviceID, stamp(now)); err != nil {
+		return RotatedToken{}, AsError(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", AsError(err)
+		return RotatedToken{}, AsError(err)
 	}
-	return next, nil
+	return RotatedToken{Token: next, GraceUntil: stamp(grace)}, nil
 }
 
-// NoteContact records a heartbeat. rotate is true when the token is older than 30 days.
+// NoteContact records a heartbeat. rotate is true when the token is 30 days old.
 func (s *Service) NoteContact(ctx context.Context, p Principal, version string, queued, dropped int) (bool, error) {
+	return s.Heartbeat(ctx, p, Heartbeat{Version: version, Queued: queued, Dropped: dropped})
+}
+
+// Heartbeat records liveness. last_seen_at is written on a status flip or
+// every 5 minutes. queued is the hub's unsent depth and is stored every time.
+func (s *Service) Heartbeat(ctx context.Context, p Principal, beat Heartbeat) (bool, error) {
 	now := s.clock()
-	if s.presence.touch(p.DeviceID, now) {
+	touch := s.presence.note(p.DeviceID, p.HouseholdID, now)
+	s.presence.setQueued(p.DeviceID, beat.Queued)
+	clockBit := 0
+	if beat.ClockSynced {
+		clockBit = 1
+	}
+	rollbackBit := 0
+	if beat.Rollback {
+		rollbackBit = 1
+	}
+	if touch.write {
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE devices SET last_seen_at = ?, hub_version = CASE WHEN ? != '' THEN ? ELSE hub_version END,
+				boot_id = CASE WHEN ? != '' THEN ? ELSE boot_id END,
+				uptime_s = ?, queued = ?, clock_synced = ?, rollback = ?,
 				dropped_total = dropped_total + ?
 			WHERE id = ? AND household_id = ?`,
-			stamp(now), version, version, dropped, p.DeviceID, p.HouseholdID); err != nil {
+			stamp(now), beat.Version, beat.Version, beat.BootID, beat.BootID, beat.UptimeS, beat.Queued,
+			clockBit, rollbackBit, beat.Dropped, p.DeviceID, p.HouseholdID); err != nil {
 			return false, AsError(err)
 		}
-	} else if dropped > 0 || version != "" {
+	} else {
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE devices SET hub_version = CASE WHEN ? != '' THEN ? ELSE hub_version END,
+				boot_id = CASE WHEN ? != '' THEN ? ELSE boot_id END,
+				uptime_s = ?, queued = ?, clock_synced = ?, rollback = ?,
 				dropped_total = dropped_total + ?
 			WHERE id = ? AND household_id = ?`,
-			version, version, dropped, p.DeviceID, p.HouseholdID); err != nil {
+			beat.Version, beat.Version, beat.BootID, beat.BootID, beat.UptimeS, beat.Queued,
+			clockBit, rollbackBit, beat.Dropped, p.DeviceID, p.HouseholdID); err != nil {
 			return false, AsError(err)
 		}
 	}
-	s.presence.setQueued(p.DeviceID, queued)
+	if beat.Dropped > 0 {
+		if err := s.noteDropped(ctx, s.db, p.HouseholdID); err != nil {
+			return false, err
+		}
+	}
+	if touch.cameOnline && s.hints != nil {
+		s.hints.PublishHint(p.HouseholdID, "devices")
+	}
 	created, err := s.deviceTokenAge(ctx, p.HouseholdID, p.SessionID)
 	if err != nil {
 		return false, err
 	}
-	return now.Sub(created) > tokenRotate, nil
-}
-
-// IngestScans writes a batch or refuses the whole batch when the device is over 600/min.
-func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInput) ([]ScanResult, error) {
-	if len(items) == 0 || len(items) > 50 {
-		return nil, validation()
-	}
-	if retry, blocked := s.limits.Blocked(s.clock(), "scan:"+p.DeviceID, scanLimit, scanWindow); blocked {
-		return nil, rateLimited(retry)
-	}
-	if _, blocked := s.limits.Hit(s.clock(), "scan:"+p.DeviceID, scanLimit, scanWindow); blocked {
-		return nil, rateLimited(time.Second)
-	}
-	// Count every item, but the cap is scans not requests. Record len(items)-1 extra hits.
-	for i := 1; i < len(items); i++ {
-		if _, blocked := s.limits.Hit(s.clock(), "scan:"+p.DeviceID, scanLimit, scanWindow); blocked {
-			return nil, rateLimited(time.Second)
-		}
-	}
-	now := s.clock()
-	s.presence.touch(p.DeviceID, now)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, AsError(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE devices SET last_seen_at = ? WHERE id = ? AND household_id = ?`,
-		stamp(now), p.DeviceID, p.HouseholdID); err != nil {
-		return nil, AsError(err)
-	}
-	out := make([]ScanResult, 0, len(items))
-	for _, item := range items {
-		result, err := s.oneScan(ctx, tx, p, item, now)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, result)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, AsError(err)
-	}
-	return out, nil
-}
-
-func (s *Service) oneScan(ctx context.Context, q queryer, p Principal, item ScanInput, now time.Time) (ScanResult, error) {
-	if item.ID == "" {
-		return ScanResult{Status: "rejected", Code: CodeValidation}, nil
-	}
-	if item.Heartbeat && !item.HasBarcode {
-		return ScanResult{ID: item.ID, Status: "accepted", Cursor: item.ID}, nil
-	}
-	if !item.HasBarcode {
-		return ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}, nil
-	}
-	if item.Direction != "" && item.Direction != "stock_in" && item.Direction != "stock_out" {
-		return ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}, nil
-	}
-	unit := item.UnitCount
-	if unit == 0 {
-		unit = 1
-	}
-	if unit < 1 {
-		return ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}, nil
-	}
-	var dir any
-	if item.Direction == "" {
-		dir = nil
-	} else {
-		dir = item.Direction
-	}
-	id := newID()
-	_, err := q.ExecContext(ctx, `
-		INSERT INTO scan_entries (
-			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at, direction, unit_count, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-		id, p.DeviceID, p.HouseholdID, p.DeviceID, item.ID, item.Barcode, stamp(now), dir, unit)
-	if err == nil {
-		return ScanResult{ID: item.ID, Status: "created", Cursor: id}, nil
-	}
-	var barcode, direction string
-	var units int
-	qerr := q.QueryRowContext(ctx, `
-		SELECT barcode, COALESCE(direction, ''), unit_count FROM scan_entries
-		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
-		p.HouseholdID, p.DeviceID, item.ID).Scan(&barcode, &direction, &units)
-	if qerr != nil {
-		return ScanResult{}, AsError(err)
-	}
-	if barcode == item.Barcode && direction == item.Direction && units == unit {
-		return ScanResult{ID: item.ID, Status: "duplicate", Cursor: item.ID}, nil
-	}
-	return ScanResult{ID: item.ID, Status: "conflict"}, nil
+	return !now.Before(created.Add(tokenRotate)), nil
 }

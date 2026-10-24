@@ -52,7 +52,7 @@ func TestPortableSQL(t *testing.T) {
 	if len(matches) != 6 {
 		t.Fatalf("household migrations: %v", matches)
 	}
-	later, err := filepath.Glob(filepath.Join(root, "internal", "app", "migrations", "02[34]_*.sql"))
+	later, err := filepath.Glob(filepath.Join(root, "internal", "app", "migrations", "02[3-9]_*.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

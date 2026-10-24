@@ -52,6 +52,9 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	if req.Body.Barcode == "" {
 		return Created{}, BadRequest("barcode is required")
 	}
+	if scan.LooksLikePairingCode(req.Body.Barcode) {
+		return Created{}, BadRequest(scan.PairingScanMessage)
+	}
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return Created{}, err

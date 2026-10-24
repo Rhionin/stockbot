@@ -286,13 +286,13 @@ func TestDirectoryEdges(t *testing.T) {
 	if _, err := svc.PairingStatus(ctx, ada.ID, house, "missing"); err == nil {
 		t.Fatal("missing pairing")
 	}
-	expectCode(t, take2(svc.CompletePairing(ctx, "not a code", "Counter", "", "")), CodeValidation)
-	expectCode(t, take2(svc.CompletePairing(ctx, "SBP-OOOO-IIII-0", "Counter", "", "")), CodeNotFound)
+	expectCode(t, take2(svc.CompletePairing(ctx, "not a code", "Counter", "", "", "")), CodeValidation)
+	expectCode(t, take2(svc.CompletePairing(ctx, "SBP-OOOO-IIII-0", "Counter", "", "", "")), CodeNotFound)
 	svc.SetClock(func() time.Time { return time.Now().Add(time.Hour) })
 	for i := 0; i < maxAttempts; i++ {
-		expectCode(t, take2(svc.CompletePairing(ctx, pair.Code, "Counter", "", "")), CodeNotFound)
+		expectCode(t, take2(svc.CompletePairing(ctx, pair.Code, "Counter", "", "", "")), CodeNotFound)
 	}
-	expectCode(t, take2(svc.CompletePairing(ctx, pair.Code, "Counter", "", "")), CodeRateLimited)
+	expectCode(t, take2(svc.CompletePairing(ctx, pair.Code, "Counter", "", "", "")), CodeRateLimited)
 	if status, err := svc.PairingStatus(ctx, ada.ID, house, pair.PairingID); err != nil || status.Status != "expired" {
 		t.Fatalf("expired %#v %v", status, err)
 	}
@@ -301,12 +301,12 @@ func TestDirectoryEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, take2(svc.CompletePairing(ctx, live.Code, "Counter", "satellite", "")), CodeValidation)
-	hub, err := svc.CompletePairing(ctx, live.Code, "", "pi_hub", "1.0.0")
+	expectCode(t, take2(svc.CompletePairing(ctx, live.Code, "Counter", "satellite", "", "")), CodeValidation)
+	hub, err := svc.CompletePairing(ctx, live.Code, "", "pi_hub", "1.0.0", "")
 	if err != nil || !hub.Hub || hub.Token == "" {
 		t.Fatalf("hub %#v %v", hub, err)
 	}
-	expectCode(t, take2(svc.CompletePairing(ctx, live.Code, "Counter", "", "")), CodeNotFound)
+	expectCode(t, take2(svc.CompletePairing(ctx, live.Code, "Counter", "", "", "")), CodeNotFound)
 	expectCode(t, take2(svc.RenameDevice(ctx, ada.ID, house, hub.DeviceID, " ")), CodeValidation)
 	var directID string
 	if err := db.QueryRow(`SELECT id FROM devices WHERE kind = 'direct' AND household_id = ?`, house).Scan(&directID); err != nil {
@@ -362,7 +362,7 @@ func TestDirectoryEdges(t *testing.T) {
 	}
 
 	next, err := svc.RotateDeviceToken(ctx, hub.Token)
-	if err != nil {
+	if err != nil || next.Token == "" {
 		t.Fatal(err)
 	}
 	if _, err := svc.AuthenticateDevice(ctx, hub.Token); err != nil {
@@ -371,24 +371,24 @@ func TestDirectoryEdges(t *testing.T) {
 	svc.SetClock(func() time.Time { return time.Now().Add(25 * time.Hour) })
 	expectCode(t, take2(svc.AuthenticateDevice(ctx, hub.Token)), CodeUnauthorized)
 	svc.SetClock(wallClock)
-	if _, err := svc.AuthenticateDevice(ctx, next); err != nil {
+	if _, err := svc.AuthenticateDevice(ctx, next.Token); err != nil {
 		t.Fatal(err)
 	}
-	current, err := svc.AuthenticateDevice(ctx, next)
+	current, err := svc.AuthenticateDevice(ctx, next.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, take2(svc.IngestScans(ctx, current, nil)), CodeValidation)
+	expectCode(t, take2(svc.IngestScans(ctx, current, nil, 0)), CodeValidation)
 	tooMany := make([]ScanInput, 51)
-	expectCode(t, take2(svc.IngestScans(ctx, current, tooMany)), CodeValidation)
+	expectCode(t, take2(svc.IngestScans(ctx, current, tooMany, 0)), CodeValidation)
 	for i := 0; i < scanLimit; i++ {
 		svc.Limiter().Hit(svc.Now(), "scan:"+current.DeviceID, scanLimit, scanWindow)
 	}
-	expectCode(t, take2(svc.IngestScans(ctx, current, []ScanInput{{ID: "over", Heartbeat: true}})), CodeRateLimited)
+	expectCode(t, take2(svc.IngestScans(ctx, current, []ScanInput{{ID: "over", Heartbeat: true}}, 0)), CodeRateLimited)
 	if err := svc.RevokeDevice(ctx, ada.ID, house, hub.DeviceID); err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, take2(svc.AuthenticateDevice(ctx, next)), CodeDeviceRevoked)
+	expectCode(t, take2(svc.AuthenticateDevice(ctx, next.Token)), CodeDeviceRevoked)
 
 	var gone *presence
 	gone.markOffline("x")

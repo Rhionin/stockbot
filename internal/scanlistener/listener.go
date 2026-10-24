@@ -246,6 +246,9 @@ func (l *ScanListener) handleLine(ctx context.Context, barcode string, mode *mod
 	if barcode == "" {
 		return // empty line discarded, no entry created
 	}
+	if scan.LooksLikePairingCode(barcode) {
+		return
+	}
 
 	if newMode, isControl := classify(barcode, l.StockInBarcode, l.StockOutBarcode); isControl {
 		if l.Mode != nil {

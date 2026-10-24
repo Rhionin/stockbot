@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -246,6 +247,41 @@ func logStorageWarning(r *http.Request, err error, event string) {
 		attrs = append(attrs, "sqlite_code", code)
 	}
 	slog.Warn(event, attrs...)
+	if household == "" || r == nil {
+		return
+	}
+	kind := ""
+	switch event {
+	case "db_busy":
+		kind = "busy"
+	case "db_no_space":
+		kind = "no_space"
+	}
+	if kind == "" {
+		return
+	}
+	if fn := storageAlertFrom(r.Context()); fn != nil {
+		fn(r.Context(), household, kind)
+	}
+}
+
+type storageAlertFunc func(ctx context.Context, householdID, kind string)
+
+type storageAlertKey struct{}
+
+func withStorageAlert(ctx context.Context, fn storageAlertFunc) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, storageAlertKey{}, fn)
+}
+
+func storageAlertFrom(ctx context.Context) storageAlertFunc {
+	if ctx == nil {
+		return nil
+	}
+	fn, _ := ctx.Value(storageAlertKey{}).(storageAlertFunc)
+	return fn
 }
 
 // noSpaceDriverMessage is the driver text for the debug record.

@@ -43,6 +43,7 @@ func init() {
 		{"POST /api/invites/preview", kindWriteScope},
 		{"POST /api/invites/accept", kindWriteScope},
 		{"POST /api/operator/household-invites", kindWriteScope},
+		{"GET /api/operator/alerts", kindListLeak},
 		{"POST /api/devices/pair", kindWriteScope},
 		{"GET /api/devices/pair/{id}", kindForeignID},
 		{"POST /api/devices/pair/complete", kindWriteScope},

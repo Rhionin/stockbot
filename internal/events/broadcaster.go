@@ -122,6 +122,20 @@ func (b *Broadcaster) PublishScanProcessingFailedEvent(failure scan.ProcessingFa
 	b.publish("scan_processing_failed", failure, time.Time{})
 }
 
+// Hint is a household refetch signal. It carries no names and no barcodes.
+type Hint struct {
+	Type        string `json:"type"`
+	HouseholdID string `json:"householdId"`
+}
+
+// PublishHint tells subscribers to refetch one household collection.
+func (b *Broadcaster) PublishHint(householdID, kind string) {
+	if b == nil || householdID == "" || kind == "" {
+		return
+	}
+	b.publish("hint", Hint{Type: kind, HouseholdID: householdID}, time.Time{})
+}
+
 func (b *Broadcaster) publish(eventType string, payload any, ingestAt time.Time) {
 	data, err := json.Marshal(payload)
 	if err != nil {

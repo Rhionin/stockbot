@@ -688,6 +688,16 @@ func newAPIMux(
 			stockIn:  scannerConfig.StockInBarcode,
 			stockOut: scannerConfig.StockOutBarcode,
 		}
+		cfg.stage1svc.SetHints(broadcaster)
+		sender := push.NewSender(pushSubscriptions, pushCfg)
+		cfg.stage1svc.SetOperatorPush(func(ctx context.Context, note auth.OperatorNote) {
+			sender.NotifyOperators(ctx, push.Notice{
+				Title: note.Title,
+				Body:  note.Body,
+				Tag:   "operator-" + note.Kind,
+				URL:   "/",
+			})
+		})
 	}
 	registerStage1(apiMux, cfg)
 	// The listener uses the broadcaster this mux already publishes scans on,
