@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -32,15 +33,19 @@ func NewConsumptionLog(db *sql.DB) *ConsumptionLog {
 
 // InsertConsumptionEvent inserts a new consumption event record.
 // If event.ID is empty, a new UUID is generated.
-func (r *ConsumptionLog) InsertConsumptionEvent(ctx context.Context, event ConsumptionEvent) (*ConsumptionEvent, error) {
+func (r *ConsumptionLog) InsertConsumptionEvent(ctx context.Context, scope tenant.Scope, event ConsumptionEvent) (*ConsumptionEvent, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if event.ID == "" {
 		event.ID = uuid.NewString()
 	}
 
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO consumption_events (id, item_id, consumed_at, scan_entry_id)
-		 VALUES (?, ?, ?, ?)`,
+		`INSERT INTO consumption_events (id, household_id, item_id, consumed_at, scan_entry_id)
+		 VALUES (?, ?, ?, ?, ?)`,
 		event.ID,
+		scope.HouseholdID(),
 		event.ItemID,
 		event.ConsumedAt,
 		nullableString(event.ScanEntryID),
@@ -49,17 +54,21 @@ func (r *ConsumptionLog) InsertConsumptionEvent(ctx context.Context, event Consu
 		return nil, fmt.Errorf("failed to insert consumption event: %w", err)
 	}
 
-	return r.getByID(ctx, event.ID)
+	return r.getByID(ctx, scope, event.ID)
 }
 
 // ListConsumptionEvents returns all consumption events for the given itemID,
 // ordered ascending by consumed_at (oldest first).
-func (r *ConsumptionLog) ListConsumptionEvents(ctx context.Context, itemID string) ([]ConsumptionEvent, error) {
+func (r *ConsumptionLog) ListConsumptionEvents(ctx context.Context, scope tenant.Scope, itemID string) ([]ConsumptionEvent, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, item_id, consumed_at, scan_entry_id
 		 FROM consumption_events
-		 WHERE item_id = ?
+		 WHERE household_id = ? AND item_id = ?
 		 ORDER BY consumed_at ASC`,
+		scope.HouseholdID(),
 		itemID,
 	)
 	if err != nil {
@@ -82,10 +91,14 @@ func (r *ConsumptionLog) ListConsumptionEvents(ctx context.Context, itemID strin
 }
 
 // getByID fetches a single consumption event by its ID.
-func (r *ConsumptionLog) getByID(ctx context.Context, id string) (*ConsumptionEvent, error) {
+func (r *ConsumptionLog) getByID(ctx context.Context, scope tenant.Scope, id string) (*ConsumptionEvent, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, item_id, consumed_at, scan_entry_id
-		 FROM consumption_events WHERE id = ?`,
+		 FROM consumption_events WHERE household_id = ? AND id = ?`,
+		scope.HouseholdID(),
 		id,
 	)
 
@@ -130,24 +143,28 @@ func scanConsumptionEvent(row scanner) (*ConsumptionEvent, error) {
 // One query returns (item_id, consumed_at) pairs, then we count per item's boundary.
 // Not a per-item COUNT(*) WHERE consumed_at > ? because each item has its own boundary,
 // and one query per item would serialize against SetMaxOpenConns(1).
-func (r *ConsumptionLog) ListConsumedAtByItems(ctx context.Context, itemIDs []string) (map[string][]time.Time, error) {
+func (r *ConsumptionLog) ListConsumedAtByItems(ctx context.Context, scope tenant.Scope, itemIDs []string) (map[string][]time.Time, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if len(itemIDs) == 0 {
 		return make(map[string][]time.Time), nil
 	}
 
 	// Create placeholders for IN clause
 	placeholders := make([]string, len(itemIDs))
-	args := make([]interface{}, len(itemIDs))
+	args := make([]interface{}, 0, len(itemIDs)+1)
+	args = append(args, scope.HouseholdID())
 	for i, id := range itemIDs {
 		placeholders[i] = "?"
-		args[i] = id
+		args = append(args, id)
 	}
 
 	// Return every event. Each item has its own ledger boundary, so the
 	// caller counts events after that boundary in Go.
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT item_id, consumed_at FROM consumption_events
-		 WHERE item_id IN (`+strings.Join(placeholders, ",")+`)
+		 WHERE household_id = ? AND item_id IN (`+strings.Join(placeholders, ",")+`)
 		 ORDER BY consumed_at`,
 		args...,
 	)

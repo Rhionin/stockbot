@@ -7,6 +7,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // directionLabel renders a scan direction for logs, showing "unset" for a nil
@@ -20,10 +21,10 @@ func directionLabel(direction *scan.ScanDirection) string {
 
 type ScanCreateHandler struct {
 	Queue interface {
-		CreateScanEntry(ctx context.Context, entry scan.ScanEntry) (*scan.ScanEntry, error)
+		CreateScanEntry(ctx context.Context, scope tenant.Scope, entry scan.ScanEntry) (*scan.ScanEntry, error)
 	}
 	LookupService interface {
-		Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error)
+		Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error)
 	}
 	// Events announces the barcode before lookup returns. Nil skips the
 	// announcement; the created scan entry is still published by the queue.
@@ -52,6 +53,10 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	if req.Body.UserID == "" {
 		return Created{}, BadRequest("userId is required")
 	}
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, err
+	}
 
 	// A product barcode with no direction takes the server's current mode, which
 	// is already scan-out when scan-in has been idle for 5 minutes. Naming a
@@ -70,7 +75,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	scannedAt := time.Now().UTC()
 	if scan.IsQRPayload(req.Body.Barcode) {
 		entry := scan.NewQREntry(req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
-		created, err := h.Queue.CreateScanEntry(req.Context, entry)
+		created, err := h.Queue.CreateScanEntry(req.Context, scope, entry)
 		if err != nil {
 			return Created{}, InternalError(err)
 		}
@@ -80,7 +85,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 
 	notice := scan.AnnounceProcessing(h.Events, req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
 
-	lookupResult, err := h.LookupService.Lookup(req.Context, req.Body.Barcode, req.Body.UserID)
+	lookupResult, err := h.LookupService.Lookup(req.Context, scope, req.Body.Barcode)
 	if err != nil {
 		scan.AnnounceProcessingFailed(h.Events, notice)
 		return Created{}, InternalError(err)
@@ -94,7 +99,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 		entry.UnitCount = req.Body.UnitCount // HTTP callers may override the default of 1
 	}
 
-	created, err := h.Queue.CreateScanEntry(req.Context, entry)
+	created, err := h.Queue.CreateScanEntry(req.Context, scope, entry)
 	if err != nil {
 		return Created{}, InternalError(err)
 	}

@@ -26,6 +26,7 @@ func scheduleBatch(t *testing.T, store *Subscriptions, entries ...scan.ScanEntry
 	t.Helper()
 	alerts, clock, notices := harness()
 	alerts.schedules = store
+	alerts.scope = testScope(t, store)
 	for _, entry := range entries {
 		alerts.noteScan(entry)
 	}
@@ -37,17 +38,19 @@ func scheduleBatch(t *testing.T, store *Subscriptions, entries ...scan.ScanEntry
 	return due
 }
 
-func restartAlerts(store *Subscriptions, scans scanReader, elapsed time.Duration) (*attention, *fakeClock, *[]Notice) {
+func restartAlerts(t *testing.T, store *Subscriptions, scans scanReader, elapsed time.Duration) (*attention, *fakeClock, *[]Notice) {
+	t.Helper()
 	alerts, clock, notices := harnessWith(scans)
 	clock.now = elapsed
 	alerts.schedules = store
+	alerts.scope = testScope(t, store)
 	alerts.rearm(context.Background())
 	return alerts, clock, notices
 }
 
 func savedBatch(t *testing.T, store *Subscriptions) scheduledBatch {
 	t.Helper()
-	rows, err := store.ListBatchAlerts(context.Background())
+	rows, err := store.ListBatchAlerts(context.Background(), testScope(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +78,7 @@ func TestRearmPendingBatchWaitsForTheStoredDueTime(t *testing.T) {
 	}
 
 	queue := scriptedScans{byID: map[string]scan.ScanEntry{"milk": milk, "oats": oats}}
-	alerts, clock, notices := restartAlerts(store, queue, 2*time.Minute)
+	alerts, clock, notices := restartAlerts(t, store, queue, 2*time.Minute)
 	alerts.rearm(context.Background())
 	clock.advance(2 * time.Minute)
 	if len(*notices) != 0 {
@@ -92,7 +95,7 @@ func TestRearmPendingBatchWaitsForTheStoredDueTime(t *testing.T) {
 	if got.Title != "Stock in batch is ready" || got.URL != "/?scanAlert=stock_in" {
 		t.Fatalf("notice = %#v", got)
 	}
-	left, err := store.ListBatchAlerts(context.Background())
+	left, err := store.ListBatchAlerts(context.Background(), testScope(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +103,7 @@ func TestRearmPendingBatchWaitsForTheStoredDueTime(t *testing.T) {
 		t.Fatalf("sent batch still scheduled: %#v", left)
 	}
 
-	again, clock2, againNotices := restartAlerts(store, queue, 2*time.Minute)
+	again, clock2, againNotices := restartAlerts(t, store, queue, 2*time.Minute)
 	clock2.advance(BatchSettle)
 	if len(*againNotices) != 0 {
 		t.Fatalf("restart sent the batch again: %#v", *againNotices)
@@ -114,6 +117,7 @@ func TestRearmKeepsTheExtendedDueTime(t *testing.T) {
 	bread := pendingNamed("bread", "Rye Bread", scan.StockIn)
 	alerts, clock, _ := harness()
 	alerts.schedules = store
+	alerts.scope = testScope(t, store)
 	alerts.noteScan(milk)
 	clock.advance(4 * time.Minute)
 	alerts.noteScan(bread)
@@ -130,7 +134,7 @@ func TestRearmKeepsTheExtendedDueTime(t *testing.T) {
 
 	queue := scriptedScans{byID: map[string]scan.ScanEntry{"milk": milk, "bread": bread}}
 	// 5 minutes is when the first scan's quiet period would have ended.
-	restarted, restartedClock, notices := restartAlerts(store, queue, 5*time.Minute)
+	restarted, restartedClock, notices := restartAlerts(t, store, queue, 5*time.Minute)
 	restartedClock.advance(0)
 	if len(*notices) != 0 {
 		t.Fatalf("fired at the first scan's due time: %#v", *notices)
@@ -156,12 +160,12 @@ func TestRearmFullyClearedBatchDoesNotPush(t *testing.T) {
 		"milk": withStatus(milk, scan.Committed),
 		"oats": withStatus(oats, scan.Cancelled),
 	}}
-	alerts, clock, notices := restartAlerts(store, queue, 10*time.Minute)
+	alerts, clock, notices := restartAlerts(t, store, queue, 10*time.Minute)
 	clock.advance(0)
 	if len(*notices) != 0 {
 		t.Fatalf("cleared batch notified: %#v", *notices)
 	}
-	left, err := store.ListBatchAlerts(context.Background())
+	left, err := store.ListBatchAlerts(context.Background(), testScope(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +174,7 @@ func TestRearmFullyClearedBatchDoesNotPush(t *testing.T) {
 	}
 	alerts.stop()
 
-	again, againClock, againNotices := restartAlerts(store, queue, 0)
+	again, againClock, againNotices := restartAlerts(t, store, queue, 0)
 	againClock.advance(BatchSettle)
 	if len(*againNotices) != 0 {
 		t.Fatalf("cleared batch notified after another restart: %#v", *againNotices)
@@ -183,6 +187,7 @@ func TestConfirmedBatchIsNotRearmed(t *testing.T) {
 	milk := pendingNamed("milk", "Whole Milk", scan.StockOut)
 	alerts, clock, notices := harness()
 	alerts.schedules = store
+	alerts.scope = testScope(t, store)
 	alerts.noteScan(milk)
 	done := milk
 	done.Status = scan.Committed
@@ -192,7 +197,7 @@ func TestConfirmedBatchIsNotRearmed(t *testing.T) {
 	if len(*notices) != 0 {
 		t.Fatalf("confirmed batch notified: %#v", *notices)
 	}
-	left, err := store.ListBatchAlerts(context.Background())
+	left, err := store.ListBatchAlerts(context.Background(), testScope(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +206,7 @@ func TestConfirmedBatchIsNotRearmed(t *testing.T) {
 	}
 
 	queue := scriptedScans{byID: map[string]scan.ScanEntry{"milk": milk}}
-	restarted, restartedClock, restartedNotices := restartAlerts(store, queue, 0)
+	restarted, restartedClock, restartedNotices := restartAlerts(t, store, queue, 0)
 	restartedClock.advance(BatchSettle)
 	if len(*restartedNotices) != 0 {
 		t.Fatalf("confirmed batch notified after restart: %#v", *restartedNotices)
@@ -220,7 +225,7 @@ func TestRearmPartiallyClearedBatchAlertsOnlyWhatIsLeft(t *testing.T) {
 		"milk": milk,
 		"oats": withStatus(oats, scan.Committed),
 	}}
-	alerts, clock, notices := restartAlerts(store, queue, time.Minute)
+	alerts, clock, notices := restartAlerts(t, store, queue, time.Minute)
 	clock.advance(3 * time.Minute)
 	if len(*notices) != 0 {
 		t.Fatalf("fired early: %#v", *notices)
@@ -246,7 +251,7 @@ func TestRearmThenANewScanDoesNotSendTwice(t *testing.T) {
 	scheduleBatch(t, store, milk)
 
 	queue := scriptedScans{byID: map[string]scan.ScanEntry{"milk": milk, "bread": bread}}
-	alerts, clock, notices := restartAlerts(store, queue, 4*time.Minute)
+	alerts, clock, notices := restartAlerts(t, store, queue, 4*time.Minute)
 	alerts.noteScan(bread)
 	clock.advance(time.Minute)
 	if len(*notices) != 0 {
@@ -269,7 +274,7 @@ func TestRearmOverdueBatchSendsPromptly(t *testing.T) {
 	scheduleBatch(t, store, milk, oats)
 
 	queue := scriptedScans{byID: map[string]scan.ScanEntry{"milk": milk, "oats": oats}}
-	alerts, clock, notices := restartAlerts(store, queue, 10*time.Minute)
+	alerts, clock, notices := restartAlerts(t, store, queue, 10*time.Minute)
 	if len(*notices) != 0 {
 		t.Fatalf("sent inside rearm: %#v", *notices)
 	}

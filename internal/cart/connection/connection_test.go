@@ -9,10 +9,12 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-func newTestDirectory(t *testing.T) (*connection.Directory, *sql.DB) {
+func newTestDirectory(t *testing.T) (*connection.Directory, *sql.DB, tenant.Scope) {
 	t.Helper()
 	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
@@ -22,13 +24,17 @@ func newTestDirectory(t *testing.T) (*connection.Directory, *sql.DB) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	return connection.NewDirectory(conn), conn
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection.NewDirectory(conn), conn, scope
 }
 
 func TestReadMissingProviderReturnsNil(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 
-	got, err := dir.Read(context.Background(), "kroger")
+	got, err := dir.Read(context.Background(), scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -38,16 +44,16 @@ func TestReadMissingProviderReturnsNil(t *testing.T) {
 }
 
 func TestReadUnknownStateDefaultsToDisconnected(t *testing.T) {
-	dir, db := newTestDirectory(t)
+	dir, db, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO provider_connections (id, user_id, provider_id, state) VALUES (?, ?, ?, ?)`,
-		"user-1:kroger", "user-1", "kroger", "some_future_state"); err != nil {
+		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state) VALUES (?, ?, ?, ?, ?)`,
+		scope.HouseholdID()+":kroger", scope.HouseholdID(), scope.HouseholdID(), "kroger", "some_future_state"); err != nil {
 		t.Fatalf("seed row: %v", err)
 	}
 
-	got, err := dir.Read(ctx, "kroger")
+	got, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -57,7 +63,7 @@ func TestReadUnknownStateDefaultsToDisconnected(t *testing.T) {
 }
 
 func TestWriteThenReadRoundTrips(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	expiresAt := time.Date(2031, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -71,11 +77,11 @@ func TestWriteThenReadRoundTrips(t *testing.T) {
 		AuthState:    "state-token",
 		AuthStateAt:  &authStateAt,
 	}
-	if err := dir.Write(ctx, want); err != nil {
+	if err := dir.Write(ctx, scope, want); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := dir.Read(ctx, "kroger")
+	got, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -106,17 +112,17 @@ func TestWriteThenReadRoundTrips(t *testing.T) {
 }
 
 func TestWriteUpdatesExistingConnection(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:    "kroger",
 		State:       connection.StateReauthRequired,
 		AccessToken: "old-token",
 	}); err != nil {
 		t.Fatalf("first Write: %v", err)
 	}
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:    "kroger",
 		State:       connection.StateConnected,
 		AccessToken: "new-token",
@@ -124,7 +130,7 @@ func TestWriteUpdatesExistingConnection(t *testing.T) {
 		t.Fatalf("second Write: %v", err)
 	}
 
-	got, err := dir.Read(ctx, "kroger")
+	got, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -137,11 +143,11 @@ func TestWriteUpdatesExistingConnection(t *testing.T) {
 }
 
 func TestDisconnectClearsCredentials(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	expiresAt := time.Date(2031, 6, 1, 12, 0, 0, 0, time.UTC)
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
 		State:        connection.StateConnected,
 		AccessToken:  "access-abc",
@@ -153,11 +159,11 @@ func TestDisconnectClearsCredentials(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	if err := dir.Disconnect(ctx, "kroger"); err != nil {
+	if err := dir.Disconnect(ctx, scope, "kroger"); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 
-	got, err := dir.Read(ctx, "kroger")
+	got, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -185,25 +191,25 @@ func TestDisconnectClearsCredentials(t *testing.T) {
 }
 
 func TestDisconnectLeavesOtherProviderUntouched(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider: "kroger", State: connection.StateConnected, AccessToken: "kroger-token",
 	}); err != nil {
 		t.Fatalf("Write kroger: %v", err)
 	}
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider: "instacart", State: connection.StateConnected, AccessToken: "instacart-token",
 	}); err != nil {
 		t.Fatalf("Write instacart: %v", err)
 	}
 
-	if err := dir.Disconnect(ctx, "kroger"); err != nil {
+	if err := dir.Disconnect(ctx, scope, "kroger"); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 
-	other, err := dir.Read(ctx, "instacart")
+	other, err := dir.Read(ctx, scope, "instacart")
 	if err != nil {
 		t.Fatalf("Read instacart: %v", err)
 	}
@@ -213,23 +219,23 @@ func TestDisconnectLeavesOtherProviderUntouched(t *testing.T) {
 }
 
 func TestGenerateAuthStatePersistsOneStatePerProvider(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{Provider: "kroger", State: connection.StateDisconnected}); err != nil {
+	if err := dir.Write(ctx, scope, &connection.Connection{Provider: "kroger", State: connection.StateDisconnected}); err != nil {
 		t.Fatalf("Write kroger: %v", err)
 	}
-	if err := dir.Write(ctx, &connection.Connection{Provider: "instacart", State: connection.StateDisconnected}); err != nil {
+	if err := dir.Write(ctx, scope, &connection.Connection{Provider: "instacart", State: connection.StateDisconnected}); err != nil {
 		t.Fatalf("Write instacart: %v", err)
 	}
 
 	before := time.Now().UTC()
-	if err := dir.GenerateAuthState(ctx, "kroger", "abc-state"); err != nil {
+	if err := dir.GenerateAuthState(ctx, scope, "kroger", "abc-state"); err != nil {
 		t.Fatalf("GenerateAuthState: %v", err)
 	}
 	after := time.Now().UTC()
 
-	got, err := dir.Read(ctx, "kroger")
+	got, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read kroger: %v", err)
 	}
@@ -243,7 +249,7 @@ func TestGenerateAuthStatePersistsOneStatePerProvider(t *testing.T) {
 		t.Errorf("AuthStateAt %v not within [%v, %v]", got.AuthStateAt, before, after)
 	}
 
-	other, err := dir.Read(ctx, "instacart")
+	other, err := dir.Read(ctx, scope, "instacart")
 	if err != nil {
 		t.Fatalf("Read instacart: %v", err)
 	}
@@ -267,11 +273,11 @@ func TestConsumeAuthState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir, _ := newTestDirectory(t)
+			dir, _, scope := newTestDirectory(t)
 			ctx := context.Background()
 
 			storedAt := time.Now().UTC().Add(-tt.storedAgo)
-			if err := dir.Write(ctx, &connection.Connection{
+			if err := dir.Write(ctx, scope, &connection.Connection{
 				Provider:    "kroger",
 				State:       connection.StateDisconnected,
 				AuthState:   tt.stored,
@@ -280,7 +286,7 @@ func TestConsumeAuthState(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 
-			got, err := dir.ConsumeAuthState(ctx, "kroger", tt.consumeArg)
+			got, err := dir.ConsumeAuthState(ctx, scope, "kroger", tt.consumeArg)
 			if err != nil {
 				t.Fatalf("ConsumeAuthState: %v", err)
 			}
@@ -288,7 +294,7 @@ func TestConsumeAuthState(t *testing.T) {
 				t.Errorf("ConsumeAuthState: want %v, got %v", tt.want, got)
 			}
 
-			after, err := dir.Read(ctx, "kroger")
+			after, err := dir.Read(ctx, scope, "kroger")
 			if err != nil {
 				t.Fatalf("Read after consume: %v", err)
 			}
@@ -300,9 +306,9 @@ func TestConsumeAuthState(t *testing.T) {
 }
 
 func TestConsumeAuthStateAbsentProviderRejected(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 
-	got, err := dir.ConsumeAuthState(context.Background(), "kroger", "any-state")
+	got, err := dir.ConsumeAuthState(context.Background(), scope, "kroger", "any-state")
 	if err != nil {
 		t.Fatalf("ConsumeAuthState: %v", err)
 	}
@@ -312,18 +318,18 @@ func TestConsumeAuthStateAbsentProviderRejected(t *testing.T) {
 }
 
 func TestConsumeAuthStateEmptyArgAgainstStoredRejected(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	storedAt := time.Now().UTC()
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider: "kroger", State: connection.StateDisconnected,
 		AuthState: "real-state", AuthStateAt: &storedAt,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := dir.ConsumeAuthState(ctx, "kroger", "")
+	got, err := dir.ConsumeAuthState(ctx, scope, "kroger", "")
 	if err != nil {
 		t.Fatalf("ConsumeAuthState: %v", err)
 	}
@@ -331,7 +337,7 @@ func TestConsumeAuthStateEmptyArgAgainstStoredRejected(t *testing.T) {
 		t.Error("ConsumeAuthState with empty state against a stored state: want false, got true")
 	}
 
-	after, err := dir.Read(ctx, "kroger")
+	after, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

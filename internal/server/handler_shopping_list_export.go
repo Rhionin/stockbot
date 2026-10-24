@@ -58,9 +58,12 @@ type HandoffResponse struct {
 }
 
 func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest, struct{}]) (*shoppingListExportResponse, error) {
-	const userID = "user-1"
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
 
-	provision, err := loadShoppingSnapshot(req.Context, userID, h.Pantry, h.ShoppingList)
+	provision, err := loadShoppingSnapshot(req.Context, scope, h.Pantry, h.ShoppingList)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -112,7 +115,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if h.Connections == nil {
 			return nil, Conflict(fmt.Sprintf("%s is not connected", provider.DisplayName()))
 		}
-		conn, err := h.Connections.Read(req.Context, string(providerID))
+		conn, err := h.Connections.Read(req.Context, scope, string(providerID))
 		if err != nil {
 			return nil, InternalError(err)
 		}
@@ -121,7 +124,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		}
 	}
 
-	report, err := h.Provisioner.Provision(req.Context, userID, providerID)
+	report, err := h.Provisioner.Provision(req.Context, scope, providerID)
 	if err != nil {
 		var conflict *cart.ProvisionConflict
 		if errors.As(err, &conflict) {

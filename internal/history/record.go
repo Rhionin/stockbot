@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -40,7 +41,10 @@ type OutNote struct {
 
 // AttachStockIn records the move and points the new instances (and the
 // stock-in event, when this restock counts toward pace) at it.
-func AttachStockIn(ctx context.Context, tx *sql.Tx, note InNote) error {
+func AttachStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note InNote) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(note.InstanceIDs) == 0 {
 		return nil
 	}
@@ -54,16 +58,16 @@ func AttachStockIn(ctx context.Context, tx *sql.Tx, note InNote) error {
 		unshelved = 1
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved)
-		VALUES (?, ?, ?, 'in', ?, ?, ?, ?, ?, ?)`,
-		id, note.ItemID, note.ProductID, len(note.InstanceIDs), note.At, note.Source, nullableString(note.ScanEntryID), tracked, unshelved,
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, unshelved, household_id)
+		VALUES (?, ?, ?, 'in', ?, ?, ?, ?, ?, ?, ?)`,
+		id, note.ItemID, note.ProductID, len(note.InstanceIDs), note.At, note.Source, nullableString(note.ScanEntryID), tracked, unshelved, scope.HouseholdID(),
 	); err != nil {
 		return err
 	}
 	for _, instanceID := range note.InstanceIDs {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE item_instances SET stock_move_id = ? WHERE id = ?`,
-			id, instanceID,
+			UPDATE item_instances SET stock_move_id = ? WHERE id = ? AND household_id = ?`,
+			id, instanceID, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
@@ -73,19 +77,22 @@ func AttachStockIn(ctx context.Context, tx *sql.Tx, note InNote) error {
 	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE stock_in_events SET stock_move_id = ?
-		WHERE id = (
+		WHERE household_id = ? AND id = (
 			SELECT id FROM stock_in_events
-			WHERE product_id = ? AND at = ? AND stock_move_id IS NULL
+			WHERE household_id = ? AND product_id = ? AND at = ? AND stock_move_id IS NULL
 			ORDER BY id DESC
 			LIMIT 1
-		)`, id, note.ProductID, note.At)
+		)`, id, scope.HouseholdID(), scope.HouseholdID(), note.ProductID, note.At)
 	return err
 }
 
 // AttachStockOut records the move and points every removed unit (and each
 // consumption row, when this use counts toward pace) at it. Quantity is the
 // number of units, so undoing the move puts all of them back.
-func AttachStockOut(ctx context.Context, tx *sql.Tx, note OutNote) error {
+func AttachStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note OutNote) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	ids := note.InstanceIDs
 	if len(ids) == 0 && note.InstanceID != "" {
 		ids = []string{note.InstanceID}
@@ -103,16 +110,16 @@ func AttachStockOut(ctx context.Context, tx *sql.Tx, note OutNote) error {
 		tracked = 1
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked)
-		VALUES (?, ?, ?, 'out', ?, ?, ?, ?, ?)`,
-		id, note.ItemID, note.ProductID, len(ids), note.At, note.Source, nullableString(note.ScanEntryID), tracked,
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, household_id)
+		VALUES (?, ?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
+		id, note.ItemID, note.ProductID, len(ids), note.At, note.Source, nullableString(note.ScanEntryID), tracked, scope.HouseholdID(),
 	); err != nil {
 		return err
 	}
 	for _, instanceID := range ids {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE item_instances SET removed_by_move_id = ? WHERE id = ?`,
-			id, instanceID,
+			UPDATE item_instances SET removed_by_move_id = ? WHERE id = ? AND household_id = ?`,
+			id, instanceID, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
@@ -122,8 +129,8 @@ func AttachStockOut(ctx context.Context, tx *sql.Tx, note OutNote) error {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE consumption_events SET stock_move_id = ? WHERE id = ?`,
-			id, consumptionID,
+			UPDATE consumption_events SET stock_move_id = ? WHERE id = ? AND household_id = ?`,
+			id, consumptionID, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}

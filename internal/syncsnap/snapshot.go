@@ -1,5 +1,5 @@
 // Package syncsnap is the read-only picture grocy-sync reconciles from.
-// It is one household (user-1). Prices are not included.
+// It is one household, the scope it is given. Prices are not included.
 package syncsnap
 
 import (
@@ -11,9 +11,8 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/restock"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
-
-const householdUser = "user-1"
 
 // Snapshot is the pantry state a one-way sync needs.
 // Slices are empty rather than null so a client can range without a nil check.
@@ -99,7 +98,10 @@ type ShoppingLine struct {
 }
 
 // Build reads the household's current pantry. now is the snapshot's generatedAt.
-func Build(ctx context.Context, db *sql.DB, now time.Time) (Snapshot, error) {
+func Build(ctx context.Context, scope tenant.Scope, db *sql.DB, now time.Time) (Snapshot, error) {
+	if err := scope.Require(); err != nil {
+		return Snapshot{}, err
+	}
 	snap := emptySnapshot(now)
 	products, err := loadProducts(ctx, db)
 	if err != nil {
@@ -109,13 +111,13 @@ func Build(ctx context.Context, db *sql.DB, now time.Time) (Snapshot, error) {
 	for i := range products {
 		byID[products[i].ID] = &products[i]
 	}
-	if err := attachBarcodes(ctx, db, byID); err != nil {
+	if err := attachBarcodes(ctx, scope, db, byID); err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachItems(ctx, db, byID); err != nil {
+	if err := attachItems(ctx, scope, db, byID); err != nil {
 		return Snapshot{}, err
 	}
-	groups, err := loadGroups(ctx, db)
+	groups, err := loadGroups(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -123,13 +125,13 @@ func Build(ctx context.Context, db *sql.DB, now time.Time) (Snapshot, error) {
 	for i := range groups {
 		groupByID[groups[i].ID] = &groups[i]
 	}
-	if err := attachMembers(ctx, db, byID, groupByID); err != nil {
+	if err := attachMembers(ctx, scope, db, byID, groupByID); err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachItemTargets(ctx, db, byID); err != nil {
+	if err := attachItemTargets(ctx, scope, db, byID); err != nil {
 		return Snapshot{}, err
 	}
-	if err := applyResolvedRestock(ctx, db, byID); err != nil {
+	if err := applyResolvedRestock(ctx, scope, db, byID); err != nil {
 		return Snapshot{}, err
 	}
 	for i := range products {
@@ -144,19 +146,19 @@ func Build(ctx context.Context, db *sql.DB, now time.Time) (Snapshot, error) {
 	}
 	snap.Products = products
 	snap.Groups = groups
-	snap.Instances, err = loadInstances(ctx, db)
+	snap.Instances, err = loadInstances(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap.Removals, err = loadRemovals(ctx, db)
+	snap.Removals, err = loadRemovals(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap.Moves, err = loadMoves(ctx, db)
+	snap.Moves, err = loadMoves(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap.ShoppingList, err = loadShopping(ctx, db)
+	snap.ShoppingList, err = loadShopping(ctx, scope, db)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -209,10 +211,14 @@ func loadProducts(ctx context.Context, db *sql.DB) ([]Product, error) {
 
 // attachBarcodes keeps one row per barcode. A household override wins over the
 // global row so the sync follows the name the household actually uses.
-func attachBarcodes(ctx context.Context, db *sql.DB, byID map[string]*Product) error {
+func attachBarcodes(ctx context.Context, scope tenant.Scope, db *sql.DB, byID map[string]*Product) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT barcode, product_id, source FROM barcodes
-		ORDER BY barcode, source`)
+		WHERE household_id = ?
+		ORDER BY barcode, source`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -257,9 +263,12 @@ func removeBarcode(p *Product, barcode string) {
 	p.Barcodes = kept
 }
 
-func attachItems(ctx context.Context, db *sql.DB, byID map[string]*Product) error {
+func attachItems(ctx context.Context, scope tenant.Scope, db *sql.DB, byID map[string]*Product) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT product_id, target_quantity FROM items WHERE user_id = ? AND shelved = 0`, householdUser)
+		SELECT product_id, target_quantity FROM items WHERE household_id = ? AND shelved = 0`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -280,13 +289,16 @@ func attachItems(ctx context.Context, db *sql.DB, byID map[string]*Product) erro
 	return rows.Err()
 }
 
-func loadGroups(ctx context.Context, db *sql.DB) ([]Group, error) {
+func loadGroups(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]Group, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, name, rule, COALESCE(pinned_product_id, ''),
 		       window_months, quantity_base_value, COALESCE(quantity_dimension, '')
 		FROM product_groups
-		WHERE user_id = ?
-		ORDER BY name, id`, householdUser)
+		WHERE household_id = ?
+		ORDER BY name, id`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -313,11 +325,15 @@ func loadGroups(ctx context.Context, db *sql.DB) ([]Group, error) {
 	return out, rows.Err()
 }
 
-func attachMembers(ctx context.Context, db *sql.DB, products map[string]*Product, groups map[string]*Group) error {
+func attachMembers(ctx context.Context, scope tenant.Scope, db *sql.DB, products map[string]*Product, groups map[string]*Group) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT group_id, product_id
 		FROM product_group_members
-		ORDER BY group_id, product_id`)
+		WHERE household_id = ?
+		ORDER BY group_id, product_id`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -340,12 +356,15 @@ func attachMembers(ctx context.Context, db *sql.DB, products map[string]*Product
 // attachItemTargets prefers the household item target over the older
 // target_quantity column and the member flag. An amount becomes the fixed
 // count. A value of 0 means don't restock.
-func attachItemTargets(ctx context.Context, db *sql.DB, byProduct map[string]*Product) error {
+func attachItemTargets(ctx context.Context, scope tenant.Scope, db *sql.DB, byProduct map[string]*Product) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT i.product_id, t.kind, t.value
 		FROM item_targets t
-		JOIN items i ON i.id = t.item_id AND i.user_id = ?
-		WHERE t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND i.shelved = 0`, householdUser)
+		JOIN items i ON i.id = t.item_id AND i.household_id = t.household_id
+		WHERE t.household_id = ? AND i.shelved = 0`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -370,8 +389,11 @@ func attachItemTargets(ctx context.Context, db *sql.DB, byProduct map[string]*Pr
 
 // applyResolvedRestock sets noRestock from the target the household actually
 // uses. Zero at any level means the mobile client should not restock it.
-func applyResolvedRestock(ctx context.Context, db *sql.DB, byProduct map[string]*Product) error {
-	snap, err := restock.Load(ctx, db, restock.HouseholdID)
+func applyResolvedRestock(ctx context.Context, scope tenant.Scope, db *sql.DB, byProduct map[string]*Product) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	snap, err := restock.Load(ctx, scope, db)
 	if err != nil {
 		return err
 	}
@@ -392,13 +414,16 @@ func roundHalfUp(x float64) int {
 	return int(math.Floor(x + 0.5))
 }
 
-func loadInstances(ctx context.Context, db *sql.DB) ([]Instance, error) {
+func loadInstances(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]Instance, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT ii.id, i.product_id, ii.stock_in_at, ii.expires_at, COALESCE(ii.stock_move_id, '')
 		FROM item_instances ii
-		JOIN items i ON i.id = ii.item_id
-		WHERE i.user_id = ? AND i.shelved = 0 AND ii.removed_at IS NULL
-		ORDER BY ii.stock_in_at, ii.id`, householdUser)
+		JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		WHERE ii.household_id = ? AND i.shelved = 0 AND ii.removed_at IS NULL
+		ORDER BY ii.stock_in_at, ii.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -420,15 +445,18 @@ func loadInstances(ctx context.Context, db *sql.DB) ([]Instance, error) {
 	return out, rows.Err()
 }
 
-func loadRemovals(ctx context.Context, db *sql.DB) ([]Removal, error) {
+func loadRemovals(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]Removal, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT ii.id, i.product_id, COALESCE(ii.removal_reason, ''),
 		       COALESCE(ii.stock_move_id, ''), COALESCE(ii.removed_by_move_id, ''),
 		       ii.stock_in_at, ii.expires_at
 		FROM item_instances ii
-		JOIN items i ON i.id = ii.item_id
-		WHERE i.user_id = ? AND i.shelved = 0 AND ii.removed_at IS NOT NULL
-		ORDER BY ii.id`, householdUser)
+		JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		WHERE ii.household_id = ? AND i.shelved = 0 AND ii.removed_at IS NOT NULL
+		ORDER BY ii.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -450,13 +478,16 @@ func loadRemovals(ctx context.Context, db *sql.DB) ([]Removal, error) {
 	return out, rows.Err()
 }
 
-func loadMoves(ctx context.Context, db *sql.DB) ([]Move, error) {
+func loadMoves(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]Move, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.item_id, m.product_id, m.direction, m.quantity, m.at, m.source
 		FROM stock_moves m
-		JOIN items i ON i.id = m.item_id
-		WHERE i.user_id = ? AND i.shelved = 0
-		ORDER BY m.at, m.id`, householdUser)
+		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
+		WHERE m.household_id = ? AND i.shelved = 0
+		ORDER BY m.at, m.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -473,13 +504,16 @@ func loadMoves(ctx context.Context, db *sql.DB) ([]Move, error) {
 	return out, rows.Err()
 }
 
-func loadShopping(ctx context.Context, db *sql.DB) ([]ShoppingLine, error) {
+func loadShopping(ctx context.Context, scope tenant.Scope, db *sql.DB) ([]ShoppingLine, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT s.id, i.product_id, COALESCE(s.group_id, ''), s.quantity, s.source
 		FROM shopping_list_items s
-		JOIN items i ON i.id = s.item_id
-		WHERE s.user_id = ? AND i.shelved = 0 AND s.purchased_at IS NULL AND s.quantity > 0
-		ORDER BY s.created_at, s.id`, householdUser)
+		JOIN items i ON i.id = s.item_id AND i.household_id = s.household_id
+		WHERE s.household_id = ? AND i.shelved = 0 AND s.purchased_at IS NULL AND s.quantity > 0
+		ORDER BY s.created_at, s.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}

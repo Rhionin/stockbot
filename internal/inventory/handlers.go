@@ -3,15 +3,16 @@ package inventory
 import (
 	"context"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ListHandler handles GET /api/inventory requests.
 type ListHandler struct {
 	Pantry interface {
-		GetInventoryList(ctx context.Context, userID string, now time.Time, warningDays int) ([]InventoryItem, error)
+		GetInventoryList(ctx context.Context, scope tenant.Scope, now time.Time, warningDays int) ([]InventoryItem, error)
 	}
-	// In a real app, userID would come from auth middleware
-	UserID      string
+	Scope       tenant.Scope
 	Now         func() time.Time
 	WarningDays int
 }
@@ -29,14 +30,15 @@ func (h *ListHandler) Handle(req struct {
 		warningDays = h.WarningDays
 	}
 
-	return h.Pantry.GetInventoryList(req.Context, h.UserID, now, warningDays)
+	return h.Pantry.GetInventoryList(req.Context, h.Scope, now, warningDays)
 }
 
 // InstancesListHandler handles GET /api/inventory/{itemId}/instances requests.
 type InstancesListHandler struct {
 	Pantry interface {
-		ListItemInstances(ctx context.Context, itemID string) ([]ItemInstance, error)
+		ListItemInstances(ctx context.Context, scope tenant.Scope, itemID string) ([]ItemInstance, error)
 	}
+	Scope       tenant.Scope
 	Now         func() time.Time
 	WarningDays int
 }
@@ -55,7 +57,7 @@ func (h *InstancesListHandler) Handle(req struct {
 	Context    context.Context
 	PathParams instancesListPathParams
 }) ([]ItemInstanceWithStatus, error) {
-	instances, err := h.Pantry.ListItemInstances(req.Context, req.PathParams.ItemID)
+	instances, err := h.Pantry.ListItemInstances(req.Context, h.Scope, req.PathParams.ItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +86,9 @@ func (h *InstancesListHandler) Handle(req struct {
 // InstanceCreateHandler handles POST /api/inventory/{itemId}/instances requests.
 type InstanceCreateHandler struct {
 	Pantry interface {
-		AddInstance(ctx context.Context, instance ItemInstance) (*ItemInstance, error)
+		AddInstance(ctx context.Context, scope tenant.Scope, instance ItemInstance) (*ItemInstance, error)
 	}
+	Scope tenant.Scope
 }
 
 type instanceCreatePathParams struct {
@@ -107,14 +110,15 @@ func (h *InstanceCreateHandler) Handle(req struct {
 		ExpiresAt: req.Body.ExpiresAt,
 	}
 
-	return h.Pantry.AddInstance(req.Context, instance)
+	return h.Pantry.AddInstance(req.Context, h.Scope, instance)
 }
 
 // InstanceDeleteHandler handles DELETE /api/inventory/instances/{instanceId} requests.
 type InstanceDeleteHandler struct {
 	Pantry interface {
-		RemoveInstance(ctx context.Context, instanceID string, reason string) error
+		RemoveInstance(ctx context.Context, scope tenant.Scope, instanceID string, reason string) error
 	}
+	Scope tenant.Scope
 }
 
 type instanceDeletePathParams struct {
@@ -125,7 +129,7 @@ func (h *InstanceDeleteHandler) Handle(req struct {
 	Context    context.Context
 	PathParams instanceDeletePathParams
 }) (struct{}, error) {
-	err := h.Pantry.RemoveInstance(req.Context, req.PathParams.InstanceID, "manual")
+	err := h.Pantry.RemoveInstance(req.Context, h.Scope, req.PathParams.InstanceID, "manual")
 	if err != nil {
 		return struct{}{}, err
 	}

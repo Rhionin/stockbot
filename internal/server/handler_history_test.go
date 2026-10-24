@@ -508,7 +508,7 @@ func TestHistoryHandler(t *testing.T) {
 func insertPendingScanUnits(env testEnv, id, productID string, direction scan.ScanDirection, units int) {
 	env.T.Helper()
 	queue := scan.NewQueue(env.DB)
-	if _, err := queue.CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := queue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID:        id,
 		UserID:    "user-1",
 		Barcode:   id,

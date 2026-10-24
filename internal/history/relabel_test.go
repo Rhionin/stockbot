@@ -18,13 +18,14 @@ func TestRelabelOneExactScan(t *testing.T) {
 	)
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-exact', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-other-product', 'user-1', 'rice', ?, 'stock_in', 1, 'committed', 'other'),
-			('scan-cancelled', 'user-1', 'oats', ?, 'stock_in', 1, 'cancelled', 'prod'),
-			('scan-same-second', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		exact, exact, exact, sameSecond)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-exact', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-other-product', ?, 'rice', ?, 'stock_in', 1, 'committed', 'other', ?),
+			('scan-cancelled', ?, 'oats', ?, 'stock_in', 1, 'cancelled', 'prod', ?),
+			('scan-same-second', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		household, exact, household, household, exact, household, household, exact, household, household, sameSecond, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
 		VALUES ('move-one', 'item', 'prod', 'in', 7, ?, 'manual', 1, ?)`,
@@ -55,9 +56,10 @@ func TestRelabelOneExactScan(t *testing.T) {
 func TestRelabelLeavesZeroMatches(t *testing.T) {
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
-		VALUES ('scan-other-time', 'user-1', 'oats', '2026-10-17 19:00:00 +0000 UTC', 'stock_in', 1, 'committed', 'prod')`)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id)
+		VALUES ('scan-other-time', ?, 'oats', '2026-10-17 19:00:00 +0000 UTC', 'stock_in', 1, 'committed', 'prod', ?)`, household, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
 		VALUES ('move-none', 'item', 'prod', 'in', 1, '2026-10-17 12:00:00 +0000 UTC', 'manual', 0)`)
@@ -73,11 +75,12 @@ func TestRelabelLeavesMultipleMatches(t *testing.T) {
 	const at = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-a', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-b', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		at, at)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-a', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-b', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		household, at, household, household, at, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
 		VALUES ('move-many', 'item', 'prod', 'in', 2, ?, 'manual', 0)`, at)
@@ -93,9 +96,10 @@ func TestRelabelLeavesScanAlreadyLinked(t *testing.T) {
 	const at = "2026-10-17 18:55:19 +0000 UTC"
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
-		VALUES ('scan-taken', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`, at)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id)
+		VALUES ('scan-taken', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`, household, at, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked) VALUES
 			('move-keeper', 'item', 'prod', 'in', 1, ?, 'scan', 'scan-taken', 0),
@@ -119,9 +123,10 @@ func TestRelabelMatchesTheSameInstantInEitherZone(t *testing.T) {
 	utc := later.UTC().Format("2006-01-02 15:04:05 -0700 MST")
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
-		VALUES ('scan-denver', 'user-1', 'oats', ?, 'stock_out', 1, 'committed', 'prod')`, denver)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id)
+		VALUES ('scan-denver', ?, 'oats', ?, 'stock_out', 1, 'committed', 'prod', ?)`, household, denver, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
 		VALUES ('move-utc', 'item', 'prod', 'out', 1, ?, 'manual', 0)`, utc)
@@ -139,6 +144,7 @@ func TestRelabelMatchesTheSameInstantInEitherZone(t *testing.T) {
 func TestRelabelThreeThousandScans(t *testing.T) {
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	tx, err := db.Begin()
 	if err != nil {
@@ -147,9 +153,9 @@ func TestRelabelThreeThousandScans(t *testing.T) {
 	for i := 0; i < 3000; i++ {
 		at := base.Add(time.Duration(i) * time.Second).Format("2006-01-02 15:04:05 -0700 MST")
 		if _, err := tx.Exec(`
-			INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
-			VALUES (?, 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-			fmt.Sprintf("scan-%d", i), at); err != nil {
+			INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id)
+			VALUES (?, ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+			fmt.Sprintf("scan-%d", i), household, at, household); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
 		}
@@ -198,12 +204,13 @@ func TestRelabelThreeMovesAcrossTwoProducts(t *testing.T) {
 	)
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-oats-in', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-oats-out', 'user-1', 'oats', ?, 'stock_out', 1, 'committed', 'prod'),
-			('scan-rice-in', 'user-1', 'rice', ?, 'stock_in', 1, 'committed', 'other')`,
-		oatsIn, oatsOut, riceIn)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-oats-in', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-oats-out', ?, 'oats', ?, 'stock_out', 1, 'committed', 'prod', ?),
+			('scan-rice-in', ?, 'rice', ?, 'stock_in', 1, 'committed', 'other', ?)`,
+		household, oatsIn, household, household, oatsOut, household, household, riceIn, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked) VALUES
 			('move-oats-in', 'item', 'prod', 'in', 1, ?, 'manual', 0),
@@ -235,11 +242,12 @@ func TestRelabelIgnoresAnotherUsersScanAtTheSameInstant(t *testing.T) {
 	const at = "2026-10-17 18:55:19 +0000 UTC"
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-mine', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-theirs', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		at, at)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-mine', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-theirs', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		household, at, household, at, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
 		VALUES ('move-mine', 'item', 'prod', 'in', 1, ?, 'manual', 0)`, at)
@@ -265,11 +273,12 @@ func TestRelabelDoesNotLinkAnotherUsersOnlyScan(t *testing.T) {
 	)
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-shelf', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-move', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		shelfAt, moveAt)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-shelf', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-move', 'user-2', 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		shelfAt, household, moveAt, household)
 	execHistory(t, db, `
 		INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('inst-shelf', 'item', ?)`, shelfAt)
 	execHistory(t, db, `
@@ -309,9 +318,10 @@ func TestRelabelGivesOneScanToTheEarliestMove(t *testing.T) {
 	const at = "2026-10-17 18:55:19 +0000 UTC"
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id)
-		VALUES ('scan-one', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`, at)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id)
+		VALUES ('scan-one', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`, household, at, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked) VALUES
 			('move-b', 'item', 'prod', 'in', 2, ?, 'manual', 0),
@@ -346,11 +356,12 @@ func TestRelabelLeavesMoveThatAlreadyHasAScan(t *testing.T) {
 	)
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-kept', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-match', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		older, at)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-kept', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-match', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		household, older, household, household, at, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked) VALUES
 			('move-a', 'item', 'prod', 'in', 5, ?, 'manual', 'scan-kept', 1),
@@ -381,18 +392,19 @@ func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
 
 	db := openHistoryDB(t)
 	seedRelabelHousehold(t, db)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-garbage', 'user-1', 'barcode-secret', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-good', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod')`,
-		garbage, goodAt)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-garbage', ?, 'barcode-secret', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-good', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?)`,
+		household, garbage, household, household, goodAt, household)
 	execHistory(t, db, `
 		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
 		VALUES ('move-good', 'item', 'prod', 'in', 1, ?, 'manual', 0)`, goodAt)
 
 	now := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
 	journal := NewJournal(db)
-	view, err := journal.Product(t.Context(), householdUser, "item", now)
+	view, err := journal.Product(t.Context(), scopeOf(t, db), "item", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +423,7 @@ func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
 		t.Fatalf("garbage scan linked %d times", stolen)
 	}
 
-	corrected, err := journal.SetQuantity(t.Context(), householdUser, "move-good", 2, now)
+	corrected, err := journal.SetQuantity(t.Context(), scopeOf(t, db), "move-good", 2, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,13 +444,14 @@ func TestRelabelSkipsUnparseableScannedAt(t *testing.T) {
 
 func seedRelabelHousehold(t *testing.T, db *sql.DB) {
 	t.Helper()
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `INSERT INTO products (id, name) VALUES ('prod', 'Oats'), ('other', 'Rice')`)
-	execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod'), ('item-other', 'user-1', 'other')`)
+	execHistory(t, db, `INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?), ('item-other', ?, 'other', ?)`, household, household, household, household)
 }
 
 func repairHistory(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := NewJournal(db).Product(t.Context(), householdUser, "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := NewJournal(db).Product(t.Context(), scopeOf(t, db), "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 }

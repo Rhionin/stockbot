@@ -19,7 +19,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 		mustExec(env, `UPDATE products SET unit_of_measure = 'can', net_base_value = ?, net_dimension = 'mass', net_size_origin = 'manual' WHERE id IN ('prod-gv', 'prod-kr', 'prod-dm')`, 14.5*oz)
 		insertConsumptionEvent(env.T, env.DB, "ate-kr", "item-kr", time.Now().UTC())
 		ounces := 48.0
-		if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-gv", "prod-kr", "prod-dm"}, &group.TargetInput{
+		if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-gv", "prod-kr", "prod-dm"}, &group.TargetInput{
 			Quantity:  &ounces,
 			Dimension: product.DimensionMass,
 		}); err != nil {
@@ -56,7 +56,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 					env.T.Fatal(err)
 				}
 				pin := "prod-gv"
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), id, "favorite", &pin, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), id, "favorite", &pin, true); err != nil {
 					env.T.Fatal(err)
 				}
 			},
@@ -83,13 +83,13 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				mustExec(env, `INSERT INTO item_deals (user_id, item_id, price_cents, regular_price_cents, label) VALUES ('user-1', 'item-small', 200, 250, 'Sale')`)
 				mustExec(env, `INSERT INTO item_deals (user_id, item_id, price_cents, regular_price_cents, label) VALUES ('user-1', 'item-big', 150, 300, 'Sale')`)
 				ounces := 50.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-small", "prod-big"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-small", "prod-big"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "best_deal", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "best_deal", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -118,16 +118,16 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				insertStockIn(env.T, env.DB, "prod-early", early)
 				insertStockIn(env.T, env.DB, "prod-late", late)
 				ounces := 48.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Muffin mix", []string{"prod-early", "prod-late", "prod-fancy"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Muffin mix", []string{"prod-early", "prod-late", "prod-fancy"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "favor_variety", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "favor_variety", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), view.ID, "prod-fancy", true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "prod-fancy", true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -150,16 +150,16 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-only", "Only fancy", "item-only")
 				mustExec(env, `UPDATE products SET unit_of_measure = 'box', net_base_value = ?, net_dimension = 'mass', net_size_origin = 'manual' WHERE id = 'prod-only'`, 14.5*oz)
 				ounces := 48.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Fancy only", []string{"prod-only"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Fancy only", []string{"prod-only"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "favor_variety", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "favor_variety", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), view.ID, "prod-only", true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "prod-only", true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -176,7 +176,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-a", "Can A", "item-a")
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-b", "Can B", "item-b")
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				started := time.Now().UTC().Add(-60 * 24 * time.Hour)
@@ -201,7 +201,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-a", "Can A", "item-a")
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-b", "Can B", "item-b")
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				started := time.Now().UTC().Add(-60 * 24 * time.Hour)

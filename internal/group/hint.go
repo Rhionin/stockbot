@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -28,19 +29,25 @@ type hintGroup struct {
 // Hints matches scanned products to existing groups in one pass.
 // A product that already belongs to a group, or that already has a from-scan
 // suggestion, is left out so the row does not ask again.
-func (g *Groups) Hints(ctx context.Context, names map[string]string) (map[string]Hint, error) {
+func (g *Groups) Hints(ctx context.Context, scope tenant.Scope, names map[string]string) (map[string]Hint, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if len(names) == 0 {
 		return map[string]Hint{}, nil
 	}
-	return hintsFor(ctx, g.db, names)
+	return hintsFor(ctx, scope, g.db, names)
 }
 
-func hintsFor(ctx context.Context, q querier, names map[string]string) (map[string]Hint, error) {
-	groups, memberOf, err := loadHintGroups(ctx, q)
+func hintsFor(ctx context.Context, scope tenant.Scope, q querier, names map[string]string) (map[string]Hint, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	groups, memberOf, err := loadHintGroups(ctx, scope, q)
 	if err != nil {
 		return nil, err
 	}
-	noted, err := loadNotedFromScan(ctx, q)
+	noted, err := loadNotedFromScan(ctx, scope, q)
 	if err != nil {
 		return nil, err
 	}
@@ -143,14 +150,17 @@ func mustSimilarityTokens(name string) []string {
 	return tokens
 }
 
-func loadHintGroups(ctx context.Context, q querier) ([]hintGroup, map[string]string, error) {
+func loadHintGroups(ctx context.Context, scope tenant.Scope, q querier) ([]hintGroup, map[string]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT g.id, g.name, m.product_id, COALESCE(p.name, '')
 		FROM product_groups g
-		LEFT JOIN product_group_members m ON m.group_id = g.id
+		LEFT JOIN product_group_members m ON m.group_id = g.id AND m.household_id = g.household_id
 		LEFT JOIN products p ON p.id = m.product_id
-		WHERE g.user_id = ?
-		ORDER BY g.name, g.id`, householdUser)
+		WHERE g.household_id = ?
+		ORDER BY g.name, g.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not match this scan to a group: %w", err)
 	}
@@ -206,12 +216,15 @@ func loadHintGroups(ctx context.Context, q querier) ([]hintGroup, map[string]str
 	return out, memberOf, nil
 }
 
-func loadNotedFromScan(ctx context.Context, q querier) (map[string]struct{}, error) {
+func loadNotedFromScan(ctx context.Context, scope tenant.Scope, q querier) (map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT m.product_id
 		FROM group_suggestion_members m
-		JOIN group_suggestions s ON s.id = m.suggestion_id
-		WHERE s.user_id = ? AND s.kind = 'from_scan'`, householdUser)
+		JOIN group_suggestions s ON s.id = m.suggestion_id AND s.household_id = m.household_id
+		WHERE s.household_id = ? AND m.household_id = ? AND s.kind = 'from_scan'`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not match this scan to a group: %w", err)
 	}
@@ -232,7 +245,10 @@ func loadNotedFromScan(ctx context.Context, q querier) (map[string]struct{}, err
 
 // NoteFromScan records one from-scan suggestion for a product.
 // A second call for the same product does nothing, including after dismiss.
-func (g *Groups) NoteFromScan(ctx context.Context, productID string) error {
+func (g *Groups) NoteFromScan(ctx context.Context, scope tenant.Scope, productID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	productID = strings.TrimSpace(productID)
 	if productID == "" {
 		return invalid("Choose a product.")
@@ -252,7 +268,7 @@ func (g *Groups) NoteFromScan(ctx context.Context, productID string) error {
 		return fmt.Errorf("could not save that for later: %w", err)
 	}
 
-	noted, err := loadNotedFromScan(ctx, tx)
+	noted, err := loadNotedFromScan(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -260,7 +276,7 @@ func (g *Groups) NoteFromScan(ctx context.Context, productID string) error {
 		return tx.Commit()
 	}
 
-	matched, err := hintsFor(ctx, tx, map[string]string{productID: name})
+	matched, err := hintsFor(ctx, scope, tx, map[string]string{productID: name})
 	if err != nil {
 		return err
 	}
@@ -273,15 +289,15 @@ func (g *Groups) NoteFromScan(ctx context.Context, productID string) error {
 	}
 	id := uuid.NewString()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO group_suggestions (id, user_id, kind, title, existing_group_id, status)
-		VALUES (?, ?, 'from_scan', ?, ?, 'open')`,
-		id, householdUser, title, existing); err != nil {
+		INSERT INTO group_suggestions (id, household_id, user_id, kind, title, existing_group_id, status)
+		VALUES (?, ?, ?, 'from_scan', ?, ?, 'open')`,
+		id, scope.HouseholdID(), scope.HouseholdID(), title, existing); err != nil {
 		return fmt.Errorf("could not save that for later: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO group_suggestion_members (suggestion_id, product_id, included, caution)
-		VALUES (?, ?, 1, '')`,
-		id, productID); err != nil {
+		INSERT INTO group_suggestion_members (household_id, suggestion_id, product_id, included, caution)
+		VALUES (?, ?, ?, 1, '')`,
+		scope.HouseholdID(), id, productID); err != nil {
 		return fmt.Errorf("could not save that for later: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -204,7 +204,7 @@ func TestRestockWrites(t *testing.T) {
 						env.T.Fatal(err)
 					}
 				}
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Citrus", []string{"lemons"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Citrus", []string{"lemons"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				if _, err := env.DB.Exec(`INSERT INTO product_off_tags (product_id, categories_tags, food_groups_tags) VALUES ('bananas', '["en:fresh-fruits"]', '[]')`); err != nil {

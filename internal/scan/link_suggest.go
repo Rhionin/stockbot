@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // linkNameFloor is how much of two food names must overlap before a stock-out
@@ -51,8 +53,11 @@ type linkQuery interface {
 // The scan must still be pending. Candidates are this scan's household only:
 // unshelved items that still have a unit on hand, in the same order as that
 // commit. The call does not write.
-func (r *Queue) LinkSuggestions(ctx context.Context, id string) ([]LinkSuggestion, error) {
-	entry, err := r.GetScanEntry(ctx, id)
+func (r *Queue) LinkSuggestions(ctx context.Context, scope tenant.Scope, id string) ([]LinkSuggestion, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	entry, err := r.GetScanEntry(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -68,13 +73,13 @@ func (r *Queue) LinkSuggestions(ctx context.Context, id string) ([]LinkSuggestio
 	if *entry.Direction != StockOut {
 		return nil, ErrNotStockOut
 	}
-	return r.suggestLinks(ctx, r.db, entry)
+	return r.suggestLinks(ctx, scope, r.db, entry)
 }
 
 // suggestLinks ranks unshelved household items that still have a unit on the shelf.
 // A barcode that is a suffix of the scan outranks a name resemblance. Wiped items
 // stay out of the list even when they still have instance rows.
-func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
+func (r *Queue) suggestLinks(ctx context.Context, scope tenant.Scope, q linkQuery, scanEntry *ScanEntry) ([]LinkSuggestion, error) {
 	scannedName := ""
 	excludeProductID := ""
 	if scanEntry.ProductID != nil {
@@ -88,20 +93,20 @@ func (r *Queue) suggestLinks(ctx context.Context, q linkQuery, scanEntry *ScanEn
 	rows, err := q.QueryContext(ctx, `
 		SELECT i.id, p.id, p.name,
 			(SELECT COUNT(*) FROM item_instances ii
-			 WHERE ii.item_id = i.id AND ii.removed_at IS NULL),
+			 WHERE ii.household_id = ? AND ii.item_id = i.id AND ii.removed_at IS NULL),
 			COALESCE((
 				SELECT group_concat(b.barcode, char(31))
 				FROM barcodes b
 				WHERE b.product_id = p.id
 				  AND (
-				        (b.source = 'global' AND b.user_id = '')
-				     OR (b.source = 'user_override' AND b.user_id = i.user_id)
+				        (b.source = 'user_override' AND b.household_id = ?)
+				     OR (b.source = 'global' AND b.user_id = '')
 				  )
 			), '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ? AND i.shelved = 0`,
-		scanEntry.UserID,
+		WHERE i.household_id = ? AND i.shelved = 0`,
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list link candidates: %w", err)

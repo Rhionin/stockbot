@@ -812,7 +812,7 @@ func undoBackfillPair(t *testing.T, handler http.Handler, env testEnv, moveID, i
 
 func seedLooseScan(env testEnv, id, barcode string, direction scan.ScanDirection, units int, productID *string, status scan.ScanStatus, at time.Time) {
 	env.T.Helper()
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: id, UserID: "user-1", Barcode: barcode, ScannedAt: at,
 		Direction: &direction, UnitCount: units, ProductID: productID, Status: status,
 	}); err != nil {

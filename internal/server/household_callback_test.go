@@ -32,7 +32,7 @@ func TestLoggedInKrogerCallbackStillSucceeds(t *testing.T) {
 	if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := connection.NewDirectory(db).GenerateAuthState(context.Background(), "kroger", "state-from-kroger"); err != nil {
+	if err := connection.NewDirectory(db).GenerateAuthState(context.Background(), primaryScope(t, db), "kroger", "state-from-kroger"); err != nil {
 		t.Fatalf("auth state: %v", err)
 	}
 

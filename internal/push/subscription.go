@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // Subscription is one browser registered for scan alerts.
@@ -67,38 +69,43 @@ func NewSubscriptions(db *sql.DB) *Subscriptions {
 // those keys without changing the endpoint. A non-empty origin, user, or
 // device replaces a blank one already stored. When both the user and the
 // device are set, older endpoints for that pair are removed.
-func (s *Subscriptions) Save(ctx context.Context, sub Subscription) error {
+func (s *Subscriptions) Save(ctx context.Context, scope tenant.Scope, sub Subscription) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	sub.Endpoint = strings.TrimSpace(sub.Endpoint)
 	sub.P256dh = strings.TrimSpace(sub.P256dh)
 	sub.Auth = strings.TrimSpace(sub.Auth)
 	sub.Origin = canonicalHost(sub.Origin)
-	sub.UserID = strings.TrimSpace(sub.UserID)
 	sub.DeviceID = strings.TrimSpace(sub.DeviceID)
+	// user_id stays required. The household is the tenant stored in that column.
+	sub.UserID = scope.HouseholdID()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save push subscription: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO push_subscriptions (endpoint, p256dh, auth, origin, user_id, device_id)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO push_subscriptions (endpoint, household_id, p256dh, auth, origin, user_id, device_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(endpoint) DO UPDATE SET
 			p256dh = excluded.p256dh,
 			auth = excluded.auth,
 			origin = CASE WHEN excluded.origin != '' THEN excluded.origin ELSE push_subscriptions.origin END,
-			user_id = CASE WHEN excluded.user_id != '' THEN excluded.user_id ELSE push_subscriptions.user_id END,
+			user_id = excluded.user_id,
 			device_id = CASE WHEN excluded.device_id != '' THEN excluded.device_id ELSE push_subscriptions.device_id END,
-			updated_at = CURRENT_TIMESTAMP`,
-		sub.Endpoint, sub.P256dh, sub.Auth, sub.Origin, sub.UserID, sub.DeviceID,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE push_subscriptions.household_id = excluded.household_id`,
+		sub.Endpoint, scope.HouseholdID(), sub.P256dh, sub.Auth, sub.Origin, sub.UserID, sub.DeviceID,
 	)
 	if err != nil {
 		return fmt.Errorf("save push subscription: %w", err)
 	}
-	if sub.UserID != "" && sub.DeviceID != "" {
+	if sub.DeviceID != "" {
 		_, err = tx.ExecContext(ctx, `
 			DELETE FROM push_subscriptions
-			WHERE endpoint != ? AND user_id = ? AND device_id = ?`,
-			sub.Endpoint, sub.UserID, sub.DeviceID,
+			WHERE household_id = ? AND endpoint != ? AND device_id = ?`,
+			scope.HouseholdID(), sub.Endpoint, sub.DeviceID,
 		)
 		if err != nil {
 			return fmt.Errorf("save push subscription: %w", err)
@@ -111,8 +118,11 @@ func (s *Subscriptions) Save(ctx context.Context, sub Subscription) error {
 }
 
 // Delete removes one endpoint. A missing row is not an error.
-func (s *Subscriptions) Delete(ctx context.Context, endpoint string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE endpoint = ?`, strings.TrimSpace(endpoint))
+func (s *Subscriptions) Delete(ctx context.Context, scope tenant.Scope, endpoint string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE household_id = ? AND endpoint = ?`, scope.HouseholdID(), strings.TrimSpace(endpoint))
 	if err != nil {
 		return fmt.Errorf("delete push subscription: %w", err)
 	}
@@ -121,12 +131,15 @@ func (s *Subscriptions) Delete(ctx context.Context, endpoint string) error {
 
 // DeleteHost removes every subscription registered at host. Zero rows is
 // not an error. An empty host removes nothing, so a blank origin is kept.
-func (s *Subscriptions) DeleteHost(ctx context.Context, host string) (int, error) {
+func (s *Subscriptions) DeleteHost(ctx context.Context, scope tenant.Scope, host string) (int, error) {
+	if err := scope.Require(); err != nil {
+		return 0, err
+	}
 	host = canonicalHost(host)
 	if host == "" {
 		return 0, nil
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE origin = ?`, host)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE household_id = ? AND origin = ?`, scope.HouseholdID(), host)
 	if err != nil {
 		return 0, fmt.Errorf("delete push subscriptions: %w", err)
 	}
@@ -138,11 +151,15 @@ func (s *Subscriptions) DeleteHost(ctx context.Context, host string) (int, error
 }
 
 // List returns every stored browser, oldest first.
-func (s *Subscriptions) List(ctx context.Context) ([]Subscription, error) {
+func (s *Subscriptions) List(ctx context.Context, scope tenant.Scope) ([]Subscription, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT endpoint, p256dh, auth, origin, user_id, device_id
 		FROM push_subscriptions
-		ORDER BY created_at, endpoint`)
+		WHERE household_id = ?
+		ORDER BY created_at, endpoint`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("list push subscriptions: %w", err)
 	}

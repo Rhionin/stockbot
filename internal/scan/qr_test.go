@@ -80,7 +80,7 @@ func TestNewQREntrySkipsTheProduct(t *testing.T) {
 	t.Parallel()
 	when := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	direction := StockIn
-	entry := NewQREntry("user-1", "  https://example.com/milk  ", &direction, when)
+	entry := NewQREntry("actor", "  https://example.com/milk  ", &direction, when)
 	if entry.Status != QR || entry.ProductID != nil {
 		t.Fatalf("entry = %+v", entry)
 	}

@@ -10,7 +10,17 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func scopeOf(t *testing.T, catalog *product.Catalog) tenant.Scope {
+	t.Helper()
+	scope, err := catalog.PrimaryScope(context.Background())
+	if err != nil {
+		t.Fatalf("primary household: %v", err)
+	}
+	return scope
+}
 
 // newTestCatalog opens an in-memory SQLite database, applies all migrations, and returns a product Catalog.
 func newTestCatalog(t *testing.T) *product.Catalog {
@@ -62,14 +72,24 @@ func TestCreateProduct(t *testing.T) {
 			catalog := newTestCatalog(t)
 			ctx := context.Background()
 
-			// Create product
+			// A typed product keeps its name on the household override.
+			if tt.wantIDEmpty {
+				created, err := catalog.CreateTypedProduct(ctx, scopeOf(t, catalog), tt.product)
+				if err != nil {
+					t.Fatalf("CreateTypedProduct: %v", err)
+				}
+				if created.ID == "" {
+					t.Error("expected generated UUID, got empty string")
+				}
+				return
+			}
 			if err := catalog.CreateProduct(ctx, tt.product); err != nil {
 				t.Fatalf("CreateProduct: %v", err)
 			}
 
 			// If UUID generation test, retrieve from list and verify ID was generated
 			if tt.wantIDEmpty {
-				products, err := catalog.ListProducts(ctx, "user-1")
+				products, err := catalog.ListProducts(ctx, scopeOf(t, catalog))
 				if err != nil {
 					t.Fatalf("ListProducts: %v", err)
 				}
@@ -203,15 +223,15 @@ func TestListProducts(t *testing.T) {
 			catalog := newTestCatalog(t)
 			ctx := context.Background()
 
-			// Add products
+			scope := scopeOf(t, catalog)
 			for _, p := range tt.productsToAdd {
-				if err := catalog.CreateProduct(ctx, p); err != nil {
-					t.Fatalf("CreateProduct %q: %v", p.Name, err)
+				if _, err := catalog.CreateTypedProduct(ctx, scope, p); err != nil {
+					t.Fatalf("CreateTypedProduct %q: %v", p.Name, err)
 				}
 			}
 
 			// List and verify
-			got, err := catalog.ListProducts(ctx, "user-1")
+			got, err := catalog.ListProducts(ctx, scope)
 			if err != nil {
 				t.Fatalf("ListProducts: %v", err)
 			}
@@ -350,8 +370,8 @@ func TestUpsertBarcodeMapping(t *testing.T) {
 			ctx := context.Background()
 
 			// Create products
-			p1 := product.Product{ID: "p1", Name: "Product One"}
-			p2 := product.Product{ID: "p2", Name: "Product Two"}
+			p1 := product.Product{ID: "p1", Name: "Product One", Source: product.SourceExternal}
+			p2 := product.Product{ID: "p2", Name: "Product Two", Source: product.SourceExternal}
 			for _, p := range []product.Product{p1, p2} {
 				if err := catalog.CreateProduct(ctx, p); err != nil {
 					t.Fatalf("CreateProduct: %v", err)
@@ -363,7 +383,7 @@ func TestUpsertBarcodeMapping(t *testing.T) {
 				t.Fatalf("UpsertBarcodeMapping (insert): %v", err)
 			}
 
-			single, err := catalog.LookupByBarcode(ctx, tt.barcode, "user-123")
+			single, err := catalog.LookupByBarcode(ctx, scopeOf(t, catalog), tt.barcode)
 			if err != nil {
 				t.Fatalf("LookupByBarcode: %v", err)
 			}
@@ -377,7 +397,7 @@ func TestUpsertBarcodeMapping(t *testing.T) {
 					t.Fatalf("UpsertBarcodeMapping (replace): %v", err)
 				}
 
-				single, err = catalog.LookupByBarcode(ctx, tt.barcode, "user-123")
+				single, err = catalog.LookupByBarcode(ctx, scopeOf(t, catalog), tt.barcode)
 				if err != nil {
 					t.Fatalf("LookupByBarcode after replace: %v", err)
 				}
@@ -405,7 +425,7 @@ func TestLookupByBarcode(t *testing.T) {
 		{
 			name:          "no match",
 			barcode:       "000000000000",
-			userID:        "user-1",
+			userID:        "",
 			setupProducts: []product.Product{},
 			setupMappings: []struct{ barcode, productID, source, userID string }{},
 			expectSingle:  nil,
@@ -413,37 +433,37 @@ func TestLookupByBarcode(t *testing.T) {
 		{
 			name:    "user override takes precedence over global",
 			barcode: "111222333444",
-			userID:  "user-abc",
+			userID:  "0190bbbb-cccc-7000-8000-0000000000a1",
 			setupProducts: []product.Product{
-				{ID: "global-prod", Name: "Global Product"},
+				{ID: "global-prod", Name: "Global Product", Source: product.SourceExternal},
 				{ID: "override-prod", Name: "Override Product"},
 			},
 			setupMappings: []struct{ barcode, productID, source, userID string }{
 				{"111222333444", "global-prod", "global", ""},
-				{"111222333444", "override-prod", "user_override", "user-abc"},
+				{"111222333444", "override-prod", "user_override", "0190bbbb-cccc-7000-8000-0000000000a1"},
 			},
 			expectSingle: stringPtr("override-prod"),
 		},
 		{
 			name:    "different user sees global (not another user's override)",
 			barcode: "555666777888",
-			userID:  "user-B",
+			userID:  "0190bbbb-cccc-7000-8000-0000000000b2",
 			setupProducts: []product.Product{
-				{ID: "global-prod", Name: "Global Product"},
+				{ID: "global-prod", Name: "Global Product", Source: product.SourceExternal},
 				{ID: "override-prod", Name: "Override Product"},
 			},
 			setupMappings: []struct{ barcode, productID, source, userID string }{
 				{"555666777888", "global-prod", "global", ""},
-				{"555666777888", "override-prod", "user_override", "user-A"},
+				{"555666777888", "override-prod", "user_override", "0190bbbb-cccc-7000-8000-0000000000a2"},
 			},
 			expectSingle: stringPtr("global-prod"),
 		},
 		{
 			name:    "global-only lookup",
 			barcode: "999888777666",
-			userID:  "user-xyz",
+			userID:  "",
 			setupProducts: []product.Product{
-				{ID: "p1", Name: "Product A", ImageURL: "https://images.openfoodfacts.org/a.jpg"},
+				{ID: "p1", Name: "Product A", ImageURL: "https://images.openfoodfacts.org/a.jpg", Source: product.SourceExternal},
 			},
 			setupMappings: []struct{ barcode, productID, source, userID string }{
 				{"999888777666", "p1", "global", ""},
@@ -464,15 +484,26 @@ func TestLookupByBarcode(t *testing.T) {
 				}
 			}
 
-			// Create mappings
+			// Create mappings. A household id on an override is that household's private barcode.
+			seenHousehold := map[string]bool{}
 			for _, m := range tt.setupMappings {
+				if _, err := tenant.New(m.userID); err == nil && !seenHousehold[m.userID] {
+					seenHousehold[m.userID] = true
+					if _, err := catalog.AddHousehold(ctx, m.userID, "Household Alder"); err != nil {
+						t.Fatalf("AddHousehold: %v", err)
+					}
+				}
 				if err := catalog.UpsertBarcodeMapping(ctx, m.barcode, m.productID, m.source, m.userID); err != nil {
 					t.Fatalf("UpsertBarcodeMapping: %v", err)
 				}
 			}
 
 			// Lookup
-			single, err := catalog.LookupByBarcode(ctx, tt.barcode, tt.userID)
+			lookupScope := scopeOf(t, catalog)
+			if s, err := tenant.New(tt.userID); err == nil {
+				lookupScope = s
+			}
+			single, err := catalog.LookupByBarcode(ctx, lookupScope, tt.barcode)
 			if err != nil {
 				t.Fatalf("LookupByBarcode: %v", err)
 			}
@@ -1009,7 +1040,7 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		}
 
 		// Query should not return a product for the miss barcode
-		productSummary, err := catalog.LookupByBarcode(ctx, missBarcode, "")
+		productSummary, err := catalog.LookupByBarcode(ctx, scopeOf(t, catalog), missBarcode)
 		if err != nil {
 			t.Fatalf("LookupByBarcode: %v", err)
 		}
@@ -1018,7 +1049,7 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		}
 
 		// Get the list of products - should still be empty
-		products, err := catalog.ListProducts(ctx, "user-1")
+		products, err := catalog.ListProducts(ctx, scopeOf(t, catalog))
 		if err != nil {
 			t.Fatalf("ListProducts: %v", err)
 		}
@@ -1033,8 +1064,9 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		// Create a real product and verify it shows up
 		realBarcode := rapid.StringMatching(`[0-9]{10}`).Draw(rt, "realBarcode")
 		realProduct := product.Product{
-			ID:   realBarcode,
-			Name: "Test Product",
+			ID:     realBarcode,
+			Name:   "Test Product",
+			Source: product.SourceExternal,
 		}
 		if err := catalog.CreateProduct(ctx, realProduct); err != nil {
 			t.Fatalf("CreateProduct: %v", err)
@@ -1046,7 +1078,7 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		}
 
 		// Now LookupByBarcode should find the real product
-		found, err := catalog.LookupByBarcode(ctx, realBarcode, "")
+		found, err := catalog.LookupByBarcode(ctx, scopeOf(t, catalog), realBarcode)
 		if err != nil {
 			t.Fatalf("LookupByBarcode (real): %v", err)
 		}

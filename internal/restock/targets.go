@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -95,26 +96,22 @@ type loadedItem struct {
 }
 
 // Load reads every item's resolved target for one household.
-func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
-	if household == "" {
-		household = HouseholdID
-	}
-	householdID, err := resolveHouseholdID(ctx, q, household)
-	if err != nil {
+func Load(ctx context.Context, scope tenant.Scope, q Queryer) (Snapshot, error) {
+	if err := scope.Require(); err != nil {
 		return Snapshot{}, err
 	}
 	home, err := readHousehold(ctx, q)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	items, err := loadItems(ctx, q, household)
+	items, err := loadItems(ctx, scope, q)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachStoredTargets(ctx, q, householdID, items); err != nil {
+	if err := attachStoredTargets(ctx, scope, q, items); err != nil {
 		return Snapshot{}, err
 	}
-	if err := attachCategories(ctx, q, householdID, items); err != nil {
+	if err := attachCategories(ctx, scope, q, items); err != nil {
 		return Snapshot{}, err
 	}
 
@@ -181,7 +178,7 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	snap.AppliesTo = applies
 	snap.ItemCount = len(snap.Items)
 
-	categories, err := loadCategoryRows(ctx, q, householdID)
+	categories, err := loadCategoryRows(ctx, scope, q)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -202,7 +199,7 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 	if snap.Categories == nil {
 		snap.Categories = []CategorySummary{}
 	}
-	cards, err := suggest(ctx, q, householdID, snap.Items)
+	cards, err := suggest(ctx, scope, q, snap.Items)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -216,11 +213,14 @@ func Load(ctx context.Context, q Queryer, household string) (Snapshot, error) {
 // categories when the household has none. Deleting them all is how a
 // household opts out; the next read seeds them again only while the table
 // is empty.
-func (t *Targets) Snapshot(ctx context.Context) (Snapshot, error) {
-	if err := t.ensureStarters(ctx); err != nil {
+func (t *Targets) Snapshot(ctx context.Context, scope tenant.Scope) (Snapshot, error) {
+	if err := scope.Require(); err != nil {
 		return Snapshot{}, err
 	}
-	snap, err := Load(ctx, t.db, HouseholdID)
+	if err := t.ensureStarters(ctx, scope); err != nil {
+		return Snapshot{}, err
+	}
+	snap, err := Load(ctx, scope, t.db)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -234,9 +234,12 @@ func (t *Targets) Snapshot(ctx context.Context) (Snapshot, error) {
 	return snap, nil
 }
 
-func (t *Targets) ensureStarters(ctx context.Context) error {
+func (t *Targets) ensureStarters(ctx context.Context, scope tenant.Scope) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var count int
-	if err := t.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE household_id = `+primaryHouseholdSQL).Scan(&count); err != nil {
+	if err := t.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE household_id = ?`, scope.HouseholdID()).Scan(&count); err != nil {
 		return fmt.Errorf("could not read categories: %w", err)
 	}
 	if count > 0 {
@@ -254,8 +257,8 @@ func (t *Targets) ensureStarters(ctx context.Context) error {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO categories (id, household_id, name, name_key) VALUES (?, `+primaryHouseholdSQL+`, ?, ?)`,
-			uuid.NewString(), name, key)
+			INSERT INTO categories (id, household_id, name, name_key) VALUES (?, ?, ?, ?)`,
+			uuid.NewString(), scope.HouseholdID(), name, key)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				return nil
@@ -298,7 +301,10 @@ func Validate(target Target) error {
 
 // SetHousehold stores the default target. The older supply_months key is not
 // written; migration 019 copied it into these keys once.
-func (t *Targets) SetHousehold(ctx context.Context, target Target) error {
+func (t *Targets) SetHousehold(ctx context.Context, scope tenant.Scope, target Target) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	target, err := prepare(target)
 	if err != nil {
 		return err
@@ -321,12 +327,15 @@ func (t *Targets) SetHousehold(ctx context.Context, target Target) error {
 }
 
 // ItemTarget reads the target stored on the item. Nil means the item does not set one.
-func (t *Targets) ItemTarget(ctx context.Context, itemID string) (*Target, error) {
+func (t *Targets) ItemTarget(ctx context.Context, scope tenant.Scope, itemID string) (*Target, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	var kind string
 	var value float64
 	err := t.db.QueryRowContext(ctx, `
-		SELECT kind, value FROM item_targets WHERE household_id = `+primaryHouseholdSQL+` AND item_id = ?`,
-		itemID).Scan(&kind, &value)
+		SELECT kind, value FROM item_targets WHERE household_id = ? AND item_id = ?`,
+		scope.HouseholdID(), itemID).Scan(&kind, &value)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -338,19 +347,22 @@ func (t *Targets) ItemTarget(ctx context.Context, itemID string) (*Target, error
 }
 
 // SetItem stores an item target. Zero means don't restock.
-func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) error {
+func (t *Targets) SetItem(ctx context.Context, scope tenant.Scope, itemID string, target Target) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	target, err := prepare(target)
 	if err != nil {
 		return err
 	}
-	if err := ensureItem(ctx, t.db, itemID); err != nil {
+	if err := ensureItem(ctx, scope, t.db, itemID); err != nil {
 		return err
 	}
 	_, err = t.db.ExecContext(ctx, `
 		INSERT INTO item_targets (household_id, item_id, kind, value)
-		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		itemID, string(target.Kind), target.Value)
+		scope.HouseholdID(), itemID, string(target.Kind), target.Value)
 	if err != nil {
 		return fmt.Errorf("could not save the restock target: %w", err)
 	}
@@ -358,8 +370,11 @@ func (t *Targets) SetItem(ctx context.Context, itemID string, target Target) err
 }
 
 // ClearItem removes the item target so a broader one applies.
-func (t *Targets) ClearItem(ctx context.Context, itemID string) error {
-	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = `+primaryHouseholdSQL+` AND item_id = ?`, itemID); err != nil {
+func (t *Targets) ClearItem(ctx context.Context, scope tenant.Scope, itemID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, scope.HouseholdID(), itemID); err != nil {
 		return fmt.Errorf("could not clear the restock target: %w", err)
 	}
 	return nil
@@ -367,10 +382,13 @@ func (t *Targets) ClearItem(ctx context.Context, itemID string) error {
 
 // ItemIDByProduct is the household item for a product. An empty id means
 // the product is not on the household's shelf.
-func (t *Targets) ItemIDByProduct(ctx context.Context, productID string) (string, error) {
+func (t *Targets) ItemIDByProduct(ctx context.Context, scope tenant.Scope, productID string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var id string
 	err := t.db.QueryRowContext(ctx, `
-		SELECT id FROM items WHERE user_id = ? AND product_id = ?`, HouseholdID, productID).Scan(&id)
+		SELECT id FROM items WHERE household_id = ? AND product_id = ?`, scope.HouseholdID(), productID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -381,12 +399,15 @@ func (t *Targets) ItemIDByProduct(ctx context.Context, productID string) (string
 }
 
 // SetCategoryTarget stores or clears a category target. A nil target clears it.
-func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, target *Target) error {
-	if err := ensureCategory(ctx, t.db, categoryID); err != nil {
+func (t *Targets) SetCategoryTarget(ctx context.Context, scope tenant.Scope, categoryID string, target *Target) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if err := ensureCategory(ctx, scope, t.db, categoryID); err != nil {
 		return err
 	}
 	if target == nil {
-		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = `+primaryHouseholdSQL+` AND category_id = ?`, categoryID)
+		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), categoryID)
 		if err != nil {
 			return fmt.Errorf("could not clear the category target: %w", err)
 		}
@@ -398,9 +419,9 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 	}
 	_, err = t.db.ExecContext(ctx, `
 		INSERT INTO category_targets (household_id, category_id, kind, value)
-		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (household_id, category_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		categoryID, string(prepared.Kind), prepared.Value)
+		scope.HouseholdID(), categoryID, string(prepared.Kind), prepared.Value)
 	if err != nil {
 		return fmt.Errorf("could not save the category target: %w", err)
 	}
@@ -408,16 +429,19 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, categoryID string, targ
 }
 
 // PreviewCategory shows what setting a category target would change.
-func (t *Targets) PreviewCategory(ctx context.Context, categoryID string, target Target) (Preview, error) {
+func (t *Targets) PreviewCategory(ctx context.Context, scope tenant.Scope, categoryID string, target Target) (Preview, error) {
+	if err := scope.Require(); err != nil {
+		return Preview{}, err
+	}
 	target, err := prepare(target)
 	if err != nil {
 		return Preview{}, err
 	}
-	name, err := categoryName(ctx, t.db, categoryID)
+	name, err := categoryName(ctx, scope, t.db, categoryID)
 	if err != nil {
 		return Preview{}, err
 	}
-	snap, err := Load(ctx, t.db, HouseholdID)
+	snap, err := Load(ctx, scope, t.db)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -436,20 +460,23 @@ func (t *Targets) PreviewCategory(ctx context.Context, categoryID string, target
 }
 
 // PreviewGroup shows what setting a group target would change.
-func (t *Targets) PreviewGroup(ctx context.Context, groupID string, target Target) (Preview, error) {
+func (t *Targets) PreviewGroup(ctx context.Context, scope tenant.Scope, groupID string, target Target) (Preview, error) {
+	if err := scope.Require(); err != nil {
+		return Preview{}, err
+	}
 	target, err := prepare(target)
 	if err != nil {
 		return Preview{}, err
 	}
 	var name string
-	err = t.db.QueryRowContext(ctx, `SELECT name FROM product_groups WHERE id = ? AND user_id = ?`, groupID, HouseholdID).Scan(&name)
+	err = t.db.QueryRowContext(ctx, `SELECT name FROM product_groups WHERE id = ? AND household_id = ?`, groupID, scope.HouseholdID()).Scan(&name)
 	if err == sql.ErrNoRows {
 		return Preview{}, fmt.Errorf("That group isn't in the household.")
 	}
 	if err != nil {
 		return Preview{}, fmt.Errorf("could not read the group: %w", err)
 	}
-	snap, err := Load(ctx, t.db, HouseholdID)
+	snap, err := Load(ctx, scope, t.db)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -468,15 +495,18 @@ func (t *Targets) PreviewGroup(ctx context.Context, groupID string, target Targe
 }
 
 // CreateCategory adds a household category.
-func (t *Targets) CreateCategory(ctx context.Context, name string) (CategorySummary, error) {
+func (t *Targets) CreateCategory(ctx context.Context, scope tenant.Scope, name string) (CategorySummary, error) {
+	if err := scope.Require(); err != nil {
+		return CategorySummary{}, err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return CategorySummary{}, err
 	}
 	id := uuid.NewString()
 	_, err = t.db.ExecContext(ctx, `
-		INSERT INTO categories (id, household_id, name, name_key) VALUES (?, `+primaryHouseholdSQL+`, ?, ?)`,
-		id, strings.TrimSpace(name), key)
+		INSERT INTO categories (id, household_id, name, name_key) VALUES (?, ?, ?, ?)`,
+		id, scope.HouseholdID(), strings.TrimSpace(name), key)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return CategorySummary{}, fmt.Errorf("A category named %s already exists.", strings.TrimSpace(name))
@@ -487,14 +517,17 @@ func (t *Targets) CreateCategory(ctx context.Context, name string) (CategorySumm
 }
 
 // RenameCategory changes a category's name.
-func (t *Targets) RenameCategory(ctx context.Context, id, name string) error {
+func (t *Targets) RenameCategory(ctx context.Context, scope tenant.Scope, id, name string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return err
 	}
 	result, err := t.db.ExecContext(ctx, `
-		UPDATE categories SET name = ?, name_key = ? WHERE id = ? AND household_id = `+primaryHouseholdSQL,
-		strings.TrimSpace(name), key, id)
+		UPDATE categories SET name = ?, name_key = ? WHERE id = ? AND household_id = ?`,
+		strings.TrimSpace(name), key, id, scope.HouseholdID())
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return fmt.Errorf("A category named %s already exists.", strings.TrimSpace(name))
@@ -509,8 +542,11 @@ func (t *Targets) RenameCategory(ctx context.Context, id, name string) error {
 }
 
 // DeleteCategory removes a category and its memberships.
-func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
-	if err := ensureCategory(ctx, t.db, id); err != nil {
+func (t *Targets) DeleteCategory(ctx context.Context, scope tenant.Scope, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if err := ensureCategory(ctx, scope, t.db, id); err != nil {
 		return err
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
@@ -519,11 +555,11 @@ func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	for _, query := range []string{
-		`DELETE FROM item_categories WHERE category_id = ?`,
-		`DELETE FROM category_targets WHERE category_id = ?`,
-		`DELETE FROM categories WHERE id = ? AND household_id = ` + primaryHouseholdSQL,
+		`DELETE FROM item_categories WHERE household_id = ? AND category_id = ?`,
+		`DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`,
+		`DELETE FROM categories WHERE household_id = ? AND id = ?`,
 	} {
-		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+		if _, err := tx.ExecContext(ctx, query, scope.HouseholdID(), id); err != nil {
 			return fmt.Errorf("could not delete the category: %w", err)
 		}
 	}
@@ -531,14 +567,17 @@ func (t *Targets) DeleteCategory(ctx context.Context, id string) error {
 }
 
 // MergeCategory moves memberships into another category and deletes the source.
-func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
+func (t *Targets) MergeCategory(ctx context.Context, scope tenant.Scope, id, intoID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if id == intoID {
 		return fmt.Errorf("Choose a different category to merge into.")
 	}
-	if err := ensureCategory(ctx, t.db, id); err != nil {
+	if err := ensureCategory(ctx, scope, t.db, id); err != nil {
 		return err
 	}
-	if err := ensureCategory(ctx, t.db, intoID); err != nil {
+	if err := ensureCategory(ctx, scope, t.db, intoID); err != nil {
 		return err
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
@@ -548,7 +587,7 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id, source, confirmed_at, removed_at FROM item_categories
-		WHERE household_id = `+primaryHouseholdSQL+` AND category_id = ?`, id)
+		WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), id)
 	if err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
 	}
@@ -573,40 +612,43 @@ func (t *Targets) MergeCategory(ctx context.Context, id, intoID string) error {
 	for _, item := range moved {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO item_categories (household_id, item_id, category_id, source, confirmed_at, removed_at)
-			VALUES (`+primaryHouseholdSQL+`, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT (household_id, item_id, category_id) DO NOTHING`,
-			item.item, intoID, item.source, nullableTime(item.confirmed), nullableTime(item.removed))
+			scope.HouseholdID(), item.item, intoID, item.source, nullableTime(item.confirmed), nullableTime(item.removed))
 		if err != nil {
 			return fmt.Errorf("could not merge the categories: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM item_categories WHERE category_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_categories WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), id); err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM category_targets WHERE category_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), id); err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM categories WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM categories WHERE household_id = ? AND id = ?`, scope.HouseholdID(), id); err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
 	}
 	return tx.Commit()
 }
 
 // AddItemCategory puts an item in a category and keeps that choice.
-func (t *Targets) AddItemCategory(ctx context.Context, itemID, categoryID string) error {
-	return t.membership(ctx, itemID, categoryID, "user", false)
+func (t *Targets) AddItemCategory(ctx context.Context, scope tenant.Scope, itemID, categoryID string) error {
+	return t.membership(ctx, scope, itemID, categoryID, "user", false)
 }
 
 // RemoveItemCategory sticks a removal so a later refresh does not put it back.
-func (t *Targets) RemoveItemCategory(ctx context.Context, itemID, categoryID string) error {
-	return t.membership(ctx, itemID, categoryID, "user", true)
+func (t *Targets) RemoveItemCategory(ctx context.Context, scope tenant.Scope, itemID, categoryID string) error {
+	return t.membership(ctx, scope, itemID, categoryID, "user", true)
 }
 
-func (t *Targets) membership(ctx context.Context, itemID, categoryID, source string, removed bool) error {
-	if err := ensureItem(ctx, t.db, itemID); err != nil {
+func (t *Targets) membership(ctx context.Context, scope tenant.Scope, itemID, categoryID, source string, removed bool) error {
+	if err := scope.Require(); err != nil {
 		return err
 	}
-	if err := ensureCategory(ctx, t.db, categoryID); err != nil {
+	if err := ensureItem(ctx, scope, t.db, itemID); err != nil {
+		return err
+	}
+	if err := ensureCategory(ctx, scope, t.db, categoryID); err != nil {
 		return err
 	}
 	var removedAt any
@@ -615,12 +657,12 @@ func (t *Targets) membership(ctx context.Context, itemID, categoryID, source str
 	}
 	_, err := t.db.ExecContext(ctx, `
 		INSERT INTO item_categories (household_id, item_id, category_id, source, confirmed_at, removed_at)
-		VALUES (`+primaryHouseholdSQL+`, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (household_id, item_id, category_id) DO UPDATE SET
 			source = excluded.source,
 			confirmed_at = excluded.confirmed_at,
 			removed_at = excluded.removed_at`,
-		itemID, categoryID, source, time.Now().UTC(), removedAt)
+		scope.HouseholdID(), itemID, categoryID, source, time.Now().UTC(), removedAt)
 	if err != nil {
 		return fmt.Errorf("could not update the category: %w", err)
 	}
@@ -648,36 +690,34 @@ type SuggestionCard struct {
 }
 
 // Suggestions lists category ideas the household has not confirmed.
-func (t *Targets) Suggestions(ctx context.Context) ([]SuggestionCard, error) {
-	snap, err := Load(ctx, t.db, HouseholdID)
+func (t *Targets) Suggestions(ctx context.Context, scope tenant.Scope) ([]SuggestionCard, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	snap, err := Load(ctx, scope, t.db)
 	if err != nil {
 		return nil, err
 	}
-	householdID, err := resolveHouseholdID(ctx, t.db, HouseholdID)
-	if err != nil {
-		return nil, err
-	}
-	return suggest(ctx, t.db, householdID, snap.Items)
+	return suggest(ctx, scope, t.db, snap.Items)
 }
 
 // ApplySuggestions adds the chosen items to a category.
-func (t *Targets) ApplySuggestions(ctx context.Context, category string, itemIDs []string) error {
+func (t *Targets) ApplySuggestions(ctx context.Context, scope tenant.Scope, category string, itemIDs []string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(itemIDs) == 0 {
 		return fmt.Errorf("Choose at least one item.")
 	}
-	id, err := t.categoryByName(ctx, category)
+	id, err := t.categoryByName(ctx, scope, category)
 	if err != nil {
 		return err
 	}
-	snap, err := Load(ctx, t.db, HouseholdID)
+	snap, err := Load(ctx, scope, t.db)
 	if err != nil {
 		return err
 	}
-	householdID, err := resolveHouseholdID(ctx, t.db, HouseholdID)
-	if err != nil {
-		return err
-	}
-	cards, err := suggest(ctx, t.db, householdID, snap.Items)
+	cards, err := suggest(ctx, scope, t.db, snap.Items)
 	if err != nil {
 		return err
 	}
@@ -695,7 +735,7 @@ func (t *Targets) ApplySuggestions(ctx context.Context, category string, itemIDs
 		if source == "" {
 			source = "user"
 		}
-		if err := t.membership(ctx, itemID, id, source, false); err != nil {
+		if err := t.membership(ctx, scope, itemID, id, source, false); err != nil {
 			return err
 		}
 	}
@@ -703,7 +743,10 @@ func (t *Targets) ApplySuggestions(ctx context.Context, category string, itemIDs
 }
 
 // DismissSuggestions hides a card's items until someone adds them by hand.
-func (t *Targets) DismissSuggestions(ctx context.Context, category string, itemIDs []string) error {
+func (t *Targets) DismissSuggestions(ctx context.Context, scope tenant.Scope, category string, itemIDs []string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	key, err := nameKey(category)
 	if err != nil {
 		return err
@@ -711,9 +754,9 @@ func (t *Targets) DismissSuggestions(ctx context.Context, category string, itemI
 	for _, itemID := range itemIDs {
 		if _, err := t.db.ExecContext(ctx, `
 			INSERT INTO category_suggestion_dismissals (household_id, item_id, category_key)
-			VALUES (`+primaryHouseholdSQL+`, ?, ?)
+			VALUES (?, ?, ?)
 			ON CONFLICT (household_id, item_id, category_key) DO NOTHING`,
-			itemID, key); err != nil {
+			scope.HouseholdID(), itemID, key); err != nil {
 			return fmt.Errorf("could not dismiss the suggestion: %w", err)
 		}
 	}
@@ -747,59 +790,80 @@ func (t *Targets) SaveOffTags(ctx context.Context, productID string, categories,
 
 // CopyLegacy moves supply overrides, fixed item quantities, and don't-restock
 // members into item targets. It is safe to run more than once.
-func CopyLegacy(ctx context.Context, q Queryer) error {
-	statements := []string{
-		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT ` + primaryHouseholdSQL + `, i.id,
+func CopyLegacy(ctx context.Context, scope tenant.Scope, q Queryer) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	householdID := scope.HouseholdID()
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{
+			query: `INSERT INTO item_targets (household_id, item_id, kind, value)
+		 SELECT ?, i.id,
 		   CASE WHEN o.window_months IS NOT NULL THEN 'months' ELSE 'amount' END,
 		   CASE WHEN o.window_months IS NOT NULL THEN o.window_months ELSE MIN(o.quantity, 999) END
 		 FROM supply_overrides o
-		 JOIN items i ON i.product_id = o.product_id
-		 WHERE NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.product_id = o.product_id)
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)
+		 JOIN items i ON i.product_id = o.product_id AND i.household_id = o.household_id
+		 WHERE o.household_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.household_id = ? AND m.product_id = o.product_id)
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ? AND t.item_id = i.id)
 		   AND (o.window_months IS NOT NULL OR (o.quantity IS NOT NULL AND o.quantity > 0))`,
-		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT ` + primaryHouseholdSQL + `, i.id, 'months', 0
+			args: []any{householdID, householdID, householdID, householdID},
+		},
+		{
+			query: `INSERT INTO item_targets (household_id, item_id, kind, value)
+		 SELECT ?, i.id, 'months', 0
 		 FROM product_group_members m
-		 JOIN items i ON i.product_id = m.product_id
-		 WHERE m.no_restock = 1
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)`,
-		`INSERT INTO item_targets (household_id, item_id, kind, value)
-		 SELECT ` + primaryHouseholdSQL + `, i.id, 'amount', MIN(i.target_quantity, 999)
+		 JOIN items i ON i.product_id = m.product_id AND i.household_id = m.household_id
+		 WHERE m.household_id = ? AND m.no_restock = 1
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ? AND t.item_id = i.id)`,
+			args: []any{householdID, householdID, householdID},
+		},
+		{
+			query: `INSERT INTO item_targets (household_id, item_id, kind, value)
+		 SELECT ?, i.id, 'amount', MIN(i.target_quantity, 999)
 		 FROM items i
-		 WHERE i.target_quantity > 0
+		 WHERE i.household_id = ?
+		   AND i.target_quantity > 0
 		   AND COALESCE(i.replenishment_mode, 'target') = 'target'
-		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ` + primaryHouseholdSQL + ` AND t.item_id = i.id)
-		   AND NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.product_id = i.product_id)
-		   AND NOT EXISTS (SELECT 1 FROM supply_overrides o WHERE o.product_id = i.product_id)`,
+		   AND NOT EXISTS (SELECT 1 FROM item_targets t WHERE t.household_id = ? AND t.item_id = i.id)
+		   AND NOT EXISTS (SELECT 1 FROM product_group_members m WHERE m.household_id = ? AND m.product_id = i.product_id)
+		   AND NOT EXISTS (SELECT 1 FROM supply_overrides o WHERE o.household_id = ? AND o.product_id = i.product_id)`,
+			args: []any{householdID, householdID, householdID, householdID, householdID},
+		},
 	}
-	for _, query := range statements {
-		if _, err := q.ExecContext(ctx, query); err != nil {
+	for _, statement := range statements {
+		if _, err := q.ExecContext(ctx, statement.query, statement.args...); err != nil {
 			return fmt.Errorf("could not move existing restock targets: %w", err)
 		}
 	}
 	return nil
 }
 
-func suggest(ctx context.Context, q Queryer, household string, items []ItemView) ([]SuggestionCard, error) {
+func suggest(ctx context.Context, scope tenant.Scope, q Queryer, items []ItemView) ([]SuggestionCard, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	tags, err := loadTags(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	barcodes, err := loadBarcodes(ctx, q)
+	barcodes, err := loadBarcodes(ctx, scope, q)
 	if err != nil {
 		return nil, err
 	}
-	dismissed, err := loadDismissals(ctx, q, household)
+	dismissed, err := loadDismissals(ctx, scope, q)
 	if err != nil {
 		return nil, err
 	}
-	removed, err := loadRemoved(ctx, q, household)
+	removed, err := loadRemoved(ctx, scope, q)
 	if err != nil {
 		return nil, err
 	}
 	existing := map[string]string{}
-	rows, err := q.QueryContext(ctx, `SELECT name_key, id, name FROM categories WHERE household_id = ?`, household)
+	rows, err := q.QueryContext(ctx, `SELECT name_key, id, name FROM categories WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
@@ -900,8 +964,11 @@ func loadTags(ctx context.Context, q Queryer) (map[string]tagPair, error) {
 	return out, rows.Err()
 }
 
-func loadBarcodes(ctx context.Context, q Queryer) (map[string]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT product_id, barcode FROM barcodes ORDER BY product_id, barcode`)
+func loadBarcodes(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT product_id, barcode FROM barcodes WHERE household_id = ? ORDER BY product_id, barcode`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read barcodes: %w", err)
 	}
@@ -919,12 +986,15 @@ func loadBarcodes(ctx context.Context, q Queryer) (map[string]string, error) {
 	return out, rows.Err()
 }
 
-func loadRemoved(ctx context.Context, q Queryer, household string) (map[string]bool, error) {
+func loadRemoved(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]bool, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT ic.item_id, c.name
 		FROM item_categories ic
 		JOIN categories c ON c.id = ic.category_id AND c.household_id = ic.household_id
-		WHERE ic.household_id = ? AND ic.removed_at IS NOT NULL`, household)
+		WHERE ic.household_id = ? AND ic.removed_at IS NOT NULL`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
@@ -940,8 +1010,11 @@ func loadRemoved(ctx context.Context, q Queryer, household string) (map[string]b
 	return out, rows.Err()
 }
 
-func loadDismissals(ctx context.Context, q Queryer, household string) (map[string]bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT item_id, category_key FROM category_suggestion_dismissals WHERE household_id = ?`, household)
+func loadDismissals(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]bool, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT item_id, category_key FROM category_suggestion_dismissals WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read dismissed suggestions: %w", err)
 	}
@@ -957,37 +1030,43 @@ func loadDismissals(ctx context.Context, q Queryer, household string) (map[strin
 	return out, rows.Err()
 }
 
-func (t *Targets) categoryByName(ctx context.Context, name string) (string, error) {
+func (t *Targets) categoryByName(ctx context.Context, scope tenant.Scope, name string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return "", err
 	}
 	var id string
-	err = t.db.QueryRowContext(ctx, `SELECT id FROM categories WHERE household_id = `+primaryHouseholdSQL+` AND name_key = ?`, key).Scan(&id)
+	err = t.db.QueryRowContext(ctx, `SELECT id FROM categories WHERE household_id = ? AND name_key = ?`, scope.HouseholdID(), key).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if err != sql.ErrNoRows {
 		return "", fmt.Errorf("could not read categories: %w", err)
 	}
-	created, err := t.CreateCategory(ctx, name)
+	created, err := t.CreateCategory(ctx, scope, name)
 	if err != nil {
 		return "", err
 	}
 	return created.ID, nil
 }
 
-func loadItems(ctx context.Context, q Queryer, household string) (map[string]*loadedItem, error) {
+func loadItems(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]*loadedItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT i.id, i.product_id, p.name, COALESCE(p.unit_of_measure, ''),
 			COALESCE(g.id, ''), COALESCE(g.name, ''),
 			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		LEFT JOIN product_group_members m ON m.product_id = i.product_id
-		LEFT JOIN product_groups g ON g.id = m.group_id AND g.user_id = i.user_id
-		WHERE i.user_id = ? AND i.shelved = 0
-		ORDER BY p.name, i.id`, household)
+		LEFT JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id
+		LEFT JOIN product_groups g ON g.id = m.group_id AND g.household_id = i.household_id
+		WHERE i.household_id = ? AND i.shelved = 0
+		ORDER BY p.name, i.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read restock targets: %w", err)
 	}
@@ -1008,8 +1087,11 @@ func loadItems(ctx context.Context, q Queryer, household string) (map[string]*lo
 	return out, rows.Err()
 }
 
-func attachStoredTargets(ctx context.Context, q Queryer, household string, items map[string]*loadedItem) error {
-	rows, err := q.QueryContext(ctx, `SELECT item_id, kind, value FROM item_targets WHERE household_id = ?`, household)
+func attachStoredTargets(ctx context.Context, scope tenant.Scope, q Queryer, items map[string]*loadedItem) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT item_id, kind, value FROM item_targets WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return fmt.Errorf("could not read restock targets: %w", err)
 	}
@@ -1030,14 +1112,17 @@ func attachStoredTargets(ctx context.Context, q Queryer, household string, items
 	return rows.Err()
 }
 
-func attachCategories(ctx context.Context, q Queryer, household string, items map[string]*loadedItem) error {
+func attachCategories(ctx context.Context, scope tenant.Scope, q Queryer, items map[string]*loadedItem) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT ic.item_id, c.id, c.name, ct.kind, ct.value
 		FROM item_categories ic
 		JOIN categories c ON c.id = ic.category_id AND c.household_id = ic.household_id
 		LEFT JOIN category_targets ct ON ct.category_id = c.id AND ct.household_id = c.household_id
 		WHERE ic.household_id = ? AND ic.removed_at IS NULL
-		ORDER BY c.name`, household)
+		ORDER BY c.name`, scope.HouseholdID())
 	if err != nil {
 		return fmt.Errorf("could not read categories: %w", err)
 	}
@@ -1067,13 +1152,16 @@ type categoryRow struct {
 	Target *Target
 }
 
-func loadCategoryRows(ctx context.Context, q Queryer, household string) ([]categoryRow, error) {
+func loadCategoryRows(ctx context.Context, scope tenant.Scope, q Queryer) ([]categoryRow, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT c.id, c.name, ct.kind, ct.value
 		FROM categories c
 		LEFT JOIN category_targets ct ON ct.category_id = c.id AND ct.household_id = c.household_id
 		WHERE c.household_id = ?
-		ORDER BY c.name`, household)
+		ORDER BY c.name`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read categories: %w", err)
 	}
@@ -1164,9 +1252,12 @@ func hasCategory(item ItemView, id string) bool {
 	return false
 }
 
-func ensureItem(ctx context.Context, q Queryer, itemID string) error {
+func ensureItem(ctx context.Context, scope tenant.Scope, q Queryer, itemID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var id string
-	err := q.QueryRowContext(ctx, `SELECT id FROM items WHERE id = ? AND user_id = ?`, itemID, HouseholdID).Scan(&id)
+	err := q.QueryRowContext(ctx, `SELECT id FROM items WHERE id = ? AND household_id = ?`, itemID, scope.HouseholdID()).Scan(&id)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("That item isn't in the household.")
 	}
@@ -1176,9 +1267,12 @@ func ensureItem(ctx context.Context, q Queryer, itemID string) error {
 	return nil
 }
 
-func ensureCategory(ctx context.Context, q Queryer, id string) error {
+func ensureCategory(ctx context.Context, scope tenant.Scope, q Queryer, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var name string
-	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = `+primaryHouseholdSQL, id).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&name)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("That category isn't in the household.")
 	}
@@ -1188,9 +1282,12 @@ func ensureCategory(ctx context.Context, q Queryer, id string) error {
 	return nil
 }
 
-func categoryName(ctx context.Context, q Queryer, id string) (string, error) {
+func categoryName(ctx context.Context, scope tenant.Scope, q Queryer, id string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var name string
-	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = `+primaryHouseholdSQL, id).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM categories WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&name)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("That category isn't in the household.")
 	}
@@ -1200,37 +1297,21 @@ func categoryName(ctx context.Context, q Queryer, id string) (string, error) {
 	return name, nil
 }
 
-// resolveHouseholdID maps the legacy user id onto household 1.
-// Any other id is already a household id and is left alone.
-func resolveHouseholdID(ctx context.Context, q Queryer, household string) (string, error) {
-	if household != "" && household != HouseholdID {
-		return household, nil
-	}
-	return PrimaryID(ctx, q)
-}
-
-// PrimaryID is household 1, the household that existing rows moved into.
-func PrimaryID(ctx context.Context, q Queryer) (string, error) {
-	var id string
-	err := q.QueryRowContext(ctx, `SELECT id FROM households WHERE is_primary = 1`).Scan(&id)
-	if err != nil {
-		return "", fmt.Errorf("could not find the household: %w", err)
-	}
-	return id, nil
-}
-
 // DeleteItem removes an item and its restock target in one transaction.
 // The database trigger that used to do this is gone.
-func DeleteItem(ctx context.Context, db *sql.DB, itemID string) error {
+func DeleteItem(ctx context.Context, scope tenant.Scope, db *sql.DB, itemID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not delete the item: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM item_targets WHERE item_id = ?`, itemID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, scope.HouseholdID(), itemID); err != nil {
 		return fmt.Errorf("could not delete the item: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE id = ?`, itemID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE household_id = ? AND id = ?`, scope.HouseholdID(), itemID); err != nil {
 		return fmt.Errorf("could not delete the item: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

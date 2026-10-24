@@ -3,9 +3,12 @@ package restock
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	_ "modernc.org/sqlite"
 )
 
@@ -29,38 +32,67 @@ func insertProduct(t *testing.T, db *sql.DB, id, name string) {
 	}
 }
 
+func primaryScope(t *testing.T, db *sql.DB) tenant.Scope {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+const cedarHouseholdID = "0190bbbb-cccc-7000-8000-0000000000e5"
+
+func cedarScope(t *testing.T, db *sql.DB) tenant.Scope {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Cedar', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`,
+		cedarHouseholdID); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := tenant.New(cedarHouseholdID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
 func TestCopyLegacyKeepsCurrentBehavior(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "chips", "Tortilla chips")
 	insertProduct(t, db, "beans", "Green beans")
 	insertProduct(t, db, "milk", "Oat milk")
+	hid := scope.HouseholdID()
 	if _, err := db.Exec(`
-		INSERT INTO items (id, user_id, product_id, target_quantity, replenishment_mode) VALUES
-			('item-chips', 'user-1', 'chips', 4, 'target'),
-			('item-beans', 'user-1', 'beans', NULL, 'target'),
-			('item-milk', 'user-1', 'milk', 9, 'replenish')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id, target_quantity, replenishment_mode) VALUES
+			('item-chips', ?, ?, 'chips', 4, 'target'),
+			('item-beans', ?, ?, 'beans', NULL, 'target'),
+			('item-milk', ?, ?, 'milk', 9, 'replenish')`,
+		hid, hid, hid, hid, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO supply_overrides (product_id, window_months) VALUES ('chips', 2)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO supply_overrides (product_id, household_id, window_months) VALUES ('chips', ?, 2)`, hid); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO product_groups (id, user_id, name, name_key) VALUES ('g1', 'user-1', 'Beans', 'beans')`); err != nil {
+		INSERT INTO product_groups (id, user_id, household_id, name, name_key) VALUES ('g1', ?, ?, 'Beans', 'beans')`, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO product_group_members (group_id, product_id, no_restock) VALUES ('g1', 'beans', 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO product_group_members (group_id, product_id, household_id, no_restock) VALUES ('g1', 'beans', ?, 1)`, hid); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := CopyLegacy(ctx, db); err != nil {
+	if err := CopyLegacy(ctx, scope, db); err != nil {
 		t.Fatal(err)
 	}
-	if err := CopyLegacy(ctx, db); err != nil {
+	if err := CopyLegacy(ctx, scope, db); err != nil {
 		t.Fatal(err)
 	}
 
-	snap, err := targets.Snapshot(ctx)
+	snap, err := targets.Snapshot(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,29 +120,31 @@ func TestCopyLegacyKeepsCurrentBehavior(t *testing.T) {
 func TestDontRestockAndCategoryPreview(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "bananas", "Bananas")
 	insertProduct(t, db, "lemons", "Lemons")
+	hid := scope.HouseholdID()
 	if _, err := db.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-bananas', 'user-1', 'bananas'),
-			('item-lemons', 'user-1', 'lemons')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-bananas', ?, ?, 'bananas'),
+			('item-lemons', ?, ?, 'lemons')`, hid, hid, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	created, err := targets.CreateCategory(ctx, "Produce")
+	created, err := targets.CreateCategory(ctx, scope, "Produce")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.AddItemCategory(ctx, "item-bananas", created.ID); err != nil {
+	if err := targets.AddItemCategory(ctx, scope, "item-bananas", created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.AddItemCategory(ctx, "item-lemons", created.ID); err != nil {
+	if err := targets.AddItemCategory(ctx, scope, "item-lemons", created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetItem(ctx, "item-lemons", Target{Kind: KindAmount, Value: 6}); err != nil {
+	if err := targets.SetItem(ctx, scope, "item-lemons", Target{Kind: KindAmount, Value: 6}); err != nil {
 		t.Fatal(err)
 	}
 
-	preview, err := targets.PreviewCategory(ctx, created.ID, Target{Kind: KindMonths, Value: 0})
+	preview, err := targets.PreviewCategory(ctx, scope, created.ID, Target{Kind: KindMonths, Value: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +155,10 @@ func TestDontRestockAndCategoryPreview(t *testing.T) {
 		t.Fatalf("preview keep: %+v", preview.Keep)
 	}
 
-	if err := targets.SetCategoryTarget(ctx, created.ID, &Target{Kind: KindMonths, Value: 0}); err != nil {
+	if err := targets.SetCategoryTarget(ctx, scope, created.ID, &Target{Kind: KindMonths, Value: 0}); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := targets.Snapshot(ctx)
+	snap, err := targets.Snapshot(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,13 +171,13 @@ func TestDontRestockAndCategoryPreview(t *testing.T) {
 		}
 	}
 
-	if err := targets.RemoveItemCategory(ctx, "item-bananas", created.ID); err != nil {
+	if err := targets.RemoveItemCategory(ctx, scope, "item-bananas", created.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := targets.SaveOffTags(ctx, "bananas", []string{"en:fresh-fruits", "en:undefined"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	cards, err := targets.Suggestions(ctx)
+	cards, err := targets.Suggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,14 +196,16 @@ func TestDontRestockAndCategoryPreview(t *testing.T) {
 func TestHouseholdDefaultMayBeZero(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "salt", "Salt")
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-salt', 'user-1', 'salt')`); err != nil {
+	hid := scope.HouseholdID()
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-salt', ?, ?, 'salt')`, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetHousehold(ctx, Target{Kind: KindMonths, Value: 0}); err != nil {
+	if err := targets.SetHousehold(ctx, scope, Target{Kind: KindMonths, Value: 0}); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := targets.Snapshot(ctx)
+	snap, err := targets.Snapshot(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,33 +222,35 @@ func TestHouseholdDefaultMayBeZero(t *testing.T) {
 func TestMergeMovesMembershipsAndNewCategories(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "bananas", "Bananas")
 	insertProduct(t, db, "tomatoes", "Crushed tomatoes")
+	hid := scope.HouseholdID()
 	if _, err := db.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-bananas', 'user-1', 'bananas'),
-			('item-tomatoes', 'user-1', 'tomatoes')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-bananas', ?, ?, 'bananas'),
+			('item-tomatoes', ?, ?, 'tomatoes')`, hid, hid, hid, hid); err != nil {
 		t.Fatal(err)
 	}
 	if err := targets.SaveOffTags(ctx, "tomatoes", []string{"en:vegetables"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	from, err := targets.CreateCategory(ctx, "Odds")
+	from, err := targets.CreateCategory(ctx, scope, "Odds")
 	if err != nil {
 		t.Fatal(err)
 	}
-	into, err := targets.CreateCategory(ctx, "Extras")
+	into, err := targets.CreateCategory(ctx, scope, "Extras")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.AddItemCategory(ctx, "item-bananas", from.ID); err != nil {
+	if err := targets.AddItemCategory(ctx, scope, "item-bananas", from.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.MergeCategory(ctx, from.ID, into.ID); err != nil {
+	if err := targets.MergeCategory(ctx, scope, from.ID, into.ID); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := targets.Snapshot(ctx)
+	snap, err := targets.Snapshot(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,10 +264,10 @@ func TestMergeMovesMembershipsAndNewCategories(t *testing.T) {
 		t.Fatalf("merged membership: %+v", bananas.Categories)
 	}
 
-	if err := targets.ApplySuggestions(ctx, "Trail snacks", []string{"item-bananas"}); err != nil {
+	if err := targets.ApplySuggestions(ctx, scope, "Trail snacks", []string{"item-bananas"}); err != nil {
 		t.Fatal(err)
 	}
-	cards, err := targets.Suggestions(ctx)
+	cards, err := targets.Suggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,47 +290,53 @@ func TestMergeMovesMembershipsAndNewCategories(t *testing.T) {
 func TestRejectedTargets(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "salt", "Salt")
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-salt', 'user-1', 'salt')`); err != nil {
+	hid := scope.HouseholdID()
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-salt', ?, ?, 'salt')`, hid, hid); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
 		name string
 		run  func() error
 	}{
-		{"blank name", func() error { _, err := targets.CreateCategory(ctx, "  "); return err }},
+		{"blank name", func() error { _, err := targets.CreateCategory(ctx, scope, "  "); return err }},
 		{"duplicate name", func() error {
-			if _, err := targets.CreateCategory(ctx, "Extras"); err != nil {
+			if _, err := targets.CreateCategory(ctx, scope, "Extras"); err != nil {
 				return err
 			}
-			_, err := targets.CreateCategory(ctx, "Extras")
+			_, err := targets.CreateCategory(ctx, scope, "Extras")
 			return err
 		}},
 		{"months too high", func() error {
-			return targets.SetHousehold(ctx, Target{Kind: KindMonths, Value: 13})
+			return targets.SetHousehold(ctx, scope, Target{Kind: KindMonths, Value: 13})
 		}},
 		{"fraction", func() error {
-			return targets.SetItem(ctx, "item-salt", Target{Kind: KindAmount, Value: 1.5})
+			return targets.SetItem(ctx, scope, "item-salt", Target{Kind: KindAmount, Value: 1.5})
 		}},
 		{"missing item", func() error {
-			return targets.SetItem(ctx, "missing", Target{Kind: KindMonths, Value: 1})
+			return targets.SetItem(ctx, scope, "missing", Target{Kind: KindMonths, Value: 1})
 		}},
 		{"missing category", func() error {
-			return targets.SetCategoryTarget(ctx, "missing", &Target{Kind: KindMonths, Value: 1})
+			return targets.SetCategoryTarget(ctx, scope, "missing", &Target{Kind: KindMonths, Value: 1})
 		}},
 		{"merge into itself", func() error {
-			created, err := targets.CreateCategory(ctx, "Pantry")
+			created, err := targets.CreateCategory(ctx, scope, "Pantry")
 			if err != nil {
 				return err
 			}
-			return targets.MergeCategory(ctx, created.ID, created.ID)
+			return targets.MergeCategory(ctx, scope, created.ID, created.ID)
 		}},
 		{"unknown group", func() error {
-			_, err := targets.PreviewGroup(ctx, "missing", Target{Kind: KindMonths, Value: 0})
+			_, err := targets.PreviewGroup(ctx, scope, "missing", Target{Kind: KindMonths, Value: 0})
 			return err
 		}},
 		{"no suggestion picked", func() error {
-			return targets.ApplySuggestions(ctx, "Produce", nil)
+			return targets.ApplySuggestions(ctx, scope, "Produce", nil)
+		}},
+		{"missing household", func() error {
+			_, err := targets.CreateCategory(ctx, tenant.Scope{}, "Pantry staples")
+			return err
 		}},
 	}
 	for _, tc := range cases {
@@ -300,11 +344,55 @@ func TestRejectedTargets(t *testing.T) {
 			t.Errorf("%s: expected a rejection", tc.name)
 		}
 	}
-	if err := targets.SetItem(ctx, "item-salt", Target{Kind: KindAmount, Value: 1000}); err != nil {
+	if err := targets.SetItem(ctx, scope, "item-salt", Target{Kind: KindAmount, Value: 1000}); err != nil {
 		t.Fatal(err)
 	}
-	clamped, err := targets.ItemTarget(ctx, "item-salt")
+	clamped, err := targets.ItemTarget(ctx, scope, "item-salt")
 	if err != nil || clamped == nil || clamped.Value != 999 {
 		t.Fatalf("amounts over 999 are clamped, got %+v %v", clamped, err)
+	}
+}
+
+func TestHouseholdCategoriesStayApart(t *testing.T) {
+	targets, db := newTestTargets(t)
+	ctx := context.Background()
+	home := primaryScope(t, db)
+	cedar := cedarScope(t, db)
+
+	if _, err := targets.CreateCategory(ctx, tenant.Scope{}, "Shared spices"); !errors.Is(err, tenant.ErrMissingHousehold) {
+		t.Fatalf("missing household: %v", err)
+	}
+
+	created, err := targets.CreateCategory(ctx, cedar, "Cedar spices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeSnap, err := targets.Snapshot(ctx, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, category := range homeSnap.Categories {
+		if category.ID == created.ID || category.Name == "Cedar spices" {
+			t.Fatalf("primary snapshot included cedar category %+v", category)
+		}
+	}
+	if err := targets.RenameCategory(ctx, home, created.ID, "Taken spices"); err == nil {
+		t.Fatal("primary household renamed cedar's category")
+	}
+	if err := targets.DeleteCategory(ctx, home, created.ID); err == nil {
+		t.Fatal("primary household deleted cedar's category")
+	}
+	cedarSnap, err := targets.Snapshot(ctx, cedar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, category := range cedarSnap.Categories {
+		if category.ID == created.ID && category.Name == "Cedar spices" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cedar category missing: %+v", cedarSnap.Categories)
 	}
 }

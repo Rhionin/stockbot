@@ -19,18 +19,24 @@ func TestMarkPurchasedStoresCleanUTC(t *testing.T) {
 	if err := app.RunMigrations(db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`
-		INSERT INTO products (id, name) VALUES ('prod', 'Oats');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod');
-		INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source)
-		VALUES ('line', 'user-1', 'item', 1, 'manual')`); err != nil {
+	scope := scopeOf(t, db)
+	household := scope.HouseholdID()
+	if _, err := db.Exec(`INSERT INTO products (id, name) VALUES ('prod', 'Oats')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewStore(db).MarkPurchased(context.Background(), "line"); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`, household, household); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source)
+		VALUES ('line', ?, ?, 'item', 1, 'manual')`, household, household); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewStore(db).MarkPurchased(context.Background(), scope, "line"); err != nil {
 		t.Fatal(err)
 	}
 	var raw string
-	if err := db.QueryRow(`SELECT CAST(purchased_at AS TEXT) FROM shopping_list_items WHERE id = 'line'`).Scan(&raw); err != nil {
+	if err := db.QueryRow(`SELECT CAST(purchased_at AS TEXT) FROM shopping_list_items WHERE id = ? AND household_id = ?`, "line", household).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(raw, "+0000 UTC") || strings.Contains(raw, "m=") {
@@ -48,16 +54,22 @@ func TestSuffixedPurchasedAtReadsBack(t *testing.T) {
 	if err := app.RunMigrations(db); err != nil {
 		t.Fatal(err)
 	}
+	scope := scopeOf(t, db)
+	household := scope.HouseholdID()
 	const stored = "2026-10-03 18:12:53.123456789 +0000 UTC m=+12.5"
 	want := time.Date(2026, 10, 3, 18, 12, 53, 123456789, time.UTC)
-	if _, err := db.Exec(`
-		INSERT INTO products (id, name) VALUES ('prod', 'Oats');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod');
-		INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, purchased_at)
-		VALUES ('line', 'user-1', 'item', 1, 'manual', ?)`, stored); err != nil {
+	if _, err := db.Exec(`INSERT INTO products (id, name) VALUES ('prod', 'Oats')`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := NewStore(db).GetItemByID(context.Background(), "line")
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`, household, household); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at)
+		VALUES ('line', ?, ?, 'item', 1, 'manual', ?)`, household, household, stored); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewStore(db).GetItemByID(context.Background(), scope, "line")
 	if err != nil {
 		t.Fatal(err)
 	}

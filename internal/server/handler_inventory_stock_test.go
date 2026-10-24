@@ -298,7 +298,7 @@ func finishOpening(env testEnv) {
 func insertPendingScan(env testEnv, id, productID string, direction scan.ScanDirection) {
 	env.T.Helper()
 	queue := scan.NewQueue(env.DB)
-	if _, err := queue.CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := queue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID:        id,
 		UserID:    "user-1",
 		Barcode:   id,

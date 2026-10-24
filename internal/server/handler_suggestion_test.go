@@ -43,10 +43,11 @@ func createItemViaStockIn(t *testing.T, db *sql.DB, catalog *product.Catalog, us
 		ProductID: &productID,
 		Status:    scan.Pending,
 	}
-	if _, err := scanQueue.CreateScanEntry(context.Background(), entry); err != nil {
+	scope := primaryScope(t, db)
+	if _, err := scanQueue.CreateScanEntry(context.Background(), scope, entry); err != nil {
 		t.Fatalf("CreateScanEntry: %v", err)
 	}
-	if err := scanQueue.CommitStockIn(context.Background(), &entry); err != nil {
+	if err := scanQueue.CommitStockIn(context.Background(), scope, &entry); err != nil {
 		t.Fatalf("CommitStockIn: %v", err)
 	}
 }

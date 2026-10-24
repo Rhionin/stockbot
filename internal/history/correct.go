@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +18,10 @@ var ErrBackfillLocked = errors.New("backfill quantity locked")
 
 // SetQuantity changes how many units a move put on or took off the shelf.
 // The returned view is that product's history after the change.
-func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity int, now time.Time) (View, error) {
+func (j *Journal) SetQuantity(ctx context.Context, scope tenant.Scope, id string, quantity int, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	if quantity < 1 {
 		return View{}, &InputError{Message: "Quantity has to be at least 1. Undo the move to remove it."}
 	}
@@ -29,15 +33,15 @@ func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity i
 		return View{}, err
 	}
 	defer tx.Rollback()
-	if err := ensure(ctx, tx); err != nil {
+	if err := ensure(ctx, scope, tx); err != nil {
 		return View{}, err
 	}
-	move, err := loadMove(ctx, tx, userID, id)
+	move, err := loadMove(ctx, scope, tx, id)
 	if err != nil {
 		return View{}, err
 	}
 	if quantity != move.Quantity {
-		_, paired, pairErr := backfillPartner(ctx, tx, userID, move)
+		_, paired, pairErr := backfillPartner(ctx, scope, tx, move)
 		if pairErr != nil {
 			return View{}, pairErr
 		}
@@ -45,9 +49,9 @@ func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity i
 			return View{}, ErrBackfillLocked
 		}
 		if move.Direction == "in" {
-			err = resizeStockIn(ctx, tx, move, quantity)
+			err = resizeStockIn(ctx, scope, tx, move, quantity)
 		} else {
-			err = resizeStockOut(ctx, tx, move, quantity)
+			err = resizeStockOut(ctx, scope, tx, move, quantity)
 		}
 		if err != nil {
 			return View{}, err
@@ -56,7 +60,7 @@ func (j *Journal) SetQuantity(ctx context.Context, userID, id string, quantity i
 	if err := tx.Commit(); err != nil {
 		return View{}, err
 	}
-	return j.Product(ctx, userID, move.ItemID, now)
+	return j.Product(ctx, scope, move.ItemID, now)
 }
 
 // UndoEffect is one product an undo would change.
@@ -79,20 +83,23 @@ type UndoPreview struct {
 
 // Undo removes a move and reverses what it did to the shelf and the pace.
 // The returned view is that product's history afterward.
-func (j *Journal) Undo(ctx context.Context, userID, id string, now time.Time) (View, error) {
+func (j *Journal) Undo(ctx context.Context, scope tenant.Scope, id string, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
 	}
 	defer tx.Rollback()
-	effect, err := applyUndo(ctx, tx, userID, id, true)
+	effect, err := applyUndo(ctx, scope, tx, id, true)
 	if err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, err
 	}
-	return j.Product(ctx, userID, effect.ItemID, now)
+	return j.Product(ctx, scope, effect.ItemID, now)
 }
 
 // PreviewUndo reports what Undo would change. It runs that same undo on a
@@ -100,7 +107,10 @@ func (j *Journal) Undo(ctx context.Context, userID, id string, now time.Time) (V
 // re-shelve decision cannot drift from the one Undo commits. The copy skips
 // the history_repair update. Repair still runs on the copy when older rows
 // would change the result.
-func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPreview, error) {
+func (j *Journal) PreviewUndo(ctx context.Context, scope tenant.Scope, id string) (UndoPreview, error) {
+	if err := scope.Require(); err != nil {
+		return UndoPreview{}, err
+	}
 	release, err := acquirePreview(ctx)
 	if err != nil {
 		return UndoPreview{}, err
@@ -122,7 +132,7 @@ func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPrevi
 		return UndoPreview{}, previewErr(ctx, err)
 	}
 	defer tx.Rollback()
-	effect, err := applyUndo(ctx, tx, userID, id, false)
+	effect, err := applyUndo(ctx, scope, tx, id, false)
 	if err != nil {
 		return UndoPreview{}, previewErr(ctx, err)
 	}
@@ -132,21 +142,24 @@ func (j *Journal) PreviewUndo(ctx context.Context, userID, id string) (UndoPrevi
 	return UndoPreview{Effects: []UndoEffect{effect}}, nil
 }
 
-func applyUndo(ctx context.Context, tx *sql.Tx, userID, id string, lockRepair bool) (UndoEffect, error) {
+func applyUndo(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id string, lockRepair bool) (UndoEffect, error) {
+	if err := scope.Require(); err != nil {
+		return UndoEffect{}, err
+	}
 	var err error
 	if lockRepair {
-		err = ensure(ctx, tx)
+		err = ensure(ctx, scope, tx)
 	} else {
-		err = repair(ctx, tx)
+		err = repair(ctx, scope, tx)
 	}
 	if err != nil {
 		return UndoEffect{}, err
 	}
-	move, err := loadMove(ctx, tx, userID, id)
+	move, err := loadMove(ctx, scope, tx, id)
 	if err != nil {
 		return UndoEffect{}, err
 	}
-	partner, paired, err := backfillPartner(ctx, tx, userID, move)
+	partner, paired, err := backfillPartner(ctx, scope, tx, move)
 	if err != nil {
 		return UndoEffect{}, err
 	}
@@ -161,26 +174,26 @@ func applyUndo(ctx context.Context, tx *sql.Tx, userID, id string, lockRepair bo
 		if incoming.Unshelved {
 			broughtBack = incoming.ItemID
 		}
-		if err = undoStockOut(ctx, tx, outgoing); err != nil {
+		if err = undoStockOut(ctx, scope, tx, outgoing); err != nil {
 			return UndoEffect{}, err
 		}
-		err = undoStockIn(ctx, tx, incoming)
+		err = undoStockIn(ctx, scope, tx, incoming)
 	} else if move.Direction == "in" {
 		stockInID = move.ID
-		err = undoStockIn(ctx, tx, move)
+		err = undoStockIn(ctx, scope, tx, move)
 	} else {
 		stockOutID = move.ID
-		err = undoStockOut(ctx, tx, move)
+		err = undoStockOut(ctx, scope, tx, move)
 	}
 	if err != nil {
 		return UndoEffect{}, err
 	}
-	reshelve, err := reshelveItem(ctx, tx, broughtBack)
+	reshelve, err := reshelveItem(ctx, scope, tx, broughtBack)
 	if err != nil {
 		return UndoEffect{}, err
 	}
 	if reshelve {
-		if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ?`, broughtBack); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE items SET shelved = 1 WHERE id = ? AND household_id = ?`, broughtBack, scope.HouseholdID()); err != nil {
 			return UndoEffect{}, err
 		}
 	}
@@ -188,10 +201,10 @@ func applyUndo(ctx context.Context, tx *sql.Tx, userID, id string, lockRepair bo
 	if err := tx.QueryRowContext(ctx, `
 		SELECT i.product_id, p.name
 		FROM items i JOIN products p ON p.id = i.product_id
-		WHERE i.id = ?`, move.ItemID).Scan(&productID, &name); err != nil {
+		WHERE i.id = ? AND i.household_id = ?`, move.ItemID, scope.HouseholdID()).Scan(&productID, &name); err != nil {
 		return UndoEffect{}, err
 	}
-	onHand, err := countOnHand(ctx, tx, []string{move.ItemID})
+	onHand, err := countOnHand(ctx, scope, tx, []string{move.ItemID})
 	if err != nil {
 		return UndoEffect{}, err
 	}
@@ -205,13 +218,16 @@ func applyUndo(ctx context.Context, tx *sql.Tx, userID, id string, lockRepair bo
 // reshelveItem reports whether undoing a pair that brought a wiped item back
 // hides it again. A later unit that is still on the shelf keeps the item visible.
 // Units that were already used do not.
-func reshelveItem(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) {
+func reshelveItem(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
 	if itemID == "" {
 		return false, nil
 	}
-	live, err := countQuery(ctx, tx, `
+	live, err := countQuery(ctx, scope, tx, `
 		SELECT COUNT(*) FROM item_instances
-		WHERE item_id = ? AND removed_at IS NULL`, itemID)
+		WHERE household_id = ? AND item_id = ? AND removed_at IS NULL`, scope.HouseholdID(), itemID)
 	if err != nil {
 		return false, err
 	}
@@ -221,7 +237,10 @@ func reshelveItem(ctx context.Context, tx *sql.Tx, itemID string) (bool, error) 
 // backfillPartner is the other move from the same backfill commit.
 // A backfill stock-in and its stock-out share a scan id, and one of them
 // has source backfill. Undoing either one removes both.
-func backfillPartner(ctx context.Context, tx *sql.Tx, userID string, move moveRow) (moveRow, bool, error) {
+func backfillPartner(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow) (moveRow, bool, error) {
+	if err := scope.Require(); err != nil {
+		return moveRow{}, false, err
+	}
 	if !move.ScanEntryID.Valid || move.ScanEntryID.String == "" {
 		return moveRow{}, false, nil
 	}
@@ -237,67 +256,76 @@ func backfillPartner(ctx context.Context, tx *sql.Tx, userID string, move moveRo
 	var partnerID string
 	err := tx.QueryRowContext(ctx, `
 		SELECT m.id FROM stock_moves m
-		JOIN items i ON i.id = m.item_id
-		WHERE m.scan_entry_id = ? AND m.id != ? AND m.source = ? AND i.user_id = ?`,
-		move.ScanEntryID.String, move.ID, want, userID).Scan(&partnerID)
+		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
+		WHERE m.household_id = ? AND m.scan_entry_id = ? AND m.id != ? AND m.source = ?`,
+		scope.HouseholdID(), move.ScanEntryID.String, move.ID, want).Scan(&partnerID)
 	if err == sql.ErrNoRows {
 		return moveRow{}, false, nil
 	}
 	if err != nil {
 		return moveRow{}, false, err
 	}
-	other, err := loadMove(ctx, tx, userID, partnerID)
+	other, err := loadMove(ctx, scope, tx, partnerID)
 	if err != nil {
 		return moveRow{}, false, err
 	}
 	return other, true, nil
 }
 
-func resizeStockIn(ctx context.Context, tx *sql.Tx, move moveRow, quantity int) error {
-	if quantity > move.Quantity {
-		return addStockInUnits(ctx, tx, move, quantity-move.Quantity)
+func resizeStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, quantity int) error {
+	if err := scope.Require(); err != nil {
+		return err
 	}
-	return removeStockInUnits(ctx, tx, move, move.Quantity-quantity)
+	if quantity > move.Quantity {
+		return addStockInUnits(ctx, scope, tx, move, quantity-move.Quantity)
+	}
+	return removeStockInUnits(ctx, scope, tx, move, move.Quantity-quantity)
 }
 
-func addStockInUnits(ctx context.Context, tx *sql.Tx, move moveRow, extra int) error {
+func addStockInUnits(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, extra int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var expires sql.NullTime
 	_ = tx.QueryRowContext(ctx, `
-		SELECT expires_at FROM item_instances WHERE stock_move_id = ? AND expires_at IS NOT NULL LIMIT 1`,
-		move.ID).Scan(&expires)
+		SELECT expires_at FROM item_instances WHERE household_id = ? AND stock_move_id = ? AND expires_at IS NOT NULL LIMIT 1`,
+		scope.HouseholdID(), move.ID).Scan(&expires)
 	for i := 0; i < extra; i++ {
 		var expiresAt any
 		if expires.Valid {
 			expiresAt = expires.Time
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, stock_move_id)
-			VALUES (?, ?, ?, ?, ?)`,
-			uuid.NewString(), move.ItemID, move.At, expiresAt, move.ID,
+			INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, stock_move_id, household_id)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			uuid.NewString(), move.ItemID, move.At, expiresAt, move.ID, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
 	}
 	if extra > 0 {
-		if err := inventory.UnshelveItem(ctx, tx, move.ItemID); err != nil {
+		if err := inventory.UnshelveItem(ctx, tx, scope, move.ItemID); err != nil {
 			return err
 		}
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity + ? WHERE id = ?`, extra, move.ID)
+	_, err := tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity + ? WHERE id = ? AND household_id = ?`, extra, move.ID, scope.HouseholdID())
 	return err
 }
 
-func removeStockInUnits(ctx context.Context, tx *sql.Tx, move moveRow, drop int) error {
-	onHand, err := idsOf(ctx, tx, `
+func removeStockInUnits(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, drop int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	onHand, err := idsOf(ctx, scope, tx, `
 		SELECT id FROM item_instances
-		WHERE stock_move_id = ? AND removed_at IS NULL
-		ORDER BY id`, move.ID)
+		WHERE household_id = ? AND stock_move_id = ? AND removed_at IS NULL
+		ORDER BY id`, scope.HouseholdID(), move.ID)
 	if err != nil {
 		return err
 	}
 	if len(onHand) < drop {
-		used, err := countQuery(ctx, tx, `
-			SELECT COUNT(*) FROM item_instances WHERE stock_move_id = ? AND removed_at IS NOT NULL`, move.ID)
+		used, err := countQuery(ctx, scope, tx, `
+			SELECT COUNT(*) FROM item_instances WHERE household_id = ? AND stock_move_id = ? AND removed_at IS NOT NULL`, scope.HouseholdID(), move.ID)
 		if err != nil {
 			return err
 		}
@@ -307,24 +335,30 @@ func removeStockInUnits(ctx context.Context, tx *sql.Tx, move moveRow, drop int)
 		return &ConflictError{Message: "This stock in can't be lowered to that quantity."}
 	}
 	for _, id := range onHand[:drop] {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM item_instances WHERE id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM item_instances WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity - ? WHERE id = ?`, drop, move.ID)
+	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity - ? WHERE id = ? AND household_id = ?`, drop, move.ID, scope.HouseholdID())
 	return err
 }
 
-func resizeStockOut(ctx context.Context, tx *sql.Tx, move moveRow, quantity int) error {
-	if quantity > move.Quantity {
-		return addStockOutUnits(ctx, tx, move, quantity-move.Quantity)
+func resizeStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, quantity int) error {
+	if err := scope.Require(); err != nil {
+		return err
 	}
-	return removeStockOutUnits(ctx, tx, move, move.Quantity-quantity)
+	if quantity > move.Quantity {
+		return addStockOutUnits(ctx, scope, tx, move, quantity-move.Quantity)
+	}
+	return removeStockOutUnits(ctx, scope, tx, move, move.Quantity-quantity)
 }
 
-func addStockOutUnits(ctx context.Context, tx *sql.Tx, move moveRow, extra int) error {
-	onHand, err := countQuery(ctx, tx, `
-		SELECT COUNT(*) FROM item_instances WHERE item_id = ? AND removed_at IS NULL`, move.ItemID)
+func addStockOutUnits(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, extra int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	onHand, err := countQuery(ctx, scope, tx, `
+		SELECT COUNT(*) FROM item_instances WHERE household_id = ? AND item_id = ? AND removed_at IS NULL`, scope.HouseholdID(), move.ItemID)
 	if err != nil {
 		return err
 	}
@@ -333,9 +367,9 @@ func addStockOutUnits(ctx context.Context, tx *sql.Tx, move moveRow, extra int) 
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM item_instances
-		WHERE item_id = ? AND removed_at IS NULL
+		WHERE household_id = ? AND item_id = ? AND removed_at IS NULL
 		ORDER BY expires_at ASC NULLS LAST
-		LIMIT ?`, move.ItemID, extra)
+		LIMIT ?`, scope.HouseholdID(), move.ItemID, extra)
 	if err != nil {
 		return err
 	}
@@ -357,25 +391,28 @@ func addStockOutUnits(ctx context.Context, tx *sql.Tx, move moveRow, extra int) 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE item_instances
 			SET removed_at = ?, removal_reason = 'consumed', removed_by_move_id = ?
-			WHERE id = ?`, move.At, move.ID, id); err != nil {
+			WHERE id = ? AND household_id = ?`, move.At, move.ID, id, scope.HouseholdID()); err != nil {
 			return err
 		}
 		if move.Tracked {
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO consumption_events (id, item_id, consumed_at, scan_entry_id, stock_move_id)
-				VALUES (?, ?, ?, ?, ?)`,
-				uuid.NewString(), move.ItemID, move.At, nullableNull(move.ScanEntryID), move.ID,
+				INSERT INTO consumption_events (id, item_id, consumed_at, scan_entry_id, stock_move_id, household_id)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				uuid.NewString(), move.ItemID, move.At, nullableNull(move.ScanEntryID), move.ID, scope.HouseholdID(),
 			); err != nil {
 				return err
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity + ? WHERE id = ?`, extra, move.ID)
+	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity + ? WHERE id = ? AND household_id = ?`, extra, move.ID, scope.HouseholdID())
 	return err
 }
 
-func removeStockOutUnits(ctx context.Context, tx *sql.Tx, move moveRow, drop int) error {
-	restored, err := restoreUnits(ctx, tx, move, drop)
+func removeStockOutUnits(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, drop int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	restored, err := restoreUnits(ctx, scope, tx, move, drop)
 	if err != nil {
 		return err
 	}
@@ -383,64 +420,73 @@ func removeStockOutUnits(ctx context.Context, tx *sql.Tx, move moveRow, drop int
 		return &ConflictError{Message: "This use can't be lowered because those units are no longer recorded."}
 	}
 	if move.Tracked {
-		if err := deleteConsumptions(ctx, tx, move.ID, drop); err != nil {
+		if err := deleteConsumptions(ctx, scope, tx, move.ID, drop); err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity - ? WHERE id = ?`, drop, move.ID)
+	_, err = tx.ExecContext(ctx, `UPDATE stock_moves SET quantity = quantity - ? WHERE id = ? AND household_id = ?`, drop, move.ID, scope.HouseholdID())
 	return err
 }
 
-func undoStockIn(ctx context.Context, tx *sql.Tx, move moveRow) error {
-	used, err := countQuery(ctx, tx, `
-		SELECT COUNT(*) FROM item_instances WHERE stock_move_id = ? AND removed_at IS NOT NULL`, move.ID)
+func undoStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	used, err := countQuery(ctx, scope, tx, `
+		SELECT COUNT(*) FROM item_instances WHERE household_id = ? AND stock_move_id = ? AND removed_at IS NOT NULL`, scope.HouseholdID(), move.ID)
 	if err != nil {
 		return err
 	}
 	if used > 0 {
 		return &ConflictError{Message: alreadyUsed(used)}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM item_instances WHERE stock_move_id = ?`, move.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_instances WHERE household_id = ? AND stock_move_id = ?`, scope.HouseholdID(), move.ID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_in_events WHERE stock_move_id = ?`, move.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stock_in_events WHERE household_id = ? AND stock_move_id = ?`, scope.HouseholdID(), move.ID); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM stock_moves WHERE id = ?`, move.ID)
+	_, err = tx.ExecContext(ctx, `DELETE FROM stock_moves WHERE id = ? AND household_id = ?`, move.ID, scope.HouseholdID())
 	return err
 }
 
-func undoStockOut(ctx context.Context, tx *sql.Tx, move moveRow) error {
-	restored, err := restoreUnits(ctx, tx, move, move.Quantity)
+func undoStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	restored, err := restoreUnits(ctx, scope, tx, move, move.Quantity)
 	if err != nil {
 		return err
 	}
 	if restored < move.Quantity {
 		return &ConflictError{Message: "This use can't be undone because those units are no longer recorded."}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM consumption_events WHERE stock_move_id = ?`, move.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM consumption_events WHERE household_id = ? AND stock_move_id = ?`, scope.HouseholdID(), move.ID); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM stock_moves WHERE id = ?`, move.ID)
+	_, err = tx.ExecContext(ctx, `DELETE FROM stock_moves WHERE id = ? AND household_id = ?`, move.ID, scope.HouseholdID())
 	return err
 }
 
-func restoreUnits(ctx context.Context, tx *sql.Tx, move moveRow, limit int) (int, error) {
-	ids, err := idsOf(ctx, tx, `
+func restoreUnits(ctx context.Context, scope tenant.Scope, tx *sql.Tx, move moveRow, limit int) (int, error) {
+	if err := scope.Require(); err != nil {
+		return 0, err
+	}
+	ids, err := idsOf(ctx, scope, tx, `
 		SELECT id FROM item_instances
-		WHERE removed_by_move_id = ?
+		WHERE household_id = ? AND removed_by_move_id = ?
 		ORDER BY id
-		LIMIT ?`, move.ID, limit)
+		LIMIT ?`, scope.HouseholdID(), move.ID, limit)
 	if err != nil {
 		return 0, err
 	}
 	if len(ids) < limit {
-		more, err := idsOf(ctx, tx, `
+		more, err := idsOf(ctx, scope, tx, `
 			SELECT id FROM item_instances
-			WHERE item_id = ? AND removed_at IS NOT NULL AND removed_by_move_id IS NULL
+			WHERE household_id = ? AND item_id = ? AND removed_at IS NOT NULL AND removed_by_move_id IS NULL
 				AND (removal_reason IS NULL OR removal_reason = 'consumed')
 			ORDER BY removed_at DESC, id
-			LIMIT ?`, move.ItemID, limit-len(ids))
+			LIMIT ?`, scope.HouseholdID(), move.ItemID, limit-len(ids))
 		if err != nil {
 			return 0, err
 		}
@@ -450,28 +496,34 @@ func restoreUnits(ctx context.Context, tx *sql.Tx, move moveRow, limit int) (int
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE item_instances
 			SET removed_at = NULL, removal_reason = NULL, removed_by_move_id = NULL
-			WHERE id = ?`, id); err != nil {
+			WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 			return 0, err
 		}
 	}
 	return len(ids), nil
 }
 
-func deleteConsumptions(ctx context.Context, tx *sql.Tx, moveID string, limit int) error {
-	ids, err := idsOf(ctx, tx, `
-		SELECT id FROM consumption_events WHERE stock_move_id = ? ORDER BY id LIMIT ?`, moveID, limit)
+func deleteConsumptions(ctx context.Context, scope tenant.Scope, tx *sql.Tx, moveID string, limit int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	ids, err := idsOf(ctx, scope, tx, `
+		SELECT id FROM consumption_events WHERE household_id = ? AND stock_move_id = ? ORDER BY id LIMIT ?`, scope.HouseholdID(), moveID, limit)
 	if err != nil {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM consumption_events WHERE id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM consumption_events WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func idsOf(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+func idsOf(ctx context.Context, scope tenant.Scope, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -488,7 +540,10 @@ func idsOf(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string
 	return ids, rows.Err()
 }
 
-func countQuery(ctx context.Context, tx *sql.Tx, query string, args ...any) (int, error) {
+func countQuery(ctx context.Context, scope tenant.Scope, tx *sql.Tx, query string, args ...any) (int, error) {
+	if err := scope.Require(); err != nil {
+		return 0, err
+	}
 	var n int
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&n)
 	return n, err

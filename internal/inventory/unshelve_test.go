@@ -12,17 +12,18 @@ import (
 func TestAddInstanceUnshelvesTheItem(t *testing.T) {
 	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-sample", Name: "Sample oats"}); err != nil {
 		t.Fatal(err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, "user-1", "prod-sample")
+	item, err := pantry.GetOrCreateItem(ctx, scope, "prod-sample")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE items SET shelved = 1 WHERE id = ?`, item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+	if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 		ItemID:    item.ID,
 		StockInAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}); err != nil {

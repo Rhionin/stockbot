@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // scheduledBatch is one stock-in or stock-out alert waiting out its quiet
@@ -22,13 +23,16 @@ type scheduledBatch struct {
 // scheduleStore is the durable copy of an open batch alert. *Subscriptions
 // implements it; the two tables share the pantry database.
 type scheduleStore interface {
-	SaveBatchAlert(ctx context.Context, batch scheduledBatch) error
-	DeleteBatchAlert(ctx context.Context, direction scan.ScanDirection) error
-	ListBatchAlerts(ctx context.Context) ([]scheduledBatch, error)
+	SaveBatchAlert(ctx context.Context, scope tenant.Scope, batch scheduledBatch) error
+	DeleteBatchAlert(ctx context.Context, scope tenant.Scope, direction scan.ScanDirection) error
+	ListBatchAlerts(ctx context.Context, scope tenant.Scope) ([]scheduledBatch, error)
 }
 
 // SaveBatchAlert inserts or replaces the open alert for a direction.
-func (s *Subscriptions) SaveBatchAlert(ctx context.Context, batch scheduledBatch) error {
+func (s *Subscriptions) SaveBatchAlert(ctx context.Context, scope tenant.Scope, batch scheduledBatch) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if batch.Direction != scan.StockIn && batch.Direction != scan.StockOut {
 		return fmt.Errorf("save batch alert: direction is not stock in or stock out")
 	}
@@ -40,11 +44,13 @@ func (s *Subscriptions) SaveBatchAlert(ctx context.Context, batch scheduledBatch
 		return fmt.Errorf("save batch alert: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO scan_alert_schedule (direction, due_at, scan_ids)
-		VALUES (?, ?, ?)
+		INSERT INTO scan_alert_schedule (household_id, direction, due_at, scan_ids)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(direction) DO UPDATE SET
 			due_at = excluded.due_at,
-			scan_ids = excluded.scan_ids`,
+			scan_ids = excluded.scan_ids
+		WHERE scan_alert_schedule.household_id = excluded.household_id`,
+		scope.HouseholdID(),
 		string(batch.Direction),
 		batch.DueAt.UTC().Format(time.RFC3339Nano),
 		string(encoded),
@@ -57,8 +63,11 @@ func (s *Subscriptions) SaveBatchAlert(ctx context.Context, batch scheduledBatch
 
 // DeleteBatchAlert removes the open alert for a direction. A missing row is
 // not an error.
-func (s *Subscriptions) DeleteBatchAlert(ctx context.Context, direction scan.ScanDirection) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM scan_alert_schedule WHERE direction = ?`, string(direction))
+func (s *Subscriptions) DeleteBatchAlert(ctx context.Context, scope tenant.Scope, direction scan.ScanDirection) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM scan_alert_schedule WHERE household_id = ? AND direction = ?`, scope.HouseholdID(), string(direction))
 	if err != nil {
 		return fmt.Errorf("delete batch alert: %w", err)
 	}
@@ -66,11 +75,15 @@ func (s *Subscriptions) DeleteBatchAlert(ctx context.Context, direction scan.Sca
 }
 
 // ListBatchAlerts returns every open batch alert, stock-in first.
-func (s *Subscriptions) ListBatchAlerts(ctx context.Context) ([]scheduledBatch, error) {
+func (s *Subscriptions) ListBatchAlerts(ctx context.Context, scope tenant.Scope) ([]scheduledBatch, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT direction, due_at, scan_ids
 		FROM scan_alert_schedule
-		ORDER BY direction`)
+		WHERE household_id = ?
+		ORDER BY direction`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("list batch alerts: %w", err)
 	}

@@ -11,13 +11,13 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 const (
 	keyStarted     = "onboarding_started_at"
 	keyTargetKind  = "supply_target_kind"
 	keyTargetValue = "supply_target_value"
-	householdUser  = "user-1"
 )
 
 func readPhaseAndMonths(ctx context.Context, tx *sql.Tx) (Phase, Months, error) {
@@ -143,9 +143,13 @@ func writeMonths(ctx context.Context, db *sql.DB, months Months) error {
 	return nil
 }
 
-func writeOverride(ctx context.Context, db *sql.DB, id ProductID, o Override) error {
+func writeOverride(ctx context.Context, scope tenant.Scope, db *sql.DB, id ProductID, o Override) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	household := scope.HouseholdID()
 	if o.kind == overrideInherit {
-		if _, err := db.ExecContext(ctx, `DELETE FROM supply_overrides WHERE product_id = ?`, string(id)); err != nil {
+		if _, err := db.ExecContext(ctx, `DELETE FROM supply_overrides WHERE household_id = ? AND product_id = ?`, household, string(id)); err != nil {
 			return fmt.Errorf("could not clear the supply override: %w", err)
 		}
 		return nil
@@ -158,11 +162,12 @@ func writeOverride(ctx context.Context, db *sql.DB, id ProductID, o Override) er
 		qty = int(units)
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO supply_overrides (product_id, window_months, quantity) VALUES (?, ?, ?)
+		INSERT INTO supply_overrides (household_id, product_id, window_months, quantity) VALUES (?, ?, ?, ?)
 		ON CONFLICT(product_id) DO UPDATE SET
 			window_months = excluded.window_months,
-			quantity = excluded.quantity`,
-		string(id), window, qty,
+			quantity = excluded.quantity
+		WHERE supply_overrides.household_id = excluded.household_id`,
+		household, string(id), window, qty,
 	)
 	if err != nil {
 		return fmt.Errorf("could not save the supply override: %w", err)
@@ -170,11 +175,14 @@ func writeOverride(ctx context.Context, db *sql.DB, id ProductID, o Override) er
 	return nil
 }
 
-func readOverride(ctx context.Context, db *sql.DB, id ProductID) (Override, error) {
+func readOverride(ctx context.Context, scope tenant.Scope, db *sql.DB, id ProductID) (Override, error) {
+	if err := scope.Require(); err != nil {
+		return Override{}, err
+	}
 	var window, qty sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-		SELECT window_months, quantity FROM supply_overrides WHERE product_id = ?`,
-		string(id),
+		SELECT window_months, quantity FROM supply_overrides WHERE household_id = ? AND product_id = ?`,
+		scope.HouseholdID(), string(id),
 	).Scan(&window, &qty)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Override{}, nil
@@ -191,28 +199,31 @@ func readOverride(ctx context.Context, db *sql.DB, id ProductID) (Override, erro
 	return Override{}, nil
 }
 
-func wipeHousehold(ctx context.Context, db *sql.DB) error {
+func wipeHousehold(ctx context.Context, scope tenant.Scope, db *sql.DB) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not wipe inventory: %w", err)
 	}
 	defer tx.Rollback()
 
+	household := scope.HouseholdID()
 	statements := []string{
-		`DELETE FROM shopping_list_entry_adjustments
-		 WHERE entry_id IN (SELECT id FROM shopping_list_items WHERE user_id = ?)`,
-		`DELETE FROM staged_cart_skips WHERE user_id = ?`,
-		`DELETE FROM shopping_list_items WHERE user_id = ?`,
-		`DELETE FROM consumption_events WHERE item_id IN (SELECT id FROM items WHERE user_id = ?)`,
-		`DELETE FROM item_instances WHERE item_id IN (SELECT id FROM items WHERE user_id = ?)`,
-		`DELETE FROM stock_in_events WHERE product_id IN (SELECT product_id FROM items WHERE user_id = ?)`,
-		`DELETE FROM stock_moves WHERE item_id IN (SELECT id FROM items WHERE user_id = ?)`,
+		`DELETE FROM shopping_list_entry_adjustments WHERE household_id = ?`,
+		`DELETE FROM staged_cart_skips WHERE household_id = ?`,
+		`DELETE FROM shopping_list_items WHERE household_id = ?`,
+		`DELETE FROM consumption_events WHERE household_id = ?`,
+		`DELETE FROM item_instances WHERE household_id = ?`,
+		`DELETE FROM stock_in_events WHERE household_id = ?`,
+		`DELETE FROM stock_moves WHERE household_id = ?`,
 		// Keep the item row so its target can reattach, but hide it until a
 		// stock-in after this wipe. Inventory and the planner both skip it.
-		`UPDATE items SET shelved = 1 WHERE user_id = ?`,
+		`UPDATE items SET shelved = 1 WHERE household_id = ?`,
 	}
 	for _, query := range statements {
-		if _, err := tx.ExecContext(ctx, query, householdUser); err != nil {
+		if _, err := tx.ExecContext(ctx, query, household); err != nil {
 			return fmt.Errorf("could not wipe inventory: %w", err)
 		}
 	}
@@ -225,20 +236,23 @@ func wipeHousehold(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func loadFacts(ctx context.Context, tx *sql.Tx, phase Phase) ([]Fact, error) {
+func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase) ([]Fact, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT i.id, i.product_id, p.name,
 			p.net_base_value, COALESCE(p.net_dimension, ''),
 			g.id, COALESCE(g.rule, ''), COALESCE(g.pinned_product_id, ''),
 			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, ''),
 			(SELECT COUNT(*) FROM item_instances inst
-			 WHERE inst.item_id = i.id AND inst.removed_at IS NULL)
+			 WHERE inst.household_id = i.household_id AND inst.item_id = i.id AND inst.removed_at IS NULL)
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		LEFT JOIN product_group_members gm ON gm.product_id = i.product_id
-		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.user_id = i.user_id
-		WHERE i.user_id = ? AND i.shelved = 0
-		ORDER BY i.product_id, i.id`, householdUser)
+		LEFT JOIN product_group_members gm ON gm.product_id = i.product_id AND gm.household_id = i.household_id
+		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.household_id = i.household_id
+		WHERE i.household_id = ? AND i.shelved = 0
+		ORDER BY i.product_id, i.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not read supply: %w", err)
 	}
@@ -294,17 +308,17 @@ func loadFacts(ctx context.Context, tx *sql.Tx, phase Phase) ([]Fact, error) {
 		return nil, fmt.Errorf("could not read supply: %w", err)
 	}
 
-	if err := attachResolved(ctx, tx, facts); err != nil {
+	if err := attachResolved(ctx, scope, tx, facts); err != nil {
 		return nil, err
 	}
-	if err := attachManuals(ctx, tx, facts); err != nil {
+	if err := attachManuals(ctx, scope, tx, facts); err != nil {
 		return nil, err
 	}
-	if err := attachGroupSignals(ctx, tx, facts); err != nil {
+	if err := attachGroupSignals(ctx, scope, tx, facts); err != nil {
 		return nil, err
 	}
 	if started, ok := phase.StartedAt(); ok {
-		if err := attachEvents(ctx, tx, facts, started); err != nil {
+		if err := attachEvents(ctx, scope, tx, facts, started); err != nil {
 			return nil, err
 		}
 	}
@@ -316,8 +330,11 @@ func loadFacts(ctx context.Context, tx *sql.Tx, phase Phase) ([]Fact, error) {
 	return out, nil
 }
 
-func attachResolved(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact) error {
-	snap, err := restock.Load(ctx, tx, restock.HouseholdID)
+func attachResolved(ctx context.Context, scope tenant.Scope, tx *sql.Tx, facts map[ProductID]*Fact) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	snap, err := restock.Load(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -339,13 +356,16 @@ func attachResolved(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact) 
 	return nil
 }
 
-func attachManuals(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact) error {
+func attachManuals(ctx context.Context, scope tenant.Scope, tx *sql.Tx, facts map[ProductID]*Fact) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT i.product_id, SUM(s.quantity)
 		FROM shopping_list_items s
-		JOIN items i ON i.id = s.item_id
-		WHERE s.user_id = ? AND s.source = 'manual' AND s.purchased_at IS NULL
-		GROUP BY i.product_id`, householdUser)
+		JOIN items i ON i.id = s.item_id AND i.household_id = s.household_id
+		WHERE s.household_id = ? AND s.source = 'manual' AND s.purchased_at IS NULL
+		GROUP BY i.product_id`, scope.HouseholdID())
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}
@@ -366,7 +386,11 @@ func attachManuals(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact) e
 	return rows.Err()
 }
 
-func attachEvents(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact, started time.Time) error {
+func attachEvents(ctx context.Context, scope tenant.Scope, tx *sql.Tx, facts map[ProductID]*Fact, started time.Time) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	household := scope.HouseholdID()
 	// The sqlite driver stores each instant as a zone-specific string
 	// ("2006-01-02 15:04:05 -0700 MST"). A SQL comparison of those strings
 	// is alphabetical, so a Denver evening sorts before the UTC morning of
@@ -374,8 +398,8 @@ func attachEvents(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact, st
 	// Load the rows and compare the parsed instants.
 	ins, err := tx.QueryContext(ctx, `
 		SELECT product_id, at FROM stock_in_events
-		WHERE product_id IN (SELECT product_id FROM items WHERE user_id = ?)
-		ORDER BY product_id, at`, householdUser)
+		WHERE household_id = ? AND product_id IN (SELECT product_id FROM items WHERE household_id = ?)
+		ORDER BY product_id, at`, household, household)
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}
@@ -403,9 +427,9 @@ func attachEvents(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact, st
 	outs, err := tx.QueryContext(ctx, `
 		SELECT i.product_id, c.consumed_at
 		FROM consumption_events c
-		JOIN items i ON i.id = c.item_id
-		WHERE i.user_id = ?
-		ORDER BY i.product_id, c.consumed_at`, householdUser)
+		JOIN items i ON i.id = c.item_id AND i.household_id = c.household_id
+		WHERE c.household_id = ?
+		ORDER BY i.product_id, c.consumed_at`, household)
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}
@@ -426,11 +450,15 @@ func attachEvents(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact, st
 	return outs.Err()
 }
 
-func attachGroupSignals(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fact) error {
+func attachGroupSignals(ctx context.Context, scope tenant.Scope, tx *sql.Tx, facts map[ProductID]*Fact) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	household := scope.HouseholdID()
 	stocked, err := tx.QueryContext(ctx, `
 		SELECT product_id, MAX(at) FROM stock_in_events
-		WHERE product_id IN (SELECT product_id FROM items WHERE user_id = ?)
-		GROUP BY product_id`, householdUser)
+		WHERE household_id = ? AND product_id IN (SELECT product_id FROM items WHERE household_id = ?)
+		GROUP BY product_id`, household, household)
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}
@@ -458,9 +486,9 @@ func attachGroupSignals(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fa
 	used, err := tx.QueryContext(ctx, `
 		SELECT i.product_id, MAX(c.consumed_at)
 		FROM consumption_events c
-		JOIN items i ON i.id = c.item_id
-		WHERE i.user_id = ?
-		GROUP BY i.product_id`, householdUser)
+		JOIN items i ON i.id = c.item_id AND i.household_id = c.household_id
+		WHERE c.household_id = ?
+		GROUP BY i.product_id`, household)
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}
@@ -487,7 +515,7 @@ func attachGroupSignals(ctx context.Context, tx *sql.Tx, facts map[ProductID]*Fa
 
 	deals, err := tx.QueryContext(ctx, `
 		SELECT item_id, price_cents, regular_price_cents, label, updated_at
-		FROM item_deals WHERE user_id = ?`, householdUser)
+		FROM item_deals WHERE household_id = ?`, household)
 	if err != nil {
 		return fmt.Errorf("could not read supply: %w", err)
 	}

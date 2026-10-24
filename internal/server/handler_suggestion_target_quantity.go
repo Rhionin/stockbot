@@ -5,14 +5,15 @@ import (
 	"errors"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // SetTargetQuantityHandler handles POST /api/items/{itemId}/target-quantity.
 // It validates the requested quantity and persists it on the item.
 type SetTargetQuantityHandler struct {
 	Pantry interface {
-		GetItem(ctx context.Context, itemID string) (*inventory.Item, error)
-		UpdateTargetQuantity(ctx context.Context, itemID string, qty int) error
+		GetItem(ctx context.Context, scope tenant.Scope, itemID string) (*inventory.Item, error)
+		UpdateTargetQuantity(ctx context.Context, scope tenant.Scope, itemID string, qty int) error
 	}
 }
 
@@ -40,7 +41,12 @@ func (h *SetTargetQuantityHandler) Handle(req Request[setTargetQuantityRequest, 
 		return nil, &HTTPError{Code: 422, Message: "targetQuantity must be 0 or greater"}
 	}
 
-	item, err := h.Pantry.GetItem(req.Context, itemID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
+	item, err := h.Pantry.GetItem(req.Context, scope, itemID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -48,7 +54,7 @@ func (h *SetTargetQuantityHandler) Handle(req Request[setTargetQuantityRequest, 
 		return nil, NotFound("item not found")
 	}
 
-	if err := h.Pantry.UpdateTargetQuantity(req.Context, itemID, qty); err != nil {
+	if err := h.Pantry.UpdateTargetQuantity(req.Context, scope, itemID, qty); err != nil {
 		if errors.Is(err, inventory.ErrInstanceNotFound) {
 			return nil, NotFound("item not found")
 		}

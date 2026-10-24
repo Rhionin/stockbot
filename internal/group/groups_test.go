@@ -9,10 +9,21 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"modernc.org/sqlite"
 )
+
+func scopeOf(t *testing.T, db *sql.DB) tenant.Scope {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
 
 func newTestGroups(t *testing.T) (*Groups, *product.Catalog, *sql.DB) {
 	t.Helper()
@@ -35,18 +46,19 @@ func mustProduct(t *testing.T, catalog *product.Catalog, id, name string) {
 }
 
 func TestGroupQuantityRoundTripAndDuplicateName(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Beans")
 	qty := 24.0
-	view, err := groups.Create(ctx, "Cut green beans", []string{"p1"}, &TargetInput{Quantity: &qty})
+	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"p1"}, &TargetInput{Quantity: &qty})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if view.Dimension != product.DimensionMass || view.Quantity == nil || *view.Quantity != 24 {
 		t.Fatalf("%+v", view)
 	}
-	if _, err := groups.Create(ctx, " cut green beans ", nil, nil); err == nil {
+	if _, err := groups.Create(ctx, scope, " cut green beans ", nil, nil); err == nil {
 		t.Fatal("expected a duplicate name")
 	}
 }
@@ -54,27 +66,28 @@ func TestGroupQuantityRoundTripAndDuplicateName(t *testing.T) {
 func TestRemoveLastMemberDeletesGroupAndClearsPin(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "A")
 	mustProduct(t, catalog, "p2", "B")
-	view, err := groups.Create(ctx, "Beans", []string{"p1", "p2"}, nil)
+	view, err := groups.Create(ctx, scope, "Beans", []string{"p1", "p2"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pin := "p1"
-	if _, err := groups.SetRule(ctx, view.ID, string(KindFavorite), &pin, true); err != nil {
+	if _, err := groups.SetRule(ctx, scope, view.ID, string(KindFavorite), &pin, true); err != nil {
 		t.Fatal(err)
 	}
-	kept, deleted, err := groups.RemoveMember(ctx, view.ID, "p1")
+	kept, deleted, err := groups.RemoveMember(ctx, scope, view.ID, "p1")
 	if err != nil || deleted {
 		t.Fatalf("deleted %v err %v", deleted, err)
 	}
 	if kept.PinnedProductID != "" || kept.RuleConfirmed {
 		t.Fatalf("pin stayed %+v", kept)
 	}
-	if _, deleted, err = groups.RemoveMember(ctx, view.ID, "p2"); err != nil || !deleted {
+	if _, deleted, err = groups.RemoveMember(ctx, scope, view.ID, "p2"); err != nil || !deleted {
 		t.Fatalf("deleted %v err %v", deleted, err)
 	}
-	if _, err := groups.Get(ctx, view.ID); err == nil {
+	if _, err := groups.Get(ctx, scope, view.ID); err == nil {
 		t.Fatal("group remained")
 	}
 	var n int
@@ -84,28 +97,29 @@ func TestRemoveLastMemberDeletesGroupAndClearsPin(t *testing.T) {
 }
 
 func TestMoveMemberAndRejectSecondGroup(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "A")
-	first, err := groups.Create(ctx, "First", []string{"p1"}, nil)
+	first, err := groups.Create(ctx, scope, "First", []string{"p1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := groups.Create(ctx, "Second", nil, nil)
+	second, err := groups.Create(ctx, scope, "Second", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := groups.AddMembers(ctx, second.ID, []string{"p1"}, "", nil); err == nil {
+	if _, err := groups.AddMembers(ctx, scope, second.ID, []string{"p1"}, "", nil); err == nil {
 		t.Fatal("expected a conflict")
 	}
-	moved, err := groups.AddMembers(ctx, second.ID, []string{"p1"}, first.ID, nil)
+	moved, err := groups.AddMembers(ctx, scope, second.ID, []string{"p1"}, first.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(moved.Members) != 1 || moved.Members[0].ProductID != "p1" {
 		t.Fatalf("%+v", moved.Members)
 	}
-	if _, err := groups.Get(ctx, first.ID); err == nil {
+	if _, err := groups.Get(ctx, scope, first.ID); err == nil {
 		t.Fatal("empty source group remained")
 	}
 }
@@ -113,18 +127,19 @@ func TestMoveMemberAndRejectSecondGroup(t *testing.T) {
 func TestAcceptDismissesOnlyExcludedPairs(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	for _, id := range []string{"a", "b", "c"} {
 		mustProduct(t, catalog, id, id)
 	}
-	if _, err := db.Exec(`INSERT INTO group_suggestions (id, user_id, kind, title, status) VALUES ('sug', 'user-1', 'looks_alike', 'Beans', 'open')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_suggestions (id, household_id, user_id, kind, title, status) VALUES ('sug', ?, ?, 'looks_alike', 'Beans', 'open')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"a", "b", "c"} {
-		if _, err := db.Exec(`INSERT INTO group_suggestion_members (suggestion_id, product_id, included) VALUES ('sug', ?, 1)`, id); err != nil {
+		if _, err := db.Exec(`INSERT INTO group_suggestion_members (household_id, suggestion_id, product_id, included) VALUES (?, 'sug', ?, 1)`, scope.HouseholdID(), id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := groups.Accept(ctx, "sug", []string{"a", "b"}, nil, ""); err != nil {
+	if _, err := groups.Accept(ctx, scope, "sug", []string{"a", "b"}, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := db.Query(`SELECT product_id_a, product_id_b FROM group_suggestion_dismissals ORDER BY product_id_a, product_id_b`)
@@ -148,20 +163,21 @@ func TestAcceptDismissesOnlyExcludedPairs(t *testing.T) {
 func TestFavorVarietyAndNoRestockRoundTrip(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "plain", "Plain")
 	mustProduct(t, catalog, "fancy", "Fancy")
-	view, err := groups.Create(ctx, "Muffin mix", []string{"plain", "fancy"}, nil)
+	view, err := groups.Create(ctx, scope, "Muffin mix", []string{"plain", "fancy"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := groups.SetRule(ctx, view.ID, string(KindFavorVariety), nil, true)
+	saved, err := groups.SetRule(ctx, scope, view.ID, string(KindFavorVariety), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved.Rule != string(KindFavorVariety) || !saved.RuleConfirmed {
 		t.Fatalf("%+v", saved)
 	}
-	marked, err := groups.SetMemberRestock(ctx, view.ID, "fancy", true)
+	marked, err := groups.SetMemberRestock(ctx, scope, view.ID, "fancy", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +193,10 @@ func TestFavorVarietyAndNoRestockRoundTrip(t *testing.T) {
 	if !fancy.NoRestock {
 		t.Fatal("fancy stayed in rotation")
 	}
-	if _, err := db.Exec(`INSERT INTO product_group_members (product_id, group_id, no_restock) VALUES ('nope', 'missing', 2)`); err == nil {
+	if _, err := db.Exec(`INSERT INTO product_group_members (household_id, product_id, group_id, no_restock) VALUES (?, 'nope', 'missing', 2)`, scope.HouseholdID()); err == nil {
 		t.Fatal("expected the flag check to reject 2")
 	}
-	back, err := groups.SetMemberRestock(ctx, view.ID, "fancy", false)
+	back, err := groups.SetMemberRestock(ctx, scope, view.ID, "fancy", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,19 +210,20 @@ func TestFavorVarietyAndNoRestockRoundTrip(t *testing.T) {
 func TestParseDBTimeDropsMonotonicSuffix(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Oats")
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-1', 'user-1', 'p1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-1', ?, ?, 'p1')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	const raw = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
-	if _, err := db.Exec(`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c1', 'item-1', ?)`, raw); err != nil {
+	if _, err := db.Exec(`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('c1', ?, 'item-1', ?)`, scope.HouseholdID(), raw); err != nil {
 		t.Fatal(err)
 	}
-	view, err := groups.Create(ctx, "Oats", []string{"p1"}, nil)
+	view, err := groups.Create(ctx, scope, "Oats", []string{"p1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := groups.Get(ctx, view.ID)
+	got, err := groups.Get(ctx, scope, view.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,22 +236,23 @@ func TestParseDBTimeDropsMonotonicSuffix(t *testing.T) {
 func TestLoadLastConsumed(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Hunt's")
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-1', 'user-1', 'p1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-1', ?, ?, 'p1')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	when := time.Date(2026, 3, 2, 15, 4, 5, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c1', 'item-1', ?)`, when); err != nil {
+	if _, err := db.Exec(`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('c1', ?, 'item-1', ?)`, scope.HouseholdID(), when); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO stock_in_events (product_id, at) VALUES ('p1', ?)`, when.Add(-time.Hour)); err != nil {
+	if _, err := db.Exec(`INSERT INTO stock_in_events (household_id, product_id, at) VALUES (?, 'p1', ?)`, scope.HouseholdID(), when.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	view, err := groups.Create(ctx, "Beans", []string{"p1"}, nil)
+	view, err := groups.Create(ctx, scope, "Beans", []string{"p1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := groups.Get(ctx, view.ID)
+	got, err := groups.Get(ctx, scope, view.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +260,7 @@ func TestLoadLastConsumed(t *testing.T) {
 		t.Fatalf("%+v", got.Members)
 	}
 	var ge *Error
-	if _, err := groups.Get(ctx, "missing"); !errors.As(err, &ge) || ge.Code != codeMissing {
+	if _, err := groups.Get(ctx, scope, "missing"); !errors.As(err, &ge) || ge.Code != codeMissing {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -250,9 +268,10 @@ func TestLoadLastConsumed(t *testing.T) {
 func TestTargetWindowVolumeAndDeals(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Milk")
 	qty := 12.0
-	view, err := groups.Create(ctx, "Milk", []string{"p1"}, &TargetInput{Quantity: &qty, Dimension: product.DimensionVolume})
+	view, err := groups.Create(ctx, scope, "Milk", []string{"p1"}, &TargetInput{Quantity: &qty, Dimension: product.DimensionVolume})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,39 +279,39 @@ func TestTargetWindowVolumeAndDeals(t *testing.T) {
 		t.Fatalf("%+v", view)
 	}
 	months := 4
-	cleared, err := groups.SetTarget(ctx, view.ID, &TargetInput{Window: &months})
+	cleared, err := groups.SetTarget(ctx, scope, view.ID, &TargetInput{Window: &months})
 	if err != nil || cleared.WindowMonths == nil || *cleared.WindowMonths != 4 || cleared.Quantity != nil {
 		t.Fatalf("%+v err %v", cleared, err)
 	}
-	again, err := groups.SetTarget(ctx, view.ID, &TargetInput{Clear: true})
+	again, err := groups.SetTarget(ctx, scope, view.ID, &TargetInput{Clear: true})
 	if err != nil || again.WindowMonths != nil || again.hasQuantity {
 		t.Fatalf("%+v err %v", again, err)
 	}
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-1', 'user-1', 'p1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-1', ?, ?, 'p1')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	price := 59
-	if err := shopping.NewStore(db).SaveDeal(ctx, "user-1", shopping.Deal{ItemID: "item-1", PriceCents: &price, Label: "sale"}); err != nil {
+	if err := shopping.NewStore(db).SaveDeal(ctx, scope, shopping.Deal{ItemID: "item-1", PriceCents: &price, Label: "sale"}); err != nil {
 		t.Fatal(err)
 	}
-	deals, err := groups.DealsFor(ctx, []string{"p1"})
+	deals, err := groups.DealsFor(ctx, scope, []string{"p1"})
 	if err != nil || len(deals) != 1 || deals[0].PriceCents == nil || *deals[0].PriceCents != 59 || deals[0].NotedAt.IsZero() {
 		t.Fatalf("%+v err %v", deals, err)
 	}
-	if err := groups.Skip(ctx, "missing"); err == nil {
+	if err := groups.Skip(ctx, scope, "missing"); err == nil {
 		t.Fatal("expected a missing suggestion")
 	}
-	if _, err := db.Exec(`INSERT INTO group_suggestions (id, user_id, kind, title) VALUES ('sug', 'user-1', 'looks_alike', 'Milk')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_suggestions (id, household_id, user_id, kind, title) VALUES ('sug', ?, ?, 'looks_alike', 'Milk')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := groups.Skip(ctx, "sug"); err != nil {
+	if err := groups.Skip(ctx, scope, "sug"); err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := groups.Rename(ctx, view.ID, "Dairy")
+	renamed, err := groups.Rename(ctx, scope, view.ID, "Dairy")
 	if err != nil || renamed.Name != "Dairy" {
 		t.Fatalf("%+v err %v", renamed, err)
 	}
-	if err := groups.Delete(ctx, view.ID); err != nil {
+	if err := groups.Delete(ctx, scope, view.ID); err != nil {
 		t.Fatal(err)
 	}
 }

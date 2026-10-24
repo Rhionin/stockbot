@@ -26,7 +26,11 @@ func (h *UpdateHandler) Handle(req Request[productWriteBody, updateProductPathPa
 		return productWriteResponse{}, err
 	}
 
-	existing, err := h.Catalog.GetProductByID(req.Context, req.PathParams.ID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return productWriteResponse{}, err
+	}
+	existing, err := h.Catalog.ProductFor(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return productWriteResponse{}, err
 	}
@@ -42,11 +46,14 @@ func (h *UpdateHandler) Handle(req Request[productWriteBody, updateProductPathPa
 	if err := applyWrittenSize(&prod, req.Body, false); err != nil {
 		return productWriteResponse{}, err
 	}
-	if err := h.Catalog.UpdateProduct(req.Context, prod); err != nil {
+	if err := h.Catalog.UpdateDetails(req.Context, prod); err != nil {
+		return productWriteResponse{}, inputOrInternal(err)
+	}
+	if err := h.Catalog.SaveDisplayName(req.Context, scope, prod.ID, req.Body.Name); err != nil {
 		return productWriteResponse{}, inputOrInternal(err)
 	}
 
-	stored, err := h.Catalog.GetProductByID(req.Context, prod.ID)
+	stored, err := h.Catalog.ProductFor(req.Context, scope, prod.ID)
 	if err != nil {
 		return productWriteResponse{}, err
 	}
@@ -56,11 +63,11 @@ func (h *UpdateHandler) Handle(req Request[productWriteBody, updateProductPathPa
 
 	// Provenance comes from the stored row so a product already loaded from
 	// upstream is not sent again.
-	outcome, err := recordWriteContribution(req.Context, h.Catalog, h.Contributor, req.Body, *stored)
+	outcome, err := recordWriteContribution(req.Context, scope, h.Catalog, h.Contributor, req.Body, *stored)
 	if err != nil {
 		return productWriteResponse{}, err
 	}
-	considerGroupProduct(req.Context, h.Groups, stored.ID)
+	considerGroupProduct(req.Context, scope, h.Groups, stored.ID)
 	return productWriteResponse{Product: *stored, Contribution: outcome}, nil
 }
 

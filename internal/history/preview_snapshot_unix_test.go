@@ -51,7 +51,7 @@ func TestPreviewFilesArePrivateWhileTheyAreCreated(t *testing.T) {
 	}
 	t.Cleanup(func() { previewDuringBackup = nil })
 
-	if _, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing"); err == nil {
+	if _, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing"); err == nil {
 		t.Fatal("expected a missing move")
 	}
 	if !checked {
@@ -76,7 +76,7 @@ func TestSnapshotHoldsThePreviewLock(t *testing.T) {
 	}
 	t.Cleanup(func() { previewDuringBackup = nil })
 
-	if _, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing"); err == nil {
+	if _, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing"); err == nil {
 		t.Fatal("expected a missing move")
 	}
 	if !held {
@@ -156,7 +156,7 @@ func TestPreviewLeavesTheLiveJournalModeAlone(t *testing.T) {
 		}
 	})
 
-	if _, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing"); err == nil {
+	if _, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing"); err == nil {
 		t.Fatal("expected a missing move")
 	}
 	if !checked {

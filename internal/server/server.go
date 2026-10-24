@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/brand"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
@@ -225,6 +226,7 @@ func NewHandler(
 	// still asks a person to sign in. A wrong or missing token never falls
 	// through to the open LAN listener.
 	handler = syncGate(syncToken, handler)
+	handler = withPrimaryScope(db, handler)
 	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
@@ -540,7 +542,14 @@ func newAPIMux(
 		Adjustments:  shoppingList,
 	}
 	refreshPlan := func(ctx context.Context) error {
-		_, err := stageShoppingPlan(ctx, "user-1", pantry, shoppingList, supplySvc, time.Now())
+		scope, err := requestScope(ctx)
+		if err != nil {
+			scope, err = auth.PrimaryScope(ctx, db)
+			if err != nil {
+				return err
+			}
+		}
+		_, err = stageShoppingPlan(ctx, scope, pantry, shoppingList, supplySvc, time.Now())
 		return err
 	}
 	restockHandler.Refresh = refreshPlan
@@ -641,7 +650,11 @@ func newAPIMux(
 	apiMux.HandleFunc("DELETE /api/push/subscriptions", HandleJSON(pushHandler.Delete))
 	// The listener uses the broadcaster this mux already publishes scans on,
 	// including scans from the headless reader when it shares that broadcaster.
-	push.Listen(broadcaster, push.NewSender(pushSubscriptions, pushCfg), scanQueue)
+	if db != nil {
+		if primary, err := auth.PrimaryScope(context.Background(), db); err == nil {
+			push.Listen(context.Background(), primary, broadcaster, push.NewSender(pushSubscriptions, pushCfg), scanQueue)
+		}
+	}
 
 	// Unknown resolution handler
 	unknownResolutionHandler := &UnknownResolutionHandler{

@@ -5,11 +5,12 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type InventoryInstancesListHandler struct {
 	Pantry interface {
-		ListItemInstances(ctx context.Context, itemID string) ([]inventory.ItemInstance, error)
+		ListItemInstances(ctx context.Context, scope tenant.Scope, itemID string) ([]inventory.ItemInstance, error)
 	}
 }
 
@@ -27,7 +28,11 @@ type ItemInstanceWithStatus struct {
 // here and returns 200 with an empty list. Inventory, restock, and the
 // planner hide that item; this direct read does not.
 func (h *InventoryInstancesListHandler) Handle(req Request[struct{}, inventoryInstancesListPathParams]) ([]ItemInstanceWithStatus, error) {
-	instances, err := h.Pantry.ListItemInstances(req.Context, req.PathParams.ItemID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	instances, err := h.Pantry.ListItemInstances(req.Context, scope, req.PathParams.ItemID)
 	if err != nil {
 		return nil, err
 	}

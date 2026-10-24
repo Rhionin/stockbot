@@ -18,18 +18,24 @@ func TestStockOutTakesTheEarlierExpiryAcrossDST(t *testing.T) {
 		t.Fatalf("dst fixture later=%s earlier=%s", later, earlier)
 	}
 
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`
-		INSERT INTO products (id, name) VALUES ('prod', 'Milk');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod');
-		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at) VALUES
-			('early', 'item', ?, ?),
-			('late', 'item', ?, ?)`,
-		earlier, earlier, earlier, later); err != nil {
+	if _, err := db.Exec(`INSERT INTO products (id, name) VALUES ('prod', 'Milk')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.StockOut(context.Background(), "item", later); err != nil {
+	if _, err := db.Exec(`
+		INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`,
+		scope.HouseholdID(), scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO item_instances (id, item_id, household_id, stock_in_at, expires_at) VALUES
+			('early', 'item', ?, ?, ?),
+			('late', 'item', ?, ?, ?)`,
+		scope.HouseholdID(), earlier, earlier, scope.HouseholdID(), earlier, later); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.StockOut(context.Background(), scope, "item", later); err != nil {
 		t.Fatal(err)
 	}
 	var id, raw string

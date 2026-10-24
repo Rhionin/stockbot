@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // InventoryItem represents an aggregated inventory item with instance counts
@@ -50,15 +51,17 @@ type GroupSummary struct {
 // GetInventoryItem use when no caller-specific value is required.
 const DefaultWarningDays = 7
 
-// GetInventoryList returns all items for the given userID with aggregated
-// instance information including counts and expiry-based attention flags.
+// GetInventoryList returns this household's items with aggregated instance
+// information including counts and expiry-based attention flags.
 // Items are ordered by product name. If query is non-empty, only items
 // whose name or category contains the query string (case-insensitive) are returned.
 //
 // Validates Requirements 2.2, 2.3, 2.4, 2.10, 2.11
-func (r *Pantry) GetInventoryList(ctx context.Context, userID string, now time.Time, warningDays int, query string) ([]InventoryItem, error) {
-	// Get all items for the user
-	items, err := r.ListItems(ctx, userID)
+func (r *Pantry) GetInventoryList(ctx context.Context, scope tenant.Scope, now time.Time, warningDays int, query string) ([]InventoryItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	items, err := r.ListItems(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -66,12 +69,11 @@ func (r *Pantry) GetInventoryList(ctx context.Context, userID string, now time.T
 	result := make([]InventoryItem, 0, len(items))
 
 	for _, item := range items {
-		// Apply search filter if query is provided
 		if query != "" && !matchesQuery(item, query) {
 			continue
 		}
 
-		invItem, err := r.aggregateItem(ctx, item, now, warningDays)
+		invItem, err := r.aggregateItem(ctx, scope, item, now, warningDays)
 		if err != nil {
 			return nil, err
 		}
@@ -79,16 +81,19 @@ func (r *Pantry) GetInventoryList(ctx context.Context, userID string, now time.T
 		result = append(result, invItem)
 	}
 
-	if err := r.attachGroups(ctx, userID, result); err != nil {
+	if err := r.attachGroups(ctx, scope, result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-// GetInventoryItem returns the aggregated InventoryItem for a single item,
-// or nil if no such item exists.
-func (r *Pantry) GetInventoryItem(ctx context.Context, itemID string, now time.Time, warningDays int) (*InventoryItem, error) {
-	item, err := r.getItemByID(ctx, itemID)
+// GetInventoryItem returns the aggregated InventoryItem for a single item
+// in this household, or nil if no such item exists.
+func (r *Pantry) GetInventoryItem(ctx context.Context, scope tenant.Scope, itemID string, now time.Time, warningDays int) (*InventoryItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	item, err := r.getItemByID(ctx, scope, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +101,12 @@ func (r *Pantry) GetInventoryItem(ctx context.Context, itemID string, now time.T
 		return nil, nil
 	}
 
-	invItem, err := r.aggregateItem(ctx, *item, now, warningDays)
+	invItem, err := r.aggregateItem(ctx, scope, *item, now, warningDays)
 	if err != nil {
 		return nil, err
 	}
 	rows := []InventoryItem{invItem}
-	if err := r.attachGroups(ctx, item.UserID, rows); err != nil {
+	if err := r.attachGroups(ctx, scope, rows); err != nil {
 		return nil, err
 	}
 	return &rows[0], nil
@@ -110,9 +115,8 @@ func (r *Pantry) GetInventoryItem(ctx context.Context, itemID string, now time.T
 // aggregateItem computes the InstanceCount, NearExpiryCount, ExpiredCount,
 // and NeedsAttention fields for a single item, shared by GetInventoryList
 // and GetInventoryItem so their behavior can never drift apart.
-func (r *Pantry) aggregateItem(ctx context.Context, item Item, now time.Time, warningDays int) (InventoryItem, error) {
-	// Get all instances for this item
-	instances, err := r.ListItemInstances(ctx, item.ID)
+func (r *Pantry) aggregateItem(ctx context.Context, scope tenant.Scope, item Item, now time.Time, warningDays int) (InventoryItem, error) {
+	instances, err := r.ListItemInstances(ctx, scope, item.ID)
 	if err != nil {
 		return InventoryItem{}, err
 	}
@@ -149,11 +153,14 @@ func matchesQuery(item Item, query string) bool {
 	return strings.Contains(lowerName, lowerQuery) || strings.Contains(lowerCategory, lowerQuery)
 }
 
-func (r *Pantry) attachGroups(ctx context.Context, userID string, items []InventoryItem) error {
+func (r *Pantry) attachGroups(ctx context.Context, scope tenant.Scope, items []InventoryItem) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return nil
 	}
-	byProduct, err := r.groupSummaries(ctx, userID)
+	byProduct, err := r.groupSummaries(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -165,20 +172,24 @@ func (r *Pantry) attachGroups(ctx context.Context, userID string, items []Invent
 	return nil
 }
 
-func (r *Pantry) groupSummaries(ctx context.Context, userID string) (map[string]*GroupSummary, error) {
+func (r *Pantry) groupSummaries(ctx context.Context, scope tenant.Scope) (map[string]*GroupSummary, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	householdID := scope.HouseholdID()
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT g.id, g.name, g.rule, g.rule_confirmed, g.pinned_product_id,
 		       g.window_months, g.quantity_base_value, g.quantity_dimension,
 		       p.id, p.name,
-		       COALESCE((SELECT i.id FROM items i WHERE i.product_id = p.id AND i.user_id = ? LIMIT 1), ''),
+		       COALESCE((SELECT i.id FROM items i WHERE i.product_id = p.id AND i.household_id = ? LIMIT 1), ''),
 		       COALESCE((SELECT COUNT(*) FROM item_instances ii
 		                  JOIN items i ON i.id = ii.item_id
-		                  WHERE i.product_id = p.id AND i.user_id = ? AND ii.removed_at IS NULL), 0)
+		                  WHERE i.product_id = p.id AND i.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL), 0)
 		FROM product_group_members m
 		JOIN product_groups g ON g.id = m.group_id
 		JOIN products p ON p.id = m.product_id
-		WHERE g.user_id = ?
-		ORDER BY g.name, p.name, p.id`, userID, userID, userID)
+		WHERE g.household_id = ? AND m.household_id = ?
+		ORDER BY g.name, p.name, p.id`, householdID, householdID, householdID, householdID, householdID)
 	if err != nil {
 		return nil, fmt.Errorf("could not load groups for inventory: %w", err)
 	}
@@ -236,7 +247,7 @@ func (r *Pantry) groupSummaries(ctx context.Context, userID string) (map[string]
 		summary := byID[id]
 		summary.MemberCount = len(summary.Members)
 	}
-	if err := r.attachBarcodes(ctx, byID); err != nil {
+	if err := r.attachBarcodes(ctx, scope, byID); err != nil {
 		return nil, err
 	}
 
@@ -249,16 +260,21 @@ func (r *Pantry) groupSummaries(ctx context.Context, userID string) (map[string]
 	return byProduct, nil
 }
 
-func (r *Pantry) attachBarcodes(ctx context.Context, groups map[string]*GroupSummary) error {
+func (r *Pantry) attachBarcodes(ctx context.Context, scope tenant.Scope, groups map[string]*GroupSummary) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(groups) == 0 {
 		return nil
 	}
+	householdID := scope.HouseholdID()
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT b.product_id, b.barcode
 		FROM barcodes b
 		JOIN product_group_members m ON m.product_id = b.product_id
 		JOIN product_groups g ON g.id = m.group_id
-		ORDER BY b.barcode`)
+		WHERE b.household_id = ? AND m.household_id = ? AND g.household_id = ?
+		ORDER BY b.barcode`, householdID, householdID, householdID)
 	if err != nil {
 		return fmt.Errorf("could not load group barcodes: %w", err)
 	}

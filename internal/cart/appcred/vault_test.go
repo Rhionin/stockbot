@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	_ "modernc.org/sqlite"
 )
 
@@ -19,7 +20,11 @@ func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
 	}
 	vault := NewVault(db)
 	ctx := context.Background()
-	if err := vault.Save(ctx, Saved{
+	scope, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Save(ctx, scope, Saved{
 		ProviderID:   "kroger",
 		ClientID:     "client",
 		ClientSecret: "kept-secret",
@@ -28,7 +33,7 @@ func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := vault.Save(ctx, Saved{
+	if err := vault.Save(ctx, scope, Saved{
 		ProviderID:  "kroger",
 		ClientID:    "client-2",
 		RedirectURI: "https://app.example/cb2",
@@ -36,14 +41,14 @@ func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	saved, ok, err := vault.Load(ctx, "kroger")
+	saved, ok, err := vault.Load(ctx, scope, "kroger")
 	if err != nil || !ok {
 		t.Fatalf("load ok=%v err=%v", ok, err)
 	}
 	if saved.ClientSecret != "kept-secret" || saved.ClientID != "client-2" {
 		t.Fatalf("saved = %+v", saved)
 	}
-	public, ok, err := vault.Public(ctx, "kroger")
+	public, ok, err := vault.Public(ctx, scope, "kroger")
 	if err != nil || !ok {
 		t.Fatalf("public ok=%v err=%v", ok, err)
 	}

@@ -7,14 +7,15 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type ScanUpdateHandler struct {
 	Queue interface {
-		UpdateScanEntry(ctx context.Context, id string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *scan.ScanStatus) error
-		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
-		ResolveFlaggedEntry(ctx context.Context, scanEntryID, productID string) error
-		LinkStockOutProduct(ctx context.Context, scanID, productID string) (int, error)
+		UpdateScanEntry(ctx context.Context, scope tenant.Scope, id string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *scan.ScanStatus) error
+		GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
+		ResolveFlaggedEntry(ctx context.Context, scope tenant.Scope, scanEntryID, productID string) error
+		LinkStockOutProduct(ctx context.Context, scope tenant.Scope, scanID, productID string) (int, error)
 	}
 }
 
@@ -51,10 +52,15 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		}
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check if this is a flagged entry resolution
 	// (updating productID and optionally status to pending on a flagged entry)
 	if req.Body.ProductID != nil {
-		entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+		entry, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 		if err != nil {
 			return nil, InternalError(err)
 		}
@@ -74,19 +80,19 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 		// without stocking anything. Flagged stock-in stays on ResolveFlaggedEntry.
 		if entry.Direction != nil && *entry.Direction == scan.StockOut &&
 			(entry.Status == scan.Pending || entry.Status == scan.Flagged) {
-			return h.linkStockOut(req)
+			return h.linkStockOut(req, scope)
 		}
 
 		// If the entry is currently flagged and we're setting a productID,
 		// use ResolveFlaggedEntry which handles barcode override creation
 		if entry.Status == scan.Flagged {
-			err := h.Queue.ResolveFlaggedEntry(req.Context, req.PathParams.ID, *req.Body.ProductID)
+			err := h.Queue.ResolveFlaggedEntry(req.Context, scope, req.PathParams.ID, *req.Body.ProductID)
 			if err != nil {
 				return nil, InternalError(err)
 			}
 
 			// Return the resolved entry
-			resolved, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+			resolved, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 			if err != nil {
 				return nil, InternalError(err)
 			}
@@ -95,8 +101,9 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	}
 
 	// Standard update path for non-resolution updates
-	err := h.Queue.UpdateScanEntry(
+	err = h.Queue.UpdateScanEntry(
 		req.Context,
+		scope,
 		req.PathParams.ID,
 		req.Body.Direction,
 		req.Body.UnitCount,
@@ -109,7 +116,7 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	}
 
 	// Return the updated entry
-	entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+	entry, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -120,8 +127,8 @@ func (h *ScanUpdateHandler) Handle(req Request[updateScanRequest, updateScanPath
 	return entry, nil
 }
 
-func (h *ScanUpdateHandler) linkStockOut(req Request[updateScanRequest, updateScanPathParams]) (*scan.ScanEntry, error) {
-	onHand, err := h.Queue.LinkStockOutProduct(req.Context, req.PathParams.ID, *req.Body.ProductID)
+func (h *ScanUpdateHandler) linkStockOut(req Request[updateScanRequest, updateScanPathParams], scope tenant.Scope) (*scan.ScanEntry, error) {
+	onHand, err := h.Queue.LinkStockOutProduct(req.Context, scope, req.PathParams.ID, *req.Body.ProductID)
 	if err != nil {
 		if _, _, ok := knownCommitFailure(err); ok {
 			return nil, commitClientError(err)
@@ -131,6 +138,7 @@ func (h *ScanUpdateHandler) linkStockOut(req Request[updateScanRequest, updateSc
 	if req.Body.Direction != nil || req.Body.UnitCount != nil || req.Body.ExpiresAt != nil {
 		if err := h.Queue.UpdateScanEntry(
 			req.Context,
+			scope,
 			req.PathParams.ID,
 			req.Body.Direction,
 			req.Body.UnitCount,
@@ -141,7 +149,7 @@ func (h *ScanUpdateHandler) linkStockOut(req Request[updateScanRequest, updateSc
 			return nil, InternalError(err)
 		}
 	}
-	linked, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+	linked, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, InternalError(err)
 	}

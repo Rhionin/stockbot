@@ -182,7 +182,7 @@ func TestHistoryCorrectionsReadBack(t *testing.T) {
 
 func seedScanAt(env testEnv, id, productID string, direction scan.ScanDirection, units int, at time.Time) {
 	env.T.Helper()
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(env.T.Context(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(env.T.Context(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: id, UserID: "user-1", Barcode: id, ScannedAt: at,
 		Direction: &direction, UnitCount: units, ProductID: &productID, Status: scan.Pending,
 	}); err != nil {

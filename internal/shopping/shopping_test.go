@@ -9,9 +9,11 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // testDeps holds all stores needed for shopping list tests.
@@ -42,14 +44,23 @@ func newTestStore(t *testing.T) testDeps {
 	}
 }
 
+func scopeOf(t *testing.T, db *sql.DB) tenant.Scope {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
 // createTestItem creates a product and an inventory item, returning the item ID.
-func createTestItem(t *testing.T, deps testDeps, ctx context.Context, userID, productID, productName string) string {
+func createTestItem(t *testing.T, deps testDeps, ctx context.Context, productID, productName string) string {
 	t.Helper()
 	p := product.Product{ID: productID, Name: productName, Category: "Test"}
 	if err := deps.product.CreateProduct(ctx, p); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	item, err := deps.inventory.GetOrCreateItem(ctx, userID, productID)
+	item, err := deps.inventory.GetOrCreateItem(ctx, scopeOf(t, deps.db), productID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
@@ -59,20 +70,20 @@ func createTestItem(t *testing.T, deps testDeps, ctx context.Context, userID, pr
 func TestAddManualItem(t *testing.T) {
 	tests := []struct {
 		name     string
-		userID   string
 		quantity int
 	}{
-		{name: "adds item with correct fields", userID: "user-1", quantity: 3},
+		{name: "adds item with correct fields", quantity: 3},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := newTestStore(t)
 			ctx := context.Background()
+			scope := scopeOf(t, deps.db)
 
-			itemID := createTestItem(t, deps, ctx, tt.userID, "prod-1", "Milk")
+			itemID := createTestItem(t, deps, ctx, "prod-1", "Milk")
 
-			got, err := deps.shopping.AddManualItem(ctx, tt.userID, itemID, tt.quantity)
+			got, err := deps.shopping.AddManualItem(ctx, scope, itemID, tt.quantity)
 			if err != nil {
 				t.Fatalf("AddManualItem: %v", err)
 			}
@@ -82,8 +93,8 @@ func TestAddManualItem(t *testing.T) {
 			if got.ID == "" {
 				t.Error("ID: expected non-empty UUID, got empty string")
 			}
-			if got.UserID != tt.userID {
-				t.Errorf("UserID: want %q, got %q", tt.userID, got.UserID)
+			if got.UserID != scope.HouseholdID() {
+				t.Errorf("UserID: want %q, got %q", scope.HouseholdID(), got.UserID)
 			}
 			if got.ItemID != itemID {
 				t.Errorf("ItemID: want %q, got %q", itemID, got.ItemID)
@@ -110,8 +121,8 @@ func TestRemoveItem(t *testing.T) {
 		{
 			name: "removes existing item",
 			setup: func(t *testing.T, deps testDeps, ctx context.Context) string {
-				itemID := createTestItem(t, deps, ctx, "user-1", "prod-1", "Eggs")
-				got, err := deps.shopping.AddManualItem(ctx, "user-1", itemID, 2)
+				itemID := createTestItem(t, deps, ctx, "prod-1", "Eggs")
+				got, err := deps.shopping.AddManualItem(ctx, scopeOf(t, deps.db), itemID, 2)
 				if err != nil {
 					t.Fatalf("AddManualItem: %v", err)
 				}
@@ -132,7 +143,7 @@ func TestRemoveItem(t *testing.T) {
 			deps := newTestStore(t)
 			ctx := context.Background()
 			id := tt.setup(t, deps, ctx)
-			err := deps.shopping.RemoveItem(ctx, id)
+			err := deps.shopping.RemoveItem(ctx, scopeOf(t, deps.db), id)
 			if tt.expectError != nil {
 				if !errors.Is(err, tt.expectError) {
 					t.Errorf("error: want %v, got %v", tt.expectError, err)
@@ -155,8 +166,8 @@ func TestMarkPurchased(t *testing.T) {
 		{
 			name: "sets purchased_at on existing item",
 			setup: func(t *testing.T, deps testDeps, ctx context.Context) string {
-				itemID := createTestItem(t, deps, ctx, "user-1", "prod-1", "Bread")
-				got, err := deps.shopping.AddManualItem(ctx, "user-1", itemID, 1)
+				itemID := createTestItem(t, deps, ctx, "prod-1", "Bread")
+				got, err := deps.shopping.AddManualItem(ctx, scopeOf(t, deps.db), itemID, 1)
 				if err != nil {
 					t.Fatalf("AddManualItem: %v", err)
 				}
@@ -176,8 +187,9 @@ func TestMarkPurchased(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := newTestStore(t)
 			ctx := context.Background()
+			scope := scopeOf(t, deps.db)
 			id := tt.setup(t, deps, ctx)
-			err := deps.shopping.MarkPurchased(ctx, id)
+			err := deps.shopping.MarkPurchased(ctx, scope, id)
 			if tt.expectError != nil {
 				if !errors.Is(err, tt.expectError) {
 					t.Errorf("error: want %v, got %v", tt.expectError, err)
@@ -187,7 +199,7 @@ func TestMarkPurchased(t *testing.T) {
 			if err != nil {
 				t.Fatalf("MarkPurchased: %v", err)
 			}
-			items, err := deps.shopping.ListManualItems(ctx, "user-1")
+			items, err := deps.shopping.ListManualItems(ctx, scope)
 			if err != nil {
 				t.Fatalf("ListManualItems: %v", err)
 			}
@@ -203,45 +215,28 @@ func TestMarkPurchased(t *testing.T) {
 func TestListManualItems(t *testing.T) {
 	tests := []struct {
 		name        string
-		userID      string
 		setup       func(t *testing.T, deps testDeps, ctx context.Context)
 		expectCount int
 	}{
 		{
 			name:        "empty list",
-			userID:      "user-1",
 			setup:       func(t *testing.T, deps testDeps, ctx context.Context) {},
 			expectCount: 0,
 		},
 		{
-			name:   "returns only unpurchased manual items",
-			userID: "user-1",
+			name: "returns only unpurchased manual items",
 			setup: func(t *testing.T, deps testDeps, ctx context.Context) {
-				itemID := createTestItem(t, deps, ctx, "user-1", "prod-1", "Cheese")
-				item1, err := deps.shopping.AddManualItem(ctx, "user-1", itemID, 1)
+				scope := scopeOf(t, deps.db)
+				itemID := createTestItem(t, deps, ctx, "prod-1", "Cheese")
+				item1, err := deps.shopping.AddManualItem(ctx, scope, itemID, 1)
 				if err != nil {
 					t.Fatalf("AddManualItem: %v", err)
 				}
-				if _, err = deps.shopping.AddManualItem(ctx, "user-1", itemID, 2); err != nil {
+				if _, err = deps.shopping.AddManualItem(ctx, scope, itemID, 2); err != nil {
 					t.Fatalf("AddManualItem: %v", err)
 				}
-				if err := deps.shopping.MarkPurchased(ctx, item1.ID); err != nil {
+				if err := deps.shopping.MarkPurchased(ctx, scope, item1.ID); err != nil {
 					t.Fatalf("MarkPurchased: %v", err)
-				}
-			},
-			expectCount: 1,
-		},
-		{
-			name:   "does not return items for other users",
-			userID: "user-1",
-			setup: func(t *testing.T, deps testDeps, ctx context.Context) {
-				itemIDUser1 := createTestItem(t, deps, ctx, "user-1", "prod-1", "Yogurt")
-				itemIDUser2 := createTestItem(t, deps, ctx, "user-2", "prod-2", "Butter")
-				if _, err := deps.shopping.AddManualItem(ctx, "user-1", itemIDUser1, 1); err != nil {
-					t.Fatalf("AddManualItem user-1: %v", err)
-				}
-				if _, err := deps.shopping.AddManualItem(ctx, "user-2", itemIDUser2, 1); err != nil {
-					t.Fatalf("AddManualItem user-2: %v", err)
 				}
 			},
 			expectCount: 1,
@@ -252,8 +247,9 @@ func TestListManualItems(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := newTestStore(t)
 			ctx := context.Background()
+			scope := scopeOf(t, deps.db)
 			tt.setup(t, deps, ctx)
-			got, err := deps.shopping.ListManualItems(ctx, tt.userID)
+			got, err := deps.shopping.ListManualItems(ctx, scope)
 			if err != nil {
 				t.Fatalf("ListManualItems: %v", err)
 			}
@@ -267,8 +263,8 @@ func TestListManualItems(t *testing.T) {
 				if item.Source != "manual" {
 					t.Errorf("item %q: Source want %q, got %q", item.ID, "manual", item.Source)
 				}
-				if item.UserID != tt.userID {
-					t.Errorf("item %q: UserID want %q, got %q", item.ID, tt.userID, item.UserID)
+				if item.UserID != scope.HouseholdID() {
+					t.Errorf("item %q: UserID want %q, got %q", item.ID, scope.HouseholdID(), item.UserID)
 				}
 			}
 		})

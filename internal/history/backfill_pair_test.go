@@ -11,6 +11,8 @@ import (
 
 func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	db := openHistoryDB(t)
+	scope := scopeOf(t, db)
+	household := scope.HouseholdID()
 	ctx := t.Context()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	at := now.Add(-2 * time.Hour)
@@ -21,26 +23,27 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 			('prod-hide', 'Hide', 'Pantry', 'unit'),
 			('prod-fills', 'Fills', 'Pantry', 'unit')`)
 	execHistory(t, db, `
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-pair', 'user-1', 'prod-pair'),
-			('item-scans', 'user-1', 'prod-scans'),
-			('item-hide', 'user-1', 'prod-hide'),
-			('item-fills', 'user-1', 'prod-fills')`)
+		INSERT INTO items (id, user_id, product_id, household_id) VALUES
+			('item-pair', ?, 'prod-pair', ?),
+			('item-scans', ?, 'prod-scans', ?),
+			('item-hide', ?, 'prod-hide', ?),
+			('item-fills', ?, 'prod-fills', ?)`,
+		household, household, household, household, household, household, household, household)
 
 	journal := NewJournal(db)
 	recordBackfillPair(t, db, "item-pair", "prod-pair", "scan-pair", "inst-pair", at, false)
 
-	view, err := journal.Product(ctx, householdUser, "item-pair", now)
+	view, err := journal.Product(ctx, scope, "item-pair", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inID := moveBy(t, view, "in", "backfill")
 	outID := moveBy(t, view, "out", "scan")
 
-	if _, err := journal.SetQuantity(ctx, householdUser, inID, 2, now); !errors.Is(err, ErrBackfillLocked) {
+	if _, err := journal.SetQuantity(ctx, scope, inID, 2, now); !errors.Is(err, ErrBackfillLocked) {
 		t.Fatalf("stock-in edit err = %v", err)
 	}
-	if _, err := journal.SetQuantity(ctx, householdUser, outID, 2, now); !errors.Is(err, ErrBackfillLocked) {
+	if _, err := journal.SetQuantity(ctx, scope, outID, 2, now); !errors.Is(err, ErrBackfillLocked) {
 		t.Fatalf("stock-out edit err = %v", err)
 	}
 	if qty := moveQuantity(t, db, inID); qty != 1 {
@@ -49,11 +52,11 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	if qty := moveQuantity(t, db, outID); qty != 1 {
 		t.Fatalf("stock-out quantity = %d", qty)
 	}
-	if _, err := journal.SetQuantity(ctx, householdUser, inID, 1, now); err != nil {
+	if _, err := journal.SetQuantity(ctx, scope, inID, 1, now); err != nil {
 		t.Fatalf("same quantity: %v", err)
 	}
 
-	undone, err := journal.Undo(ctx, householdUser, inID, now)
+	undone, err := journal.Undo(ctx, scope, inID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +73,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		recordConsumed(t, db, "item-scans", "prod-scans", "scan-shared", "inst-scans-out-2", at, "scan")
 		recordHeld(t, db, "item-scans", "prod-scans", "inst-scans-left", at)
 
-		view, err := journal.Product(ctx, householdUser, "item-scans", now)
+		view, err := journal.Product(ctx, scope, "item-scans", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,13 +86,13 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if len(outs) != 2 {
 			t.Fatalf("scan outs = %+v", view.Moves)
 		}
-		if _, err := journal.SetQuantity(ctx, householdUser, outs[0].ID, 2, now); err != nil {
+		if _, err := journal.SetQuantity(ctx, scope, outs[0].ID, 2, now); err != nil {
 			t.Fatalf("editable scan out: %v", err)
 		}
 		if moveQuantity(t, db, outs[1].ID) != 1 {
 			t.Fatal("the other scan move was changed")
 		}
-		if _, err := journal.Undo(ctx, householdUser, outs[1].ID, now); err != nil {
+		if _, err := journal.Undo(ctx, scope, outs[1].ID, now); err != nil {
 			t.Fatal(err)
 		}
 		if moveQuantity(t, db, outs[0].ID) != 2 {
@@ -100,7 +103,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 	t.Run("two backfill moves that share a scan are not a pair", func(t *testing.T) {
 		recordHeldMove(t, db, "item-fills", "prod-fills", "scan-fills", "inst-fill-1", at, "backfill", false)
 		recordHeldMove(t, db, "item-fills", "prod-fills", "scan-fills", "inst-fill-2", at, "backfill", false)
-		view, err := journal.Product(ctx, householdUser, "item-fills", now)
+		view, err := journal.Product(ctx, scope, "item-fills", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +116,7 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 		if len(fills) != 2 {
 			t.Fatalf("backfills = %+v", view.Moves)
 		}
-		if _, err := journal.SetQuantity(ctx, householdUser, fills[0].ID, 2, now); err != nil {
+		if _, err := journal.SetQuantity(ctx, scope, fills[0].ID, 2, now); err != nil {
 			t.Fatalf("unpaired backfill: %v", err)
 		}
 		if moveQuantity(t, db, fills[1].ID) != 1 {
@@ -123,11 +126,11 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 
 	t.Run("undo of a pair that unshelved hides the item again", func(t *testing.T) {
 		recordBackfillPair(t, db, "item-hide", "prod-hide", "scan-hide", "inst-hide", at, true)
-		view, err := journal.Product(ctx, householdUser, "item-hide", now)
+		view, err := journal.Product(ctx, scope, "item-hide", now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "out", "scan"), now); err != nil {
+		if _, err := journal.Undo(ctx, scope, moveBy(t, view, "out", "scan"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-hide"); shelved != 1 {
@@ -140,14 +143,14 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 
 	t.Run("undo of a pair that unshelved leaves a later unit", func(t *testing.T) {
 		execHistory(t, db, `INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-keep', 'Keep', 'Pantry', 'unit')`)
-		execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item-keep', 'user-1', 'prod-keep')`)
+		execHistory(t, db, `INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-keep', ?, 'prod-keep', ?)`, household, household)
 		recordBackfillPair(t, db, "item-keep", "prod-keep", "scan-keep", "inst-keep", at, true)
 		recordHeld(t, db, "item-keep", "prod-keep", "inst-keep-live", at.Add(time.Hour))
-		view, err := journal.Product(ctx, householdUser, "item-keep", now)
+		view, err := journal.Product(ctx, scope, "item-keep", now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "in", "backfill"), now); err != nil {
+		if _, err := journal.Undo(ctx, scope, moveBy(t, view, "in", "backfill"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-keep"); shelved != 0 {
@@ -166,18 +169,18 @@ func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
 
 	t.Run("a later unit that was used up still re-shelves", func(t *testing.T) {
 		execHistory(t, db, `INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-used', 'Used', 'Pantry', 'unit')`)
-		execHistory(t, db, `INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-used', 'user-1', 'prod-used', 1)`)
+		execHistory(t, db, `INSERT INTO items (id, user_id, product_id, shelved, household_id) VALUES ('item-used', ?, 'prod-used', 1, ?)`, household, household)
 		recordBackfillPair(t, db, "item-used", "prod-used", "scan-used", "inst-used", at, true)
 		recordHeld(t, db, "item-used", "prod-used", "inst-used-real", at.Add(time.Hour))
 		useUp(t, db, "item-used", "prod-used", "inst-used-real", at.Add(2*time.Hour))
 		if shelved := itemShelved(t, db, "item-used"); shelved != 0 {
 			t.Fatal("the item was still shelved before the undo")
 		}
-		view, err := journal.Product(ctx, householdUser, "item-used", now)
+		view, err := journal.Product(ctx, scope, "item-used", now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := journal.Undo(ctx, householdUser, moveBy(t, view, "in", "backfill"), now); err != nil {
+		if _, err := journal.Undo(ctx, scope, moveBy(t, view, "in", "backfill"), now); err != nil {
 			t.Fatal(err)
 		}
 		if shelved := itemShelved(t, db, "item-used"); shelved != 1 {
@@ -200,24 +203,25 @@ func recordHeld(t *testing.T, db *sql.DB, itemID, productID, instanceID string, 
 
 func recordHeldMove(t *testing.T, db *sql.DB, itemID, productID, scanID, instanceID string, at time.Time, source string, unshelved bool) {
 	t.Helper()
+	scope := scopeOf(t, db)
 	tx, err := db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(t.Context(),
-		`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES (?, ?, ?)`,
-		instanceID, itemID, at); err != nil {
+		`INSERT INTO item_instances (id, item_id, stock_in_at, household_id) VALUES (?, ?, ?, ?)`,
+		instanceID, itemID, at, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := inventory.UnshelveItem(t.Context(), tx, itemID); err != nil {
+	if err := inventory.UnshelveItem(t.Context(), tx, scope, itemID); err != nil {
 		t.Fatal(err)
 	}
 	var scan *string
 	if scanID != "" {
 		scan = &scanID
 	}
-	if err := AttachStockIn(t.Context(), tx, InNote{
+	if err := AttachStockIn(t.Context(), scope, tx, InNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: source,
 		ScanEntryID: scan, InstanceIDs: []string{instanceID}, Unshelved: unshelved,
 	}); err != nil {
@@ -230,28 +234,29 @@ func recordHeldMove(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 
 func recordConsumed(t *testing.T, db *sql.DB, itemID, productID, scanID, instanceID string, at time.Time, source string) {
 	t.Helper()
+	scope := scopeOf(t, db)
 	tx, err := db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(t.Context(),
-		`INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason) VALUES (?, ?, ?, ?, 'consumed')`,
-		instanceID, itemID, at, at); err != nil {
+		`INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason, household_id) VALUES (?, ?, ?, ?, 'consumed', ?)`,
+		instanceID, itemID, at, at, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := inventory.UnshelveItem(t.Context(), tx, itemID); err != nil {
+	if err := inventory.UnshelveItem(t.Context(), tx, scope, itemID); err != nil {
 		t.Fatal(err)
 	}
 	// The insert has no stock-in move. Point it at a manual stock-in so repair does not invent one.
-	if err := AttachStockIn(t.Context(), tx, InNote{
+	if err := AttachStockIn(t.Context(), scope, tx, InNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
 		InstanceIDs: []string{instanceID},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	scan := scanID
-	if err := AttachStockOut(t.Context(), tx, OutNote{
+	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: source,
 		ScanEntryID: &scan, InstanceID: instanceID,
 	}); err != nil {
@@ -264,13 +269,14 @@ func recordConsumed(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 
 func recordConsumedMove(t *testing.T, db *sql.DB, itemID, productID, scanID, instanceID string, at time.Time) {
 	t.Helper()
+	scope := scopeOf(t, db)
 	tx, err := db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	scan := scanID
-	if err := AttachStockOut(t.Context(), tx, OutNote{
+	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "scan",
 		ScanEntryID: &scan, InstanceID: instanceID,
 	}); err != nil {
@@ -283,6 +289,7 @@ func recordConsumedMove(t *testing.T, db *sql.DB, itemID, productID, scanID, ins
 
 func useUp(t *testing.T, db *sql.DB, itemID, productID, instanceID string, at time.Time) {
 	t.Helper()
+	scope := scopeOf(t, db)
 	tx, err := db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -291,10 +298,10 @@ func useUp(t *testing.T, db *sql.DB, itemID, productID, instanceID string, at ti
 	if _, err := tx.ExecContext(t.Context(), `
 		UPDATE item_instances
 		SET removed_at = ?, removal_reason = 'consumed'
-		WHERE id = ?`, at, instanceID); err != nil {
+		WHERE id = ? AND household_id = ?`, at, instanceID, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := AttachStockOut(t.Context(), tx, OutNote{
+	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
 		InstanceID: instanceID,
 	}); err != nil {

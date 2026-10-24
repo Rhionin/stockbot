@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type InventoryStockOutHandler struct {
 	Queue interface {
-		StockOut(ctx context.Context, itemID string, at time.Time) error
+		StockOut(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) error
 	}
 }
 
@@ -19,7 +20,11 @@ type inventoryStockOutPathParams struct {
 }
 
 func (h *InventoryStockOutHandler) Handle(req Request[struct{}, inventoryStockOutPathParams]) (struct{}, error) {
-	err := h.Queue.StockOut(req.Context, req.PathParams.ItemID, time.Now().UTC())
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return struct{}{}, err
+	}
+	err = h.Queue.StockOut(req.Context, scope, req.PathParams.ItemID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, scan.ErrItemNotFound) {
 			return struct{}{}, NotFound("item not found")

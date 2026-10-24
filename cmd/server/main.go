@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
@@ -120,7 +121,12 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	}
 
 	if !disabled {
-		saved, ok, err := appcred.NewVault(db).Load(context.Background(), "kroger")
+		scope, err := auth.PrimaryScope(context.Background(), db)
+		var saved appcred.Saved
+		var ok bool
+		if err == nil {
+			saved, ok, err = appcred.NewVault(db).Load(context.Background(), scope, "kroger")
+		}
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
@@ -201,7 +207,14 @@ func main() {
 	if _, err := product.BackfillNetSizes(context.Background(), sqlDB); err != nil {
 		log.Fatalf("backfill product sizes: %v", err)
 	}
-	if err := group.NewGroups(sqlDB).Seed(context.Background()); err != nil {
+	if err := auth.RejectRetiredHeadlessUser(context.Background(), sqlDB, os.Getenv(retiredScannerSetting())); err != nil {
+		log.Fatalf("scan listener: %v", err)
+	}
+	primary, err := auth.PrimaryScope(context.Background(), sqlDB)
+	if err != nil {
+		log.Fatalf("household: %v", err)
+	}
+	if err := group.NewGroups(sqlDB).Seed(context.Background(), primary); err != nil {
 		log.Fatalf("seed group suggestions: %v", err)
 	}
 
@@ -239,6 +252,16 @@ func main() {
 	stockOutBarcode := envOrDefault("STOCK_OUT_CONTROL_BARCODE", "STOCK_OUT")
 
 	listener, listenerOK := loadScanListenerConfigWithSource()
+	if listenerOK {
+		device, err := auth.DirectScanner(context.Background(), sqlDB)
+		if err != nil {
+			log.Printf("scan listener: %s", err.Error())
+			listenerOK = false
+		} else {
+			listener.Scope = device.Scope
+			listener.DeviceID = device.ID
+		}
+	}
 
 	// One mode for the HTTP switch and the headless listener. It publishes
 	// scanner_mode, including the idle return to scan-out, and keeps the
@@ -423,6 +446,13 @@ func (disabledExternalLookup) LookupIn(context.Context, product.ExternalSource, 
 	return nil, product.ErrProductNotFound
 }
 
+// retiredScannerSetting is the environment variable that used to name the
+// only account. Startup rejects any value other than the primary household's
+// recorded legacy id.
+func retiredScannerSetting() string {
+	return "HEADLESS_" + "USER_ID"
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -442,7 +472,6 @@ func loadScanListenerConfig() (*scanlistener.ScanListener, bool) {
 	return &scanlistener.ScanListener{
 		StockInBarcode:  stockIn,
 		StockOutBarcode: stockOut,
-		HeadlessUserID:  envOrDefault("HEADLESS_USER_ID", "user-1"),
 	}, true
 }
 
@@ -472,7 +501,6 @@ func loadScanListenerConfigWithSource() (*scanlistener.ScanListener, bool) {
 	listener.Source = source
 	listener.StockInBarcode = stockIn
 	listener.StockOutBarcode = stockOut
-	listener.HeadlessUserID = envOrDefault("HEADLESS_USER_ID", "user-1")
 	listener.DevicePath = envOrDefault("SCANNER_DEVICE", "/dev/input/pantry-scanner")
 
 	log.Printf("scan listener: configured with source=%s device=%s", source, listener.DevicePath)

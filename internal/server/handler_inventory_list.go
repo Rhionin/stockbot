@@ -5,20 +5,19 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type InventoryListHandler struct {
 	Pantry interface {
-		GetInventoryList(ctx context.Context, userID string, now time.Time, warningDays int, query string) ([]inventory.InventoryItem, error)
+		GetInventoryList(ctx context.Context, scope tenant.Scope, now time.Time, warningDays int, query string) ([]inventory.InventoryItem, error)
 	}
-	// In a real app, userID would come from auth middleware
-	UserID string
 }
 
 func (h *InventoryListHandler) Handle(req Request[struct{}, struct{}]) ([]inventory.InventoryItem, error) {
-	userID := "user-1" // Hardcoded for now; would come from auth middleware in production
-	if h.UserID != "" {
-		userID = h.UserID
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
@@ -27,5 +26,5 @@ func (h *InventoryListHandler) Handle(req Request[struct{}, struct{}]) ([]invent
 	// Extract query parameter from raw request
 	query := req.RawRequest.URL.Query().Get("q")
 
-	return h.Pantry.GetInventoryList(req.Context, userID, now, warningDays, query)
+	return h.Pantry.GetInventoryList(req.Context, scope, now, warningDays, query)
 }

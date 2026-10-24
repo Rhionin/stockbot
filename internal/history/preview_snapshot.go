@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"modernc.org/sqlite"
 )
 
@@ -331,7 +332,7 @@ func previewErr(ctx context.Context, err error) error {
 	var input *InputError
 	var conflict *ConflictError
 	var full *PreviewFullError
-	if errors.As(err, &missing) || errors.As(err, &input) || errors.As(err, &conflict) || errors.As(err, &full) || errors.Is(err, ErrBackfillLocked) {
+	if errors.As(err, &missing) || errors.As(err, &input) || errors.As(err, &conflict) || errors.As(err, &full) || errors.Is(err, ErrBackfillLocked) || errors.Is(err, tenant.ErrMissingHousehold) {
 		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

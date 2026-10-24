@@ -12,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // commitGate holds every concurrent commit inside CommitStockOut until each
@@ -23,10 +24,10 @@ type commitGate struct {
 	ready sync.WaitGroup
 }
 
-func (g *commitGate) CommitStockOut(ctx context.Context, entry *scan.ScanEntry, instanceID *string) (int, error) {
+func (g *commitGate) CommitStockOut(ctx context.Context, scope tenant.Scope, entry *scan.ScanEntry, instanceID *string) (int, error) {
 	g.ready.Done()
 	<-g.start
-	return g.Queue.CommitStockOut(ctx, entry, instanceID)
+	return g.Queue.CommitStockOut(ctx, scope, entry, instanceID)
 }
 
 func waitForCommitGate(t *testing.T, ready *sync.WaitGroup) {

@@ -8,14 +8,9 @@ import (
 	"context"
 	"database/sql"
 	"time"
-)
 
-// connectionUserID is the placeholder owner for every connection record until an
-// auth layer supplies a real user. The rest of the server uses the same "user-1"
-// placeholder (see handler_inventory_list.go). The provider_connections schema
-// requires user_id NOT NULL and keys uniqueness on (user_id, provider_id), so the
-// Directory API's provider-only key resolves to this fixed user.
-const connectionUserID = "user-1"
+	"github.com/Rhionin/stockbot/internal/tenant"
+)
 
 // ConnectionState is the connection state of one provider.
 type ConnectionState string
@@ -49,7 +44,10 @@ func NewDirectory(db *sql.DB) *Directory {
 }
 
 // Read returns the connection record for one provider, or (nil, nil) if not found.
-func (d *Directory) Read(ctx context.Context, provider string) (*Connection, error) {
+func (d *Directory) Read(ctx context.Context, scope tenant.Scope, provider string) (*Connection, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	var (
 		state        string
 		accessToken  sql.NullString
@@ -62,7 +60,7 @@ func (d *Directory) Read(ctx context.Context, provider string) (*Connection, err
 	err := d.db.QueryRowContext(ctx,
 		`SELECT state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at
 		 FROM provider_connections
-		 WHERE provider_id = ?`, provider).Scan(
+		 WHERE household_id = ? AND provider_id = ?`, scope.HouseholdID(), provider).Scan(
 		&state, &accessToken, &refreshToken, &expiresAt, &authState, &authStateAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -102,18 +100,23 @@ func (d *Directory) Read(ctx context.Context, provider string) (*Connection, err
 }
 
 // Write creates or updates the connection record for one provider.
-func (d *Directory) Write(ctx context.Context, conn *Connection) error {
+func (d *Directory) Write(ctx context.Context, scope tenant.Scope, conn *Connection) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	householdID := scope.HouseholdID()
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO provider_connections (id, user_id, provider_id, state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, provider_id) DO UPDATE SET
 		     state = excluded.state,
 		     access_token = excluded.access_token,
 		     refresh_token = excluded.refresh_token,
 		     access_token_expires_at = excluded.access_token_expires_at,
 		     auth_state = excluded.auth_state,
-		     auth_state_at = excluded.auth_state_at`,
-		connectionUserID+":"+conn.Provider, connectionUserID, conn.Provider,
+		     auth_state_at = excluded.auth_state_at
+		 WHERE provider_connections.household_id = excluded.household_id`,
+		householdID+":"+conn.Provider, householdID, householdID, conn.Provider,
 		string(conn.State), conn.AccessToken, conn.RefreshToken,
 		conn.ExpiresAt, conn.AuthState, conn.AuthStateAt)
 	return err
@@ -121,30 +124,38 @@ func (d *Directory) Write(ctx context.Context, conn *Connection) error {
 
 // Disconnect clears the credentials for one provider and leaves the state as disconnected.
 // Every ledger entry is left unchanged (requirement 4.3).
-func (d *Directory) Disconnect(ctx context.Context, provider string) error {
+func (d *Directory) Disconnect(ctx context.Context, scope tenant.Scope, provider string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE provider_connections SET
 		     state = ?, access_token = NULL, refresh_token = NULL,
 		     access_token_expires_at = NULL, auth_state = NULL, auth_state_at = NULL
-		 WHERE provider_id = ?`,
-		StateDisconnected, provider)
+		 WHERE household_id = ? AND provider_id = ?`,
+		StateDisconnected, scope.HouseholdID(), provider)
 	return err
 }
 
 // GenerateAuthState creates a new authorization state for the provider.
 // Generate at least 32 characters from an injected io.Reader (crypto/rand in production).
-func (d *Directory) GenerateAuthState(ctx context.Context, provider, state string) error {
+func (d *Directory) GenerateAuthState(ctx context.Context, scope tenant.Scope, provider, state string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
+	householdID := scope.HouseholdID()
 	// Insert a disconnected row when this is the first authorization attempt,
 	// and on conflict touch only the single-use state so a refresh token
 	// already stored for this provider is left in place.
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO provider_connections (id, user_id, provider_id, state, auth_state, auth_state_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, auth_state, auth_state_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, provider_id) DO UPDATE SET
 		     auth_state = excluded.auth_state,
-		     auth_state_at = excluded.auth_state_at`,
-		connectionUserID+":"+provider, connectionUserID, provider, StateDisconnected, state, now)
+		     auth_state_at = excluded.auth_state_at
+		 WHERE provider_connections.household_id = excluded.household_id`,
+		householdID+":"+provider, householdID, householdID, provider, StateDisconnected, state, now)
 	return err
 }
 
@@ -152,15 +163,18 @@ func (d *Directory) GenerateAuthState(ctx context.Context, provider, state strin
 // Returns true if valid, false if rejected.
 // Reject an absent or mismatched state, reject past 600 seconds, reject a
 // callback carrying an error parameter, and discard the state in every case.
-func (d *Directory) ConsumeAuthState(ctx context.Context, provider, state string) (bool, error) {
+func (d *Directory) ConsumeAuthState(ctx context.Context, scope tenant.Scope, provider, state string) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
 	var (
 		storedState string
 		storedAt    time.Time
 	)
 
 	err := d.db.QueryRowContext(ctx,
-		`SELECT auth_state, auth_state_at FROM provider_connections WHERE provider_id = ?`,
-		provider).Scan(&storedState, &storedAt)
+		`SELECT auth_state, auth_state_at FROM provider_connections WHERE household_id = ? AND provider_id = ?`,
+		scope.HouseholdID(), provider).Scan(&storedState, &storedAt)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -171,8 +185,8 @@ func (d *Directory) ConsumeAuthState(ctx context.Context, provider, state string
 	// A single-use state is discarded whether accepted or rejected, so a mismatched
 	// or expired guess cannot be retried against the same stored value.
 	if _, err := d.db.ExecContext(ctx,
-		`UPDATE provider_connections SET auth_state = NULL, auth_state_at = NULL WHERE provider_id = ?`,
-		provider); err != nil {
+		`UPDATE provider_connections SET auth_state = NULL, auth_state_at = NULL WHERE household_id = ? AND provider_id = ?`,
+		scope.HouseholdID(), provider); err != nil {
 		return false, err
 	}
 

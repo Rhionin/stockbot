@@ -7,6 +7,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type providerCredentialParams struct {
@@ -57,9 +58,14 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 		return nil, &HTTPError{Code: 422, Message: "Redirect URI must be an http or https URL."}
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+
 	providerID := string(provider.ID())
 	if secret == "" && h.Credentials != nil {
-		existing, ok, loadErr := h.Credentials.Load(req.Context, providerID)
+		existing, ok, loadErr := h.Credentials.Load(req.Context, scope, providerID)
 		if loadErr != nil {
 			return nil, InternalError(loadErr)
 		}
@@ -73,7 +79,7 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 	if h.Credentials == nil {
 		return nil, errCredentialStore
 	}
-	if err := h.Credentials.Save(req.Context, appcred.Saved{
+	if err := h.Credentials.Save(req.Context, scope, appcred.Saved{
 		ProviderID:   providerID,
 		ClientID:     clientID,
 		ClientSecret: secret,
@@ -103,8 +109,12 @@ func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerC
 	if err != nil {
 		return nil, err
 	}
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
 	if h.Credentials != nil {
-		if err := h.Credentials.Clear(req.Context, string(provider.ID())); err != nil {
+		if err := h.Credentials.Clear(req.Context, scope, string(provider.ID())); err != nil {
 			return nil, InternalError(err)
 		}
 	}
@@ -121,7 +131,7 @@ func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerC
 			h.Registry.SetCredentialsConfigured(provider.ID(), false)
 		}
 	}
-	view, err := h.credentialView(req.Context, provider)
+	view, err := h.credentialView(req.Context, scope, provider)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -145,9 +155,9 @@ func (h *ProvidersHandler) credentialSink(providerID string) (cart.Provider, car
 	return provider, sink, nil
 }
 
-func (h *ProvidersHandler) credentialView(ctx context.Context, provider cart.Provider) (CredentialView, error) {
+func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scope, provider cart.Provider) (CredentialView, error) {
 	if h.Credentials != nil {
-		saved, ok, err := h.Credentials.Public(ctx, string(provider.ID()))
+		saved, ok, err := h.Credentials.Public(ctx, scope, string(provider.ID()))
 		if err != nil {
 			return CredentialView{}, err
 		}
