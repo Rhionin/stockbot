@@ -12,6 +12,15 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
+func TestShelfErrorsSpeakPlainly(t *testing.T) {
+	if (&EmptyShelfLink{}).Error() != "nothing on hand" {
+		t.Fatal("empty shelf")
+	}
+	if (&UnitsOnHandError{}).Error() != "units on hand" {
+		t.Fatal("units on hand")
+	}
+}
+
 func TestCommitReachesTheRowsAffectedGuard(t *testing.T) {
 	queue, db, scope := newTestQueueInternal(t)
 	ctx := context.Background()

@@ -119,7 +119,6 @@ var sqlAllow = []struct {
 }
 
 var (
-	tableRef      = regexp.MustCompile(`(?i)\b(?:from|join|update|into|table)\s+([a-z_][a-z0-9_]*)`)
 	tableAliasRef = regexp.MustCompile(`(?i)\b(?:from|join|update|into|table)\s+([a-z_][a-z0-9_]*)(?:\s+(?:as\s+)?([a-z_][a-z0-9_]*))?`)
 	bareHousehold = regexp.MustCompile(`(?i)(?:^|[^\w.])household_id\b`)
 	sqlStart      = regexp.MustCompile(`(?i)\b(select|insert|update|delete|with)\b`)
@@ -237,21 +236,6 @@ func allowed(file, sqlText string) bool {
 		}
 	}
 	return false
-}
-
-func householdTablesIn(sqlText string) []string {
-	set := householdSet()
-	seen := map[string]bool{}
-	var out []string
-	for _, match := range tableRef.FindAllStringSubmatch(sqlText, -1) {
-		name := strings.ToLower(match[1])
-		if !set[name] || seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
 }
 
 func householdSet() map[string]bool {

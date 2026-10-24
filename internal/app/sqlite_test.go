@@ -14,6 +14,17 @@ import (
 	"time"
 )
 
+func TestWithPrivateFilesRunsTheFunction(t *testing.T) {
+	called := false
+	err := WithPrivateFiles(func() error {
+		called = true
+		return nil
+	})
+	if err != nil || !called {
+		t.Fatalf("err %v called %v", err, called)
+	}
+}
+
 func TestWithUTCTimezone(t *testing.T) {
 	if got := withUTCTimezone(":memory:"); got != ":memory:?_timezone=UTC" {
 		t.Fatalf("memory: %s", got)
