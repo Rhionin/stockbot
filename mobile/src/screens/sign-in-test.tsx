@@ -152,14 +152,29 @@ describe('session sign-in', () => {
 
     function Probe() {
       const session = useSession();
+      const [error, setError] = useState('');
       if (session.status === 'loading') return <Text>Loading</Text>;
-      if (session.status === 'signedOut') return <Text>{session.error || 'Signed out'}</Text>;
+      if (session.status === 'ready') {
+        return (
+          <Pressable
+            accessibilityLabel="Reload"
+            onPress={() => { void session.client.listPending().catch(() => undefined); }}
+          >
+            <Text>Ready</Text>
+          </Pressable>
+        );
+      }
+      const signedOutError = session.status === 'signedOut' ? session.error : '';
       return (
         <Pressable
-          accessibilityLabel="Reload"
-          onPress={() => { void session.client.listPending().catch(() => undefined); }}
+          accessibilityLabel="Connect now"
+          onPress={() => {
+            void session.signIn('https://stockbot.rhionin.com', 'correct-horse').catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : 'failed');
+            });
+          }}
         >
-          <Text>Ready</Text>
+          <Text>{error || signedOutError || 'Signed out'}</Text>
         </Pressable>
       );
     }

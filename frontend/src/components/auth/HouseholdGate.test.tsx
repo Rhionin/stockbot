@@ -283,7 +283,7 @@ describe('HouseholdGate', () => {
     render(
       <MantineProvider>
         <HouseholdGate>
-          <button type="button" onClick={() => { void listProducts(); }}>Load products</button>
+          <button type="button" onClick={() => { void listProducts().catch(() => undefined); }}>Load products</button>
         </HouseholdGate>
       </MantineProvider>,
     );
