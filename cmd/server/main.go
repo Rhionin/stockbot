@@ -27,6 +27,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/server"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // defaultProductCacheTTL is used when PRODUCT_CACHE_TTL is unset, empty, or
@@ -295,7 +296,11 @@ func start(stop <-chan struct{}) error {
 	// scanner_mode, including the idle return to scan-out, and keeps the
 	// health status on the same direction the next scan will use.
 	scannerMode := server.NewScannerMode(func(d scan.ScanDirection) {
-		broadcaster.PublishScannerModeEvent(d)
+		if listenerOK && listener.Scope.HouseholdID() != "" {
+			broadcaster.PublishScannerModeFor(listener.Scope.HouseholdID(), d)
+		} else {
+			broadcaster.PublishScannerModeEvent(d)
+		}
 		if listenerOK {
 			listener.SetStatusMode(d)
 		}
@@ -351,6 +356,25 @@ func start(stop <-chan struct{}) error {
 	}
 	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)), server.WithReadDB(readDB), server.WithStage1(directory, site))
 	handler, scanQueue := server.NewHandler(catalog, lookupService, refresher, sqlDB, opts...)
+	directory.SetBarcodeLookup(func(ctx context.Context, householdID, scanID, barcode string) {
+		scope, err := tenant.New(householdID)
+		if err != nil {
+			return
+		}
+		go func() {
+			_, _ = lookupService.Lookup(context.Background(), scope, barcode)
+		}()
+	})
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	go func() {
+		<-stop
+		sweepCancel()
+	}()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		directory.RunSweeper(sweepCtx, ticker.C)
+	}()
 	gate.use(handler)
 
 	if listenerOK {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -48,14 +49,43 @@ const shoppingListSelect = `
 	LEFT JOIN product_groups g ON g.id = s.group_id AND g.household_id = s.household_id
 	WHERE s.household_id = ?`
 
+type listHinter interface {
+	PublishHint(householdID, kind string)
+}
+
 // Store provides data access for shopping list items.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	hints listHinter
 }
 
 // NewStore creates a new Store with the given database connection.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// SetHints publishes a list hint after a shopping-list write commits.
+func (s *Store) SetHints(h listHinter) {
+	if s != nil {
+		s.hints = h
+	}
+}
+
+func (s *Store) noteList(household string) {
+	if s != nil && s.hints != nil && household != "" {
+		s.hints.PublishHint(household, "list")
+	}
+}
+
+func (s *Store) commitList(ctx context.Context, tx *sql.Tx, household string) error {
+	if err := changes.Bump(ctx, tx, household, changes.ScopeList); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.noteList(household)
+	return nil
 }
 
 // AddManualItem inserts a new manual shopping list item for the household and item.
@@ -84,7 +114,7 @@ func (s *Store) AddManualItem(ctx context.Context, scope tenant.Scope, itemID st
 	); err != nil {
 		return nil, fmt.Errorf("failed to add shopping list item: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitList(ctx, tx, household); err != nil {
 		return nil, fmt.Errorf("failed to add shopping list item: %w", err)
 	}
 	return s.getByID(ctx, scope, id)
@@ -135,7 +165,7 @@ func (s *Store) RemoveItem(ctx context.Context, scope tenant.Scope, id string) e
 	if n == 0 {
 		return ErrItemNotFound
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitList(ctx, tx, household); err != nil {
 		return fmt.Errorf("failed to remove shopping list item: %w", err)
 	}
 	return nil
@@ -148,7 +178,12 @@ func (s *Store) MarkPurchased(ctx context.Context, scope tenant.Scope, id string
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to mark shopping list item as purchased: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE shopping_list_items SET purchased_at = ? WHERE id = ? AND household_id = ?`,
 		time.Now().UTC(), id, scope.HouseholdID(),
 	)
@@ -161,6 +196,9 @@ func (s *Store) MarkPurchased(ctx context.Context, scope tenant.Scope, id string
 	}
 	if n == 0 {
 		return ErrItemNotFound
+	}
+	if err := s.commitList(ctx, tx, scope.HouseholdID()); err != nil {
+		return fmt.Errorf("failed to mark shopping list item as purchased: %w", err)
 	}
 	return nil
 }
@@ -321,7 +359,12 @@ func (s *Store) SetAdjustment(ctx context.Context, scope tenant.Scope, entryID, 
 		return ErrItemNotFound
 	}
 	household := scope.HouseholdID()
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(entry_id, provider_id) DO UPDATE SET quantity = ?
@@ -331,8 +374,10 @@ func (s *Store) SetAdjustment(ctx context.Context, scope tenant.Scope, entryID, 
 		return err
 	}
 	// The quantity the owner typed is a decision. The next fill leaves this line.
-	_, err = s.db.ExecContext(ctx, `UPDATE shopping_list_items SET touched = 1 WHERE id = ? AND household_id = ?`, entryID, household)
-	return err
+	if _, err = tx.ExecContext(ctx, `UPDATE shopping_list_items SET touched = 1 WHERE id = ? AND household_id = ?`, entryID, household); err != nil {
+		return err
+	}
+	return s.commitList(ctx, tx, household)
 }
 
 // GetAdjustment returns the adjustment for one entry and provider, or (nil, nil) if not found.
@@ -361,10 +406,12 @@ func (s *Store) ClearAdjustmentTx(ctx context.Context, scope tenant.Scope, tx *s
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM shopping_list_entry_adjustments WHERE household_id = ? AND entry_id = ? AND provider_id = ?`,
-		scope.HouseholdID(), entryID, providerID)
-	return err
+		scope.HouseholdID(), entryID, providerID); err != nil {
+		return err
+	}
+	return changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList)
 }
 
 // ErrNotGroupLine means the shopping line was not planned for a product group.
@@ -403,10 +450,18 @@ func (s *Store) SwapAutoLine(ctx context.Context, scope tenant.Scope, lineID, it
 	if n == 0 {
 		return ErrNotGroupMember
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not change the product on this line: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE shopping_list_items SET item_id = ?, touched = 1 WHERE id = ? AND household_id = ?`,
 		itemID, lineID, household,
 	); err != nil {
+		return fmt.Errorf("could not change the product on this line: %w", err)
+	}
+	if err := s.commitList(ctx, tx, household); err != nil {
 		return fmt.Errorf("could not change the product on this line: %w", err)
 	}
 	return nil
@@ -497,8 +552,15 @@ func (s *Store) RemoveAdjustment(ctx context.Context, scope tenant.Scope, entryI
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM shopping_list_entry_adjustments WHERE household_id = ? AND entry_id = ? AND provider_id = ?`,
-		scope.HouseholdID(), entryID, providerID)
-	return err
+		scope.HouseholdID(), entryID, providerID); err != nil {
+		return err
+	}
+	return s.commitList(ctx, tx, scope.HouseholdID())
 }

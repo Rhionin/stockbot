@@ -5,6 +5,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -19,6 +20,9 @@ func (h *LookupHandler) Handle(req Request[struct{}, struct{}]) (product.LookupR
 	barcode := req.RawRequest.URL.Query().Get("barcode")
 	if barcode == "" {
 		return product.LookupResult{}, BadRequest("barcode query parameter is required")
+	}
+	if scan.LooksLikePairingCode(barcode) {
+		return product.LookupResult{}, BadRequest(scan.PairingScanMessage)
 	}
 
 	scope, err := requestScope(req.Context)

@@ -61,20 +61,47 @@ func Listen(ctx context.Context, scope tenant.Scope, b *events.Broadcaster, send
 	if b == nil || sender == nil || !sender.cfg.CanSend() {
 		return
 	}
-	msgs, unsub := b.Subscribe()
+	msgs, unsub := b.SubscribeAll()
 	go func() {
 		defer unsub()
-		alerts := newAttention(func(notice Notice) {
-			go sender.Notify(context.Background(), scope, notice)
-		}, sender.cfg.settle(), realClock{}, scans)
-		alerts.scope = scope
-		if sender.subs != nil {
-			alerts.schedules = sender.subs
+		byHouse := map[string]*attention{}
+		ensure := func(id string) *attention {
+			if id == "" {
+				id = scope.HouseholdID()
+			}
+			if alerts := byHouse[id]; alerts != nil {
+				return alerts
+			}
+			house, err := tenant.New(id)
+			if err != nil {
+				house = scope
+			}
+			alerts := newAttention(func(notice Notice) {
+				go sender.Notify(context.Background(), house, notice)
+			}, sender.cfg.settle(), realClock{}, scans)
+			alerts.scope = house
+			if sender.subs != nil {
+				alerts.schedules = sender.subs
+			}
+			if id == scope.HouseholdID() {
+				alerts.rearm(ctx)
+			}
+			byHouse[id] = alerts
+			return alerts
 		}
-		alerts.rearm(ctx)
-		defer alerts.stop()
+		primary := ensure(scope.HouseholdID())
+		defer func() {
+			for _, alerts := range byHouse {
+				alerts.stop()
+			}
+		}()
 		for msg := range msgs {
-			alerts.handle(msg)
+			id := msg.HouseholdID
+			if id == "" {
+				primary.handle(msg)
+				continue
+			}
+			ensure(id).handle(msg)
 		}
 	}()
 }
@@ -105,6 +132,37 @@ func (s *Sender) Notify(ctx context.Context, scope tenant.Scope, notice Notice) 
 		return
 	}
 	s.deliverAll(ctx, scope, notice, subs)
+}
+
+// NotifyOperators pushes one operator note. Names are cleared so a scan
+// batch cannot be copied onto this alert. Nothing is sent without VAPID
+// keys or a test Post hook.
+func (s *Sender) NotifyOperators(ctx context.Context, notice Notice) {
+	if s == nil || s.subs == nil || !s.cfg.CanSend() {
+		return
+	}
+	notice.Names = nil
+	notice.Count = 0
+	rows, err := s.subs.ListOperator(ctx)
+	if err != nil {
+		log.Printf("operator alerts: could not read push subscriptions: %v", err)
+		return
+	}
+	grouped := map[string][]Subscription{}
+	var order []string
+	for _, row := range rows {
+		if _, ok := grouped[row.HouseholdID]; !ok {
+			order = append(order, row.HouseholdID)
+		}
+		grouped[row.HouseholdID] = append(grouped[row.HouseholdID], row.Subscription)
+	}
+	for _, id := range order {
+		scope, err := tenant.New(id)
+		if err != nil {
+			continue
+		}
+		s.deliverAll(ctx, scope, notice, grouped[id])
+	}
 }
 
 // deliverAll sends notice to the subscriptions selectForSend keeps.

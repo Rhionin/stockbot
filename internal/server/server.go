@@ -16,6 +16,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/deployhook"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/group"
@@ -276,6 +277,13 @@ func newAPIMux(
 	if cfg != nil && cfg.broadcaster != nil {
 		broadcaster = cfg.broadcaster
 	}
+	broadcaster.SetCursor(func(householdID, scope string) string {
+		cursor, err := changes.Current(context.Background(), db, householdID, scope)
+		if err != nil {
+			return ""
+		}
+		return cursor
+	})
 	// The headless listener publishes on this same broadcaster, so the observer
 	// has to be attached to the shared instance rather than a private one.
 	broadcaster.SetObserver(publishObserver{reg: reg})
@@ -372,19 +380,32 @@ func newAPIMux(
 	} else {
 		mode = newScannerMode(nil)
 	}
+	primaryID := ""
+	if db != nil {
+		if scope, err := auth.PrimaryScope(context.Background(), db); err == nil {
+			primaryID = scope.HouseholdID()
+		}
+	}
 	if mode.publish == nil {
 		mode.mu.Lock()
 		mode.publish = func(d scan.ScanDirection) {
+			if primaryID != "" {
+				broadcaster.PublishScannerModeFor(primaryID, d)
+				return
+			}
 			broadcaster.PublishScannerModeEvent(d)
 		}
 		mode.mu.Unlock()
 	}
-	scannerModeHandler := &ScannerModeHandler{Mode: mode}
-	scannerConfigHandler := &ScannerConfigHandler{Config: scannerConfig, Mode: mode}
+	modes := newModeBook(mode, primaryID, db, broadcaster)
+	scannerModeHandler := &ScannerModeHandler{Mode: mode, Book: modes}
+	scannerConfigHandler := &ScannerConfigHandler{Config: scannerConfig, Mode: mode, Book: modes}
 	if cfg != nil {
 		scannerConfigHandler.Status = cfg.statusFn
 	}
 	apiMux.HandleFunc("POST /api/scanner/mode", HandleJSON(scannerModeHandler.Handle))
+	apiMux.HandleFunc("GET /api/scans/mode", HandleJSON(scannerModeHandler.Get))
+	apiMux.HandleFunc("POST /api/scans/mode", HandleJSON(scannerModeHandler.Handle))
 	apiMux.HandleFunc("GET /api/scanner/config", HandleJSON(scannerConfigHandler.Handle))
 
 	contributor := product.UpstreamContributor(product.UnconfiguredContributor{})
@@ -429,8 +450,9 @@ func newAPIMux(
 		LookupService: lookupService,
 		Events:        broadcaster,
 		Mode:          mode,
+		Modes:         modes,
 	}
-	scanListHandler := &ScanListHandler{Queue: scanQueue}
+	scanListHandler := &ScanListHandler{Queue: scanQueue, DB: db}
 	scanHistoryHandler := &ScanHistoryHandler{Queue: scanQueue}
 	scanUpdateHandler := &ScanUpdateHandler{Queue: scanQueue}
 	scanCommitHandler := &ScanCommitHandler{Queue: scanQueue}
@@ -449,7 +471,7 @@ func newAPIMux(
 	pantry := inventory.NewPantry(db)
 	pantry.Broadcaster = broadcaster
 	scanQueue.Pantry = pantry
-	inventoryListHandler := &InventoryListHandler{Pantry: pantry}
+	inventoryListHandler := &InventoryListHandler{Pantry: pantry, DB: db}
 	inventoryInstancesListHandler := &InventoryInstancesListHandler{Pantry: pantry}
 	inventoryInstanceCreateHandler := &InventoryInstanceCreateHandler{Queue: scanQueue}
 	inventoryInstanceDeleteHandler := &InventoryInstanceDeleteHandler{Queue: scanQueue}
@@ -458,6 +480,7 @@ func newAPIMux(
 	supplySettingsGetHandler := &SupplySettingsGetHandler{Supply: supplySvc}
 	supplySettingsPutHandler := &SupplySettingsPutHandler{Supply: supplySvc}
 	groups := group.NewGroups(db)
+	groups.SetHints(broadcaster)
 	scanListHandler.Groups = groups
 	createHandler.Groups = groups
 	updateHandler.Groups = groups
@@ -548,6 +571,7 @@ func newAPIMux(
 
 	// Shopping list handlers
 	shoppingList := shopping.NewStore(db)
+	shoppingList.SetHints(broadcaster)
 	connDir := connection.NewDirectory(db)
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
@@ -565,6 +589,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Adjustments:  shoppingList,
+		DB:           db,
 	}
 	shoppingListFillHandler := &ShoppingListFillHandler{
 		ShoppingList: shoppingList,
@@ -688,6 +713,17 @@ func newAPIMux(
 			stockIn:  scannerConfig.StockInBarcode,
 			stockOut: scannerConfig.StockOutBarcode,
 		}
+		cfg.stage1svc.SetHints(broadcaster)
+		cfg.stage1svc.SetLive(broadcaster)
+		sender := push.NewSender(pushSubscriptions, pushCfg)
+		cfg.stage1svc.SetOperatorPush(func(ctx context.Context, note auth.OperatorNote) {
+			sender.NotifyOperators(ctx, push.Notice{
+				Title: note.Title,
+				Body:  note.Body,
+				Tag:   "operator-" + note.Kind,
+				URL:   "/",
+			})
+		})
 	}
 	registerStage1(apiMux, cfg)
 	// The listener uses the broadcaster this mux already publishes scans on,

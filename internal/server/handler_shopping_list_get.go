@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"sort"
+	"strings"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -22,19 +24,35 @@ type ShoppingListGetHandler struct {
 	Adjustments interface {
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
+	DB *sql.DB
 }
 
-func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) ([]ShoppingListEntryResponse, error) {
+func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (changeView, error) {
 	scope, err := requestScope(req.Context)
 	if err != nil {
-		return nil, InternalError(err)
+		return changeView{}, InternalError(err)
 	}
 
 	provision, err := loadShoppingSnapshot(req.Context, scope, h.Pantry, h.ShoppingList)
 	if err != nil {
-		return nil, InternalError(err)
+		return changeView{}, InternalError(err)
 	}
-	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
+	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
+	if err != nil {
+		return changeView{}, err
+	}
+	if items == nil {
+		items = []ShoppingListEntryResponse{}
+	}
+	since := ""
+	if req.RawRequest != nil {
+		since = strings.TrimSpace(req.RawRequest.URL.Query().Get("since"))
+	}
+	view, err := viewChanges(req.Context, h.DB, scope.HouseholdID(), "list", since, "items", items)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	return view, nil
 }
 
 func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {

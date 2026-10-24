@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -57,6 +58,9 @@ func (j *Journal) SetQuantity(ctx context.Context, scope tenant.Scope, id string
 		if err != nil {
 			return View{}, err
 		}
+		if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+			return View{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, err
@@ -95,6 +99,9 @@ func (j *Journal) Undo(ctx context.Context, scope tenant.Scope, id string, now t
 	defer tx.Rollback()
 	effect, err := applyUndo(ctx, scope, tx, id, true)
 	if err != nil {
+		return View{}, err
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {

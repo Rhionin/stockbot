@@ -41,6 +41,7 @@ var HouseholdTables = []string{
 	"item_targets",
 	"items",
 	"memberships",
+	"operator_alerts",
 	"pairing_codes",
 	"product_contributions",
 	"product_group_members",

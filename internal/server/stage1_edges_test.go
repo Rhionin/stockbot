@@ -177,7 +177,7 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 
 	account := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	account = account.WithContext(auth.WithPrincipal(account.Context(), auth.Principal{Kind: "household_password"}))
-	if eventStreamKey(account) != auth.HouseholdPasswordStreamKey() {
+	if eventStreamKey(account) != auth.HouseholdPasswordStreamKey("192.0.2.1") {
 		t.Fatalf("household stream %q", eventStreamKey(account))
 	}
 	lan := httptest.NewRequest(http.MethodGet, "/api/events", nil)

@@ -78,8 +78,14 @@ func (s *Subscriptions) Save(ctx context.Context, scope tenant.Scope, sub Subscr
 	sub.Auth = strings.TrimSpace(sub.Auth)
 	sub.Origin = canonicalHost(sub.Origin)
 	sub.DeviceID = strings.TrimSpace(sub.DeviceID)
-	// user_id stays required. The household is the tenant stored in that column.
-	sub.UserID = scope.HouseholdID()
+	sub.UserID = strings.TrimSpace(sub.UserID)
+	// A household-password or LAN browser has no account. NULL keeps that
+	// distinct from a member, and a key refresh without a user does not
+	// wipe an account id already stored.
+	var user any
+	if sub.UserID != "" {
+		user = sub.UserID
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save push subscription: %w", err)
@@ -92,11 +98,11 @@ func (s *Subscriptions) Save(ctx context.Context, scope tenant.Scope, sub Subscr
 			p256dh = excluded.p256dh,
 			auth = excluded.auth,
 			origin = CASE WHEN excluded.origin != '' THEN excluded.origin ELSE push_subscriptions.origin END,
-			user_id = excluded.user_id,
+			user_id = COALESCE(excluded.user_id, push_subscriptions.user_id),
 			device_id = CASE WHEN excluded.device_id != '' THEN excluded.device_id ELSE push_subscriptions.device_id END,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE push_subscriptions.household_id = excluded.household_id`,
-		sub.Endpoint, scope.HouseholdID(), sub.P256dh, sub.Auth, sub.Origin, sub.UserID, sub.DeviceID,
+		sub.Endpoint, scope.HouseholdID(), sub.P256dh, sub.Auth, sub.Origin, user, sub.DeviceID,
 	)
 	if err != nil {
 		return fmt.Errorf("save push subscription: %w", err)
@@ -167,13 +173,54 @@ func (s *Subscriptions) List(ctx context.Context, scope tenant.Scope) ([]Subscri
 	var out []Subscription
 	for rows.Next() {
 		var sub Subscription
-		if err := rows.Scan(&sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.Origin, &sub.UserID, &sub.DeviceID); err != nil {
+		var user sql.NullString
+		if err := rows.Scan(&sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.Origin, &user, &sub.DeviceID); err != nil {
 			return nil, fmt.Errorf("list push subscriptions: %w", err)
+		}
+		if user.Valid {
+			sub.UserID = user.String
 		}
 		out = append(out, sub)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list push subscriptions: %w", err)
+	}
+	return out, nil
+}
+
+// OperatorSubscription is a browser registered by an operator account.
+type OperatorSubscription struct {
+	Subscription
+	HouseholdID string
+}
+
+// ListOperator returns subscriptions whose user_id is an operator account.
+func (s *Subscriptions) ListOperator(ctx context.Context) ([]OperatorSubscription, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("list operator push subscriptions")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT push_subscriptions.endpoint, push_subscriptions.p256dh, push_subscriptions.auth,
+		       push_subscriptions.origin, push_subscriptions.user_id, push_subscriptions.device_id,
+		       push_subscriptions.household_id
+		FROM push_subscriptions
+		JOIN users ON users.id = push_subscriptions.user_id
+		WHERE users.operator = 1 AND users.deleted_at IS NULL AND push_subscriptions.household_id != ''
+		ORDER BY push_subscriptions.created_at, push_subscriptions.endpoint`)
+	if err != nil {
+		return nil, fmt.Errorf("list operator push subscriptions: %w", err)
+	}
+	defer rows.Close()
+	var out []OperatorSubscription
+	for rows.Next() {
+		var sub OperatorSubscription
+		if err := rows.Scan(&sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.Origin, &sub.UserID, &sub.DeviceID, &sub.HouseholdID); err != nil {
+			return nil, fmt.Errorf("list operator push subscriptions: %w", err)
+		}
+		out = append(out, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list operator push subscriptions: %w", err)
 	}
 	return out, nil
 }

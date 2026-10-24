@@ -27,6 +27,11 @@ type Service struct {
 
 	healthMu    sync.Mutex
 	setupHealth string
+
+	hints         HintBus
+	live          liveKicker
+	operatorPush  OperatorPush
+	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
 }
 
 // NewService uses the pantry database. setupDir is the display-file directory.
@@ -58,6 +63,55 @@ func (s *Service) SetClock(now func() time.Time) {
 }
 
 func (s *Service) Streams() *Streams { return s.streams }
+
+// DB is the pantry database. Changes-since reads versions from it.
+func (s *Service) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
+// liveKicker closes SSE streams. The events hub implements it.
+type liveKicker interface {
+	Kick(householdID, userID string)
+	DropSession(sessionID string)
+}
+
+// SetLive closes matching event streams when a member or session ends.
+func (s *Service) SetLive(k liveKicker) {
+	if s != nil {
+		s.live = k
+	}
+}
+
+func (s *Service) kickLive(householdID, userID string) {
+	if s != nil && s.live != nil {
+		s.live.Kick(householdID, userID)
+	}
+}
+
+// endAccountStreams closes every live stream for the account.
+// Password reset, account deletion, and operator recovery revoke every session.
+func (s *Service) endAccountStreams(userID string) {
+	if s == nil || userID == "" {
+		return
+	}
+	s.streams.Kick(UserStreamKey(userID))
+	s.streams.KickHousehold("", userID)
+	s.kickLive("", userID)
+}
+
+// dropSession closes streams bound to one session hash.
+func (s *Service) dropSession(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.streams.Kick(SessionStreamKey(sessionID))
+	if s.live != nil {
+		s.live.DropSession(sessionID)
+	}
+}
 
 func (s *Service) Limiter() *Limiter { return s.limits }
 
@@ -376,15 +430,44 @@ func (s *Service) sessionByHash(ctx context.Context, hash string) (sessionRow, b
 	}, true, nil
 }
 
-// RevokeSession ends one session immediately.
+// RevokeSession ends one session immediately and closes its event streams.
 func (s *Service) RevokeSession(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	hash := HashOpaque(token)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET revoked_at = ? WHERE id_hash = ? AND revoked_at IS NULL`,
-		stamp(s.clock()), HashOpaque(token))
-	return AsError(err)
+		stamp(s.clock()), hash)
+	if err != nil {
+		return AsError(err)
+	}
+	s.dropSession(hash)
+	return nil
+}
+
+// RevokeSessionByID ends one of the caller's sessions. The id is the stored
+// session hash. Another account's session is the same result as a missing one.
+func (s *Service) RevokeSessionByID(ctx context.Context, userID, idHash string) error {
+	if userID == "" || strings.TrimSpace(idHash) == "" {
+		return notFound()
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET revoked_at = ?
+		WHERE id_hash = ? AND user_id = ? AND revoked_at IS NULL`,
+		stamp(s.clock()), idHash, userID)
+	if err != nil {
+		return AsError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return AsError(err)
+	}
+	if n == 0 {
+		return notFound()
+	}
+	s.dropSession(idHash)
+	return nil
 }
 
 // SwitchHousehold stores the active household on this session only.

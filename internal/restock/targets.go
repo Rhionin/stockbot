@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
@@ -320,6 +321,9 @@ func (t *Targets) SetHousehold(ctx context.Context, scope tenant.Scope, target T
 	if err := putSetting(ctx, scope, tx, "supply_target_value", strconv.FormatFloat(target.Value, 'f', -1, 64)); err != nil {
 		return err
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not save the household default: %w", err)
 	}
@@ -358,12 +362,22 @@ func (t *Targets) SetItem(ctx context.Context, scope tenant.Scope, itemID string
 	if err := ensureItem(ctx, scope, t.db, itemID); err != nil {
 		return err
 	}
-	_, err = t.db.ExecContext(ctx, `
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not save the restock target: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO item_targets (household_id, item_id, kind, value)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		scope.HouseholdID(), itemID, string(target.Kind), target.Value)
-	if err != nil {
+		scope.HouseholdID(), itemID, string(target.Kind), target.Value); err != nil {
+		return fmt.Errorf("could not save the restock target: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not save the restock target: %w", err)
 	}
 	return nil
@@ -374,7 +388,18 @@ func (t *Targets) ClearItem(ctx context.Context, scope tenant.Scope, itemID stri
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	if _, err := t.db.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, scope.HouseholdID(), itemID); err != nil {
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not clear the restock target: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_targets WHERE household_id = ? AND item_id = ?`, scope.HouseholdID(), itemID); err != nil {
+		return fmt.Errorf("could not clear the restock target: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not clear the restock target: %w", err)
 	}
 	return nil
@@ -406,23 +431,32 @@ func (t *Targets) SetCategoryTarget(ctx context.Context, scope tenant.Scope, cat
 	if err := ensureCategory(ctx, scope, t.db, categoryID); err != nil {
 		return err
 	}
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not save the category target: %w", err)
+	}
+	defer tx.Rollback()
 	if target == nil {
-		_, err := t.db.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), categoryID)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM category_targets WHERE household_id = ? AND category_id = ?`, scope.HouseholdID(), categoryID); err != nil {
 			return fmt.Errorf("could not clear the category target: %w", err)
 		}
-		return nil
+	} else {
+		prepared, err := prepare(*target)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO category_targets (household_id, category_id, kind, value)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (household_id, category_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
+			scope.HouseholdID(), categoryID, string(prepared.Kind), prepared.Value); err != nil {
+			return fmt.Errorf("could not save the category target: %w", err)
+		}
 	}
-	prepared, err := prepare(*target)
-	if err != nil {
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
 		return err
 	}
-	_, err = t.db.ExecContext(ctx, `
-		INSERT INTO category_targets (household_id, category_id, kind, value)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT (household_id, category_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`,
-		scope.HouseholdID(), categoryID, string(prepared.Kind), prepared.Value)
-	if err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not save the category target: %w", err)
 	}
 	return nil
@@ -563,6 +597,9 @@ func (t *Targets) DeleteCategory(ctx context.Context, scope tenant.Scope, id str
 			return fmt.Errorf("could not delete the category: %w", err)
 		}
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -627,6 +664,9 @@ func (t *Targets) MergeCategory(ctx context.Context, scope tenant.Scope, id, int
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM categories WHERE household_id = ? AND id = ?`, scope.HouseholdID(), id); err != nil {
 		return fmt.Errorf("could not merge the categories: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1328,6 +1368,9 @@ func DeleteItem(ctx context.Context, scope tenant.Scope, db *sql.DB, itemID stri
 		return fmt.Errorf("could not delete the item: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE household_id = ? AND id = ?`, scope.HouseholdID(), itemID); err != nil {
+		return fmt.Errorf("could not delete the item: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
 		return fmt.Errorf("could not delete the item: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

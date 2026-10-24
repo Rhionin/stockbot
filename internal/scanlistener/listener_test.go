@@ -72,6 +72,18 @@ func (l *fakeLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode str
 	return l.result, nil
 }
 
+func TestPairingCodeIsNotQueued(t *testing.T) {
+	listener := newListener(t)
+	queue := &fakeQueue{}
+	listener.Queue = queue
+	listener.LookupService = &fakeLookup{}
+	listener.handleLine(context.Background(), "SBP-0123-ABCD-G", newModeState())
+	listener.handleLine(context.Background(), "  sbp-0123-abcd-g\n", newModeState())
+	if len(queue.entries) != 0 {
+		t.Fatalf("pairing code became %d scans", len(queue.entries))
+	}
+}
+
 func TestRunStdinStampsTheBoundScanner(t *testing.T) {
 	listener := newListener(t)
 	listener.Source = SourceStdin

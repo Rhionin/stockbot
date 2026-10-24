@@ -375,7 +375,7 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 		t.Fatalf("duplicate %d %s", dupScan.Code, dupScan.Body.String())
 	}
 	conflict := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "999", "direction": "stock_out", "unitCount": 1}, app.EntryLAN, dev)
-	if conflict.Code != http.StatusOK || !strings.Contains(conflict.Body.String(), `"conflict"`) {
+	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), `"code":"conflict"`) {
 		t.Fatalf("conflict %d %s", conflict.Code, conflict.Body.String())
 	}
 	heart := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-heart", "heartbeat": true}, app.EntryLAN, dev)
@@ -657,7 +657,7 @@ func openAccountEvents(t *testing.T, svc *auth.Service, userID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: userID}))
+	req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: userID, HouseholdID: "house-north"}))
 	handler := &EventsHandler{Broadcaster: events.NewBroadcaster(), Streams: svc.Streams(), Keepalive: time.Hour}
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
