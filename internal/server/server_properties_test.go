@@ -179,11 +179,11 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /api/me = %d, want 405", rec.Code)
 	}
-	alerts := httptest.NewRequest(http.MethodGet, "/api/operator/alerts", nil)
+	alerts := httptest.NewRequest(http.MethodPost, "/api/operator/alerts", nil)
 	alertsRec := httptest.NewRecorder()
 	handler.ServeHTTP(alertsRec, alerts)
-	if alertsRec.Code == http.StatusNotFound {
-		t.Fatalf("GET /api/operator/alerts = 404; the route is registered")
+	if alertsRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/operator/alerts = %d, want 405", alertsRec.Code)
 	}
 }
 
