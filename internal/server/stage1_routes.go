@@ -79,6 +79,19 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("POST /api/device/heartbeat", gate.serveHeartbeat)
 	apiMux.HandleFunc("POST /api/device/token/rotate", gate.serveRotateToken)
 	apiMux.HandleFunc("DELETE /api/me", gate.serveDeleteAccount)
+	apiMux.HandleFunc("POST /api/export", gate.serveCreateExport)
+	apiMux.HandleFunc("GET /api/export/{id}", gate.serveExportStatus)
+	apiMux.HandleFunc("GET /api/export/{id}/download", gate.serveExportZip)
+	apiMux.HandleFunc("GET /api/export/{id}/stockbot-export.json", gate.serveExportJSON)
+	apiMux.HandleFunc("GET /api/export/{id}/items.csv", gate.serveExportItems)
+	apiMux.HandleFunc("GET /api/export/{id}/shopping-list.csv", gate.serveExportShopping)
+	apiMux.HandleFunc("POST /api/household/exports", gate.serveCreateExport)
+	apiMux.HandleFunc("GET /api/household/exports/{id}", gate.serveExportStatus)
+	apiMux.HandleFunc("GET /api/household/exports/{id}/download", gate.serveExportZip)
+	apiMux.HandleFunc("GET /api/households/{id}/export", gate.serveHouseholdExport)
+	apiMux.HandleFunc("POST /api/household/import/uploads", gate.serveStage3)
+	apiMux.HandleFunc("POST /api/import", gate.serveStage3)
+	apiMux.HandleFunc("GET /api/import/{id}", gate.serveStage3)
 }
 
 func (s *stage1) unavailable(w http.ResponseWriter) bool {
