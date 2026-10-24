@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // HistoryHandler serves pace and the recent trail, and the corrections on a move.
@@ -39,7 +39,11 @@ type historyQuantityBody struct {
 // Product is the trail for one item id. A wiped item is hidden from
 // inventory and restock lists, and this direct read still returns 200.
 func (h *HistoryHandler) Product(req Request[struct{}, historyItemParams]) (history.View, error) {
-	view, err := h.Journal.Product(req.Context, history.DefaultHousehold(), req.PathParams.ItemID, time.Now())
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return history.View{}, err
+	}
+	view, err := h.Journal.Product(req.Context, scope, req.PathParams.ItemID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -47,7 +51,11 @@ func (h *HistoryHandler) Product(req Request[struct{}, historyItemParams]) (hist
 }
 
 func (h *HistoryHandler) Group(req Request[struct{}, historyGroupParams]) (history.View, error) {
-	view, err := h.Journal.Group(req.Context, req.PathParams.GroupID, time.Now())
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return history.View{}, err
+	}
+	view, err := h.Journal.Group(req.Context, scope, req.PathParams.GroupID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
@@ -55,8 +63,12 @@ func (h *HistoryHandler) Group(req Request[struct{}, historyGroupParams]) (histo
 }
 
 func (h *HistoryHandler) Household(req Request[struct{}, struct{}]) (history.Ledger, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return history.Ledger{}, err
+	}
 	query := req.RawRequest.URL.Query()
-	ledger, err := h.Journal.Household(req.Context, history.LedgerFilter{
+	ledger, err := h.Journal.Household(req.Context, scope, history.LedgerFilter{
 		Direction: query.Get("direction"),
 		Query:     query.Get("q"),
 	})
@@ -67,28 +79,28 @@ func (h *HistoryHandler) Household(req Request[struct{}, struct{}]) (history.Led
 }
 
 func (h *HistoryHandler) SetQuantity(req Request[historyQuantityBody, historyMoveParams]) (history.View, error) {
-	household, err := moveHousehold(req.RawRequest)
+	scope, err := requestScope(req.Context)
 	if err != nil {
 		return history.View{}, err
 	}
-	view, err := h.Journal.SetQuantity(req.Context, household, req.PathParams.ID, req.Body.Quantity, time.Now())
+	view, err := h.Journal.SetQuantity(req.Context, scope, req.PathParams.ID, req.Body.Quantity, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
-	h.publish(req.Context, view.ID)
+	h.publish(req.Context, scope, view.ID)
 	return view, nil
 }
 
 func (h *HistoryHandler) Undo(req Request[struct{}, historyMoveParams]) (history.View, error) {
-	household, err := moveHousehold(req.RawRequest)
+	scope, err := requestScope(req.Context)
 	if err != nil {
 		return history.View{}, err
 	}
-	view, err := h.Journal.Undo(req.Context, household, req.PathParams.ID, time.Now())
+	view, err := h.Journal.Undo(req.Context, scope, req.PathParams.ID, time.Now())
 	if err != nil {
 		return history.View{}, historyHTTP(err)
 	}
-	h.publish(req.Context, view.ID)
+	h.publish(req.Context, scope, view.ID)
 	return view, nil
 }
 
@@ -108,11 +120,11 @@ type undoEffectJSON struct {
 
 // PreviewUndo reports what DELETE /api/moves/{id} would change. It changes nothing.
 func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (undoPreviewResponse, error) {
-	household, err := moveHousehold(req.RawRequest)
+	scope, err := requestScope(req.Context)
 	if err != nil {
 		return undoPreviewResponse{}, err
 	}
-	preview, err := h.Journal.PreviewUndo(req.Context, household, req.PathParams.ID)
+	preview, err := h.Journal.PreviewUndo(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return undoPreviewResponse{}, historyHTTP(err)
 	}
@@ -127,38 +139,11 @@ func (h *HistoryHandler) PreviewUndo(req Request[struct{}, historyMoveParams]) (
 	return undoPreviewResponse{Effects: effects}, nil
 }
 
-// moveHousehold is the household a move correction uses. Until signed-in
-// households exist, the only household is the default. userId is accepted
-// only when it is omitted or a single exact value of that household. An
-// empty value, a different case, surrounding spaces, a repeated parameter,
-// a malformed query, or any other id is the same 404 as a missing move,
-// before any read or write.
-func moveHousehold(r *http.Request) (string, error) {
-	household := history.DefaultHousehold()
-	if r == nil || r.URL == nil {
-		return household, nil
-	}
-	// URL.Query drops a parse error, so a semicolon or a bad escape would
-	// look like an omitted userId and the default household would be used.
-	values, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return "", NotFound("That move is no longer in the history.")
-	}
-	ids, present := values["userId"]
-	if !present || len(ids) == 0 {
-		return household, nil
-	}
-	if len(ids) == 1 && ids[0] == household {
-		return household, nil
-	}
-	return "", NotFound("That move is no longer in the history.")
-}
-
-func (h *HistoryHandler) publish(ctx context.Context, itemID string) {
+func (h *HistoryHandler) publish(ctx context.Context, scope tenant.Scope, itemID string) {
 	if h.Events == nil || h.Pantry == nil || itemID == "" {
 		return
 	}
-	item, err := h.Pantry.GetInventoryItem(ctx, itemID, time.Now(), inventory.DefaultWarningDays)
+	item, err := h.Pantry.GetInventoryItem(ctx, scope, itemID, time.Now(), inventory.DefaultWarningDays)
 	if err != nil || item == nil {
 		return
 	}
