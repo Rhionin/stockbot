@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -161,7 +160,15 @@ func krogerBatchSize() int {
 
 func main() {
 	dbPath := envOrDefault("DB_PATH", "pantry.db")
-	addr := envOrDefault("ADDR", ":8080")
+	site, err := app.LoadRuntimeConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	if site.AppBaseURL == "" {
+		log.Printf("site: %s, LAN only", site.AppName)
+	} else {
+		log.Printf("site: %s at %s", site.AppName, site.AppBaseURL)
+	}
 
 	sqlDB, err := app.OpenSQLite(dbPath)
 	if err != nil {
@@ -177,27 +184,12 @@ func main() {
 	// ReadHeaderTimeout closes a connection that never sends headers.
 	// WriteTimeout is left unset so a live /api/events stream is not cut off.
 	gate := newBootGate()
-	ln, err := net.Listen("tcp", addr)
+	streams := server.NewStreamShutdown()
+	// Shutdown does not cancel request contexts. Register ends SSE handlers
+	// so a live /api/events tab does not hold the process for the whole budget.
+	listeners, err := openListeners(site.Listeners(), gate, streams.Register)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
-	}
-	streams := server.NewStreamShutdown()
-	srv := &http.Server{
-		Handler:           gate,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 16,
-	}
-	// Shutdown does not cancel request contexts. This ends SSE handlers so a
-	// live /api/events tab does not hold the process for the whole budget.
-	streams.Register(srv)
-	serveErr := make(chan error, 1)
-	go func() {
-		serveErr <- srv.Serve(ln)
-	}()
-	log.Printf("listening on %s", addr)
-	if warning := unauthenticatedListenWarning(addr); warning != "" {
-		log.Print(warning)
 	}
 
 	if err := app.RunMigrations(sqlDB); err != nil {
@@ -273,6 +265,8 @@ func main() {
 		log.Print("sentry: error reporting is on")
 	}
 
+	pushCfg := loadPushConfig()
+	pushCfg.AppName = site.AppName
 	opts := []server.Option{
 		server.WithBroadcaster(broadcaster),
 		server.WithSentryTunnel(sentrySettings.TunnelConfig()),
@@ -288,7 +282,7 @@ func main() {
 		server.WithScannerMode(scannerMode),
 		server.WithDeployHook(os.Getenv("DEPLOY_HOOK_SECRET"), os.Getenv("DEPLOY_TRIGGER_PATH")),
 		server.WithSyncToken(os.Getenv("PANTRY_SYNC_TOKEN")),
-		server.WithPush(loadPushConfig()),
+		server.WithPush(pushCfg),
 	}
 	if strings.TrimSpace(os.Getenv("DEPLOY_HOOK_SECRET")) == "" {
 		log.Println("deploy hook: DEPLOY_HOOK_SECRET is empty; signed deploys are disabled")
@@ -322,7 +316,7 @@ func main() {
 		<-sigs
 		close(stop)
 	}()
-	if err := runHTTPServer(srv, serveErr, stop, server.FlushSentry); err != nil {
+	if err := runHTTPServers(listeners.servers, listeners.serveErr, stop, server.FlushSentry); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 }
@@ -342,27 +336,7 @@ var shutdownHTTP = func(srv *http.Server, ctx context.Context) error {
 // Serve, so this does not listen again. A closed stop shuts that listener down.
 // Flush runs only after Shutdown has returned.
 func runHTTPServer(srv *http.Server, serveErr <-chan error, stop <-chan struct{}, flush func()) error {
-	var err error
-	select {
-	case err = <-serveErr:
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-	case <-stop:
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		err = shutdownHTTP(srv, ctx)
-		<-serveErr
-		if errors.Is(err, context.DeadlineExceeded) {
-			log.Print("warning: open connections did not finish during shutdown; closing them")
-			_ = srv.Close()
-			err = nil
-		}
-	}
-	if flush != nil {
-		flush()
-	}
-	return err
+	return runHTTPServers([]*http.Server{srv}, serveErr, stop, flush)
 }
 
 // loadPushConfig reads the VAPID pair setup stores in the environment.

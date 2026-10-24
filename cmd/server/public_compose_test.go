@@ -87,7 +87,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(pantry.Environment["PANTRY_SESSION_SECRET"], "PANTRY_SESSION_SECRET") {
 		t.Fatalf("pantry must receive PANTRY_SESSION_SECRET from .env, got %q", pantry.Environment["PANTRY_SESSION_SECRET"])
 	}
-	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST", "SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TUNNEL_PROJECT_IDS", "SENTRY_TUNNEL_PUBLIC_KEYS"} {
+	for _, key := range []string{"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "PUBLIC_HOST", "LEGACY_PUBLIC_HOST", "SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TUNNEL_PROJECT_IDS", "SENTRY_TUNNEL_PUBLIC_KEYS", "APP_BASE_URL", "APP_NAME", "SESSION_COOKIE_NAME", "COOKIE_DOMAIN", "EMAIL_FROM", "LAN_PEOPLE", "EXPO_MIN_VERSION", "PUBLIC_LISTEN_ADDR", "LAN_LISTEN_ADDR"} {
 		if !strings.Contains(pantry.Environment[key], key) {
 			t.Fatalf("pantry must receive %s from .env, got %q", key, pantry.Environment[key])
 		}

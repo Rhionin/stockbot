@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Rhionin/stockbot/internal/app"
 )
 
 // maxPushPlaintext is the largest JSON document Notify sends. With the
@@ -23,8 +25,13 @@ type wireNotice struct {
 // pushPayload builds the compact document for one alert: a short title, a
 // body with the count and the first item names that fit, and a url.
 func pushPayload(notice Notice) ([]byte, error) {
+	return pushPayloadFor(notice, "")
+}
+
+func pushPayloadFor(notice Notice, appName string) ([]byte, error) {
+	appName = notificationTitle(appName)
 	wire := wireNotice{
-		Title: compactTitle(notice.Title),
+		Title: compactTitle(notice.Title, appName),
 		Body:  compactBody(notice),
 		Tag:   strings.TrimSpace(notice.Tag),
 		URL:   alertURL(notice.URL),
@@ -57,13 +64,21 @@ func pushPayload(notice Notice) ([]byte, error) {
 	if len(payload) <= maxPushPlaintext {
 		return payload, nil
 	}
-	return json.Marshal(wireNotice{Title: "Stockbot", URL: "/"})
+	return json.Marshal(wireNotice{Title: appName, URL: "/"})
 }
 
-func compactTitle(title string) string {
+func notificationTitle(appName string) string {
+	appName = strings.TrimSpace(appName)
+	if appName == "" {
+		return app.DefaultAppName
+	}
+	return appName
+}
+
+func compactTitle(title, appName string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return "Stockbot"
+		return appName
 	}
 	const maxTitleBytes = 120
 	if len(title) <= maxTitleBytes {
