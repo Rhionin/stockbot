@@ -159,6 +159,20 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 			t.Fatalf("telemetry matcher must not include %s", legal)
 		}
 	}
+	if !strings.Contains(text, "max_size 1MB") {
+		t.Fatal("Caddyfile must cap request bodies at 1MB")
+	}
+	deviceAt := strings.Index(text, "handle /api/device/*")
+	if deviceAt < 0 || deviceAt > authAt {
+		t.Fatal("Caddyfile must handle /api/device/* before the household site")
+	}
+	deviceBlock := text[deviceAt:authAt]
+	if !strings.Contains(deviceBlock, "max_size 64KB") {
+		t.Fatal("Caddyfile device handle must cap request bodies at 64KB")
+	}
+	if !strings.Contains(deviceBlock, "X-Pantry-Entry public") || !strings.Contains(deviceBlock, "X-Pantry-Client-IP {client_ip}") {
+		t.Fatal("Caddyfile device handle must use the public site proxy headers")
+	}
 	authedMatchers := pathMatchers(text[authAt:])
 	if strings.Join(authedMatchers, "\n") != "path /api/events\npath /sw.js" {
 		t.Fatalf("path matchers after the login handle = %#v, want /api/events and /sw.js", authedMatchers)
@@ -192,6 +206,9 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(envText, "\nSENTRY_DSN=\n") || !strings.Contains(envText, "\nSENTRY_ENVIRONMENT=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PROJECT_IDS=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PUBLIC_KEYS=\n") {
 		t.Fatal(".env.example must leave Sentry values empty")
+	}
+	if !strings.Contains(envText, "\nBACKUP_BEFORE_DEPLOY=warn\n") {
+		t.Fatal(".env.example must default BACKUP_BEFORE_DEPLOY to warn")
 	}
 
 	setup, err := os.ReadFile(filepath.Join("..", "..", "deploy", "setup.sh"))
@@ -327,6 +344,9 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	if strings.Contains(tunnelText, "{$ACME_EMAIL}") || strings.Contains(tunnelText, "email ") {
 		t.Fatal("tunnel Caddyfile must not request a certificate")
+	}
+	if !strings.Contains(tunnelText, "max_size 1MB") {
+		t.Fatal("Caddyfile.tunnel must cap request bodies at 1MB")
 	}
 
 	tunnelComposeRaw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "docker-compose.tunnel.yml"))

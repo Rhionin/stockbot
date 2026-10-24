@@ -92,6 +92,11 @@ printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
 if [[ -n "${SEQUENCE_LOG:-}" ]]; then
   printf 'docker %s\n' "$*" >> "$SEQUENCE_LOG"
 fi
+# The updater holds the deploy lock on fd 9 and closes it before starting
+# the backup. A child of that backup must not inherit the lock.
+if [[ "${PANTRY_BACKUP_LOCK_HELD:-}" == 1 ]]; then
+  [ ! -e /proc/self/fd/9 ] || { echo "fd 9 leaked into backup child" >&2; exit 99; }
+fi
 
 tsv_col() {
   local key="$1" col="$2" svc ref run_id run_dig pull_id pull_dig revision run_revision
@@ -250,6 +255,10 @@ if [[ "$1" == inspect ]]; then
     printf '%s\n' "$started"
     exit 0
   fi
+  if [[ "$format" == '{{.Image}}' ]]; then
+    printf '%s\n' "${STUB_CONTAINER_IMAGE:-sha256:running-pantry}"
+    exit 0
+  fi
   if [[ "$format" == *State.Running* ]]; then
     name=${target#cid-}
     id=$(tsv_col "$name" run_id || true)
@@ -405,6 +414,10 @@ if [[ "$1" == compose ]]; then
     exit "${STUB_UP_RC:-0}"
   fi
   exit 0
+fi
+
+if [[ "$1" == run && "$*" == *"--reason"* ]]; then
+  exit "${STUB_BACKUP_RC:-0}"
 fi
 
 exit 0
@@ -666,6 +679,9 @@ run_update() {
     PANTRY_UPDATE_SETTLE_SECONDS="${PANTRY_UPDATE_SETTLE_SECONDS:-0}" \
     PANTRY_UPDATE_PROBE_RETRY_SECONDS="${PANTRY_UPDATE_PROBE_RETRY_SECONDS:-0}" \
     PANTRY_UPDATE_MIN_FREE_KIB="${PANTRY_UPDATE_MIN_FREE_KIB:-65536}" \
+    PANTRY_BACKUP_LOCK_WAIT="${PANTRY_BACKUP_LOCK_WAIT:-1}" \
+    BACKUP_BEFORE_DEPLOY="${BACKUP_BEFORE_DEPLOY-}" \
+    STUB_BACKUP_RC="${STUB_BACKUP_RC:-0}" \
     PATH="$bin:$PATH" \
     "${deadline_cmd[@]}" env "${extra_env[@]}" bash "$UPDATE" >"$out" 2>"$err"
   LAST_RC=$?
@@ -711,12 +727,22 @@ assert_have_lack_large_input
 
 line_of() {
   local haystack="$1" needle="$2"
-  grep -n -F -m1 -- "$needle" <<< "$haystack" | cut -d: -f1
+  grep -n -F -m1 -- "$needle" <<< "$haystack" | cut -d: -f1 || true
 }
 
 env_unchanged() {
   local pantry="$1"
   cmp -s "$pantry/.env" "$pantry/.env.orig" || fail "update rewrote .env"
+}
+
+# normalize_update_docker strips fixture paths from a docker log so two
+# runs can be compared. The pre-deploy backup copies config secrets into
+# a fresh directory; that name is not part of the compose argv.
+normalize_update_docker() {
+  local text="$1" dir="$2"
+  text=${text//$dir/<pantry>}
+  text=${text//$(basename "$dir")/<proj>}
+  printf '%s\n' "$text" | sed -E 's#/(tmp|run)/stockbot-backup-secrets\.[^ :]+#/\1/stockbot-backup-secrets.<id>#g'
 }
 
 NEW_COMMIT=0123456789abcdef0123456789abcdef01234567
@@ -757,6 +783,11 @@ up_line=$(line_of "$LAST_SEQUENCE" " up -d")
 curl_line=$(line_of "$LAST_SEQUENCE" "curl ")
 [[ -n "$record_line" && -n "$pull_line" && "$record_line" -lt "$pull_line" ]] || fail "healthy run inspected the running image after pull (record=$record_line pull=$pull_line)"
 [[ -n "$up_line" && -n "$curl_line" && "$up_line" -lt "$curl_line" ]] || fail "healthy run polled health before up -d"
+backup_line=$(line_of "$LAST_SEQUENCE" "--reason pre-deploy")
+[[ -n "$backup_line" && "$backup_line" -lt "$up_line" ]] || fail "healthy run did not back up before recreate (backup=$backup_line up=$up_line)"
+have "$LAST_OUT" "pantry update: pre-deploy backup (warn)" "a pantry image change takes a warn backup by default"
+have "$LAST_OUT" "backup: deploy lock already held" "the updater tells the backup it already holds the lock"
+have "$LAST_OUT" "pantry update: pre-deploy backup finished" "a successful pre-deploy backup finishes"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY STUB_HEALTH_RC STUB_BUILD_RC
 
 # Nothing changed on pull: no recreate and no health poll.
@@ -775,6 +806,8 @@ have "$LAST_OUT" "pantry update: images unchanged" "unchanged pull is a no-op"
 have "$LAST_OUT" "pantry update: finished" "unchanged pull finishes"
 have "$LAST_DOCKER" " pull" "unchanged pull still checks the registry"
 lack "$LAST_DOCKER" " up " "unchanged pull does not recreate containers"
+lack "$LAST_OUT" "pre-deploy backup" "an unchanged pantry image does not take a backup"
+lack "$LAST_DOCKER" "--reason pre-deploy" "an unchanged pantry image does not start the backup container"
 [[ -z "$LAST_CURL" ]] || fail "unchanged pull polled health: $LAST_CURL"
 lack "$LAST_OUT" "PANTRY UPDATE FAILED" "unchanged pull does not roll back"
 env_unchanged "$noop"
@@ -913,6 +946,8 @@ have "$(cat "$caddy_only/.update-rejected-digest")" "caddy@sha256:newcaddy" "cad
 lack "$(cat "$caddy_only/.update-rejected-digest")" "oldpantry" "caddy-only failure does not reject the running pantry digest"
 lack "$(cat "$caddy_only/.update-rejected-digest")" "newpantry" "caddy-only failure does not invent a pantry digest"
 lack "$LAST_OUT" "BOTH IMAGES DOWN" "caddy-only rollback reaches the previous pantry image"
+lack "$LAST_OUT" "pre-deploy backup" "a caddy-only image change does not back up"
+lack "$LAST_DOCKER" "--reason pre-deploy" "a caddy-only image change does not start the backup container"
 unset STUB_STATUS_TSV STUB_UP_RC STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # Rollback that does not start records nothing and says both images are down.
@@ -2268,12 +2303,10 @@ for grocy_mode in lan tunnel; do
   cp "$grocy_on/.env" "$grocy_on/.env.orig"
   STUB_HEALTH_BODY='{"status":"ok"}' STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}" run_update "$grocy_off"
   [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode update without Grocy failed: $LAST_OUT"
-  grocy_off_docker=${LAST_DOCKER//$grocy_off/<pantry>}
-  grocy_off_docker=${grocy_off_docker//$(basename "$grocy_off")/<proj>}
+  grocy_off_docker=$(normalize_update_docker "$LAST_DOCKER" "$grocy_off")
   STUB_HEALTH_BODY='{"status":"ok"}' STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}" run_update "$grocy_on"
   [[ "$LAST_RC" -eq 0 ]] || fail "$grocy_mode update with Grocy failed: $LAST_OUT"
-  grocy_on_docker=${LAST_DOCKER//$grocy_on/<pantry>}
-  grocy_on_docker=${grocy_on_docker//$(basename "$grocy_on")/<proj>}
+  grocy_on_docker=$(normalize_update_docker "$LAST_DOCKER" "$grocy_on")
   have "$grocy_on_docker" " up -d" "$grocy_mode update with Grocy still recreates the stack"
   lack "$grocy_on_docker" "docker-compose.grocy.yml" "$grocy_mode update with Grocy must not load the sidecar file"
   lack "$grocy_on_docker" "--profile grocy" "$grocy_mode update with Grocy must not select a grocy profile"
@@ -2286,6 +2319,105 @@ for grocy_mode in lan tunnel; do
   rm -rf "$grocy_off" "$grocy_on"
 done
 unset STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# A failed pre-deploy backup warns and the new image is still recreated.
+backup_warn=$(mktemp -d)
+prepare_pantry "$backup_warn"
+write_images "$backup_warn/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_BACKUP_RC=1
+BACKUP_BEFORE_DEPLOY=warn
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_warn"
+[[ "$LAST_RC" -eq 0 ]] || fail "warn backup failure exited $LAST_RC: $LAST_OUT"
+have "$LAST_OUT" "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" "a warn backup failure is a warning"
+have "$LAST_OUT" "pantry update: healthy, running commit ${NEW_COMMIT}" "a warn backup failure still deploys"
+have "$LAST_DOCKER" " up -d" "a warn backup failure still recreates"
+warn_backup=$(line_of "$LAST_SEQUENCE" "--reason pre-deploy")
+warn_up=$(line_of "$LAST_SEQUENCE" " up -d")
+[[ -n "$warn_backup" && -n "$warn_up" && "$warn_backup" -lt "$warn_up" ]] || fail "warn backup did not run before recreate"
+lack "$LAST_OUT" "not recreating pantry" "warn does not abort before recreate"
+[[ ! -e "$backup_warn/.update-rejected-digest" ]] || fail "warn backup failure rejected a digest"
+unset STUB_BACKUP_RC BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# required refuses to recreate pantry when the backup fails.
+backup_required=$(mktemp -d)
+prepare_pantry "$backup_required"
+write_images "$backup_required/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_BACKUP_RC=1
+BACKUP_BEFORE_DEPLOY=required
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_required"
+[[ "$LAST_RC" -ne 0 ]] || fail "required backup failure should exit non-zero: $LAST_OUT"
+have "$LAST_OUT" "pantry update: pre-deploy backup (required)" "required mode runs the backup"
+have "$LAST_OUT" "pre-deploy backup failed; not recreating pantry" "required mode stops before recreate"
+have "$LAST_OUT" "backup: deploy lock already held" "required mode still shares the deploy lock"
+lack "$LAST_DOCKER" " up -d" "required mode does not recreate pantry"
+lack "$LAST_DOCKER" "pending-before-up" "required mode does not write the pending marker before up"
+lack "$LAST_DOCKER" "--pull never" "required mode does not roll back"
+lack "$LAST_OUT" "PANTRY UPDATE FAILED: rolling back" "required mode does not roll back an image that was not started"
+[[ ! -e "$backup_required/.update-pending" ]] || fail "required mode left a pending marker"
+[[ ! -e "$backup_required/.update-rejected-digest" ]] || fail "required mode recorded a rejected digest"
+unset STUB_BACKUP_RC BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# off skips the backup even when the pantry digest changes.
+backup_off=$(mktemp -d)
+prepare_pantry "$backup_off"
+write_images "$backup_off/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+BACKUP_BEFORE_DEPLOY=off
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_off"
+[[ "$LAST_RC" -eq 0 ]] || fail "off backup mode exited $LAST_RC: $LAST_OUT"
+have "$LAST_OUT" "pantry update: healthy, running commit ${NEW_COMMIT}" "off mode still deploys"
+lack "$LAST_OUT" "pre-deploy backup" "off mode does not take a backup"
+lack "$LAST_DOCKER" "--reason pre-deploy" "off mode does not start the backup container"
+have "$LAST_DOCKER" " up -d" "off mode still recreates"
+unset BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# .env is the fallback when the process environment does not set the mode.
+backup_dotenv=$(mktemp -d)
+prepare_pantry "$backup_dotenv"
+printf '\nBACKUP_BEFORE_DEPLOY=off\n' >> "$backup_dotenv/.env"
+write_images "$backup_dotenv/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+unset BACKUP_BEFORE_DEPLOY
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_dotenv"
+[[ "$LAST_RC" -eq 0 ]] || fail "off in .env exited $LAST_RC: $LAST_OUT"
+have "$LAST_OUT" "pantry update: healthy, running commit ${NEW_COMMIT}" "off in .env still deploys"
+lack "$LAST_OUT" "pre-deploy backup" "off in .env does not take a backup"
+lack "$LAST_DOCKER" "--reason pre-deploy" "off in .env does not start the backup container"
+have "$LAST_DOCKER" " up -d" "off in .env still recreates"
+unset STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# An unknown mode stops before recreate. The default must not be substituted.
+backup_invalid=$(mktemp -d)
+prepare_pantry "$backup_invalid"
+write_images "$backup_invalid/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+BACKUP_BEFORE_DEPLOY=invalid
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_invalid"
+[[ "$LAST_RC" -ne 0 ]] || fail "invalid BACKUP_BEFORE_DEPLOY should exit non-zero: $LAST_OUT"
+have "$LAST_OUT" "BACKUP_BEFORE_DEPLOY must be warn, required, or off" "invalid mode names the allowed values"
+lack "$LAST_DOCKER" " up -d" "invalid mode does not recreate pantry"
+lack "$LAST_DOCKER" "--reason pre-deploy" "invalid mode does not start the backup container"
+lack "$LAST_OUT" "pre-deploy backup failed; not recreating pantry" "invalid mode fails before the backup runs"
+[[ ! -e "$backup_invalid/.update-pending" ]] || fail "invalid mode left a pending marker"
+unset BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
+rm -rf "$backup_warn" "$backup_required" "$backup_off" "$backup_dotenv" "$backup_invalid"
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

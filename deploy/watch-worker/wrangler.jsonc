@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pantry-pi-watch",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-24",
+  "compatibility_flags": ["nodejs_compat"],
+  // No workers.dev hostname and no public route. Cron is the only trigger.
+  "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  // Every 5 minutes. The backup check runs when the UTC minute is 0.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "r2_buckets": [
+    {
+      "binding": "BACKUPS",
+      "bucket_name": "pantry-pi-backups"
+    }
+  ],
+  // Sends only to this verified destination. Alerts do not use healthchecks.io.
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "destination_address": "rhionin@gmail.com"
+    }
+  ],
+  "vars": {
+    "TARGET_URL": "https://stockbot.rhionin.com",
+    "ALERT_TO": "rhionin@gmail.com",
+    "ALERT_FROM": "pantry-pi-watch@rhionin.com"
+  }
+}
