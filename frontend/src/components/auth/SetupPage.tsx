@@ -49,7 +49,7 @@ export const SetupPage = () => {
   return (
     <main className="login-screen">
       <section className="login-card" aria-labelledby="setup-title">
-        <Title id="setup-title" order={1} size="h2">Set up Stockbot</Title>
+        <Title id="setup-title" className="login-brand" order={1} size="h2">Set up Stockbot</Title>
         <Text className="login-lede">
           {recover
             ? 'Enter the recovery code from the server, then choose a new password.'
