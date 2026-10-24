@@ -375,7 +375,7 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 		t.Fatalf("duplicate %d %s", dupScan.Code, dupScan.Body.String())
 	}
 	conflict := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-1", "barcode": "999", "direction": "stock_out", "unitCount": 1}, app.EntryLAN, dev)
-	if conflict.Code != http.StatusOK || !strings.Contains(conflict.Body.String(), `"conflict"`) {
+	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), `"code":"conflict"`) {
 		t.Fatalf("conflict %d %s", conflict.Code, conflict.Body.String())
 	}
 	heart := c.call(http.MethodPost, "/api/device/scans", map[string]any{"id": "scan-heart", "heartbeat": true}, app.EntryLAN, dev)

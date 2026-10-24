@@ -1141,8 +1141,20 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 		writeStage1(w, err)
 		return
 	}
-	if len(results) == 0 || results[0].Status == "rejected" {
+	if len(results) == 0 {
 		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
+		return
+	}
+	if results[0].Status == "rejected" {
+		msg := auth.SentenceValidation
+		if results[0].Message != "" {
+			msg = results[0].Message
+		}
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: msg})
+		return
+	}
+	if results[0].Status == "conflict" {
+		writeStage1(w, &auth.Error{Code: auth.CodeConflict, Message: "scan id already used with different payload"})
 		return
 	}
 	status := results[0].Status
