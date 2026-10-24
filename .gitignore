@@ -23,6 +23,9 @@ frontend/dist-ssr/
 
 # Node / npm
 frontend/node_modules/
+deploy/watch-worker/node_modules/
+deploy/watch-worker/.wrangler/
+deploy/watch-worker/.dev.vars
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local
