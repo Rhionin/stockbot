@@ -3,6 +3,7 @@ package changes
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -129,4 +130,63 @@ func TestCursorFromAnotherHouseholdIsAFullRead(t *testing.T) {
 	if _, _, _, ok := Parse(strings.Repeat("v", 200)); ok {
 		t.Fatal("accepted a long cursor")
 	}
+}
+
+func TestChangeVersionsRejectBadInput(t *testing.T) {
+	db, house := openVersions(t)
+	ctx := context.Background()
+	if err := Bump(ctx, nil, house, ScopeStock); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bump(ctx, db, "  ", ScopeStock); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bump(ctx, db, house); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bump(ctx, db, house, "nope"); err == nil {
+		t.Fatal("unknown scope was recorded")
+	}
+	if _, err := Version(ctx, nil, house, ScopeStock); err == nil {
+		t.Fatal("nil reader")
+	}
+	if _, err := Version(ctx, db, house, "nope"); err == nil {
+		t.Fatal("unknown scope was read")
+	}
+	if _, err := Current(ctx, db, house, "nope"); err == nil {
+		t.Fatal("unknown scope became a cursor")
+	}
+	if _, _, _, ok := Parse("v1.!!!"); ok {
+		t.Fatal("accepted a broken cursor")
+	}
+	broken := "v1." + encodeRaw("only|two")
+	if _, _, _, ok := Parse(broken); ok {
+		t.Fatal("accepted a short cursor")
+	}
+	negative := "v1." + encodeRaw(house+"|stock|-1")
+	if _, _, _, ok := Parse(negative); ok {
+		t.Fatal("accepted a negative version")
+	}
+	empty, err := Compare(ctx, db, house, ScopeStock, "  ")
+	if err != nil || !empty.Changed || empty.Recognized {
+		t.Fatalf("blank since = %+v %v", empty, err)
+	}
+	future, err := Compare(ctx, db, house, ScopeStock, Cursor(house, ScopeStock, 99))
+	if err != nil || !future.Changed || future.Recognized {
+		t.Fatalf("future = %+v %v", future, err)
+	}
+	db.Close()
+	if err := Bump(ctx, db, house, ScopeStock); err == nil {
+		t.Fatal("closed database recorded a change")
+	}
+	if _, err := Version(ctx, db, house, ScopeStock); err == nil {
+		t.Fatal("closed database returned a version")
+	}
+	if _, err := Compare(ctx, db, house, ScopeStock, ""); err == nil {
+		t.Fatal("closed database compared a cursor")
+	}
+}
+
+func encodeRaw(raw string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
