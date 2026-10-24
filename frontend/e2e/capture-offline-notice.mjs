@@ -277,6 +277,7 @@ async function captureWebStartup(browser) {
     baseURL: webURL,
   });
   const page = await context.newPage();
+  await page.route('**/api/auth/session', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) }));
   await page.route('**/api/session', (route) => route.fulfill({
     status: 503,
     contentType: 'text/html',
@@ -303,6 +304,7 @@ async function captureWebAuth(browser) {
     baseURL: webURL,
   });
   const page = await context.newPage();
+  await page.route('**/api/auth/session', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) }));
   await page.route('**/api/session', (route) => route.fulfill({
     status: 503,
     contentType: 'application/json',
