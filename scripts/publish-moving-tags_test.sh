@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Fake git and docker. Covers the tip match, a stale skip, a failed
-# ls-remote, empty ls-remote output, and pipefail on that pipeline.
+# Fake git and docker. Covers the tip match (exact retag lines), a stale
+# skip, a tip that differs only in the last character, a failed ls-remote,
+# empty ls-remote output, pipefail on that pipeline, and a pantry retag
+# that fails after the sidecar has already moved.
 
 set -euo pipefail
 
@@ -24,7 +26,7 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/git" << 'EOF'
 #!/bin/bash
 set -euo pipefail
-if [ "${1:-}" != "ls-remote" ]; then
+if [ "$#" -ne 3 ] || [ "$1" != "ls-remote" ] || [ "$2" != "origin" ] || [ "$3" != "refs/heads/master" ]; then
   echo "unexpected git: $*" >&2
   exit 1
 fi
@@ -42,12 +44,29 @@ EOF
 
 cat > "$tmp/bin/docker" << 'EOF'
 #!/bin/bash
-printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+set -euo pipefail
+printf '%s\n' "docker $*" >> "${DOCKER_LOG:?}"
+if [ -n "${FAKE_DOCKER_FAIL_ON:-}" ]; then
+  n=$(wc -l < "${DOCKER_LOG}")
+  if [ "$n" -eq "${FAKE_DOCKER_FAIL_ON}" ]; then
+    echo "fake docker refused" >&2
+    # Not 1. The publisher has to propagate this status; exit 1 in the trap would hide the mutant.
+    exit 7
+  fi
+fi
 EOF
 chmod +x "$tmp/bin/git" "$tmp/bin/docker"
 
 SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 OTHER=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+# Same through character 39. Any shorter compare would treat this tip as
+# the commit being published.
+PREFIX="${SHA:0:39}b"
+if [ "${#SHA}" -ne 40 ] || [ "${#PREFIX}" -ne 40 ] || [ "${PREFIX:0:39}" != "${SHA:0:39}" ] || [ "${PREFIX:39}" = "${SHA:39}" ]; then
+  fail "prefix fixture"
+fi
+
+SPLIT_MSG="Moved pantry-grocy-sync :latest and :master to ${SHA}, then the pantry tag move failed. pantry :latest and :master may be partially moved, so the two images may be on different versions."
 
 run_case() {
   local name="$1" expect="$2"
@@ -75,37 +94,67 @@ run_case() {
 assert_no_docker() {
   local dir="$1" name="$2"
   if [ -s "$dir/docker" ]; then
-    fail "$name moved tags"
+    fail "$name moved tags: $(cat "$dir/docker")"
+  fi
+}
+
+sidecar_cmd() {
+  printf 'docker buildx imagetools create --tag ghcr.io/rhionin/pantry-grocy-sync:latest --tag ghcr.io/rhionin/pantry-grocy-sync:master ghcr.io/rhionin/pantry-grocy-sync:%s' "$SHA"
+}
+
+pantry_cmd() {
+  printf 'docker buildx imagetools create --tag ghcr.io/rhionin/pantry:latest --tag ghcr.io/rhionin/pantry:master ghcr.io/rhionin/pantry:%s' "$SHA"
+}
+
+assert_exact_publish() {
+  local dir="$1" name="$2"
+  local lines
+  lines=$(grep -c '' "$dir/docker" || true)
+  if [ "$lines" -ne 2 ]; then
+    fail "$name ran ${lines} docker commands, want 2: $(cat "$dir/docker")"
+  fi
+  if [ "$(sed -n '1p' "$dir/docker")" != "$(sidecar_cmd)" ]; then
+    fail "$name sidecar command: $(sed -n '1p' "$dir/docker")"
+  fi
+  if [ "$(sed -n '2p' "$dir/docker")" != "$(pantry_cmd)" ]; then
+    fail "$name pantry command: $(sed -n '2p' "$dir/docker")"
+  fi
+}
+
+assert_skip() {
+  local dir="$1" name="$2" tip="$3"
+  grep -q '^publish=false$' "$dir/output" || fail "$name published"
+  assert_no_docker "$dir" "$name"
+  grep -F -q "::notice::${SHA} is not the tip of master (${tip})." "$dir/stdout" || fail "$name notice"
+  grep -F -q 'leaving :latest and :master unchanged' "$dir/stdout" || fail "$name notice omitted the skip"
+  grep -F -q "If ${tip}'s run did not publish, re-run it." "$dir/stdout" || fail "$name notice omitted recovery"
+  grep -F -q 'leaving :latest and :master unchanged' "$dir/summary" || fail "$name summary"
+  grep -F -q "If ${tip}'s run did not publish, re-run it." "$dir/summary" || fail "$name summary omitted recovery"
+  if grep -F -q "$SPLIT_MSG" "$dir/summary"; then
+    fail "$name wrote the partial-move summary"
   fi
 }
 
 export FAKE_LS_FAIL=0
 export FAKE_LS_STDOUT=
 export FAKE_TIP="$SHA"
+export FAKE_DOCKER_FAIL_ON=
 match=$(run_case match 0)
 grep -q '^publish=true$' "$match/output" || fail "tip match did not publish"
 grep -q '::notice::Moved :latest and :master to '"$SHA" "$match/stdout" || fail "tip match notice"
 grep -q 'Moved :latest and :master to '"$SHA" "$match/summary" || fail "tip match summary"
-first=$(sed -n '1p' "$match/docker")
-second=$(sed -n '2p' "$match/docker")
-case "$first" in
-  *pantry-grocy-sync:latest*) ;;
-  *) fail "grocy-sync tag was not first: $first" ;;
-esac
-case "$second" in
-  *ghcr.io/rhionin/pantry:latest*) ;;
-  *) fail "pantry tag was not second: $second" ;;
-esac
+assert_exact_publish "$match" match
+if grep -F -q "$SPLIT_MSG" "$match/summary"; then
+  fail "tip match wrote the partial-move summary"
+fi
+
+export FAKE_TIP="$PREFIX"
+truncated=$(run_case truncated 0)
+assert_skip "$truncated" truncated "$PREFIX"
 
 export FAKE_TIP="$OTHER"
 stale=$(run_case stale 0)
-grep -q '^publish=false$' "$stale/output" || fail "stale commit published"
-assert_no_docker "$stale" stale
-grep -q '::notice::'"$SHA"' is not the tip of master ('"$OTHER"')' "$stale/stdout" || fail "stale notice"
-grep -q 'leaving :latest and :master unchanged' "$stale/stdout" || fail "stale notice omitted the skip"
-grep -q 'Re-run the master workflow for '"$OTHER" "$stale/stdout" || fail "stale notice omitted recovery"
-grep -q 'leaving :latest and :master unchanged' "$stale/summary" || fail "stale summary"
-grep -q 'Re-run the master workflow for '"$OTHER" "$stale/summary" || fail "stale summary omitted recovery"
+assert_skip "$stale" stale "$OTHER"
 
 export FAKE_TIP=
 export FAKE_LS_FAIL=1
@@ -130,5 +179,36 @@ export FAKE_LS_FAIL=1
 export FAKE_LS_STDOUT="${SHA}"$'\t'"refs/heads/master"
 pipe=$(run_case pipefail 1)
 assert_no_docker "$pipe" pipefail
+
+# The sidecar command is attempted and fails. Pantry has not moved, so the
+# summary must not claim a partial move.
+export FAKE_LS_FAIL=0
+export FAKE_LS_STDOUT=
+export FAKE_TIP="$SHA"
+export FAKE_DOCKER_FAIL_ON=1
+sidecar_fail=$(run_case sidecar-fail 7)
+if [ "$(grep -c '' "$sidecar_fail/docker" || true)" -ne 1 ] || [ "$(sed -n '1p' "$sidecar_fail/docker")" != "$(sidecar_cmd)" ]; then
+  fail "sidecar failure did not stop after the sidecar command: $(cat "$sidecar_fail/docker")"
+fi
+if grep -F -q "$SPLIT_MSG" "$sidecar_fail/summary" || grep -F -q "$SPLIT_MSG" "$sidecar_fail/stderr"; then
+  fail "sidecar failure wrote the partial-move summary"
+fi
+if grep -q '^publish=' "$sidecar_fail/output"; then
+  fail "sidecar failure wrote a publish output"
+fi
+
+export FAKE_DOCKER_FAIL_ON=2
+pantry_fail=$(run_case pantry-fail 7)
+grep -F -q "$SPLIT_MSG" "$pantry_fail/summary" || fail "pantry failure omitted the partial-move summary: $(cat "$pantry_fail/summary")"
+grep -F -q "$SPLIT_MSG" "$pantry_fail/stderr" || fail "pantry failure omitted the partial-move log"
+grep -F -q "Moved pantry-grocy-sync :latest and :master to ${SHA}," "$pantry_fail/summary" || fail "pantry failure omitted the sidecar commit"
+grep -F -q "Moved pantry-grocy-sync :latest and :master to ${SHA}," "$pantry_fail/stderr" || fail "pantry failure log omitted the sidecar commit"
+if grep -q '^publish=' "$pantry_fail/output"; then
+  fail "pantry failure wrote a publish output"
+fi
+if grep -q 'Moved :latest and :master to '"$SHA" "$pantry_fail/summary"; then
+  fail "pantry failure recorded a successful move"
+fi
+assert_exact_publish "$pantry_fail" pantry-fail
 
 echo "publish-moving-tags_test ok"

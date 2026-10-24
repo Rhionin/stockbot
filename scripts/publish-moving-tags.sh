@@ -28,19 +28,38 @@ fi
 
 if [ "${tip}" != "${sha}" ]; then
   echo "publish=false" >> "$output"
-  record "${sha} is not the tip of master (${tip}). Pushed the immutable tag only; leaving :latest and :master unchanged and skipping the deploy hook. Re-run the master workflow for ${tip}."
+  record "${sha} is not the tip of master (${tip}). Pushed the immutable tag only; leaving :latest and :master unchanged and skipping the deploy hook. If ${tip}'s run did not publish, re-run it."
   exit 0
 fi
 
-# Sidecar first. A failure on the pantry move then leaves pantry on the previous tip.
+# Sidecar first, so a failed pantry move does not leave pantry ahead of the
+# sidecar. The summary names the sidecar commit that already moved, then
+# says the pantry move failed and that pantry :latest and :master may be
+# partial. A cancel or timeout between the two moves kills the step without
+# running this trap, so that summary line is skipped.
+sidecar_moved=0
+on_publish_error() {
+  local code=$?
+  local msg
+  trap - ERR
+  if [ "$sidecar_moved" -eq 1 ]; then
+    msg="Moved pantry-grocy-sync :latest and :master to ${sha}, then the pantry tag move failed. pantry :latest and :master may be partially moved, so the two images may be on different versions."
+    printf '%s\n' "$msg" >> "$summary"
+    printf '%s\n' "$msg" >&2
+  fi
+  exit "$code"
+}
+trap on_publish_error ERR
 docker buildx imagetools create \
   --tag "ghcr.io/rhionin/pantry-grocy-sync:latest" \
   --tag "ghcr.io/rhionin/pantry-grocy-sync:master" \
   "ghcr.io/rhionin/pantry-grocy-sync:${sha}"
+sidecar_moved=1
 docker buildx imagetools create \
   --tag "ghcr.io/rhionin/pantry:latest" \
   --tag "ghcr.io/rhionin/pantry:master" \
   "ghcr.io/rhionin/pantry:${sha}"
+trap - ERR
 
 echo "publish=true" >> "$output"
 record "Moved :latest and :master to ${sha}, the tip of master."
