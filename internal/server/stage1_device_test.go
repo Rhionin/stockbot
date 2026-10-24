@@ -281,17 +281,30 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	if stored != edge || approx != 0 {
 		t.Fatalf("edge stored %s approx %d", stored, approx)
 	}
+	received := now.UTC().Format(time.RFC3339)
 	lateScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{
 		"id": "late", "barcode": "12345670", "scannedAt": late,
 	}, app.EntryLAN, dev)
-	if lateScan.Code != http.StatusBadRequest || !strings.Contains(lateScan.Body.String(), `"code":"validation"`) || !strings.Contains(lateScan.Body.String(), "scannedAt out of range") {
+	if lateScan.Code != http.StatusOK || !strings.Contains(lateScan.Body.String(), `"accepted"`) {
 		t.Fatalf("+5m1s %d %s", lateScan.Code, lateScan.Body.String())
+	}
+	if err := db.QueryRow(`SELECT scanned_at, time_approx FROM scan_entries WHERE household_id = ? AND client_scan_id = 'late'`, c.house).Scan(&stored, &approx); err != nil {
+		t.Fatal(err)
+	}
+	if stored != received || approx != 1 {
+		t.Fatalf("+5m1s stored %s approx %d", stored, approx)
 	}
 	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
 		{"id": "batch-late", "barcode": "12345670", "scannedAt": late},
 	}}, app.EntryLAN, dev)
-	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"rejected"`) {
+	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"created"`) || strings.Contains(batch.Body.String(), `"rejected"`) {
 		t.Fatalf("batch +5m1s %d %s", batch.Code, batch.Body.String())
+	}
+	if err := db.QueryRow(`SELECT scanned_at, time_approx FROM scan_entries WHERE household_id = ? AND client_scan_id = 'batch-late'`, c.house).Scan(&stored, &approx); err != nil {
+		t.Fatal(err)
+	}
+	if stored != received || approx != 1 {
+		t.Fatalf("batch +5m1s stored %s approx %d", stored, approx)
 	}
 }
 
