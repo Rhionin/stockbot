@@ -25,6 +25,14 @@ func scopeOf(t *testing.T, db *sql.DB) tenant.Scope {
 	return scope
 }
 
+func TestSetDefaultRuleRejectsAnUnknownRule(t *testing.T) {
+	groups, _, db := newTestGroups(t)
+	err := groups.SetDefaultRule(context.Background(), scopeOf(t, db), "not-a-rule")
+	if err == nil {
+		t.Fatal("expected the rule to be rejected")
+	}
+}
+
 func newTestGroups(t *testing.T) (*Groups, *product.Catalog, *sql.DB) {
 	t.Helper()
 	conn, err := app.OpenSQLite(":memory:")

@@ -8,6 +8,15 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 )
 
+func TestUnitForDimension(t *testing.T) {
+	if unitForDimension(product.DimensionVolume) != "fl oz" {
+		t.Fatal("volume unit")
+	}
+	if unitForDimension(product.DimensionMass) != "oz" {
+		t.Fatal("mass unit")
+	}
+}
+
 func TestGroupHandlers(t *testing.T) {
 	runHandlerTests(t, []handlerTestCase{
 		{
