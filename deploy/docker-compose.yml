@@ -67,6 +67,20 @@ services:
       # subscription, including rows stored before origins existed.
       PUBLIC_HOST: ${PUBLIC_HOST:-}
       LEGACY_PUBLIC_HOST: ${LEGACY_PUBLIC_HOST:-}
+      # Empty APP_BASE_URL keeps this process LAN-only: it does not bind
+      # PUBLIC_LISTEN_ADDR. Set the public origin (https://host, no path)
+      # to require that listener. It must name the same host as PUBLIC_HOST.
+      # The public port stays on the compose network until the proxy is
+      # pointed at it. LAN_LISTEN_ADDR overrides ADDR when it is set.
+      APP_BASE_URL: ${APP_BASE_URL:-}
+      APP_NAME: ${APP_NAME:-Stockbot}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-__Host-stockbot_session}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      LAN_PEOPLE: ${LAN_PEOPLE:-redirect}
+      EXPO_MIN_VERSION: ${EXPO_MIN_VERSION:-1.0.0}
+      PUBLIC_LISTEN_ADDR: ${PUBLIC_LISTEN_ADDR:-:8081}
+      LAN_LISTEN_ADDR: ${LAN_LISTEN_ADDR:-:8080}
     volumes:
       - pantry-data:/data
       # The process writes one file here. A host path unit starts the update.

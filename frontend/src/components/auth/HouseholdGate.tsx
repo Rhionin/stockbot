@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, serverNoticeText, UnreachableError } from '@stockbot/shared/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, SESSION_EXPIRED_SENTENCE, serverNoticeText, UnreachableError } from '@stockbot/shared/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { HouseholdSessionContext } from './householdSession';
@@ -74,7 +74,10 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
       setUnauthorizedHandler(null);
       return undefined;
     }
-    setUnauthorizedHandler(() => setPhase('login'));
+    setUnauthorizedHandler(() => {
+      setError(SESSION_EXPIRED_SENTENCE);
+      setPhase('login');
+    });
     return () => setUnauthorizedHandler(null);
   }, [phase, required]);
 

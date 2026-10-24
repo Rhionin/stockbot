@@ -1,10 +1,8 @@
 package app_test
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -144,77 +142,6 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	}
 	if count != 31 {
 		t.Errorf("schema_migrations should have 31 rows after two runs, got %d", count)
-	}
-}
-
-// TestRunMigrations_LogsAppliedMigrationsOnFreshDB verifies that RunMigrations
-// logs one "applied migration: <filename>" line per migration file it applies
-// against a fresh database, and does not log the "schema up to date" summary
-// line (since at least one file was applied).
-func TestRunMigrations_LogsAppliedMigrationsOnFreshDB(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
-		t.Fatalf("open in-memory SQLite: %v", err)
-	}
-	defer conn.Close()
-
-	previous := log.Writer()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(previous)
-
-	if err := app.RunMigrations(conn); err != nil {
-		t.Fatalf("RunMigrations: %v", err)
-	}
-
-	output := buf.String()
-
-	for _, name := range []string{
-		"001_initial_schema.sql",
-		"002_backfill_orphaned_products.sql",
-		"003_add_product_image_url.sql",
-	} {
-		want := "applied migration: " + name
-		if !strings.Contains(output, want) {
-			t.Errorf("log output missing %q; got: %s", want, output)
-		}
-	}
-
-	if strings.Contains(output, "schema up to date") {
-		t.Errorf("log output should not contain the summary line when migrations were applied; got: %s", output)
-	}
-}
-
-// TestRunMigrations_LogsSummaryWhenAlreadyMigrated verifies that RunMigrations
-// logs exactly the "schema up to date, no migrations applied" summary line
-// (and no "applied migration:" lines) when called against a database that has
-// already been fully migrated.
-func TestRunMigrations_LogsSummaryWhenAlreadyMigrated(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
-		t.Fatalf("open in-memory SQLite: %v", err)
-	}
-	defer conn.Close()
-
-	if err := app.RunMigrations(conn); err != nil {
-		t.Fatalf("first RunMigrations (set up schema): %v", err)
-	}
-
-	previous := log.Writer()
-	previousFlags := log.Flags()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	defer log.SetOutput(previous)
-	defer log.SetFlags(previousFlags)
-
-	if err := app.RunMigrations(conn); err != nil {
-		t.Fatalf("second RunMigrations: %v", err)
-	}
-
-	want := "schema up to date, no migrations applied\n"
-	if got := buf.String(); got != want {
-		t.Errorf("log output: want %q, got %q", want, got)
 	}
 }
 

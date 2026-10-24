@@ -146,6 +146,8 @@ export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try a
 export const CODE_UNAUTHORIZED = 'unauthorized';
 export const SIGN_IN_REQUIRED_SENTENCE = 'Sign in required.';
 export const INVALID_CREDENTIALS_SENTENCE = 'The username or password is incorrect.';
+// A session that was accepted and then rejected. PM ruling for 401 after sign-in.
+export const SESSION_EXPIRED_SENTENCE = 'Sign in to continue.';
 export const SYNC_TOKEN_INVALID_SENTENCE = 'The sync token is not valid.';
 
 export const CODE_VALIDATION = 'validation';
@@ -702,14 +704,22 @@ export function stockbotCode(body: unknown): string {
   return typeof code === 'string' ? code.trim() : '';
 }
 
-export type HttpDisposition = 'offline' | 'auth' | 'stockbot';
+export type HttpDisposition = 'offline' | 'auth' | 'updating' | 'stockbot';
 
 // A Stockbot response, including an error, clears offline and the sign-in banner.
 // A 502, 503, 504, or 530 with no code did not come from Stockbot, so it is offline.
-// auth_not_configured is its own banner. busy and no_space stay with the caller
-// and clear only on success.
+// A code on those statuses is Stockbot, including provider_unavailable, updating,
+// busy, no_space, auth_not_configured, and internal, so it is not offline.
+// auth_not_configured and updating are banner sentences. busy and no_space stay
+// with the caller. no_space and busy clear updating so that sentence can show.
+// They clear only on success. provider_unavailable never takes the banner.
+// A 2xx clears the banner the same way a later success does.
 export function applyHttpResponse(status: number, code: string): HttpDisposition {
   const trimmed = code.trim();
+  if (status >= 200 && status < 300) {
+    clearServerNotice();
+    return 'stockbot';
+  }
   if (GATEWAY_STATUSES.has(status) && trimmed === '') {
     raiseOfflineBanner();
     return 'offline';
@@ -718,8 +728,20 @@ export function applyHttpResponse(status: number, code: string): HttpDisposition
     raiseAuthNotConfiguredBanner();
     return 'auth';
   }
+  if (trimmed === CODE_UPDATING) {
+    raiseUpdatingBanner();
+    return 'updating';
+  }
   clearServerNotice();
   return 'stockbot';
+}
+
+// The banner owns these. Callers throw the result so an inline alert stays quiet.
+export function noticeForDisposition(disposition: HttpDisposition): UnreachableError | ServerNoticeError | null {
+  if (disposition === 'offline') return new UnreachableError();
+  if (disposition === 'auth') return new ServerNoticeError(CODE_AUTH_NOT_CONFIGURED, AUTH_NOT_CONFIGURED_SENTENCE);
+  if (disposition === 'updating') return new ServerNoticeError(CODE_UPDATING, UPDATING_SENTENCE);
+  return null;
 }
 
 export function unreachableFrom(error: unknown): UnreachableError | null {
@@ -744,9 +766,11 @@ export function notifyApiSuccess(): void {
   for (const listener of apiSuccessListeners) listener();
 }
 
-// One shared banner. Offline replaces any other notice. auth_not_configured
-// replaces offline. Any other Stockbot response clears the slot. Success does too.
-type NoticeKind = '' | 'offline' | 'auth';
+// One shared banner. Offline replaces updating and sign-in. auth_not_configured
+// and updating replace offline, because Stockbot answered. no_space and busy
+// clear updating so the caller's sentence shows. Any other Stockbot response
+// clears the slot. Success does too.
+type NoticeKind = '' | 'offline' | 'auth' | 'updating';
 
 let noticeKind: NoticeKind = '';
 const offlineBannerListeners = new Set<() => void>();
@@ -760,6 +784,7 @@ function publishNotice(next: NoticeKind): void {
 export function serverNoticeText(): string {
   if (noticeKind === 'offline') return OFFLINE_SENTENCE;
   if (noticeKind === 'auth') return AUTH_NOT_CONFIGURED_SENTENCE;
+  if (noticeKind === 'updating') return UPDATING_SENTENCE;
   return '';
 }
 
@@ -775,6 +800,10 @@ export function raiseOfflineBanner(): void {
 
 export function raiseAuthNotConfiguredBanner(): void {
   publishNotice('auth');
+}
+
+export function raiseUpdatingBanner(): void {
+  publishNotice('updating');
 }
 
 // A body that cannot be read, or a success that is not JSON, is not a Stockbot

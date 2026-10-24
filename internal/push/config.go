@@ -26,6 +26,9 @@ type Config struct {
 	// LegacyHost is the previous public hostname. Subscriptions from it are
 	// dropped. A value equal to PublicHost, or one that includes a scheme, is ignored.
 	LegacyHost string
+	// AppName is the product name used when an alert has no title of its own.
+	// Empty uses the configured default.
+	AppName string
 }
 
 // ConfigFromEnv reads VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT,
