@@ -96,6 +96,8 @@ for needle in \
 do
   [[ "$log" == *"$needle"* ]] || fail "docker args missing $needle"
 done
+tmpfs_n=$(grep -Fc -- '--tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700,uid=65532,gid=65532' "$work/docker.log" || true)
+[[ "$tmpfs_n" -eq 2 ]] || fail "tmpfs /tmp uid 65532 must be on both run_locked and cleanup_stage (got ${tmpfs_n})"
 [[ "$log" == *--env-file* ]] && fail "docker was passed --env-file"
 [[ "$log" == *--with-secrets* ]] && fail "secrets were archived when no config files exist"
 [[ "$log" == *R2_SECRET* ]] && fail "docker args named an R2 secret"
@@ -206,6 +208,20 @@ rc=$(CURL_LOG="$work/curl.log" PANTRY_BACKUP_LOCK_WAIT=1 run_backup nightly)
 [[ ! -s "$work/docker.log" ]] || fail "backup talked to docker without the lock"
 grep -q '/fail' "$work/curl.log" || fail "lock timeout did not ping healthchecks"
 [[ "$(cat "$work/out" "$work/err")" != *backup-run-token* ]] || fail "healthchecks URL was printed"
+flock -u 8
+
+# The updater already holds this lock. A second flock would wait until
+# that process exits, and the updater is waiting on this script.
+: >"$work/docker.log"
+: >"$work/curl.log"
+exec 8>"$work/pantry/deploy-trigger/.lock"
+flock -n 8 || fail "could not hold the deploy lock for the nested backup"
+rc=$(CURL_LOG="$work/curl.log" PANTRY_BACKUP_LOCK_HELD=1 PANTRY_BACKUP_LOCK_WAIT=1 run_backup pre-deploy)
+[[ "$rc" == 0 ]] || fail "backup while the updater holds the lock rc=$rc err=$(cat "$work/err") out=$(cat "$work/out")"
+grep -q 'deploy lock already held' "$work/out" || fail "held-lock backup did not say the lock was already held"
+held_log=$(cat "$work/docker.log")
+[[ "$held_log" == *"--reason pre-deploy"* ]] || fail "held-lock backup did not pass pre-deploy"
+[[ "$held_log" == *"--entrypoint /usr/local/bin/stockbot-backup"* ]] || fail "held-lock backup did not start the container"
 flock -u 8
 
 : >"$work/docker.log"
