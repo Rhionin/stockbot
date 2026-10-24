@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
@@ -138,6 +139,18 @@ func TestStage1DeviceAPI(t *testing.T) {
 	if dup.Code != http.StatusOK || !strings.Contains(dup.Body.String(), `"duplicate"`) || !strings.Contains(dup.Body.String(), `"conflict"`) {
 		t.Fatalf("retry %d %s", dup.Code, dup.Body.String())
 	}
+	solo := c.call(http.MethodPost, "/api/device/scans", map[string]any{
+		"id": "solo", "barcode": "12345670", "direction": "stock_in", "unitCount": 1,
+	}, app.EntryLAN, dev)
+	if solo.Code != http.StatusOK || !strings.Contains(solo.Body.String(), `"accepted"`) {
+		t.Fatalf("single scan %d %s", solo.Code, solo.Body.String())
+	}
+	clash := c.call(http.MethodPost, "/api/device/scans", map[string]any{
+		"id": "solo", "barcode": "12345670", "direction": "stock_in", "unitCount": 2,
+	}, app.EntryLAN, dev)
+	if clash.Code != http.StatusConflict || !strings.Contains(clash.Body.String(), `"code":"conflict"`) || !strings.Contains(clash.Body.String(), "scan id already used with different payload") {
+		t.Fatalf("single conflict %d %s", clash.Code, clash.Body.String())
+	}
 	var stored int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_entries WHERE household_id = ? AND client_scan_id = 's1'`, c.house).Scan(&stored); err != nil || stored != 1 {
 		t.Fatalf("stored %d %v", stored, err)
@@ -199,6 +212,86 @@ func TestStage1DeviceAPI(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" || !strings.Contains(rec.Body.String(), "rate_limited") {
 		t.Fatalf("ip limit %d retry %q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+}
+
+func TestScanFutureSkewBoundary(t *testing.T) {
+	db := openMigratedDB(t, filepath.Join(t.TempDir(), "pantry.db"))
+	setupDir := t.TempDir()
+	svc := auth.NewService(db, setupDir)
+	now := time.Date(2026, 6, 1, 15, 4, 5, 0, time.UTC)
+	svc.SetClock(func() time.Time { return now })
+	site := stage1Site(t)
+	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
+	c := &stage1Caller{t: t, h: handler}
+
+	if rec := c.call(http.MethodGet, "/setup", nil, app.EntryLAN, nil); rec.Code != http.StatusOK {
+		t.Fatalf("setup page %d", rec.Code)
+	}
+	code, err := auth.ReadSetupCode(setupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := c.call(http.MethodPost, "/setup", map[string]string{
+		"setupCode": code, "name": "Nia North", "email": "nia@example.test", "password": "correct horse",
+	}, app.EntryLAN, nil); rec.Code != http.StatusOK {
+		t.Fatalf("setup %d %s", rec.Code, rec.Body.String())
+	}
+	login := c.call(http.MethodPost, "/api/auth/login", map[string]string{
+		"email": "nia@example.test", "password": "correct horse",
+	}, app.EntryPublic, map[string]string{"X-Stockbot-Client": "expo/1.2.3"})
+	if login.Code != http.StatusOK {
+		t.Fatalf("login %d %s", login.Code, login.Body.String())
+	}
+	var session auth.SessionView
+	if err := json.Unmarshal(login.Body.Bytes(), &session); err != nil || session.ActiveHouseholdID == nil {
+		t.Fatalf("session %s", login.Body.String())
+	}
+	c.cookie = cookieFrom(t, login, site.SessionCookie().Name)
+	c.house = *session.ActiveHouseholdID
+	pair := c.authed(http.MethodPost, "/api/devices/pair", map[string]any{})
+	var issued auth.PairingCode
+	if err := json.Unmarshal(pair.Body.Bytes(), &issued); err != nil || pair.Code != http.StatusCreated {
+		t.Fatalf("pair %d %s", pair.Code, pair.Body.String())
+	}
+	done := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
+		"code": issued.Code, "label": "Counter",
+		"hub": map[string]string{"kind": "pi_hub", "version": "1.2.3", "bootId": "boot-edge"},
+	}, app.EntryLAN)
+	var paired struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(done.Body.Bytes(), &paired); err != nil || done.Code != http.StatusCreated {
+		t.Fatalf("complete %d %s", done.Code, done.Body.String())
+	}
+	dev := map[string]string{"Authorization": "Bearer " + paired.Token}
+	edge := now.Add(5 * time.Minute).Format(time.RFC3339)
+	late := now.Add(5*time.Minute + time.Second).Format(time.RFC3339)
+	okScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{
+		"id": "edge", "barcode": "12345670", "scannedAt": edge,
+	}, app.EntryLAN, dev)
+	if okScan.Code != http.StatusOK || !strings.Contains(okScan.Body.String(), `"accepted"`) {
+		t.Fatalf("+5m %d %s", okScan.Code, okScan.Body.String())
+	}
+	var stored string
+	var approx int
+	if err := db.QueryRow(`SELECT scanned_at, time_approx FROM scan_entries WHERE household_id = ? AND client_scan_id = 'edge'`, c.house).Scan(&stored, &approx); err != nil {
+		t.Fatal(err)
+	}
+	if stored != edge || approx != 0 {
+		t.Fatalf("edge stored %s approx %d", stored, approx)
+	}
+	lateScan := c.call(http.MethodPost, "/api/device/scans", map[string]any{
+		"id": "late", "barcode": "12345670", "scannedAt": late,
+	}, app.EntryLAN, dev)
+	if lateScan.Code != http.StatusBadRequest || !strings.Contains(lateScan.Body.String(), `"code":"validation"`) || !strings.Contains(lateScan.Body.String(), "scannedAt out of range") {
+		t.Fatalf("+5m1s %d %s", lateScan.Code, lateScan.Body.String())
+	}
+	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{
+		{"id": "batch-late", "barcode": "12345670", "scannedAt": late},
+	}}, app.EntryLAN, dev)
+	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"rejected"`) {
+		t.Fatalf("batch +5m1s %d %s", batch.Code, batch.Body.String())
 	}
 }
 

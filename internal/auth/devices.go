@@ -193,11 +193,12 @@ type ScanInput struct {
 
 // ScanResult is one item outcome.
 type ScanResult struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Code   string `json:"code,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
-	ScanID string `json:"scanId,omitempty"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+	ScanID  string `json:"scanId,omitempty"`
+	Message string `json:"-"`
 }
 
 // Heartbeat is one hub check-in.
