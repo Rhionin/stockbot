@@ -25,7 +25,7 @@ func TestStartRejectsBadConfig(t *testing.T) {
 func TestStartRejectsAMemoryDatabase(t *testing.T) {
 	quietSite(t)
 	t.Setenv("DB_PATH", ":memory:")
-	t.Setenv("LAN_LISTEN_ADDR", "127.0.0.1:0")
+	t.Setenv("LAN_LISTEN_ADDR", "127.0.0.1:1")
 	t.Setenv("PUBLIC_LISTEN_ADDR", "off")
 	err := start(make(chan struct{}))
 	if err == nil || !strings.Contains(err.Error(), "open database:") {
