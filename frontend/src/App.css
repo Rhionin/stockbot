@@ -61,6 +61,13 @@
   flex: none;
   display: flex;
   align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-header-wordmark {
+  display: flex;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }

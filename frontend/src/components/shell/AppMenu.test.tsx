@@ -233,7 +233,7 @@ describe('AppMenu', () => {
     }));
     render(
       <MantineProvider env="test">
-        <HouseholdSessionContext.Provider value={{ required: true, logout }}>
+        <HouseholdSessionContext.Provider value={{ required: true, logout, auth: null, replaceAuth: () => undefined }}>
           <MemoryRouter>
             <AppMenu onCredentialsChanged={() => undefined} />
           </MemoryRouter>

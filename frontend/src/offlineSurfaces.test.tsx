@@ -49,7 +49,7 @@ describe('offline surfaces', () => {
     window.history.pushState({}, '', '/');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session') || url.includes('/api/session')) return Promise.resolve(json({ required: false }));
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
     render(
@@ -125,7 +125,7 @@ describe('offline surfaces', () => {
     window.history.pushState({}, '', '/inventory');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session') || url.includes('/api/session')) return Promise.resolve(json({ required: false }));
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
 
