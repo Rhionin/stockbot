@@ -375,6 +375,7 @@ func start(stop <-chan struct{}) error {
 		defer ticker.Stop()
 		directory.RunSweeper(sweepCtx, ticker.C)
 	}()
+	go directory.RunPurge(sweepCtx, 24*time.Hour)
 	gate.use(handler)
 
 	if listenerOK {

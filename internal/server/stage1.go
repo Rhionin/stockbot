@@ -28,6 +28,7 @@ type stage1 struct {
 	site     app.RuntimeConfig
 	stockIn  string
 	stockOut string
+	exports  exportJobs
 }
 
 func (s *stage1) Middleware(next http.Handler) http.Handler {
@@ -334,6 +335,15 @@ func (s *stage1) bindHousehold(w http.ResponseWriter, r *http.Request, p auth.Pr
 		}
 		p.HouseholdID = scope.HouseholdID()
 		p.Role = "member"
+		gone, err := s.svc.HouseholdGone(r.Context(), p.HouseholdID)
+		if err != nil {
+			writeStage1(w, err)
+			return p, false
+		}
+		if gone && !allowsDeleted(r) {
+			writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
+			return p, false
+		}
 		return p, true
 	}
 	if p.Kind == "device" {
@@ -434,6 +444,10 @@ func needsHousehold(r *http.Request) bool {
 	if strings.HasPrefix(path, "/api/auth/") || strings.HasPrefix(path, "/api/device/") {
 		return false
 	}
+	// Export job polls and downloads take the household from the job row.
+	if strings.HasPrefix(path, "/api/export/") || strings.HasPrefix(path, "/api/household/exports/") {
+		return false
+	}
 	return true
 }
 
@@ -455,6 +469,18 @@ func allowsDeleted(r *http.Request) bool {
 		return true
 	}
 	if strings.HasPrefix(path, "/api/households/") && !strings.Contains(strings.TrimPrefix(path, "/api/households/"), "/") && r.Method == http.MethodGet {
+		return true
+	}
+	if strings.HasSuffix(path, "/export") && r.Method == http.MethodGet && strings.HasPrefix(path, "/api/households/") {
+		return true
+	}
+	if path == "/api/export" && r.Method == http.MethodPost {
+		return true
+	}
+	if path == "/api/household/exports" && r.Method == http.MethodPost {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/export/") || strings.HasPrefix(path, "/api/household/exports/") {
 		return true
 	}
 	return strings.HasSuffix(path, "/restore") && r.Method == http.MethodPost

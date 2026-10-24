@@ -7,20 +7,35 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/export"
 )
 
-// runAdmin handles `stockbot-server admin setup-code [--recover]`.
-// The display file is for the person at the Pi. This log records the path
-// and when the code was issued, never the code itself.
+// runAdmin handles setup codes, household export, and the purge job.
+// The setup display file is for the person at the Pi. This log records the
+// path and when the code was issued, never the code itself.
 func runAdmin(args []string) error {
-	if len(args) == 0 || args[0] != "setup-code" {
-		return fmt.Errorf("usage: stockbot-server admin setup-code [--recover]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stockbot-server admin setup-code [--recover] | export --household <id> --out <path> | purge")
 	}
+	switch args[0] {
+	case "setup-code":
+		return runSetupCode(args[1:])
+	case "export":
+		return runExport(args[1:])
+	case "purge":
+		return runPurge(args[1:])
+	default:
+		return fmt.Errorf("usage: stockbot-server admin setup-code [--recover] | export --household <id> --out <path> | purge")
+	}
+}
+
+func runSetupCode(args []string) error {
 	recover := false
-	for _, arg := range args[1:] {
+	for _, arg := range args {
 		if arg == "--recover" {
 			recover = true
 			continue
@@ -43,6 +58,75 @@ func runAdmin(args []string) error {
 		return err
 	}
 	logSetupFile(setupDir)
+	return nil
+}
+
+func runExport(args []string) error {
+	household := ""
+	out := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--household":
+			if i+1 >= len(args) {
+				return fmt.Errorf("export: --household needs an id")
+			}
+			i++
+			household = args[i]
+		case "--out":
+			if i+1 >= len(args) {
+				return fmt.Errorf("export: --out needs a path")
+			}
+			i++
+			out = args[i]
+		default:
+			return fmt.Errorf("unknown argument %q", args[i])
+		}
+	}
+	if household == "" || out == "" {
+		return fmt.Errorf("usage: stockbot-server admin export --household <id> --out <path>")
+	}
+	sqlDB, readDB, err := app.OpenPantry(envOrDefault("DB_PATH", "pantry.db"))
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+	defer readDB.Close()
+	if err := app.RunMigrations(sqlDB); err != nil {
+		return err
+	}
+	bundle, err := export.Build(context.Background(), sqlDB, household, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil && filepath.Dir(out) != "." {
+		return err
+	}
+	if err := os.WriteFile(out, bundle.Zip, 0o600); err != nil {
+		return err
+	}
+	directory := auth.NewService(sqlDB, envOrDefault("SETUP_DIR", "/run/setup"))
+	return directory.RecordExport(context.Background(), "admin", "cli", household)
+}
+
+func runPurge(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: stockbot-server admin purge")
+	}
+	sqlDB, readDB, err := app.OpenPantry(envOrDefault("DB_PATH", "pantry.db"))
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+	defer readDB.Close()
+	if err := app.RunMigrations(sqlDB); err != nil {
+		return err
+	}
+	directory := auth.NewService(sqlDB, envOrDefault("SETUP_DIR", "/run/setup"))
+	result, err := directory.PurgeDue(context.Background())
+	if err != nil {
+		return err
+	}
+	log.Printf("purge: households %d, passwords %d", result.Households, result.Passwords)
 	return nil
 }
 
