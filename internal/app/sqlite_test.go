@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -13,6 +14,71 @@ import (
 	"testing"
 	"time"
 )
+
+func TestMemoryDatabaseSurvivesACancelledQuery(t *testing.T) {
+	db, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if db.Stats().MaxOpenConnections != 1 {
+		t.Fatalf("pool %d", db.Stats().MaxOpenConnections)
+	}
+	var seq int
+	var name, file string
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
+		t.Fatal(err)
+	}
+	if file != "" {
+		t.Fatalf("memory database is a file %q", file)
+	}
+	if _, err := db.Exec(`CREATE TABLE scan_entries (id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO scan_entries (id) VALUES ('scan-1')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var id string
+	err = db.QueryRowContext(ctx, `SELECT id FROM scan_entries`).Scan(&id)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled query: %v", err)
+	}
+	if err := db.QueryRow(`SELECT id FROM scan_entries`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "scan-1" {
+		t.Fatalf("id %q", id)
+	}
+
+	other, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	if err := other.QueryRow(`SELECT id FROM scan_entries`).Scan(&id); err == nil {
+		t.Fatal("a second :memory: open saw the first database")
+	}
+
+	db.SetMaxOpenConns(2)
+	left, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { left.Close() })
+	right, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { right.Close() })
+	if err := right.QueryRowContext(context.Background(), `SELECT id FROM scan_entries`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "scan-1" {
+		t.Fatalf("second connection id %q", id)
+	}
+}
 
 func TestWithUTCTimezone(t *testing.T) {
 	if got := withUTCTimezone(":memory:"); got != ":memory:?_timezone=UTC" {

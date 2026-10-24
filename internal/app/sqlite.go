@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 )
@@ -38,8 +39,66 @@ const sqliteBusyTimeoutMS = 2000
 // because this process opened them. The pantry server sets WAL in OpenPantry.
 // A file connection uses synchronous=NORMAL. An in-memory database does too,
 // and it does not switch journals.
+// memorySeq keeps each OpenSQLite(":memory:") call on its own database.
+// cache=shared would otherwise join every unnamed memory database in the process.
+var memorySeq atomic.Uint64
+
 func OpenSQLite(dsn string) (*sql.DB, error) {
-	return sql.Open("sqlite", withUTCTimezone(withSQLiteDurability(withSQLiteLocking(dsn))))
+	dsn = withUTCTimezone(withSQLiteDurability(withSQLiteLocking(dsn)))
+	mem := memoryDSN(dsn)
+	if mem {
+		// A plain :memory: database exists only on the connection that
+		// created it. The pool's next connection is empty, so a query
+		// after a cancelled transaction reports missing tables.
+		dsn = sharedMemoryDSN(dsn)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if mem {
+		db.SetMaxOpenConns(1)
+	}
+	return db, nil
+}
+
+// memoryDSN reports a database that is not a file. A file URI that opts into
+// mode=memory counts, because a second connection to that name is still empty
+// unless the cache is shared.
+func memoryDSN(dsn string) bool {
+	base, _, _ := strings.Cut(dsn, "?")
+	switch base {
+	case ":memory:", "file::memory:":
+		return true
+	}
+	return dsnHasKey(dsn, "mode") && queryValue(dsn, "mode") == "memory"
+}
+
+// sharedMemoryDSN gives an unnamed memory database a private shared cache.
+// A caller who already named a shared memory database keeps that name.
+func sharedMemoryDSN(dsn string) string {
+	if strings.Contains(dsn, "cache=shared") && !strings.HasPrefix(dsn, ":memory:") && !strings.HasPrefix(dsn, "file::memory:") {
+		return dsn
+	}
+	q := ""
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		q = dsn[i+1:]
+	}
+	out := fmt.Sprintf("file:stockbotmem%d?mode=memory&cache=shared", memorySeq.Add(1))
+	if q != "" {
+		out += "&" + q
+	}
+	return out
+}
+
+func queryValue(dsn, key string) string {
+	for _, part := range dsnQuery(dsn) {
+		k, val, ok := strings.Cut(part, "=")
+		if ok && k == key {
+			return val
+		}
+	}
+	return ""
 }
 
 // OpenPantry opens the writer and a read-only pool on one pantry file.
