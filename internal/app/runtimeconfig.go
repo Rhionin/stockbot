@@ -330,7 +330,7 @@ func normalizeBaseURL(raw string) (origin, host string, err error) {
 	if parseErr != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", "", errors.New("APP_BASE_URL must be an http or https address with no path, query, or user")
 	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
+	if parsed.User != nil || parsed.ForceQuery || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
 		return "", "", errors.New("APP_BASE_URL must be an http or https address with no path, query, or user")
 	}
 	host = strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
@@ -338,8 +338,14 @@ func normalizeBaseURL(raw string) (origin, host string, err error) {
 		return "", "", errors.New("APP_BASE_URL must be an http or https address with no path, query, or user")
 	}
 	originHost := host
-	if port := parsed.Port(); port != "" && !defaultPort(parsed.Scheme, port) {
-		originHost = net.JoinHostPort(host, port)
+	if port := parsed.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", "", errors.New("APP_BASE_URL must be an http or https address with no path, query, or user")
+		}
+		if !defaultPort(parsed.Scheme, port) {
+			originHost = net.JoinHostPort(host, port)
+		}
 	}
 	return parsed.Scheme + "://" + originHost, host, nil
 }
@@ -438,7 +444,8 @@ func validListenAddr(raw string) bool {
 	if err != nil || port == "" {
 		return false
 	}
-	if _, err := strconv.Atoi(port); err != nil {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
 		return false
 	}
 	if host == "" || net.ParseIP(host) != nil {
@@ -454,7 +461,7 @@ func listenConflict(a, b string) bool {
 	if aerr != nil || berr != nil || ap != bp {
 		return false
 	}
-	return unspecifiedHost(ah) && unspecifiedHost(bh) || strings.EqualFold(ah, bh)
+	return (unspecifiedHost(ah) || unspecifiedHost(bh)) || strings.EqualFold(ah, bh)
 }
 
 func unspecifiedHost(host string) bool {
@@ -474,7 +481,7 @@ func parseSemver(raw string) (semver, bool) {
 		raw = raw[:i]
 	}
 	parts := strings.Split(raw, ".")
-	if len(parts) == 0 || len(parts) > 3 {
+	if len(parts) < 2 || len(parts) > 3 {
 		return semver{}, false
 	}
 	nums := [3]int{}

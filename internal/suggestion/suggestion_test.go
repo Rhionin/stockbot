@@ -3,15 +3,18 @@ package suggestion_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/suggestion"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // newTestConsumptionLog opens an in-memory SQLite database, applies all migrations,
@@ -30,7 +33,16 @@ func newTestConsumptionLog(t *testing.T) (*suggestion.ConsumptionLog, *sql.DB) {
 }
 
 // createTestItem creates a product and item in the DB and returns the item ID.
-func createTestItem(t *testing.T, conn *sql.DB, ctx context.Context, userID, productID, productName string) string {
+func primaryScope(t *testing.T, conn *sql.DB) tenant.Scope {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func createTestItem(t *testing.T, conn *sql.DB, ctx context.Context, scope tenant.Scope, productID, productName string) string {
 	t.Helper()
 	catalog := product.NewCatalog(conn)
 	p := product.Product{ID: productID, Name: productName, Category: "Test"}
@@ -38,7 +50,7 @@ func createTestItem(t *testing.T, conn *sql.DB, ctx context.Context, userID, pro
 		t.Fatalf("CreateProduct: %v", err)
 	}
 	pantry := inventory.NewPantry(conn)
-	item, err := pantry.GetOrCreateItem(ctx, userID, productID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, productID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
@@ -100,12 +112,13 @@ func TestInsertConsumptionEvent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			log, conn := newTestConsumptionLog(t)
 			ctx := context.Background()
-			itemID := createTestItem(t, conn, ctx, "user-1", "prod-1", "Milk")
+			scope := primaryScope(t, conn)
+			itemID := createTestItem(t, conn, ctx, scope, "prod-1", "Milk")
 
 			evt := tt.event(itemID)
 			originalID := evt.ID
 
-			inserted, err := log.InsertConsumptionEvent(ctx, evt)
+			inserted, err := log.InsertConsumptionEvent(ctx, scope, evt)
 			if err != nil {
 				t.Fatalf("InsertConsumptionEvent: %v", err)
 			}
@@ -156,15 +169,16 @@ func TestListConsumptionEvents(t *testing.T) {
 		{
 			name: "empty — no events",
 			setup: func(t *testing.T, log *suggestion.ConsumptionLog, conn *sql.DB, ctx context.Context) string {
-				return createTestItem(t, conn, ctx, "user-1", "prod-1", "Milk")
+				return createTestItem(t, conn, ctx, primaryScope(t, conn), "prod-1", "Milk")
 			},
 			expectCount: 0,
 		},
 		{
 			name: "single event",
 			setup: func(t *testing.T, log *suggestion.ConsumptionLog, conn *sql.DB, ctx context.Context) string {
-				itemID := createTestItem(t, conn, ctx, "user-1", "prod-1", "Milk")
-				_, err := log.InsertConsumptionEvent(ctx, suggestion.ConsumptionEvent{
+				scope := primaryScope(t, conn)
+				itemID := createTestItem(t, conn, ctx, scope, "prod-1", "Milk")
+				_, err := log.InsertConsumptionEvent(ctx, scope, suggestion.ConsumptionEvent{
 					ItemID:     itemID,
 					ConsumedAt: now,
 				})
@@ -179,7 +193,8 @@ func TestListConsumptionEvents(t *testing.T) {
 		{
 			name: "multiple events ordered ascending by consumed_at",
 			setup: func(t *testing.T, log *suggestion.ConsumptionLog, conn *sql.DB, ctx context.Context) string {
-				itemID := createTestItem(t, conn, ctx, "user-1", "prod-1", "Milk")
+				scope := primaryScope(t, conn)
+				itemID := createTestItem(t, conn, ctx, scope, "prod-1", "Milk")
 				// Insert out of order intentionally
 				times := []time.Time{
 					now.Add(2 * 24 * time.Hour),
@@ -187,7 +202,7 @@ func TestListConsumptionEvents(t *testing.T) {
 					now.Add(1 * 24 * time.Hour),
 				}
 				for _, ts := range times {
-					_, err := log.InsertConsumptionEvent(ctx, suggestion.ConsumptionEvent{
+					_, err := log.InsertConsumptionEvent(ctx, scope, suggestion.ConsumptionEvent{
 						ItemID:     itemID,
 						ConsumedAt: ts,
 					})
@@ -207,12 +222,13 @@ func TestListConsumptionEvents(t *testing.T) {
 		{
 			name: "filters by item — other item's events not returned",
 			setup: func(t *testing.T, log *suggestion.ConsumptionLog, conn *sql.DB, ctx context.Context) string {
-				itemID1 := createTestItem(t, conn, ctx, "user-1", "prod-1", "Milk")
-				itemID2 := createTestItem(t, conn, ctx, "user-1", "prod-2", "Bread")
+				scope := primaryScope(t, conn)
+				itemID1 := createTestItem(t, conn, ctx, scope, "prod-1", "Milk")
+				itemID2 := createTestItem(t, conn, ctx, scope, "prod-2", "Bread")
 
 				// Add events to both items
 				for _, id := range []string{itemID1, itemID2} {
-					_, err := log.InsertConsumptionEvent(ctx, suggestion.ConsumptionEvent{
+					_, err := log.InsertConsumptionEvent(ctx, scope, suggestion.ConsumptionEvent{
 						ItemID:     id,
 						ConsumedAt: now,
 					})
@@ -231,8 +247,9 @@ func TestListConsumptionEvents(t *testing.T) {
 			log, conn := newTestConsumptionLog(t)
 			ctx := context.Background()
 			itemID := tt.setup(t, log, conn, ctx)
+			scope := primaryScope(t, conn)
 
-			events, err := log.ListConsumptionEvents(ctx, itemID)
+			events, err := log.ListConsumptionEvents(ctx, scope, itemID)
 			if err != nil {
 				t.Fatalf("ListConsumptionEvents: %v", err)
 			}
@@ -266,5 +283,86 @@ func TestListConsumptionEvents(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConsumptionEventsStayInTheirHousehold(t *testing.T) {
+	log, conn := newTestConsumptionLog(t)
+	ctx := context.Background()
+	home := primaryScope(t, conn)
+	if _, err := log.InsertConsumptionEvent(ctx, tenant.Scope{}, suggestion.ConsumptionEvent{ItemID: "missing"}); !errors.Is(err, tenant.ErrMissingHousehold) {
+		t.Fatalf("missing household: %v", err)
+	}
+	const cedarID = "0190bbbb-cccc-7000-8000-0000000000e5"
+	if _, err := conn.Exec(`
+		INSERT INTO households (id, name, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Cedar', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, cedarID); err != nil {
+		t.Fatal(err)
+	}
+	cedar, err := tenant.New(cedarID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID := createTestItem(t, conn, ctx, cedar, "cedar-oats", "Cedar oats")
+	inserted, err := log.InsertConsumptionEvent(ctx, cedar, suggestion.ConsumptionEvent{
+		ID:         "cedar-ate",
+		ItemID:     itemID,
+		ConsumedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeEvents, err := log.ListConsumptionEvents(ctx, home, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(homeEvents) != 0 {
+		t.Fatalf("primary household read cedar's event: %+v", homeEvents)
+	}
+	homeTimes, err := log.ListConsumedAtByItems(ctx, home, []string{itemID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(homeTimes[itemID]) != 0 {
+		t.Fatalf("primary household counted cedar's event: %+v", homeTimes)
+	}
+	if _, err := log.InsertConsumptionEvent(ctx, home, suggestion.ConsumptionEvent{
+		ID:         inserted.ID,
+		ItemID:     itemID,
+		ConsumedAt: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+	}); err == nil {
+		t.Fatal("primary household replaced cedar's consumption event")
+	}
+	cedarEvents, err := log.ListConsumptionEvents(ctx, cedar, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cedarEvents) != 1 || cedarEvents[0].ID != "cedar-ate" || !cedarEvents[0].ConsumedAt.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("cedar event = %+v", cedarEvents)
+	}
+}
+
+func TestListConsumedAtByItems(t *testing.T) {
+	log, conn := newTestConsumptionLog(t)
+	ctx := context.Background()
+	scope := primaryScope(t, conn)
+	empty, err := log.ListConsumedAtByItems(ctx, scope, nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty %#v err %v", empty, err)
+	}
+	itemID := createTestItem(t, conn, ctx, scope, "prod-times", "Timed oats")
+	when := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := log.InsertConsumptionEvent(ctx, scope, suggestion.ConsumptionEvent{ItemID: itemID, ConsumedAt: when}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := log.ListConsumedAtByItems(ctx, scope, []string{itemID, "item-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[itemID]) != 1 || !got[itemID][0].Equal(when) {
+		t.Fatalf("times %#v", got)
+	}
+	if _, ok := got["item-2"]; ok {
+		t.Fatal("item-2 had events")
 	}
 }

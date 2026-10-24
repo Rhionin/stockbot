@@ -87,11 +87,10 @@ func TestScanListenerConfig(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		t.Setenv("STOCK_IN_CONTROL_BARCODE", "")
 		t.Setenv("STOCK_OUT_CONTROL_BARCODE", "")
-		t.Setenv("HEADLESS_USER_ID", "")
 		t.Setenv("SCAN_INPUT", "")
 		t.Setenv("SCANNER_DEVICE", "")
 		listener, ok := loadScanListenerConfig()
-		if !ok || listener.StockInBarcode != "STOCK_IN" || listener.StockOutBarcode != "STOCK_OUT" || listener.HeadlessUserID != "user-1" {
+		if !ok || listener.StockInBarcode != "STOCK_IN" || listener.StockOutBarcode != "STOCK_OUT" {
 			t.Fatalf("listener %+v ok %v", listener, ok)
 		}
 		withSource, ok := loadScanListenerConfigWithSource()
@@ -102,11 +101,10 @@ func TestScanListenerConfig(t *testing.T) {
 	t.Run("stdin and custom device", func(t *testing.T) {
 		t.Setenv("SCAN_INPUT", "stdin")
 		t.Setenv("SCANNER_DEVICE", "/tmp/scanner")
-		t.Setenv("HEADLESS_USER_ID", "user-9")
 		t.Setenv("STOCK_IN_CONTROL_BARCODE", "IN")
 		t.Setenv("STOCK_OUT_CONTROL_BARCODE", "OUT")
 		listener, ok := loadScanListenerConfigWithSource()
-		if !ok || listener.Source != scanlistener.SourceStdin || listener.DevicePath != "/tmp/scanner" || listener.HeadlessUserID != "user-9" {
+		if !ok || listener.Source != scanlistener.SourceStdin || listener.DevicePath != "/tmp/scanner" {
 			t.Fatalf("listener %+v ok %v", listener, ok)
 		}
 	})
@@ -182,12 +180,10 @@ func TestConfiguredStartupServesHealth(t *testing.T) {
 	t.Setenv("STOCK_IN_CONTROL_BARCODE", "IN")
 	t.Setenv("STOCK_OUT_CONTROL_BARCODE", "OUT")
 	t.Setenv("SCAN_INPUT", "stdin")
-	t.Setenv("HEADLESS_USER_ID", "user-9")
-
 	db := newCartDB(t)
 	registry, ledger, providerEnv := loadCartRegistry(db)
 	listener, ok := loadScanListenerConfigWithSource()
-	if !ok || listener.Source != scanlistener.SourceStdin || listener.HeadlessUserID != "user-9" {
+	if !ok || listener.Source != scanlistener.SourceStdin {
 		t.Fatalf("listener %+v ok %v", listener, ok)
 	}
 	catalog := product.NewCatalog(db)

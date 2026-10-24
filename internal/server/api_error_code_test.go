@@ -173,7 +173,7 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 			t.Fatal(err)
 		}
-		if err := connection.NewDirectory(db).GenerateAuthState(t.Context(), "kroger", "state-1"); err != nil {
+		if err := connection.NewDirectory(db).GenerateAuthState(t.Context(), primaryScope(t, db), "kroger", "state-1"); err != nil {
 			t.Fatal(err)
 		}
 		callbackHandler, _ := NewHandler(nil, nil, nil, db, WithCartRegistry(registry, cart.NewLedger(db)))

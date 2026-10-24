@@ -75,12 +75,6 @@ func TestComposeDefaultsMatchMainGo(t *testing.T) {
 			goDefault:      "STOCK_OUT", // from loadScanListenerConfig
 		},
 		{
-			name:           "HEADLESS_USER_ID",
-			envVar:         "HEADLESS_USER_ID",
-			composeDefault: extractDefault(t, pantryService.Environment["HEADLESS_USER_ID"]),
-			goDefault:      "user-1", // from loadScanListenerConfig
-		},
-		{
 			name:           "APP_BASE_URL",
 			envVar:         "APP_BASE_URL",
 			composeDefault: extractDefault(t, pantryService.Environment["APP_BASE_URL"]),

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 )
 
@@ -456,5 +457,34 @@ func TestScannerMode_NonScanActivityDoesNotResetIdle(t *testing.T) {
 	}
 	if got := postUntaggedScan(t, handler, "131313131313", "user-idle-noscan"); got != "stock_out" {
 		t.Fatalf("next scan direction = %q, want stock_out", got)
+	}
+}
+
+func TestScannerIdleTimerReturnsToStockOut(t *testing.T) {
+	var published []scan.ScanDirection
+	mode := NewScannerMode(func(d scan.ScanDirection) {
+		published = append(published, d)
+	})
+	t.Cleanup(func() {
+		mode.mu.Lock()
+		defer mode.mu.Unlock()
+		if mode.stopTimer != nil {
+			mode.stopTimer()
+		}
+	})
+
+	mode.onIdleTimer()
+	if len(published) != 0 {
+		t.Fatalf("idle timer fired before the window elapsed: %v", published)
+	}
+	mode.mu.Lock()
+	mode.idleAnchor = time.Now().Add(-scannerIdleTimeout - time.Second)
+	mode.mu.Unlock()
+	mode.onIdleTimer()
+	if len(published) != 1 || published[0] != scan.StockOut {
+		t.Fatalf("published %v", published)
+	}
+	if mode.Get() != scan.StockOut {
+		t.Fatalf("mode = %s", mode.Get())
 	}
 }

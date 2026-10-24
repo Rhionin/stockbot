@@ -7,11 +7,12 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type InventoryInstanceCreateHandler struct {
 	Queue interface {
-		StockIn(ctx context.Context, itemID string, at time.Time, expiresAt *time.Time) (*inventory.ItemInstance, error)
+		StockIn(ctx context.Context, scope tenant.Scope, itemID string, at time.Time, expiresAt *time.Time) (*inventory.ItemInstance, error)
 	}
 }
 
@@ -24,7 +25,11 @@ type inventoryInstanceCreateRequest struct {
 }
 
 func (h *InventoryInstanceCreateHandler) Handle(req Request[inventoryInstanceCreateRequest, inventoryInstanceCreatePathParams]) (Created, error) {
-	created, err := h.Queue.StockIn(req.Context, req.PathParams.ItemID, time.Now().UTC(), req.Body.ExpiresAt)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, err
+	}
+	created, err := h.Queue.StockIn(req.Context, scope, req.PathParams.ItemID, time.Now().UTC(), req.Body.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, scan.ErrItemNotFound) {
 			return Created{}, NotFound("item not found")

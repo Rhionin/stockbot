@@ -3,6 +3,7 @@ package grocysync
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -735,6 +736,187 @@ func TestReconcileRewritesDriftedShoppingLine(t *testing.T) {
 	if numField(line, "done") != 0 || line["amount"] != float64(2) {
 		t.Fatalf("line drifted again: %#v", line)
 	}
+}
+
+func TestSyncBarcodesUpdatesAndRemovesPantryCodes(t *testing.T) {
+	fake := newFakeGrocy()
+	srv := fake.server()
+	defer srv.Close()
+	api, err := NewAPI(srv.URL, fake.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := OpenMap(filepath.Join(t.TempDir(), "map.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	snap := syncsnap.Snapshot{
+		Products: []syncsnap.Product{{ID: "p1", Name: "Milk", Barcodes: []string{"111"}}},
+	}
+	rec := &Reconciler{Pantry: &fixedSource{snap: snap}, Grocy: api, Map: m, Loc: time.UTC}
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	var kept int
+	for id, obj := range fake.objects["product_barcodes"] {
+		obj["note"] = "other"
+		kept = id
+	}
+	fake.next++
+	stray := fake.next
+	fake.objects["product_barcodes"][stray] = map[string]any{
+		"id": stray, "barcode": "999", "product_id": float64(1), "note": barcodeNote,
+	}
+	fake.mu.Unlock()
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	if _, ok := fake.objects["product_barcodes"][stray]; ok {
+		t.Fatal("stray pantry barcode was kept")
+	}
+	if strField(fake.objects["product_barcodes"][kept], "note") != barcodeNote {
+		t.Fatalf("barcode note = %#v", fake.objects["product_barcodes"][kept])
+	}
+	fake.mu.Unlock()
+	if err := rec.syncBarcodes(context.Background(), syncsnap.Snapshot{
+		Products: []syncsnap.Product{{ID: "missing", Name: "Gone", Barcodes: []string{"222"}}},
+	}, map[string]int{}); err == nil || !strings.Contains(err.Error(), "not in Grocy") {
+		t.Fatalf("missing product = %v", err)
+	}
+}
+
+func TestClearLeftoverRemovesStockLeftAfterAUse(t *testing.T) {
+	fake, rec, _ := reconcileUntilConsumed(t)
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("POST", "/consume") != 1 {
+		t.Fatalf("first leftover pass consumed, count %d", fake.count("POST", "/consume"))
+	}
+
+	fake.mu.Lock()
+	var productID int
+	for i := range fake.logs {
+		if fake.logs[i].Note == instancePrefix+"i1" {
+			productID = fake.logs[i].ProductID
+			fake.logs[i].Undone = 1
+		}
+	}
+	fake.stock = append(fake.stock, fakeStock{
+		ProductID: productID, Amount: 1, StockID: "left", Note: instancePrefix + "i1",
+	})
+	fake.mu.Unlock()
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("POST", "/consume") != 2 || len(fake.stock) != 0 {
+		t.Fatalf("consumes %d stock %#v", fake.count("POST", "/consume"), fake.stock)
+	}
+
+	fake.bookingError = "stock entry is gone"
+	fake.mu.Lock()
+	fake.stock = append(fake.stock, fakeStock{
+		ProductID: productID, Amount: 1, StockID: "again", Note: instancePrefix + "i1",
+	})
+	fake.mu.Unlock()
+	if err := rec.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "could not record a use") {
+		t.Fatalf("consume error = %v", err)
+	}
+}
+
+func TestClearLeftoverUndoDropsTheSharedPurchase(t *testing.T) {
+	fake, rec, _ := reconcileUntilConsumed(t)
+	addOpenPurchase(t, fake, instancePrefix+"i1")
+	undos := fake.count("POST", "/undo")
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("POST", "/undo") <= undos {
+		t.Fatalf("undos %d then %d", undos, fake.count("POST", "/undo"))
+	}
+	if len(fake.stock) != 0 {
+		t.Fatalf("stock %#v", fake.stock)
+	}
+
+	fake.undoError = "The transaction could not be undone"
+	addOpenPurchase(t, fake, instancePrefix+"i1")
+	if err := rec.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "could not undo a Grocy booking") {
+		t.Fatalf("undo error = %v", err)
+	}
+}
+
+// addOpenPurchase puts a stock row back with a new open purchase. A consume
+// already deleted the row, so raising an old booking's amount would not.
+func addOpenPurchase(t *testing.T, fake *fakeGrocy, note string) {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	var sample fakeLog
+	for _, log := range fake.logs {
+		if log.Note == note && log.Type == "purchase" {
+			sample = log
+			break
+		}
+	}
+	if sample.ProductID == 0 {
+		t.Fatal("no purchase to copy")
+	}
+	fake.next++
+	tx := "tx" + strconv.Itoa(fake.next)
+	fake.stock = append(fake.stock, fakeStock{
+		ProductID: sample.ProductID, Amount: 1, StockID: sample.StockID, Note: note,
+		BestBefore: sample.BestBefore, Purchased: sample.Purchased,
+	})
+	fake.logs = append(fake.logs, fakeLog{
+		ID: fake.next, ProductID: sample.ProductID, Amount: 1, BestBefore: sample.BestBefore, Purchased: sample.Purchased,
+		Type: "purchase", TxID: tx, StockID: sample.StockID, Note: note,
+	})
+	fake.txs[tx] = &fakeTx{Kind: "purchase", Entry: fakeStock{
+		ProductID: sample.ProductID, Amount: 1, BestBefore: sample.BestBefore, Purchased: sample.Purchased,
+		StockID: sample.StockID, Note: note,
+	}}
+}
+
+func reconcileUntilConsumed(t *testing.T) (*fakeGrocy, *Reconciler, syncsnap.Snapshot) {
+	t.Helper()
+	fake := newFakeGrocy()
+	srv := fake.server()
+	t.Cleanup(srv.Close)
+	api, err := NewAPI(srv.URL, fake.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := OpenMap(filepath.Join(t.TempDir(), "map.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	inAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	snap := syncsnap.Snapshot{
+		Products:  []syncsnap.Product{{ID: "p1", Name: "Milk"}},
+		Instances: []syncsnap.Instance{{ID: "i1", ProductID: "p1", StockInAt: inAt, StockMoveID: "in1"}},
+		Moves:     []syncsnap.Move{{ID: "in1", ProductID: "p1", Direction: "in", Quantity: 1, At: inAt}},
+	}
+	rec := &Reconciler{Pantry: &fixedSource{snap: snap}, Grocy: api, Map: m, Loc: time.UTC}
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	used := snap
+	used.Instances = nil
+	used.Removals = []syncsnap.Removal{{InstanceID: "i1", ProductID: "p1", Reason: "used", StockMoveID: "in1", RemovedByMoveID: "out1"}}
+	used.Moves = append(append([]syncsnap.Move{}, snap.Moves...), syncsnap.Move{ID: "out1", ProductID: "p1", Direction: "out", Quantity: 1, At: inAt.Add(time.Hour)})
+	rec.Pantry = &fixedSource{snap: used}
+	if err := rec.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	link, ok, err := m.Get(linkConsume, "i1")
+	if err != nil || !ok || link.GrocyRef == "" {
+		t.Fatalf("consume link %#v ok %v err %v", link, ok, err)
+	}
+	return fake, rec, used
 }
 
 type fixedSource struct {

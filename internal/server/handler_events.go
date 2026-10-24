@@ -1,12 +1,15 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/telemetry"
@@ -25,6 +28,8 @@ type EventsHandler struct {
 	// Shutdown, when set, ends this stream during process shutdown so the
 	// listener does not wait out an open tab.
 	Shutdown *StreamShutdown
+	// Streams cancels a member's event stream when their access ends.
+	Streams *auth.Streams
 	// Keepalive is how often to write an SSE comment. Zero uses eventKeepalive.
 	Keepalive time.Duration
 }
@@ -49,23 +54,58 @@ func (h *EventsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe before flushing the response headers. A client that observes
-	// the 200 OK is then guaranteed to already be subscribed, so an event
-	// published immediately after the client's request returns cannot slip
-	// through the gap between headers being sent and the subscription being
-	// registered.
-	messages, unsubscribe := h.Broadcaster.Subscribe()
-	defer unsubscribe()
-
 	ctx := r.Context()
 	if h.Shutdown != nil {
 		ctx = h.Shutdown.Context(ctx)
 	}
+	principal, _ := auth.PrincipalFrom(r.Context())
+	householdID := principal.HouseholdID
+	if scope, err := requestScope(r.Context()); err == nil && householdID == "" {
+		householdID = scope.HouseholdID()
+	}
+	if h.Streams != nil {
+		if key := eventStreamKey(r); key != "" {
+			bound, err := h.Streams.BindLive(ctx, key, householdID, principal.UserID, principal.Kind)
+			if err != nil {
+				secs := 1
+				var ae *auth.Error
+				if errors.As(err, &ae) && ae.Retry > 0 {
+					secs = int(ae.Retry.Seconds())
+					if secs < 1 {
+						secs = 1
+					}
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				writeJSON(w, http.StatusTooManyRequests, errorPayload{Error: auth.SentenceRate, Code: codeRateLimited})
+				return
+			}
+			ctx = bound
+		}
+	}
+
+	// Subscribe before flushing the response headers. A client that observes
+	// the 200 OK is then guaranteed to already be subscribed, so an event
+	// published immediately after the client's request returns cannot slip
+	// through the gap between headers being sent and the subscription being
+	// registered. The stream is this household only.
+	var messages <-chan events.Message
+	var unsubscribe func()
+	if householdID == "" {
+		messages, unsubscribe = h.Broadcaster.Subscribe()
+	} else {
+		messages, unsubscribe = h.Broadcaster.SubscribeHousehold(householdID, principal.UserID, principal.Kind)
+	}
+	defer unsubscribe()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+	// The tunnel can hold a response that has flushed headers and no body.
+	// The comment is not an event. It is the first body byte.
+	if _, err := w.Write([]byte(": ok\n\n")); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	keepalive := time.NewTicker(h.keepaliveEvery())

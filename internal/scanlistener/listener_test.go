@@ -13,7 +13,25 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func testScope(t *testing.T) tenant.Scope {
+	t.Helper()
+	scope, err := tenant.New("0190bbbb-cccc-7000-8000-0000000000e5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func newListener(t *testing.T) *ScanListener {
+	t.Helper()
+	listener := New()
+	listener.Scope = testScope(t)
+	listener.DeviceID = "0190bbbb-cccc-7000-8000-0000000000d4"
+	return listener
+}
 
 // fakeQueue implements the Queue interface for testing.
 type fakeQueue struct {
@@ -28,7 +46,7 @@ type fakeQueue struct {
 	cancel func()
 }
 
-func (q *fakeQueue) CreateScanEntry(ctx context.Context, entry scan.ScanEntry) (*scan.ScanEntry, error) {
+func (q *fakeQueue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry scan.ScanEntry) (*scan.ScanEntry, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
@@ -47,17 +65,58 @@ type fakeLookup struct {
 	err    error
 }
 
-func (l *fakeLookup) Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error) {
+func (l *fakeLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error) {
 	if l.err != nil {
 		return product.LookupResult{}, l.err
 	}
 	return l.result, nil
 }
 
+func TestPairingCodeIsNotQueued(t *testing.T) {
+	listener := newListener(t)
+	queue := &fakeQueue{}
+	listener.Queue = queue
+	listener.LookupService = &fakeLookup{}
+	listener.handleLine(context.Background(), "SBP-0123-ABCD-G", newModeState())
+	listener.handleLine(context.Background(), "  sbp-0123-abcd-g\n", newModeState())
+	if len(queue.entries) != 0 {
+		t.Fatalf("pairing code became %d scans", len(queue.entries))
+	}
+}
+
+func TestRunStdinStampsTheBoundScanner(t *testing.T) {
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	queue := &fakeQueue{}
+	listener.Queue = queue
+	listener.LookupService = &fakeLookup{result: product.LookupResult{}}
+	listener.Stdin = strings.NewReader("123456\n")
+
+	listener.Run(context.Background())
+
+	if len(queue.entries) != 1 {
+		t.Fatalf("entries %d", len(queue.entries))
+	}
+	got := queue.entries[0]
+	if got.UserID != listener.Scope.HouseholdID() || got.DeviceID != listener.DeviceID {
+		t.Fatalf("entry user %s device %s, scope %s device %s", got.UserID, got.DeviceID, listener.Scope.HouseholdID(), listener.DeviceID)
+	}
+
+	unbound := New()
+	unbound.Source = SourceStdin
+	unbound.Queue = &fakeQueue{}
+	unbound.LookupService = &fakeLookup{}
+	unbound.Stdin = strings.NewReader("999\n")
+	unbound.Run(context.Background())
+	if len(unbound.Queue.(*fakeQueue).entries) != 0 {
+		t.Fatal("an unbound scanner wrote a scan")
+	}
+}
+
 // TestRunStdin_EOF tests that Run returns when stdin reaches EOF.
 func TestRunStdin_EOF(t *testing.T) {
 	ctx := context.Background()
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = &fakeLookup{}
@@ -73,7 +132,7 @@ func TestRunStdin_EOF(t *testing.T) {
 // TestRunStdin_BackgroundMode tests stdin mode with a faked OpenFunc.
 func TestRunStdin_BackgroundMode(t *testing.T) {
 	ctx := context.Background()
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = &fakeLookup{}
@@ -108,7 +167,7 @@ func TestRunDevice_OpenFail(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(nil)), true, nil
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -148,7 +207,7 @@ func TestRunDevice_Success(t *testing.T) {
 		Source: "global",
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = func(path string) (io.ReadCloser, bool, error) {
 		return io.NopCloser(bytes.NewReader(buf.Bytes())), true, nil
@@ -186,7 +245,7 @@ func TestRunDevice_Success(t *testing.T) {
 // TestRunStdin_Cancelled tests that Run returns when ctx is cancelled.
 func TestRunStdin_Cancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = &fakeLookup{}
@@ -209,7 +268,7 @@ func TestRunStdin_Cancelled(t *testing.T) {
 // TestRunStdin_Errors tests that stdin errors are handled gracefully.
 func TestRunStdin_Errors(t *testing.T) {
 	ctx := context.Background()
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = &fakeLookup{}
@@ -247,7 +306,7 @@ func TestOpenAlwaysFails(t *testing.T) {
 		return nil, false, io.EOF
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -291,7 +350,7 @@ func TestOpenFailsThenSucceeds(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(nil)), true, nil
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -333,7 +392,7 @@ func TestDeviceDisappearsAfterOpen(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(nil)), false, nil
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -381,7 +440,7 @@ func TestGrabFailureNonFatal(t *testing.T) {
 		Source: "global",
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = func(path string) (io.ReadCloser, bool, error) {
 		// Return grabbed=false to simulate failed exclusive grab
@@ -408,7 +467,7 @@ func TestGrabFailureNonFatal(t *testing.T) {
 // TestReconnectPollDefaults verifies the compiled-in poll and missing-log
 // intervals: retry every 1s, throttle the "still missing" log to every 30s.
 func TestReconnectPollDefaults(t *testing.T) {
-	listener := New()
+	listener := newListener(t)
 	if listener.pollInterval != 1*time.Second {
 		t.Errorf("default pollInterval = %v, want %v", listener.pollInterval, 1*time.Second)
 	}
@@ -444,7 +503,7 @@ func TestMissingDeviceLogThrottled(t *testing.T) {
 		return nil, false, io.EOF
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -493,7 +552,7 @@ func TestReconnectLogsImmediatelyOnRecovery(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(nil)), true, nil
 	}
 
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceDevice
 	listener.Open = openFunc
 	listener.Queue = &fakeQueue{}
@@ -510,7 +569,7 @@ func TestReconnectLogsImmediatelyOnRecovery(t *testing.T) {
 
 // TestDefaultDevicePath verifies the compiled-in default device path.
 func TestDefaultDevicePath(t *testing.T) {
-	listener := New()
+	listener := newListener(t)
 	if listener.DevicePath != "/dev/input/pantry-scanner" {
 		t.Errorf("default DevicePath = %q, want %q", listener.DevicePath, "/dev/input/pantry-scanner")
 	}
@@ -551,7 +610,7 @@ type gatingLookup struct {
 	release chan struct{}
 }
 
-func (l *gatingLookup) Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error) {
+func (l *gatingLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error) {
 	if l.started != nil {
 		close(l.started)
 	}
@@ -568,7 +627,7 @@ func TestCreateEntry_AnnouncesProcessingBeforeLookupReturns(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	publisher := &recordingPublisher{}
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Stdin = strings.NewReader("123456\n")
 	listener.Queue = &fakeQueue{}
@@ -616,7 +675,7 @@ func TestCreateEntry_AnnouncesProcessingBeforeLookupReturns(t *testing.T) {
 
 func TestCreateEntry_AnnouncesFailureWhenLookupFails(t *testing.T) {
 	publisher := &recordingPublisher{}
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Stdin = strings.NewReader("123456\n")
 	listener.Queue = &fakeQueue{}
@@ -656,7 +715,7 @@ func (s *stubMode) NoteScan()                { s.noted++ }
 // A control barcode is not scan traffic.
 func TestHandleLine_SharedModeStampsTheNextScan(t *testing.T) {
 	shared := &stubMode{current: scan.StockOut}
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.StockInBarcode = "STOCK_IN"
 	listener.StockOutBarcode = "STOCK_OUT"
@@ -687,7 +746,7 @@ func TestHandleLine_SharedModeStampsTheNextScan(t *testing.T) {
 
 func TestHandleLine_ControlBarcodeDoesNotAnnounceProcessing(t *testing.T) {
 	publisher := &recordingPublisher{}
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.StockInBarcode = "STOCK_IN"
 	listener.StockOutBarcode = "STOCK_OUT"
@@ -710,14 +769,14 @@ type countingLookup struct {
 	calls int
 }
 
-func (l *countingLookup) Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error) {
+func (l *countingLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error) {
 	l.calls++
 	return product.LookupResult{}, nil
 }
 
 func TestCreateEntry_SkipsLookupForQRPayload(t *testing.T) {
 	lookup := &countingLookup{}
-	listener := New()
+	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = lookup

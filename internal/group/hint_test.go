@@ -6,17 +6,18 @@ import (
 )
 
 func TestHints_MatchesGroupAndSkipsMembers(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
 	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
 	mustProduct(t, catalog, "milk", "Whole Milk")
 	mustProduct(t, catalog, "french", "Del Monte French Style Green Beans")
-	if _, err := groups.Create(ctx, "Cut green beans", []string{"kr"}, nil); err != nil {
+	if _, err := groups.Create(ctx, scope, "Cut green beans", []string{"kr"}, nil); err != nil {
 		t.Fatalf("create group: %v", err)
 	}
 
-	hints, err := groups.Hints(ctx, map[string]string{
+	hints, err := groups.Hints(ctx, scope, map[string]string{
 		"kr":     "Kroger Cut Green Beans",
 		"dm":     "Del Monte Cut Green Beans",
 		"milk":   "Whole Milk",
@@ -41,14 +42,15 @@ func TestHints_MatchesGroupAndSkipsMembers(t *testing.T) {
 }
 
 func TestHints_LooseNameJoinsExistingGroup(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "barilla", "Barilla Spaghetti")
 	mustProduct(t, catalog, "rice", "Rice")
-	if _, err := groups.Create(ctx, "Spaghetti", nil, nil); err != nil {
+	if _, err := groups.Create(ctx, scope, "Spaghetti", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	hints, err := groups.Hints(ctx, map[string]string{
+	hints, err := groups.Hints(ctx, scope, map[string]string{
 		"barilla": "Barilla Spaghetti",
 		"rice":    "Rice",
 	})
@@ -66,15 +68,16 @@ func TestHints_LooseNameJoinsExistingGroup(t *testing.T) {
 func TestNoteFromScan_Once(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
-	created, err := groups.Create(ctx, "Cut green beans", nil, nil)
+	created, err := groups.Create(ctx, scope, "Cut green beans", nil, nil)
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
-	if err := groups.NoteFromScan(ctx, "dm"); err != nil {
+	if err := groups.NoteFromScan(ctx, scope, "dm"); err != nil {
 		t.Fatalf("note: %v", err)
 	}
-	if err := groups.NoteFromScan(ctx, "dm"); err != nil {
+	if err := groups.NoteFromScan(ctx, scope, "dm"); err != nil {
 		t.Fatalf("second note: %v", err)
 	}
 	var n int
@@ -91,7 +94,7 @@ func TestNoteFromScan_Once(t *testing.T) {
 	if existing != created.ID {
 		t.Fatalf("existing group = %q, want %q", existing, created.ID)
 	}
-	hints, err := groups.Hints(ctx, map[string]string{"dm": "Del Monte Cut Green Beans"})
+	hints, err := groups.Hints(ctx, scope, map[string]string{"dm": "Del Monte Cut Green Beans"})
 	if err != nil {
 		t.Fatal(err)
 	}

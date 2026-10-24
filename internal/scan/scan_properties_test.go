@@ -23,7 +23,7 @@ import (
 // with status `pending` and no pre-set scan direction unless one was explicitly provided.
 func TestProperty1_ScanEntryDataIntegrity(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		// Generate arbitrary inputs
@@ -40,7 +40,7 @@ func TestProperty1_ScanEntryDataIntegrity(t *testing.T) {
 			UnitCount: 1,
 		}
 
-		created, err := queue.CreateScanEntry(ctx, entry)
+		created, err := queue.CreateScanEntry(ctx, scope, entry)
 		if err != nil {
 			rt.Fatalf("CreateScanEntry failed: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestProperty1_ScanEntryDataIntegrity(t *testing.T) {
 // direction SHALL NOT be applied automatically.
 func TestProperty2_ScanDirectionPropagation(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		// Generate test data
@@ -128,7 +128,7 @@ func TestProperty2_ScanDirectionPropagation(t *testing.T) {
 				UnitCount: 1,
 			}
 
-			created, err := queue.CreateScanEntry(ctx, entry)
+			created, err := queue.CreateScanEntry(ctx, scope, entry)
 			if err != nil {
 				rt.Fatalf("CreateScanEntry failed: %v", err)
 			}
@@ -169,7 +169,7 @@ func TestProperty2_ScanDirectionPropagation(t *testing.T) {
 // SHALL be ordered ascending by `scanned_at` timestamp (oldest first).
 func TestProperty3_ScanQueueChronologicalOrdering(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		userID := rapid.String().Draw(rt, "userID")
@@ -195,14 +195,14 @@ func TestProperty3_ScanQueueChronologicalOrdering(t *testing.T) {
 				Status:    scan.Pending,
 			}
 
-			_, err := queue.CreateScanEntry(ctx, entry)
+			_, err := queue.CreateScanEntry(ctx, scope, entry)
 			if err != nil {
 				rt.Fatalf("CreateScanEntry failed: %v", err)
 			}
 		}
 
 		// List all entries
-		entries, err := queue.ListScanEntries(ctx, userID, scan.Pending)
+		entries, err := queue.ListScanEntries(ctx, scope, scan.Pending)
 		if err != nil {
 			rt.Fatalf("ListScanEntries failed: %v", err)
 		}
@@ -230,7 +230,7 @@ func TestProperty3_ScanQueueChronologicalOrdering(t *testing.T) {
 // new values, and no entry outside the subset SHALL be modified.
 func TestProperty4_BatchUpdateApplies(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		userID := rapid.String().Draw(rt, "userID")
@@ -252,7 +252,7 @@ func TestProperty4_BatchUpdateApplies(t *testing.T) {
 				Status:    scan.Pending,
 			}
 
-			created, err := queue.CreateScanEntry(ctx, entry)
+			created, err := queue.CreateScanEntry(ctx, scope, entry)
 			if err != nil {
 				rt.Fatalf("CreateScanEntry failed: %v", err)
 			}
@@ -283,14 +283,14 @@ func TestProperty4_BatchUpdateApplies(t *testing.T) {
 		expiresAt := time.Now().Add(time.Duration(rapid.IntRange(1, 30).Draw(rt, "daysUntilExpiry")) * 24 * time.Hour)
 
 		// Perform batch update
-		err := queue.BatchUpdateScanEntries(ctx, selectedIDs, &direction, &unitCount, &expiresAt)
+		err := queue.BatchUpdateScanEntries(ctx, scope, selectedIDs, &direction, &unitCount, &expiresAt)
 		if err != nil {
 			rt.Fatalf("BatchUpdateScanEntries failed: %v", err)
 		}
 
 		// Verify all entries
 		for i, id := range entryIDs {
-			entry, err := queue.GetScanEntry(ctx, id)
+			entry, err := queue.GetScanEntry(ctx, scope, id)
 			if err != nil {
 				rt.Fatalf("GetScanEntry failed: %v", err)
 			}
@@ -334,7 +334,7 @@ func TestProperty4_BatchUpdateApplies(t *testing.T) {
 // original barcode, timestamp, direction, unit count, and expiration date all unchanged.
 func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		// Generate arbitrary scan entry data
@@ -377,7 +377,7 @@ func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 			Status:    scan.Pending,
 		}
 
-		created, err := queue.CreateScanEntry(ctx, entry)
+		created, err := queue.CreateScanEntry(ctx, scope, entry)
 		if err != nil {
 			rt.Fatalf("CreateScanEntry failed: %v", err)
 		}
@@ -391,7 +391,7 @@ func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 		originalID := created.ID
 
 		// Verify entry is in pending list
-		pendingEntries, err := queue.ListScanEntries(ctx, userID, scan.Pending)
+		pendingEntries, err := queue.ListScanEntries(ctx, scope, scan.Pending)
 		if err != nil {
 			rt.Fatalf("ListScanEntries (pending) failed: %v", err)
 		}
@@ -407,13 +407,13 @@ func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 		}
 
 		// Commit the scan entry
-		err = queue.CommitScanEntry(ctx, originalID)
+		err = queue.CommitScanEntry(ctx, scope, originalID)
 		if err != nil {
 			rt.Fatalf("CommitScanEntry failed: %v", err)
 		}
 
 		// Verify entry is NO LONGER in pending list
-		pendingAfterCommit, err := queue.ListScanEntries(ctx, userID, scan.Pending)
+		pendingAfterCommit, err := queue.ListScanEntries(ctx, scope, scan.Pending)
 		if err != nil {
 			rt.Fatalf("ListScanEntries (pending after commit) failed: %v", err)
 		}
@@ -424,7 +424,7 @@ func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 		}
 
 		// Verify entry IS in committed/history list
-		committedEntries, err := queue.ListScanEntries(ctx, userID, scan.Committed)
+		committedEntries, err := queue.ListScanEntries(ctx, scope, scan.Committed)
 		if err != nil {
 			rt.Fatalf("ListScanEntries (committed) failed: %v", err)
 		}
@@ -510,7 +510,7 @@ func TestProperty7_CommittedEntryInHistory(t *testing.T) {
 // Validates: Requirements 2.1, 2.2, 2.3, 2.5
 func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		operation := rapid.IntRange(0, 4).Draw(rt, "operation")
@@ -523,7 +523,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 		switch operation {
 		case 0: // CreateScanEntry
 			queue.Broadcaster = broadcaster
-			created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				UserID:    userID,
 				Barcode:   barcode,
 				ScannedAt: time.Now(),
@@ -534,7 +534,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 			}
 			entryID = created.ID
 		case 1: // UpdateScanEntry
-			created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				UserID:    userID,
 				Barcode:   barcode,
 				ScannedAt: time.Now(),
@@ -551,7 +551,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 				scan.StockOut,
 			}).Draw(rt, "direction")
 			unitCount := rapid.IntRange(1, 10).Draw(rt, "unitCount")
-			if err := queue.UpdateScanEntry(ctx, entryID, &direction, &unitCount, nil, nil, nil); err != nil {
+			if err := queue.UpdateScanEntry(ctx, scope, entryID, &direction, &unitCount, nil, nil, nil); err != nil {
 				rt.Fatalf("UpdateScanEntry failed: %v", err)
 			}
 		case 2: // ResolveFlaggedEntry
@@ -562,33 +562,33 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 			}); err != nil {
 				rt.Fatalf("CreateProduct failed: %v", err)
 			}
-			flagged := createFlaggedEntry(t, queue, ctx)
+			flagged := createFlaggedEntry(t, queue, ctx, scope)
 			entryID = flagged.ID
 
 			queue.Broadcaster = broadcaster
-			if err := queue.ResolveFlaggedEntry(ctx, entryID, productID); err != nil {
+			if err := queue.ResolveFlaggedEntry(ctx, scope, entryID, productID); err != nil {
 				rt.Fatalf("ResolveFlaggedEntry failed: %v", err)
 			}
 		case 3: // CommitStockIn
 			unitCount := rapid.IntRange(1, 10).Draw(rt, "unitCount")
-			created := createStockInEntry(t, queue, db, ctx, unitCount)
+			created := createStockInEntry(t, queue, db, ctx, scope, unitCount)
 			entryID = created.ID
 
 			queue.Broadcaster = broadcaster
-			if err := queue.CommitStockIn(ctx, created); err != nil {
+			if err := queue.CommitStockIn(ctx, scope, created); err != nil {
 				rt.Fatalf("CommitStockIn failed: %v", err)
 			}
 		case 4: // CommitStockOut
-			created := createStockOutEntry(t, queue, db, ctx)
+			created := createStockOutEntry(t, queue, db, ctx, scope)
 			entryID = created.ID
 
 			queue.Broadcaster = broadcaster
-			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, scope, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
 
-		want, err := queue.GetScanEntry(ctx, entryID)
+		want, err := queue.GetScanEntry(ctx, scope, entryID)
 		if err != nil {
 			rt.Fatalf("GetScanEntry failed: %v", err)
 		}
@@ -616,7 +616,7 @@ func TestRealtimeProperty4_CreateAndUpdatePublishMatchingEvent(t *testing.T) {
 // Validates: Requirements 2.4
 func TestRealtimeProperty5_BatchUpdatePublishesOnePerEntry(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, _ := newTestQueue(t)
+		queue, _, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		userID := rapid.String().Draw(rt, "userID")
@@ -630,7 +630,7 @@ func TestRealtimeProperty5_BatchUpdatePublishesOnePerEntry(t *testing.T) {
 			// now merges into an existing pending/flagged entry with the same
 			// user_id/barcode/direction rather than always inserting, so a
 			// collision would produce fewer rows than numEntries.
-			created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				UserID:    userID,
 				Barcode:   fmt.Sprintf("%s-%d", rapid.String().Draw(rt, "barcode"), i),
 				ScannedAt: time.Now().Add(time.Duration(i) * time.Minute),
@@ -663,7 +663,7 @@ func TestRealtimeProperty5_BatchUpdatePublishesOnePerEntry(t *testing.T) {
 			scan.StockOut,
 		}).Draw(rt, "direction")
 
-		if err := queue.BatchUpdateScanEntries(ctx, selectedIDs, &direction, nil, nil); err != nil {
+		if err := queue.BatchUpdateScanEntries(ctx, scope, selectedIDs, &direction, nil, nil); err != nil {
 			rt.Fatalf("BatchUpdateScanEntries failed: %v", err)
 		}
 
@@ -680,7 +680,7 @@ func TestRealtimeProperty5_BatchUpdatePublishesOnePerEntry(t *testing.T) {
 		}
 
 		for _, id := range selectedIDs {
-			want, err := queue.GetScanEntry(ctx, id)
+			want, err := queue.GetScanEntry(ctx, scope, id)
 			if err != nil {
 				rt.Fatalf("GetScanEntry failed: %v", err)
 			}
@@ -706,7 +706,7 @@ func TestRealtimeProperty5_BatchUpdatePublishesOnePerEntry(t *testing.T) {
 // Validates: Requirements 2.6
 func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		broadcaster := &fakeBroadcaster{}
@@ -720,7 +720,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 		case 0: // CreateScanEntry with a duplicate ID that cannot merge
 			userID := rapid.String().Draw(rt, "userID")
 			barcode := rapid.String().Draw(rt, "barcode")
-			existing, createErr := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			existing, createErr := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				UserID:    userID,
 				Barcode:   barcode,
 				ScannedAt: time.Now(),
@@ -735,7 +735,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 			// row instead of inserting, so the duplicate id would not fail.
 			broadcaster.scanEvents = nil
 
-			_, err = queue.CreateScanEntry(ctx, scan.ScanEntry{
+			_, err = queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				ID:        existing.ID,
 				UserID:    userID + "x",
 				Barcode:   barcode,
@@ -747,7 +747,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				scan.StockIn,
 				scan.StockOut,
 			}).Draw(rt, "direction")
-			err = queue.UpdateScanEntry(ctx, unknownID, &direction, nil, nil, nil, nil)
+			err = queue.UpdateScanEntry(ctx, scope, unknownID, &direction, nil, nil, nil, nil)
 		case 2: // BatchUpdateScanEntries when the context is already canceled
 			direction := rapid.SampledFrom([]scan.ScanDirection{
 				scan.StockIn,
@@ -755,7 +755,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 			}).Draw(rt, "direction")
 			canceled, cancel := context.WithCancel(ctx)
 			cancel()
-			err = queue.BatchUpdateScanEntries(canceled, []string{unknownID}, &direction, nil, nil)
+			err = queue.BatchUpdateScanEntries(canceled, scope, []string{unknownID}, &direction, nil, nil)
 		case 3: // ResolveFlaggedEntry, one of its documented error conditions
 			switch rapid.IntRange(0, 2).Draw(rt, "resolveFlaggedErrorCondition") {
 			case 0: // scan entry not found
@@ -766,7 +766,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				}); createErr != nil {
 					rt.Fatalf("CreateProduct failed: %v", createErr)
 				}
-				err = queue.ResolveFlaggedEntry(ctx, unknownID, productID)
+				err = queue.ResolveFlaggedEntry(ctx, scope, unknownID, productID)
 			case 1: // scan entry is not flagged
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
@@ -775,7 +775,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				}); createErr != nil {
 					rt.Fatalf("CreateProduct failed: %v", createErr)
 				}
-				created, createErr := queue.CreateScanEntry(ctx, scan.ScanEntry{
+				created, createErr := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					UserID:    rapid.String().Draw(rt, "userID"),
 					Barcode:   rapid.String().Draw(rt, "barcode"),
 					ScannedAt: time.Now(),
@@ -786,11 +786,11 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 					rt.Fatalf("CreateScanEntry (setup) failed: %v", createErr)
 				}
 				broadcaster.scanEvents = nil
-				err = queue.ResolveFlaggedEntry(ctx, created.ID, productID)
+				err = queue.ResolveFlaggedEntry(ctx, scope, created.ID, productID)
 			case 2: // product not found
-				flagged := createFlaggedEntry(t, queue, ctx)
+				flagged := createFlaggedEntry(t, queue, ctx, scope)
 				broadcaster.scanEvents = nil
-				err = queue.ResolveFlaggedEntry(ctx, flagged.ID, "no-such-product")
+				err = queue.ResolveFlaggedEntry(ctx, scope, flagged.ID, "no-such-product")
 			}
 		case 4: // CommitStockIn, one of its documented error conditions
 			var entry *scan.ScanEntry
@@ -798,16 +798,16 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 			case 0: // direction is not stock_in
 				direction := scan.StockOut
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 1}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 1}
 			case 1: // missing product_id
 				direction := scan.StockIn
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, UnitCount: 1}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, UnitCount: 1}
 			case 2: // unit count less than 1
 				direction := scan.StockIn
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 0}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 0}
 			}
-			err = queue.CommitStockIn(ctx, entry)
+			err = queue.CommitStockIn(ctx, scope, entry)
 		case 5: // CommitStockOut, one of its documented error conditions
 			var entry *scan.ScanEntry
 			var instanceID *string
@@ -815,16 +815,16 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 			case 0: // direction is not stock_out
 				direction := scan.StockIn
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}
 			case 1: // missing product_id
 				direction := scan.StockOut
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction}
 			case 2: // no item found for user and product
 				direction := scan.StockOut
 				productID := "no-such-product"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}
 			case 3: // specific instance not found or already removed
-				entry = createStockOutEntry(t, queue, db, ctx)
+				entry = createStockOutEntry(t, queue, db, ctx, scope)
 				broadcaster.scanEvents = nil
 				missing := "no-such-instance"
 				instanceID = &missing
@@ -838,12 +838,12 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				}
 				userID := uuid.NewString()
 				itemID := uuid.NewString()
-				if _, dbErr := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`,
-					itemID, userID, productID); dbErr != nil {
+				if _, dbErr := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+					itemID, userID, productID, scope.HouseholdID()); dbErr != nil {
 					rt.Fatalf("create item failed: %v", dbErr)
 				}
 				direction := scan.StockOut
-				created, createErr := queue.CreateScanEntry(ctx, scan.ScanEntry{
+				created, createErr := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					UserID:    userID,
 					Barcode:   rapid.String().Draw(rt, "barcode"),
 					ScannedAt: time.Now(),
@@ -858,7 +858,7 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 				broadcaster.scanEvents = nil
 				entry = created
 			}
-			_, err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, scope, entry, instanceID)
 		}
 
 		if err == nil {
@@ -883,45 +883,42 @@ func TestRealtimeProperty6_FailedScanMutationPublishesNoEvent(t *testing.T) {
 // Validates: Requirements 3.4, 3.5
 func TestRealtimeProperty7_QueuePublishesInventoryEventOnSuccess(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 		pantry := inventory.NewPantry(db)
 		broadcaster := &fakeBroadcaster{}
 
 		operation := rapid.IntRange(0, 1).Draw(rt, "operation")
 
-		var userID string
 		var productID string
 
 		switch operation {
 		case 0: // CommitStockIn
 			unitCount := rapid.IntRange(1, 10).Draw(rt, "unitCount")
-			created := createStockInEntry(t, queue, db, ctx, unitCount)
-			userID = created.UserID
+			created := createStockInEntry(t, queue, db, ctx, scope, unitCount)
 			productID = *created.ProductID
 
 			queue.Broadcaster = broadcaster
 			queue.Pantry = pantry
-			if err := queue.CommitStockIn(ctx, created); err != nil {
+			if err := queue.CommitStockIn(ctx, scope, created); err != nil {
 				rt.Fatalf("CommitStockIn failed: %v", err)
 			}
 		case 1: // CommitStockOut
-			created := createStockOutEntry(t, queue, db, ctx)
-			userID = created.UserID
+			created := createStockOutEntry(t, queue, db, ctx, scope)
 			productID = *created.ProductID
 
 			queue.Broadcaster = broadcaster
 			queue.Pantry = pantry
-			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, scope, created, nil); err != nil {
 				rt.Fatalf("CommitStockOut failed: %v", err)
 			}
 		}
 
-		item, err := pantry.GetOrCreateItem(ctx, userID, productID)
+		item, err := pantry.GetOrCreateItem(ctx, scope, productID)
 		if err != nil {
 			rt.Fatalf("GetOrCreateItem failed: %v", err)
 		}
-		want, err := pantry.GetInventoryItem(ctx, item.ID, time.Now(), inventory.DefaultWarningDays)
+		want, err := pantry.GetInventoryItem(ctx, scope, item.ID, time.Now(), inventory.DefaultWarningDays)
 		if err != nil {
 			rt.Fatalf("GetInventoryItem failed: %v", err)
 		}
@@ -948,7 +945,7 @@ func TestRealtimeProperty7_QueuePublishesInventoryEventOnSuccess(t *testing.T) {
 // Validates: Requirements 3.6
 func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		broadcaster := &fakeBroadcaster{}
@@ -965,16 +962,16 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 			case 0: // direction is not stock_in
 				direction := scan.StockOut
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 1}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 1}
 			case 1: // missing product_id
 				direction := scan.StockIn
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, UnitCount: 1}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, UnitCount: 1}
 			case 2: // unit count less than 1
 				direction := scan.StockIn
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 0}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 0}
 			}
-			err = queue.CommitStockIn(ctx, entry)
+			err = queue.CommitStockIn(ctx, scope, entry)
 		case 1: // CommitStockOut, one of its documented error conditions
 			var entry *scan.ScanEntry
 			var instanceID *string
@@ -982,16 +979,16 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 			case 0: // direction is not stock_out
 				direction := scan.StockIn
 				productID := "prod-1"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}
 			case 1: // missing product_id
 				direction := scan.StockOut
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction}
 			case 2: // no item found for user and product
 				direction := scan.StockOut
 				productID := "no-such-product"
-				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}
+				entry = &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}
 			case 3: // specific instance not found or already removed
-				entry = createStockOutEntry(t, queue, db, ctx)
+				entry = createStockOutEntry(t, queue, db, ctx, scope)
 				broadcaster.inventoryEvents = nil
 				missing := "no-such-instance"
 				instanceID = &missing
@@ -1005,12 +1002,12 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 				}
 				userID := uuid.NewString()
 				itemID := uuid.NewString()
-				if _, dbErr := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`,
-					itemID, userID, productID); dbErr != nil {
+				if _, dbErr := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+					itemID, userID, productID, scope.HouseholdID()); dbErr != nil {
 					rt.Fatalf("create item failed: %v", dbErr)
 				}
 				direction := scan.StockOut
-				created, createErr := queue.CreateScanEntry(ctx, scan.ScanEntry{
+				created, createErr := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					UserID:    userID,
 					Barcode:   rapid.String().Draw(rt, "barcode"),
 					ScannedAt: time.Now(),
@@ -1025,7 +1022,7 @@ func TestRealtimeProperty8_QueuePublishesNoInventoryEventOnFailure(t *testing.T)
 				broadcaster.inventoryEvents = nil
 				entry = created
 			}
-			_, err = queue.CommitStockOut(ctx, entry, instanceID)
+			_, err = queue.CommitStockOut(ctx, scope, entry, instanceID)
 		}
 
 		if err == nil {
@@ -1078,7 +1075,7 @@ func directionFromLabel(label int) *scan.ScanDirection {
 // Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5
 func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		barcode := rapid.StringN(1, -1, 50).Draw(rt, "barcode")
@@ -1120,7 +1117,7 @@ func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testin
 		existingDirection := directionFromLabel(existingDirLabel)
 		incomingDirection := directionFromLabel(incomingDirLabel)
 
-		existingCreated, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		existingCreated, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 			UserID:    existingUserID,
 			Barcode:   barcode,
 			ScannedAt: time.Now(),
@@ -1132,7 +1129,7 @@ func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testin
 			rt.Fatalf("CreateScanEntry (existing entry): %v", err)
 		}
 
-		incomingCreated, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		incomingCreated, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 			UserID:    incomingUserID,
 			Barcode:   barcode,
 			ScannedAt: time.Now(),
@@ -1156,7 +1153,7 @@ func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testin
 			rt.Fatalf("row count for barcode %q: want 2 (existing + newly inserted), got %d", barcode, rowCount)
 		}
 
-		refetchedExisting, err := queue.GetScanEntry(ctx, existingCreated.ID)
+		refetchedExisting, err := queue.GetScanEntry(ctx, scope, existingCreated.ID)
 		if err != nil {
 			rt.Fatalf("GetScanEntry (existing entry): %v", err)
 		}
@@ -1192,11 +1189,11 @@ func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testin
 // Validates: Requirements 2.1, 2.2, 2.3, 3.1, 3.2, 3.3, 3.4, 3.5
 func TestProperty3_MergeAccounting_RowCountAndUnitCountMatchExpectedMerges(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		queue, db := newTestQueue(t)
+		queue, db, scope := newTestQueue(t)
 		ctx := context.Background()
 
 		barcodePool := []string{"barcode-a", "barcode-b", "barcode-c"}
-		userPool := []string{"user-1", "user-2"}
+		userPool := []string{"actor", "user-2"}
 		directionLabelPool := []int{0, 1, 2} // nil, StockIn, StockOut
 
 		numScans := rapid.IntRange(1, 15).Draw(rt, "numScans")
@@ -1227,7 +1224,7 @@ func TestProperty3_MergeAccounting_RowCountAndUnitCountMatchExpectedMerges(t *te
 				status = scan.Flagged
 			}
 
-			_, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			_, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 				UserID:    userID,
 				Barcode:   barcode,
 				ScannedAt: time.Now(),

@@ -10,10 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/brand"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/deployhook"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/group"
@@ -55,9 +58,13 @@ type config struct {
 	deployHookPath   string
 	household        *HouseholdAuth
 	syncToken        string
+	readDB           *sql.DB
 	push             push.Config
 	sentryTunnel     SentryTunnelConfig
 	streamShutdown   *StreamShutdown
+	stage1svc        *auth.Service
+	site             app.RuntimeConfig
+	gate             *stage1
 }
 
 // Option is a functional option for NewHandler.
@@ -125,6 +132,14 @@ func WithContributor(contributor product.UpstreamContributor) Option {
 func WithScannerMode(mode *scannerMode) Option {
 	return func(c *config) {
 		c.scannerMode = mode
+	}
+}
+
+// WithReadDB uses the WAL read pool for queries that do not write.
+// A missing pool keeps those reads on the writer.
+func WithReadDB(db *sql.DB) Option {
+	return func(c *config) {
+		c.readDB = db
 	}
 }
 
@@ -225,6 +240,15 @@ func NewHandler(
 	// still asks a person to sign in. A wrong or missing token never falls
 	// through to the open LAN listener.
 	handler = syncGate(syncToken, handler)
+	readDB := db
+	if cfg != nil && cfg.readDB != nil {
+		readDB = cfg.readDB
+	}
+	if cfg != nil && cfg.gate != nil {
+		handler = cfg.gate.Middleware(handler)
+	} else {
+		handler = withPrimaryScope(readDB, handler)
+	}
 	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
@@ -253,6 +277,13 @@ func newAPIMux(
 	if cfg != nil && cfg.broadcaster != nil {
 		broadcaster = cfg.broadcaster
 	}
+	broadcaster.SetCursor(func(householdID, scope string) string {
+		cursor, err := changes.Current(context.Background(), db, householdID, scope)
+		if err != nil {
+			return ""
+		}
+		return cursor
+	})
 	// The headless listener publishes on this same broadcaster, so the observer
 	// has to be attached to the shared instance rather than a private one.
 	broadcaster.SetObserver(publishObserver{reg: reg})
@@ -282,6 +313,11 @@ func newAPIMux(
 			scannerJSON, _ := json.Marshal(status)
 			response = fmt.Sprintf(`%s,"scanner":%s}`, response[:len(response)-1], scannerJSON)
 		}
+		if cfg != nil && cfg.stage1svc != nil {
+			if code := cfg.stage1svc.SetupHealth(r.Context()); code != "" {
+				response = fmt.Sprintf(`%s,"setupCode":%q}`, response[:len(response)-1], code)
+			}
+		}
 		fmt.Fprintln(w, response)
 	})
 
@@ -290,6 +326,9 @@ func newAPIMux(
 		streams = cfg.streamShutdown
 	}
 	eventsHandler := &EventsHandler{Broadcaster: broadcaster, Telemetry: reg, Shutdown: streams}
+	if cfg != nil && cfg.stage1svc != nil {
+		eventsHandler.Streams = cfg.stage1svc.Streams()
+	}
 	apiMux.HandleFunc("GET /api/events", eventsHandler.Handle)
 	// Caddy serves this exact path without the household password, beside
 	// telemetry, and isPublicPath leaves it open when X-Pantry-Entry is set.
@@ -341,19 +380,32 @@ func newAPIMux(
 	} else {
 		mode = newScannerMode(nil)
 	}
+	primaryID := ""
+	if db != nil {
+		if scope, err := auth.PrimaryScope(context.Background(), db); err == nil {
+			primaryID = scope.HouseholdID()
+		}
+	}
 	if mode.publish == nil {
 		mode.mu.Lock()
 		mode.publish = func(d scan.ScanDirection) {
+			if primaryID != "" {
+				broadcaster.PublishScannerModeFor(primaryID, d)
+				return
+			}
 			broadcaster.PublishScannerModeEvent(d)
 		}
 		mode.mu.Unlock()
 	}
-	scannerModeHandler := &ScannerModeHandler{Mode: mode}
-	scannerConfigHandler := &ScannerConfigHandler{Config: scannerConfig, Mode: mode}
+	modes := newModeBook(mode, primaryID, db, broadcaster)
+	scannerModeHandler := &ScannerModeHandler{Mode: mode, Book: modes}
+	scannerConfigHandler := &ScannerConfigHandler{Config: scannerConfig, Mode: mode, Book: modes}
 	if cfg != nil {
 		scannerConfigHandler.Status = cfg.statusFn
 	}
 	apiMux.HandleFunc("POST /api/scanner/mode", HandleJSON(scannerModeHandler.Handle))
+	apiMux.HandleFunc("GET /api/scans/mode", HandleJSON(scannerModeHandler.Get))
+	apiMux.HandleFunc("POST /api/scans/mode", HandleJSON(scannerModeHandler.Handle))
 	apiMux.HandleFunc("GET /api/scanner/config", HandleJSON(scannerConfigHandler.Handle))
 
 	contributor := product.UpstreamContributor(product.UnconfiguredContributor{})
@@ -398,8 +450,9 @@ func newAPIMux(
 		LookupService: lookupService,
 		Events:        broadcaster,
 		Mode:          mode,
+		Modes:         modes,
 	}
-	scanListHandler := &ScanListHandler{Queue: scanQueue}
+	scanListHandler := &ScanListHandler{Queue: scanQueue, DB: db}
 	scanHistoryHandler := &ScanHistoryHandler{Queue: scanQueue}
 	scanUpdateHandler := &ScanUpdateHandler{Queue: scanQueue}
 	scanCommitHandler := &ScanCommitHandler{Queue: scanQueue}
@@ -418,7 +471,7 @@ func newAPIMux(
 	pantry := inventory.NewPantry(db)
 	pantry.Broadcaster = broadcaster
 	scanQueue.Pantry = pantry
-	inventoryListHandler := &InventoryListHandler{Pantry: pantry}
+	inventoryListHandler := &InventoryListHandler{Pantry: pantry, DB: db}
 	inventoryInstancesListHandler := &InventoryInstancesListHandler{Pantry: pantry}
 	inventoryInstanceCreateHandler := &InventoryInstanceCreateHandler{Queue: scanQueue}
 	inventoryInstanceDeleteHandler := &InventoryInstanceDeleteHandler{Queue: scanQueue}
@@ -427,6 +480,7 @@ func newAPIMux(
 	supplySettingsGetHandler := &SupplySettingsGetHandler{Supply: supplySvc}
 	supplySettingsPutHandler := &SupplySettingsPutHandler{Supply: supplySvc}
 	groups := group.NewGroups(db)
+	groups.SetHints(broadcaster)
 	scanListHandler.Groups = groups
 	createHandler.Groups = groups
 	updateHandler.Groups = groups
@@ -444,10 +498,14 @@ func newAPIMux(
 	apiMux.HandleFunc("POST /api/inventory/wipe", HandleJSON(inventoryWipeHandler.Handle))
 
 	var syncToken string
+	readDB := db
 	if cfg != nil {
 		syncToken = cfg.syncToken
+		if cfg.readDB != nil {
+			readDB = cfg.readDB
+		}
 	}
-	apiMux.HandleFunc("GET /api/sync/snapshot", (&syncSnapshotHandler{DB: db, Token: syncToken}).ServeHTTP)
+	apiMux.HandleFunc("GET /api/sync/snapshot", (&syncSnapshotHandler{DB: readDB, Token: syncToken}).ServeHTTP)
 
 	historyHandler := &HistoryHandler{Journal: history.NewJournal(db), Pantry: pantry, Events: broadcaster}
 	apiMux.HandleFunc("GET /api/history", HandleJSON(historyHandler.Household))
@@ -513,6 +571,7 @@ func newAPIMux(
 
 	// Shopping list handlers
 	shoppingList := shopping.NewStore(db)
+	shoppingList.SetHints(broadcaster)
 	connDir := connection.NewDirectory(db)
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
@@ -530,6 +589,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Adjustments:  shoppingList,
+		DB:           db,
 	}
 	shoppingListFillHandler := &ShoppingListFillHandler{
 		ShoppingList: shoppingList,
@@ -540,7 +600,14 @@ func newAPIMux(
 		Adjustments:  shoppingList,
 	}
 	refreshPlan := func(ctx context.Context) error {
-		_, err := stageShoppingPlan(ctx, "user-1", pantry, shoppingList, supplySvc, time.Now())
+		scope, err := requestScope(ctx)
+		if err != nil {
+			scope, err = auth.PrimaryScope(ctx, db)
+			if err != nil {
+				return err
+			}
+		}
+		_, err = stageShoppingPlan(ctx, scope, pantry, shoppingList, supplySvc, time.Now())
 		return err
 	}
 	restockHandler.Refresh = refreshPlan
@@ -639,9 +706,33 @@ func newAPIMux(
 	apiMux.HandleFunc("GET /api/push/vapid-public-key", HandleJSON(pushHandler.PublicKey))
 	apiMux.HandleFunc("POST /api/push/subscriptions", HandleJSON(pushHandler.Save))
 	apiMux.HandleFunc("DELETE /api/push/subscriptions", HandleJSON(pushHandler.Delete))
+	if cfg != nil && cfg.stage1svc != nil {
+		cfg.gate = &stage1{
+			svc:      cfg.stage1svc,
+			site:     cfg.site,
+			stockIn:  scannerConfig.StockInBarcode,
+			stockOut: scannerConfig.StockOutBarcode,
+		}
+		cfg.stage1svc.SetHints(broadcaster)
+		cfg.stage1svc.SetLive(broadcaster.Hub())
+		sender := push.NewSender(pushSubscriptions, pushCfg)
+		cfg.stage1svc.SetOperatorPush(func(ctx context.Context, note auth.OperatorNote) {
+			sender.NotifyOperators(ctx, push.Notice{
+				Title: note.Title,
+				Body:  note.Body,
+				Tag:   "operator-" + note.Kind,
+				URL:   "/",
+			})
+		})
+	}
+	registerStage1(apiMux, cfg)
 	// The listener uses the broadcaster this mux already publishes scans on,
 	// including scans from the headless reader when it shares that broadcaster.
-	push.Listen(broadcaster, push.NewSender(pushSubscriptions, pushCfg), scanQueue)
+	if db != nil {
+		if primary, err := auth.PrimaryScope(context.Background(), db); err == nil {
+			push.Listen(context.Background(), primary, broadcaster, push.NewSender(pushSubscriptions, pushCfg), scanQueue)
+		}
+	}
 
 	// Unknown resolution handler
 	unknownResolutionHandler := &UnknownResolutionHandler{

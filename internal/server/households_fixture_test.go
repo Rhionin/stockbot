@@ -107,6 +107,7 @@ func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {
 		ID:       h.ProductID,
 		Name:     h.Marker + " " + h.ID,
 		Category: h.Name,
+		Source:   product.SourceExternal,
 	})
 	if err != nil {
 		t.Fatalf("seed %s: %v", h.Name, err)
@@ -118,7 +119,11 @@ func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {
 	if err != nil || got == nil || got.Name != h.Marker+" "+h.ID || got.Category != h.Name {
 		t.Fatalf("seed %s did not store the marker (product %+v, err %v)", h.Name, got, err)
 	}
-	summary, err := env.ProductStore.LookupByBarcode(ctx, h.Barcode, "")
+	scope, err := env.ProductStore.PrimaryScope(ctx)
+	if err != nil {
+		t.Fatalf("seed %s household: %v", h.Name, err)
+	}
+	summary, err := env.ProductStore.LookupByBarcode(ctx, scope, h.Barcode)
 	if err != nil || summary == nil || summary.Name != h.Marker+" "+h.ID {
 		t.Fatalf("seed %s barcode was not stored (summary %+v, err %v)", h.Name, summary, err)
 	}

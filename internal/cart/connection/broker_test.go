@@ -12,11 +12,11 @@ import (
 )
 
 func TestAccessTokenReturnsPersistedTokenWhenFresh(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	expiresAt := time.Now().UTC().Add(30 * time.Minute)
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
 		State:        connection.StateConnected,
 		AccessToken:  "fresh-token",
@@ -28,7 +28,7 @@ func TestAccessTokenReturnsPersistedTokenWhenFresh(t *testing.T) {
 
 	broker := connection.NewTokenBroker(dir)
 	refreshed := false
-	got, err := broker.AccessToken(ctx, "kroger", func(string) (string, string, time.Duration, error) {
+	got, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
 		refreshed = true
 		return "should-not-run", "", 0, nil
 	})
@@ -44,11 +44,11 @@ func TestAccessTokenReturnsPersistedTokenWhenFresh(t *testing.T) {
 }
 
 func TestAccessTokenRefreshesWhenNearExpiry(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	expiresAt := time.Now().UTC().Add(45 * time.Second)
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
 		State:        connection.StateConnected,
 		AccessToken:  "stale-token",
@@ -60,7 +60,7 @@ func TestAccessTokenRefreshesWhenNearExpiry(t *testing.T) {
 
 	broker := connection.NewTokenBroker(dir)
 	var gotRefreshArg string
-	got, err := broker.AccessToken(ctx, "kroger", func(refreshToken string) (string, string, time.Duration, error) {
+	got, err := broker.AccessToken(ctx, scope, "kroger", func(refreshToken string) (string, string, time.Duration, error) {
 		gotRefreshArg = refreshToken
 		return "renewed-token", "refresh-2", time.Hour, nil
 	})
@@ -74,7 +74,7 @@ func TestAccessTokenRefreshesWhenNearExpiry(t *testing.T) {
 		t.Errorf("refresh callback received %q, want the persisted refresh token %q", gotRefreshArg, "refresh-1")
 	}
 
-	persisted, err := dir.Read(ctx, "kroger")
+	persisted, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -93,10 +93,10 @@ func TestAccessTokenRefreshesWhenNearExpiry(t *testing.T) {
 }
 
 func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
 		State:        connection.StateReauthRequired,
 		RefreshToken: "refresh-1",
@@ -105,7 +105,7 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 	}
 
 	broker := connection.NewTokenBroker(dir)
-	got, err := broker.AccessToken(ctx, "kroger", func(string) (string, string, time.Duration, error) {
+	got, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
 		return "first-token", "refresh-2", time.Hour, nil
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 		t.Errorf("AccessToken: want %q, got %q", "first-token", got)
 	}
 
-	persisted, err := dir.Read(ctx, "kroger")
+	persisted, err := dir.Read(ctx, scope, "kroger")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -125,10 +125,10 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 }
 
 func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -152,7 +152,7 @@ func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tok, err := broker.AccessToken(ctx, "kroger", refreshFn)
+		tok, err := broker.AccessToken(ctx, scope, "kroger", refreshFn)
 		if err != nil {
 			t.Errorf("first AccessToken: %v", err)
 		}
@@ -163,7 +163,7 @@ func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tok, err := broker.AccessToken(ctx, "kroger", func(string) (string, string, time.Duration, error) {
+		tok, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
 			t.Error("second caller ran its own refresh instead of sharing the in-flight one")
 			return "", "", 0, nil
 		})
@@ -189,10 +189,10 @@ func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
 }
 
 func TestAccessTokenPropagatesRefreshError(t *testing.T) {
-	dir, _ := newTestDirectory(t)
+	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
-	if err := dir.Write(ctx, &connection.Connection{
+	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -200,7 +200,7 @@ func TestAccessTokenPropagatesRefreshError(t *testing.T) {
 
 	broker := connection.NewTokenBroker(dir)
 	wantErr := errors.New("provider rejected refresh")
-	got, err := broker.AccessToken(ctx, "kroger", func(string) (string, string, time.Duration, error) {
+	got, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
 		return "", "", 0, wantErr
 	})
 	if !errors.Is(err, wantErr) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 func TestKnownCommitFailureMessages(t *testing.T) {
@@ -95,7 +96,7 @@ func TestCommitFailuresHideDatabaseErrors(t *testing.T) {
 			mux.HandleFunc("POST /api/inventory/{itemId}/stock-out", HandleJSON((&InventoryStockOutHandler{Queue: queue}).Handle))
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
+			withRequestScope(t, nil, mux).ServeHTTP(rec, req)
 			body, err := io.ReadAll(rec.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -296,7 +297,7 @@ func TestBatchLinkTargetGoneIsNotLogged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scans/batch-commit", strings.NewReader(`{"scanEntryIds":["scan-stale"],"commit":true}`)))
+	withRequestScope(t, nil, mux).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scans/batch-commit", strings.NewReader(`{"scanEntryIds":["scan-stale"],"commit":true}`)))
 	body := rec.Body.String()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d body %s", rec.Code, body)
@@ -316,14 +317,16 @@ type linkGoneQueue struct {
 	entry *scan.ScanEntry
 }
 
-func (q linkGoneQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+func (q linkGoneQueue) GetScanEntry(context.Context, tenant.Scope, string) (*scan.ScanEntry, error) {
 	return q.entry, nil
 }
-func (q linkGoneQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q linkGoneQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return nil
 }
-func (q linkGoneQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return nil }
-func (q linkGoneQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q linkGoneQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
+	return nil
+}
+func (q linkGoneQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	return 0, scan.ErrLinkTargetGone
 }
 
@@ -341,23 +344,25 @@ type dbErrorQueue struct {
 	err error
 }
 
-func (q dbErrorQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+func (q dbErrorQueue) GetScanEntry(context.Context, tenant.Scope, string) (*scan.ScanEntry, error) {
 	return nil, q.err
 }
-func (q dbErrorQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q dbErrorQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return q.err
 }
-func (q dbErrorQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return q.err }
-func (q dbErrorQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q dbErrorQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
+	return q.err
+}
+func (q dbErrorQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	return 0, q.err
 }
-func (q dbErrorQueue) CommitStockOutLink(context.Context, *scan.ScanEntry, *string, string) (int, error) {
+func (q dbErrorQueue) CommitStockOutLink(context.Context, tenant.Scope, *scan.ScanEntry, *string, string) (int, error) {
 	return 0, q.err
 }
-func (q dbErrorQueue) CommitBackfill(context.Context, *scan.ScanEntry) (scan.BackfillResult, error) {
+func (q dbErrorQueue) CommitBackfill(context.Context, tenant.Scope, *scan.ScanEntry) (scan.BackfillResult, error) {
 	return scan.BackfillResult{}, q.err
 }
-func (q dbErrorQueue) CountOnHand(context.Context, string, string) (int, error) {
+func (q dbErrorQueue) CountOnHand(context.Context, tenant.Scope, string) (int, error) {
 	return 0, q.err
 }
-func (q dbErrorQueue) StockOut(context.Context, string, time.Time) error { return q.err }
+func (q dbErrorQueue) StockOut(context.Context, tenant.Scope, string, time.Time) error { return q.err }

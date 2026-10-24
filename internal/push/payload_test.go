@@ -16,8 +16,9 @@ import (
 func TestNotifyKeepsALargeBatchUnderTheCap(t *testing.T) {
 	subs := newTestSubscriptions(t)
 	ctx := context.Background()
+	scope := testScope(t, subs)
 	endpoint := "https://updates.push.services.mozilla.com/wpush/v2/batch"
-	if err := subs.Save(ctx, sampleSub(endpoint)); err != nil {
+	if err := subs.Save(ctx, scope, sampleSub(endpoint)); err != nil {
 		t.Fatal(err)
 	}
 	var got []byte
@@ -37,7 +38,7 @@ func TestNotifyKeepsALargeBatchUnderTheCap(t *testing.T) {
 		// the encoded payload and not the Go string.
 		names[i] = strings.Repeat("North Atlantic smoked salmon & fillet ", 8) + "item-" + strconv.Itoa(i)
 	}
-	sender.Notify(ctx, Notice{
+	sender.Notify(ctx, scope, Notice{
 		Title: "Stock out batch is ready",
 		Tag:   "pantry-scan-batch-stock_out",
 		URL:   "/?scanAlert=stock_out",

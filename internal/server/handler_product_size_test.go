@@ -80,6 +80,42 @@ func TestProductNetSizeRoundTrip(t *testing.T) {
 			),
 		},
 		{
+			name: "renaming a product keeps the new name on the household",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(env.T.Context(), product.Product{
+					ID: "prod-rename", Name: "Beans", Category: "Canned", UnitOfMeasure: "can",
+				}); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "PUT",
+				path:           "/api/products/prod-rename",
+				body:           `{"name":"Cut green beans","category":"Canned","unitOfMeasure":"can"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.name", value: "Cut green beans"},
+				},
+			},
+		},
+		{
+			name: "an update without a name is rejected",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(env.T.Context(), product.Product{
+					ID: "prod-noname", Name: "Beans",
+				}); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "PUT",
+				path:           "/api/products/prod-noname",
+				body:           `{"name":"","category":"Canned"}`,
+				expectedStatus: http.StatusBadRequest,
+				bodyContains:   []string{"name is required"},
+			},
+		},
+		{
 			name: "a size without a unit is rejected",
 			setup: func(env testEnv) {
 				if err := env.ProductStore.CreateProduct(env.T.Context(), product.Product{

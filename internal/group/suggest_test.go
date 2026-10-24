@@ -8,8 +8,9 @@ import (
 )
 
 func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
 	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
 	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
@@ -18,7 +19,7 @@ func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
 	mustProduct(t, catalog, "sm", "Kroger Creamy Peanut Butter")
 	mustProduct(t, catalog, "gvpb", "Great Value Peanut Butter")
 
-	first, err := groups.ListSuggestions(ctx)
+	first, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
 		t.Fatalf("%+v", butter.Members)
 	}
 
-	second, err := groups.ListSuggestions(ctx)
+	second, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,10 +59,10 @@ func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
 		t.Fatalf("duplicated: %+v", second)
 	}
 
-	if err := groups.Dismiss(ctx, beans.ID); err != nil {
+	if err := groups.Dismiss(ctx, scope, beans.ID); err != nil {
 		t.Fatal(err)
 	}
-	after, err := groups.ListSuggestions(ctx)
+	after, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,17 +72,18 @@ func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
 }
 
 func TestRefreshSuggestionsJoinsAnExistingGroup(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
 	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
-	view, err := groups.Create(ctx, "Cut green beans", []string{"gv", "kr"}, nil)
+	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"gv", "kr"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
 
-	cards, err := groups.ListSuggestions(ctx)
+	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,10 +94,10 @@ func TestRefreshSuggestionsJoinsAnExistingGroup(t *testing.T) {
 		t.Fatalf("%+v", cards[0].Members)
 	}
 
-	if _, err := groups.AddMembers(ctx, view.ID, []string{"dm"}, "", nil); err != nil {
+	if _, err := groups.AddMembers(ctx, scope, view.ID, []string{"dm"}, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	left, err := groups.ListSuggestions(ctx)
+	left, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +109,15 @@ func TestRefreshSuggestionsJoinsAnExistingGroup(t *testing.T) {
 func TestRefreshSuggestionsFindsNationalBrandsAddedLater(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
-	if err := groups.Seed(ctx); err != nil {
+	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
 	mustProduct(t, catalog, "hunts", "Hunt's Tomato Ketchup")
 	mustProduct(t, catalog, "heinz", "Heinz Tomato Ketchup")
 
-	cards, err := groups.ListSuggestions(ctx)
+	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +126,7 @@ func TestRefreshSuggestionsFindsNationalBrandsAddedLater(t *testing.T) {
 		t.Fatalf("%+v", ketchup.Members)
 	}
 
-	again, err := groups.Rescan(ctx)
+	again, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +134,10 @@ func TestRefreshSuggestionsFindsNationalBrandsAddedLater(t *testing.T) {
 		t.Fatalf("rescan copied cards: %+v", again)
 	}
 
-	if err := groups.Dismiss(ctx, ketchup.ID); err != nil {
+	if err := groups.Dismiss(ctx, scope, ketchup.ID); err != nil {
 		t.Fatal(err)
 	}
-	after, err := groups.Rescan(ctx)
+	after, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,27 +156,28 @@ func TestRefreshSuggestionsFindsNationalBrandsAddedLater(t *testing.T) {
 func TestRefreshSuggestionsPinsALaterSameNeed(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	if err := catalog.CreateProduct(ctx, product.Product{ID: "whole", Name: "Whole Milk", UnitOfMeasure: "carton"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := groups.Seed(ctx); err != nil {
+	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.CreateProduct(ctx, product.Product{ID: "gv", Name: "Great Value Whole Milk", UnitOfMeasure: "carton"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-whole', 'user-1', 'whole')`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-whole', ?, ?, 'whole')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	key, ok := needKey("Whole Milk", "carton")
 	if !ok {
 		t.Fatal("need key")
 	}
-	if _, err := conn.Exec(`INSERT INTO brand_preferences (user_id, need_key, item_id, ignore_price) VALUES ('user-1', ?, 'item-whole', 1)`, key); err != nil {
+	if _, err := conn.Exec(`INSERT INTO brand_preferences (household_id, user_id, need_key, item_id, ignore_price) VALUES (?, ?, ?, 'item-whole', 1)`, scope.HouseholdID(), scope.HouseholdID(), key); err != nil {
 		t.Fatal(err)
 	}
 
-	cards, err := groups.ListSuggestions(ctx)
+	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,22 +187,23 @@ func TestRefreshSuggestionsPinsALaterSameNeed(t *testing.T) {
 }
 
 func TestRescanRespectsAPartialDismissal(t *testing.T) {
-	groups, catalog, _ := newTestGroups(t)
+	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "hunts", "Hunt's Tomato Ketchup")
 	mustProduct(t, catalog, "heinz", "Heinz Tomato Ketchup")
-	first, err := groups.Rescan(ctx)
+	first, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(first) != 1 {
 		t.Fatalf("%+v", first)
 	}
-	if err := groups.Dismiss(ctx, first[0].ID); err != nil {
+	if err := groups.Dismiss(ctx, scope, first[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	mustProduct(t, catalog, "plain", "Ketchup")
-	cards, err := groups.Rescan(ctx)
+	cards, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,13 +227,14 @@ func TestRescanRespectsAPartialDismissal(t *testing.T) {
 func TestConsiderProductJoinsAnExistingGroup(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
-	view, err := groups.Create(ctx, "Cut green beans", []string{"kr"}, nil)
+	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"kr"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustProduct(t, catalog, "hunts", "Hunt's Cut Green Beans")
-	if err := groups.ConsiderProduct(ctx, "hunts"); err != nil {
+	if err := groups.ConsiderProduct(ctx, scope, "hunts"); err != nil {
 		t.Fatal(err)
 	}
 	var existing string
@@ -238,10 +244,66 @@ func TestConsiderProductJoinsAnExistingGroup(t *testing.T) {
 	if existing != view.ID {
 		t.Fatalf("existing group = %q, want %q", existing, view.ID)
 	}
-	if err := groups.ConsiderProduct(ctx, "missing"); err != nil {
+	if err := groups.ConsiderProduct(ctx, scope, "missing"); err != nil {
 		t.Fatal(err)
 	}
 }
+
+func TestAcceptJoinsAnExistingGroupAndRenamesANewOne(t *testing.T) {
+	groups, catalog, db := newTestGroups(t)
+	ctx := context.Background()
+	scope := scopeOf(t, db)
+	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
+	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
+	created, err := groups.Create(ctx, scope, "Cut green beans", []string{"gv"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	cards, err := groups.ListSuggestions(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := cardByTitle(t, cards, "Cut green beans")
+	if card.ExistingGroupID != created.ID {
+		t.Fatalf("existing group = %q", card.ExistingGroupID)
+	}
+	if _, err := groups.Accept(ctx, scope, card.ID, nil, &TargetInput{Window: intPtr(2), Quantity: floatPtr(8)}, ""); err == nil {
+		t.Fatal("accepted a target that sets two fields")
+	}
+	joined, err := groups.Accept(ctx, scope, card.ID, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.ID != created.ID {
+		t.Fatalf("joined group = %s, want %s", joined.ID, created.ID)
+	}
+	if _, err := groups.Accept(ctx, scope, card.ID, nil, nil, ""); err == nil {
+		t.Fatal("accepted a suggestion that was already settled")
+	}
+
+	mustProduct(t, catalog, "oats", "Rolled Oats")
+	mustProduct(t, catalog, "quick", "Quick Oats")
+	if _, err := db.Exec(`
+		INSERT INTO group_suggestions (id, user_id, household_id, kind, title, status)
+		VALUES ('sug-oats', 'user-1', ?, 'looks_alike', 'Oats', 'open')`, scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO group_suggestion_members (suggestion_id, product_id, included)
+		VALUES ('sug-oats', 'oats', 1), ('sug-oats', 'quick', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := groups.Accept(ctx, scope, "sug-oats", []string{"oats"}, &TargetInput{Clear: true}, "Breakfast oats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "Breakfast oats" {
+		t.Fatalf("name = %q", renamed.Name)
+	}
+}
+
+func floatPtr(n float64) *float64 { return &n }
 
 func sameIDs(a, b []Suggestion) bool {
 	if len(a) != len(b) {

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +79,138 @@ func TestOpenListenersClosesTheFirstWhenTheNextBindFails(t *testing.T) {
 	if dialErr == nil {
 		conn.Close()
 		t.Fatal("first listener stayed open after the second bind failed")
+	}
+}
+
+func TestOpenListenersRegistersAndWarnsForALANAddress(t *testing.T) {
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	var registered int
+	set, err := openListeners([]app.Listener{{
+		Addr:  "0.0.0.0:0",
+		Entry: app.EntryLAN,
+	}}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), func(*http.Server) {
+		registered++
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(set.close)
+	if registered != 1 {
+		t.Fatalf("registered %d servers", registered)
+	}
+	if !strings.Contains(logs.String(), "has no application login") {
+		t.Fatalf("log = %s", logs.String())
+	}
+}
+
+func TestShutdownServersTreatsADeadlineAsAClosedListener(t *testing.T) {
+	prevTimeout := shutdownTimeout
+	shutdownTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = prevTimeout })
+	orig := shutdownHTTP
+	t.Cleanup(func() { shutdownHTTP = orig })
+	shutdownHTTP = func(*http.Server, context.Context) error {
+		return context.DeadlineExceeded
+	}
+	srv := &http.Server{Handler: http.NewServeMux()}
+	if err := shutdownServers([]*http.Server{nil, srv}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDrainServeErrorsStopsWaiting(t *testing.T) {
+	prev := shutdownTimeout
+	shutdownTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = prev })
+	started := time.Now()
+	drainServeErrors(make(chan error), 4)
+	if time.Since(started) < 15*time.Millisecond {
+		t.Fatal("drain returned before the shutdown budget")
+	}
+	drainServeErrors(make(chan error), 0)
+}
+
+func TestRunHTTPServersClosesTheOthersWhenOneStops(t *testing.T) {
+	prev := shutdownTimeout
+	shutdownTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = prev })
+
+	ln := listenLocal(t)
+	srv := &http.Server{Handler: http.NewServeMux()}
+	serveErr := make(chan error, 2)
+	go func() { serveErr <- srv.Serve(ln) }()
+	waitListening(t, ln.Addr().String())
+
+	flushed := false
+	done := make(chan error, 1)
+	go func() {
+		done <- runHTTPServers([]*http.Server{srv, nil}, serveErr, make(chan struct{}), func() {
+			flushed = true
+		})
+	}()
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the other listeners were not closed")
+	}
+	if !flushed {
+		t.Fatal("error reports were not flushed")
+	}
+}
+
+func TestRunHTTPServersShutsThePeerDownWhenServeReturnsBeforeStop(t *testing.T) {
+	prev := shutdownTimeout
+	shutdownTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = prev })
+
+	set, err := openListeners([]app.Listener{
+		{Addr: "127.0.0.1:0", Entry: app.EntryLAN},
+		{Addr: "127.0.0.1:0", Entry: app.EntryPublic},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, addr := range set.addrs {
+		waitListening(t, addr)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- runHTTPServers(set.servers, set.serveErr, stop, func() {})
+	}()
+	if err := set.servers[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer listener was not shut down before stop closed")
+	}
+	select {
+	case <-stop:
+		t.Fatal("stop was closed")
+	default:
+	}
+	conn, dialErr := net.DialTimeout("tcp", set.addrs[1], 200*time.Millisecond)
+	if dialErr == nil {
+		conn.Close()
+		t.Fatal("peer listener accepted a connection after the other Serve returned")
 	}
 }
 

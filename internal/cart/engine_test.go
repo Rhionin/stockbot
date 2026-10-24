@@ -7,6 +7,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,8 @@ func TestProperty8_Isolation_StateKinds(t *testing.T) {
 
 		err = app.RunMigrations(db)
 		require.NoError(t, err)
+		scope, err := auth.PrimaryScope(context.Background(), db)
+		require.NoError(t, err)
 
 		ledger := NewLedger(db)
 		connDir := connection.NewDirectory(db)
@@ -138,13 +141,13 @@ func TestProperty8_Isolation_StateKinds(t *testing.T) {
 		providerID := ProviderID("test-mutation")
 
 		// Check initial state - no ledger entry
-		ledgerMap, err := ledger.ListForProvider(context.Background(), providerID)
+		ledgerMap, err := ledger.ListForProvider(context.Background(), scope, providerID)
 		assert.NoError(t, err)
 		assert.Empty(t, ledgerMap, "Ledger should be empty initially")
 
 		// Test connection directory operations
 		// Check initial state - no connection
-		conn, err := connDir.Read(context.Background(), string(providerID))
+		conn, err := connDir.Read(context.Background(), scope, string(providerID))
 		assert.NoError(t, err)
 		assert.Nil(t, conn, "Connection should be nil initially")
 

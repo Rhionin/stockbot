@@ -10,6 +10,7 @@ import (
 func TestSeed_OldPlanPinsFavoriteAndIncludesDelMonte(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	for _, row := range []struct{ id, name string }{
 		{"gv", "Great Value Cut Green Beans"},
 		{"kr", "Kroger Cut Green Beans"},
@@ -19,21 +20,21 @@ func TestSeed_OldPlanPinsFavoriteAndIncludesDelMonte(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-gv', 'user-1', 'gv')`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-gv', ?, ?, 'gv')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	key, ok := needKey("Great Value Cut Green Beans", "can")
 	if !ok {
 		t.Fatal("need key")
 	}
-	if _, err := conn.Exec(`INSERT INTO brand_preferences (user_id, need_key, item_id, ignore_price) VALUES ('user-1', ?, 'item-gv', 1)`, key); err != nil {
+	if _, err := conn.Exec(`INSERT INTO brand_preferences (household_id, user_id, need_key, item_id, ignore_price) VALUES (?, ?, ?, 'item-gv', 1)`, scope.HouseholdID(), scope.HouseholdID(), key); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := groups.Seed(ctx); err != nil {
+	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if err := groups.Seed(ctx); err != nil {
+	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,6 +75,7 @@ func TestSeed_OldPlanPinsFavoriteAndIncludesDelMonte(t *testing.T) {
 func TestSeed_SkipsGoneAndSinglePreferences(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
+	scope := scopeOf(t, conn)
 	if err := catalog.CreateProduct(ctx, product.Product{ID: "milk", Name: "Whole Milk", UnitOfMeasure: "carton"}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +83,10 @@ func TestSeed_SkipsGoneAndSinglePreferences(t *testing.T) {
 	if !ok {
 		t.Fatal("need key")
 	}
-	if _, err := conn.Exec(`INSERT INTO brand_preferences (user_id, need_key, item_id, ignore_price) VALUES ('user-1', ?, 'missing-item', 1)`, key); err != nil {
+	if _, err := conn.Exec(`INSERT INTO brand_preferences (household_id, user_id, need_key, item_id, ignore_price) VALUES (?, ?, ?, 'missing-item', 1)`, scope.HouseholdID(), scope.HouseholdID(), key); err != nil {
 		t.Fatal(err)
 	}
-	if err := groups.Seed(ctx); err != nil {
+	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
 	var n int

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
@@ -26,6 +27,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/server"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // defaultProductCacheTTL is used when PRODUCT_CACHE_TTL is unset, empty, or
@@ -120,7 +122,12 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	}
 
 	if !disabled {
-		saved, ok, err := appcred.NewVault(db).Load(context.Background(), "kroger")
+		scope, err := auth.PrimaryScope(context.Background(), db)
+		var saved appcred.Saved
+		var ok bool
+		if err == nil {
+			saved, ok, err = appcred.NewVault(db).Load(context.Background(), scope, "kroger")
+		}
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
@@ -159,10 +166,33 @@ func krogerBatchSize() int {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		if err := runAdmin(os.Args[2:]); err != nil {
+			log.Printf("admin: %s", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	stop := make(chan struct{})
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		close(stop)
+	}()
+	if err := start(stop); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// start opens the pantry, binds the listeners, and serves until stop is
+// closed. Errors name the startup step so the process log stays the same
+// when main exits.
+func start(stop <-chan struct{}) error {
 	dbPath := envOrDefault("DB_PATH", "pantry.db")
 	site, err := app.LoadRuntimeConfig(os.Getenv)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config: %w", err)
 	}
 	if site.AppBaseURL == "" {
 		log.Printf("site: %s, LAN only", site.AppName)
@@ -170,14 +200,12 @@ func main() {
 		log.Printf("site: %s at %s", site.AppName, site.AppBaseURL)
 	}
 
-	sqlDB, err := app.OpenSQLite(dbPath)
+	sqlDB, readDB, err := app.OpenPantry(dbPath)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer sqlDB.Close()
-
-	// SQLite is single-writer; limit to one connection to avoid SQLITE_BUSY.
-	sqlDB.SetMaxOpenConns(1)
+	defer readDB.Close()
 
 	// Bind before migrations. /health is 503 with status migrating until the
 	// real handler is installed, and /api/build is already this binary.
@@ -189,19 +217,34 @@ func main() {
 	// so a live /api/events tab does not hold the process for the whole budget.
 	listeners, err := openListeners(site.Listeners(), gate, streams.Register)
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
 
 	if err := app.RunMigrations(sqlDB); err != nil {
-		log.Fatalf("run migrations: %v", err)
+		return fmt.Errorf("run migrations: %w", err)
 	}
 	log.Println("migrations applied")
+	setupDir := envOrDefault("SETUP_DIR", "/run/setup")
+	directory := auth.NewService(sqlDB, setupDir)
+	if err := directory.Boot(context.Background()); err != nil {
+		log.Printf("setup code: %s", err.Error())
+	}
+	if err := server.ImportHouseholdPassword(context.Background(), sqlDB, os.Getenv("PANTRY_AUTH_FILE"), os.Getenv("PANTRY_SESSION_SECRET")); err != nil {
+		log.Printf("household login: %s", err.Error())
+	}
 
 	if _, err := product.BackfillNetSizes(context.Background(), sqlDB); err != nil {
-		log.Fatalf("backfill product sizes: %v", err)
+		return fmt.Errorf("backfill product sizes: %w", err)
 	}
-	if err := group.NewGroups(sqlDB).Seed(context.Background()); err != nil {
-		log.Fatalf("seed group suggestions: %v", err)
+	if err := auth.RejectRetiredHeadlessUser(context.Background(), sqlDB, os.Getenv(retiredScannerSetting())); err != nil {
+		return fmt.Errorf("scan listener: %w", err)
+	}
+	primary, err := auth.PrimaryScope(context.Background(), sqlDB)
+	if err != nil {
+		return fmt.Errorf("household: %w", err)
+	}
+	if err := group.NewGroups(sqlDB).Seed(context.Background(), primary); err != nil {
+		return fmt.Errorf("seed group suggestions: %w", err)
 	}
 
 	catalog := product.NewCatalog(sqlDB)
@@ -238,12 +281,26 @@ func main() {
 	stockOutBarcode := envOrDefault("STOCK_OUT_CONTROL_BARCODE", "STOCK_OUT")
 
 	listener, listenerOK := loadScanListenerConfigWithSource()
+	if listenerOK {
+		device, err := auth.DirectScanner(context.Background(), sqlDB)
+		if err != nil {
+			log.Printf("scan listener: %s", err.Error())
+			listenerOK = false
+		} else {
+			listener.Scope = device.Scope
+			listener.DeviceID = device.ID
+		}
+	}
 
 	// One mode for the HTTP switch and the headless listener. It publishes
 	// scanner_mode, including the idle return to scan-out, and keeps the
 	// health status on the same direction the next scan will use.
 	scannerMode := server.NewScannerMode(func(d scan.ScanDirection) {
-		broadcaster.PublishScannerModeEvent(d)
+		if listenerOK && listener.Scope.HouseholdID() != "" {
+			broadcaster.PublishScannerModeFor(listener.Scope.HouseholdID(), d)
+		} else {
+			broadcaster.PublishScannerModeEvent(d)
+		}
 		if listenerOK {
 			listener.SetStatusMode(d)
 		}
@@ -297,8 +354,28 @@ func main() {
 	if listenerOK {
 		opts = append(opts, server.WithScannerStatus(listener.Status))
 	}
-	opts = append(opts, server.WithHouseholdAuth(loadHouseholdAuth()))
+	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)), server.WithReadDB(readDB), server.WithStage1(directory, site))
 	handler, scanQueue := server.NewHandler(catalog, lookupService, refresher, sqlDB, opts...)
+	directory.SetBarcodeLookup(func(ctx context.Context, householdID, scanID, barcode string) {
+		scope, err := tenant.New(householdID)
+		if err != nil {
+			return
+		}
+		go func() {
+			_, _ = lookupService.Lookup(context.Background(), scope, barcode)
+		}()
+	})
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	go func() {
+		<-stop
+		sweepCancel()
+	}()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		directory.RunSweeper(sweepCtx, ticker.C)
+	}()
+	go directory.RunPurge(sweepCtx, 24*time.Hour)
 	gate.use(handler)
 
 	if listenerOK {
@@ -309,16 +386,10 @@ func main() {
 		go listener.Run(context.Background())
 	}
 
-	stop := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigs
-		close(stop)
-	}()
 	if err := runHTTPServers(listeners.servers, listeners.serveErr, stop, server.FlushSentry); err != nil {
-		log.Fatalf("listen: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
+	return nil
 }
 
 // shutdownTimeout is how long Shutdown waits for handlers to return. SSE
@@ -353,6 +424,24 @@ func loadPushConfig() push.Config {
 		log.Println("scan alerts: web push is off until VAPID keys are set")
 	}
 	return cfg
+}
+
+// loadHouseholdGate reads the shared password from the database. The Caddy
+// file is only the one-time import source. A missing hash fails closed on
+// the public hostname. The LAN listener never sends X-Pantry-Entry, so it
+// stays open.
+func loadHouseholdGate(db *sql.DB) *server.HouseholdAuth {
+	household, err := server.HouseholdAuthFromDB(context.Background(), db)
+	if err != nil {
+		log.Printf("household login: %s", err.Error())
+	}
+	if household == nil {
+		return server.FailClosedHouseholdAuth()
+	}
+	if household.Configured {
+		log.Printf("household login: the public site signs in as %s", household.Username)
+	}
+	return household
 }
 
 // loadHouseholdAuth always returns a gate. An unset, empty, or unreadable
@@ -404,6 +493,13 @@ func (disabledExternalLookup) LookupIn(context.Context, product.ExternalSource, 
 	return nil, product.ErrProductNotFound
 }
 
+// retiredScannerSetting is the environment variable that used to name the
+// only account. Startup rejects any value other than the primary household's
+// recorded legacy id.
+func retiredScannerSetting() string {
+	return "HEADLESS_" + "USER_ID"
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -423,7 +519,6 @@ func loadScanListenerConfig() (*scanlistener.ScanListener, bool) {
 	return &scanlistener.ScanListener{
 		StockInBarcode:  stockIn,
 		StockOutBarcode: stockOut,
-		HeadlessUserID:  envOrDefault("HEADLESS_USER_ID", "user-1"),
 	}, true
 }
 
@@ -453,7 +548,6 @@ func loadScanListenerConfigWithSource() (*scanlistener.ScanListener, bool) {
 	listener.Source = source
 	listener.StockInBarcode = stockIn
 	listener.StockOutBarcode = stockOut
-	listener.HeadlessUserID = envOrDefault("HEADLESS_USER_ID", "user-1")
 	listener.DevicePath = envOrDefault("SCANNER_DEVICE", "/dev/input/pantry-scanner")
 
 	log.Printf("scan listener: configured with source=%s device=%s", source, listener.DevicePath)

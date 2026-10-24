@@ -12,6 +12,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -27,7 +28,7 @@ import (
 // exactly N.
 
 func TestProperty_StockInCreatesExactlyNInstances(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 
@@ -72,7 +73,7 @@ func TestProperty_StockInCreatesExactlyNInstances(t *testing.T) {
 				ProductID: &productID,
 				Status:    scan.Pending,
 			}
-			created, err := queue.CreateScanEntry(ctx, scanEntry)
+			created, err := queue.CreateScanEntry(ctx, scope, scanEntry)
 			if err != nil {
 				t.Fatalf("CreateScanEntry: %v", err)
 			}
@@ -91,7 +92,7 @@ func TestProperty_StockInCreatesExactlyNInstances(t *testing.T) {
 			}
 
 			// Commit stock-in
-			if err := queue.CommitStockIn(ctx, created); err != nil {
+			if err := queue.CommitStockIn(ctx, scope, created); err != nil {
 				t.Fatalf("CommitStockIn: %v", err)
 			}
 
@@ -177,7 +178,7 @@ func TestProperty_StockInCreatesExactlyNInstances(t *testing.T) {
 // by exactly 1. A larger unit count removes that many units; the HTTP tests cover it.
 
 func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 
@@ -242,9 +243,9 @@ func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
 			userID := uuid.NewString()
 			itemID := uuid.NewString()
 			_, err := db.ExecContext(ctx, `
-				INSERT INTO items (id, user_id, product_id)
-				VALUES (?, ?, ?)`,
-				itemID, userID, productID)
+				INSERT INTO items (id, user_id, product_id, household_id)
+				VALUES (?, ?, ?, ?)`,
+				itemID, userID, productID, scope.HouseholdID())
 			if err != nil {
 				t.Fatalf("create item: %v", err)
 			}
@@ -254,9 +255,9 @@ func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
 			for i, expiresAt := range tc.expirationDates {
 				instanceIDs[i] = uuid.NewString()
 				_, err := db.ExecContext(ctx, `
-					INSERT INTO item_instances (id, item_id, stock_in_at, expires_at)
-					VALUES (?, ?, ?, ?)`,
-					instanceIDs[i], itemID, now.Add(-24*time.Hour), nullableTime(expiresAt))
+					INSERT INTO item_instances (id, item_id, household_id, stock_in_at, expires_at)
+					VALUES (?, ?, ?, ?, ?)`,
+					instanceIDs[i], itemID, scope.HouseholdID(), now.Add(-24*time.Hour), nullableTime(expiresAt))
 				if err != nil {
 					t.Fatalf("create instance %d: %v", i, err)
 				}
@@ -286,12 +287,12 @@ func TestProperty_StockOutRemovesUseOldestFirst(t *testing.T) {
 				ProductID: &productID,
 				Status:    scan.Pending,
 			}
-			created, err := queue.CreateScanEntry(ctx, scanEntry)
+			created, err := queue.CreateScanEntry(ctx, scope, scanEntry)
 			if err != nil {
 				t.Fatalf("CreateScanEntry: %v", err)
 			}
 
-			if _, err := queue.CommitStockOut(ctx, created, nil); err != nil {
+			if _, err := queue.CommitStockOut(ctx, scope, created, nil); err != nil {
 				t.Fatalf("CommitStockOut: %v", err)
 			}
 
@@ -385,12 +386,12 @@ func TestResolveFlaggedEntry(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setup       func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (scanEntryID, productID string)
+		setup       func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (scanEntryID, productID string)
 		expectError bool
 	}{
 		{
 			name: "successfully resolves flagged entry",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -406,7 +407,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 					UnitCount: 1,
 					Status:    scan.Flagged,
 				}
-				created, err := queue.CreateScanEntry(ctx, entry)
+				created, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -416,7 +417,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 		},
 		{
 			name: "scan entry not found",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -430,7 +431,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 		},
 		{
 			name: "scan entry is not flagged",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -446,7 +447,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 					UnitCount: 1,
 					Status:    scan.Pending,
 				}
-				created, err := queue.CreateScanEntry(ctx, entry)
+				created, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -456,7 +457,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 		},
 		{
 			name: "product not found",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				entry := scan.ScanEntry{
 					ID:        uuid.NewString(),
 					UserID:    uuid.NewString(),
@@ -465,7 +466,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 					UnitCount: 1,
 					Status:    scan.Flagged,
 				}
-				created, err := queue.CreateScanEntry(ctx, entry)
+				created, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -477,11 +478,11 @@ func TestResolveFlaggedEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, db := newTestQueue(t)
+			queue, db, scope := newTestQueue(t)
 			ctx := context.Background()
-			scanEntryID, productID := tt.setup(t, queue, db, ctx)
+			scanEntryID, productID := tt.setup(t, queue, db, ctx, scope)
 
-			err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID)
+			err := queue.ResolveFlaggedEntry(ctx, scope, scanEntryID, productID)
 			if tt.expectError {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -492,7 +493,7 @@ func TestResolveFlaggedEntry(t *testing.T) {
 				t.Fatalf("ResolveFlaggedEntry: %v", err)
 			}
 
-			got, err := queue.GetScanEntry(ctx, scanEntryID)
+			got, err := queue.GetScanEntry(ctx, scope, scanEntryID)
 			if err != nil {
 				t.Fatalf("GetScanEntry: %v", err)
 			}
@@ -513,9 +514,9 @@ func TestResolveFlaggedEntry(t *testing.T) {
 
 // createFlaggedEntry creates a flagged scan entry (no product_id) ready to
 // be resolved.
-func createFlaggedEntry(t *testing.T, queue *scan.Queue, ctx context.Context) *scan.ScanEntry {
+func createFlaggedEntry(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) *scan.ScanEntry {
 	t.Helper()
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        uuid.NewString(),
 		UserID:    uuid.NewString(),
 		Barcode:   uuid.NewString(),
@@ -531,7 +532,7 @@ func createFlaggedEntry(t *testing.T, queue *scan.Queue, ctx context.Context) *s
 
 // createStockInEntry creates a pending stock-in scan entry for a freshly
 // created product, ready to be committed.
-func createStockInEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, unitCount int) *scan.ScanEntry {
+func createStockInEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope, unitCount int) *scan.ScanEntry {
 	t.Helper()
 	catalog := product.NewCatalog(db)
 	productID := uuid.NewString()
@@ -541,7 +542,7 @@ func createStockInEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context
 		t.Fatalf("CreateProduct: %v", err)
 	}
 	direction := scan.StockIn
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        uuid.NewString(),
 		UserID:    uuid.NewString(),
 		Barcode:   uuid.NewString(),
@@ -559,7 +560,7 @@ func createStockInEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context
 
 // createStockOutEntry creates a product and item with one existing instance,
 // then a pending stock-out scan entry for that item, ready to be committed.
-func createStockOutEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) *scan.ScanEntry {
+func createStockOutEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) *scan.ScanEntry {
 	t.Helper()
 	catalog := product.NewCatalog(db)
 	productID := uuid.NewString()
@@ -570,19 +571,19 @@ func createStockOutEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx contex
 	}
 	userID := uuid.NewString()
 	itemID := uuid.NewString()
-	if _, err := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`,
-		itemID, userID, productID); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+		itemID, userID, productID, scope.HouseholdID()); err != nil {
 		t.Fatalf("create item: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at)
-		VALUES (?, ?, ?, ?)`,
-		uuid.NewString(), itemID, time.Now(), nullableTime(nil)); err != nil {
+		INSERT INTO item_instances (id, item_id, household_id, stock_in_at, expires_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		uuid.NewString(), itemID, scope.HouseholdID(), time.Now(), nullableTime(nil)); err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
 
 	direction := scan.StockOut
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        uuid.NewString(),
 		UserID:    userID,
 		Barcode:   uuid.NewString(),
@@ -599,7 +600,7 @@ func createStockOutEntry(t *testing.T, queue *scan.Queue, db *sql.DB, ctx contex
 }
 
 func TestResolveFlaggedEntry_PublishesScanEvent(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	catalog := product.NewCatalog(db)
@@ -609,16 +610,16 @@ func TestResolveFlaggedEntry_PublishesScanEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	entry := createFlaggedEntry(t, queue, ctx)
+	entry := createFlaggedEntry(t, queue, ctx, scope)
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	if err := queue.ResolveFlaggedEntry(ctx, entry.ID, productID); err != nil {
+	if err := queue.ResolveFlaggedEntry(ctx, scope, entry.ID, productID); err != nil {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
 
-	want, err := queue.GetScanEntry(ctx, entry.ID)
+	want, err := queue.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -636,11 +637,11 @@ func TestResolveFlaggedEntry_PublishesScanEvent(t *testing.T) {
 func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 	tests := []struct {
 		name  string
-		setup func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (scanEntryID, productID string)
+		setup func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (scanEntryID, productID string)
 	}{
 		{
 			name: "scan entry not found",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -653,7 +654,7 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 		},
 		{
 			name: "scan entry is not flagged",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -661,7 +662,7 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("CreateProduct: %v", err)
 				}
-				created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+				created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					ID:        uuid.NewString(),
 					UserID:    uuid.NewString(),
 					Barcode:   uuid.NewString(),
@@ -677,8 +678,8 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 		},
 		{
 			name: "product not found",
-			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (string, string) {
-				entry := createFlaggedEntry(t, queue, ctx)
+			setup: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (string, string) {
+				entry := createFlaggedEntry(t, queue, ctx, scope)
 				return entry.ID, "no-such-product"
 			},
 		},
@@ -686,14 +687,14 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, db := newTestQueue(t)
+			queue, db, scope := newTestQueue(t)
 			ctx := context.Background()
-			scanEntryID, productID := tt.setup(t, queue, db, ctx)
+			scanEntryID, productID := tt.setup(t, queue, db, ctx, scope)
 
 			broadcaster := &fakeBroadcaster{}
 			queue.Broadcaster = broadcaster
 
-			if err := queue.ResolveFlaggedEntry(ctx, scanEntryID, productID); err == nil {
+			if err := queue.ResolveFlaggedEntry(ctx, scope, scanEntryID, productID); err == nil {
 				t.Fatal("expected error, got nil")
 			}
 			if len(broadcaster.scanEvents) != 0 {
@@ -704,19 +705,19 @@ func TestResolveFlaggedEntry_ErrorConditions_NoPublish(t *testing.T) {
 }
 
 func TestCommitStockIn_PublishesScanEvent(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
-	entry := createStockInEntry(t, queue, db, ctx, 3)
+	entry := createStockInEntry(t, queue, db, ctx, scope, 3)
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 	// queue.Pantry left nil: no Inventory_Event should be published.
 
-	if err := queue.CommitStockIn(ctx, entry); err != nil {
+	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
 		t.Fatalf("CommitStockIn: %v", err)
 	}
 
-	want, err := queue.GetScanEntry(ctx, entry.ID)
+	want, err := queue.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -732,28 +733,28 @@ func TestCommitStockIn_PublishesScanEvent(t *testing.T) {
 }
 
 func TestCommitStockIn_PublishesInventoryEvent_WithPantry(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
-	entry := createStockInEntry(t, queue, db, ctx, 3)
+	entry := createStockInEntry(t, queue, db, ctx, scope, 3)
 
 	pantry := inventory.NewPantry(db)
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 	queue.Pantry = pantry
 
-	if err := queue.CommitStockIn(ctx, entry); err != nil {
+	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
 		t.Fatalf("CommitStockIn: %v", err)
 	}
 
-	wantEntry, err := queue.GetScanEntry(ctx, entry.ID)
+	wantEntry, err := queue.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, entry.UserID, *entry.ProductID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, *entry.ProductID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
-	wantInventoryItem, err := pantry.GetInventoryItem(ctx, item.ID, time.Now(), inventory.DefaultWarningDays)
+	wantInventoryItem, err := pantry.GetInventoryItem(ctx, scope, item.ID, time.Now(), inventory.DefaultWarningDays)
 	if err != nil {
 		t.Fatalf("GetInventoryItem: %v", err)
 	}
@@ -775,44 +776,44 @@ func TestCommitStockIn_PublishesInventoryEvent_WithPantry(t *testing.T) {
 func TestCommitStockIn_ErrorConditions_NoPublish(t *testing.T) {
 	tests := []struct {
 		name  string
-		entry func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) *scan.ScanEntry
+		entry func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) *scan.ScanEntry
 	}{
 		{
 			name: "direction is not stock_in",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) *scan.ScanEntry {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) *scan.ScanEntry {
 				direction := scan.StockOut
 				productID := "prod-1"
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 1}
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 1}
 			},
 		},
 		{
 			name: "missing product_id",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) *scan.ScanEntry {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) *scan.ScanEntry {
 				direction := scan.StockIn
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, UnitCount: 1}
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, UnitCount: 1}
 			},
 		},
 		{
 			name: "unit count less than 1",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) *scan.ScanEntry {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) *scan.ScanEntry {
 				direction := scan.StockIn
 				productID := "prod-1"
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID, UnitCount: 0}
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID, UnitCount: 0}
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, db := newTestQueue(t)
+			queue, db, scope := newTestQueue(t)
 			ctx := context.Background()
-			entry := tt.entry(t, queue, db, ctx)
+			entry := tt.entry(t, queue, db, ctx, scope)
 
 			broadcaster := &fakeBroadcaster{}
 			queue.Broadcaster = broadcaster
 			queue.Pantry = inventory.NewPantry(db)
 
-			if err := queue.CommitStockIn(ctx, entry); err == nil {
+			if err := queue.CommitStockIn(ctx, scope, entry); err == nil {
 				t.Fatal("expected error, got nil")
 			}
 			if len(broadcaster.scanEvents) != 0 {
@@ -826,19 +827,19 @@ func TestCommitStockIn_ErrorConditions_NoPublish(t *testing.T) {
 }
 
 func TestCommitStockOut_PublishesScanEvent(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
-	entry := createStockOutEntry(t, queue, db, ctx)
+	entry := createStockOutEntry(t, queue, db, ctx, scope)
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 	// queue.Pantry left nil: no Inventory_Event should be published.
 
-	if _, err := queue.CommitStockOut(ctx, entry, nil); err != nil {
+	if _, err := queue.CommitStockOut(ctx, scope, entry, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 
-	want, err := queue.GetScanEntry(ctx, entry.ID)
+	want, err := queue.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -854,28 +855,28 @@ func TestCommitStockOut_PublishesScanEvent(t *testing.T) {
 }
 
 func TestCommitStockOut_PublishesInventoryEvent_WithPantry(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
-	entry := createStockOutEntry(t, queue, db, ctx)
+	entry := createStockOutEntry(t, queue, db, ctx, scope)
 
 	pantry := inventory.NewPantry(db)
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 	queue.Pantry = pantry
 
-	if _, err := queue.CommitStockOut(ctx, entry, nil); err != nil {
+	if _, err := queue.CommitStockOut(ctx, scope, entry, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 
-	wantEntry, err := queue.GetScanEntry(ctx, entry.ID)
+	wantEntry, err := queue.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, entry.UserID, *entry.ProductID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, *entry.ProductID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
-	wantInventoryItem, err := pantry.GetInventoryItem(ctx, item.ID, time.Now(), inventory.DefaultWarningDays)
+	wantInventoryItem, err := pantry.GetInventoryItem(ctx, scope, item.ID, time.Now(), inventory.DefaultWarningDays)
 	if err != nil {
 		t.Fatalf("GetInventoryItem: %v", err)
 	}
@@ -897,42 +898,42 @@ func TestCommitStockOut_PublishesInventoryEvent_WithPantry(t *testing.T) {
 func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 	tests := []struct {
 		name  string
-		entry func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string)
+		entry func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string)
 	}{
 		{
 			name: "direction is not stock_out",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string) {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string) {
 				direction := scan.StockIn
 				productID := "prod-1"
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}, nil
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}, nil
 			},
 		},
 		{
 			name: "missing product_id",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string) {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string) {
 				direction := scan.StockOut
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction}, nil
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction}, nil
 			},
 		},
 		{
 			name: "no item found for user and product",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string) {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string) {
 				direction := scan.StockOut
 				productID := "no-such-product"
-				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "user-1", Direction: &direction, ProductID: &productID}, nil
+				return &scan.ScanEntry{ID: uuid.NewString(), UserID: "actor", Direction: &direction, ProductID: &productID}, nil
 			},
 		},
 		{
 			name: "specific instance not found or already removed",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string) {
-				entry := createStockOutEntry(t, queue, db, ctx)
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string) {
+				entry := createStockOutEntry(t, queue, db, ctx, scope)
 				missing := "no-such-instance"
 				return entry, &missing
 			},
 		},
 		{
 			name: "no available instances",
-			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context) (*scan.ScanEntry, *string) {
+			entry: func(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope) (*scan.ScanEntry, *string) {
 				catalog := product.NewCatalog(db)
 				productID := uuid.NewString()
 				if err := catalog.CreateProduct(ctx, product.Product{
@@ -942,12 +943,12 @@ func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 				}
 				userID := uuid.NewString()
 				itemID := uuid.NewString()
-				if _, err := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`,
-					itemID, userID, productID); err != nil {
+				if _, err := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+					itemID, userID, productID, scope.HouseholdID()); err != nil {
 					t.Fatalf("create item: %v", err)
 				}
 				direction := scan.StockOut
-				created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+				created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					ID:        uuid.NewString(),
 					UserID:    userID,
 					Barcode:   uuid.NewString(),
@@ -967,15 +968,15 @@ func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, db := newTestQueue(t)
+			queue, db, scope := newTestQueue(t)
 			ctx := context.Background()
-			entry, instanceID := tt.entry(t, queue, db, ctx)
+			entry, instanceID := tt.entry(t, queue, db, ctx, scope)
 
 			broadcaster := &fakeBroadcaster{}
 			queue.Broadcaster = broadcaster
 			queue.Pantry = inventory.NewPantry(db)
 
-			_, err := queue.CommitStockOut(ctx, entry, instanceID)
+			_, err := queue.CommitStockOut(ctx, scope, entry, instanceID)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -997,7 +998,7 @@ func TestCommitStockOut_ErrorConditions_NoPublish(t *testing.T) {
 // supported mode: none of ResolveFlaggedEntry, CommitStockIn, or
 // CommitStockOut panics or changes its return value because of it.
 func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	catalog := product.NewCatalog(db)
@@ -1007,18 +1008,18 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	flagged := createFlaggedEntry(t, queue, ctx)
-	if err := queue.ResolveFlaggedEntry(ctx, flagged.ID, productID); err != nil {
+	flagged := createFlaggedEntry(t, queue, ctx, scope)
+	if err := queue.ResolveFlaggedEntry(ctx, scope, flagged.ID, productID); err != nil {
 		t.Fatalf("ResolveFlaggedEntry: %v", err)
 	}
 
-	stockIn := createStockInEntry(t, queue, db, ctx, 2)
-	if err := queue.CommitStockIn(ctx, stockIn); err != nil {
+	stockIn := createStockInEntry(t, queue, db, ctx, scope, 2)
+	if err := queue.CommitStockIn(ctx, scope, stockIn); err != nil {
 		t.Fatalf("CommitStockIn: %v", err)
 	}
 
-	stockOut := createStockOutEntry(t, queue, db, ctx)
-	if _, err := queue.CommitStockOut(ctx, stockOut, nil); err != nil {
+	stockOut := createStockOutEntry(t, queue, db, ctx, scope)
+	if _, err := queue.CommitStockOut(ctx, scope, stockOut, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
 }

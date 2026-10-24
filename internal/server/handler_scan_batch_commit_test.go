@@ -352,7 +352,7 @@ func TestScanBatchCommit(t *testing.T) {
 				flagged := scan.Flagged
 				in := scan.StockIn
 				productID := "prod-flag-mix"
-				if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+				if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 					ID: "scan-held", UserID: "user-1", Barcode: "scan-held",
 					ScannedAt: time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC),
 					Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
@@ -416,14 +416,14 @@ func TestScanBatchCommit(t *testing.T) {
 				at := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 				gap := "prod-gap"
 				queue := scan.NewQueue(env.DB)
-				if _, err := queue.CreateScanEntry(context.Background(), scan.ScanEntry{
+				if _, err := queue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 					ID: "scan-nodir", UserID: "user-1", Barcode: "scan-nodir",
 					ScannedAt: at, UnitCount: 1, Status: scan.Pending, ProductID: &gap,
 				}); err != nil {
 					env.T.Fatalf("scan without direction: %v", err)
 				}
 				in := scan.StockIn
-				if _, err := queue.CreateScanEntry(context.Background(), scan.ScanEntry{
+				if _, err := queue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 					ID: "scan-noprod", UserID: "user-1", Barcode: "scan-noprod",
 					ScannedAt: at, Direction: &in, UnitCount: 1, Status: scan.Pending,
 				}); err != nil {

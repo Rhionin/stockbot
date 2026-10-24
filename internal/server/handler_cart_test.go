@@ -189,7 +189,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
-				if err := connection.NewDirectory(env.DB).Write(context.Background(), &connection.Connection{
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:    "kroger",
 					State:       connection.StateConnected,
 					AccessToken: "should-not-leak",
@@ -411,6 +411,234 @@ func TestCartHTTP(t *testing.T) {
 					assertions: []assertion{
 						{path: "$.error", value: "Choose a product on this line."},
 					},
+				},
+			),
+		},
+		{
+			name: "export reports an unknown line when the retailer does not answer",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-unk", "Milk", "item-unk")
+				insertManualShoppingItem(env.T, env.DB, "sli-unk", "user-1", "item-unk", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "555", "prod-unk", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithDispositions(cart.DispositionIndeterminate).
+					WithIdentityLookup("555", cart.ProductIdentity("milk"))
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.provider", value: "test-none-server_push"},
+					{path: "$.exported", value: float64(0)},
+					{path: "$.unknownItems[0]", value: "Milk"},
+					{path: "$.entries[0].outcome", value: "unknown"},
+				},
+			},
+		},
+		{
+			name: "export names a product it cannot identify",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-noid", "Oats", "item-noid")
+				insertManualShoppingItem(env.T, env.DB, "sli-noid", "user-1", "item-noid", 1)
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, carttest.NewScript())
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-none-server_push"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.failedItems[0]", value: "Oats"},
+					{path: "$.entries[0].outcome", value: "failed"},
+				},
+			},
+		},
+		{
+			name: "export returns a handoff link",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-hand", "Rice", "item-hand")
+				insertManualShoppingItem(env.T, env.DB, "sli-hand", "user-1", "item-hand", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "444", "prod-hand", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithDispositions(cart.DispositionAccepted).
+					WithIdentityLookup("444", cart.ProductIdentity("rice"))
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryClientHandoff,
+					Confirmation: cart.ConfirmNone,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-none-client_handoff"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.handoff.url", value: "https://example.com/handoff"},
+					{path: "$.handoff.expires", value: "30 minutes from now"},
+				},
+			},
+		},
+		{
+			name: "export refuses a provider that is not connected",
+			setup: func(env testEnv) {
+				adapter, err := kroger.New("my-client", "secret", "https://app.example/cb", "PICKUP")
+				if err != nil {
+					env.T.Fatalf("kroger.New: %v", err)
+				}
+				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"kroger"}`,
+				expectedStatus: http.StatusConflict,
+				bodyContains:   []string{"not connected"},
+			},
+		},
+		{
+			name: "export refuses an unknown provider and a provider with no credentials",
+			setup: func(env testEnv) {
+				push := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmNone,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, carttest.NewScript())
+				handoff := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryClientHandoff,
+					Confirmation: cart.ConfirmNone,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, carttest.NewScript())
+				if err := env.Registry.Register(push, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatal(err)
+				}
+				if err := env.Registry.Register(handoff, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatal(err)
+				}
+				if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{}`,
+				expectedStatus: http.StatusBadRequest,
+				bodyContains:   []string{"not registered"},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/export",
+					body:           `{"provider":"nope"}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"nope", "not registered"},
+				},
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/export",
+					body:           `{"provider":"kroger"}`,
+					expectedStatus: http.StatusConflict,
+					bodyContains:   []string{"Kroger is not configured"},
+				},
+			),
+		},
+		{
+			name: "credentials reject a blank id, a bad modality, and a bad redirect",
+			setup: func(env testEnv) {
+				if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "PUT",
+				path:           "/api/providers/kroger/credentials",
+				body:           `{"clientId":"  ","clientSecret":"secret","redirectUri":"https://pantry.example/cb","modality":"PICKUP"}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				bodyContains:   []string{"Client ID is required."},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "PUT",
+					path:           "/api/providers/kroger/credentials",
+					body:           `{"clientId":"ui","clientSecret":"secret","redirectUri":"https://pantry.example/cb","modality":"CURBSIDE"}`,
+					expectedStatus: http.StatusUnprocessableEntity,
+					bodyContains:   []string{"PICKUP or DELIVERY"},
+				},
+				httpExchange{
+					method:         "PUT",
+					path:           "/api/providers/kroger/credentials",
+					body:           `{"clientId":"ui","clientSecret":"secret","redirectUri":"not a url","modality":"PICKUP"}`,
+					expectedStatus: http.StatusUnprocessableEntity,
+					bodyContains:   []string{"http or https"},
+				},
+				httpExchange{
+					method:         "PUT",
+					path:           "/api/providers/kroger/credentials",
+					body:           `{"clientId":"ui","clientSecret":"","redirectUri":"https://pantry.example/cb"}`,
+					expectedStatus: http.StatusUnprocessableEntity,
+					bodyContains:   []string{"Client secret is required."},
+				},
+				httpExchange{
+					method:         "PUT",
+					path:           "/api/providers/nope/credentials",
+					body:           `{"clientId":"ui","clientSecret":"secret","redirectUri":"https://pantry.example/cb"}`,
+					expectedStatus: http.StatusNotFound,
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/providers/missing/authorize",
+					expectedStatus: http.StatusNotFound,
+					bodyContains:   []string{"not registered"},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/providers/kroger/callback",
+					query:          map[string]string{"error": "access_denied", "state": "nope"},
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"declined the connection"},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/providers/kroger/callback",
+					query:          map[string]string{"code": "abc", "state": "never-issued"},
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"invalid or expired"},
 				},
 			),
 		},

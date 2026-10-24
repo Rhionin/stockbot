@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Rhionin/stockbot/internal/changes"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // PlannedLine is one supply line ready to persist.
@@ -30,7 +33,10 @@ type ShelfMember struct {
 // SavePlannedLines writes one supply snapshot into the staged cart.
 // Untouched auto rows are refreshed. A line the owner changed (touched) stays.
 // Auto rows the owner removed stay removed. Manual rows are neither deleted nor resized.
-func (s *Store) SavePlannedLines(ctx context.Context, userID string, lines []PlannedLine, members []ShelfMember) error {
+func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines []PlannedLine, members []ShelfMember) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not begin shopping list update: %w", err)
@@ -48,11 +54,11 @@ func (s *Store) SavePlannedLines(ctx context.Context, userID string, lines []Pla
 		membersOf[member.GroupKey][member.ItemID] = struct{}{}
 	}
 
-	touched, touchedGroups, err := listTouchedAutoItems(ctx, tx, userID)
+	touched, touchedGroups, err := listTouchedAutoItems(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
-	skipped, skippedGroups, err := listSkippedItems(ctx, tx, userID)
+	skipped, skippedGroups, err := listSkippedItems(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -90,25 +96,29 @@ func (s *Store) SavePlannedLines(ctx context.Context, userID string, lines []Pla
 				continue
 			}
 		}
-		if err := upsertAutoLine(ctx, tx, userID, itemID, line.GroupKey, line.Quantity, line.Note); err != nil {
+		if err := upsertAutoLine(ctx, scope, tx, itemID, line.GroupKey, line.Quantity, line.Note); err != nil {
 			return err
 		}
 		keep[itemID] = struct{}{}
 	}
-	if err := deleteUnplannedAuto(ctx, tx, userID, keep); err != nil {
+	if err := deleteUnplannedAuto(ctx, scope, tx, keep); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitList(ctx, tx, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not save shopping list updates: %w", err)
 	}
 	return nil
 }
 
-func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID string, quantity int, note string) error {
+func upsertAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID, groupID string, quantity int, note string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	household := scope.HouseholdID()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, quantity, note, purchased_at, CAST(created_at AS TEXT) FROM shopping_list_items
-		WHERE user_id = ? AND item_id = ? AND source = 'auto'
-		ORDER BY created_at ASC, rowid ASC`, userID, itemID)
+		WHERE household_id = ? AND item_id = ? AND source = 'auto'
+		ORDER BY created_at ASC, rowid ASC`, household, itemID)
 	if err != nil {
 		return fmt.Errorf("could not load shopping list item %q: %w", itemID, err)
 	}
@@ -144,7 +154,7 @@ func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID str
 		return fmt.Errorf("could not read shopping list item %q: %w", itemID, err)
 	}
 
-	stockIns, err := stockInTimes(ctx, tx, itemID)
+	stockIns, err := stockInTimes(ctx, scope, tx, itemID)
 	if err != nil {
 		return err
 	}
@@ -182,9 +192,9 @@ func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID str
 			return nil
 		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, note, created_at, group_id)
-			VALUES (?, ?, ?, ?, 'auto', ?, ?, ?)`,
-			uuid.NewString(), userID, itemID, quantity, note, time.Now().UTC(), storedGroup,
+			INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, note, created_at, group_id)
+			VALUES (?, ?, ?, ?, ?, 'auto', ?, ?, ?)`,
+			uuid.NewString(), household, household, itemID, quantity, note, time.Now().UTC(), storedGroup,
 		)
 		if err != nil {
 			return fmt.Errorf("could not add shopping list item %q: %w", itemID, err)
@@ -197,25 +207,28 @@ func upsertAutoLine(ctx context.Context, tx *sql.Tx, userID, itemID, groupID str
 		SET quantity = ?,
 		    note = ?,
 		    group_id = ?
-		WHERE id = ?`,
-		quantity, note, storedGroup, openID,
+		WHERE id = ? AND household_id = ?`,
+		quantity, note, storedGroup, openID, household,
 	)
 	if err != nil {
 		return fmt.Errorf("could not refresh shopping list item %q: %w", itemID, err)
 	}
 	for _, extra := range extras {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ?`, extra); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ? AND household_id = ?`, extra, household); err != nil {
 			return fmt.Errorf("could not refresh shopping list item %q: %w", itemID, err)
 		}
 	}
 	return nil
 }
 
-func listTouchedAutoItems(ctx context.Context, tx *sql.Tx, userID string) (map[string]struct{}, map[string]struct{}, error) {
+func listTouchedAutoItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]struct{}, map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id, COALESCE(group_id, '') FROM shopping_list_items
-		WHERE user_id = ? AND source = 'auto' AND touched = 1 AND purchased_at IS NULL`,
-		userID)
+		WHERE household_id = ? AND source = 'auto' AND touched = 1 AND purchased_at IS NULL`,
+		scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not load shopping list edits: %w", err)
 	}
@@ -238,9 +251,12 @@ func listTouchedAutoItems(ctx context.Context, tx *sql.Tx, userID string) (map[s
 	return touched, groups, nil
 }
 
-func listSkippedItems(ctx context.Context, tx *sql.Tx, userID string) (map[string]struct{}, map[string]struct{}, error) {
+func listSkippedItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]struct{}, map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT item_id, COALESCE(group_id, '') FROM staged_cart_skips WHERE user_id = ?`, userID)
+		SELECT item_id, COALESCE(group_id, '') FROM staged_cart_skips WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not load removed shopping list items: %w", err)
 	}
@@ -281,10 +297,13 @@ func groupSkipped(skipped, skippedGroups map[string]struct{}, key, itemID string
 	return false
 }
 
-func deleteUnplannedAuto(ctx context.Context, tx *sql.Tx, userID string, keep map[string]struct{}) error {
+func deleteUnplannedAuto(ctx context.Context, scope tenant.Scope, tx *sql.Tx, keep map[string]struct{}) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, item_id, touched, purchased_at, CAST(created_at AS TEXT) FROM shopping_list_items
-		WHERE user_id = ? AND source = 'auto'`, userID)
+		WHERE household_id = ? AND source = 'auto'`, scope.HouseholdID())
 	if err != nil {
 		return fmt.Errorf("could not load derived shopping list items: %w", err)
 	}
@@ -333,7 +352,7 @@ func deleteUnplannedAuto(ctx context.Context, tx *sql.Tx, userID string, keep ma
 			// unplanned auto line.
 			times, ok := stocked[row.itemID]
 			if !ok {
-				times, err = stockInTimes(ctx, tx, row.itemID)
+				times, err = stockInTimes(ctx, scope, tx, row.itemID)
 				if err != nil {
 					return err
 				}
@@ -353,17 +372,22 @@ func deleteUnplannedAuto(ctx context.Context, tx *sql.Tx, userID string, keep ma
 		drop = append(drop, row.id)
 	}
 	for _, id := range drop {
-		if err := deleteShoppingRow(ctx, tx, id); err != nil {
+		if err := deleteShoppingRow(ctx, scope, tx, id); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func stockInTimes(ctx context.Context, tx *sql.Tx, itemID string) ([]time.Time, error) {
+func stockInTimes(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string) ([]time.Time, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	household := scope.HouseholdID()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT CAST(at AS TEXT) FROM stock_in_events
-		WHERE product_id = (SELECT product_id FROM items WHERE id = ?)`, itemID)
+		WHERE household_id = ? AND product_id = (SELECT product_id FROM items WHERE id = ? AND household_id = ?)`,
+		household, itemID, household)
 	if err != nil {
 		return nil, fmt.Errorf("could not read stock-in events: %w", err)
 	}
@@ -427,7 +451,10 @@ func parseStoredTime(raw string) (time.Time, error) {
 // EndTrip drops checked-off auto rows. Starting a new cart ends the
 // protection those rows had during a target change, so the next list can
 // plan the item again.
-func (s *Store) EndTrip(ctx context.Context, userID string) error {
+func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
@@ -435,7 +462,7 @@ func (s *Store) EndTrip(ctx context.Context, userID string) error {
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM shopping_list_items
-		WHERE user_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`, userID)
+		WHERE household_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`, scope.HouseholdID())
 	if err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
@@ -455,21 +482,29 @@ func (s *Store) EndTrip(ctx context.Context, userID string) error {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	for _, id := range ids {
-		if err := deleteShoppingRow(ctx, tx, id); err != nil {
+		if err := deleteShoppingRow(ctx, scope, tx, id); err != nil {
 			return err
 		}
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
+	s.noteList(scope.HouseholdID())
 	return nil
 }
 
-func deleteShoppingRow(ctx context.Context, tx *sql.Tx, id string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_entry_adjustments WHERE entry_id = ?`, id); err != nil {
+func deleteShoppingRow(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	household := scope.HouseholdID()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_entry_adjustments WHERE entry_id = ? AND household_id = ?`, id, household); err != nil {
 		return fmt.Errorf("could not clear shopping list item: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM shopping_list_items WHERE id = ? AND household_id = ?`, id, household); err != nil {
 		return fmt.Errorf("could not clear shopping list item: %w", err)
 	}
 	return nil

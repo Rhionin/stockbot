@@ -15,6 +15,7 @@ import (
 // result from each Serve call.
 type listenerSet struct {
 	servers  []*http.Server
+	lns      []net.Listener
 	addrs    []string
 	serveErr chan error
 }
@@ -46,6 +47,7 @@ func openListeners(specs []app.Listener, handler http.Handler, register func(*ht
 			register(srv)
 		}
 		set.servers = append(set.servers, srv)
+		set.lns = append(set.lns, ln)
 		set.addrs = append(set.addrs, ln.Addr().String())
 		go func(srv *http.Server, ln net.Listener) {
 			set.serveErr <- srv.Serve(ln)
@@ -61,6 +63,11 @@ func openListeners(specs []app.Listener, handler http.Handler, register func(*ht
 }
 
 func (s listenerSet) close() {
+	// Close the socket itself. Server.Close only drops a listener that Serve
+	// has already registered, and the next bind can fail before that happens.
+	for _, ln := range s.lns {
+		_ = ln.Close()
+	}
 	for _, srv := range s.servers {
 		_ = srv.Close()
 	}

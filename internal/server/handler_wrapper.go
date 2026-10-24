@@ -122,6 +122,9 @@ func HandleJSON[TBody, TPathParams, TResp any](fn handlerFunc[TBody, TPathParams
 			respData = created.Value
 		}
 
+		if ns, ok := respData.(interface{ NoStore() bool }); ok && ns.NoStore() {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		writeJSON(w, status, respData)
 	}
 }
@@ -149,9 +152,23 @@ func parsePathParams[Pp any](r *http.Request, pattern string) (Pp, error) {
 
 // writeJSON writes a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	data = scrubImageURLs(data)
+	if raw, ok := data.(interface{ RawJSON() ([]byte, error) }); ok {
+		body, err := raw.RawJSON()
+		if err != nil {
+			fmt.Printf("error encoding JSON response: %v\n", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if _, err := w.Write(body); err != nil {
+			fmt.Printf("error encoding JSON response: %v\n", err)
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.MarshalWrite(w, scrubImageURLs(data)); err != nil {
+	if err := json.MarshalWrite(w, data); err != nil {
 		fmt.Printf("error encoding JSON response: %v\n", err)
 	}
 }

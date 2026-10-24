@@ -105,12 +105,19 @@ func isRegisteredGetPath(path string) bool {
 	switch path {
 	case "/api/products", "/api/products/lookup", "/api/scans", "/api/scans/history",
 		"/api/inventory", "/api/shopping-list", "/api/events", "/api/build",
+		"/api/scans/mode",
 		"/api/scanner/config", "/api/telemetry",
 		// POST-only. GET is 405 from the method pattern, not an unmatched path.
-		"/api/deploy-hook",
+		"/api/deploy-hook", "/api/login", "/api/logout",
 		"/api/contributions", "/api/settings/contribution", "/api/settings/supply",
 		"/api/groups", "/api/group-suggestions", "/api/settings/group-rule",
-		"/api/history":
+		"/api/history", "/api/session":
+		return true
+	}
+	// Stage-1 routes are registered for GET, POST, PATCH, or DELETE. A GET
+	// against a path that only has another method is 405, and a registered
+	// GET is 200 or 401. Neither is an unmatched path.
+	if stage1RegisteredPath(path) {
 		return true
 	}
 	// Wildcard GET routes: /api/inventory/{itemId}/instances, /api/products/{id},
@@ -132,6 +139,83 @@ func isRegisteredGetPath(path string) bool {
 	}
 	return false
 }
+
+func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
+	handler, _ := setupTestWithDB(t)
+	registered := []string{
+		"/api/config", "/api/me", "/api/households", "/api/invites", "/api/devices",
+		"/api/login", "/api/logout", "/api/session",
+		"/api/auth/session", "/api/auth/session/household", "/api/auth/login",
+		"/api/auth/logout", "/api/auth/reset", "/api/auth/callback",
+		"/api/household/settings",
+		"/api/household/household-password/retire",
+		"/api/household/household-password/restore",
+		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
+		"/api/operator/household-invites", "/api/operator/alerts",
+		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
+		"/api/devices/abc",
+		"/api/device/scans", "/api/device/heartbeat", "/api/device/token/rotate",
+		"/api/households/abc", "/api/households/abc/restore", "/api/households/abc/export",
+		"/api/households/abc/members", "/api/households/abc/members/user",
+		"/api/households/abc/members/user/reset-link",
+		"/api/export", "/api/export/abc", "/api/export/abc/download",
+		"/api/export/abc/stockbot-export.json", "/api/export/abc/items.csv",
+		"/api/export/abc/shopping-list.csv",
+		"/api/household/exports", "/api/household/exports/abc",
+		"/api/household/exports/abc/download",
+		"/api/household/import/uploads", "/api/import", "/api/import/abc",
+	}
+	for _, path := range registered {
+		if !isRegisteredGetPath(path) {
+			t.Errorf("isRegisteredGetPath(%s) = false", path)
+		}
+	}
+	unmatched := []string{
+		"/api/nope", "/api/households/abc/nope", "/api/invites/abc",
+		"/api/auth/nope", "/api/device/nope", "/api/devices/pair/abc/extra",
+		"/api/setup/code", "/api/export/abc/extra", "/api/household/exports/abc/extra",
+		"/api/import/abc/extra",
+	}
+	for _, path := range unmatched {
+		if isRegisteredGetPath(path) {
+			t.Errorf("isRegisteredGetPath(%s) = true", path)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/me = %d, want 405", rec.Code)
+	}
+	alerts := httptest.NewRequest(http.MethodPost, "/api/operator/alerts", nil)
+	alertsRec := httptest.NewRecorder()
+	handler.ServeHTTP(alertsRec, alerts)
+	if alertsRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/operator/alerts = %d, want 405", alertsRec.Code)
+	}
+}
+
+// stage1RegisteredPath matches every route registerStage1 puts on the mux,
+// including POST, PATCH, and DELETE patterns. ServeMux answers GET on those
+// with 405, which is a matched route.
+func stage1RegisteredPath(path string) bool {
+	return stage1RoutePattern.MatchString(path)
+}
+
+var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
+	`config|me|households|invites|devices|` +
+	`auth/(?:session(?:/household)?|login|logout|reset|callback)|` +
+	`household/settings|household/household-password/(?:retire|restore)|` +
+	`invites/(?:preview|accept|[^/]+/revoke)|` +
+	`operator/(?:household-invites|alerts)|` +
+	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +
+	`device/(?:scans|heartbeat|token/rotate)|` +
+	`households/[^/]+(?:/(?:restore|export|members(?:/[^/]+(?:/reset-link)?)?))?|` +
+	`export(?:/[^/]+(?:/(?:download|stockbot-export\.json|items\.csv|shopping-list\.csv))?)?|` +
+	`import(?:/[^/]+)?|` +
+	`household/exports(?:/[^/]+(?:/download)?)?|` +
+	`household/import/uploads` +
+	`)$`)
 
 // TestHealthPathsNeverFallBack implements
 // Feature: pi-release-build, Property 5: Health paths never fall back to the SPA
@@ -463,7 +547,7 @@ func buildComposedAndAPIHandlers(t *testing.T, seed func(env testEnv)) (http.Han
 	}
 	apiMux, _, _ := newAPIMux(catalogB, lookupB, refresherB, envB.DB, nil)
 
-	return composed, apiMux
+	return composed, withPrimaryScope(envB.DB, apiMux)
 }
 
 // TestMountingWebUIPerturbsNoRoute implements

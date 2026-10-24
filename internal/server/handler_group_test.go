@@ -53,7 +53,7 @@ func TestGroupHandlers(t *testing.T) {
 				mustGroupProduct(env, "p1", "Small")
 				mustGroupProduct(env, "p2", "Large")
 				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1'), ('item-p2', 'user-1', 'p2')`)
-				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4), ('user-1', 'item-p2', 'months', 2)`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-p1', 'amount', 4), ((SELECT id FROM households WHERE is_primary = 1), 'item-p2', 'months', 2)`)
 				base, _, err := product.BaseFromAmount(12, "fl oz")
 				if err != nil {
 					env.T.Fatal(err)
@@ -114,7 +114,7 @@ func TestGroupHandlers(t *testing.T) {
 			setup: func(env testEnv) {
 				mustGroupProduct(env, "p1", "Small")
 				mustExec(env, `INSERT INTO items (id, user_id, product_id) VALUES ('item-p1', 'user-1', 'p1')`)
-				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-p1', 'amount', 4)`)
+				mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-p1', 'amount', 4)`)
 				mustExec(env, `UPDATE products SET net_dimension = 'volume' WHERE id = 'p1'`)
 			},
 			httpExchange: httpExchange{
@@ -144,8 +144,8 @@ func TestGroupHandlers(t *testing.T) {
 				now := time.Now().UTC()
 				started := now.Add(-90 * 24 * time.Hour)
 				firstIn := started.Add(time.Second)
-				mustExec(env, `INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`, started.Format(time.RFC3339))
-				mustExec(env, `INSERT INTO stock_in_events (product_id, at) VALUES ('p1', ?)`, firstIn)
+				mustExec(env, `INSERT INTO household_settings (household_id, key, value) SELECT id, 'onboarding_started_at', ? FROM households WHERE is_primary = 1`, started.Format(time.RFC3339))
+				mustExec(env, `INSERT INTO stock_in_events (id, product_id, at) VALUES (1, 'p1', ?)`, firstIn)
 				mustExec(env, `INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c1', 'item-1', ?)`, firstIn.Add(30*24*time.Hour))
 				mustExec(env, `INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('c2', 'item-1', ?)`, firstIn.Add(60*24*time.Hour))
 			},
@@ -625,6 +625,92 @@ func TestGroupHandlers(t *testing.T) {
 						{path: "$.productId", value: ""},
 						{path: "$.because", value: "Every product in this group is marked don't restock."},
 					},
+				},
+			),
+		},
+		{
+			name: "preview applies a quantity, a window, and a cleared target",
+			httpExchange: httpExchange{
+				method: http.MethodPost,
+				path:   "/api/groups/preview",
+				body: `{
+					"rule":"favorite",
+					"pinnedProductId":"a",
+					"members":[
+						{"productId":"a","name":"Big","netBaseValue":400,"netDimension":"mass","onHand":1},
+						{"productId":"b","name":"Small","netBaseValue":200,"netDimension":"mass","onHand":0}
+					],
+					"target":{"quantity":28,"dimension":"mass"},
+					"rate":{"perDay":0.2,"ok":true}
+				}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.productId", value: "a"},
+					{path: "$.buy", value: float64(1)},
+				},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A","onHand":1}],
+						"target":{"windowMonths":2},
+						"rate":{"perDay":0.2,"ok":true,"itemCount":true}
+					}`,
+					expectedStatus: http.StatusOK,
+					bodyContains:   []string{"this counts items"},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A","netBaseValue":29.5735295625,"netDimension":"volume","onHand":0}],
+						"target":{"quantity":8,"dimension":"volume"}
+					}`,
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.productId", value: "a"}},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"clear":true},
+						"rate":{"perDay":0,"ok":false}
+					}`,
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.buy", value: float64(0)}},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"quantity":0}
+					}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"more than zero"},
+				},
+				httpExchange{
+					method: http.MethodPost,
+					path:   "/api/groups/preview",
+					body: `{
+						"rule":"favorite",
+						"pinnedProductId":"a",
+						"members":[{"productId":"a","name":"A"}],
+						"target":{"windowMonths":2,"quantity":8}
+					}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{"Choose a window"},
 				},
 			),
 		},

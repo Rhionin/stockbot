@@ -113,7 +113,7 @@ A 4xx stays a 4xx when that 4xx is already decided. The response reports the
 client error, including when the cause is a database lock or a full disk.
 
 Some conflicts are decided only after the write transaction starts. Under
-write contention those requests can wait up to 3 seconds and then come back
+write contention those requests can wait up to 2 seconds and then come back
 as a busy 503. That covers renaming a group to a name that already exists,
 and adding a product that is already in another group.
 
@@ -278,11 +278,8 @@ do not include `field`.
 | same | `:76` | `invalid direction value` |
 | `POST /api/scans/{id}/commit` | `handler_scan_commit.go:41` | `scan entry id is required` |
 | same | `:75` | `linking a barcode is only available when scanning out` |
-| `POST /api/scans` | `handler_scan_create.go:50` | `barcode is required` |
-| same | `:53` | `userId is required` |
-| `GET /api/scans/history` | `handler_scan_history.go:19` | `userId query parameter is required` |
-| `GET /api/scans` | `handler_scan_list.go:23` | `userId query parameter is required` |
-| same | `:28` | `invalid status value` |
+| `POST /api/scans` | `handler_scan_create.go:52` | `barcode is required` |
+| `GET /api/scans` | `handler_scan_list.go:24` | `invalid status value` |
 | `PATCH /api/scans/{id}` | `handler_scan_update.go:32` | `scan entry id is required` |
 | same | `:39` | `invalid status value` |
 | same | `:47` | `invalid direction value` |

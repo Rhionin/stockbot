@@ -12,6 +12,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/suggestion"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ReplenishmentMode identifies the shopping list calculation mode.
@@ -75,7 +76,10 @@ func (e *Engine) SetCatalog(catalog product.Catalog) {
 // Provision performs the complete provisioning operation for one provider.
 // It claims an in-flight slot, computes quantities, resolves identities, batches requests,
 // submits to the provider, records outcomes, and updates the ledger.
-func (e *Engine) Provision(ctx context.Context, userID string, providerID ProviderID) (ProvisionReport, error) {
+func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID ProviderID) (ProvisionReport, error) {
+	if err := scope.Require(); err != nil {
+		return ProvisionReport{}, err
+	}
 	e.mu.Lock()
 	if _, exists := e.inFlight[providerID]; exists {
 		e.mu.Unlock()
@@ -101,7 +105,7 @@ func (e *Engine) Provision(ctx context.Context, userID string, providerID Provid
 	caps := provider.Capabilities()
 
 	// Check connection state
-	conn, err := e.tokenBroker.Directory.Read(ctx, string(providerID))
+	conn, err := e.tokenBroker.Directory.Read(ctx, scope, string(providerID))
 	if err != nil {
 		return ProvisionReport{}, fmt.Errorf("failed to read connection: %w", err)
 	}
@@ -115,13 +119,13 @@ func (e *Engine) Provision(ctx context.Context, userID string, providerID Provid
 	}
 
 	// Get computed entries from shopping list (with ledger-net quantities)
-	entries, err := e.getComputedEntries(ctx, providerID, userID)
+	entries, err := e.getComputedEntries(ctx, scope, providerID)
 	if err != nil {
 		return ProvisionReport{}, fmt.Errorf("failed to compute entries: %w", err)
 	}
 
 	// Resolve identities for each entry
-	resolvedItems, unresolved, err := e.resolveIdentities(ctx, provider, caps, providerID, entries)
+	resolvedItems, unresolved, err := e.resolveIdentities(ctx, scope, provider, caps, providerID, entries)
 	if err != nil {
 		return ProvisionReport{}, fmt.Errorf("failed to resolve identities: %w", err)
 	}
@@ -159,7 +163,7 @@ func (e *Engine) Provision(ctx context.Context, userID string, providerID Provid
 		cred = NoCredential{}
 	} else if caps.Auth == AuthOAuth2 {
 		// For OAuth2, use the token broker to get an access token
-		token, err := e.tokenBroker.AccessToken(ctx, string(providerID), e.exchangeRefresh(ctx, provider))
+		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
 		if err != nil {
 			// For indeterminate outcomes, record failed/unknown and return
 			for _, item := range resolvedItems {
@@ -324,7 +328,7 @@ func (e *Engine) Provision(ctx context.Context, userID string, providerID Provid
 
 		// Update ledger for accepted items
 		if acceptedCount > 0 {
-			if err := e.updateLedgerAndAdjustments(ctx, providerID, req); err != nil {
+			if err := e.updateLedgerAndAdjustments(ctx, scope, providerID, req); err != nil {
 				// If ledger update fails, we have a partial failure
 				return ProvisionReport{
 					Provider:  providerID,
@@ -348,16 +352,19 @@ func (e *Engine) Provision(ctx context.Context, userID string, providerID Provid
 // It does not recompute the supply plan, so a quantity the owner changed
 // is the quantity sent. An adjustment, when one is stored for this provider,
 // replaces that quantity for this operation only.
-func (e *Engine) getComputedEntries(ctx context.Context, providerID ProviderID, userID string) ([]ResolvedItem, error) {
-	pantryItems, err := e.pantry.ListItems(ctx, userID)
+func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, providerID ProviderID) ([]ResolvedItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	pantryItems, err := e.pantry.ListItems(ctx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pantry items: %w", err)
 	}
-	ledger, err := e.ledger.ListForProvider(ctx, providerID)
+	ledger, err := e.ledger.ListForProvider(ctx, scope, providerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ledger: %w", err)
 	}
-	active, err := e.shoppingList.ListUnpurchased(ctx, userID)
+	active, err := e.shoppingList.ListUnpurchased(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +386,7 @@ func (e *Engine) getComputedEntries(ctx context.Context, providerID ProviderID, 
 		if qty < 0 {
 			qty = 0
 		}
-		adjustment, err := e.shoppingList.GetAdjustment(ctx, entry.ID, string(providerID))
+		adjustment, err := e.shoppingList.GetAdjustment(ctx, scope, entry.ID, string(providerID))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read adjustment: %w", err)
 		}
@@ -421,7 +428,7 @@ func (e *Engine) exchangeRefresh(ctx context.Context, provider Provider) func(re
 }
 
 // resolveIdentities resolves identities for each entry.
-func (e *Engine) resolveIdentities(ctx context.Context, provider Provider, caps Capabilities, providerID ProviderID, entries []ResolvedItem) ([]ResolvedItem, []ResolvedItem, error) {
+func (e *Engine) resolveIdentities(ctx context.Context, scope tenant.Scope, provider Provider, caps Capabilities, providerID ProviderID, entries []ResolvedItem) ([]ResolvedItem, []ResolvedItem, error) {
 	var resolved, unresolved []ResolvedItem
 
 	// Check if provider implements DerivedIdentity or LookedUpIdentity
@@ -444,7 +451,7 @@ func (e *Engine) resolveIdentities(ctx context.Context, provider Provider, caps 
 
 	for _, entry := range entries {
 		// Barcodes key on the product (products.id), not the pantry item.
-		barcodes, err := e.catalog.ListBarcodesForProduct(ctx, entry.ProductID)
+		barcodes, err := e.catalog.ListBarcodesForProduct(ctx, scope, entry.ProductID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to list barcodes for %s: %w", entry.ProductID, err)
 		}
@@ -469,7 +476,7 @@ func (e *Engine) resolveIdentities(ctx context.Context, provider Provider, caps 
 			if caps.Auth == AuthNone {
 				cred = NoCredential{}
 			} else if caps.Auth == AuthOAuth2 {
-				token, err := e.tokenBroker.AccessToken(ctx, string(providerID), e.exchangeRefresh(ctx, provider))
+				token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
 				if err != nil {
 					unresolved = append(unresolved, entry)
 					continue
@@ -557,7 +564,10 @@ func (e *Engine) batchRequests(providerID ProviderID, items []ResolvedItem, caps
 
 // updateLedgerAndAdjustments advances the ledger and clears adjustments for
 // every line of an accepted request, atomically in one transaction.
-func (e *Engine) updateLedgerAndAdjustments(ctx context.Context, providerID ProviderID, req ProvisionRequest) error {
+func (e *Engine) updateLedgerAndAdjustments(ctx context.Context, scope tenant.Scope, providerID ProviderID, req ProvisionRequest) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	// Create a transaction
 	tx, err := e.ledger.db.Begin()
 	if err != nil {
@@ -571,17 +581,17 @@ func (e *Engine) updateLedgerAndAdjustments(ctx context.Context, providerID Prov
 		// Advance each accounted item by its own quantity. The boundary the
 		// operation computed against stays put; a missing row starts at now.
 		for _, item := range line.Accounts {
-			boundary, ok, err := e.ledger.boundaryTx(ctx, tx, providerID, item.ItemID)
+			boundary, ok, err := e.ledger.boundaryTx(ctx, scope, tx, providerID, item.ItemID)
 			if err != nil {
 				return fmt.Errorf("failed to read ledger boundary: %w", err)
 			}
 			if !ok {
 				boundary = now
 			}
-			if _, err := e.ledger.AdvanceTx(ctx, tx, providerID, item.ItemID, item.Quantity, boundary); err != nil {
+			if _, err := e.ledger.AdvanceTx(ctx, scope, tx, providerID, item.ItemID, item.Quantity, boundary); err != nil {
 				return fmt.Errorf("failed to advance ledger: %w", err)
 			}
-			if err := e.shoppingList.ClearAdjustmentTx(ctx, tx, item.EntryID, string(providerID)); err != nil {
+			if err := e.shoppingList.ClearAdjustmentTx(ctx, scope, tx, item.EntryID, string(providerID)); err != nil {
 				return fmt.Errorf("failed to clear adjustment for %s: %w", item.EntryID, err)
 			}
 		}

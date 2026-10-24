@@ -15,24 +15,30 @@ func TestRepairMatchesSuffixedScannedAt(t *testing.T) {
 		sameSecond = "2026-10-17 12:00:00.9 +0000 UTC"
 	)
 	db := openHistoryDB(t)
+	household := scopeOf(t, db).HouseholdID()
 	execHistory(t, db, `INSERT INTO products (id, name) VALUES ('prod', 'Oats'), ('other', 'Rice')`)
-	execHistory(t, db, `INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod')`)
+	execHistory(t, db, `INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`, household, household)
 	execHistory(t, db, `
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id) VALUES
-			('scan-decoy', 'user-1', 'oats', '2026-10-17 19:00:00 +0000 UTC', 'stock_in', 1, 'committed', 'prod'),
-			('scan-other-product', 'user-1', 'rice', ?, 'stock_in', 1, 'committed', 'other'),
-			('scan-cancelled', 'user-1', 'oats', ?, 'stock_in', 1, 'cancelled', 'prod'),
-			('scan-same-second', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-suffix', 'user-1', 'oats', ?, 'stock_in', 1, 'committed', 'prod'),
-			('scan-out-suffix', 'user-1', 'oats', ?, 'stock_out', 1, 'committed', 'prod')`,
-		manualAt, manualAt, sameSecond, suffixed, suffixed)
+		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, status, product_id, household_id) VALUES
+			('scan-decoy', ?, 'oats', '2026-10-17 19:00:00 +0000 UTC', 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-other-product', ?, 'rice', ?, 'stock_in', 1, 'committed', 'other', ?),
+			('scan-cancelled', ?, 'oats', ?, 'stock_in', 1, 'cancelled', 'prod', ?),
+			('scan-same-second', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-suffix', ?, 'oats', ?, 'stock_in', 1, 'committed', 'prod', ?),
+			('scan-out-suffix', ?, 'oats', ?, 'stock_out', 1, 'committed', 'prod', ?)`,
+		household, household,
+		household, manualAt, household,
+		household, manualAt, household,
+		household, sameSecond, household,
+		household, suffixed, household,
+		household, suffixed, household)
 	execHistory(t, db, `
 		INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason) VALUES
 			('inst-in', 'item', ?, NULL, NULL),
 			('inst-out', 'item', ?, ?, 'manual')`,
 		suffixed, manualAt, suffixed)
 
-	view, err := NewJournal(db).Product(t.Context(), householdUser, "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
+	view, err := NewJournal(db).Product(t.Context(), scopeOf(t, db), "item", time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}

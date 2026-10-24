@@ -37,9 +37,11 @@ func openHistory(t *testing.T) *sql.DB {
 	if err := app.RunMigrations(db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`
-		INSERT INTO products (id, name) VALUES ('prod', 'Oats');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO products (id, name) VALUES ('prod', 'Oats')`); err != nil {
+		t.Fatal(err)
+	}
+	household := scopeOf(t, db).HouseholdID()
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`, household, household); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -66,7 +68,7 @@ func TestPaceKeepsTheUseAcrossDST(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	view, err := NewJournal(db).Product(context.Background(), householdUser, "item", now)
+	view, err := NewJournal(db).Product(context.Background(), scopeOf(t, db), "item", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +92,13 @@ func TestRestorePutsBackTheLaterRemovalAcrossDST(t *testing.T) {
 		earlier, later, earlier, earlier); err != nil {
 		t.Fatal(err)
 	}
+	scope := scopeOf(t, db)
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	n, err := restoreUnits(context.Background(), tx, moveRow{ID: "move", ItemID: "item"}, 1)
+	n, err := restoreUnits(context.Background(), scope, tx, moveRow{ID: "move", ItemID: "item"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +129,7 @@ func TestRaisingAUseTakesTheEarlierExpiryAcrossDST(t *testing.T) {
 		earlier, earlier, earlier, later); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewJournal(db).SetQuantity(context.Background(), householdUser, "move", 2, earlier); err != nil {
+	if _, err := NewJournal(db).SetQuantity(context.Background(), scopeOf(t, db), "move", 2, earlier); err != nil {
 		t.Fatal(err)
 	}
 	var id string

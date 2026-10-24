@@ -4,11 +4,12 @@ import (
 	"context"
 
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type ScanLinkSuggestionsHandler struct {
 	Queue interface {
-		LinkSuggestions(ctx context.Context, id string) ([]scan.LinkSuggestion, error)
+		LinkSuggestions(ctx context.Context, scope tenant.Scope, id string) ([]scan.LinkSuggestion, error)
 	}
 }
 
@@ -24,7 +25,11 @@ func (h *ScanLinkSuggestionsHandler) Handle(req Request[struct{}, linkSuggestion
 	if req.PathParams.ID == "" {
 		return linkSuggestionsResponse{}, BadRequest("scan entry id is required")
 	}
-	suggestions, err := h.Queue.LinkSuggestions(req.Context, req.PathParams.ID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return linkSuggestionsResponse{}, err
+	}
+	suggestions, err := h.Queue.LinkSuggestions(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return linkSuggestionsResponse{}, commitClientError(err)
 	}

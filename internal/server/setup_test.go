@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,9 +26,22 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return openMigratedDB(t, ":memory:")
 }
 
+// pantryTestDSN matches the server file: WAL, so a read can run beside a
+// writer. An in-memory database stays as it is. A DSN that already names
+// the journal is left alone.
+func pantryTestDSN(dsn string) string {
+	if dsn == ":memory:" || strings.HasPrefix(dsn, "file::memory:") || strings.Contains(dsn, "journal_mode") {
+		return dsn
+	}
+	if strings.Contains(dsn, "?") {
+		return dsn + "&_pragma=journal_mode(WAL)"
+	}
+	return dsn + "?_pragma=journal_mode(WAL)"
+}
+
 func openMigratedDB(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
-	conn, err := app.OpenSQLite(dsn)
+	conn, err := app.OpenSQLite(pantryTestDSN(dsn))
 	if err != nil {
 		t.Fatalf("open SQLite: %v", err)
 	}

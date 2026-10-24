@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/go-json-experiment/json"
 	"github.com/google/uuid"
 )
@@ -141,12 +142,25 @@ func (s ExternalSource) DisplayName() string {
 }
 
 // ContributionEnabled reports the household opt-in. No stored value means off.
-func (r *Catalog) ContributionEnabled(ctx context.Context) (bool, error) {
+func (r *Catalog) ContributionEnabled(ctx context.Context, scope tenant.Scope) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
 	var value string
-	err := r.db.QueryRowContext(ctx,
-		`SELECT value FROM app_settings WHERE key = ?`, contributionSettingKey).Scan(&value)
+	err := r.db.QueryRowContext(ctx, `
+		SELECT value FROM household_settings
+		WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), contributionSettingKey).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		primary, perr := r.PrimaryScope(ctx)
+		if perr != nil || primary.HouseholdID() != scope.HouseholdID() {
+			return false, nil
+		}
+		err = r.db.QueryRowContext(ctx,
+			`SELECT value FROM app_settings WHERE key = ?`, contributionSettingKey).Scan(&value)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
 	}
 	if err != nil {
 		return false, fmt.Errorf("could not read contribution setting: %w", err)
@@ -156,15 +170,18 @@ func (r *Catalog) ContributionEnabled(ctx context.Context) (bool, error) {
 
 // SetContributionEnabled stores the household opt-in. false is the default
 // and is still stored explicitly so a later read can tell a choice from absence.
-func (r *Catalog) SetContributionEnabled(ctx context.Context, enabled bool) error {
+func (r *Catalog) SetContributionEnabled(ctx context.Context, scope tenant.Scope, enabled bool) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	value := "false"
 	if enabled {
 		value = "true"
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		contributionSettingKey, value)
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
+		ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
+		scope.HouseholdID(), contributionSettingKey, value)
 	if err != nil {
 		return fmt.Errorf("could not save contribution setting: %w", err)
 	}
@@ -172,14 +189,17 @@ func (r *Catalog) SetContributionEnabled(ctx context.Context, enabled bool) erro
 }
 
 // InsertContribution stores one share attempt. An empty ID is filled in.
-func (r *Catalog) InsertContribution(ctx context.Context, rec ContributionRecord) error {
+func (r *Catalog) InsertContribution(ctx context.Context, scope tenant.Scope, rec ContributionRecord) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if rec.ID == "" {
 		rec.ID = uuid.NewString()
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO product_contributions (id, product_id, barcode, external_source, status, detail)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.ProductID, rec.Barcode, string(rec.Database), rec.Status, nullableString(rec.Detail))
+		INSERT INTO product_contributions (id, product_id, household_id, barcode, external_source, status, detail)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.ProductID, scope.HouseholdID(), rec.Barcode, string(rec.Database), rec.Status, nullableString(rec.Detail))
 	if err != nil {
 		return fmt.Errorf("could not save contribution: %w", err)
 	}
@@ -188,13 +208,16 @@ func (r *Catalog) InsertContribution(ctx context.Context, rec ContributionRecord
 
 // ListContributions returns share attempts, newest first. An empty productID
 // lists every attempt.
-func (r *Catalog) ListContributions(ctx context.Context, productID string) ([]ContributionRecord, error) {
+func (r *Catalog) ListContributions(ctx context.Context, scope tenant.Scope, productID string) ([]ContributionRecord, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, product_id, barcode, external_source, status, COALESCE(detail, ''), created_at
 		FROM product_contributions
-		WHERE (? = '' OR product_id = ?)
+		WHERE household_id = ? AND (? = '' OR product_id = ?)
 		ORDER BY created_at DESC, id DESC`,
-		productID, productID)
+		scope.HouseholdID(), productID, productID)
 	if err != nil {
 		return nil, fmt.Errorf("could not list contributions: %w", err)
 	}
@@ -217,9 +240,18 @@ func (r *Catalog) ListContributions(ctx context.Context, productID string) ([]Co
 }
 
 // BarcodesForProduct returns every barcode mapped to a product, sorted.
-func (r *Catalog) BarcodesForProduct(ctx context.Context, productID string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT barcode FROM barcodes WHERE product_id = ? ORDER BY barcode`, productID)
+func (r *Catalog) BarcodesForProduct(ctx context.Context, scope tenant.Scope, productID string) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT barcode FROM barcodes
+		WHERE product_id = ?
+		  AND (
+		        (source = 'user_override' AND household_id = ?)
+		     OR (source = 'global' AND user_id = '')
+		      )
+		ORDER BY barcode`, productID, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not list barcodes: %w", err)
 	}
@@ -245,7 +277,7 @@ func (r *Catalog) BarcodesForProduct(ctx context.Context, productID string) ([]s
 // setting is on, and the product was not already loaded from an upstream
 // database. When this process has no Product Opener account, the attempt is
 // saved locally as not_configured and no network call is made.
-func RecordShare(ctx context.Context, catalog *Catalog, contributor UpstreamContributor, req ShareRequest) (*ShareOutcome, error) {
+func RecordShare(ctx context.Context, scope tenant.Scope, catalog *Catalog, contributor UpstreamContributor, req ShareRequest) (*ShareOutcome, error) {
 	if !req.Contribute {
 		return nil, nil
 	}
@@ -253,7 +285,7 @@ func RecordShare(ctx context.Context, catalog *Catalog, contributor UpstreamCont
 		contributor = UnconfiguredContributor{}
 	}
 
-	enabled, err := catalog.ContributionEnabled(ctx)
+	enabled, err := catalog.ContributionEnabled(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +326,7 @@ func RecordShare(ctx context.Context, catalog *Catalog, contributor UpstreamCont
 		}
 	}
 
-	if err := catalog.InsertContribution(ctx, ContributionRecord{
+	if err := catalog.InsertContribution(ctx, scope, ContributionRecord{
 		ProductID: req.ProductID,
 		Barcode:   req.Barcode,
 		Database:  req.Database,

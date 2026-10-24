@@ -397,7 +397,7 @@ func TestExternalPersistencePreservation(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanQueue.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanQueue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},

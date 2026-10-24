@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 const trailLimit = 40
@@ -20,16 +23,19 @@ func NewJournal(db *sql.DB) *Journal {
 }
 
 // Product is the history of one inventory item in this household.
-func (j *Journal) Product(ctx context.Context, userID, itemID string, now time.Time) (View, error) {
+func (j *Journal) Product(ctx context.Context, scope tenant.Scope, itemID string, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
 	}
 	defer tx.Rollback()
-	if err := ensure(ctx, tx); err != nil {
+	if err := ensure(ctx, scope, tx); err != nil {
 		return View{}, err
 	}
-	view, err := productView(ctx, tx, userID, itemID, now)
+	view, err := productView(ctx, scope, tx, itemID, now)
 	if err != nil {
 		return View{}, err
 	}
@@ -40,16 +46,19 @@ func (j *Journal) Product(ctx context.Context, userID, itemID string, now time.T
 }
 
 // Group is the history of every product in a group, added together.
-func (j *Journal) Group(ctx context.Context, groupID string, now time.Time) (View, error) {
+func (j *Journal) Group(ctx context.Context, scope tenant.Scope, groupID string, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, err
 	}
 	defer tx.Rollback()
-	if err := ensure(ctx, tx); err != nil {
+	if err := ensure(ctx, scope, tx); err != nil {
 		return View{}, err
 	}
-	view, err := groupView(ctx, tx, groupID, now)
+	view, err := groupView(ctx, scope, tx, groupID, now)
 	if err != nil {
 		return View{}, err
 	}
@@ -59,30 +68,33 @@ func (j *Journal) Group(ctx context.Context, groupID string, now time.Time) (Vie
 	return view, nil
 }
 
-func productView(ctx context.Context, tx *sql.Tx, userID, itemID string, now time.Time) (View, error) {
+func productView(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	var name, unit, dimension string
 	var base sql.NullFloat64
 	var pack sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
-		SELECT p.name, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
+		SELECT `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''), p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.id = ? AND i.user_id = ?`, itemID, userID).Scan(&name, &unit, &base, &dimension, &pack)
+		WHERE i.id = ? AND i.household_id = ?`, scope.HouseholdID(), itemID, scope.HouseholdID()).Scan(&name, &unit, &base, &dimension, &pack)
 	if err == sql.ErrNoRows {
 		return View{}, &NotFoundError{Message: "That product was not found."}
 	}
 	if err != nil {
 		return View{}, err
 	}
-	onHand, err := countOnHand(ctx, tx, []string{itemID})
+	onHand, err := countOnHand(ctx, scope, tx, []string{itemID})
 	if err != nil {
 		return View{}, err
 	}
-	uses, err := listUses(ctx, tx, []string{itemID}, now)
+	uses, err := listUses(ctx, scope, tx, []string{itemID}, now)
 	if err != nil {
 		return View{}, err
 	}
-	moves, err := listMoves(ctx, tx, []string{itemID})
+	moves, err := listMoves(ctx, scope, tx, []string{itemID})
 	if err != nil {
 		return View{}, err
 	}
@@ -97,10 +109,13 @@ func productView(ctx context.Context, tx *sql.Tx, userID, itemID string, now tim
 	}, nil
 }
 
-func groupView(ctx context.Context, tx *sql.Tx, groupID string, now time.Time) (View, error) {
+func groupView(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, now time.Time) (View, error) {
+	if err := scope.Require(); err != nil {
+		return View{}, err
+	}
 	var name string
 	err := tx.QueryRowContext(ctx, `
-		SELECT name FROM product_groups WHERE id = ? AND user_id = ?`, groupID, householdUser).Scan(&name)
+		SELECT name FROM product_groups WHERE id = ? AND household_id = ?`, groupID, scope.HouseholdID()).Scan(&name)
 	if err == sql.ErrNoRows {
 		return View{}, &NotFoundError{Message: "That group was not found."}
 	}
@@ -112,9 +127,9 @@ func groupView(ctx context.Context, tx *sql.Tx, groupID string, now time.Time) (
 			i.id
 		FROM product_group_members m
 		JOIN products p ON p.id = m.product_id
-		LEFT JOIN items i ON i.product_id = p.id AND i.user_id = ?
-		WHERE m.group_id = ?
-		ORDER BY p.name, p.id`, householdUser, groupID)
+		LEFT JOIN items i ON i.product_id = p.id AND i.household_id = ?
+		WHERE m.group_id = ? AND m.household_id = ?
+		ORDER BY `+product.DisplayNameSQL("p")+`, p.id`, scope.HouseholdID(), groupID, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return View{}, err
 	}
@@ -140,15 +155,15 @@ func groupView(ctx context.Context, tx *sql.Tx, groupID string, now time.Time) (
 	}
 	rows.Close()
 
-	onHand, err := countOnHand(ctx, tx, itemIDs)
+	onHand, err := countOnHand(ctx, scope, tx, itemIDs)
 	if err != nil {
 		return View{}, err
 	}
-	uses, err := listUses(ctx, tx, itemIDs, now)
+	uses, err := listUses(ctx, scope, tx, itemIDs, now)
 	if err != nil {
 		return View{}, err
 	}
-	moves, err := listMoves(ctx, tx, itemIDs)
+	moves, err := listMoves(ctx, scope, tx, itemIDs)
 	if err != nil {
 		return View{}, err
 	}
@@ -163,27 +178,34 @@ func groupView(ctx context.Context, tx *sql.Tx, groupID string, now time.Time) (
 	}, nil
 }
 
-func countOnHand(ctx context.Context, tx *sql.Tx, itemIDs []string) (int, error) {
+func countOnHand(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemIDs []string) (int, error) {
+	if err := scope.Require(); err != nil {
+		return 0, err
+	}
 	if len(itemIDs) == 0 {
 		return 0, nil
 	}
 	query := `SELECT COUNT(*) FROM item_instances ii
-		JOIN items i ON i.id = ii.item_id
-		WHERE ii.removed_at IS NULL AND i.shelved = 0 AND ii.item_id IN (` + placeholders(len(itemIDs)) + `)`
+		JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		WHERE ii.household_id = ? AND ii.removed_at IS NULL AND i.shelved = 0 AND ii.item_id IN (` + placeholders(len(itemIDs)) + `)`
+	args := append([]any{scope.HouseholdID()}, idsAsArgs(itemIDs)...)
 	var n int
-	err := tx.QueryRowContext(ctx, query, idsAsArgs(itemIDs)...).Scan(&n)
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&n)
 	return n, err
 }
 
-func listUses(ctx context.Context, tx *sql.Tx, itemIDs []string, now time.Time) ([]time.Time, error) {
+func listUses(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemIDs []string, now time.Time) ([]time.Time, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if len(itemIDs) == 0 {
 		return nil, nil
 	}
 	query := `
 		SELECT consumed_at FROM consumption_events
-		WHERE consumed_at >= ? AND item_id IN (` + placeholders(len(itemIDs)) + `)
+		WHERE household_id = ? AND consumed_at >= ? AND item_id IN (` + placeholders(len(itemIDs)) + `)
 		ORDER BY consumed_at`
-	args := append([]any{now.UTC().Add(-2 * paceWindow)}, idsAsArgs(itemIDs)...)
+	args := append([]any{scope.HouseholdID(), now.UTC().Add(-2 * paceWindow)}, idsAsArgs(itemIDs)...)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -200,18 +222,22 @@ func listUses(ctx context.Context, tx *sql.Tx, itemIDs []string, now time.Time) 
 	return uses, rows.Err()
 }
 
-func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error) {
+func listMoves(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemIDs []string) ([]Move, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if len(itemIDs) == 0 {
 		return []Move{}, nil
 	}
 	query := `
-		SELECT m.id, m.direction, m.quantity, m.at, m.source, m.product_id, p.name
+		SELECT m.id, m.direction, m.quantity, m.at, m.source, m.product_id, ` + product.DisplayNameSQL("p") + `
 		FROM stock_moves m
 		JOIN products p ON p.id = m.product_id
-		WHERE m.item_id IN (` + placeholders(len(itemIDs)) + `)
+		WHERE m.household_id = ? AND m.item_id IN (` + placeholders(len(itemIDs)) + `)
 		ORDER BY ` + historyListOrder + `
 		LIMIT ?`
-	args := append(idsAsArgs(itemIDs), trailLimit)
+	args := append([]any{scope.HouseholdID(), scope.HouseholdID()}, idsAsArgs(itemIDs)...)
+	args = append(args, trailLimit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -230,15 +256,18 @@ func listMoves(ctx context.Context, tx *sql.Tx, itemIDs []string) ([]Move, error
 	return moves, rows.Err()
 }
 
-func loadMove(ctx context.Context, tx *sql.Tx, userID, id string) (moveRow, error) {
+func loadMove(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id string) (moveRow, error) {
+	if err := scope.Require(); err != nil {
+		return moveRow{}, err
+	}
 	var move moveRow
 	var tracked, unshelved int
 	err := tx.QueryRowContext(ctx, `
 		SELECT m.id, m.item_id, m.product_id, m.direction, m.quantity, m.at, m.source,
 			m.scan_entry_id, m.tracked, m.unshelved
 		FROM stock_moves m
-		JOIN items i ON i.id = m.item_id
-		WHERE m.id = ? AND i.user_id = ?`, id, userID).Scan(
+		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
+		WHERE m.id = ? AND m.household_id = ?`, id, scope.HouseholdID()).Scan(
 		&move.ID, &move.ItemID, &move.ProductID, &move.Direction, &move.Quantity, &move.At,
 		&move.Source, &move.ScanEntryID, &tracked, &unshelved,
 	)

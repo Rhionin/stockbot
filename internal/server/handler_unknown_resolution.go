@@ -6,6 +6,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // UnknownResolutionPathParams holds path parameters for the unknown resolution endpoint.
@@ -17,7 +18,7 @@ type UnknownResolutionPathParams struct {
 // Handles the owner's declaration of whether an item reached the provider or not.
 type UnknownResolutionHandler struct {
 	ShoppingList interface {
-		GetItemByID(ctx context.Context, entryID string) (*shopping.ShoppingListItem, error)
+		GetItemByID(ctx context.Context, scope tenant.Scope, entryID string) (*shopping.ShoppingListItem, error)
 	}
 	Ledger *cart.Ledger
 }
@@ -35,13 +36,16 @@ type UnknownResolutionResponse struct {
 
 // Handle handles unknown-outcome resolution.
 func (h *UnknownResolutionHandler) Handle(req Request[UnknownResolutionBody, UnknownResolutionPathParams]) (*UnknownResolutionResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	entryID := req.PathParams.ID
 	if entryID == "" {
 		return nil, BadRequest("missing id path parameter")
 	}
 
-	// Get the entry to find its item ID
-	entry, err := h.ShoppingList.GetItemByID(req.Context, entryID)
+	entry, err := h.ShoppingList.GetItemByID(req.Context, scope, entryID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -62,7 +66,7 @@ func (h *UnknownResolutionHandler) Handle(req Request[UnknownResolutionBody, Unk
 	if h.Ledger == nil {
 		return nil, InternalError(fmt.Errorf("ledger is not available"))
 	}
-	if err := h.Ledger.Advance(req.Context, cart.ProviderID(req.Body.Provider), entry.ItemID, qty); err != nil {
+	if err := h.Ledger.Advance(req.Context, scope, cart.ProviderID(req.Body.Provider), entry.ItemID, qty); err != nil {
 		return nil, InternalError(err)
 	}
 	return &UnknownResolutionResponse{EntryID: entryID}, nil

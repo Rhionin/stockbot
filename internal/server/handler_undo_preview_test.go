@@ -334,14 +334,15 @@ func TestUndoPreviewUnitsNoLongerRecorded(t *testing.T) {
 func TestOtherHouseholdMoveLooksMissing(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	finishOpening(env)
+	cedar := cedarHousehold(t, env.DB)
 	if _, err := env.DB.Exec(`
 		INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-other', 'Other oats', 'Pantry', 'unit');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item-other', 'user-2', 'prod-other');
-		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked)
-		VALUES ('move-other', 'item-other', 'prod-other', 'in', 1, '2026-08-01 12:00:00', 'manual', 0);
-		INSERT INTO item_instances (id, item_id, stock_in_at, stock_move_id)
-		VALUES ('inst-other', 'item-other', '2026-08-01 12:00:00', 'move-other');
-	`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-other', 'user-2', ?, 'prod-other');
+		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, tracked, household_id)
+		VALUES ('move-other', 'item-other', 'prod-other', 'in', 1, '2026-08-01 12:00:00', 'manual', 0, ?);
+		INSERT INTO item_instances (id, item_id, household_id, stock_in_at, stock_move_id)
+		VALUES ('inst-other', 'item-other', ?, '2026-08-01 12:00:00', 'move-other');
+	`, cedar, cedar, cedar); err != nil {
 		t.Fatal(err)
 	}
 	missing := exchangeJSON(t, handler, http.MethodGet, "/api/moves/missing/preview", "", http.StatusNotFound)
@@ -405,29 +406,16 @@ func TestForeignUserIDChangesNothing(t *testing.T) {
 	if id == "" {
 		t.Fatal("missing stock-in")
 	}
-	missing := exchangeJSON(t, handler, http.MethodGet, "/api/moves/missing/preview", "", http.StatusNotFound)
+	own := exchangeJSON(t, handler, http.MethodGet, "/api/moves/"+id+"/preview", "", http.StatusOK)
 	before := domainSnapshot(t, env.DB)
 	for _, path := range []string{
 		"/api/moves/" + id + "/preview?userId=user-2",
 		"/api/moves/" + id + "/preview?userId=%20user-2%20",
-		"/api/moves/" + id + "?userId=user-2",
 	} {
-		method := http.MethodGet
-		body := ""
-		if !strings.Contains(path, "/preview") {
-			method = http.MethodDelete
+		got := exchangeJSON(t, handler, http.MethodGet, path, "", http.StatusOK)
+		if string(got) != string(own) {
+			t.Fatalf("%s %s", path, got)
 		}
-		got := exchangeJSON(t, handler, method, path, body, http.StatusNotFound)
-		if string(got) != string(missing) {
-			t.Fatalf("%s %s %s", method, path, got)
-		}
-		if strings.Contains(string(got), "item-own") || strings.Contains(string(got), "Own oats") || strings.Contains(string(got), "onHand") {
-			t.Fatalf("leaked %s", got)
-		}
-	}
-	edited := exchangeJSON(t, handler, http.MethodPatch, "/api/moves/"+id+"?userId=user-2", `{"quantity":4}`, http.StatusNotFound)
-	if string(edited) != string(missing) {
-		t.Fatalf("edit %s", edited)
 	}
 	if got := domainSnapshot(t, env.DB); got != before {
 		t.Fatalf("foreign userId changed the shelf:\n%s", got)
@@ -466,47 +454,25 @@ func TestMoveUserIDIsAnExactHouseholdOrOmitted(t *testing.T) {
 	if id == "" {
 		t.Fatal("missing stock-in")
 	}
-	missing := exchangeJSON(t, handler, http.MethodGet, "/api/moves/missing/preview", "", http.StatusNotFound)
+	plain := exchangeJSON(t, handler, http.MethodGet, "/api/moves/"+id+"/preview", "", http.StatusOK)
 	for _, path := range []string{
-		"/api/moves/" + id + "/preview",
 		"/api/moves/" + id + "/preview?userId=user-1",
+		"/api/moves/" + id + "/preview?userId=",
+		"/api/moves/" + id + "/preview?userId=User-1",
+		"/api/moves/" + id + "/preview?userId=user-1%20",
+		"/api/moves/" + id + "/preview?userId=%20user-1",
+		"/api/moves/" + id + "/preview?userId=user-1&userId=user-2",
+		"/api/moves/" + id + "/preview?userId=user-2;x",
+		"/api/moves/" + id + "/preview?userId=%ZZ",
 	} {
 		body := exchangeJSON(t, handler, http.MethodGet, path, "", http.StatusOK)
-		if !strings.Contains(string(body), `"onHand"`) {
+		if string(body) != string(plain) {
 			t.Fatalf("%s body %s", path, body)
 		}
 	}
 	before := domainSnapshot(t, env.DB)
-	rejected := []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=User-1", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1%20", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=%20user-1", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1&userId=user-1", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-1&userId=user-2", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=user-2;x", ""},
-		{http.MethodGet, "/api/moves/" + id + "/preview?userId=%ZZ", ""},
-		{http.MethodDelete, "/api/moves/" + id + "?userId=user-2;x", ""},
-		{http.MethodPatch, "/api/moves/" + id + "?userId=%ZZ", `{"quantity":4}`},
-		{http.MethodDelete, "/api/moves/" + id + "?userId=", ""},
-		{http.MethodDelete, "/api/moves/" + id + "?userId=User-1", ""},
-		{http.MethodDelete, "/api/moves/" + id + "?userId=user-1&userId=user-1", ""},
-		{http.MethodPatch, "/api/moves/" + id + "?userId=", `{"quantity":4}`},
-		{http.MethodPatch, "/api/moves/" + id + "?userId=user-1&userId=user-1", `{"quantity":4}`},
-		{http.MethodPatch, "/api/moves/" + id + "?userId=USER-1", `{"quantity":4}`},
-	}
-	for _, req := range rejected {
-		got := exchangeJSON(t, handler, req.method, req.path, req.body, http.StatusNotFound)
-		if string(got) != string(missing) {
-			t.Fatalf("%s %s %s", req.method, req.path, got)
-		}
-	}
 	if got := domainSnapshot(t, env.DB); got != before {
-		t.Fatalf("rejected userId changed the shelf:\n%s", got)
+		t.Fatalf("ignored userId changed the shelf:\n%s", got)
 	}
 	patched := exchangeJSON(t, handler, http.MethodPatch, "/api/moves/"+id+"?userId=user-1", `{"quantity":4}`, http.StatusOK)
 	var raised struct {
@@ -532,23 +498,23 @@ func TestMoveUserIDIsAnExactHouseholdOrOmitted(t *testing.T) {
 
 func TestPreviewHoldsNoWriteLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
-	db, err := app.OpenSQLite(path)
+	db, readDB, err := app.OpenPantry(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { readDB.Close() })
 	var mode string
 	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "delete" {
+	if mode != "wal" {
 		t.Fatalf("journal_mode = %s", mode)
 	}
 	var busy int
 	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
 		t.Fatal(err)
 	}
-	if busy != 3000 || db.Stats().MaxOpenConnections != 1 {
+	if busy != 2000 || db.Stats().MaxOpenConnections != 1 {
 		t.Fatalf("busy_timeout %d pool %d", busy, db.Stats().MaxOpenConnections)
 	}
 	if err := app.RunMigrations(db); err != nil {

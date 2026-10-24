@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/events"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
@@ -56,23 +57,51 @@ func NewSender(subs *Subscriptions, cfg Config) *Sender {
 // when a batch settles, so a scan already confirmed is not announced again.
 // A batch that was still waiting out its quiet period is armed again from
 // the due time stored for it, so a restart does not drop that alert.
-func Listen(b *events.Broadcaster, sender *Sender, scans scanReader) {
+func Listen(ctx context.Context, scope tenant.Scope, b *events.Broadcaster, sender *Sender, scans scanReader) {
 	if b == nil || sender == nil || !sender.cfg.CanSend() {
 		return
 	}
-	msgs, unsub := b.Subscribe()
+	msgs, unsub := b.SubscribeAll()
 	go func() {
 		defer unsub()
-		alerts := newAttention(func(notice Notice) {
-			go sender.Notify(context.Background(), notice)
-		}, sender.cfg.settle(), realClock{}, scans)
-		if sender.subs != nil {
-			alerts.schedules = sender.subs
+		byHouse := map[string]*attention{}
+		ensure := func(id string) *attention {
+			if id == "" {
+				id = scope.HouseholdID()
+			}
+			if alerts := byHouse[id]; alerts != nil {
+				return alerts
+			}
+			house, err := tenant.New(id)
+			if err != nil {
+				house = scope
+			}
+			alerts := newAttention(func(notice Notice) {
+				go sender.Notify(context.Background(), house, notice)
+			}, sender.cfg.settle(), realClock{}, scans)
+			alerts.scope = house
+			if sender.subs != nil {
+				alerts.schedules = sender.subs
+			}
+			if id == scope.HouseholdID() {
+				alerts.rearm(ctx)
+			}
+			byHouse[id] = alerts
+			return alerts
 		}
-		alerts.rearm(context.Background())
-		defer alerts.stop()
+		primary := ensure(scope.HouseholdID())
+		defer func() {
+			for _, alerts := range byHouse {
+				alerts.stop()
+			}
+		}()
 		for msg := range msgs {
-			alerts.handle(msg)
+			id := msg.HouseholdID
+			if id == "" {
+				primary.handle(msg)
+				continue
+			}
+			ensure(id).handle(msg)
 		}
 	}()
 }
@@ -81,31 +110,66 @@ func Listen(b *events.Broadcaster, sender *Sender, scans scanReader) {
 // A row with no origin was stored before origins existed and is included, so
 // a live browser is not dropped on upgrade. The previous public host is
 // removed. Each endpoint is contacted once. A 404 or 410 removes that row.
-func (s *Sender) Notify(ctx context.Context, notice Notice) {
+func (s *Sender) Notify(ctx context.Context, scope tenant.Scope, notice Notice) {
 	if s == nil || s.subs == nil || !s.cfg.CanSend() {
 		return
 	}
+	if err := scope.Require(); err != nil {
+		log.Printf("scan alerts: could not read push subscriptions: %v", err)
+		return
+	}
 	if legacy := s.cfg.legacyHost(); legacy != "" {
-		n, err := s.subs.DeleteHost(ctx, legacy)
+		n, err := s.subs.DeleteHost(ctx, scope, legacy)
 		if err != nil {
 			log.Printf("scan alerts: could not remove a subscription from the previous address: %v", err)
 		} else if n > 0 {
 			log.Printf("scan alerts: removed subscriptions for %s", legacy)
 		}
 	}
-	subs, err := s.subs.List(ctx)
+	subs, err := s.subs.List(ctx, scope)
 	if err != nil {
 		log.Printf("scan alerts: could not read push subscriptions: %v", err)
 		return
 	}
-	s.deliverAll(ctx, notice, subs)
+	s.deliverAll(ctx, scope, notice, subs)
+}
+
+// NotifyOperators pushes one operator note. Names are cleared so a scan
+// batch cannot be copied onto this alert. Nothing is sent without VAPID
+// keys or a test Post hook.
+func (s *Sender) NotifyOperators(ctx context.Context, notice Notice) {
+	if s == nil || s.subs == nil || !s.cfg.CanSend() {
+		return
+	}
+	notice.Names = nil
+	notice.Count = 0
+	rows, err := s.subs.ListOperator(ctx)
+	if err != nil {
+		log.Printf("operator alerts: could not read push subscriptions: %v", err)
+		return
+	}
+	grouped := map[string][]Subscription{}
+	var order []string
+	for _, row := range rows {
+		if _, ok := grouped[row.HouseholdID]; !ok {
+			order = append(order, row.HouseholdID)
+		}
+		grouped[row.HouseholdID] = append(grouped[row.HouseholdID], row.Subscription)
+	}
+	for _, id := range order {
+		scope, err := tenant.New(id)
+		if err != nil {
+			continue
+		}
+		s.deliverAll(ctx, scope, notice, grouped[id])
+	}
 }
 
 // deliverAll sends notice to the subscriptions selectForSend keeps.
-func (s *Sender) deliverAll(ctx context.Context, notice Notice, subs []Subscription) {
+func (s *Sender) deliverAll(ctx context.Context, scope tenant.Scope, notice Notice, subs []Subscription) {
 	send, drop := selectForSend(subs, s.cfg)
 	for _, sub := range drop {
-		if err := s.subs.Delete(ctx, sub.Endpoint); err != nil {
+		if err := s.subs.Delete(ctx, scope, sub.Endpoint); err != nil {
 			log.Printf("scan alerts: could not remove a subscription from the previous address: %v", err)
 		}
 	}
@@ -122,7 +186,7 @@ func (s *Sender) deliverAll(ctx context.Context, notice Notice, subs []Subscript
 		// Host only. The path is a capability and the keys are secrets.
 		log.Printf("scan alerts: push to %s returned %d", endpointHost(sub.Endpoint), status)
 		if status == http.StatusNotFound || status == http.StatusGone {
-			if err := s.subs.Delete(ctx, sub.Endpoint); err != nil {
+			if err := s.subs.Delete(ctx, scope, sub.Endpoint); err != nil {
 				log.Printf("scan alerts: could not remove an expired push subscription: %v", err)
 			}
 		}

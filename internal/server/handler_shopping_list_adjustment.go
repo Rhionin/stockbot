@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListAdjustmentPathParams holds path parameters for the adjustment endpoint.
@@ -15,8 +17,8 @@ type ShoppingListAdjustmentPathParams struct {
 // ShoppingListAdjustmentHandler handles PUT/DELETE /api/shopping-list/items/{id}/adjustment.
 type ShoppingListAdjustmentHandler struct {
 	ShoppingList interface {
-		SetAdjustment(ctx context.Context, entryID string, providerID string, adjustment int) error
-		RemoveAdjustment(ctx context.Context, entryID string, providerID string) error
+		SetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string, quantity int) error
+		RemoveAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) error
 	}
 }
 
@@ -49,10 +51,15 @@ func (h *ShoppingListAdjustmentHandler) Handle(req Request[ShoppingListAdjustmen
 		return nil, BadRequest("missing provider")
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+
 	// If adjustment is nil, clear it; otherwise set it
 	if req.Body.Adjustment == nil {
 		// Clear adjustment
-		if err := h.ShoppingList.RemoveAdjustment(req.Context, entryID, providerID); err != nil {
+		if err := h.ShoppingList.RemoveAdjustment(req.Context, scope, entryID, providerID); err != nil {
 			return nil, InternalError(err)
 		}
 		return &ShoppingListAdjustmentResponse{Adjustment: 0}, nil
@@ -66,7 +73,7 @@ func (h *ShoppingListAdjustmentHandler) Handle(req Request[ShoppingListAdjustmen
 	}
 
 	// Set the adjustment
-	if err := h.ShoppingList.SetAdjustment(req.Context, entryID, providerID, adjustment); err != nil {
+	if err := h.ShoppingList.SetAdjustment(req.Context, scope, entryID, providerID, adjustment); err != nil {
 		return nil, InternalError(err)
 	}
 

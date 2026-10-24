@@ -115,7 +115,7 @@ func insertHintScan(env testEnv, id, productID, barcode string, at time.Time, un
 	env.T.Helper()
 	direction := scan.StockIn
 	queue := scan.NewQueue(env.DB)
-	if _, err := queue.CreateScanEntry(env.T.Context(), scan.ScanEntry{
+	if _, err := queue.CreateScanEntry(env.T.Context(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID:        id,
 		UserID:    "user-1",
 		Barcode:   barcode,

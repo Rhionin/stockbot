@@ -7,6 +7,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListFillHandler handles POST /api/shopping-list/fill.
@@ -19,16 +20,19 @@ type ShoppingListFillHandler struct {
 	Ledger       *cart.Ledger
 	Registry     *cart.Registry
 	Adjustments  interface {
-		GetAdjustment(ctx context.Context, entryID string, providerID string) (*shopping.Adjustment, error)
+		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
 }
 
 func (h *ShoppingListFillHandler) Handle(req Request[struct{}, struct{}]) ([]ShoppingListEntryResponse, error) {
-	const userID = "user-1"
-
-	provision, err := stageShoppingPlan(req.Context, userID, h.Pantry, h.ShoppingList, h.Supply, time.Now())
+	scope, err := requestScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	return presentShoppingList(req, provision, h.Ledger, h.Registry, h.Adjustments)
+
+	provision, err := stageShoppingPlan(req.Context, scope, h.Pantry, h.ShoppingList, h.Supply, time.Now())
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
 }

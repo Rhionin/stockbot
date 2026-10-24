@@ -113,7 +113,7 @@ func TestHistoryCorrectionsReadBack(t *testing.T) {
 				mustInsertInstance(env, "old-a", "item-old", t1, nil, "")
 				mustInsertInstance(env, "old-b", "item-old", t1, &t3, "manual")
 				mustInsertInstance(env, "old-c", "item-old", t2, nil, "")
-				if _, err := env.DB.Exec(`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', 'yesterday')`); err != nil {
+				if _, err := env.DB.Exec(`INSERT INTO household_settings (household_id, key, value) SELECT id, 'onboarding_started_at', 'yesterday' FROM households WHERE is_primary = 1`); err != nil {
 					env.T.Fatalf("stamp: %v", err)
 				}
 				if _, err := env.DB.Exec(`
@@ -182,7 +182,7 @@ func TestHistoryCorrectionsReadBack(t *testing.T) {
 
 func seedScanAt(env testEnv, id, productID string, direction scan.ScanDirection, units int, at time.Time) {
 	env.T.Helper()
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(env.T.Context(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(env.T.Context(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: id, UserID: "user-1", Barcode: id, ScannedAt: at,
 		Direction: &direction, UnitCount: units, ProductID: &productID, Status: scan.Pending,
 	}); err != nil {

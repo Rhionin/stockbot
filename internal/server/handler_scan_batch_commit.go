@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type ScanBatchCommitHandler struct {
 	Queue interface {
-		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
-		BatchUpdateScanEntries(ctx context.Context, ids []string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time) error
-		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
-		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
+		GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
+		BatchUpdateScanEntries(ctx context.Context, scope tenant.Scope, ids []string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time) error
+		CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry) error
+		CommitStockOut(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
 	}
 }
 
@@ -80,6 +81,11 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		}
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return batchCommitResponse{}, err
+	}
+
 	// An update-only request applies one transaction to every id. A missing id
 	// is left out of that write and then reported as scan_not_found. A lock
 	// or a full disk on that transaction stops the batch: every id, including
@@ -96,6 +102,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 	if applyFields && !req.Body.Commit {
 		err := h.Queue.BatchUpdateScanEntries(
 			req.Context,
+			scope,
 			req.Body.ScanEntryIDs,
 			req.Body.Direction,
 			req.Body.UnitCount,
@@ -112,7 +119,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			if failures.skip(id) {
 				continue
 			}
-			entry, err := h.Queue.GetScanEntry(req.Context, id)
+			entry, err := h.Queue.GetScanEntry(req.Context, scope, id)
 			if err != nil {
 				failures.fail(id, err)
 				continue
@@ -137,7 +144,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			if failures.skip(id) {
 				continue
 			}
-			entry, err := h.Queue.GetScanEntry(req.Context, id)
+			entry, err := h.Queue.GetScanEntry(req.Context, scope, id)
 			if err != nil {
 				failures.fail(id, err)
 				continue
@@ -167,6 +174,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			if applyFields {
 				err := h.Queue.BatchUpdateScanEntries(
 					req.Context,
+					scope,
 					[]string{id},
 					req.Body.Direction,
 					req.Body.UnitCount,
@@ -176,7 +184,7 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 					failures.fail(id, err)
 					continue
 				}
-				entry, err = h.Queue.GetScanEntry(req.Context, id)
+				entry, err = h.Queue.GetScanEntry(req.Context, scope, id)
 				if err != nil {
 					failures.fail(id, err)
 					continue
@@ -199,9 +207,9 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 			var removed int
 			var commitErr error
 			if *entry.Direction == scan.StockIn {
-				commitErr = h.Queue.CommitStockIn(req.Context, entry)
+				commitErr = h.Queue.CommitStockIn(req.Context, scope, entry)
 			} else {
-				removed, commitErr = h.Queue.CommitStockOut(req.Context, entry, nil)
+				removed, commitErr = h.Queue.CommitStockOut(req.Context, scope, entry, nil)
 			}
 
 			if commitErr != nil {

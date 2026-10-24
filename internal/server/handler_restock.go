@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Rhionin/stockbot/internal/restock"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // RestockHandler serves household restock targets and categories.
@@ -71,7 +72,11 @@ type restockDontResponse struct {
 }
 
 func (h *RestockHandler) Snapshot(req Request[struct{}, struct{}]) (*restock.Snapshot, error) {
-	snap, err := h.Targets.Snapshot(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := h.Targets.Snapshot(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -79,11 +84,15 @@ func (h *RestockHandler) Snapshot(req Request[struct{}, struct{}]) (*restock.Sna
 }
 
 func (h *RestockHandler) PutHousehold(req Request[restockTargetBody, struct{}]) (*restock.Snapshot, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := explicitTarget(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	if err := h.Targets.SetHousehold(req.Context, target); err != nil {
+	if err := h.Targets.SetHousehold(req.Context, scope, target); err != nil {
 		return nil, restockError(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
@@ -93,6 +102,10 @@ func (h *RestockHandler) PutHousehold(req Request[restockTargetBody, struct{}]) 
 }
 
 func (h *RestockHandler) PutItem(req Request[restockTargetBody, restockItemParams]) (*restock.ItemView, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	if req.PathParams.ItemID == "" {
 		return nil, BadRequest("missing item id")
 	}
@@ -100,34 +113,42 @@ func (h *RestockHandler) PutItem(req Request[restockTargetBody, restockItemParam
 	if err != nil {
 		return nil, err
 	}
-	if err := h.Targets.SetItem(req.Context, req.PathParams.ItemID, target); err != nil {
+	if err := h.Targets.SetItem(req.Context, scope, req.PathParams.ItemID, target); err != nil {
 		return nil, restockError(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
 		return nil, err
 	}
-	return h.oneItem(req.Context, req.PathParams.ItemID)
+	return h.oneItem(req.Context, scope, req.PathParams.ItemID)
 }
 
 func (h *RestockHandler) DeleteItem(req Request[struct{}, restockItemParams]) (*restock.ItemView, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	if req.PathParams.ItemID == "" {
 		return nil, BadRequest("missing item id")
 	}
-	if err := h.Targets.ClearItem(req.Context, req.PathParams.ItemID); err != nil {
+	if err := h.Targets.ClearItem(req.Context, scope, req.PathParams.ItemID); err != nil {
 		return nil, restockError(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
 		return nil, err
 	}
-	return h.oneItem(req.Context, req.PathParams.ItemID)
+	return h.oneItem(req.Context, scope, req.PathParams.ItemID)
 }
 
 func (h *RestockHandler) DontRestock(req Request[struct{}, restockItemParams]) (*restockDontResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	itemID := req.PathParams.ItemID
 	if itemID == "" {
 		return nil, BadRequest("missing item id")
 	}
-	beforeSnap, err := h.Targets.Snapshot(req.Context)
+	beforeSnap, err := h.Targets.Snapshot(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -142,11 +163,11 @@ func (h *RestockHandler) DontRestock(req Request[struct{}, restockItemParams]) (
 	if name == "" {
 		return nil, NotFound("That item isn't in the household.")
 	}
-	previous, err := h.Targets.ItemTarget(req.Context, itemID)
+	previous, err := h.Targets.ItemTarget(req.Context, scope, itemID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	if err := h.Targets.SetItem(req.Context, itemID, restock.Target{Kind: restock.KindMonths, Value: 0}); err != nil {
+	if err := h.Targets.SetItem(req.Context, scope, itemID, restock.Target{Kind: restock.KindMonths, Value: 0}); err != nil {
 		return nil, restockError(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
@@ -160,7 +181,11 @@ func (h *RestockHandler) DontRestock(req Request[struct{}, restockItemParams]) (
 }
 
 func (h *RestockHandler) Categories(req Request[struct{}, struct{}]) (*[]restock.CategorySummary, error) {
-	snap, err := h.Targets.Snapshot(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := h.Targets.Snapshot(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -168,7 +193,11 @@ func (h *RestockHandler) Categories(req Request[struct{}, struct{}]) (*[]restock
 }
 
 func (h *RestockHandler) CreateCategory(req Request[restockNameBody, struct{}]) (*restock.CategorySummary, error) {
-	created, err := h.Targets.CreateCategory(req.Context, req.Body.Name)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	created, err := h.Targets.CreateCategory(req.Context, scope, req.Body.Name)
 	if err != nil {
 		return nil, restockError(err)
 	}
@@ -176,6 +205,10 @@ func (h *RestockHandler) CreateCategory(req Request[restockNameBody, struct{}]) 
 }
 
 func (h *RestockHandler) PutCategoryTarget(req Request[restockTargetBody, restockCategoryParams]) (*restock.Snapshot, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	if req.PathParams.ID == "" {
 		return nil, BadRequest("missing category id")
 	}
@@ -187,7 +220,7 @@ func (h *RestockHandler) PutCategoryTarget(req Request[restockTargetBody, restoc
 		}
 		target = &value
 	}
-	if err := h.Targets.SetCategoryTarget(req.Context, req.PathParams.ID, target); err != nil {
+	if err := h.Targets.SetCategoryTarget(req.Context, scope, req.PathParams.ID, target); err != nil {
 		return nil, restockError(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
@@ -197,11 +230,15 @@ func (h *RestockHandler) PutCategoryTarget(req Request[restockTargetBody, restoc
 }
 
 func (h *RestockHandler) PreviewCategory(req Request[restockTargetBody, restockCategoryParams]) (*restock.Preview, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := explicitTarget(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	preview, err := h.Targets.PreviewCategory(req.Context, req.PathParams.ID, target)
+	preview, err := h.Targets.PreviewCategory(req.Context, scope, req.PathParams.ID, target)
 	if err != nil {
 		return nil, restockError(err)
 	}
@@ -209,46 +246,70 @@ func (h *RestockHandler) PreviewCategory(req Request[restockTargetBody, restockC
 }
 
 func (h *RestockHandler) RenameCategory(req Request[restockNameBody, restockCategoryParams]) (*restock.Snapshot, error) {
-	if err := h.Targets.RenameCategory(req.Context, req.PathParams.ID, req.Body.Name); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.RenameCategory(req.Context, scope, req.PathParams.ID, req.Body.Name); err != nil {
 		return nil, restockError(err)
 	}
 	return h.Snapshot(Request[struct{}, struct{}]{Context: req.Context})
 }
 
 func (h *RestockHandler) MergeCategory(req Request[restockMergeBody, restockCategoryParams]) (*restock.Snapshot, error) {
-	if err := h.Targets.MergeCategory(req.Context, req.PathParams.ID, req.Body.IntoID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.MergeCategory(req.Context, scope, req.PathParams.ID, req.Body.IntoID); err != nil {
 		return nil, restockError(err)
 	}
 	return h.Snapshot(Request[struct{}, struct{}]{Context: req.Context})
 }
 
 func (h *RestockHandler) DeleteCategory(req Request[struct{}, restockCategoryParams]) (*restock.Snapshot, error) {
-	if err := h.Targets.DeleteCategory(req.Context, req.PathParams.ID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.DeleteCategory(req.Context, scope, req.PathParams.ID); err != nil {
 		return nil, restockError(err)
 	}
 	return h.Snapshot(Request[struct{}, struct{}]{Context: req.Context})
 }
 
 func (h *RestockHandler) AddItemCategory(req Request[restockCategoryBody, restockItemParams]) (*restock.ItemView, error) {
-	if err := h.Targets.AddItemCategory(req.Context, req.PathParams.ItemID, req.Body.CategoryID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.AddItemCategory(req.Context, scope, req.PathParams.ItemID, req.Body.CategoryID); err != nil {
 		return nil, restockError(err)
 	}
-	return h.oneItem(req.Context, req.PathParams.ItemID)
+	return h.oneItem(req.Context, scope, req.PathParams.ItemID)
 }
 
 func (h *RestockHandler) RemoveItemCategory(req Request[struct{}, restockItemCategoryParams]) (*restock.ItemView, error) {
-	if err := h.Targets.RemoveItemCategory(req.Context, req.PathParams.ItemID, req.PathParams.CategoryID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.RemoveItemCategory(req.Context, scope, req.PathParams.ItemID, req.PathParams.CategoryID); err != nil {
 		return nil, restockError(err)
 	}
-	return h.oneItem(req.Context, req.PathParams.ItemID)
+	return h.oneItem(req.Context, scope, req.PathParams.ItemID)
 }
 
 func (h *RestockHandler) PreviewGroup(req Request[restockTargetBody, restockGroupParams]) (*restock.Preview, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := explicitTarget(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	preview, err := h.Targets.PreviewGroup(req.Context, req.PathParams.ID, target)
+	preview, err := h.Targets.PreviewGroup(req.Context, scope, req.PathParams.ID, target)
 	if err != nil {
 		return nil, restockError(err)
 	}
@@ -256,7 +317,11 @@ func (h *RestockHandler) PreviewGroup(req Request[restockTargetBody, restockGrou
 }
 
 func (h *RestockHandler) Suggestions(req Request[struct{}, struct{}]) (*[]restock.SuggestionCard, error) {
-	cards, err := h.Targets.Suggestions(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	cards, err := h.Targets.Suggestions(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -267,21 +332,29 @@ func (h *RestockHandler) Suggestions(req Request[struct{}, struct{}]) (*[]restoc
 }
 
 func (h *RestockHandler) ApplySuggestions(req Request[restockSuggestBody, struct{}]) (*restock.Snapshot, error) {
-	if err := h.Targets.ApplySuggestions(req.Context, req.Body.Category, req.Body.ItemIDs); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.ApplySuggestions(req.Context, scope, req.Body.Category, req.Body.ItemIDs); err != nil {
 		return nil, restockError(err)
 	}
 	return h.Snapshot(Request[struct{}, struct{}]{Context: req.Context})
 }
 
 func (h *RestockHandler) DismissSuggestions(req Request[restockSuggestBody, struct{}]) (*[]restock.SuggestionCard, error) {
-	if err := h.Targets.DismissSuggestions(req.Context, req.Body.Category, req.Body.ItemIDs); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Targets.DismissSuggestions(req.Context, scope, req.Body.Category, req.Body.ItemIDs); err != nil {
 		return nil, restockError(err)
 	}
 	return h.Suggestions(Request[struct{}, struct{}]{Context: req.Context})
 }
 
-func (h *RestockHandler) oneItem(ctx context.Context, itemID string) (*restock.ItemView, error) {
-	snap, err := h.Targets.Snapshot(ctx)
+func (h *RestockHandler) oneItem(ctx context.Context, scope tenant.Scope, itemID string) (*restock.ItemView, error) {
+	snap, err := h.Targets.Snapshot(ctx, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}

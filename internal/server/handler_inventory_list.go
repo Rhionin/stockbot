@@ -2,30 +2,42 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type InventoryListHandler struct {
 	Pantry interface {
-		GetInventoryList(ctx context.Context, userID string, now time.Time, warningDays int, query string) ([]inventory.InventoryItem, error)
+		GetInventoryList(ctx context.Context, scope tenant.Scope, now time.Time, warningDays int, query string) ([]inventory.InventoryItem, error)
 	}
-	// In a real app, userID would come from auth middleware
-	UserID string
+	DB *sql.DB
 }
 
-func (h *InventoryListHandler) Handle(req Request[struct{}, struct{}]) ([]inventory.InventoryItem, error) {
-	userID := "user-1" // Hardcoded for now; would come from auth middleware in production
-	if h.UserID != "" {
-		userID = h.UserID
+func (h *InventoryListHandler) Handle(req Request[struct{}, struct{}]) (changeView, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return changeView{}, err
 	}
 
 	now := time.Now()
 	warningDays := inventory.DefaultWarningDays
 
-	// Extract query parameter from raw request
 	query := req.RawRequest.URL.Query().Get("q")
-
-	return h.Pantry.GetInventoryList(req.Context, userID, now, warningDays, query)
+	since := strings.TrimSpace(req.RawRequest.URL.Query().Get("since"))
+	items, err := h.Pantry.GetInventoryList(req.Context, scope, now, warningDays, query)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	if items == nil {
+		items = []inventory.InventoryItem{}
+	}
+	view, err := viewChanges(req.Context, h.DB, scope.HouseholdID(), "stock", since, "items", items)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	return view, nil
 }

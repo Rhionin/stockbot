@@ -10,21 +10,22 @@ import (
 func TestDealRoundTrip(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()
-	kr := createTestItem(t, deps, ctx, "user-1", "prod-kr-deal", "Kroger Cut Green Beans")
+	scope := scopeOf(t, deps.db)
+	kr := createTestItem(t, deps, ctx, "prod-kr-deal", "Kroger Cut Green Beans")
 	price := 79
 	regular := 125
-	if err := deps.shopping.SaveDeal(ctx, "user-1", shopping.Deal{
+	if err := deps.shopping.SaveDeal(ctx, scope, shopping.Deal{
 		ItemID: kr, PriceCents: &price, RegularPriceCents: &regular, Label: "Weekly ad",
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	price = 69
-	if err := deps.shopping.SaveDeal(ctx, "user-1", shopping.Deal{
+	if err := deps.shopping.SaveDeal(ctx, scope, shopping.Deal{
 		ItemID: kr, PriceCents: &price, Label: "Weekly ad",
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	deals, err := deps.shopping.ListDeals(ctx, "user-1")
+	deals, err := deps.shopping.ListDeals(ctx, scope)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -34,10 +35,10 @@ func TestDealRoundTrip(t *testing.T) {
 	if deals[0].Source != shopping.DealSourceRecorded {
 		t.Fatalf("source = %q", deals[0].Source)
 	}
-	if err := deps.shopping.DeleteDeal(ctx, "user-1", kr); err != nil {
+	if err := deps.shopping.DeleteDeal(ctx, scope, kr); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	deals, err = deps.shopping.ListDeals(ctx, "user-1")
+	deals, err = deps.shopping.ListDeals(ctx, scope)
 	if err != nil {
 		t.Fatalf("list after delete: %v", err)
 	}

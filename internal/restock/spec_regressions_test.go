@@ -2,6 +2,7 @@ package restock
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -11,30 +12,32 @@ import (
 func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 	targets, db := newTestTargets(t)
 	ctx := context.Background()
+	scope := primaryScope(t, db)
 	insertProduct(t, db, "salt", "Salt")
 	insertProduct(t, db, "pepper", "Pepper")
+	hid := scope.HouseholdID()
 	if _, err := db.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-salt', 'user-1', 'salt'),
-			('item-pepper', 'user-1', 'pepper')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-salt', ?, ?, 'salt'),
+			('item-pepper', ?, ?, 'pepper')`, hid, hid, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetItem(ctx, "item-salt", Target{Kind: KindAmount, Value: 4}); err != nil {
+	if err := targets.SetItem(ctx, scope, "item-salt", Target{Kind: KindAmount, Value: 4}); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetItem(ctx, "item-pepper", Target{Kind: KindMonths, Value: 2}); err != nil {
+	if err := targets.SetItem(ctx, scope, "item-pepper", Target{Kind: KindMonths, Value: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetHousehold(ctx, Target{Kind: KindMonths, Value: 6}); err != nil {
+	if err := targets.SetHousehold(ctx, scope, Target{Kind: KindMonths, Value: 6}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := db.Exec(`DELETE FROM items WHERE id = ?`, "item-salt"); err != nil {
+	if err := DeleteItem(ctx, scope, db, "item-salt"); err != nil {
 		t.Fatalf("setup: deleting the item: %v", err)
 	}
 
 	t.Run("the deleted item's target is gone", func(t *testing.T) {
-		got, err := targets.ItemTarget(ctx, "item-salt")
+		got, err := targets.ItemTarget(ctx, scope, "item-salt")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +47,7 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 	})
 
 	t.Run("another item's target stays", func(t *testing.T) {
-		got, err := targets.ItemTarget(ctx, "item-pepper")
+		got, err := targets.ItemTarget(ctx, scope, "item-pepper")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +57,7 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 	})
 
 	t.Run("the household default stays", func(t *testing.T) {
-		snap, err := targets.Snapshot(ctx)
+		snap, err := targets.Snapshot(ctx, scope)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,4 +65,14 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 			t.Fatalf("household target = %+v", snap.Household)
 		}
 	})
+}
+
+func TestDeleteItemReportsAClosedDatabase(t *testing.T) {
+	_, db := newTestTargets(t)
+	scope := primaryScope(t, db)
+	db.Close()
+	err := DeleteItem(context.Background(), scope, db, "item-sample")
+	if err == nil || !strings.Contains(err.Error(), "could not delete the item") {
+		t.Fatalf("err = %v", err)
+	}
 }

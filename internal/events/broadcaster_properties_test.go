@@ -81,7 +81,7 @@ func TestProperty1_SubscribersOnlyReceiveEventsPublishedAfterSubscribing(t *test
 
 		beforeCount := rapid.IntRange(0, 20).Draw(rt, "beforeCount")
 		for i := 0; i < beforeCount; i++ {
-			broadcaster.PublishScanEvent(scan.ScanEntry{ID: fmt.Sprintf("before-%d", i)})
+			broadcaster.PublishScanEvent("", scan.ScanEntry{ID: fmt.Sprintf("before-%d", i)})
 		}
 
 		ch, unsubscribe := broadcaster.Subscribe()
@@ -94,7 +94,7 @@ func TestProperty1_SubscribersOnlyReceiveEventsPublishedAfterSubscribing(t *test
 		for i := 0; i < afterCount; i++ {
 			id := fmt.Sprintf("after-%d", i)
 			afterIDs[i] = id
-			broadcaster.PublishScanEvent(scan.ScanEntry{ID: id})
+			broadcaster.PublishScanEvent("", scan.ScanEntry{ID: id})
 		}
 
 		for i, wantID := range afterIDs {
@@ -146,7 +146,7 @@ func TestProperty2_UnsubscribingRemovesExactlyThatSubscriber(t *testing.T) {
 		}()
 
 		entry := scan.ScanEntry{ID: "prop2-entry"}
-		broadcaster.PublishScanEvent(entry)
+		broadcaster.PublishScanEvent("", entry)
 
 		for i, s := range subscribers {
 			if s.unsubscribed {
@@ -203,7 +203,7 @@ func TestProperty3_SlowSubscriberDroppedWithoutBlockingOthers(t *testing.T) {
 		publishCount := rapid.IntRange(subscriberBuffer+1, subscriberBuffer+10).Draw(rt, "publishCount")
 		for i := 0; i < publishCount; i++ {
 			id := fmt.Sprintf("prop3-%d", i)
-			broadcaster.PublishScanEvent(scan.ScanEntry{ID: id})
+			broadcaster.PublishScanEvent("", scan.ScanEntry{ID: id})
 
 			for j, s := range subscribers {
 				if s.nonDraining {

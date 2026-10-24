@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -60,7 +62,7 @@ type Pantry struct {
 	// Broadcaster publishes an Inventory_Event after each successful
 	// mutation. Nil in every existing test; publish calls are skipped when nil.
 	Broadcaster interface {
-		PublishInventoryEvent(item InventoryItem)
+		PublishInventoryEvent(householdID string, item InventoryItem)
 	}
 }
 
@@ -69,11 +71,16 @@ func NewPantry(db *sql.DB) *Pantry {
 	return &Pantry{db: db}
 }
 
-// GetOrCreateItem returns the item for the given userID and productID.
+// GetOrCreateItem returns the item for this household and product.
 // If no such item exists, it creates one and returns it.
-func (r *Pantry) GetOrCreateItem(ctx context.Context, userID, productID string) (*Item, error) {
-	// First try to get existing item
-	item, err := r.getItemByUserAndProduct(ctx, userID, productID)
+// user_id and household_id are both the household id so a new household
+// does not collide with another household's product row. An existing row
+// whose household_id is already this scope is returned instead of inserted.
+func (r *Pantry) GetOrCreateItem(ctx context.Context, scope tenant.Scope, productID string) (*Item, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	item, err := r.getItemByProduct(ctx, scope, productID)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrCreateItem get: %w", err)
 	}
@@ -81,30 +88,32 @@ func (r *Pantry) GetOrCreateItem(ctx context.Context, userID, productID string) 
 		return item, nil
 	}
 
-	// Create new item
 	itemID := uuid.NewString()
+	householdID := scope.HouseholdID()
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`,
-		itemID, userID, productID,
+		`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+		itemID, householdID, productID, householdID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrCreateItem insert: %w", err)
 	}
 
-	// Return the newly created item
-	return r.getItemByID(ctx, itemID)
+	return r.getItemByID(ctx, scope, itemID)
 }
 
-// getItemByUserAndProduct is a helper that returns the item for the given userID and productID.
-func (r *Pantry) getItemByUserAndProduct(ctx context.Context, userID, productID string) (*Item, error) {
+// getItemByProduct returns the item for this household and product, or nil.
+func (r *Pantry) getItemByProduct(ctx context.Context, scope tenant.Scope, productID string) (*Item, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ? AND i.product_id = ?`,
-		userID, productID,
+		WHERE i.household_id = ? AND i.product_id = ?`,
+		scope.HouseholdID(), scope.HouseholdID(), productID,
 	)
 
 	item, err := scanItem(row)
@@ -112,21 +121,24 @@ func (r *Pantry) getItemByUserAndProduct(ctx context.Context, userID, productID 
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("getItemByUserAndProduct: %w", err)
+		return nil, fmt.Errorf("could not read the item: %w", err)
 	}
 	return item, nil
 }
 
-// getItemByID is a helper that returns the item with the given ID.
-func (r *Pantry) getItemByID(ctx context.Context, itemID string) (*Item, error) {
+// getItemByID returns the item with the given ID in this household, or nil.
+func (r *Pantry) getItemByID(ctx context.Context, scope tenant.Scope, itemID string) (*Item, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.id = ?`,
-		itemID,
+		WHERE i.id = ? AND i.household_id = ?`,
+		scope.HouseholdID(), itemID, scope.HouseholdID(),
 	)
 
 	item, err := scanItem(row)
@@ -139,17 +151,20 @@ func (r *Pantry) getItemByID(ctx context.Context, itemID string) (*Item, error) 
 	return item, nil
 }
 
-// ListItems returns all items for the given userID, ordered by product name.
-func (r *Pantry) ListItems(ctx context.Context, userID string) ([]Item, error) {
+// ListItems returns unshelved items for this household, ordered by product name.
+func (r *Pantry) ListItems(ctx context.Context, scope tenant.Scope) ([]Item, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT 
 			i.id, i.user_id, i.product_id, i.target_quantity, i.created_at, i.replenishment_mode,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		WHERE i.user_id = ? AND i.shelved = 0
-		ORDER BY p.name`,
-		userID,
+		WHERE i.household_id = ? AND i.shelved = 0
+		ORDER BY `+product.DisplayNameSQL("p"),
+		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ListItems: %w", err)
@@ -170,15 +185,18 @@ func (r *Pantry) ListItems(ctx context.Context, userID string) ([]Item, error) {
 	return items, nil
 }
 
-// ListItemInstances returns all item instances for the given itemID,
+// ListItemInstances returns active instances for the given item in this household,
 // ordered by expiration date ascending (use-oldest-first).
-func (r *Pantry) ListItemInstances(ctx context.Context, itemID string) ([]ItemInstance, error) {
+func (r *Pantry) ListItemInstances(ctx context.Context, scope tenant.Scope, itemID string) ([]ItemInstance, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, item_id, stock_in_at, expires_at, removed_at, removal_reason, created_at
 		FROM item_instances
-		WHERE item_id = ? AND removed_at IS NULL
+		WHERE item_id = ? AND removed_at IS NULL AND household_id = ?
 		ORDER BY expires_at ASC NULLS LAST`,
-		itemID,
+		itemID, scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ListItemInstances: %w", err)
@@ -201,39 +219,82 @@ func (r *Pantry) ListItemInstances(ctx context.Context, itemID string) ([]ItemIn
 
 // AddInstance adds a new item instance to the inventory.
 // If instance.ID is empty, a new UUID is generated.
-func (r *Pantry) AddInstance(ctx context.Context, instance ItemInstance) (*ItemInstance, error) {
+// The item must already belong to this household.
+func (r *Pantry) AddInstance(ctx context.Context, scope tenant.Scope, instance ItemInstance) (*ItemInstance, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	item, err := r.getItemByID(ctx, scope, instance.ItemID)
+	if err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
+	if item == nil {
+		return nil, ErrInstanceNotFound
+	}
 	if instance.ID == "" {
 		instance.ID = uuid.NewString()
 	}
 
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO item_instances (id, item_id, stock_in_at, expires_at)
-		 VALUES (?, ?, ?, ?)`,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, household_id)
+		 VALUES (?, ?, ?, ?, ?)`,
 		instance.ID,
 		instance.ItemID,
 		instance.StockInAt,
 		nullableTime(instance.ExpiresAt),
+		scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("AddInstance: %w", err)
 	}
+	if err := UnshelveItem(ctx, tx, scope, instance.ItemID); err != nil {
+		return nil, err
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
 
-	addedInstance, err := r.GetInstance(ctx, instance.ID)
+	addedInstance, err := r.GetInstance(ctx, scope, instance.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	r.publishInventoryEvent(ctx, instance.ItemID)
+	r.publishInventoryEvent(ctx, scope, instance.ItemID)
 
 	return addedInstance, nil
+}
+
+// UnshelveItem puts a wiped item back on the shelf. Stocking a unit used to
+// do this in a database trigger. The insert and this update share one
+// transaction, so a failure leaves the item hidden.
+func UnshelveItem(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, scope tenant.Scope, itemID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, `UPDATE items SET shelved = 0 WHERE id = ? AND household_id = ?`, itemID, scope.HouseholdID()); err != nil {
+		return fmt.Errorf("could not put the item back on the shelf: %w", err)
+	}
+	return nil
 }
 
 // RemoveInstance marks an item instance as removed by setting removed_at
 // and removal_reason. Returns ErrInstanceNotFound if the instance does not exist
 // or is already removed.
-func (r *Pantry) RemoveInstance(ctx context.Context, instanceID string, reason string) error {
-	// First check if the instance exists and is not already removed
-	existing, err := r.GetInstance(ctx, instanceID)
+func (r *Pantry) RemoveInstance(ctx context.Context, scope tenant.Scope, instanceID string, reason string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	existing, err := r.GetInstance(ctx, scope, instanceID)
 	if err != nil {
 		return fmt.Errorf("RemoveInstance: %w", err)
 	}
@@ -242,9 +303,14 @@ func (r *Pantry) RemoveInstance(ctx context.Context, instanceID string, reason s
 	}
 
 	now := time.Now()
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE item_instances SET removed_at = ?, removal_reason = ? WHERE id = ? AND removed_at IS NULL`,
-		now, reason, instanceID,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE item_instances SET removed_at = ?, removal_reason = ? WHERE id = ? AND removed_at IS NULL AND household_id = ?`,
+		now, reason, instanceID, scope.HouseholdID(),
 	)
 	if err != nil {
 		return fmt.Errorf("RemoveInstance: %w", err)
@@ -257,18 +323,27 @@ func (r *Pantry) RemoveInstance(ctx context.Context, instanceID string, reason s
 	if n == 0 {
 		return ErrInstanceNotFound
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
+	}
 
-	r.publishInventoryEvent(ctx, existing.ItemID)
+	r.publishInventoryEvent(ctx, scope, existing.ItemID)
 
 	return nil
 }
 
 // UpdateTargetQuantity sets the target_quantity for the given item.
-// Returns ErrInstanceNotFound if no item with that ID exists.
-func (r *Pantry) UpdateTargetQuantity(ctx context.Context, itemID string, qty int) error {
+// Returns ErrInstanceNotFound if no item with that ID exists in this household.
+func (r *Pantry) UpdateTargetQuantity(ctx context.Context, scope tenant.Scope, itemID string, qty int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE items SET target_quantity = ? WHERE id = ?`,
-		qty, itemID,
+		`UPDATE items SET target_quantity = ? WHERE id = ? AND household_id = ?`,
+		qty, itemID, scope.HouseholdID(),
 	)
 	if err != nil {
 		return fmt.Errorf("UpdateTargetQuantity: %w", err)
@@ -281,21 +356,24 @@ func (r *Pantry) UpdateTargetQuantity(ctx context.Context, itemID string, qty in
 		return ErrInstanceNotFound
 	}
 
-	r.publishInventoryEvent(ctx, itemID)
+	r.publishInventoryEvent(ctx, scope, itemID)
 
 	return nil
 }
 
 // UpdateReplenishmentMode sets the replenishment_mode for the given item.
-// Returns ErrInstanceNotFound if no item with that ID exists.
+// Returns ErrInstanceNotFound if no item with that ID exists in this household.
 // Enforces the two-value set in Go.
-func (r *Pantry) UpdateReplenishmentMode(ctx context.Context, itemID string, mode ReplenishmentMode) error {
+func (r *Pantry) UpdateReplenishmentMode(ctx context.Context, scope tenant.Scope, itemID string, mode ReplenishmentMode) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if !mode.Valid() {
 		return fmt.Errorf("invalid replenishment mode: %q", mode)
 	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE items SET replenishment_mode = ? WHERE id = ?`,
-		string(mode), itemID,
+		`UPDATE items SET replenishment_mode = ? WHERE id = ? AND household_id = ?`,
+		string(mode), itemID, scope.HouseholdID(),
 	)
 	if err != nil {
 		return fmt.Errorf("UpdateReplenishmentMode: %w", err)
@@ -308,16 +386,19 @@ func (r *Pantry) UpdateReplenishmentMode(ctx context.Context, itemID string, mod
 		return ErrInstanceNotFound
 	}
 
-	r.publishInventoryEvent(ctx, itemID)
+	r.publishInventoryEvent(ctx, scope, itemID)
 
 	return nil
 }
 
 // GetTargetQuantity returns the target_quantity for the given item, or nil if not found.
-func (r *Pantry) GetTargetQuantity(ctx context.Context, itemID string) (*int, error) {
+func (r *Pantry) GetTargetQuantity(ctx context.Context, scope tenant.Scope, itemID string) (*int, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx,
-		`SELECT target_quantity FROM items WHERE id = ?`,
-		itemID,
+		`SELECT target_quantity FROM items WHERE id = ? AND household_id = ?`,
+		itemID, scope.HouseholdID(),
 	)
 
 	var qty sql.NullInt64
@@ -334,10 +415,13 @@ func (r *Pantry) GetTargetQuantity(ctx context.Context, itemID string) (*int, er
 
 // GetReplenishmentMode returns the replenishment_mode for the given item.
 // Returns TargetMode if not found (default per requirement 6.2).
-func (r *Pantry) GetReplenishmentMode(ctx context.Context, itemID string) (ReplenishmentMode, error) {
+func (r *Pantry) GetReplenishmentMode(ctx context.Context, scope tenant.Scope, itemID string) (ReplenishmentMode, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	row := r.db.QueryRowContext(ctx,
-		`SELECT replenishment_mode FROM items WHERE id = ?`,
-		itemID,
+		`SELECT replenishment_mode FROM items WHERE id = ? AND household_id = ?`,
+		itemID, scope.HouseholdID(),
 	)
 
 	var mode string
@@ -355,13 +439,17 @@ func (r *Pantry) GetReplenishmentMode(ctx context.Context, itemID string) (Reple
 	return m, nil
 }
 
-// List returns all item instances in the pantry, ordered by creation time.
+// List returns this household's active item instances, ordered by creation time.
 // Used for counting instances per item in provisioning.
-func (r *Pantry) List(ctx context.Context) ([]ItemInstance, error) {
+func (r *Pantry) List(ctx context.Context, scope tenant.Scope) ([]ItemInstance, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, item_id, stock_in_at, expires_at, removed_at, removal_reason, created_at
-		 FROM item_instances WHERE removed_at IS NULL
+		 FROM item_instances WHERE removed_at IS NULL AND household_id = ?
 		 ORDER BY created_at ASC`,
+		scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("List: %w", err)
@@ -386,30 +474,36 @@ func (r *Pantry) List(ctx context.Context) ([]ItemInstance, error) {
 // publishes it via Broadcaster. It is a no-op if Broadcaster is nil, the
 // item can't be found, or the fetch fails, since the mutation that
 // triggered it has already succeeded and must not fail because of it.
-func (r *Pantry) publishInventoryEvent(ctx context.Context, itemID string) {
+func (r *Pantry) publishInventoryEvent(ctx context.Context, scope tenant.Scope, itemID string) {
 	if r.Broadcaster == nil {
 		return
 	}
-	invItem, err := r.GetInventoryItem(ctx, itemID, time.Now(), DefaultWarningDays)
+	invItem, err := r.GetInventoryItem(ctx, scope, itemID, time.Now(), DefaultWarningDays)
 	if err != nil || invItem == nil {
 		return
 	}
-	r.Broadcaster.PublishInventoryEvent(*invItem)
+	r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 }
 
-// GetItem returns the item with the given ID, or nil if no such item exists.
+// GetItem returns the item with the given ID in this household, or nil if none exists.
 // A wiped (shelved) item is hidden from ListItems and still returned here.
-func (r *Pantry) GetItem(ctx context.Context, itemID string) (*Item, error) {
-	return r.getItemByID(ctx, itemID)
+func (r *Pantry) GetItem(ctx context.Context, scope tenant.Scope, itemID string) (*Item, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	return r.getItemByID(ctx, scope, itemID)
 }
 
-// GetInstance returns the item instance with the given ID, or nil if no such
-// instance exists.
-func (r *Pantry) GetInstance(ctx context.Context, instanceID string) (*ItemInstance, error) {
+// GetInstance returns the item instance with the given ID in this household,
+// or nil if no such instance exists.
+func (r *Pantry) GetInstance(ctx context.Context, scope tenant.Scope, instanceID string) (*ItemInstance, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, item_id, stock_in_at, expires_at, removed_at, removal_reason, created_at
-		 FROM item_instances WHERE id = ?`,
-		instanceID,
+		 FROM item_instances WHERE id = ? AND household_id = ?`,
+		instanceID, scope.HouseholdID(),
 	)
 
 	instance, err := scanItemInstance(row)

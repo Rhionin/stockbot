@@ -19,7 +19,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 		mustExec(env, `UPDATE products SET unit_of_measure = 'can', net_base_value = ?, net_dimension = 'mass', net_size_origin = 'manual' WHERE id IN ('prod-gv', 'prod-kr', 'prod-dm')`, 14.5*oz)
 		insertConsumptionEvent(env.T, env.DB, "ate-kr", "item-kr", time.Now().UTC())
 		ounces := 48.0
-		if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-gv", "prod-kr", "prod-dm"}, &group.TargetInput{
+		if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-gv", "prod-kr", "prod-dm"}, &group.TargetInput{
 			Quantity:  &ounces,
 			Dimension: product.DimensionMass,
 		}); err != nil {
@@ -56,7 +56,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 					env.T.Fatal(err)
 				}
 				pin := "prod-gv"
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), id, "favorite", &pin, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), id, "favorite", &pin, true); err != nil {
 					env.T.Fatal(err)
 				}
 			},
@@ -83,13 +83,13 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				mustExec(env, `INSERT INTO item_deals (user_id, item_id, price_cents, regular_price_cents, label) VALUES ('user-1', 'item-small', 200, 250, 'Sale')`)
 				mustExec(env, `INSERT INTO item_deals (user_id, item_id, price_cents, regular_price_cents, label) VALUES ('user-1', 'item-big', 150, 300, 'Sale')`)
 				ounces := 50.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-small", "prod-big"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-small", "prod-big"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "best_deal", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "best_deal", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -118,16 +118,16 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				insertStockIn(env.T, env.DB, "prod-early", early)
 				insertStockIn(env.T, env.DB, "prod-late", late)
 				ounces := 48.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Muffin mix", []string{"prod-early", "prod-late", "prod-fancy"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Muffin mix", []string{"prod-early", "prod-late", "prod-fancy"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "favor_variety", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "favor_variety", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), view.ID, "prod-fancy", true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "prod-fancy", true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -150,16 +150,16 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-only", "Only fancy", "item-only")
 				mustExec(env, `UPDATE products SET unit_of_measure = 'box', net_base_value = ?, net_dimension = 'mass', net_size_origin = 'manual' WHERE id = 'prod-only'`, 14.5*oz)
 				ounces := 48.0
-				view, err := group.NewGroups(env.DB).Create(env.T.Context(), "Fancy only", []string{"prod-only"}, &group.TargetInput{
+				view, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Fancy only", []string{"prod-only"}, &group.TargetInput{
 					Quantity: &ounces, Dimension: product.DimensionMass,
 				})
 				if err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), view.ID, "favor_variety", nil, true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetRule(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "favor_variety", nil, true); err != nil {
 					env.T.Fatal(err)
 				}
-				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), view.ID, "prod-only", true); err != nil {
+				if _, err := group.NewGroups(env.DB).SetMemberRestock(env.T.Context(), primaryScope(env.T, env.DB), view.ID, "prod-only", true); err != nil {
 					env.T.Fatal(err)
 				}
 				beginUsing(env.T, env.DB, time.Now())
@@ -176,7 +176,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-a", "Can A", "item-a")
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-b", "Can B", "item-b")
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				started := time.Now().UTC().Add(-60 * 24 * time.Hour)
@@ -201,7 +201,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-a", "Can A", "item-a")
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-b", "Can B", "item-b")
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Cut green beans", []string{"prod-a", "prod-b"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				started := time.Now().UTC().Add(-60 * 24 * time.Hour)
@@ -259,6 +259,60 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				if len(next) != 1 || next[0].ItemID != "item-dm" || next[0].Quantity != rows[0].Quantity {
 					env.T.Fatalf("swap did not stick: %#v", next)
 				}
+			},
+		},
+		{
+			name: "swap refuses a blank product, a missing line, and a line that is not a group",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-manual", "Oats", "item-manual")
+				insertManualShoppingItem(env.T, env.DB, "line-manual", "user-1", "item-manual", 1)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/line-manual/swap",
+				body:           `{"itemId":""}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				bodyContains:   []string{"Choose a product in this group."},
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/items/missing-line/swap",
+					body:           `{"itemId":"item-manual"}`,
+					expectedStatus: http.StatusNotFound,
+					bodyContains:   []string{"not found"},
+				},
+				httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/items/line-manual/swap",
+					body:           `{"itemId":"item-manual"}`,
+					expectedStatus: http.StatusUnprocessableEntity,
+					bodyContains:   []string{"That shopping line is not a group."},
+				},
+			),
+		},
+		{
+			name:  "swap refuses a product outside the group",
+			setup: beans,
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/fill",
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-peas", "Peas", "item-peas")
+				handler := stagedCartHandler(env)
+				body := exchangeJSON(env.T, handler, http.MethodGet, "/api/shopping-list", ``, http.StatusOK)
+				var rows []struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal(body, &rows); err != nil {
+					env.T.Fatal(err)
+				}
+				if len(rows) != 1 {
+					env.T.Fatalf("rows: %#v", rows)
+				}
+				exchangeJSON(env.T, handler, http.MethodPost, "/api/shopping-list/items/"+rows[0].ID+"/swap", `{"itemId":"item-peas"}`, http.StatusUnprocessableEntity)
 			},
 		},
 		{

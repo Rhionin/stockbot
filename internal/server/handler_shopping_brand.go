@@ -6,6 +6,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type shoppingDealRequest struct {
@@ -26,10 +27,10 @@ type shoppingDealResponse struct {
 // ShoppingDealPutHandler handles PUT /api/shopping-list/deals.
 type ShoppingDealPutHandler struct {
 	ShoppingList interface {
-		SaveDeal(ctx context.Context, userID string, deal shopping.Deal) error
+		SaveDeal(ctx context.Context, scope tenant.Scope, deal shopping.Deal) error
 	}
 	Pantry interface {
-		GetItem(ctx context.Context, itemID string) (*inventory.Item, error)
+		GetItem(ctx context.Context, scope tenant.Scope, itemID string) (*inventory.Item, error)
 	}
 }
 
@@ -44,7 +45,11 @@ func (h *ShoppingDealPutHandler) Handle(req Request[shoppingDealRequest, struct{
 	if (req.Body.PriceCents != nil && *req.Body.PriceCents < 0) || (req.Body.RegularPriceCents != nil && *req.Body.RegularPriceCents < 0) {
 		return nil, &HTTPError{Code: 422, Message: "Sale price can't be negative"}
 	}
-	item, err := h.Pantry.GetItem(req.Context, req.Body.ItemID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	item, err := h.Pantry.GetItem(req.Context, scope, req.Body.ItemID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -58,8 +63,7 @@ func (h *ShoppingDealPutHandler) Handle(req Request[shoppingDealRequest, struct{
 		Label:             label,
 		Source:            shopping.DealSourceRecorded,
 	}
-	const userID = "user-1"
-	if err := h.ShoppingList.SaveDeal(req.Context, userID, deal); err != nil {
+	if err := h.ShoppingList.SaveDeal(req.Context, scope, deal); err != nil {
 		return nil, InternalError(err)
 	}
 	return &shoppingDealResponse{
@@ -78,7 +82,7 @@ type shoppingDealPath struct {
 // ShoppingDealDeleteHandler handles DELETE /api/shopping-list/deals/{itemId}.
 type ShoppingDealDeleteHandler struct {
 	ShoppingList interface {
-		DeleteDeal(ctx context.Context, userID, itemID string) error
+		DeleteDeal(ctx context.Context, scope tenant.Scope, itemID string) error
 	}
 }
 
@@ -86,8 +90,11 @@ func (h *ShoppingDealDeleteHandler) Handle(req Request[struct{}, shoppingDealPat
 	if req.PathParams.ItemID == "" {
 		return struct{}{}, &HTTPError{Code: 422, Message: "Choose a brand to clear"}
 	}
-	const userID = "user-1"
-	if err := h.ShoppingList.DeleteDeal(req.Context, userID, req.PathParams.ItemID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return struct{}{}, InternalError(err)
+	}
+	if err := h.ShoppingList.DeleteDeal(req.Context, scope, req.PathParams.ItemID); err != nil {
 		return struct{}{}, InternalError(err)
 	}
 	return struct{}{}, nil

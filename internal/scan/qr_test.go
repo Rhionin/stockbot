@@ -7,6 +7,19 @@ import (
 	"unicode/utf8"
 )
 
+func TestProductBarcodeKeepsUnicodeWhitespace(t *testing.T) {
+	t.Parallel()
+	if IsProductBarcode("1234567\u0085") || IsProductBarcode("1234567\u00a0") {
+		t.Fatal("unicode whitespace was trimmed into a product barcode")
+	}
+	if !IsProductBarcode("1234567 ") || !IsProductBarcode("\t1234567\r\n") {
+		t.Fatal("ASCII whitespace was not trimmed")
+	}
+	if TrimASCII("1234567\u00a0") != "1234567\u00a0" {
+		t.Fatal("U+00A0 was trimmed")
+	}
+}
+
 func TestIsQRPayload(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -28,6 +41,9 @@ func TestIsQRPayload(t *testing.T) {
 		{name: "text with a space", raw: "buy milk", isQR: true},
 		{name: "digits and a symbol", raw: "1234-5678", isQR: true},
 		{name: "longer than a GTIN", raw: "123456789012345", isQR: true},
+		{name: "digits with ASCII space", raw: "1234567 ", isQR: false},
+		{name: "digits with next-line", raw: "1234567\u0085", isQR: true},
+		{name: "digits with no-break space", raw: "1234567\u00a0", isQR: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +96,7 @@ func TestNewQREntrySkipsTheProduct(t *testing.T) {
 	t.Parallel()
 	when := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	direction := StockIn
-	entry := NewQREntry("user-1", "  https://example.com/milk  ", &direction, when)
+	entry := NewQREntry("actor", "  https://example.com/milk  ", &direction, when)
 	if entry.Status != QR || entry.ProductID != nil {
 		t.Fatalf("entry = %+v", entry)
 	}

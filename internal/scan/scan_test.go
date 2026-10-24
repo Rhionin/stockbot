@@ -12,13 +12,15 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // newTestQueue opens an in-memory SQLite database, applies all migrations, and returns a scan Queue.
-func newTestQueue(t *testing.T) (*scan.Queue, *sql.DB) {
+func newTestQueue(t *testing.T) (*scan.Queue, *sql.DB, tenant.Scope) {
 	t.Helper()
 	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
@@ -28,14 +30,18 @@ func newTestQueue(t *testing.T) (*scan.Queue, *sql.DB) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	return scan.NewQueue(conn), conn
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("PrimaryScope: %v", err)
+	}
+	return scan.NewQueue(conn), conn, scope
 }
 
 // TestGetScanEntry_ProductImageURL locks in that ScanEntry.Product.ImageURL is
 // projected through the scan_entries-products join, not silently dropped like
 // the other product columns would be if a join query omitted it.
 func TestGetScanEntry_ProductImageURL(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	catalog := product.NewCatalog(db)
@@ -47,8 +53,8 @@ func TestGetScanEntry_ProductImageURL(t *testing.T) {
 	}
 
 	productID := "prod-1"
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID:    "user-1",
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID:    "actor",
 		Barcode:   "000000000001",
 		ScannedAt: time.Now(),
 		UnitCount: 1,
@@ -61,7 +67,7 @@ func TestGetScanEntry_ProductImageURL(t *testing.T) {
 		t.Errorf("CreateScanEntry: want Product.ImageURL %q, got %+v", wantImageURL, created.Product)
 	}
 
-	got, err := queue.GetScanEntry(ctx, created.ID)
+	got, err := queue.GetScanEntry(ctx, scope, created.ID)
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -69,7 +75,7 @@ func TestGetScanEntry_ProductImageURL(t *testing.T) {
 		t.Errorf("GetScanEntry: want Product.ImageURL %q, got %+v", wantImageURL, got.Product)
 	}
 
-	entries, err := queue.ListScanEntries(ctx, "user-1", "")
+	entries, err := queue.ListScanEntries(ctx, scope, "")
 	if err != nil {
 		t.Fatalf("ListScanEntries: %v", err)
 	}
@@ -94,7 +100,7 @@ func TestCreateScanEntry(t *testing.T) {
 			name: "explicit ID and pending status",
 			entry: scan.ScanEntry{
 				ID:        "scan-1",
-				UserID:    "user-1",
+				UserID:    "actor",
 				Barcode:   "123456789012",
 				ScannedAt: time.Now(),
 				UnitCount: 1,
@@ -107,7 +113,7 @@ func TestCreateScanEntry(t *testing.T) {
 		{
 			name: "generate UUID when ID empty",
 			entry: scan.ScanEntry{
-				UserID:    "user-1",
+				UserID:    "actor",
 				Barcode:   "987654321098",
 				ScannedAt: time.Now(),
 				UnitCount: 2,
@@ -120,7 +126,7 @@ func TestCreateScanEntry(t *testing.T) {
 			name: "with pre-selected direction",
 			entry: scan.ScanEntry{
 				ID:        "scan-2",
-				UserID:    "user-1",
+				UserID:    "actor",
 				Barcode:   "111222333444",
 				ScannedAt: time.Now(),
 				Direction: ptrScanDirection(scan.StockIn),
@@ -134,11 +140,11 @@ func TestCreateScanEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
 
 			// Create scan entry
-			created, err := queue.CreateScanEntry(ctx, tt.entry)
+			created, err := queue.CreateScanEntry(ctx, scope, tt.entry)
 			if err != nil {
 				t.Fatalf("CreateScanEntry: %v", err)
 			}
@@ -184,21 +190,21 @@ func TestGetScanEntry(t *testing.T) {
 	tests := []struct {
 		name        string
 		id          string
-		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context)
+		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope)
 		expectFound bool
 	}{
 		{
 			name: "found",
 			id:   "scan-1",
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				entry := scan.ScanEntry{
 					ID:        "scan-1",
-					UserID:    "user-1",
+					UserID:    "actor",
 					Barcode:   "123456789012",
 					ScannedAt: time.Now(),
 					UnitCount: 1,
 				}
-				_, err := queue.CreateScanEntry(ctx, entry)
+				_, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -208,18 +214,18 @@ func TestGetScanEntry(t *testing.T) {
 		{
 			name:        "not found",
 			id:          "no-such-id",
-			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context) {},
+			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {},
 			expectFound: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
-			tt.setup(t, queue, ctx)
+			tt.setup(t, queue, ctx, scope)
 
-			got, err := queue.GetScanEntry(ctx, tt.id)
+			got, err := queue.GetScanEntry(ctx, scope, tt.id)
 			if err != nil {
 				t.Fatalf("GetScanEntry: %v", err)
 			}
@@ -243,32 +249,32 @@ func TestListScanEntries(t *testing.T) {
 		name        string
 		userID      string
 		status      scan.ScanStatus
-		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context)
+		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope)
 		expectCount int
 		expectOrder []string // barcodes in expected chronological order
 	}{
 		{
 			name:        "empty",
-			userID:      "user-1",
+			userID:      "actor",
 			status:      scan.Pending,
-			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context) {},
+			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {},
 			expectCount: 0,
 			expectOrder: []string{},
 		},
 		{
 			name:   "single entry",
-			userID: "user-1",
+			userID: "actor",
 			status: scan.Pending,
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				entry := scan.ScanEntry{
 					ID:        "scan-1",
-					UserID:    "user-1",
+					UserID:    "actor",
 					Barcode:   "111111111111",
 					ScannedAt: now,
 					UnitCount: 1,
 					Status:    scan.Pending,
 				}
-				_, err := queue.CreateScanEntry(ctx, entry)
+				_, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -278,13 +284,13 @@ func TestListScanEntries(t *testing.T) {
 		},
 		{
 			name:   "multiple entries ordered chronologically",
-			userID: "user-1",
+			userID: "actor",
 			status: scan.Pending,
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				entries := []scan.ScanEntry{
 					{
 						ID:        "scan-1",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "333333333333",
 						ScannedAt: now.Add(2 * time.Minute),
 						UnitCount: 1,
@@ -292,7 +298,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 					{
 						ID:        "scan-2",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "111111111111",
 						ScannedAt: now,
 						UnitCount: 1,
@@ -300,7 +306,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 					{
 						ID:        "scan-3",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "222222222222",
 						ScannedAt: now.Add(1 * time.Minute),
 						UnitCount: 1,
@@ -308,7 +314,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 				}
 				for _, e := range entries {
-					_, err := queue.CreateScanEntry(ctx, e)
+					_, err := queue.CreateScanEntry(ctx, scope, e)
 					if err != nil {
 						t.Fatalf("CreateScanEntry: %v", err)
 					}
@@ -319,13 +325,13 @@ func TestListScanEntries(t *testing.T) {
 		},
 		{
 			name:   "filter by status",
-			userID: "user-1",
+			userID: "actor",
 			status: scan.Flagged,
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				entries := []scan.ScanEntry{
 					{
 						ID:        "scan-1",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "111111111111",
 						ScannedAt: now,
 						UnitCount: 1,
@@ -333,7 +339,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 					{
 						ID:        "scan-2",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "222222222222",
 						ScannedAt: now.Add(1 * time.Minute),
 						UnitCount: 1,
@@ -341,7 +347,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 					{
 						ID:        "scan-3",
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   "333333333333",
 						ScannedAt: now.Add(2 * time.Minute),
 						UnitCount: 1,
@@ -349,7 +355,7 @@ func TestListScanEntries(t *testing.T) {
 					},
 				}
 				for _, e := range entries {
-					_, err := queue.CreateScanEntry(ctx, e)
+					_, err := queue.CreateScanEntry(ctx, scope, e)
 					if err != nil {
 						t.Fatalf("CreateScanEntry: %v", err)
 					}
@@ -362,12 +368,12 @@ func TestListScanEntries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
-			tt.setup(t, queue, ctx)
+			tt.setup(t, queue, ctx, scope)
 
 			// List and verify
-			got, err := queue.ListScanEntries(ctx, tt.userID, tt.status)
+			got, err := queue.ListScanEntries(ctx, scope, tt.status)
 			if err != nil {
 				t.Fatalf("ListScanEntries: %v", err)
 			}
@@ -469,27 +475,27 @@ func TestUpdateScanEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
 
 			// Setup: create scan entry
 			if !tt.expectError {
 				entry := scan.ScanEntry{
 					ID:        tt.id,
-					UserID:    "user-1",
+					UserID:    "actor",
 					Barcode:   "123456789012",
 					ScannedAt: now,
 					UnitCount: 1,
 					Status:    scan.Pending,
 				}
-				_, err := queue.CreateScanEntry(ctx, entry)
+				_, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
 			}
 
 			// Update
-			err := queue.UpdateScanEntry(ctx, tt.id, tt.direction, tt.unitCount, tt.expiresAt, tt.productID, tt.status)
+			err := queue.UpdateScanEntry(ctx, scope, tt.id, tt.direction, tt.unitCount, tt.expiresAt, tt.productID, tt.status)
 			if tt.expectError && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -499,7 +505,7 @@ func TestUpdateScanEntry(t *testing.T) {
 
 			// Verify if successful
 			if !tt.expectError {
-				got, err := queue.GetScanEntry(ctx, tt.id)
+				got, err := queue.GetScanEntry(ctx, scope, tt.id)
 				if err != nil {
 					t.Fatalf("GetScanEntry: %v", err)
 				}
@@ -519,22 +525,22 @@ func TestCommitScanEntry(t *testing.T) {
 	tests := []struct {
 		name        string
 		id          string
-		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context)
+		setup       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope)
 		expectError bool
 	}{
 		{
 			name: "commit successfully",
 			id:   "scan-1",
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				entry := scan.ScanEntry{
 					ID:        "scan-1",
-					UserID:    "user-1",
+					UserID:    "actor",
 					Barcode:   "123456789012",
 					ScannedAt: now,
 					UnitCount: 1,
 					Status:    scan.Pending,
 				}
-				_, err := queue.CreateScanEntry(ctx, entry)
+				_, err := queue.CreateScanEntry(ctx, scope, entry)
 				if err != nil {
 					t.Fatalf("CreateScanEntry: %v", err)
 				}
@@ -544,19 +550,19 @@ func TestCommitScanEntry(t *testing.T) {
 		{
 			name:        "entry not found",
 			id:          "no-such-id",
-			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context) {},
+			setup:       func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {},
 			expectError: false, // CommitScanEntry doesn't check for existence before updating
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
-			tt.setup(t, queue, ctx)
+			tt.setup(t, queue, ctx, scope)
 
 			// Commit
-			err := queue.CommitScanEntry(ctx, tt.id)
+			err := queue.CommitScanEntry(ctx, scope, tt.id)
 			if tt.expectError && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -566,7 +572,7 @@ func TestCommitScanEntry(t *testing.T) {
 
 			// Verify committed status
 			if !tt.expectError && tt.id == "scan-1" {
-				got, err := queue.GetScanEntry(ctx, tt.id)
+				got, err := queue.GetScanEntry(ctx, scope, tt.id)
 				if err != nil {
 					t.Fatalf("GetScanEntry: %v", err)
 				}
@@ -598,35 +604,35 @@ func TestBatchUpdateScanEntries(t *testing.T) {
 		direction      *scan.ScanDirection
 		unitCount      *int
 		expiresAt      *time.Time
-		setup          func(t *testing.T, queue *scan.Queue, ctx context.Context)
+		setup          func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope)
 		expectError    bool
-		verifyAllMatch func(t *testing.T, queue *scan.Queue, ctx context.Context, ids []string)
+		verifyAllMatch func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope, ids []string)
 	}{
 		{
 			name:      "batch update direction and expiry",
 			ids:       []string{"scan-1", "scan-2", "scan-3"},
 			direction: ptrScanDirection(scan.StockIn),
 			expiresAt: &expiresAt,
-			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context) {
+			setup: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {
 				for i, id := range []string{"scan-1", "scan-2", "scan-3"} {
 					entry := scan.ScanEntry{
 						ID:        id,
-						UserID:    "user-1",
+						UserID:    "actor",
 						Barcode:   string(rune('1' + i)),
 						ScannedAt: now.Add(time.Duration(i) * time.Minute),
 						UnitCount: 1,
 						Status:    scan.Pending,
 					}
-					_, err := queue.CreateScanEntry(ctx, entry)
+					_, err := queue.CreateScanEntry(ctx, scope, entry)
 					if err != nil {
 						t.Fatalf("CreateScanEntry: %v", err)
 					}
 				}
 			},
 			expectError: false,
-			verifyAllMatch: func(t *testing.T, queue *scan.Queue, ctx context.Context, ids []string) {
+			verifyAllMatch: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope, ids []string) {
 				for _, id := range ids {
-					got, err := queue.GetScanEntry(ctx, id)
+					got, err := queue.GetScanEntry(ctx, scope, id)
 					if err != nil {
 						t.Fatalf("GetScanEntry %s: %v", id, err)
 					}
@@ -643,8 +649,8 @@ func TestBatchUpdateScanEntries(t *testing.T) {
 			name:      "empty batch",
 			ids:       []string{},
 			direction: ptrScanDirection(scan.StockIn),
-			setup:     func(t *testing.T, queue *scan.Queue, ctx context.Context) {},
-			verifyAllMatch: func(t *testing.T, queue *scan.Queue, ctx context.Context, ids []string) {
+			setup:     func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) {},
+			verifyAllMatch: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope, ids []string) {
 				// Nothing to verify
 			},
 		},
@@ -652,12 +658,12 @@ func TestBatchUpdateScanEntries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
-			tt.setup(t, queue, ctx)
+			tt.setup(t, queue, ctx, scope)
 
 			// Batch update
-			err := queue.BatchUpdateScanEntries(ctx, tt.ids, tt.direction, tt.unitCount, tt.expiresAt)
+			err := queue.BatchUpdateScanEntries(ctx, scope, tt.ids, tt.direction, tt.unitCount, tt.expiresAt)
 			if tt.expectError && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -667,7 +673,7 @@ func TestBatchUpdateScanEntries(t *testing.T) {
 
 			// Verify
 			if !tt.expectError {
-				tt.verifyAllMatch(t, queue, ctx, tt.ids)
+				tt.verifyAllMatch(t, queue, ctx, scope, tt.ids)
 			}
 		})
 	}
@@ -680,7 +686,7 @@ func TestBatchUpdateScanEntries(t *testing.T) {
 func TestScanEntryWithProductJoin(t *testing.T) {
 	now := time.Now()
 
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	// Create a product
@@ -699,20 +705,20 @@ func TestScanEntryWithProductJoin(t *testing.T) {
 	productID := "prod-1"
 	entry := scan.ScanEntry{
 		ID:        "scan-1",
-		UserID:    "user-1",
+		UserID:    "actor",
 		Barcode:   "123456789012",
 		ScannedAt: now,
 		UnitCount: 1,
 		ProductID: &productID,
 		Status:    scan.Pending,
 	}
-	_, err := queue.CreateScanEntry(ctx, entry)
+	_, err := queue.CreateScanEntry(ctx, scope, entry)
 	if err != nil {
 		t.Fatalf("CreateScanEntry: %v", err)
 	}
 
 	// Retrieve and verify product join
-	got, err := queue.GetScanEntry(ctx, "scan-1")
+	got, err := queue.GetScanEntry(ctx, scope, "scan-1")
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -760,7 +766,7 @@ func TestNewEntryFromLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := scan.NewEntryFromLookup("user-1", "123456789012", tt.lookup, direction, now)
+			entry := scan.NewEntryFromLookup("actor", "123456789012", tt.lookup, direction, now)
 
 			if tt.wantProductID == nil && entry.ProductID != nil {
 				t.Errorf("ProductID: want nil, got %v", *entry.ProductID)
@@ -781,8 +787,8 @@ func TestNewEntryFromLookup(t *testing.T) {
 			}
 
 			// UserID, Barcode, ScannedAt, and Direction are carried through unchanged.
-			if entry.UserID != "user-1" {
-				t.Errorf("UserID: want %q, got %q", "user-1", entry.UserID)
+			if entry.UserID != "actor" {
+				t.Errorf("UserID: want %q, got %q", "actor", entry.UserID)
 			}
 			if entry.Barcode != "123456789012" {
 				t.Errorf("Barcode: want %q, got %q", "123456789012", entry.Barcode)
@@ -828,11 +834,11 @@ func TestCreateScanEntry_BugCondition_RepeatScanMergesIntoExisting(t *testing.T)
 		{
 			name: "repeat pending scan merges into existing entry instead of duplicating",
 			first: scan.ScanEntry{
-				UserID: "user-1", Barcode: "123456789012", ScannedAt: t0,
+				UserID: "actor", Barcode: "123456789012", ScannedAt: t0,
 				Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 			},
 			second: scan.ScanEntry{
-				UserID: "user-1", Barcode: "123456789012", ScannedAt: t1,
+				UserID: "actor", Barcode: "123456789012", ScannedAt: t1,
 				Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 			},
 			status: scan.Pending,
@@ -840,11 +846,11 @@ func TestCreateScanEntry_BugCondition_RepeatScanMergesIntoExisting(t *testing.T)
 		{
 			name: "repeat flagged scan merges into existing entry instead of duplicating",
 			first: scan.ScanEntry{
-				UserID: "user-1", Barcode: "000000000099", ScannedAt: t0,
+				UserID: "actor", Barcode: "000000000099", ScannedAt: t0,
 				Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Flagged,
 			},
 			second: scan.ScanEntry{
-				UserID: "user-1", Barcode: "000000000099", ScannedAt: t1,
+				UserID: "actor", Barcode: "000000000099", ScannedAt: t1,
 				Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Flagged,
 			},
 			status: scan.Flagged,
@@ -852,11 +858,11 @@ func TestCreateScanEntry_BugCondition_RepeatScanMergesIntoExisting(t *testing.T)
 		{
 			name: "rescan time replaces the original scan time so the card sorts as the most recent",
 			first: scan.ScanEntry{
-				UserID: "user-1", Barcode: "555555555555", ScannedAt: t0,
+				UserID: "actor", Barcode: "555555555555", ScannedAt: t0,
 				Direction: ptrScanDirection(scan.StockOut), UnitCount: 1, Status: scan.Pending,
 			},
 			second: scan.ScanEntry{
-				UserID: "user-1", Barcode: "555555555555", ScannedAt: t1,
+				UserID: "actor", Barcode: "555555555555", ScannedAt: t1,
 				Direction: ptrScanDirection(scan.StockOut), UnitCount: 1, Status: scan.Pending,
 			},
 			status: scan.Pending,
@@ -865,17 +871,17 @@ func TestCreateScanEntry_BugCondition_RepeatScanMergesIntoExisting(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
 
-			if _, err := queue.CreateScanEntry(ctx, tt.first); err != nil {
+			if _, err := queue.CreateScanEntry(ctx, scope, tt.first); err != nil {
 				t.Fatalf("CreateScanEntry (first scan): %v", err)
 			}
-			if _, err := queue.CreateScanEntry(ctx, tt.second); err != nil {
+			if _, err := queue.CreateScanEntry(ctx, scope, tt.second); err != nil {
 				t.Fatalf("CreateScanEntry (repeat scan): %v", err)
 			}
 
-			entries, err := queue.ListScanEntries(ctx, "user-1", tt.status)
+			entries, err := queue.ListScanEntries(ctx, scope, tt.status)
 			if err != nil {
 				t.Fatalf("ListScanEntries: %v", err)
 			}
@@ -912,35 +918,39 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 
 	tests := []struct {
 		name          string
-		setupPrior    func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry
+		setupPrior    func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry
 		incoming      func() scan.ScanEntry
 		wantUnitCount int
 		wantStatus    scan.ScanStatus
 	}{
 		{
-			name:       "no prior entry, product found: creates a pending row",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry { return nil },
+			name: "no prior entry, product found: creates a pending row",
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				return nil
+			},
 			incoming: func() scan.ScanEntry {
 				lookup := product.LookupResult{Product: &product.ProductSummary{ID: "prod-1"}}
-				return scan.NewEntryFromLookup("user-1", "100000000001", lookup, ptrScanDirection(scan.StockIn), now)
+				return scan.NewEntryFromLookup("actor", "100000000001", lookup, ptrScanDirection(scan.StockIn), now)
 			},
 			wantUnitCount: 1,
 			wantStatus:    scan.Pending,
 		},
 		{
-			name:       "no prior entry, product not found: creates a flagged row",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry { return nil },
+			name: "no prior entry, product not found: creates a flagged row",
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				return nil
+			},
 			incoming: func() scan.ScanEntry {
-				return scan.NewEntryFromLookup("user-1", "100000000002", product.LookupResult{}, ptrScanDirection(scan.StockIn), now)
+				return scan.NewEntryFromLookup("actor", "100000000002", product.LookupResult{}, ptrScanDirection(scan.StockIn), now)
 			},
 			wantUnitCount: 1,
 			wantStatus:    scan.Flagged,
 		},
 		{
 			name: "different direction: existing pending stock-in entry is untouched, a new stock-out entry is created",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry {
-				existing, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-					UserID: "user-1", Barcode: "200000000001", ScannedAt: now,
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				existing, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+					UserID: "actor", Barcode: "200000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 				})
 				if err != nil {
@@ -950,7 +960,7 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 			},
 			incoming: func() scan.ScanEntry {
 				return scan.ScanEntry{
-					UserID: "user-1", Barcode: "200000000001", ScannedAt: now,
+					UserID: "actor", Barcode: "200000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockOut), UnitCount: 1, Status: scan.Pending,
 				}
 			},
@@ -959,8 +969,8 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 		},
 		{
 			name: "different user: existing pending entry for user A is untouched, a new entry is created for user B",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry {
-				existing, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				existing, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 					UserID: "user-A", Barcode: "300000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 				})
@@ -980,9 +990,9 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 		},
 		{
 			name: "only a committed entry exists: a new entry is created rather than merging into the closed entry",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry {
-				existing, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-					UserID: "user-1", Barcode: "400000000001", ScannedAt: now,
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				existing, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+					UserID: "actor", Barcode: "400000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Committed,
 				})
 				if err != nil {
@@ -992,7 +1002,7 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 			},
 			incoming: func() scan.ScanEntry {
 				return scan.ScanEntry{
-					UserID: "user-1", Barcode: "400000000001", ScannedAt: now,
+					UserID: "actor", Barcode: "400000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 				}
 			},
@@ -1001,9 +1011,9 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 		},
 		{
 			name: "only a cancelled entry exists: a new entry is created rather than merging into the closed entry",
-			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context) []*scan.ScanEntry {
-				existing, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-					UserID: "user-1", Barcode: "500000000001", ScannedAt: now,
+			setupPrior: func(t *testing.T, queue *scan.Queue, ctx context.Context, scope tenant.Scope) []*scan.ScanEntry {
+				existing, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+					UserID: "actor", Barcode: "500000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Cancelled,
 				})
 				if err != nil {
@@ -1013,7 +1023,7 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 			},
 			incoming: func() scan.ScanEntry {
 				return scan.ScanEntry{
-					UserID: "user-1", Barcode: "500000000001", ScannedAt: now,
+					UserID: "actor", Barcode: "500000000001", ScannedAt: now,
 					Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 				}
 			},
@@ -1024,15 +1034,15 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			queue, _ := newTestQueue(t)
+			queue, _, scope := newTestQueue(t)
 			ctx := context.Background()
 
 			broadcaster := &fakeBroadcaster{}
 			queue.Broadcaster = broadcaster
 
-			prior := tt.setupPrior(t, queue, ctx)
+			prior := tt.setupPrior(t, queue, ctx, scope)
 
-			created, err := queue.CreateScanEntry(ctx, tt.incoming())
+			created, err := queue.CreateScanEntry(ctx, scope, tt.incoming())
 			if err != nil {
 				t.Fatalf("CreateScanEntry (incoming scan): %v", err)
 			}
@@ -1051,7 +1061,7 @@ func TestCreateScanEntry_Preservation_InsertsNewRowWhenNotMergeable(t *testing.T
 				if created.ID == p.ID {
 					t.Fatalf("expected a new row distinct from prior entry %s, got the same entry", p.ID)
 				}
-				refetched, err := queue.GetScanEntry(ctx, p.ID)
+				refetched, err := queue.GetScanEntry(ctx, scope, p.ID)
 				if err != nil {
 					t.Fatalf("GetScanEntry (prior entry %s): %v", p.ID, err)
 				}
@@ -1083,11 +1093,11 @@ type fakeBroadcaster struct {
 	inventoryEvents []inventory.InventoryItem
 }
 
-func (f *fakeBroadcaster) PublishScanEvent(entry scan.ScanEntry) {
+func (f *fakeBroadcaster) PublishScanEvent(householdID string, entry scan.ScanEntry) {
 	f.scanEvents = append(f.scanEvents, entry)
 }
 
-func (f *fakeBroadcaster) PublishInventoryEvent(item inventory.InventoryItem) {
+func (f *fakeBroadcaster) PublishInventoryEvent(householdID string, item inventory.InventoryItem) {
 	f.inventoryEvents = append(f.inventoryEvents, item)
 }
 
@@ -1096,12 +1106,12 @@ func (f *fakeBroadcaster) PublishInventoryEvent(item inventory.InventoryItem) {
 // CreateScanEntry, UpdateScanEntry, or BatchUpdateScanEntries panics or
 // changes its return value because of it.
 func TestQueueBroadcaster_NilIsSafe(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        "scan-1",
-		UserID:    "user-1",
+		UserID:    "actor",
 		Barcode:   "123456789012",
 		ScannedAt: time.Now(),
 		UnitCount: 1,
@@ -1113,25 +1123,25 @@ func TestQueueBroadcaster_NilIsSafe(t *testing.T) {
 		t.Fatal("CreateScanEntry: expected entry, got nil")
 	}
 
-	if err := queue.UpdateScanEntry(ctx, "scan-1", ptrScanDirection(scan.StockIn), nil, nil, nil, nil); err != nil {
+	if err := queue.UpdateScanEntry(ctx, scope, "scan-1", ptrScanDirection(scan.StockIn), nil, nil, nil, nil); err != nil {
 		t.Fatalf("UpdateScanEntry: %v", err)
 	}
 
-	if err := queue.BatchUpdateScanEntries(ctx, []string{"scan-1"}, ptrScanDirection(scan.StockOut), nil, nil); err != nil {
+	if err := queue.BatchUpdateScanEntries(ctx, scope, []string{"scan-1"}, ptrScanDirection(scan.StockOut), nil, nil); err != nil {
 		t.Fatalf("BatchUpdateScanEntries: %v", err)
 	}
 }
 
 func TestCreateScanEntry_PublishesScanEvent(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        "scan-1",
-		UserID:    "user-1",
+		UserID:    "actor",
 		Barcode:   "123456789012",
 		ScannedAt: time.Now(),
 		UnitCount: 1,
@@ -1149,12 +1159,12 @@ func TestCreateScanEntry_PublishesScanEvent(t *testing.T) {
 }
 
 func TestUpdateScanEntry_PublishesScanEvent(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 
-	_, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+	_, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 		ID:        "scan-1",
-		UserID:    "user-1",
+		UserID:    "actor",
 		Barcode:   "123456789012",
 		ScannedAt: time.Now(),
 		UnitCount: 1,
@@ -1166,11 +1176,11 @@ func TestUpdateScanEntry_PublishesScanEvent(t *testing.T) {
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	if err := queue.UpdateScanEntry(ctx, "scan-1", ptrScanDirection(scan.StockIn), nil, nil, nil, nil); err != nil {
+	if err := queue.UpdateScanEntry(ctx, scope, "scan-1", ptrScanDirection(scan.StockIn), nil, nil, nil, nil); err != nil {
 		t.Fatalf("UpdateScanEntry: %v", err)
 	}
 
-	want, err := queue.GetScanEntry(ctx, "scan-1")
+	want, err := queue.GetScanEntry(ctx, scope, "scan-1")
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
@@ -1183,13 +1193,13 @@ func TestUpdateScanEntry_PublishesScanEvent(t *testing.T) {
 }
 
 func TestUpdateScanEntry_UnknownID_NoPublish(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	err := queue.UpdateScanEntry(ctx, "no-such-id", ptrScanDirection(scan.StockIn), nil, nil, nil, nil)
+	err := queue.UpdateScanEntry(ctx, scope, "no-such-id", ptrScanDirection(scan.StockIn), nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1199,11 +1209,11 @@ func TestUpdateScanEntry_UnknownID_NoPublish(t *testing.T) {
 }
 
 func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
-	if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		ID: "scan-keep", UserID: "user-1", Barcode: "1",
+	if _, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		ID: "scan-keep", UserID: "actor", Barcode: "1",
 		ScannedAt: now, UnitCount: 1, Status: scan.Pending,
 	}); err != nil {
 		t.Fatalf("CreateScanEntry: %v", err)
@@ -1214,18 +1224,18 @@ func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
 	expires := time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)
 	count := 3
 	direction := scan.StockOut
-	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-upd", "scan-keep"}, &direction, &count, &expires); err != nil {
+	if err := queue.BatchUpdateScanEntries(ctx, scope, []string{"missing-upd", "scan-keep"}, &direction, &count, &expires); err != nil {
 		t.Fatalf("BatchUpdateScanEntries: %v", err)
 	}
 
-	got, err := queue.GetScanEntry(ctx, "scan-keep")
+	got, err := queue.GetScanEntry(ctx, scope, "scan-keep")
 	if err != nil {
 		t.Fatalf("GetScanEntry: %v", err)
 	}
 	if got == nil || got.Direction == nil || *got.Direction != scan.StockOut || got.UnitCount != 3 || got.ExpiresAt == nil || !got.ExpiresAt.Equal(expires) {
 		t.Fatalf("known card = %+v", got)
 	}
-	missing, err := queue.GetScanEntry(ctx, "missing-upd")
+	missing, err := queue.GetScanEntry(ctx, scope, "missing-upd")
 	if err != nil {
 		t.Fatalf("GetScanEntry missing: %v", err)
 	}
@@ -1237,7 +1247,7 @@ func TestBatchUpdateScanEntriesSkipsMissingIDs(t *testing.T) {
 	}
 
 	broadcaster.scanEvents = nil
-	if err := queue.BatchUpdateScanEntries(ctx, []string{"missing-only"}, &direction, nil, nil); err != nil {
+	if err := queue.BatchUpdateScanEntries(ctx, scope, []string{"missing-only"}, &direction, nil, nil); err != nil {
 		t.Fatalf("unknown-only batch: %v", err)
 	}
 	if len(broadcaster.scanEvents) != 0 {
@@ -1250,18 +1260,18 @@ type cancelAfterPublish struct {
 	cancel context.CancelFunc
 }
 
-func (c *cancelAfterPublish) PublishScanEvent(entry scan.ScanEntry) {
-	c.fakeBroadcaster.PublishScanEvent(entry)
+func (c *cancelAfterPublish) PublishScanEvent(householdID string, entry scan.ScanEntry) {
+	c.fakeBroadcaster.PublishScanEvent(householdID, entry)
 	c.cancel()
 }
 
 func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 	for i, id := range []string{"scan-evt-a", "scan-evt-b"} {
-		if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-			ID: id, UserID: "user-1", Barcode: string(rune('1' + i)),
+		if _, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+			ID: id, UserID: "actor", Barcode: string(rune('1' + i)),
 			ScannedAt: now.Add(time.Duration(i) * time.Minute),
 			UnitCount: 1, Status: scan.Pending,
 		}); err != nil {
@@ -1280,11 +1290,11 @@ func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 
 	direction := scan.StockOut
-	if err := queue.BatchUpdateScanEntries(updateCtx, []string{"scan-evt-a", "scan-evt-b"}, &direction, nil, nil); err != nil {
+	if err := queue.BatchUpdateScanEntries(updateCtx, scope, []string{"scan-evt-a", "scan-evt-b"}, &direction, nil, nil); err != nil {
 		t.Fatalf("saved update reported as failed: %v", err)
 	}
 	for _, id := range []string{"scan-evt-a", "scan-evt-b"} {
-		got, err := queue.GetScanEntry(ctx, id)
+		got, err := queue.GetScanEntry(ctx, scope, id)
 		if err != nil {
 			t.Fatalf("GetScanEntry %s: %v", id, err)
 		}
@@ -1296,21 +1306,21 @@ func TestBatchUpdateScanEntriesEventReadFailureStillSaves(t *testing.T) {
 		t.Fatalf("events = %+v", broadcaster.scanEvents)
 	}
 	logged := slogBuf.String()
-	if strings.Count(logged, "scan update saved but its event was not sent") != 1 || !strings.Contains(logged, "err=") || strings.Contains(logged, "user-1") {
+	if strings.Count(logged, "scan update saved but its event was not sent") != 1 || !strings.Contains(logged, "err=") || strings.Contains(logged, "actor") {
 		t.Fatalf("log = %q", logged)
 	}
 }
 
 func TestBatchUpdateScanEntries_PublishesScanEventPerEntry(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 
 	ids := []string{"scan-1", "scan-2", "scan-3"}
 	for i, id := range ids {
-		_, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
+		_, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
 			ID:        id,
-			UserID:    "user-1",
+			UserID:    "actor",
 			Barcode:   string(rune('1' + i)),
 			ScannedAt: now.Add(time.Duration(i) * time.Minute),
 			UnitCount: 1,
@@ -1323,7 +1333,7 @@ func TestBatchUpdateScanEntries_PublishesScanEventPerEntry(t *testing.T) {
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	if err := queue.BatchUpdateScanEntries(ctx, ids, ptrScanDirection(scan.StockIn), nil, nil); err != nil {
+	if err := queue.BatchUpdateScanEntries(ctx, scope, ids, ptrScanDirection(scan.StockIn), nil, nil); err != nil {
 		t.Fatalf("BatchUpdateScanEntries: %v", err)
 	}
 
@@ -1337,7 +1347,7 @@ func TestBatchUpdateScanEntries_PublishesScanEventPerEntry(t *testing.T) {
 	}
 
 	for _, id := range ids {
-		want, err := queue.GetScanEntry(ctx, id)
+		want, err := queue.GetScanEntry(ctx, scope, id)
 		if err != nil {
 			t.Fatalf("GetScanEntry %s: %v", id, err)
 		}
@@ -1382,20 +1392,20 @@ func ptrScanStatus(s scan.ScanStatus) *scan.ScanStatus {
 // entry's unit_count by exactly 1, not 0 — the same default-to-1 convention
 // CreateScanEntry already applies on the create path (see NewEntryFromLookup).
 func TestCreateScanEntry_MergeDefaultsZeroUnitCountToOne(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 
-	existing, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "600000000001", ScannedAt: now,
+	existing, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "600000000001", ScannedAt: now,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 3, Status: scan.Pending,
 	})
 	if err != nil {
 		t.Fatalf("CreateScanEntry (existing entry): %v", err)
 	}
 
-	merged, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "600000000001", ScannedAt: now.Add(time.Minute),
+	merged, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "600000000001", ScannedAt: now.Add(time.Minute),
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 0, Status: scan.Pending,
 	})
 	if err != nil {
@@ -1422,23 +1432,23 @@ func TestCreateScanEntry_MergeDefaultsZeroUnitCountToOne(t *testing.T) {
 // total, and the second call's published entry must carry the incremented
 // UnitCount.
 func TestCreateScanEntry_MergePublishesOneEventPerCall(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	now := time.Now()
 
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	first, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "700000000001", ScannedAt: now,
+	first, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "700000000001", ScannedAt: now,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	})
 	if err != nil {
 		t.Fatalf("CreateScanEntry (first scan): %v", err)
 	}
 
-	second, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "700000000001", ScannedAt: now.Add(time.Minute),
+	second, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "700000000001", ScannedAt: now.Add(time.Minute),
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	})
 	if err != nil {
@@ -1470,7 +1480,7 @@ func TestCreateScanEntry_MergePublishesOneEventPerCall(t *testing.T) {
 // published event carries the rescan time, and the count increments once.
 // An older incoming timestamp does not move the card backward.
 func TestCreateScanEntry_RescanBecomesMostRecent(t *testing.T) {
-	queue, _ := newTestQueue(t)
+	queue, _, scope := newTestQueue(t)
 	ctx := context.Background()
 	t0 := time.Now().Add(-2 * time.Minute).UTC().Truncate(time.Millisecond)
 	t1 := t0.Add(time.Minute)
@@ -1479,22 +1489,22 @@ func TestCreateScanEntry_RescanBecomesMostRecent(t *testing.T) {
 	broadcaster := &fakeBroadcaster{}
 	queue.Broadcaster = broadcaster
 
-	older, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "111111111111", ScannedAt: t0,
+	older, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "111111111111", ScannedAt: t0,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	})
 	if err != nil {
 		t.Fatalf("CreateScanEntry (older): %v", err)
 	}
-	if _, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "222222222222", ScannedAt: t1,
+	if _, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "222222222222", ScannedAt: t1,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	}); err != nil {
 		t.Fatalf("CreateScanEntry (newer): %v", err)
 	}
 
-	rescanned, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "111111111111", ScannedAt: t2,
+	rescanned, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "111111111111", ScannedAt: t2,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	})
 	if err != nil {
@@ -1510,7 +1520,7 @@ func TestCreateScanEntry_RescanBecomesMostRecent(t *testing.T) {
 		t.Errorf("ScannedAt: want rescan time %v, got %v", t2, rescanned.ScannedAt)
 	}
 
-	entries, err := queue.ListScanEntries(ctx, "user-1", scan.Pending)
+	entries, err := queue.ListScanEntries(ctx, scope, scan.Pending)
 	if err != nil {
 		t.Fatalf("ListScanEntries: %v", err)
 	}
@@ -1532,8 +1542,8 @@ func TestCreateScanEntry_RescanBecomesMostRecent(t *testing.T) {
 			older.ID, t2, published.ID, published.UnitCount, published.ScannedAt)
 	}
 
-	held, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID: "user-1", Barcode: "111111111111", ScannedAt: t0,
+	held, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "111111111111", ScannedAt: t0,
 		Direction: ptrScanDirection(scan.StockIn), UnitCount: 1, Status: scan.Pending,
 	})
 	if err != nil {

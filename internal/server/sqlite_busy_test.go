@@ -25,8 +25,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
-	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/getsentry/sentry-go"
 	"modernc.org/sqlite"
 )
@@ -73,14 +73,17 @@ func TestStockInWaitsOutBriefDatabaseLock(t *testing.T) {
 
 func TestInventoryReadWaitsOutBriefDatabaseLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
-	handler, env := setupTestOnDSN(t, path, nil)
-	// A reserved lock still allows readers. Exclusive is the lock a writer
-	// holds while it commits, which is when inventory reads returned 500.
-	res := callWhileLocked(t, env.DB, path, "BEGIN EXCLUSIVE", func() lockedHTTPResult {
-		return serveJSON(handler, http.MethodGet, "/api/inventory", "")
-	})
+	handler, _ := setupTestOnDSN(t, path, nil)
+	// WAL lets this read finish while a writer holds the exclusive lock.
+	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
+	defer release()
+	started := time.Now()
+	res := serveJSON(handler, http.MethodGet, "/api/inventory", "")
 	if res.code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", res.code, res.body)
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("inventory read waited %s behind a writer", time.Since(started))
 	}
 }
 
@@ -248,17 +251,26 @@ func TestNoSpace503KeepsItsSentence(t *testing.T) {
 
 func TestRestockLockLongerThanTimeoutIsUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
-	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
+	handler, _ := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
+	routes := []string{"/api/restock", "/api/restock/categories", "/api/restock/suggestions"}
+	for _, route := range routes {
+		res := serveJSON(handler, http.MethodGet, route, "")
+		if res.code != http.StatusOK {
+			t.Fatalf("unlocked %s = %d %s", route, res.code, res.body)
+		}
+	}
+	// The first reads above create the starter categories. Later reads stay
+	// reads, so WAL answers them while a writer holds the lock.
 	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
-	for _, route := range []string{"/api/restock", "/api/restock/categories", "/api/restock/suggestions"} {
-		done := make(chan lockedHTTPResult, 1)
-		go func(route string) {
-			done <- serveJSON(handler, http.MethodGet, route, "")
-		}(route)
-		res := awaitLockedResult(t, env.DB, done, 50*time.Millisecond)
-		if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
+	for _, route := range routes {
+		started := time.Now()
+		res := serveJSON(handler, http.MethodGet, route, "")
+		if res.code != http.StatusOK {
 			t.Fatalf("%s = %d %s", route, res.code, res.body)
+		}
+		if time.Since(started) > 50*time.Millisecond {
+			t.Fatalf("%s waited %s behind a writer", route, time.Since(started))
 		}
 	}
 }
@@ -267,19 +279,20 @@ func TestSyncSnapshotLockIsUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	_, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
 	handler := &syncSnapshotHandler{DB: env.DB, Token: "sync-token"}
+	scope := primaryScope(t, env.DB)
 	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
-	done := make(chan lockedHTTPResult, 1)
-	go func() {
-		req := httptest.NewRequest(http.MethodGet, "/api/sync/snapshot", nil)
-		req.Header.Set("Authorization", "Bearer sync-token")
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		done <- lockedHTTPResult{code: rec.Code, body: rec.Body.String()}
-	}()
-	res := awaitLockedResult(t, env.DB, done, 50*time.Millisecond)
-	if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
-		t.Fatalf("snapshot = %d %s", res.code, res.body)
+	started := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "/api/sync/snapshot", nil)
+	req.Header.Set("Authorization", "Bearer sync-token")
+	req = req.WithContext(tenant.WithScope(req.Context(), scope))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot = %d %s", rec.Code, rec.Body.String())
+	}
+	if time.Since(started) > 50*time.Millisecond {
+		t.Fatalf("snapshot waited %s behind a writer", time.Since(started))
 	}
 }
 
@@ -502,7 +515,6 @@ func TestNoSpaceLogsTheOperatorLine(t *testing.T) {
 		"event=db_no_space",
 		"method=POST",
 		`route="POST /api/scans"`,
-		"household_id=" + restock.HouseholdID,
 		"sqlite_code=13",
 	} {
 		if !strings.Contains(line, part) {
@@ -577,25 +589,20 @@ func assertNoSpaceLogIsSafe(t *testing.T, logged string) {
 
 func TestRestockSuggestionsLockFailsAfterOneWait(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
-	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(300)", nil)
+	handler, _ := setupTestOnDSN(t, path+"?_pragma=busy_timeout(300)", nil)
 	open := serveJSON(handler, http.MethodGet, "/api/restock/suggestions", "")
 	if open.code != http.StatusOK {
 		t.Fatalf("unlocked = %d %s", open.code, open.body)
 	}
 	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
-	done := make(chan lockedHTTPResult, 1)
 	started := time.Now()
-	go func() {
-		done <- serveJSON(handler, http.MethodGet, "/api/restock/suggestions", "")
-	}()
-	res := awaitLockedResult(t, env.DB, done, 200*time.Millisecond)
-	if res.code != http.StatusServiceUnavailable || res.body != busyBody() {
+	res := serveJSON(handler, http.MethodGet, "/api/restock/suggestions", "")
+	if res.code != http.StatusOK {
 		t.Fatalf("suggestions = %d %s", res.code, res.body)
 	}
-	// One 300ms wait. A swallowed settings read would wait again before the
-	// query that returns the error, and that second wait does not fit here.
-	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+	// A read does not take the write lock, so it does not wait out the timeout.
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
 		t.Fatalf("suggestions waited %s", elapsed)
 	}
 }
@@ -825,16 +832,18 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	dir := connection.NewDirectory(env.DB)
 	ledger := cart.NewLedger(env.DB)
 	providers := ProvidersHandler{Registry: env.Registry, ConnectionDir: dir}
+	scope := primaryScope(t, env.DB)
+	ctx := tenant.WithScope(context.Background(), scope)
 
 	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
 	_, err := (&ProviderDisconnectHandler{ProvidersHandler: providers}).Handle(Request[struct{}, ProviderDisconnectRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderDisconnectRequest{ProviderID: "kroger"},
 	})
 	release()
 	requireDriverCause(t, err, "failed to disconnect")
 
-	if err := dir.Write(context.Background(), &connection.Connection{
+	if err := dir.Write(context.Background(), primaryScope(t, env.DB), &connection.Connection{
 		Provider:    "kroger",
 		State:       connection.StateConnected,
 		AccessToken: "tok",
@@ -843,31 +852,35 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	}
 	release = holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
 	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
 	})
 	release()
 	requireDriverCause(t, err, "failed to reset ledger")
 
-	// A reserved lock still allows the connection read. An exclusive lock
-	// is what makes that read fail.
+	// WAL lets the ledger read proceed. The reset still has to wait, then
+	// comes back as a busy driver error.
 	release = holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
 	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerGetRequest{ProviderID: "kroger"},
 	})
-	requireDriverCause(t, err, "failed to read connection")
+	if err != nil {
+		t.Fatalf("reader blocked by the writer: %v", err)
+	}
 	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
 	})
-	requireDriverCause(t, err, "failed to read connection")
+	requireDriverCause(t, err, "failed to reset ledger")
 	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerGetRequest{ProviderID: string(open.ID())},
 	})
-	requireDriverCause(t, err, "failed to read ledger")
+	if err != nil {
+		t.Fatalf("reader blocked by the writer: %v", err)
+	}
 }
 
 func busyBody() string {

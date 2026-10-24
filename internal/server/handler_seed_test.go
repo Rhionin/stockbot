@@ -21,7 +21,7 @@ func TestSeededSuggestionsLeaveShoppingCombined(t *testing.T) {
 				beginUsing(env.T, env.DB, time.Now())
 				setSupplyQuantity(env.T, env.DB, "gv", 4)
 				setSupplyQuantity(env.T, env.DB, "kr", 4)
-				if err := group.NewGroups(env.DB).Seed(env.T.Context()); err != nil {
+				if err := group.NewGroups(env.DB).Seed(env.T.Context(), primaryScope(env.T, env.DB)); err != nil {
 					env.T.Fatal(err)
 				}
 			},

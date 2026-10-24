@@ -20,6 +20,8 @@ type ProcessingNotice struct {
 	Barcode   string         `json:"barcode"`
 	Direction *ScanDirection `json:"direction"`
 	ScannedAt time.Time      `json:"scannedAt"`
+	// HouseholdID routes the notice. It is not part of the JSON payload.
+	HouseholdID string `json:"-"`
 }
 
 // ProcessingFailure withdraws a ProcessingNotice when lookup does not finish.
@@ -27,6 +29,8 @@ type ProcessingFailure struct {
 	ID      string `json:"id"`
 	Barcode string `json:"barcode"`
 	Message string `json:"message"`
+	// HouseholdID routes the failure. It is not part of the JSON payload.
+	HouseholdID string `json:"-"`
 }
 
 // ProcessingAnnouncer receives the live lookup notices. A nil announcer is a no-op.
@@ -36,13 +40,14 @@ type ProcessingAnnouncer interface {
 }
 
 // AnnounceProcessing tells subscribers a barcode was accepted. Call it before lookup.
-func AnnounceProcessing(events ProcessingAnnouncer, userID, barcode string, direction *ScanDirection, at time.Time) ProcessingNotice {
+func AnnounceProcessing(events ProcessingAnnouncer, householdID, userID, barcode string, direction *ScanDirection, at time.Time) ProcessingNotice {
 	notice := ProcessingNotice{
-		ID:        uuid.NewString(),
-		UserID:    userID,
-		Barcode:   barcode,
-		Direction: direction,
-		ScannedAt: at,
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		Barcode:     barcode,
+		Direction:   direction,
+		ScannedAt:   at,
+		HouseholdID: householdID,
 	}
 	if events != nil {
 		events.PublishScanProcessingEvent(notice)
@@ -56,8 +61,9 @@ func AnnounceProcessingFailed(events ProcessingAnnouncer, notice ProcessingNotic
 		return
 	}
 	events.PublishScanProcessingFailedEvent(ProcessingFailure{
-		ID:      notice.ID,
-		Barcode: notice.Barcode,
-		Message: ProcessingLookupFailed,
+		ID:          notice.ID,
+		Barcode:     notice.Barcode,
+		Message:     ProcessingLookupFailed,
+		HouseholdID: notice.HouseholdID,
 	})
 }

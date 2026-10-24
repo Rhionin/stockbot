@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,8 +13,60 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/server"
+	"golang.org/x/crypto/bcrypt"
 )
+
+func TestLoadHouseholdGateReadsTheStoredPassword(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	closed := loadHouseholdGate(conn)
+	if closed == nil || closed.Configured {
+		t.Fatal("missing hash was treated as configured")
+	}
+	if !strings.Contains(logs.String(), "no household password is stored") {
+		t.Fatalf("log = %s", logs.String())
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("sample-passphrase-1"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "auth.caddy")
+	if err := os.WriteFile(path, []byte("keeper "+string(hash)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.ImportHouseholdPassword(context.Background(), conn, path, "sample-session-secret-0123456789abcd"); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	gate := loadHouseholdGate(conn)
+	if gate == nil || !gate.Configured || gate.Username != "keeper" {
+		t.Fatalf("gate %+v", gate)
+	}
+	if !strings.Contains(logs.String(), "signs in as keeper") {
+		t.Fatalf("log = %s", logs.String())
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	again := loadHouseholdGate(conn)
+	if again == nil || !again.Configured || again.Username != "keeper" {
+		t.Fatal("gate still needed the password file")
+	}
+}
 
 func TestPublicEntryFailsClosedWithoutHouseholdLogin(t *testing.T) {
 	t.Run("unset", func(t *testing.T) {

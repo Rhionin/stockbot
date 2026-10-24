@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 )
 
 func TestLedgerAdvanceMatchesTheSameInstantAcrossDST(t *testing.T) {
@@ -26,9 +27,14 @@ func TestLedgerAdvanceMatchesTheSameInstantAcrossDST(t *testing.T) {
 	if err := app.RunMigrations(db); err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
+	scope, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`
 		INSERT INTO products (id, name) VALUES ('prod', 'Milk');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item', ?, ?, 'prod')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := db.Begin()
@@ -37,11 +43,10 @@ func TestLedgerAdvanceMatchesTheSameInstantAcrossDST(t *testing.T) {
 	}
 	defer tx.Rollback()
 	ledger := NewLedger(db)
-	ctx := context.Background()
-	if err := ledger.ResetForItemTx(ctx, tx, "kroger", "item", later); err != nil {
+	if err := ledger.ResetForItemTx(ctx, scope, tx, "kroger", "item", later); err != nil {
 		t.Fatal(err)
 	}
-	n, err := ledger.AdvanceTx(ctx, tx, "kroger", "item", 1, later.UTC())
+	n, err := ledger.AdvanceTx(ctx, scope, tx, "kroger", "item", 1, later.UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

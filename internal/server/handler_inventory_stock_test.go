@@ -288,7 +288,8 @@ func finishOpening(env testEnv) {
 	env.T.Helper()
 	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	if _, err := env.DB.ExecContext(context.Background(),
-		`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`,
+		`INSERT INTO household_settings (household_id, key, value)
+		 SELECT id, 'onboarding_started_at', ? FROM households WHERE is_primary = 1`,
 		stamp,
 	); err != nil {
 		env.T.Fatalf("finish opening: %v", err)
@@ -298,7 +299,7 @@ func finishOpening(env testEnv) {
 func insertPendingScan(env testEnv, id, productID string, direction scan.ScanDirection) {
 	env.T.Helper()
 	queue := scan.NewQueue(env.DB)
-	if _, err := queue.CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := queue.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID:        id,
 		UserID:    "user-1",
 		Barcode:   id,

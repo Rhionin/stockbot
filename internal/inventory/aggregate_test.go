@@ -11,8 +11,8 @@ import (
 )
 
 func TestGetInventoryList_EmptyInventory(t *testing.T) {
-	pantry, _, _ := newTestPantry(t)
-	items, err := pantry.GetInventoryList(context.Background(), uuid.NewString(), time.Now(), 7, "")
+	pantry, _, db := newTestPantry(t)
+	items, err := pantry.GetInventoryList(context.Background(), scopeOf(t, db), time.Now(), 7, "")
 	if err != nil {
 		t.Fatalf("GetInventoryList failed: %v", err)
 	}
@@ -64,9 +64,9 @@ func TestGetInventoryList_SingleInstanceExpiryStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pantry, catalog, _ := newTestPantry(t)
+			pantry, catalog, db := newTestPantry(t)
 			ctx := context.Background()
-			userID := uuid.NewString()
+			scope := scopeOf(t, db)
 
 			prodID := uuid.NewString()
 			if err := catalog.CreateProduct(ctx, product.Product{
@@ -74,7 +74,7 @@ func TestGetInventoryList_SingleInstanceExpiryStates(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("CreateProduct: %v", err)
 			}
-			item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+			item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 			if err != nil {
 				t.Fatalf("GetOrCreateItem: %v", err)
 			}
@@ -82,7 +82,7 @@ func TestGetInventoryList_SingleInstanceExpiryStates(t *testing.T) {
 			if tt.expiresAt != nil || tt.wantInstances > 0 {
 				// Only add an instance when the test wants one
 				if tt.wantInstances > 0 {
-					_, err = pantry.AddInstance(ctx, inventory.ItemInstance{
+					_, err = pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 						ItemID:    item.ID,
 						StockInAt: now.Add(-24 * time.Hour),
 						ExpiresAt: tt.expiresAt,
@@ -93,7 +93,7 @@ func TestGetInventoryList_SingleInstanceExpiryStates(t *testing.T) {
 				}
 			}
 
-			items, err := pantry.GetInventoryList(ctx, userID, now, 7, "")
+			items, err := pantry.GetInventoryList(ctx, scope, now, 7, "")
 			if err != nil {
 				t.Fatalf("GetInventoryList: %v", err)
 			}
@@ -118,9 +118,9 @@ func TestGetInventoryList_SingleInstanceExpiryStates(t *testing.T) {
 }
 
 func TestGetInventoryList_MixedExpiryStates(t *testing.T) {
-	pantry, catalog, _ := newTestPantry(t)
+	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
-	userID := uuid.NewString()
+	scope := scopeOf(t, db)
 	now := time.Now()
 
 	prodID := uuid.NewString()
@@ -129,7 +129,7 @@ func TestGetInventoryList_MixedExpiryStates(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
@@ -140,20 +140,20 @@ func TestGetInventoryList_MixedExpiryStates(t *testing.T) {
 		-24 * time.Hour,     // expired
 	} {
 		ts := now.Add(d)
-		if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+		if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 			ItemID: item.ID, StockInAt: now, ExpiresAt: &ts,
 		}); err != nil {
 			t.Fatalf("AddInstance: %v", err)
 		}
 	}
 	// one instance with no expiry
-	if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+	if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 		ItemID: item.ID, StockInAt: now,
 	}); err != nil {
 		t.Fatalf("AddInstance (no expiry): %v", err)
 	}
 
-	items, err := pantry.GetInventoryList(ctx, userID, now, 7, "")
+	items, err := pantry.GetInventoryList(ctx, scope, now, 7, "")
 	if err != nil {
 		t.Fatalf("GetInventoryList: %v", err)
 	}
@@ -176,9 +176,9 @@ func TestGetInventoryList_MixedExpiryStates(t *testing.T) {
 }
 
 func TestGetInventoryList_MultipleItems(t *testing.T) {
-	pantry, catalog, _ := newTestPantry(t)
+	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
-	userID := uuid.NewString()
+	scope := scopeOf(t, db)
 	now := time.Now()
 
 	for _, p := range []struct {
@@ -194,19 +194,19 @@ func TestGetInventoryList_MultipleItems(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateProduct %s: %v", p.name, err)
 		}
-		item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+		item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 		if err != nil {
 			t.Fatalf("GetOrCreateItem %s: %v", p.name, err)
 		}
 		ts := now.Add(p.offset)
-		if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+		if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 			ItemID: item.ID, StockInAt: now, ExpiresAt: &ts,
 		}); err != nil {
 			t.Fatalf("AddInstance %s: %v", p.name, err)
 		}
 	}
 
-	items, err := pantry.GetInventoryList(ctx, userID, now, 7, "")
+	items, err := pantry.GetInventoryList(ctx, scope, now, 7, "")
 	if err != nil {
 		t.Fatalf("GetInventoryList: %v", err)
 	}
@@ -230,9 +230,9 @@ func TestGetInventoryList_MultipleItems(t *testing.T) {
 }
 
 func TestGetInventoryList_ExcludesRemovedInstances(t *testing.T) {
-	pantry, catalog, _ := newTestPantry(t)
+	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
-	userID := uuid.NewString()
+	scope := scopeOf(t, db)
 	now := time.Now()
 
 	prodID := uuid.NewString()
@@ -241,28 +241,28 @@ func TestGetInventoryList_ExcludesRemovedInstances(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
 
 	farFuture := now.Add(30 * 24 * time.Hour)
-	if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+	if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 		ItemID: item.ID, StockInAt: now, ExpiresAt: &farFuture,
 	}); err != nil {
 		t.Fatalf("AddInstance (active): %v", err)
 	}
-	inst2, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+	inst2, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 		ItemID: item.ID, StockInAt: now, ExpiresAt: &farFuture,
 	})
 	if err != nil {
 		t.Fatalf("AddInstance (to remove): %v", err)
 	}
-	if err := pantry.RemoveInstance(ctx, inst2.ID, "consumed"); err != nil {
+	if err := pantry.RemoveInstance(ctx, scope, inst2.ID, "consumed"); err != nil {
 		t.Fatalf("RemoveInstance: %v", err)
 	}
 
-	items, err := pantry.GetInventoryList(ctx, userID, now, 7, "")
+	items, err := pantry.GetInventoryList(ctx, scope, now, 7, "")
 	if err != nil {
 		t.Fatalf("GetInventoryList: %v", err)
 	}
@@ -275,9 +275,9 @@ func TestGetInventoryList_ExcludesRemovedInstances(t *testing.T) {
 }
 
 func TestGetInventoryList_WithSearchFilter(t *testing.T) {
-	pantry, catalog, _ := newTestPantry(t)
+	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
-	userID := uuid.NewString()
+	scope := scopeOf(t, db)
 	now := time.Now()
 
 	for _, p := range []struct{ name, category string }{
@@ -289,7 +289,7 @@ func TestGetInventoryList_WithSearchFilter(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateProduct %s: %v", p.name, err)
 		}
-		if _, err := pantry.GetOrCreateItem(ctx, userID, prodID); err != nil {
+		if _, err := pantry.GetOrCreateItem(ctx, scope, prodID); err != nil {
 			t.Fatalf("GetOrCreateItem %s: %v", p.name, err)
 		}
 	}
@@ -309,7 +309,7 @@ func TestGetInventoryList_WithSearchFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
-			items, err := pantry.GetInventoryList(ctx, userID, now, 7, tt.query)
+			items, err := pantry.GetInventoryList(ctx, scope, now, 7, tt.query)
 			if err != nil {
 				t.Fatalf("GetInventoryList: %v", err)
 			}
@@ -333,9 +333,9 @@ func TestGetInventoryList_WithSearchFilter(t *testing.T) {
 // and GetInventoryList agree on the aggregated counts for the same item, since
 // both share the aggregateItem implementation.
 func TestGetInventoryItem_MatchesGetInventoryList(t *testing.T) {
-	pantry, catalog, _ := newTestPantry(t)
+	pantry, catalog, db := newTestPantry(t)
 	ctx := context.Background()
-	userID := uuid.NewString()
+	scope := scopeOf(t, db)
 	now := time.Now()
 
 	prodID := uuid.NewString()
@@ -344,7 +344,7 @@ func TestGetInventoryItem_MatchesGetInventoryList(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+	item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 	if err != nil {
 		t.Fatalf("GetOrCreateItem: %v", err)
 	}
@@ -355,14 +355,14 @@ func TestGetInventoryItem_MatchesGetInventoryList(t *testing.T) {
 		-24 * time.Hour,     // expired
 	} {
 		ts := now.Add(d)
-		if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+		if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 			ItemID: item.ID, StockInAt: now, ExpiresAt: &ts,
 		}); err != nil {
 			t.Fatalf("AddInstance: %v", err)
 		}
 	}
 
-	listItems, err := pantry.GetInventoryList(ctx, userID, now, 7, "")
+	listItems, err := pantry.GetInventoryList(ctx, scope, now, 7, "")
 	if err != nil {
 		t.Fatalf("GetInventoryList: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestGetInventoryItem_MatchesGetInventoryList(t *testing.T) {
 	}
 	want := listItems[0]
 
-	got, err := pantry.GetInventoryItem(ctx, item.ID, now, 7)
+	got, err := pantry.GetInventoryItem(ctx, scope, item.ID, now, 7)
 	if err != nil {
 		t.Fatalf("GetInventoryItem: %v", err)
 	}
@@ -396,10 +396,10 @@ func TestGetInventoryItem_MatchesGetInventoryList(t *testing.T) {
 // returns a nil InventoryItem and no error, rather than an error or a
 // zero-valued InventoryItem.
 func TestGetInventoryItem_UnknownItemID(t *testing.T) {
-	pantry, _, _ := newTestPantry(t)
+	pantry, _, db := newTestPantry(t)
 	ctx := context.Background()
 
-	got, err := pantry.GetInventoryItem(ctx, uuid.NewString(), time.Now(), 7)
+	got, err := pantry.GetInventoryItem(ctx, scopeOf(t, db), uuid.NewString(), time.Now(), 7)
 	if err != nil {
 		t.Fatalf("GetInventoryItem: %v", err)
 	}

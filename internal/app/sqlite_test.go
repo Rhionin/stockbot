@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -13,6 +14,71 @@ import (
 	"testing"
 	"time"
 )
+
+func TestMemoryDatabaseSurvivesACancelledQuery(t *testing.T) {
+	db, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if db.Stats().MaxOpenConnections != 1 {
+		t.Fatalf("pool %d", db.Stats().MaxOpenConnections)
+	}
+	var seq int
+	var name, file string
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
+		t.Fatal(err)
+	}
+	if file != "" {
+		t.Fatalf("memory database is a file %q", file)
+	}
+	if _, err := db.Exec(`CREATE TABLE scan_entries (id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO scan_entries (id) VALUES ('scan-1')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var id string
+	err = db.QueryRowContext(ctx, `SELECT id FROM scan_entries`).Scan(&id)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled query: %v", err)
+	}
+	if err := db.QueryRow(`SELECT id FROM scan_entries`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "scan-1" {
+		t.Fatalf("id %q", id)
+	}
+
+	other, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	if err := other.QueryRow(`SELECT id FROM scan_entries`).Scan(&id); err == nil {
+		t.Fatal("a second :memory: open saw the first database")
+	}
+
+	db.SetMaxOpenConns(2)
+	left, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { left.Close() })
+	right, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { right.Close() })
+	if err := right.QueryRowContext(context.Background(), `SELECT id FROM scan_entries`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "scan-1" {
+		t.Fatalf("second connection id %q", id)
+	}
+}
 
 func TestWithUTCTimezone(t *testing.T) {
 	if got := withUTCTimezone(":memory:"); got != ":memory:?_timezone=UTC" {
@@ -129,8 +195,8 @@ func TestSQLiteOpensGoThroughUTC(t *testing.T) {
 	}
 }
 
-func TestBusyTimeoutDSNPinsThreeSeconds(t *testing.T) {
-	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(3000)&_txlock=immediate"; got != want {
+func TestBusyTimeoutDSNPinsTwoSeconds(t *testing.T) {
+	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(2000)&_txlock=immediate"; got != want {
 		t.Fatalf("dsn = %s, want %s", got, want)
 	}
 }
@@ -183,6 +249,13 @@ func TestOpenSQLiteSetsBusyTimeoutAndImmediateLock(t *testing.T) {
 	if !strings.EqualFold(mode, "delete") {
 		t.Fatalf("journal_mode = %s, want delete", mode)
 	}
+	var synchronous int
+	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 1 {
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", synchronous)
+	}
 	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +287,170 @@ func TestOpenSQLiteSetsBusyTimeoutAndImmediateLock(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "database is locked") && !strings.Contains(err.Error(), "SQLITE_BUSY") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWithSQLiteDurability(t *testing.T) {
+	mem := withSQLiteDurability(":memory:?_pragma=busy_timeout(2000)&_txlock=immediate")
+	if strings.Contains(mem, "journal_mode") {
+		t.Fatalf("memory set a journal: %s", mem)
+	}
+	if !strings.Contains(mem, "synchronous(NORMAL)") {
+		t.Fatalf("memory: %s", mem)
+	}
+	file := withSQLiteDurability("pantry.db?_pragma=busy_timeout(2000)&_txlock=immediate")
+	if strings.Contains(file, "journal_mode") || !strings.Contains(file, "synchronous(NORMAL)") {
+		t.Fatalf("file: %s", file)
+	}
+	ro := withSQLiteDurability("file:pantry.db?mode=ro&_txlock=deferred&_pragma=query_only(1)")
+	if strings.Contains(ro, "journal_mode") || strings.Contains(ro, "synchronous") {
+		t.Fatalf("reader: %s", ro)
+	}
+	kept := withSQLiteDurability("pantry.db?_pragma=journal_mode(DELETE)&_pragma=synchronous(FULL)")
+	if strings.Contains(kept, "WAL") || strings.Contains(kept, "NORMAL") {
+		t.Fatalf("explicit: %s", kept)
+	}
+}
+
+func TestOpenPantryOneWriterTwoReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	writer, reader, err := OpenPantry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		reader.Close()
+		writer.Close()
+	})
+	if writer.Stats().MaxOpenConnections != 1 {
+		t.Fatalf("writer pool %d", writer.Stats().MaxOpenConnections)
+	}
+	if reader.Stats().MaxOpenConnections != 2 {
+		t.Fatalf("reader pool %d", reader.Stats().MaxOpenConnections)
+	}
+	var mode string
+	if err := writer.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode %s", mode)
+	}
+	var synchronous, busy, queryOnly int
+	if err := writer.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRow(`PRAGMA query_only`).Scan(&queryOnly); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 1 || busy != sqliteBusyTimeoutMS || queryOnly != 1 {
+		t.Fatalf("synchronous %d busy %d query_only %d", synchronous, busy, queryOnly)
+	}
+	if _, err := reader.Exec(`CREATE TABLE nope (id INTEGER)`); err == nil {
+		t.Fatal("reader wrote")
+	}
+
+	if _, err := writer.Exec(`CREATE TABLE held (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	if _, err := tx.Exec(`INSERT INTO held (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	var n int
+	if err := reader.QueryRow(`SELECT COUNT(*) FROM held`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("reader saw an uncommitted row: %d", n)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("reader waited %s behind the writer", time.Since(started))
+	}
+
+	other, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetMaxOpenConns(1)
+	started = time.Now()
+	_, err = other.Exec(`BEGIN IMMEDIATE`)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("second writer took the lock")
+	}
+	if elapsed < 1500*time.Millisecond || elapsed > 4500*time.Millisecond {
+		t.Fatalf("busy returned after %s; the wait is 2s", elapsed)
+	}
+}
+
+func TestOpenPantryRejectsMemory(t *testing.T) {
+	writer, reader, err := OpenPantry(":memory:")
+	if err == nil {
+		writer.Close()
+		reader.Close()
+		t.Fatal("in-memory pantry opened a read pool")
+	}
+}
+
+func TestOpenPantryRejectsANonFilePath(t *testing.T) {
+	for _, path := range []string{"", "pantry.db?mode=ro", "pantry.db\x00"} {
+		writer, reader, err := OpenPantry(path)
+		if err == nil {
+			writer.Close()
+			reader.Close()
+			t.Fatalf("opened %q", path)
+		}
+		if !strings.Contains(err.Error(), "file path") {
+			t.Fatalf("%q: %v", path, err)
+		}
+	}
+}
+
+func TestOpenSQLiteReaderRejectsANonFilePath(t *testing.T) {
+	for _, path := range []string{"", ":memory:", "pantry.db?mode=ro", "pantry.db\x00"} {
+		db, err := OpenSQLiteReader(path)
+		if err == nil {
+			db.Close()
+			t.Fatalf("opened %q", path)
+		}
+		if !strings.Contains(err.Error(), "file path") {
+			t.Fatalf("%q: %v", path, err)
+		}
+	}
+}
+
+func TestSQLiteLockingLeavesAnExplicitTimeout(t *testing.T) {
+	got := withSQLiteLocking("file.db?_timeout=1&_txlock=deferred")
+	if strings.Contains(got, "busy_timeout") || strings.Contains(got, "immediate") {
+		t.Fatalf("explicit lock was rewritten: %s", got)
+	}
+	plain := withSQLiteLocking("file.db")
+	if !strings.Contains(plain, "busy_timeout(2000)") || !strings.Contains(plain, "_txlock=immediate") {
+		t.Fatalf("plain: %s", plain)
+	}
+	if dsnReadOnly("file:db?mode&_pragma=query_only(1)") != true {
+		t.Fatal("query_only was not read-only")
+	}
+	if dsnReadOnly("file:db") {
+		t.Fatal("plain file was read-only")
+	}
+	if pragmaName(" Busy_Timeout = 1 ") != "busy_timeout" {
+		t.Fatalf("pragma %s", pragmaName(" Busy_Timeout = 1 "))
+	}
+	if dsnSetsBusyTimeout("file.db?mode&_timeout=1") != true {
+		t.Fatal("a timeout alias was ignored")
+	}
+	if dsnSetsBusyTimeout("file.db?mode") {
+		t.Fatal("a flag without a value counted as a timeout")
 	}
 }
 

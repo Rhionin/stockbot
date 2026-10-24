@@ -9,6 +9,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type supplySettingsResponse struct {
@@ -46,7 +47,11 @@ type SupplySettingsGetHandler struct {
 }
 
 func (h *SupplySettingsGetHandler) Handle(req Request[struct{}, struct{}]) (*supplySettingsResponse, error) {
-	settings, err := h.Supply.Settings(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := h.Supply.Settings(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -59,14 +64,18 @@ type SupplySettingsPutHandler struct {
 }
 
 func (h *SupplySettingsPutHandler) Handle(req Request[supplyMonthsRequest, struct{}]) (*supplySettingsResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	months, err := supply.ParseMonths(req.Body.Months)
 	if err != nil {
 		return nil, BadRequest(err.Error())
 	}
-	if err := h.Supply.SetMonths(req.Context, months); err != nil {
+	if err := h.Supply.SetMonths(req.Context, scope, months); err != nil {
 		return nil, InternalError(err)
 	}
-	settings, err := h.Supply.Settings(req.Context)
+	settings, err := h.Supply.Settings(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -80,13 +89,17 @@ type SupplyOverrideGetHandler struct {
 }
 
 func (h *SupplyOverrideGetHandler) Handle(req Request[struct{}, productIDParams]) (*supplyOverrideResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	if req.PathParams.ID == "" {
 		return nil, BadRequest("missing product id")
 	}
-	if err := refuseGroupedOverride(req.Context, h.Groups, req.PathParams.ID); err != nil {
+	if err := refuseGroupedOverride(req.Context, scope, h.Groups, req.PathParams.ID); err != nil {
 		return nil, err
 	}
-	target, err := h.productTarget(req.Context, req.PathParams.ID)
+	target, err := h.productTarget(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,17 +113,21 @@ type SupplyOverridePutHandler struct {
 }
 
 func (h *SupplyOverridePutHandler) Handle(req Request[supplyOverrideRequest, productIDParams]) (*supplyOverrideResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	if req.PathParams.ID == "" {
 		return nil, BadRequest("missing product id")
 	}
-	if err := refuseGroupedOverride(req.Context, h.Groups, req.PathParams.ID); err != nil {
+	if err := refuseGroupedOverride(req.Context, scope, h.Groups, req.PathParams.ID); err != nil {
 		return nil, err
 	}
 	override, err := parseSupplyOverride(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	itemID, err := h.Targets.ItemIDByProduct(req.Context, req.PathParams.ID)
+	itemID, err := h.Targets.ItemIDByProduct(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -119,33 +136,33 @@ func (h *SupplyOverridePutHandler) Handle(req Request[supplyOverrideRequest, pro
 	}
 	switch {
 	case override == supply.Override{}:
-		err = h.Targets.ClearItem(req.Context, itemID)
+		err = h.Targets.ClearItem(req.Context, scope, itemID)
 	default:
 		if months, ok := override.Window(); ok {
-			err = h.Targets.SetItem(req.Context, itemID, restock.Target{Kind: restock.KindMonths, Value: float64(months)})
+			err = h.Targets.SetItem(req.Context, scope, itemID, restock.Target{Kind: restock.KindMonths, Value: float64(months)})
 		} else if qty, ok := override.Quantity(); ok {
-			err = h.Targets.SetItem(req.Context, itemID, restock.Target{Kind: restock.KindAmount, Value: float64(qty)})
+			err = h.Targets.SetItem(req.Context, scope, itemID, restock.Target{Kind: restock.KindAmount, Value: float64(qty)})
 		}
 	}
 	if err != nil {
 		return nil, restockError(err)
 	}
-	target, err := h.Targets.ItemTarget(req.Context, itemID)
+	target, err := h.Targets.ItemTarget(req.Context, scope, itemID)
 	if err != nil {
 		return nil, restockError(err)
 	}
 	return targetAsOverride(target), nil
 }
 
-func (h *SupplyOverrideGetHandler) productTarget(ctx context.Context, productID string) (*restock.Target, error) {
-	itemID, err := h.Targets.ItemIDByProduct(ctx, productID)
+func (h *SupplyOverrideGetHandler) productTarget(ctx context.Context, scope tenant.Scope, productID string) (*restock.Target, error) {
+	itemID, err := h.Targets.ItemIDByProduct(ctx, scope, productID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
 	if itemID == "" {
 		return nil, nil
 	}
-	target, err := h.Targets.ItemTarget(ctx, itemID)
+	target, err := h.Targets.ItemTarget(ctx, scope, itemID)
 	if err != nil {
 		return nil, restockError(err)
 	}
@@ -158,7 +175,11 @@ type OnboardingCompleteHandler struct {
 }
 
 func (h *OnboardingCompleteHandler) Handle(req Request[struct{}, struct{}]) (*onboardingCompleteResponse, error) {
-	phase, err := h.Supply.Complete(req.Context, time.Now())
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	phase, err := h.Supply.Complete(req.Context, scope, time.Now())
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -169,11 +190,11 @@ func (h *OnboardingCompleteHandler) Handle(req Request[struct{}, struct{}]) (*on
 	return &onboardingCompleteResponse{StartedAt: started.UTC().Format(time.RFC3339)}, nil
 }
 
-func refuseGroupedOverride(ctx context.Context, groups *group.Groups, productID string) error {
+func refuseGroupedOverride(ctx context.Context, scope tenant.Scope, groups *group.Groups, productID string) error {
 	if groups == nil {
 		return nil
 	}
-	groupID, err := groups.MemberGroupID(ctx, productID)
+	groupID, err := groups.MemberGroupID(ctx, scope, productID)
 	if err != nil {
 		return InternalError(err)
 	}

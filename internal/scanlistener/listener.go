@@ -11,11 +11,8 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
-
-// defaultHeadlessUserID matches the single-user default hardcoded across
-// internal/server's handlers (const userID = "user-1").
-const defaultHeadlessUserID = "user-1"
 
 // defaultPollInterval is how often runDevice retries opening a missing device.
 // A fixed 1s poll means a device that appears is picked up within a second.
@@ -36,13 +33,16 @@ type ScanListener struct {
 	Stdin           io.Reader
 	StockInBarcode  string
 	StockOutBarcode string
-	HeadlessUserID  string
+	// Scope is household 1. DeviceID is the seeded direct scanner.
+	// Both are set at startup from the database, not from an environment variable.
+	Scope    tenant.Scope
+	DeviceID string
 
 	Queue interface {
-		CreateScanEntry(ctx context.Context, entry scan.ScanEntry) (*scan.ScanEntry, error)
+		CreateScanEntry(ctx context.Context, scope tenant.Scope, entry scan.ScanEntry) (*scan.ScanEntry, error)
 	}
 	LookupService interface {
-		Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error)
+		Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error)
 	}
 	Open OpenFunc
 
@@ -246,6 +246,9 @@ func (l *ScanListener) handleLine(ctx context.Context, barcode string, mode *mod
 	if barcode == "" {
 		return // empty line discarded, no entry created
 	}
+	if scan.LooksLikePairingCode(barcode) {
+		return
+	}
 
 	if newMode, isControl := classify(barcode, l.StockInBarcode, l.StockOutBarcode); isControl {
 		if l.Mode != nil {
@@ -280,15 +283,17 @@ func (l *ScanListener) SetStatusMode(d scan.ScanDirection) {
 }
 
 func (l *ScanListener) createEntry(ctx context.Context, barcode string, direction scan.ScanDirection) {
-	userID := l.HeadlessUserID
-	if userID == "" {
-		userID = defaultHeadlessUserID
+	if err := l.Scope.Require(); err != nil {
+		log.Printf("scan listener: this server's scanner is not bound to a household: %v", err)
+		return
 	}
+	userID := l.Scope.HouseholdID()
 
 	scannedAt := l.now()
 	if scan.IsQRPayload(barcode) {
 		entry := scan.NewQREntry(userID, barcode, &direction, scannedAt)
-		created, err := l.Queue.CreateScanEntry(ctx, entry)
+		entry.DeviceID = l.DeviceID
+		created, err := l.Queue.CreateScanEntry(ctx, l.Scope, entry)
 		if err != nil {
 			log.Printf("scan listener: create scan entry for %q failed: %v", barcode, err)
 			return
@@ -298,9 +303,9 @@ func (l *ScanListener) createEntry(ctx context.Context, barcode string, directio
 		return
 	}
 
-	notice := scan.AnnounceProcessing(l.ProcessingPublisher, userID, barcode, &direction, scannedAt)
+	notice := scan.AnnounceProcessing(l.ProcessingPublisher, l.Scope.HouseholdID(), userID, barcode, &direction, scannedAt)
 
-	lookup, err := l.LookupService.Lookup(ctx, barcode, userID)
+	lookup, err := l.LookupService.Lookup(ctx, l.Scope, barcode)
 	if err != nil {
 		log.Printf("scan listener: product lookup for %q failed: %v", barcode, err)
 		scan.AnnounceProcessingFailed(l.ProcessingPublisher, notice)
@@ -308,7 +313,8 @@ func (l *ScanListener) createEntry(ctx context.Context, barcode string, directio
 	}
 
 	entry := scan.NewEntryFromLookup(userID, barcode, lookup, &direction, scannedAt)
-	created, err := l.Queue.CreateScanEntry(ctx, entry)
+	entry.DeviceID = l.DeviceID
+	created, err := l.Queue.CreateScanEntry(ctx, l.Scope, entry)
 	if err != nil {
 		log.Printf("scan listener: create scan entry for %q failed: %v", barcode, err)
 		return

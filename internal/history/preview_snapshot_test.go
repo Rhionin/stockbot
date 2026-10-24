@@ -33,7 +33,7 @@ func TestPreviewCopyLivesBesideTheDatabaseAndIsRemoved(t *testing.T) {
 	}
 	t.Cleanup(func() { previewDuringBackup = nil })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var missing *NotFoundError
 	if !errors.As(err, &missing) {
 		t.Fatalf("err = %v", err)
@@ -55,7 +55,7 @@ func TestPreviewRemovesTheCopyWhenTheBackupFails(t *testing.T) {
 	}
 	t.Cleanup(func() { previewBackup = previous })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	if err == nil || !strings.Contains(err.Error(), "backup failed") {
 		t.Fatalf("err = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestPreviewRemovesTheCopyWhenOpenFails(t *testing.T) {
 	}
 	t.Cleanup(func() { previewOpen = previous })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	if err == nil || !strings.Contains(err.Error(), "open failed") {
 		t.Fatalf("err = %v", err)
 	}
@@ -90,7 +90,7 @@ func TestPreviewRemovesTheCopyWhenTheModeCheckFails(t *testing.T) {
 	}
 	t.Cleanup(func() { previewDuringBackup = nil })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	if err == nil || !strings.Contains(err.Error(), "mode check failed") {
 		t.Fatalf("err = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestPreviewDiskFullIsRetryable(t *testing.T) {
 	}
 	t.Cleanup(func() { previewBackup = previous })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var full *PreviewFullError
 	if !errors.As(err, &full) {
 		t.Fatalf("err = %v", err)
@@ -147,9 +147,10 @@ func TestPreviewWaitsForTheSingleSlotUntilCanceled(t *testing.T) {
 	})
 
 	journal := NewJournal(db)
+	scope := scopeOf(t, db)
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := journal.PreviewUndo(context.Background(), householdUser, "missing")
+		_, err := journal.PreviewUndo(context.Background(), scope, "missing")
 		firstDone <- err
 	}()
 	select {
@@ -160,7 +161,7 @@ func TestPreviewWaitsForTheSingleSlotUntilCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err := journal.PreviewUndo(ctx, householdUser, "missing")
+	_, err := journal.PreviewUndo(ctx, scope, "missing")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("waiter err = %v", err)
 	}
@@ -206,7 +207,7 @@ func TestPreviewRefusesWhenFreeSpaceCannotHoldTheCopy(t *testing.T) {
 		previewBackup = previous
 	})
 
-	_, err = NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err = NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var full *PreviewFullError
 	if !errors.As(err, &full) {
 		t.Fatalf("err = %v", err)
@@ -231,7 +232,7 @@ func TestPreviewProceedsWhenFreeSpaceCoversTheReserve(t *testing.T) {
 	previewFree = func(string) (uint64, error) { return need, nil }
 	t.Cleanup(func() { previewFree = previousFree })
 
-	_, err = NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err = NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var missing *NotFoundError
 	if !errors.As(err, &missing) {
 		t.Fatalf("err = %v", err)
@@ -288,7 +289,7 @@ func TestPreviewStatfsErrorIsNotAFullDisk(t *testing.T) {
 	previewFree = func(string) (uint64, error) { return 0, errors.New("statfs failed") }
 	t.Cleanup(func() { previewFree = previous })
 
-	_, err := NewJournal(db).PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := NewJournal(db).PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var full *PreviewFullError
 	if errors.As(err, &full) || err == nil || !strings.Contains(err.Error(), "statfs failed") {
 		t.Fatalf("err = %v", err)
@@ -330,9 +331,10 @@ func TestPreviewUndoHoldsTheOnlySlot(t *testing.T) {
 	})
 
 	journal := NewJournal(db)
+	scope := scopeOf(t, db)
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := journal.PreviewUndo(context.Background(), householdUser, "missing")
+		_, err := journal.PreviewUndo(context.Background(), scope, "missing")
 		firstDone <- err
 	}()
 	select {
@@ -342,7 +344,7 @@ func TestPreviewUndoHoldsTheOnlySlot(t *testing.T) {
 	}
 	secondDone := make(chan error, 1)
 	go func() {
-		_, err := journal.PreviewUndo(context.Background(), householdUser, "missing")
+		_, err := journal.PreviewUndo(context.Background(), scope, "missing")
 		secondDone <- err
 	}()
 	select {
@@ -406,14 +408,14 @@ func TestBackupStopsWhenTheRequestContextIsCanceled(t *testing.T) {
 	})
 
 	journal := NewJournal(db)
-	_, err := journal.PreviewUndo(ctx, householdUser, "missing")
+	_, err := journal.PreviewUndo(ctx, scopeOf(t, db), "missing")
 	if steps != 1 || !errors.Is(err, context.Canceled) {
 		t.Fatalf("steps = %d, err = %v", steps, err)
 	}
 	if dirs := previewDirNames(t, dir); len(dirs) != 0 {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}
-	_, err = journal.PreviewUndo(context.Background(), householdUser, "missing")
+	_, err = journal.PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var missing *NotFoundError
 	if !errors.As(err, &missing) {
 		t.Fatalf("next preview err = %v", err)
@@ -465,7 +467,7 @@ func TestAbortedPreviewStopsBetweenPagesAndReleasesTheSlot(t *testing.T) {
 	})
 
 	journal := NewJournal(db)
-	_, err := journal.PreviewUndo(context.Background(), householdUser, "missing")
+	_, err := journal.PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
@@ -476,7 +478,7 @@ func TestAbortedPreviewStopsBetweenPagesAndReleasesTheSlot(t *testing.T) {
 		t.Fatalf("preview dirs left: %v", dirs)
 	}
 	stop = false
-	_, err = journal.PreviewUndo(context.Background(), householdUser, "missing")
+	_, err = journal.PreviewUndo(context.Background(), scopeOf(t, db), "missing")
 	var missing *NotFoundError
 	if !errors.As(err, &missing) {
 		t.Fatalf("next preview err = %v", err)
@@ -547,6 +549,7 @@ func sqliteOther(t *testing.T) error {
 
 func TestApplyUndoReturnsTheRepairError(t *testing.T) {
 	db := openHistoryDB(t)
+	scope := scopeOf(t, db)
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -555,7 +558,7 @@ func TestApplyUndoReturnsTheRepairError(t *testing.T) {
 	if _, err := tx.Exec(`DROP TABLE item_instances`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = applyUndo(context.Background(), tx, householdUser, "missing", false)
+	_, err = applyUndo(context.Background(), scope, tx, "missing", false)
 	if err == nil {
 		t.Fatal("repair error was dropped")
 	}

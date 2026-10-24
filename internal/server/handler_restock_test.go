@@ -3,12 +3,38 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
 )
+
+func TestRestockErrorMapsHouseholdSentences(t *testing.T) {
+	if restockError(nil) != nil {
+		t.Fatal("nil error was reported")
+	}
+	for _, msg := range []string{
+		"That item isn't in the household.",
+		"That category isn't in the household.",
+		"That group isn't in the household.",
+	} {
+		err := restockError(errors.New(msg))
+		httpErr, ok := err.(*HTTPError)
+		if !ok || httpErr.Code != http.StatusNotFound || httpErr.Message != msg {
+			t.Fatalf("%s: %#v", msg, err)
+		}
+	}
+	bad, ok := restockError(errors.New("Pick a number.")).(*HTTPError)
+	if !ok || bad.Code != http.StatusBadRequest || bad.Message != "Pick a number." {
+		t.Fatalf("capital sentence: %#v", bad)
+	}
+	internal, ok := restockError(errors.New("could not save the target")).(*HTTPError)
+	if !ok || internal.Code != http.StatusInternalServerError {
+		t.Fatalf("internal: %#v", internal)
+	}
+}
 
 func TestRestockHandler(t *testing.T) {
 	seed := func(env testEnv) {
@@ -204,7 +230,7 @@ func TestRestockWrites(t *testing.T) {
 						env.T.Fatal(err)
 					}
 				}
-				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), "Citrus", []string{"lemons"}, nil); err != nil {
+				if _, err := group.NewGroups(env.DB).Create(env.T.Context(), primaryScope(env.T, env.DB), "Citrus", []string{"lemons"}, nil); err != nil {
 					env.T.Fatal(err)
 				}
 				if _, err := env.DB.Exec(`INSERT INTO product_off_tags (product_id, categories_tags, food_groups_tags) VALUES ('bananas', '["en:fresh-fruits"]', '[]')`); err != nil {

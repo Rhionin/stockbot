@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"sort"
+	"strings"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListGetHandler handles GET /api/shopping-list.
@@ -19,22 +22,41 @@ type ShoppingListGetHandler struct {
 	// GetAdjustment is separate so tests can satisfy shoppingListReader
 	// without pulling adjustment methods onto every list reader.
 	Adjustments interface {
-		GetAdjustment(ctx context.Context, entryID string, providerID string) (*shopping.Adjustment, error)
+		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
+	DB *sql.DB
 }
 
-func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) ([]ShoppingListEntryResponse, error) {
-	const userID = "user-1"
-
-	provision, err := loadShoppingSnapshot(req.Context, userID, h.Pantry, h.ShoppingList)
+func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (changeView, error) {
+	scope, err := requestScope(req.Context)
 	if err != nil {
-		return nil, InternalError(err)
+		return changeView{}, InternalError(err)
 	}
-	return presentShoppingList(req, provision, h.Ledger, h.Registry, h.Adjustments)
+
+	provision, err := loadShoppingSnapshot(req.Context, scope, h.Pantry, h.ShoppingList)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
+	if err != nil {
+		return changeView{}, err
+	}
+	if items == nil {
+		items = []ShoppingListEntryResponse{}
+	}
+	since := ""
+	if req.RawRequest != nil {
+		since = strings.TrimSpace(req.RawRequest.URL.Query().Get("since"))
+	}
+	view, err := viewChanges(req.Context, h.DB, scope.HouseholdID(), "list", since, "items", items)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	return view, nil
 }
 
-func presentShoppingList(req Request[struct{}, struct{}], provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {
-	GetAdjustment(ctx context.Context, entryID string, providerID string) (*shopping.Adjustment, error)
+func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {
+	GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 }) ([]ShoppingListEntryResponse, error) {
 	providerID := targetProviderID(req, registry)
 	itemByID := make(map[string]inventory.Item, len(provision.Items))
@@ -55,7 +77,7 @@ func presentShoppingList(req Request[struct{}, struct{}], provision shoppingProv
 	var err error
 	ledger := map[string]cart.LedgerEntry{}
 	if ledgerStore != nil && providerID != "" {
-		ledger, err = ledgerStore.ListForProvider(req.Context, cart.ProviderID(providerID))
+		ledger, err = ledgerStore.ListForProvider(req.Context, scope, cart.ProviderID(providerID))
 		if err != nil {
 			return nil, InternalError(err)
 		}
@@ -73,7 +95,7 @@ func presentShoppingList(req Request[struct{}, struct{}], provision shoppingProv
 		provisionQty := computed
 		var adjustment *int
 		if providerID != "" && row.ID != "" && adjustments != nil {
-			adj, adjErr := adjustments.GetAdjustment(req.Context, row.ID, providerID)
+			adj, adjErr := adjustments.GetAdjustment(req.Context, scope, row.ID, providerID)
 			if adjErr != nil {
 				return nil, InternalError(adjErr)
 			}

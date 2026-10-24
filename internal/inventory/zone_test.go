@@ -18,16 +18,25 @@ func TestInstancesComeBackSoonestExpiryFirstAcrossDST(t *testing.T) {
 	}
 
 	pantry, _, db := newTestPantry(t)
-	if _, err := db.Exec(`
-		INSERT INTO products (id, name) VALUES ('prod', 'Milk');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item', 'user-1', 'prod');
-		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at) VALUES
-			('late', 'item', ?, ?),
-			('early', 'item', ?, ?)`,
-		earlier, later, earlier, earlier); err != nil {
+	scope := scopeOf(t, db)
+	householdID := scope.HouseholdID()
+	if _, err := db.Exec(`INSERT INTO products (id, name) VALUES ('prod', 'Milk')`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := pantry.ListItemInstances(context.Background(), "item")
+	if _, err := db.Exec(
+		`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item', ?, 'prod', ?)`,
+		householdID, householdID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO item_instances (id, item_id, stock_in_at, expires_at, household_id) VALUES
+			('late', 'item', ?, ?, ?),
+			('early', 'item', ?, ?, ?)`,
+		earlier, later, householdID,
+		earlier, earlier, householdID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pantry.ListItemInstances(context.Background(), scope, "item")
 	if err != nil {
 		t.Fatal(err)
 	}

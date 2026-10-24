@@ -9,13 +9,14 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // scanReader is the queue a settled batch reads to see which scans are still
 // waiting. *scan.Queue satisfies it. A nil reader trusts the events already
 // seen, which is only for tests that do not stand up a queue.
 type scanReader interface {
-	GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
+	GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
 }
 
 // announcedCap bounds ids remembered for the life of the process. Clearing
@@ -61,6 +62,7 @@ type attention struct {
 	settle    time.Duration
 	scans     scanReader
 	schedules scheduleStore
+	scope     tenant.Scope
 	announced map[string]struct{}
 	batches   map[scan.ScanDirection]*openBatch
 }
@@ -256,7 +258,7 @@ func (a *attention) stillPending(direction scan.ScanDirection, ids []string, rem
 	var names []string
 	count := 0
 	for _, id := range ids {
-		entry, err := a.scans.GetScanEntry(context.Background(), id)
+		entry, err := a.scans.GetScanEntry(context.Background(), a.scope, id)
 		if err != nil {
 			log.Printf("scan alerts: could not check whether a scan is still waiting: %v", err)
 			count++
@@ -343,7 +345,7 @@ func (a *attention) rearm(ctx context.Context) {
 	if a.schedules == nil {
 		return
 	}
-	rows, err := a.schedules.ListBatchAlerts(ctx)
+	rows, err := a.schedules.ListBatchAlerts(ctx, a.scope)
 	if err != nil {
 		log.Printf("scan alerts: could not read pending batch alerts: %v", err)
 		return
@@ -373,7 +375,7 @@ func (a *attention) writeSchedule(direction scan.ScanDirection) {
 	}
 	batch := a.batches[direction]
 	if len(batch.ids) == 0 {
-		if err := a.schedules.DeleteBatchAlert(context.Background(), direction); err != nil {
+		if err := a.schedules.DeleteBatchAlert(context.Background(), a.scope, direction); err != nil {
 			log.Printf("scan alerts: could not clear a batch alert: %v", err)
 		}
 		return
@@ -381,7 +383,7 @@ func (a *attention) writeSchedule(direction scan.ScanDirection) {
 	if batch.due.IsZero() {
 		return
 	}
-	err := a.schedules.SaveBatchAlert(context.Background(), scheduledBatch{
+	err := a.schedules.SaveBatchAlert(context.Background(), a.scope, scheduledBatch{
 		Direction: direction,
 		DueAt:     batch.due,
 		ScanIDs:   append([]string(nil), batch.order...),
@@ -397,7 +399,7 @@ func (a *attention) claim(direction scan.ScanDirection) bool {
 	if a.schedules == nil {
 		return true
 	}
-	if err := a.schedules.DeleteBatchAlert(context.Background(), direction); err != nil {
+	if err := a.schedules.DeleteBatchAlert(context.Background(), a.scope, direction); err != nil {
 		log.Printf("scan alerts: could not settle a batch alert: %v", err)
 		return false
 	}
