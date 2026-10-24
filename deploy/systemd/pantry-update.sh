@@ -21,7 +21,16 @@
 #
 # A pull that does not change the image id of a running service stops there.
 # The timer fires every minute, and recreating a healthy stack each time
-# would drop the scanner session for nothing.
+# would drop the scanner session for nothing. A minute that does not change
+# the pantry image does not take a backup.
+#
+# When the pantry image digest is about to change, pantry-backup.sh
+# pre-deploy runs before anything is recreated. BACKUP_BEFORE_DEPLOY is
+# warn (the default: a failed backup is a journal warning and the deploy
+# continues), required (containers stay as they are and this script exits
+# non-zero), or off. The value may be set in the environment or in .env.
+# This script already holds the deploy lock, so the backup is started with
+# PANTRY_BACKUP_LOCK_HELD=1 and does not flock that file again.
 #
 # When an image does change, the pantry revision label is read before
 # anything is recreated. An image without org.opencontainers.image.revision
@@ -206,6 +215,14 @@ echo "pantry update: lock acquired"
 
 # shellcheck disable=SC1091
 source "$PANTRY_DIR/auth-migrate.sh"
+if ! prepare_setup_dir; then
+  echo "Could not prepare ${PANTRY_DIR}/setup for the setup code" >&2
+  exit 1
+fi
+if ! ensure_app_base_url; then
+  echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
+  exit 1
+fi
 if ! sync_household_credential; then
   echo "Could not copy the household password hash; leaving containers unchanged." >&2
   exit 1
@@ -1543,6 +1560,64 @@ resume_pending_deploy() {
   exit 1
 }
 
+# backup_before_deploy_mode is warn, required, or off. An empty setting
+# is warn. The environment wins over .env.
+backup_before_deploy_mode() {
+  local mode="${BACKUP_BEFORE_DEPLOY:-}"
+  if [[ -z "$mode" ]]; then
+    mode=$(publish_env_value BACKUP_BEFORE_DEPLOY)
+  fi
+  mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+  if [[ -z "$mode" ]]; then
+    mode=warn
+  fi
+  case "$mode" in
+    warn|required|off)
+      printf '%s' "$mode"
+      ;;
+    *)
+      echo "pantry update: BACKUP_BEFORE_DEPLOY must be warn, required, or off" >&2
+      return 1
+      ;;
+  esac
+}
+
+# pre_deploy_backup runs pantry-backup.sh pre-deploy when the pantry image
+# is about to change. The deploy lock is already held on fd 9. The child
+# is started with that fd closed and PANTRY_BACKUP_LOCK_HELD=1 so it does
+# not flock the same file. Returns 0 when the deploy may continue.
+pre_deploy_backup() {
+  local state="$1" mode script rc
+  mode=$(backup_before_deploy_mode) || return 1
+  if [[ "$mode" == off ]]; then
+    return 0
+  fi
+  service_changed "$state" pantry || return 0
+  script="$(cd "$(dirname "$0")" && pwd)/pantry-backup.sh"
+  echo "pantry update: pre-deploy backup (${mode})"
+  if [[ ! -f "$script" ]]; then
+    echo "pantry update: pre-deploy backup script is missing" >&2
+    if [[ "$mode" == required ]]; then
+      echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+      return 1
+    fi
+    echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+    return 0
+  fi
+  rc=0
+  PANTRY_BACKUP_LOCK_HELD=1 "$script" pre-deploy 9>&- || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    echo "pantry update: pre-deploy backup finished"
+    return 0
+  fi
+  if [[ "$mode" == required ]]; then
+    echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+    return 1
+  fi
+  echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+  return 0
+}
+
 apply_compose() {
   local state up_ok ref pins desired containers_ok caddy_ok proxy
   PANTRY_VERIFIED=0
@@ -1600,6 +1675,10 @@ apply_compose() {
   fi
 
   if ! ensure_free_space; then
+    clear_state
+    exit 1
+  fi
+  if ! pre_deploy_backup "$state"; then
     clear_state
     exit 1
   fi

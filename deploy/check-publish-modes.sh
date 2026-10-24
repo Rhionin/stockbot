@@ -182,6 +182,92 @@ if [[ "$acme_routes" != "$tunnel_routes" ]]; then
   fail "Caddyfile and Caddyfile.tunnel route blocks differ"
 fi
 
+# caddy_handle_block prints one handle, from its header through the brace
+# that closes it. Comments are left in place; callers skip them.
+caddy_handle_block() {
+  local file="$1" header="$2"
+  awk -v header="$header" '
+    !capturing && index($0, header) { capturing = 1 }
+    capturing {
+      print
+      opens = gsub(/{/, "{")
+      closes = gsub(/}/, "}")
+      depth += opens - closes
+      if (depth <= 0 && opens + closes > 0) exit
+    }
+  ' "$file"
+}
+
+# assert_request_body_limits checks the site cap and the device cap in one
+# Caddyfile. The 1 MB directive is the site default, so telemetry, the
+# build identity, the deploy hook, and the public catch-all (Sentry tunnel
+# included) do not set their own. /api/device/* is the only tighter cap.
+assert_request_body_limits() {
+  local file="$1" site device telemetry deploy
+  site=$(awk '
+    $0 ~ /^[[:space:]]*request_body[[:space:]]*\{/ && !seen {
+      seen = 1
+      capturing = 1
+    }
+    capturing {
+      print
+      opens = gsub(/{/, "{")
+      closes = gsub(/}/, "}")
+      depth += opens - closes
+      if (depth <= 0 && opens + closes > 0) exit
+    }
+  ' "$file")
+  have "$site" $'request_body {' "$file site request_body"
+  have "$site" "max_size 1MB" "$file site cap is 1MB"
+  device=$(caddy_handle_block "$file" "handle /api/device/*")
+  [[ -n "$device" ]] || fail "$file is missing handle /api/device/*"
+  have "$device" "max_size 64KB" "$file device cap is 64KB"
+  lack "$device" "X-Pantry-Entry" "$file device handle must not stamp an entry header"
+  have "$device" "header_up X-Pantry-Client-IP {client_ip}" "$file device handle passes the visitor address"
+  have "$device" "reverse_proxy pantry:8081" "$file device handle proxies to the public listener"
+  lack "$device" "max_size 1MB" "$file device handle must not use the site cap"
+  telemetry=$(caddy_handle_block "$file" "handle @telemetry")
+  lack "$telemetry" "request_body" "$file telemetry handle stays under the 1MB site cap"
+  deploy=$(caddy_handle_block "$file" "handle @deploy")
+  lack "$deploy" "request_body" "$file deploy hook stays under the 1MB site cap"
+  # The site cap is the first request_body. A second one is the device cap.
+  if [[ $(grep -c '^[[:space:]]*max_size 1MB$' "$file") -ne 1 ]]; then
+    fail "$file must set max_size 1MB once"
+  fi
+  if [[ $(grep -c '^[[:space:]]*max_size 64KB$' "$file") -ne 1 ]]; then
+    fail "$file must set max_size 64KB once"
+  fi
+  local site_at device_at household_at
+  site_at=$(grep -n '^[[:space:]]*max_size 1MB$' "$file" | head -n 1 | cut -d: -f1)
+  device_at=$(grep -n 'handle /api/device/\*' "$file" | head -n 1 | cut -d: -f1)
+  household_at=$(grep -n '# Everything else is the household site\.' "$file" | head -n 1 | cut -d: -f1 || true)
+  [[ -n "$site_at" && -n "$device_at" && "$site_at" -lt "$device_at" ]] || fail "$file site cap must come before the device handle"
+  # handle is first-match. The catch-all after this comment would shadow
+  # /api/device/* if that handle were moved below it.
+  if [[ -z "$household_at" || -z "$device_at" || "$device_at" -ge "$household_at" ]]; then
+    fail "$file device handle must come before the household catch-all"
+  fi
+}
+
+assert_request_body_limits deploy/Caddyfile
+assert_request_body_limits deploy/Caddyfile.tunnel
+
+# Every public handle is the :8081 listener. A handle left on the LAN port
+# would be classed as LAN and could expose household activity publicly.
+assert_public_listener() {
+  local file="$1" text proxies targets
+  text=$(cat "$file")
+  have "$text" "reverse_proxy pantry:8081" "$file proxies to the public listener"
+  lack "$text" "pantry:8080" "$file must not proxy to the LAN listener"
+  lack "$text" "X-Pantry-Entry" "$file must not stamp an entry header"
+  proxies=$(grep -c 'reverse_proxy ' "$file" || true)
+  targets=$(grep -c 'reverse_proxy pantry:8081' "$file" || true)
+  [[ "$proxies" -ge 1 && "$proxies" == "$targets" ]] || fail "$file has a reverse_proxy that is not the public listener"
+}
+
+assert_public_listener deploy/Caddyfile
+assert_public_listener deploy/Caddyfile.tunnel
+
 empty_env=$(mktemp)
 public_cfg=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml --profile public config)
 tunnel_cfg=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.tunnel.yml --profile tunnel config)
@@ -192,6 +278,37 @@ grocy_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f 
 grocy_sync_profile=$(compose --env-file "$empty_env" -f deploy/docker-compose.yml -f deploy/docker-compose.grocy.yml --profile grocy-sync config)
 rm -f "$empty_env"
 
+# pantry publishes the LAN listener only. 8081 stays on the compose network.
+# PUBLIC_LISTEN_ADDR still names :8081, so the check is the ports list.
+pantry_ports=$(awk '
+  $0 ~ /^  pantry:$/ { in_s = 1; next }
+  in_s && /^  [^ ]/ { in_s = 0 }
+  in_s && /^    ports:$/ { in_p = 1; next }
+  in_s && in_p && /^    [^ ]/ { in_p = 0 }
+  in_s && in_p { print }
+' <<< "$public_cfg")
+have "$pantry_ports" 'target: 8080' "pantry still publishes the LAN listener"
+lack "$pantry_ports" '8081' "pantry must not publish the public listener"
+have "$public_cfg" 'target: /run/setup' "pantry bind-mounts the setup directory"
+host_env=$(mktemp)
+printf '%s\n' 'PUBLIC_HOST=stockbot.rhionin.com' 'APP_BASE_URL=' > "$host_env"
+host_cfg=$(compose --env-file "$host_env" -f deploy/docker-compose.yml config)
+rm -f "$host_env"
+have "$host_cfg" 'https://stockbot.rhionin.com' "empty APP_BASE_URL follows PUBLIC_HOST"
+kept_env=$(mktemp)
+printf '%s\n' 'PUBLIC_HOST=stockbot.rhionin.com' 'APP_BASE_URL=https://operator.example' > "$kept_env"
+kept_cfg=$(compose --env-file "$kept_env" -f deploy/docker-compose.yml config)
+rm -f "$kept_env"
+have "$kept_cfg" 'https://operator.example' "a set APP_BASE_URL is kept"
+lack "$kept_cfg" 'https://stockbot.rhionin.com' "a set APP_BASE_URL is not replaced from PUBLIC_HOST"
+setup_mount=$(awk '
+  $0 ~ /target: \/run\/setup/ { capture = 1 }
+  capture { print }
+  capture && /target: \/run\/setup/ { next }
+  capture && /^        [a-z_]+:/ { next }
+  capture && /^      - / { exit }
+' <<< "$public_cfg")
+lack "$setup_mount" 'read_only: true' "setup mount must be read-write"
 have "$public_cfg" 'published: "80"' "certificate mode publishes port 80"
 have "$public_cfg" 'published: "443"' "certificate mode publishes port 443"
 have "$public_cfg" "$cert_caddy" "certificate mode pins Caddy"
@@ -253,8 +370,18 @@ lack "$tunnel_json" 'cj@example.com' "tunnel adapt must not configure an ACME ac
 lack "$tunnel_json" '"module": "acme"' "tunnel adapt must not request a certificate"
 lack "$acme_json" "http_basic" "certificate adapt must not use browser basic auth"
 lack "$tunnel_json" "http_basic" "tunnel adapt must not use browser basic auth"
-have "$acme_json" "X-Pantry-Entry" "certificate adapt marks the public site for the login page"
-have "$tunnel_json" "X-Pantry-Entry" "tunnel adapt marks the public site for the login page"
+lack "$acme_json" "X-Pantry-Entry" "certificate adapt must not stamp an entry header"
+lack "$tunnel_json" "X-Pantry-Entry" "tunnel adapt must not stamp an entry header"
+have "$acme_json" "pantry:8081" "certificate adapt dials the public listener"
+have "$tunnel_json" "pantry:8081" "tunnel adapt dials the public listener"
+# humanize sizes: 1MB is 1000000 bytes, 64KB is 64000. The device route is
+# the only place the tighter cap is compiled.
+have "$acme_json" '"max_size": 1000000' "certificate adapt enforces the 1MB site cap"
+have "$tunnel_json" '"max_size": 1000000' "tunnel adapt enforces the 1MB site cap"
+have "$acme_json" '"max_size": 64000' "certificate adapt enforces the 64KB device cap"
+have "$tunnel_json" '"max_size": 64000' "tunnel adapt enforces the 64KB device cap"
+have "$acme_json" "/api/device/*" "certificate adapt keeps the device route"
+have "$tunnel_json" "/api/device/*" "tunnel adapt keeps the device route"
 # Caddy's adapt output canonicalizes the header to Client-Ip.
 have "$acme_json" "X-Pantry-Client-Ip" "certificate adapt passes the visitor address"
 have "$tunnel_json" "X-Pantry-Client-Ip" "tunnel adapt passes the visitor address"

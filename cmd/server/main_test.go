@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,7 +195,107 @@ func extractDefault(t *testing.T, envValue string) string {
 		t.Fatalf("Environment variable %q does not contain :- separator", envValue)
 	}
 
-	return parts[1]
+	// ${OTHER:+text} is empty when OTHER is unset. That is the value Compose
+	// passes when the deployment .env sets neither name, which is the Go default.
+	def := parts[1]
+	if strings.HasPrefix(def, "${") && strings.HasSuffix(def, "}") && strings.Contains(def, ":+") {
+		return ""
+	}
+	return def
+}
+
+// expandCompose applies Compose's ${VAR:-default} and ${VAR:+alt} rules.
+// An empty or missing variable is unset. Nested substitutions are expanded.
+func expandCompose(t *testing.T, expr string, env map[string]string) string {
+	t.Helper()
+	got, err := expandComposeExpr(expr, env)
+	if err != nil {
+		t.Fatalf("expand %q: %v", expr, err)
+	}
+	return got
+}
+
+func expandComposeExpr(expr string, env map[string]string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(expr); {
+		if expr[i] == '$' && i+1 < len(expr) && expr[i+1] == '{' {
+			end := composeBraceEnd(expr, i+1)
+			if end < 0 {
+				return "", fmt.Errorf("unclosed substitution")
+			}
+			piece, err := expandComposeItem(expr[i+2:end], env)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(piece)
+			i = end + 1
+			continue
+		}
+		b.WriteByte(expr[i])
+		i++
+	}
+	return b.String(), nil
+}
+
+func expandComposeItem(inner string, env map[string]string) (string, error) {
+	name, op, rest := splitComposeOp(inner)
+	val, ok := env[name]
+	if op == "" {
+		return val, nil
+	}
+	alt, err := expandComposeExpr(rest, env)
+	if err != nil {
+		return "", err
+	}
+	set := ok && val != ""
+	switch op {
+	case ":-":
+		if !set {
+			return alt, nil
+		}
+		return val, nil
+	case ":+":
+		if set {
+			return alt, nil
+		}
+		return "", nil
+	default:
+		return "", fmt.Errorf("unknown operator %q", op)
+	}
+}
+
+func splitComposeOp(inner string) (name, op, rest string) {
+	depth := 0
+	for i := 0; i < len(inner); i++ {
+		switch {
+		case inner[i] == '$' && i+1 < len(inner) && inner[i+1] == '{':
+			depth++
+			i++
+		case inner[i] == '{':
+			depth++
+		case inner[i] == '}' && depth > 0:
+			depth--
+		case depth == 0 && i+1 < len(inner) && inner[i] == ':' && (inner[i+1] == '-' || inner[i+1] == '+'):
+			return inner[:i], inner[i : i+2], inner[i+2:]
+		}
+	}
+	return inner, "", ""
+}
+
+func composeBraceEnd(expr string, open int) int {
+	depth := 0
+	for i := open; i < len(expr); i++ {
+		switch expr[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func TestUnauthenticatedListenWarning(t *testing.T) {

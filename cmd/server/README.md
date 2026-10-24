@@ -177,10 +177,9 @@ call the ingest host itself.
 
 The route is open before household login, including on the login page, and
 it does not accept the sync token as a credential. No other route is opened
-with it. The client IP is the address Caddy already records
-(`X-Pantry-Client-IP` when `X-Pantry-Entry` is `public`, otherwise the
-connection address). `X-Forwarded-For` is not used. The envelope is not
-written to the log.
+with it. The client IP on the public listener (`:8081`) is the address Caddy
+records in `X-Pantry-Client-IP`. The LAN listener uses the connection
+address. `X-Forwarded-For` is not used. The envelope is not written to the log.
 
 SDK configuration uses the tunnel option `'/api/sentry-tunnel'`.
 

@@ -55,6 +55,24 @@ func TestUnscopedSQLLintRejectsEveryHouseholdTable(t *testing.T) {
 	}
 }
 
+// householdTablesIn is the table walk the production linter used to export.
+// It stays in the test so the walk can be checked without an unused helper
+// in sqlcheck.go.
+func householdTablesIn(sqlText string) []string {
+	set := householdSet()
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range tableAliasRef.FindAllStringSubmatch(sqlText, -1) {
+		name := strings.ToLower(match[1])
+		if !set[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 func TestHouseholdTablesInListsEachHouseholdTableOnce(t *testing.T) {
 	got := householdTablesIn(`
 		SELECT id FROM items i
@@ -136,6 +154,53 @@ func TestDirectScannerQueryIsAllowListed(t *testing.T) {
 		  AND h.is_primary = 1`
 	if got := checkStatement(sqlText, "internal/auth/scope.go"); len(got) != 0 {
 		t.Fatalf("scanner lookup rejected: %v", got)
+	}
+}
+
+func TestUnscopedSQLReportStaysShort(t *testing.T) {
+	sqlText := "SELECT id FROM items WHERE note = '" + strings.Repeat("a", 220) + "'"
+	got := CheckStatement(sqlText)
+	if len(got) != 1 || !strings.Contains(got[0], "...") {
+		t.Fatalf("report = %v", got)
+	}
+}
+
+func TestScanRepoReportsParseErrorsAndUnscopedSQL(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "frontend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write("bad.go", "package p\nfunc (")
+	write("leak.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	write("leak_test.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	if err := os.WriteFile(filepath.Join(root, "frontend", "skip.go"), []byte("package p\nconst q = `SELECT id FROM items`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	problems, err := ScanRepo(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parse, sql bool
+	for _, problem := range problems {
+		if strings.Contains(problem, "bad.go") {
+			parse = true
+		}
+		if strings.Contains(problem, "leak.go") && strings.Contains(problem, "unscoped") {
+			sql = true
+		}
+		if strings.Contains(problem, "frontend") || strings.Contains(problem, "leak_test.go") {
+			t.Fatalf("skipped file reported: %s", problem)
+		}
+	}
+	if !parse || !sql {
+		t.Fatalf("problems = %v", problems)
 	}
 }
 
