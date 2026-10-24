@@ -14,12 +14,6 @@ type ScanHistoryHandler struct {
 }
 
 func (h *ScanHistoryHandler) Handle(req Request[struct{}, struct{}]) ([]scan.ScanEntry, error) {
-	userIDParam := req.RawRequest.URL.Query().Get("userId")
-
-	if userIDParam == "" {
-		return nil, BadRequest("userId query parameter is required")
-	}
-
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return nil, err

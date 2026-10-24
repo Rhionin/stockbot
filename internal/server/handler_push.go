@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/push"
 )
 
@@ -54,12 +55,18 @@ func (h *PushHandler) Save(req Request[pushSubscriptionBody, struct{}]) (pushEnd
 	if !h.Keys.Configured() {
 		return pushEndpointResponse{}, BadRequest("Background scan alerts are not set up on this pantry yet.")
 	}
+	userID := strings.TrimSpace(req.Body.UserID)
+	if userID == "" {
+		if p, ok := auth.PrincipalFrom(req.Context); ok && p.UserID != "" {
+			userID = p.UserID
+		}
+	}
 	sub := push.Subscription{
 		Endpoint: strings.TrimSpace(req.Body.Endpoint),
 		P256dh:   strings.TrimSpace(req.Body.Keys.P256dh),
 		Auth:     strings.TrimSpace(req.Body.Keys.Auth),
 		Origin:   push.OriginHost(req.RawRequest),
-		UserID:   strings.TrimSpace(req.Body.UserID),
+		UserID:   userID,
 		DeviceID: strings.TrimSpace(req.Body.DeviceID),
 	}
 	if problem := sub.Problem(); problem != "" {

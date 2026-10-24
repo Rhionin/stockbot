@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/push"
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -337,5 +338,19 @@ func TestPushStaysBehindHouseholdLogin(t *testing.T) {
 	}
 	if strings.Contains(authedRec.Body.String(), cfg.PrivateKey) {
 		t.Fatal("subscribe response included the VAPID private key")
+	}
+}
+
+func TestPushSaveDefaultsUserIDFromPrincipal(t *testing.T) {
+	cfg := testPushConfig(t, nil)
+	handler, _ := setupTestWithContributor(t, nil, WithPush(cfg))
+	body := `{"endpoint":"https://push.example/device","keys":{"p256dh":"p256dh-key","auth":"auth-key"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/push/subscriptions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Kind: "account", UserID: "not a token"}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
 	}
 }
