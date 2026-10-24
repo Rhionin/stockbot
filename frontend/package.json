@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json --noEmit",
+    "lint": "eslint . ../shared",
     "preview": "vite preview",
     "test": "vitest",
     "e2e": "playwright test"

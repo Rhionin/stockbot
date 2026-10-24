@@ -32,5 +32,10 @@ export default defineConfig({
     include: ['./src/**/*.test.{ts,tsx}', '../shared/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
+    coverage: {
+      allowExternal: true,
+      include: ['src/**/*.{ts,tsx}', '../shared/**/*.{ts,tsx}'],
+      exclude: ['../shared/**/*.test.{ts,tsx}'],
+    },
   },
 })

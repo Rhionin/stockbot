@@ -1,0 +1,26 @@
+// Not referenced by tsconfig.json, so `npm run build` (`tsc -b`) skips it.
+// Node resolves modules from shared/, so vitest and node builtins are mapped here.
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "vitest": ["./node_modules/vitest/dist/index.d.ts"],
+      "node:*": ["./node_modules/@types/node/*"]
+    }
+  },
+  "include": ["../shared/**/*.test.ts", "../shared/**/*.test.tsx"]
+}

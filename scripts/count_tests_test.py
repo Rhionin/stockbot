@@ -679,6 +679,10 @@ class CollectMetricsScriptTest(unittest.TestCase):
         ]
         self.assertEqual(install_lines, ['  elif ! npm install --no-save "@vitest/coverage-v8@${vitest_version}"; then'])
         self.assertIn("web coverage was not produced", script)
+        self.assertIn("--coverage.allowExternal=true", script)
+        self.assertIn("--coverage.include='src/**/*.{ts,tsx}'", script)
+        self.assertIn("--coverage.include='../shared/**/*.{ts,tsx}'", script)
+        self.assertIn("--coverage.exclude='../shared/**/*.test.{ts,tsx}'", script)
         self.assertEqual(workflow.count("Web coverage was not produced"), 2)
         self.assertEqual(workflow.count("exit 1"), 2)
 

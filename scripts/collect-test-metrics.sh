@@ -73,12 +73,17 @@ else
     echo "::error::could not install @vitest/coverage-v8@${vitest_version} to match locked vitest" >&2
     web_status=1
   else
+    # shared/ sits outside this package. allowExternal lets v8 count it, and
+    # the test files stay out of the production denominator.
     npx vitest --run \
       --coverage.enabled \
       --coverage.provider=v8 \
       --coverage.reporter=json \
       --coverage.reportsDirectory="$OUT/vitest-coverage" \
+      --coverage.allowExternal=true \
       --coverage.include='src/**/*.{ts,tsx}' \
+      --coverage.include='../shared/**/*.{ts,tsx}' \
+      --coverage.exclude='../shared/**/*.test.{ts,tsx}' \
       --coverage.reportOnFailure \
       --reporter=default \
       --reporter=json \

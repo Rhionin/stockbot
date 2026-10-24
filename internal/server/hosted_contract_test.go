@@ -71,7 +71,7 @@ func readContract(t *testing.T) (doc, ts string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tsBytes, err := os.ReadFile(filepath.Join(root, "frontend", "src", "api", "contract.ts"))
+	tsBytes, err := os.ReadFile(filepath.Join(root, "shared", "contract.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
