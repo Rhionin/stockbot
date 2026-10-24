@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
-import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode } from '../../api/client';
+import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode, stage1AuthActive } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
 import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, scanReportsNothingOnHand, skippedNothingOnHandBanner, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '@stockbot/shared/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScannerConfig } from '@stockbot/shared/types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
+import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { BarcodeInputField } from '../scanner/BarcodeInputField';
 import { focusBarcodeScanner } from '../scanner/focusBarcodeScanner';
@@ -277,8 +278,16 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   }, [acceptRemoteMode]);
 
   useEffect(() => {
-    const eventSource = new EventSource('/api/events');
-    trackEventSource(eventSource);
+    let eventSource: EventSource | null = null;
+    let poll = 0;
+    let stopped = false;
+    const connect = () => {
+      if (stopped) return;
+      if (poll !== 0) window.clearInterval(poll);
+      poll = 0;
+      eventSource?.close();
+      eventSource = new EventSource('/api/events');
+      trackEventSource(eventSource);
     eventSource.addEventListener('scan', (message) => {
       const scanEntry = JSON.parse((message as MessageEvent).data) as ScanListEntry;
       if (scanEntry.direction === 'stock_in' && scanEntry.productId !== null && scanEntry.status === 'committed') {
@@ -316,8 +325,38 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
         releasePinsRef.current(new Set([inventoryItem.item.productId]));
       }
     });
-    return () => eventSource.close();
-  }, [acceptRemoteMode]);
+    eventSource.addEventListener('hint', (message) => {
+      let hint: { type?: string };
+      try {
+        hint = JSON.parse((message as MessageEvent).data) as { type?: string };
+      } catch {
+        return;
+      }
+      if (hint.type !== 'scans' && hint.type !== 'rekey') return;
+      if (document.visibilityState === 'hidden') return;
+      void loadQueue(true);
+    });
+    eventSource.onerror = () => {
+      if (!stage1AuthActive() || poll !== 0 || document.visibilityState === 'hidden') return;
+      poll = window.setInterval(() => {
+        if (document.visibilityState === 'hidden') return;
+        void loadQueue(true);
+      }, 2000);
+    };
+    };
+    const onSwitch = () => {
+      void loadQueue(true);
+      if (stage1AuthActive()) connect();
+    };
+    connect();
+    window.addEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+    return () => {
+      stopped = true;
+      window.removeEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+      if (poll !== 0) window.clearInterval(poll);
+      eventSource?.close();
+    };
+  }, [acceptRemoteMode, loadQueue]);
 
   const itemIdByProductId = useMemo(
     () => new Map(inventory.map((inventoryItem) => [inventoryItem.item.productId, inventoryItem.item.id])),

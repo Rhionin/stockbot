@@ -1075,6 +1075,8 @@ export interface Device {
   kind: DeviceKind;
   /** Server-computed from the in-memory lastSeenAt: within 300 seconds. */
   online: boolean;
+  /** Last heartbeat queue depth. The hub disconnect confirm uses it as N. */
+  queued?: number;
 }
 
 export interface RenameDeviceRequest {
@@ -1563,4 +1565,110 @@ export function isPairingCode(input: string): boolean {
   if (code === null || !PAIRING_CODE_GRAMMAR.test(code)) return false;
   const payload = code.slice(4, 8) + code.slice(9, 13);
   return code[14] === pairingCheckCharacter(payload);
+}
+
+// Stage-1 web copy (S10 / #383). Sentences that the error registry or PM-REQ
+// lock are quoted here so the UI and the tests share one string.
+
+export const AUTH_LOGIN_PATH = '/api/auth/login';
+export const AUTH_LOGOUT_PATH = '/api/auth/logout';
+export const AUTH_RESET_PATH = '/api/auth/reset';
+export const SWITCH_HOUSEHOLD_PATH = '/api/auth/session/household';
+export const HOUSEHOLD_SETTINGS_PATH = '/api/household/settings';
+export const HOUSEHOLD_PASSWORD_RETIRE_PATH = '/api/household/household-password/retire';
+export const HOUSEHOLD_PASSWORD_RESTORE_PATH = '/api/household/household-password/restore';
+export const HOUSEHOLDS_PATH = '/api/households';
+export const INVITES_PATH = '/api/invites';
+export const INVITE_PREVIEW_PATH = '/api/invites/preview';
+export const INVITE_ACCEPT_PATH = '/api/invites/accept';
+export const OPERATOR_HOUSEHOLD_INVITES_PATH = '/api/operator/household-invites';
+export const DEVICES_PATH = '/api/devices';
+export const DEVICES_PAIR_PATH = '/api/devices/pair';
+export const EXPORT_PATH = '/api/export';
+export const IMPORT_UPLOADS_PATH = '/api/household/import/uploads';
+export const IMPORT_PATH = '/api/import';
+export const ACCOUNT_PATH = '/api/me';
+export const SETUP_PATH = '/setup';
+export const TELEMETRY_PATH = '/api/telemetry';
+
+export const HOUSEHOLD_PASSWORD_LINK = 'Sign in with the household password';
+export const MAKE_MY_ACCOUNT = 'Make my account';
+export const CHANGEOVER_BANNER =
+  "You're signed in with the shared household password. Make an account so you can still get in after it's turned off.";
+export const CHANGEOVER_SIGN_IN_NOTE =
+  'The shared household password no longer signs in. Use your email and password.';
+export const RETIRE_HOUSEHOLD_PASSWORD = 'Turn off the household password';
+export const RESTORE_HOUSEHOLD_PASSWORD = 'Turn the household password back on';
+export const PASSWORD_TOO_SHORT = 'Use at least 10 characters.';
+export const PRINT_PAIRING_CODE_LABEL = 'Print pairing code';
+export const PAIRING_EXPIRED_SENTENCE = 'This code expired. Get a new one.';
+export const HOUSEHOLD_DELETE_SENTENCE =
+  'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.';
+
+export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
+  busy: BUSY_SENTENCE,
+  no_space: NO_SPACE_SENTENCE,
+  unauthorized: SESSION_EXPIRED_SENTENCE,
+  forbidden_role: 'Only an owner can do that.',
+  not_found: "Stockbot couldn't find that. It may have been removed.",
+  conflict: 'Someone else just changed this. Refresh and try again.',
+  invite_expired: 'This invite has expired or was already used. Ask for a new one.',
+  invite_required: 'You need an invite to start a household.',
+  reset_expired: 'This reset link has expired or was already used. Ask for a new one.',
+  account_exists: 'That email already has an account. Sign in, then open the invite again.',
+  validation: 'Check what you entered and try again.',
+  not_pending: 'This scan was already handled.',
+  product_unresolved: 'Choose which item this is first.',
+  none_on_hand: 'Nothing on hand to take out.',
+  instance_gone: 'That one was already taken out. Pick another.',
+  no_item: 'Which item is this?',
+  link_target_gone: "That item isn't available anymore. Pick another.",
+  scan_not_found: 'This scan is no longer in the queue.',
+  direction_unset: 'Choose stock in or stock out first.',
+  internal: SERVER_ERROR_FALLBACK,
+  last_owner: "You're the only owner. Make someone else an owner first, or delete the household.",
+  household_not_empty: 'You can only import into an empty household. This one already has items.',
+  confirmation_mismatch: "That doesn't match. Check the spelling and try again.",
+  rate_limited: 'Too many tries. Wait a moment and try again.',
+  payload_too_large: 'That file is too large to import.',
+  device_revoked: 'This device was disconnected. Pair it again to keep using it.',
+  upgrade_required: UPGRADE_REQUIRED_SENTENCE,
+};
+
+export function hostedErrorSentence(code: string): string {
+  if (code in HOSTED_ERROR_SENTENCES) return HOSTED_ERROR_SENTENCES[code as HostedErrorCode];
+  return SERVER_ERROR_FALLBACK;
+}
+
+/** PM §13.1 #3. Omitted when N is 0. The words stay plural; only N changes. */
+export function olderAppDevicesSentence(count: number): string | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const n = Math.trunc(count);
+  return `${n} devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.`;
+}
+
+/** PM §13.1 #5. The second sentence is omitted when N is 0. */
+export function disconnectHubConfirm(hubName: string, queued: number): string {
+  const lead = `Disconnect ${hubName}?`;
+  if (!Number.isFinite(queued) || queued <= 0) return lead;
+  return `${lead} ${Math.trunc(queued)} scans it hasn't sent yet will be lost.`;
+}
+
+export function disconnectedHubNotice(hubName: string): string {
+  return `${hubName} was disconnected.`;
+}
+
+export function pairingPrintBody(householdName: string): string {
+  return `Scan this code with your scanner to connect your hub to ${householdName}. This code works once and expires in 10 minutes.`;
+}
+
+export function pairingKeyboardFallback(code: string): string {
+  return `No printer? Plug a USB keyboard into the hub, type this code, and press Enter: ${code}`;
+}
+
+export function deviceKindLabel(kind: string): string {
+  if (kind === 'pi_hub' || kind === 'box_hub') return 'Hub';
+  if (kind === 'phone') return 'Phone';
+  if (kind === 'direct') return 'Direct scanner';
+  return kind;
 }

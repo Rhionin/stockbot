@@ -1,0 +1,282 @@
+import { expect, test, type Page, type Route } from '@playwright/test'
+import { mkdirSync } from 'node:fs'
+import { formatPairingCode } from '../../shared/contract'
+
+const PAIRING = formatPairingCode('23456789')
+const shots = '/cursor/stores/self/383'
+
+const olderWarning = (count: number) =>
+  `${count} devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.`
+
+interface Stage {
+  kind: 'signed_out' | 'account' | 'household_password'
+  role: 'owner' | 'member'
+  passwordSignIn: boolean
+  olderAppDevices: number
+  householdPasswordEnabled: boolean
+  restoreUntil: string | null
+  invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
+  deletedAt: string | null
+  pairingExpired: boolean
+}
+
+const stage: Stage = {
+  kind: 'signed_out',
+  role: 'owner',
+  passwordSignIn: false,
+  olderAppDevices: 3,
+  householdPasswordEnabled: true,
+  restoreUntil: null,
+  invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
+  deletedAt: null,
+  pairingExpired: false,
+}
+
+const sessionBody = () => ({
+  user: stage.kind === 'account' ? { id: 'user-1', email: 'ada@example.com', name: 'Ada' } : null,
+  kind: stage.kind,
+  memberships: [
+    { householdId: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt },
+    { householdId: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
+  ],
+  households: [
+    { id: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt },
+    { id: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
+  ],
+  activeHouseholdId: stage.kind === 'signed_out' ? null : 'hh-1',
+  operator: false,
+})
+
+const devices = () => ([
+  { id: 'hub', label: 'Kitchen hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'pi_hub', online: true, queued: 3 },
+  { id: 'shed', label: 'Shed hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-03-01T00:00:00Z', revokedAt: null, kind: 'box_hub', online: false, queued: 0 },
+  { id: 'direct', label: 'Counter', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'direct', online: true },
+])
+
+const fulfillJson = (route: Route, body: unknown, status = 200) => route.fulfill({
+  status,
+  contentType: 'application/json',
+  body: JSON.stringify(body),
+})
+
+const install = async (page: Page) => {
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url())
+    const path = url.pathname
+    if (!path.startsWith('/api') && path !== '/setup') return route.continue()
+    const method = route.request().method()
+    if (path === '/api/auth/session' && method === 'GET') return fulfillJson(route, sessionBody())
+    if (path === '/api/auth/session/household' && method === 'POST') {
+      const body = route.request().postDataJSON() as { householdId: string }
+      return fulfillJson(route, { ...sessionBody(), activeHouseholdId: body.householdId })
+    }
+    if (path === '/api/auth/login' && method === 'POST') {
+      stage.kind = 'household_password'
+      stage.role = 'member'
+      return fulfillJson(route, sessionBody())
+    }
+    if (path === '/api/config') {
+      return fulfillJson(route, {
+        live: 'sse',
+        minClientVersion: { expo: '1.0.0' },
+        householdPasswordSignIn: stage.passwordSignIn,
+        entry: 'public',
+      })
+    }
+    if (path === '/api/providers' || path === '/api/group-suggestions' || path === '/api/scans' || path === '/api/inventory') {
+      return fulfillJson(route, [])
+    }
+    if (path === '/api/build') return fulfillJson(route, {})
+    if (path === '/api/scanner/config') {
+      return fulfillJson(route, { stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' })
+    }
+    if (path === '/api/events') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: 'event: hint\ndata: {"type":"devices"}\n\n',
+      })
+    }
+    if (path === '/api/household/settings' && method === 'GET') {
+      return fulfillJson(route, {
+        restockMode: 'auto',
+        householdPasswordEnabled: stage.householdPasswordEnabled,
+        ...(stage.restoreUntil ? { householdPasswordRestoreUntil: stage.restoreUntil } : {}),
+      })
+    }
+    if (path === '/api/household/household-password/retire' && method === 'POST') {
+      stage.householdPasswordEnabled = false
+      stage.restoreUntil = '2026-05-01T00:00:00Z'
+      return fulfillJson(route, { restockMode: 'auto', householdPasswordEnabled: false, householdPasswordRestoreUntil: stage.restoreUntil })
+    }
+    if (path === '/api/household/household-password/restore' && method === 'POST') {
+      stage.householdPasswordEnabled = true
+      return fulfillJson(route, { restockMode: 'auto', householdPasswordEnabled: true })
+    }
+    if (path === '/api/telemetry') return fulfillJson(route, { olderAppDevices: stage.olderAppDevices })
+    if (path === '/api/households/hh-1/members') return fulfillJson(route, { members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] })
+    if (path === '/api/invites' && method === 'GET') {
+      return fulfillJson(route, {
+        invites: stage.invites.map((invite) => ({
+          id: invite.id,
+          email: null,
+          role: invite.role,
+          createdBy: 'user-1',
+          expiresAt: '2026-06-01T00:00:00Z',
+          status: invite.status,
+        })),
+      })
+    }
+    if (path === '/api/invites' && method === 'POST') {
+      stage.invites.push({ id: 'inv-2', status: 'open', role: 'member' })
+      return fulfillJson(route, { id: 'inv-2', code: 'new-code', url: 'https://app.example/invite/new-code', email: null, role: 'member', expiresAt: '2026-06-01T00:00:00Z' })
+    }
+    if (path.endsWith('/revoke')) {
+      stage.invites = stage.invites.map((invite) => invite.id === 'inv-1' ? { ...invite, status: 'revoked' } : invite)
+      return fulfillJson(route, {})
+    }
+    if (path === '/api/households/hh-1' && method === 'GET') {
+      return fulfillJson(route, { id: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
+    }
+    if (path === '/api/households/hh-1' && method === 'DELETE') {
+      stage.deletedAt = '2026-04-02T00:00:00Z'
+      return fulfillJson(route, {
+        id: 'hh-1',
+        name: 'Pantry',
+        role: 'owner',
+        deletedAt: stage.deletedAt,
+        purgeAt: '2026-05-02T00:00:00Z',
+        message: 'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.',
+      })
+    }
+    if (path === '/api/households/hh-1/restore') {
+      stage.deletedAt = null
+      return fulfillJson(route, { id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null })
+    }
+    if (path === '/api/export' && method === 'POST') return fulfillJson(route, { jobId: 'job-1', status: 'ready' })
+    if (path === '/api/export/job-1') {
+      return fulfillJson(route, { jobId: 'job-1', status: 'ready', jsonUrl: '/files/pantry.json', csvUrl: '/files/pantry.csv', expiresAt: null })
+    }
+    if (path === '/api/me' && method === 'DELETE') return fulfillJson(route, { error: 'blocked', code: 'last_owner' }, 409)
+    if (path === '/api/devices' && method === 'GET') return fulfillJson(route, { devices: devices() })
+    if (path === '/api/devices/pair' && method === 'POST') {
+      return fulfillJson(route, {
+        code: PAIRING,
+        qrPayload: PAIRING,
+        expiresAt: stage.pairingExpired ? '2000-01-01T00:00:00Z' : '2099-01-01T00:00:00Z',
+        pairingId: 'pair-1',
+        barcodeValue: PAIRING,
+        qrValue: PAIRING,
+      })
+    }
+    if (path === '/api/devices/pair/pair-1') {
+      return fulfillJson(route, { pairingId: 'pair-1', status: stage.pairingExpired ? 'expired' : 'pending', expiresAt: '2099-01-01T00:00:00Z' })
+    }
+    if (path === '/api/devices/shed' && method === 'DELETE') return fulfillJson(route, {})
+    if (path === '/api/devices/hub' && method === 'PATCH') return fulfillJson(route, devices()[0])
+    return fulfillJson(route, {})
+  })
+}
+
+const shot = async (page: Page, name: string) => {
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
+    await page.screenshot({ path: `${shots}/${name}-${width}.png`, fullPage: true })
+  }
+}
+
+test.describe('stage-1 household screens', () => {
+  test.beforeAll(() => {
+    mkdirSync(shots, { recursive: true })
+  })
+
+  test('sign-in, changeover, households, devices, and export', async ({ page }) => {
+    await install(page)
+    await page.goto('/')
+    await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
+    await shot(page, 'sign-in-c2a3')
+
+    stage.passwordSignIn = true
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'Sign in with the household password' })).toBeVisible()
+    await page.getByRole('button', { name: 'Sign in with the household password' }).click()
+    await page.getByLabel('Household password').fill('shared-secret')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'shared household password' })).toBeVisible()
+    await shot(page, 'banner-c2a1')
+
+    stage.kind = 'account'
+    stage.role = 'owner'
+    await page.reload()
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
+    await expect(page.getByText(olderWarning(3))).toBeVisible()
+    await shot(page, 'retire-n3')
+    await page.getByRole('button', { name: 'Cancel' }).click()
+
+    stage.olderAppDevices = 0
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
+    await expect(page.getByText(/older app version/)).toHaveCount(0)
+    await shot(page, 'retire-n0')
+    await page.getByRole('button', { name: 'Turn off' }).click()
+
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Household' }).click()
+    await expect(page.getByRole('heading', { name: 'Pantry' })).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Household' })).toBeVisible()
+    await shot(page, 'switcher')
+    await expect(page.getByRole('button', { name: 'Make owner' })).toBeVisible()
+    await page.getByRole('button', { name: 'Create invite' }).click()
+    await expect(page.getByText(/Invite link:/)).toBeVisible()
+    await page.getByRole('button', { name: 'Revoke invite' }).first().click()
+    await expect(page.getByText('Cancelled')).toBeVisible()
+    await shot(page, 'members-invites')
+
+    await page.getByRole('button', { name: 'Export household' }).click()
+    await expect(page.getByRole('link', { name: 'Download JSON' })).toBeVisible()
+    await expect(page.getByText('Your household will be permanently deleted after 30 days.')).toBeVisible()
+    await shot(page, 'export-delete')
+
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Devices' }).click()
+    await expect(page.getByText('Kitchen hub')).toBeVisible()
+    await expect(page.getByText(/Offline/)).toBeVisible()
+    await shot(page, 'devices')
+    await page.getByRole('listitem').filter({ hasText: 'Kitchen hub' }).getByRole('button', { name: 'Disconnect' }).click()
+    await expect(page.getByText("Disconnect Kitchen hub? 3 scans it hasn't sent yet will be lost.")).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Disconnect' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
+    await shot(page, 'disconnect-n3')
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await page.getByRole('listitem').filter({ hasText: 'Shed hub' }).getByRole('button', { name: 'Disconnect' }).click()
+    await expect(page.getByText('Disconnect Shed hub?')).toBeVisible()
+    await expect(page.getByText(/scans it hasn't sent/)).toHaveCount(0)
+    await shot(page, 'disconnect-n0')
+    await page.getByRole('button', { name: 'Cancel' }).click()
+
+    await page.getByRole('button', { name: 'Pair a hub' }).click()
+    await expect(page.getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
+    await expect(page.getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Print pairing code' })).toBeVisible()
+    await expect(page.getByText(/No printer\? Plug a USB keyboard/)).toBeVisible()
+    await shot(page, 'pairing')
+    await page.emulateMedia({ media: 'print' })
+    await shot(page, 'pairing-print')
+    await page.emulateMedia({ media: 'screen' })
+    await page.getByRole('button', { name: 'Close' }).click()
+
+    stage.pairingExpired = true
+    await page.getByRole('button', { name: 'Pair a hub' }).click()
+    await expect(page.getByText('This code expired. Get a new one.')).toBeVisible()
+    await shot(page, 'pairing-expired')
+
+    stage.role = 'member'
+    stage.kind = 'account'
+    await page.goto('/household')
+    await expect(page.getByText('bea@example.com')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Export household' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Make owner' })).toHaveCount(0)
+  })
+})

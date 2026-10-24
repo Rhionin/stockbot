@@ -72,6 +72,18 @@ import {
   UPDATING_SENTENCE,
   UPDATING_STATUS,
   inlineFailure,
+  CHANGEOVER_BANNER,
+  CHANGEOVER_SIGN_IN_NOTE,
+  HOUSEHOLD_DELETE_SENTENCE,
+  PAIRING_EXPIRED_SENTENCE,
+  deviceKindLabel,
+  disconnectHubConfirm,
+  disconnectedHubNotice,
+  hostedErrorSentence,
+  HOSTED_ERROR_SENTENCES,
+  olderAppDevicesSentence,
+  pairingKeyboardFallback,
+  pairingPrintBody,
   type BackfillCommitResponse,
   type BatchCommitResponse,
   type ScanListEntry,
@@ -799,5 +811,63 @@ describe('offline banner', () => {
       expect(serverNoticeText()).toBe(OFFLINE_SENTENCE);
       notifyApiSuccess();
     }
+  });
+});
+
+describe('stage-1 household copy', () => {
+  it('omits the older-app warning when no device is behind', () => {
+    expect(olderAppDevicesSentence(0)).toBeNull();
+    expect(olderAppDevicesSentence(-1)).toBeNull();
+    expect(olderAppDevicesSentence(Number.NaN)).toBeNull();
+  });
+
+  it('keeps the older-app warning plural and substitutes only N', () => {
+    expect(olderAppDevicesSentence(1)).toBe(
+      "1 devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.",
+    );
+    expect(olderAppDevicesSentence(3)).toBe(
+      "3 devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.",
+    );
+  });
+
+  it('omits the unsent-scan sentence when a hub has nothing queued', () => {
+    expect(disconnectHubConfirm('Kitchen hub', 0)).toBe('Disconnect Kitchen hub?');
+    expect(disconnectHubConfirm('Kitchen hub', 4)).toBe(
+      "Disconnect Kitchen hub? 4 scans it hasn't sent yet will be lost.",
+    );
+    expect(disconnectedHubNotice('Kitchen hub')).toBe('Kitchen hub was disconnected.');
+  });
+
+  it('uses the printed pairing copy and the hosted error sentences', () => {
+    expect(pairingPrintBody('Pantry')).toBe(
+      'Scan this code with your scanner to connect your hub to Pantry. This code works once and expires in 10 minutes.',
+    );
+    expect(pairingKeyboardFallback('SBP-2345-6789-X')).toBe(
+      'No printer? Plug a USB keyboard into the hub, type this code, and press Enter: SBP-2345-6789-X',
+    );
+    expect(PAIRING_EXPIRED_SENTENCE).toBe('This code expired. Get a new one.');
+    expect(HOUSEHOLD_DELETE_SENTENCE).toBe(
+      'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.',
+    );
+    expect(CHANGEOVER_BANNER).toContain('shared household password');
+    expect(CHANGEOVER_SIGN_IN_NOTE).toBe(
+      'The shared household password no longer signs in. Use your email and password.',
+    );
+    expect(hostedErrorSentence('last_owner')).toBe(
+      "You're the only owner. Make someone else an owner first, or delete the household.",
+    );
+    expect(hostedErrorSentence('forbidden_role')).toBe('Only an owner can do that.');
+    expect(hostedErrorSentence('rate_limited')).toBe('Too many tries. Wait a moment and try again.');
+    expect(hostedErrorSentence('not_a_code')).toBe(SERVER_ERROR_FALLBACK);
+    for (const code of Object.keys(HOSTED_ERROR_SENTENCES)) {
+      expect(hostedErrorSentence(code)).toBe(HOSTED_ERROR_SENTENCES[code as keyof typeof HOSTED_ERROR_SENTENCES]);
+    }
+  });
+
+  it('names hub, phone, and direct scanner kinds', () => {
+    expect(deviceKindLabel('pi_hub')).toBe('Hub');
+    expect(deviceKindLabel('box_hub')).toBe('Hub');
+    expect(deviceKindLabel('phone')).toBe('Phone');
+    expect(deviceKindLabel('direct')).toBe('Direct scanner');
   });
 });

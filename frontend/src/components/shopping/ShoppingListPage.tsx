@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { Link } from 'react-router-dom';
 import {
   ActionIcon,
@@ -29,6 +30,7 @@ import {
   setCategoryTarget,
   setItemTarget,
   listProviders,
+  stage1AuthActive,
   markShoppingListItemPurchased,
   removeShoppingListItem,
   swapShoppingLine,
@@ -98,6 +100,44 @@ export const ShoppingListPage = () => {
 
   useEffect(() => {
     void Promise.resolve().then(loadShoppingList);
+  }, [loadShoppingList]);
+
+  useEffect(() => {
+    if (!stage1AuthActive() || typeof EventSource !== 'function') return undefined;
+    let source: EventSource | null = null;
+    let poll = 0;
+    try {
+      source = new EventSource('/api/events');
+    } catch {
+      return undefined;
+    }
+    source.addEventListener('hint', (event) => {
+      let hint: { type?: string };
+      try {
+        hint = JSON.parse((event as MessageEvent).data) as { type?: string };
+      } catch {
+        return;
+      }
+      if (hint.type !== 'list' && hint.type !== 'rekey') return;
+      if (document.visibilityState === 'hidden') return;
+      void loadShoppingList();
+    });
+    source.onerror = () => {
+      source?.close();
+      source = null;
+      if (poll !== 0 || document.visibilityState === 'hidden') return;
+      poll = window.setInterval(() => {
+        if (document.visibilityState === 'hidden') return;
+        void loadShoppingList();
+      }, 10_000);
+    };
+    const onSwitch = () => { void loadShoppingList(); };
+    window.addEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+    return () => {
+      window.removeEventListener(HOUSEHOLD_SWITCH_EVENT, onSwitch);
+      if (poll !== 0) window.clearInterval(poll);
+      source?.close();
+    };
   }, [loadShoppingList]);
 
   const credentialsRevision = useCredentialsRevision();
