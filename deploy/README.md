@@ -13,7 +13,7 @@ The Go module is `github.com/Rhionin/stockbot`. The Pi keeps the names from the 
 - Images `ghcr.io/rhionin/pantry` and `ghcr.io/rhionin/pantry-grocy-sync`. Containers `pantry`, `pantry-caddy`, `pantry-cloudflared`, and `pantry-grocy-sync`. Volume `pantry-data`. Database `/data/pantry.db`.
 - Compose service `pantry`. The sidecar calls it at `http://pantry:8080`. Docker network `pantry_cf-tunnel`.
 - Scanner node `/dev/input/pantry-scanner`, udev rule `99-pantry-scanner.rules`, and units `pantry-update.service`, `pantry-update.path`, `pantry-update.timer`, `pantry-lan-only.service`, and `pantry-mdns.service`.
-- Headers `X-Pantry-Deploy-Timestamp`, `X-Pantry-Deploy-Signature`, `X-Pantry-Entry`, and `X-Pantry-Client-IP`. The Caddy basic-auth realm stays `Pantry`. The shared login username stays `pantry`.
+- Headers `X-Pantry-Deploy-Timestamp`, `X-Pantry-Deploy-Signature`, and `X-Pantry-Client-IP`. The Caddy basic-auth realm stays `Pantry`. The shared login username stays `pantry`.
 - Environment variables and Actions secrets that start with `PANTRY_`.
 - Browser keys `pantry-scan-alerts`, `pantry-scan-alert-open`, and `pantry-scan-alert-direction`, and notification tags that start with `pantry-scan-`.
 - Grocy location and shopping list named `Pantry`, the location description `Synced from Pantry`, and userfields `pantry_id`, `pantry_name`, `pantry_size`, and `pantry_rule`.
@@ -574,7 +574,7 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `PANTRY_IMAGE_TAG` | `latest` | Container image tag to deploy. Use `latest` for newest build, `master` for master branch, or full commit SHA to pin version |
 | `HOST_PORT` | `8080` | IPv4 port for the LAN site. The container still listens on 8080. Published on `0.0.0.0` only, not IPv6. Do not forward this port on the router |
 | `PUBLIC_HOST` | empty | Hostname for the public HTTPS proxy, such as `stockbot.rhionin.com`. Empty keeps the install LAN-only. No `https://`. Setup does not replace a value that is already set |
-| `APP_BASE_URL` | empty | Public origin, such as `https://stockbot.rhionin.com`, with no path. Empty keeps the process LAN-only and does not bind `PUBLIC_LISTEN_ADDR`. When set, it must be the same host as `PUBLIC_HOST`, and startup fails if the public listener is off |
+| `APP_BASE_URL` | empty | Public origin, such as `https://stockbot.rhionin.com`, with no path. When this is empty and `PUBLIC_HOST` is a hostname, setup and the updater set `https://PUBLIC_HOST`, and Compose does the same if `.env` has not been updated yet. A value already set is kept. Empty `PUBLIC_HOST` (LAN-only) leaves this empty, and the process does not bind `PUBLIC_LISTEN_ADDR`. When set, it must be the same host as `PUBLIC_HOST`, and startup fails if the public listener is off |
 | `APP_NAME` | `Stockbot` | Product name used for the title and alert fallback. A rename is this value |
 | `SESSION_COOKIE_NAME` | `__Host-stockbot_session` | Personal-session cookie name. `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`. The `__Host-` prefix is dropped when `COOKIE_DOMAIN` is set |
 | `COOKIE_DOMAIN` | empty | Empty keeps the cookie host-only. Set a parent hostname so a later HTTPS name can share it |

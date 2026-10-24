@@ -560,15 +560,15 @@ refresh_backup_unit() {
   log_success "Refreshed pantry-backup units"
 }
 
-# verify_public_sign_in asks Stockbot on the LAN port, with the public-entry
-# header Caddy would add. A password file the container cannot read makes
-# GET /api/session return 503. A visitor who simply has not signed in gets 401.
+# verify_public_sign_in asks Stockbot on the published LAN port. The public
+# listener is only on the compose network. A password file the container
+# cannot read makes GET /api/session return 503. A visitor who simply has
+# not signed in gets 401.
 verify_public_sign_in() {
   local port="$1"
   local body code
   body=$(mktemp)
   if ! code=$(curl -sS -o "$body" -w '%{http_code}' --max-time 10 \
-    -H 'X-Pantry-Entry: public' \
     "http://127.0.0.1:${port}/api/session"); then
     rm -f "$body"
     fatal "Could not check whether the public site can sign in."
@@ -576,7 +576,7 @@ verify_public_sign_in() {
   if [[ "$code" == "503" ]] || grep -q -F 'Sign-in is unavailable' "$body"; then
     log_error "The public site cannot read ${PANTRY_DIR}/auth/household."
     log_error "The pantry container runs as distroless nonroot (uid 65532) and cannot open a root-owned password file."
-    log_error "GET /api/session with X-Pantry-Entry: public returned ${code}: $(tr '\n' ' ' < "$body")"
+    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
     rm -f "$body"
     fatal "Sign-in is unavailable. The public site is up, but login will not work until that file is readable by uid 65532."
   fi
@@ -707,8 +707,14 @@ cmd_apply() {
   if [[ -f "$PANTRY_DIR/.env" ]]; then
     chmod 600 "$PANTRY_DIR/.env"
   fi
+  if ! ensure_app_base_url; then
+    fatal "Could not set APP_BASE_URL from PUBLIC_HOST"
+  fi
   write_legacy_public_host
   prepare_deploy_trigger_dir
+  if ! prepare_setup_dir; then
+    fatal "Could not prepare ${PANTRY_DIR}/setup for the setup code"
+  fi
 
   if [[ ! -d /dev/input ]]; then
     log_warn "/dev/input does not exist, creating it (scanner nodes will not appear inside container otherwise)"

@@ -194,7 +194,13 @@ func extractDefault(t *testing.T, envValue string) string {
 		t.Fatalf("Environment variable %q does not contain :- separator", envValue)
 	}
 
-	return parts[1]
+	// ${OTHER:+text} is empty when OTHER is unset. That is the value Compose
+	// passes when the deployment .env sets neither name, which is the Go default.
+	def := parts[1]
+	if strings.HasPrefix(def, "${") && strings.HasSuffix(def, "}") && strings.Contains(def, ":+") {
+		return ""
+	}
+	return def
 }
 
 func TestUnauthenticatedListenWarning(t *testing.T) {
