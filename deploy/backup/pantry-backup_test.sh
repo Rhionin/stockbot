@@ -86,7 +86,8 @@ for needle in \
   "--security-opt no-new-privileges" \
   "--pids-limit 64" \
   "--memory 128m" \
-  "--tmpfs /run/stockbot-backup:rw,noexec,nosuid,size=64m,mode=0700" \
+  "--tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=0700,uid=65532,gid=65532" \
+  "--tmpfs /run/stockbot-backup:rw,noexec,nosuid,size=64m,mode=0700,uid=65532,gid=65532" \
   "--stage /run/stockbot-backup" \
   "--volume pantry_pantry-data:/data" \
   "--entrypoint /usr/local/bin/stockbot-backup" \
