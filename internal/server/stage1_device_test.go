@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -123,6 +125,22 @@ func TestStage1DeviceAPI(t *testing.T) {
 	devices := c.authed(http.MethodGet, "/api/devices", nil)
 	if devices.Code != http.StatusOK || !strings.Contains(devices.Body.String(), `"queued":4`) || !strings.Contains(devices.Body.String(), `"online":true`) {
 		t.Fatalf("devices %d %s", devices.Code, devices.Body.String())
+	}
+	cursor, err := changes.Current(context.Background(), db, c.house, changes.ScopeDevices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := c.authed(http.MethodGet, "/api/devices?since="+url.QueryEscape(cursor), nil)
+	if same.Code != http.StatusOK || same.Header().Get("Cache-Control") != "no-store" || !strings.Contains(same.Body.String(), `"changed":false`) || strings.Contains(same.Body.String(), `"devices"`) {
+		t.Fatalf("unchanged devices %d %s %s", same.Code, same.Header().Get("Cache-Control"), same.Body.String())
+	}
+	stale := c.authed(http.MethodGet, "/api/devices?since="+url.QueryEscape(changes.Cursor(c.house, changes.ScopeDevices, 0)), nil)
+	if stale.Code != http.StatusOK || stale.Header().Get("Cache-Control") != "no-store" || !strings.Contains(stale.Body.String(), `"changed":true`) || !strings.Contains(stale.Body.String(), `"devices"`) || !strings.Contains(stale.Body.String(), `"queued":4`) {
+		t.Fatalf("stale devices %d %s %s", stale.Code, stale.Header().Get("Cache-Control"), stale.Body.String())
+	}
+	otherCursor := c.authed(http.MethodGet, "/api/devices?since="+url.QueryEscape(changes.Cursor("other-household", changes.ScopeDevices, 0)), nil)
+	if otherCursor.Code != http.StatusOK || !strings.Contains(otherCursor.Body.String(), `"changed":true`) || !strings.Contains(otherCursor.Body.String(), `"devices"`) {
+		t.Fatalf("foreign cursor %d %s", otherCursor.Code, otherCursor.Body.String())
 	}
 
 	batch := c.call(http.MethodPost, "/api/device/scans", map[string]any{"scans": []map[string]any{

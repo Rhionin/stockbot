@@ -105,6 +105,7 @@ func isRegisteredGetPath(path string) bool {
 	switch path {
 	case "/api/products", "/api/products/lookup", "/api/scans", "/api/scans/history",
 		"/api/inventory", "/api/shopping-list", "/api/events", "/api/build",
+		"/api/scans/mode",
 		"/api/scanner/config", "/api/telemetry",
 		// POST-only. GET is 405 from the method pattern, not an unmatched path.
 		"/api/deploy-hook", "/api/login", "/api/logout",
@@ -152,7 +153,7 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
 		"/api/operator/household-invites", "/api/operator/alerts",
 		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
-		"/api/devices/abc",
+		"/api/devices/abc", "/api/sessions/abc",
 		"/api/device/scans", "/api/device/heartbeat", "/api/device/token/rotate",
 		"/api/households/abc", "/api/households/abc/restore",
 		"/api/households/abc/members", "/api/households/abc/members/user",
@@ -201,6 +202,7 @@ var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
 	`invites/(?:preview|accept|[^/]+/revoke)|` +
 	`operator/(?:household-invites|alerts)|` +
 	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +
+	`sessions/[^/]+|` +
 	`device/(?:scans|heartbeat|token/rotate)|` +
 	`households/[^/]+(?:/(?:restore|members(?:/[^/]+(?:/reset-link)?)?))?` +
 	`)$`)

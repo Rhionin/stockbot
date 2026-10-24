@@ -14,6 +14,18 @@ import (
 
 // directionLabel renders a scan direction for logs, showing "unset" for a nil
 // direction so operators can tell an unset scan apart from a stock-in one.
+func (h *ScanCreateHandler) scanMode(ctx context.Context, scope tenant.Scope) *scannerMode {
+	if h != nil && h.Modes != nil {
+		if slot := h.Modes.For(ctx, scope.HouseholdID(), ""); slot != nil {
+			return slot
+		}
+	}
+	if h != nil {
+		return h.Mode
+	}
+	return nil
+}
+
 func directionLabel(direction *scan.ScanDirection) string {
 	if direction == nil {
 		return "unset"
@@ -37,7 +49,8 @@ type ScanCreateHandler struct {
 	// Mode stamps a product barcode that did not name its own direction, and
 	// counts the barcode as scan traffic for the idle return to scan-out.
 	// Nil leaves an omitted direction unset and does not track idle time.
-	Mode *scannerMode
+	Mode  *scannerMode
+	Modes *modeBook
 }
 
 type createScanRequest struct {
@@ -67,12 +80,12 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 	// is already scan-out when scan-in has been idle for 5 minutes. Naming a
 	// direction keeps that explicit choice. Either way the barcode is scan
 	// traffic, so it is the event that can postpone the idle return.
-	if h.Mode != nil {
+	if mode := h.scanMode(req.Context, scope); mode != nil {
 		if req.Body.Direction == nil {
-			current := h.Mode.Get()
+			current := mode.Get()
 			req.Body.Direction = &current
 		}
-		h.Mode.NoteScan()
+		mode.NoteScan()
 	}
 
 	log.Printf("scan received: barcode=%q direction=%s user=%s", req.Body.Barcode, directionLabel(req.Body.Direction), req.Body.UserID)
@@ -88,7 +101,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 		return Created{Value: created}, nil
 	}
 
-	notice := scan.AnnounceProcessing(h.Events, req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
+	notice := scan.AnnounceProcessing(h.Events, scope.HouseholdID(), req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
 
 	lookupResult, err := h.LookupService.Lookup(req.Context, scope, req.Body.Barcode)
 	if err != nil {

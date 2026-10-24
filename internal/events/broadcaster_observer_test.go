@@ -34,7 +34,7 @@ func TestPublish_AssignsSeqAndIngestTime(t *testing.T) {
 	defer unsubscribe()
 
 	scannedAt := time.Now().Add(-time.Second)
-	broadcaster.PublishScanEvent(scan.ScanEntry{ID: "scan-seq", ScannedAt: scannedAt})
+	broadcaster.PublishScanEvent("", scan.ScanEntry{ID: "scan-seq", ScannedAt: scannedAt})
 	msg := recvMessage(t, ch)
 	if msg.Seq != 1 {
 		t.Fatalf("seq = %d, want 1", msg.Seq)
@@ -58,7 +58,7 @@ func TestPublish_NoSubscriberNotifiesObserver(t *testing.T) {
 	obs := &recordingObserver{}
 	broadcaster.SetObserver(obs)
 
-	broadcaster.PublishScanEvent(scan.ScanEntry{ID: "nobody"})
+	broadcaster.PublishScanEvent("", scan.ScanEntry{ID: "nobody"})
 	if obs.published != 1 || obs.subscribers != 0 || obs.enqueued != 0 {
 		t.Fatalf("observer = %+v", obs)
 	}
@@ -76,9 +76,9 @@ func TestPublish_ObserverSeesDroppedSubscriber(t *testing.T) {
 	defer unsubscribe()
 
 	for i := 0; i < subscriberBuffer; i++ {
-		broadcaster.PublishScanEvent(scan.ScanEntry{ID: fmt.Sprintf("scan-%d", i)})
+		broadcaster.PublishScanEvent("", scan.ScanEntry{ID: fmt.Sprintf("scan-%d", i)})
 	}
-	broadcaster.PublishScanEvent(scan.ScanEntry{ID: "overflow"})
+	broadcaster.PublishScanEvent("", scan.ScanEntry{ID: "overflow"})
 
 	if obs.dropped != 1 {
 		t.Fatalf("dropped = %d, want 1", obs.dropped)

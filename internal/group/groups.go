@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -140,14 +141,43 @@ type SuggestionMember struct {
 	Barcodes      []string `json:"barcodes,omitempty"`
 }
 
+type stockHinter interface {
+	PublishHint(householdID, kind string)
+}
+
 // Groups is the household's product groups.
 type Groups struct {
-	db *sql.DB
+	db    *sql.DB
+	hints stockHinter
 }
 
 // NewGroups returns a group store for db.
 func NewGroups(db *sql.DB) *Groups {
 	return &Groups{db: db}
+}
+
+// SetHints publishes a stock hint after a group write commits.
+func (g *Groups) SetHints(h stockHinter) {
+	if g != nil {
+		g.hints = h
+	}
+}
+
+func (g *Groups) noteStock(household string) {
+	if g != nil && g.hints != nil && household != "" {
+		g.hints.PublishHint(household, "stock")
+	}
+}
+
+func (g *Groups) commitStock(ctx context.Context, tx *sql.Tx, household string) error {
+	if err := changes.Bump(ctx, tx, household, changes.ScopeStock); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	g.noteStock(household)
+	return nil
 }
 
 type querier interface {
@@ -260,7 +290,7 @@ func (g *Groups) Create(ctx context.Context, scope tenant.Scope, name string, pr
 	if err != nil {
 		return Group{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
@@ -292,7 +322,7 @@ func (g *Groups) Rename(ctx context.Context, scope tenant.Scope, id, name string
 		}
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
@@ -317,7 +347,7 @@ func (g *Groups) Delete(ctx context.Context, scope tenant.Scope, id string) erro
 	if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not delete the group: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not delete the group: %w", err)
 	}
 	return nil
@@ -347,7 +377,7 @@ func (g *Groups) AddMembers(ctx context.Context, scope tenant.Scope, id string, 
 	if err := addMembersInTx(ctx, scope, tx, id, ids, fromGroupID, target); err != nil {
 		return Group{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
@@ -389,12 +419,12 @@ func (g *Groups) RemoveMember(ctx context.Context, scope tenant.Scope, id, produ
 		if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 			return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 			return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 		}
 		return Group{}, true, nil
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
 	view, err := g.load(ctx, scope, g.db, id)
@@ -442,7 +472,7 @@ func (g *Groups) SetRule(ctx context.Context, scope tenant.Scope, id, rule strin
 		WHERE id = ? AND household_id = ?`, rule, pinVal, confirmed, id, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the rule: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the rule: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
@@ -467,22 +497,30 @@ func (g *Groups) SetMemberRestock(ctx context.Context, scope tenant.Scope, group
 	if err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
-	itemID, err := ensureHouseholdItem(ctx, scope, g.db, productID)
+	tx, err := g.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Group{}, fmt.Errorf("could not update the group: %w", err)
+	}
+	defer tx.Rollback()
+	itemID, err := ensureHouseholdItem(ctx, scope, tx, productID)
 	if err != nil {
 		return Group{}, err
 	}
 	if noRestock {
-		_, err = g.db.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO item_targets (household_id, item_id, kind, value)
 			VALUES (?, ?, 'months', 0)
 			ON CONFLICT (household_id, item_id) DO UPDATE SET kind = 'months', value = 0`,
 			scope.HouseholdID(), itemID)
 	} else {
-		_, err = g.db.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			DELETE FROM item_targets WHERE household_id = ? AND item_id = ? AND value = 0`,
 			scope.HouseholdID(), itemID)
 	}
 	if err != nil {
+		return Group{}, fmt.Errorf("could not update the group: %w", err)
+	}
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
 	return g.load(ctx, scope, g.db, groupID)
@@ -533,7 +571,7 @@ func (g *Groups) SetTarget(ctx context.Context, scope tenant.Scope, id string, t
 	if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
 		return Group{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the target: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
@@ -573,11 +611,18 @@ func (g *Groups) SetDefaultRule(ctx context.Context, scope tenant.Scope, rule st
 	if !Valid(rule) {
 		return invalid("Pick one of the rules.")
 	}
-	_, err := g.db.ExecContext(ctx, `
+	tx, err := g.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("could not save the default rule: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
-		scope.HouseholdID(), settingRule, rule)
-	if err != nil {
+		scope.HouseholdID(), settingRule, rule); err != nil {
+		return fmt.Errorf("could not save the default rule: %w", err)
+	}
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not save the default rule: %w", err)
 	}
 	return nil
@@ -704,7 +749,7 @@ func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID st
 	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'accepted' WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
 	return g.load(ctx, scope, g.db, groupID)
@@ -741,7 +786,7 @@ func (g *Groups) Dismiss(ctx context.Context, scope tenant.Scope, suggestionID s
 	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'dismissed' WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not dismiss the suggestion: %w", err)
 	}
-	return tx.Commit()
+	return g.commitStock(ctx, tx, scope.HouseholdID())
 }
 
 // Skip leaves the card open.

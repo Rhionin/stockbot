@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/supply"
@@ -115,8 +116,8 @@ type Queue struct {
 	// test and in any caller that doesn't need live updates; publish calls
 	// are skipped entirely when nil.
 	Broadcaster interface {
-		PublishScanEvent(entry ScanEntry)
-		PublishInventoryEvent(item inventory.InventoryItem)
+		PublishScanEvent(householdID string, entry ScanEntry)
+		PublishInventoryEvent(householdID string, item inventory.InventoryItem)
 	}
 
 	// Pantry supplies the aggregated InventoryItem for a scan commit's
@@ -199,7 +200,12 @@ func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry S
 		directionStr = ptr(string(*entry.Direction))
 	}
 
-	_, err = r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("CreateScanEntry: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO scan_entries (id, user_id, household_id, device_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
@@ -217,6 +223,12 @@ func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry S
 	if err != nil {
 		return nil, fmt.Errorf("CreateScanEntry: %w", err)
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return nil, fmt.Errorf("CreateScanEntry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("CreateScanEntry: %w", err)
+	}
 
 	created, err := r.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
@@ -224,7 +236,7 @@ func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry S
 	}
 
 	if created != nil && r.Broadcaster != nil {
-		r.Broadcaster.PublishScanEvent(*created)
+		r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *created)
 	}
 
 	return created, nil
@@ -236,7 +248,12 @@ func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry S
 // scanned_at, and clients sort the same column newest-first, so one write
 // keeps live updates and reloads in the same order.
 func (r *Queue) recordMergedScan(ctx context.Context, scope tenant.Scope, id string, unitCount int, scannedAt time.Time) error {
-	res, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("recordMergedScan: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE scan_entries SET unit_count = ?, scanned_at = ? WHERE household_id = ? AND id = ?`,
 		unitCount, scannedAt, scope.HouseholdID(), id,
 	)
@@ -251,13 +268,19 @@ func (r *Queue) recordMergedScan(ctx context.Context, scope tenant.Scope, id str
 	if n == 0 {
 		return fmt.Errorf("recordMergedScan: scan entry %q not found", id)
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return fmt.Errorf("recordMergedScan: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("recordMergedScan: %w", err)
+	}
 
 	updated, err := r.GetScanEntry(ctx, scope, id)
 	if err != nil {
 		return err
 	}
 	if updated != nil && r.Broadcaster != nil {
-		r.Broadcaster.PublishScanEvent(*updated)
+		r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *updated)
 	}
 	return nil
 }
@@ -401,7 +424,12 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, scope tenant.Scope, id stri
 		return nil
 	}
 
-	res, err := r.db.ExecContext(ctx, query, args...)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("UpdateScanEntry: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("UpdateScanEntry: %w", err)
 	}
@@ -413,6 +441,12 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, scope tenant.Scope, id stri
 	if n == 0 {
 		return fmt.Errorf("UpdateScanEntry: scan entry %q not found", id)
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return fmt.Errorf("UpdateScanEntry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("UpdateScanEntry: %w", err)
+	}
 
 	updated, err := r.GetScanEntry(ctx, scope, id)
 	if err != nil {
@@ -420,7 +454,7 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, scope tenant.Scope, id stri
 	}
 
 	if updated != nil && r.Broadcaster != nil {
-		r.Broadcaster.PublishScanEvent(*updated)
+		r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *updated)
 	}
 
 	return nil
@@ -435,14 +469,23 @@ func (r *Queue) CommitScanEntry(ctx context.Context, scope tenant.Scope, id stri
 	now := time.Now().UTC()
 	committed := Committed
 
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE scan_entries SET status = ?, committed_at = ? WHERE household_id = ? AND id = ?`,
-		string(committed), now, scope.HouseholdID(), id,
-	)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("CommitScanEntry: %w", err)
 	}
-
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE scan_entries SET status = ?, committed_at = ? WHERE household_id = ? AND id = ?`,
+		string(committed), now, scope.HouseholdID(), id,
+	); err != nil {
+		return fmt.Errorf("CommitScanEntry: %w", err)
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return fmt.Errorf("CommitScanEntry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("CommitScanEntry: %w", err)
+	}
 	return nil
 }
 
@@ -497,7 +540,7 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, scope tenant.Scope, 
 				break
 			}
 			if updated != nil {
-				r.Broadcaster.PublishScanEvent(*updated)
+				r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *updated)
 			}
 		}
 	}
@@ -524,7 +567,9 @@ func (r *Queue) updateScanEntryInTx(ctx context.Context, scope tenant.Scope, tx 
 	if n == 0 {
 		return fmt.Errorf("updateScanEntryInTx: scan entry %q not found", id)
 	}
-
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
+		return fmt.Errorf("updateScanEntryInTx: %w", err)
+	}
 	return nil
 }
 

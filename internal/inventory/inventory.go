@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
@@ -61,7 +62,7 @@ type Pantry struct {
 	// Broadcaster publishes an Inventory_Event after each successful
 	// mutation. Nil in every existing test; publish calls are skipped when nil.
 	Broadcaster interface {
-		PublishInventoryEvent(item InventoryItem)
+		PublishInventoryEvent(householdID string, item InventoryItem)
 	}
 }
 
@@ -254,6 +255,9 @@ func (r *Pantry) AddInstance(ctx context.Context, scope tenant.Scope, instance I
 	if err := UnshelveItem(ctx, tx, scope, instance.ItemID); err != nil {
 		return nil, err
 	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return nil, fmt.Errorf("AddInstance: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("AddInstance: %w", err)
 	}
@@ -299,7 +303,12 @@ func (r *Pantry) RemoveInstance(ctx context.Context, scope tenant.Scope, instanc
 	}
 
 	now := time.Now()
-	res, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE item_instances SET removed_at = ?, removal_reason = ? WHERE id = ? AND removed_at IS NULL AND household_id = ?`,
 		now, reason, instanceID, scope.HouseholdID(),
 	)
@@ -313,6 +322,12 @@ func (r *Pantry) RemoveInstance(ctx context.Context, scope tenant.Scope, instanc
 	}
 	if n == 0 {
 		return ErrInstanceNotFound
+	}
+	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeStock); err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("RemoveInstance: %w", err)
 	}
 
 	r.publishInventoryEvent(ctx, scope, existing.ItemID)
@@ -467,7 +482,7 @@ func (r *Pantry) publishInventoryEvent(ctx context.Context, scope tenant.Scope, 
 	if err != nil || invItem == nil {
 		return
 	}
-	r.Broadcaster.PublishInventoryEvent(*invItem)
+	r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
 }
 
 // GetItem returns the item with the given ID in this household, or nil if none exists.

@@ -424,6 +424,9 @@ func needsHousehold(r *http.Request) bool {
 		"/api/telemetry/client", "/api/me", "/api/session", "/api/login", "/api/logout":
 		return false
 	}
+	if strings.HasPrefix(path, "/api/sessions/") {
+		return false
+	}
 	// Revoke looks the invite up itself. A start_household invite ignores
 	// X-Household-Id, so a missing or foreign header must not fail here.
 	// A join_household invite still requires the header or the session's
@@ -491,9 +494,12 @@ func eventStreamKey(r *http.Request) string {
 	}
 	switch p.Kind {
 	case "account":
+		if key := auth.SessionStreamKey(p.SessionID); key != "" {
+			return key
+		}
 		return auth.UserStreamKey(p.UserID)
 	case "household_password":
-		return auth.HouseholdPasswordStreamKey()
+		return auth.HouseholdPasswordStreamKey(stage1ClientIP(r))
 	case "lan":
 		return "lan:" + stage1ClientIP(r)
 	default:
