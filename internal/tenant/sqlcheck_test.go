@@ -55,6 +55,24 @@ func TestUnscopedSQLLintRejectsEveryHouseholdTable(t *testing.T) {
 	}
 }
 
+// householdTablesIn is the table walk the production linter used to export.
+// It stays in the test so the walk can be checked without an unused helper
+// in sqlcheck.go.
+func householdTablesIn(sqlText string) []string {
+	set := householdSet()
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range tableAliasRef.FindAllStringSubmatch(sqlText, -1) {
+		name := strings.ToLower(match[1])
+		if !set[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 func TestHouseholdTablesInListsEachHouseholdTableOnce(t *testing.T) {
 	got := householdTablesIn(`
 		SELECT id FROM items i
