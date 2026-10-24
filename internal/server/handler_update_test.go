@@ -29,7 +29,10 @@ func TestUpdateHandler(t *testing.T) {
 				method:         "PUT",
 				path:           "/api/products/nonexistent",
 				body:           `{"name":"New Name"}`,
-				expectedStatus: http.StatusInternalServerError,
+				expectedStatus: http.StatusNotFound,
+				assertions: []assertion{
+					{path: "$.error", value: "product not found"},
+				},
 			},
 		},
 		{

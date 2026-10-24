@@ -89,6 +89,7 @@ func TestShelvedItemStaysHiddenUntilBackfill(t *testing.T) {
 	}
 	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
 		ID: "prod-other", Name: "Other household", Category: "Pantry", UnitOfMeasure: "unit",
+		Source: product.SourceExternal,
 	}); err != nil {
 		t.Fatal(err)
 	}
