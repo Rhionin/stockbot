@@ -1,7 +1,7 @@
 import { fireEvent, waitFor } from '@testing-library/react-native';
 import * as Haptics from 'expo-haptics';
-import { OFFLINE_SENTENCE } from '../../../frontend/src/api/contract';
-import type { ScanEntry } from '../../../frontend/src/types';
+import { OFFLINE_SENTENCE } from '@stockbot/shared/contract';
+import type { ScanEntry } from '@stockbot/shared/types';
 import { createStockbotClient, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { ScanScreen } from './ScanScreen';

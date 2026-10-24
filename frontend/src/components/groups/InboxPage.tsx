@@ -4,9 +4,9 @@ import {
   Alert, Anchor, Button, Checkbox, Group, Loader, NumberInput, Stack, Text, TextInput, Title,
 } from '@mantine/core';
 import { ApiError, acceptSuggestion, dismissSuggestion, listSuggestions, rescanSuggestions, skipSuggestion } from '../../api/client';
-import type { GroupSuggestion, GroupTarget, SuggestionMember, TargetConflictMember } from '../../types';
+import type { GroupSuggestion, GroupTarget, SuggestionMember, TargetConflictMember } from '@stockbot/shared/types';
 import { conflictLine, kindPhrase, memberFacts } from './copy';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 const MemberPhoto = ({ src }: { src?: string }) => {
   const [failed, setFailed] = useState(false);

@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, linkSuggestionsPath, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from './contract';
+import { applyHttpResponse, AUTH_NOT_CONFIGURED_SENTENCE, CODE_AUTH_NOT_CONFIGURED, linkSuggestionsPath, notifyApiSuccess, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, ServerNoticeError, stockbotCode, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type LinkSuggestionsResponse, type ScanListEntry, type UndoPreview } from '@stockbot/shared/contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -41,7 +41,7 @@ import type {
   HistoryLedger,
   PantryLinkSuggestion,
   TargetConflictMember,
-} from '../types';
+} from '@stockbot/shared/types';
 import {
   BATCH_COMMIT_PATH,
   type BatchCommitInput,
@@ -56,9 +56,9 @@ import {
   scanCommitPath,
   scansQuery,
   toQueryString,
-} from './contract';
+} from '@stockbot/shared/contract';
 
-export { DEFAULT_SCAN_USER_ID, type HouseholdSession } from './contract';
+export { DEFAULT_SCAN_USER_ID, type HouseholdSession } from '@stockbot/shared/contract';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 

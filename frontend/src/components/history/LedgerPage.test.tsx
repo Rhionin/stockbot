@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HistoryLedger, LedgerMove } from '../../types';
+import type { HistoryLedger, LedgerMove } from '@stockbot/shared/types';
 import { LedgerPage } from './LedgerPage';
 
 const todayAt = new Date(2026, 9, 14, 15, 0, 0);

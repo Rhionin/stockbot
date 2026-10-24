@@ -7,18 +7,12 @@ on:
   pull_request:
     paths:
       - 'mobile/**'
-      - 'frontend/src/types/**'
-      - 'frontend/src/api/contract.ts'
-      - 'frontend/src/components/scanner/barcodeFormats.ts'
-      - 'frontend/src/components/scanner/scanTiming.ts'
+      - 'shared/**'
   push:
     branches: [master]
     paths:
       - 'mobile/**'
-      - 'frontend/src/types/**'
-      - 'frontend/src/api/contract.ts'
-      - 'frontend/src/components/scanner/barcodeFormats.ts'
-      - 'frontend/src/components/scanner/scanTiming.ts'
+      - 'shared/**'
 
 permissions:
   contents: read

@@ -27,7 +27,16 @@ async function bannerBox(page: Page) {
 function expectSides(box: { x: number; y: number; width: number }, side: number, viewport: number) {
   expect(box.x).toBe(side)
   expect(box.width).toBe(viewport - side * 2)
-  expect(box.y).toBeGreaterThan(0)
+}
+
+// Inventory and history render the shell banner as the first child of main.
+// Mantine turns the header's px height into rem with a 16px base, and this
+// app's root font is 15px, so 112px paints as 105 and 56px paints as 52.5.
+// Shell padding is xs (0.625rem = 9.375px) below 768 and md (15px) from there.
+function shellBannerTop(viewport: number): number {
+  const header = (viewport < 768 ? 112 : 56) / 16 * 15
+  const padding = viewport < 768 ? 0.625 * 15 : 15
+  return header + padding
 }
 
 function expectGate(box: { x: number; y: number; width: number }, viewport: number) {
@@ -48,14 +57,24 @@ for (const viewport of viewports) {
       await expect(page.getByRole('heading', { name: surface.heading })).toBeVisible()
       await expect(page.getByText(sentence)).toBeVisible()
       const box = await bannerBox(page)
-      if (surface.name === 'queue' && viewport.width === 1280) {
-        const column = await page.locator('.scan-page').boundingBox()
-        expect(column).not.toBeNull()
-        expect(box.x).toBe(column!.x)
-        expect(box.width).toBe(column!.width)
-        expect(box.y).toBeGreaterThan(0)
+      if (surface.name === 'queue') {
+        const queue = await page.locator('.scan-page-queue').boundingBox()
+        const heading = await page.getByRole('heading', { name: 'Scan queue' }).boundingBox()
+        expect(queue).not.toBeNull()
+        expect(heading).not.toBeNull()
+        expect(box.y).toBe(queue!.y)
+        expect(box.y).toBeGreaterThan(heading!.y + heading!.height)
+        if (viewport.width === 1280) {
+          const column = await page.locator('.scan-page').boundingBox()
+          expect(column).not.toBeNull()
+          expect(box.x).toBe(column!.x)
+          expect(box.width).toBe(column!.width)
+        } else {
+          expectSides(box, viewport.shell, viewport.width)
+        }
       } else {
         expectSides(box, viewport.shell, viewport.width)
+        expect(box.y).toBe(shellBannerTop(viewport.width))
       }
     }
   })

@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ScanSessionCard } from './ScanSessionCard';
 import { formatBatchTimeRange } from './queueUtils';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 const scanEntry = (overrides: Partial<ScanEntry>): ScanEntry => ({
   id: 'scan-1',

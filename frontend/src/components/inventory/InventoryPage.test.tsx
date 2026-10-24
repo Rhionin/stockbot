@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { notifyApiSuccess, raiseOfflineBanner } from '../../api/contract';
+import { notifyApiSuccess, raiseOfflineBanner } from '@stockbot/shared/contract';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InventoryItem } from '../../types';
+import type { InventoryItem } from '@stockbot/shared/types';
 import { InventoryPage } from './InventoryPage';
 
 // Records the URL a component connects to, the listeners it registers, and

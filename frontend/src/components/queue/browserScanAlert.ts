@@ -1,4 +1,4 @@
-import type { ScanDirection } from '../../types';
+import type { ScanDirection } from '@stockbot/shared/types';
 import { backgroundAlertsEnabled, scanAlertsPreferred } from './pushAlerts';
 import type { AttentionNotice } from './scanAttention';
 

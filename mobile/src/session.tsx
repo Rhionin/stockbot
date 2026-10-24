@@ -1,5 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, raiseOfflineBanner, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '../../frontend/src/api/contract';
+import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, raiseOfflineBanner, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
 import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
 import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
 

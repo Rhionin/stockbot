@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Drawer, Stack, Text, TextInput, UnstyledButton } from '@mantine/core';
 import { addGroupMembers, ApiError, createGroup } from '../../api/client';
-import type { GroupSuggestion, GroupTarget, ProductGroup, TargetConflictMember } from '../../types';
+import type { GroupSuggestion, GroupTarget, ProductGroup, TargetConflictMember } from '@stockbot/shared/types';
 import { TargetConflictPrompt } from '../groups/TargetConflictPrompt';
 import { suggestedDestinations } from './shelf';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface AddToGroupSheetProps {
   opened: boolean;

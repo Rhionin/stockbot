@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
-import type { ProviderInfo } from '../../types';
-import { inlineFailure } from '../../api/contract';
+import type { ProviderInfo } from '@stockbot/shared/types';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface CredentialsDialogProps {
   provider: ProviderInfo | null;

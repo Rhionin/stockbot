@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, serverNoticeText, UnreachableError } from '../../api/contract';
+import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, serverNoticeText, UnreachableError } from '@stockbot/shared/contract';
 import { getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { HouseholdSessionContext } from './householdSession';

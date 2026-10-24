@@ -6,7 +6,7 @@ import {
 import {
   addGroupMembers, getGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, previewGroupTarget, removeGroupMember, renameGroup, setGroupTarget, setMemberRestock,
 } from '../../api/client';
-import type { GroupTarget, ProductDetail, ProductGroup } from '../../types';
+import type { GroupTarget, ProductDetail, ProductGroup } from '@stockbot/shared/types';
 import { AddToGroup } from './AddToGroup';
 import { BinMark } from './BinMark';
 import { ungroupedProducts, type AddCandidate } from './candidates';
@@ -21,7 +21,7 @@ import { Seesaw } from './Seesaw';
 import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter, type SeesawDraft } from './seesaw';
 import { groupStock } from '../../stockState';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import '../history/history.css';
 
 const closeButton = { 'aria-label': 'Close' };

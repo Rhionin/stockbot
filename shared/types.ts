@@ -2,7 +2,7 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
-import type { ScanListEntry } from '../api/contract';
+import type { ScanListEntry } from './contract';
 
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 

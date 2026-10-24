@@ -4,10 +4,10 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  padding-top: max(var(--notice-screen-padding-top), env(safe-area-inset-top)) !important;
-  padding-right: var(--notice-screen-padding-inline);
-  padding-bottom: max(var(--notice-screen-padding-top), env(safe-area-inset-bottom)) !important;
-  padding-left: var(--notice-screen-padding-inline);
+  padding-top: max(var(--notice-screen-padding-top, 24px), env(safe-area-inset-top)) !important;
+  padding-right: var(--notice-screen-padding-inline, 20px);
+  padding-bottom: max(var(--notice-screen-padding-bottom, 24px), env(safe-area-inset-bottom)) !important;
+  padding-left: var(--notice-screen-padding-inline, 20px);
   background:
     radial-gradient(900px 420px at 50% -80px, #e5f3f1 0%, transparent 60%),
     #f4f7f6;
@@ -22,9 +22,9 @@
 
 /* A notice above the centered form uses the same inset, including the notch. */
 .server-notice-inset {
-  margin-top: max(var(--notice-screen-padding-top), env(safe-area-inset-top)) !important;
-  margin-right: var(--notice-screen-padding-inline) !important;
-  margin-left: var(--notice-screen-padding-inline) !important;
+  margin-top: max(var(--notice-screen-padding-top, 24px), env(safe-area-inset-top)) !important;
+  margin-right: var(--notice-screen-padding-inline, 20px) !important;
+  margin-left: var(--notice-screen-padding-inline, 20px) !important;
 }
 
 .login-screen--offline .login-brand {

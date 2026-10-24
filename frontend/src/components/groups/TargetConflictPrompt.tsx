@@ -1,5 +1,5 @@
 import { Button, Group, Stack, Text } from '@mantine/core';
-import type { GroupTarget, TargetConflictMember } from '../../types';
+import type { GroupTarget, TargetConflictMember } from '@stockbot/shared/types';
 import { conflictLine, targetChoices, type GroupSupply } from './copy';
 
 export interface TargetConflictPromptProps {

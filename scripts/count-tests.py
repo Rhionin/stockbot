@@ -6,6 +6,7 @@ a test actually ran. It is an advisory signal, not a merge gate. Go and web
 definitions match count-tests.py 1.0, which the 2026-10-17 master baseline was
 measured with (Go about 2.62, web unit about 3.15). 1.1 changes only how mobile
 test files are found: from the mobile Jest config, not the web naming rule.
+1.2 counts shared/ TypeScript with the web unit suite, because Vitest runs it.
 Change the counting rules only with a version bump.
 
 Usage:
@@ -41,7 +42,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 # Twice the 2026-10-17 baseline densities (Go 2.62, web 3.15), as agreed.
 # Flag A fires only when marginal density is strictly above these.
@@ -319,6 +320,10 @@ def classify(root: Path) -> dict[str, list[str]]:
                 groups["web_test"].append(rel)
             else:
                 groups["web_prod"].append(rel)
+        elif parts[0] == "shared":
+            # Vitest runs shared tests from the web app. Count them with web unit.
+            key = "web_test" if is_test else "web_prod"
+            groups[key].append(rel)
         elif parts[0] == "mobile":
             # Mobile Jest names tests by its own testMatch (for example
             # client-test.ts), not by the web .test.ts rule.

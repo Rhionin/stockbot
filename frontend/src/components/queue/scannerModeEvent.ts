@@ -1,4 +1,4 @@
-import type { ScanDirection } from '../../types';
+import type { ScanDirection } from '@stockbot/shared/types';
 
 // The server publishes scanner_mode as a JSON string ("stock_in"), which is
 // what encoding a ScanDirection produces. Older callers and tests also send

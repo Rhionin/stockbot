@@ -1,4 +1,4 @@
-import type { InventoryItem, Product, ProductGroup } from '../../types';
+import type { InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 
 export interface AddCandidate {
   productId: string;

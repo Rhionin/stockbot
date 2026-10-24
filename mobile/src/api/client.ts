@@ -25,14 +25,14 @@ import {
   UnreachableError,
   unreachableFrom,
   unreadableResponse,
-} from '../../../frontend/src/api/contract';
+} from '@stockbot/shared/contract';
 import type {
   InventoryItem,
   PantryLinkSuggestion,
   ScanDirection,
   ScanEntry,
   ScannerConfig,
-} from '../../../frontend/src/types';
+} from '@stockbot/shared/types';
 
 // The public hostname's login name. See deploy/README.md.
 export const HOUSEHOLD_USERNAME = 'pantry';

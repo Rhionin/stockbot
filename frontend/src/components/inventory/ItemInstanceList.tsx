@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Group, Loader, Paper, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core';
 import { addItemInstance, listItemInstances, stockOutItem } from '../../api/client';
-import type { ExpiryStatus, ItemInstanceWithStatus } from '../../types';
+import type { ExpiryStatus, ItemInstanceWithStatus } from '@stockbot/shared/types';
 import { computeExpiryStatus } from '../../utils/expiry';
 import { expiryDateToISOString } from '../queue/queueUtils';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ItemInstanceListProps {
   itemId: string;

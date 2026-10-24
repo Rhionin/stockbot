@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OFFLINE_SENTENCE, notifyApiSuccess } from './api/contract';
+import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import { HouseholdSessionContext } from './components/auth/householdSession';
 import { DiagnosticsPage } from './components/diagnostics/DiagnosticsPage';
 import { HistoryPage } from './components/history/HistoryPage';
@@ -16,7 +16,7 @@ import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
 import { CredentialsDialog } from './components/shopping/CredentialsDialog';
 import { ProvisionButton } from './components/shopping/ProvisionButton';
 import { ShoppingListPage } from './components/shopping/ShoppingListPage';
-import type { ProviderInfo, ScanEntry, ShoppingListEntry } from './types';
+import type { ProviderInfo, ScanEntry, ShoppingListEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   readonly url: string;

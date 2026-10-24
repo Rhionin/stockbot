@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { contrastRatio, flatten, parseHex, readableLightShade, readableShade, towardContrast } from './contrast'
+import { contrastRatio, flatten, parseHex, readableLightShade, readableShade, towardContrast } from '@stockbot/shared/contrast'
 
 // Pairs are independent of the theme resolver. #0a0a0a sits on the sRGB linear
 // branch; the swap and the 4.5 boundary keep a wrong gamma or a strict >

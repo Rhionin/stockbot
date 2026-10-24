@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ScanQueuePage } from './ScanQueuePage';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 // The unmount clear schedules a state update as the page goes away, so the
 // sentence is already gone with or without that call. This is the cleanup that

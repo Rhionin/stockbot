@@ -1,5 +1,5 @@
 import { Text } from 'react-native';
-import { OFFLINE_SENTENCE, notifyApiSuccess } from '../../frontend/src/api/contract';
+import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import { createStockbotClient } from './api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from './auth/credentials';
 import { SessionProvider, useSession } from './session';

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import type { ProcessingFailure, ScanEntry } from '../../types';
+import type { ProcessingFailure, ScanEntry } from '@stockbot/shared/types';
 import { ScanAlertHost } from './ScanAlertHost';
 import { setBackgroundAlerts, writeScanAlertPreference } from './pushAlerts';
 

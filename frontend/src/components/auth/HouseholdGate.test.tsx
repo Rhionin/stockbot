@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OFFLINE_SENTENCE, notifyApiSuccess } from '../../api/contract';
+import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import { HouseholdGate } from './HouseholdGate';
 
 const authNotConfigured = JSON.parse(

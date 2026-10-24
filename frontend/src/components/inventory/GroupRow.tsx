@@ -8,7 +8,7 @@ import { ItemInstanceList } from './ItemInstanceList';
 import { ProductPhoto } from './ProductPhoto';
 import type { ShelfGroupRow, ShelfMember } from './shelf';
 import { groupStock } from '../../stockState';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface GroupRowProps {
   row: ShelfGroupRow;

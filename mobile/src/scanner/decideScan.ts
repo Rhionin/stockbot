@@ -1,5 +1,5 @@
-import { RESCAN_COOLDOWN_MS, shouldAcceptScan, type PriorScan } from '../../../frontend/src/components/scanner/scanTiming';
-import type { ScanDirection, ScannerConfig } from '../../../frontend/src/types';
+import { RESCAN_COOLDOWN_MS, shouldAcceptScan, type PriorScan } from '@stockbot/shared/scanTiming';
+import type { ScanDirection, ScannerConfig } from '@stockbot/shared/types';
 
 export type ScanDecision =
   | { kind: 'ignore' }

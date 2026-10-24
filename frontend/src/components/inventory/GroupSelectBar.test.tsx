@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import type { ProductGroup } from '../../types';
+import type { ProductGroup } from '@stockbot/shared/types';
 import { GroupSelectBar } from './GroupSelectBar';
 
 const json = (body: unknown, status = 200) =>

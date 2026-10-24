@@ -5,7 +5,7 @@ import { ruleLabels } from '../groups/copy';
 import { WipeInventoryDialog } from '../inventory/WipeInventoryDialog';
 import { RestockSettings } from '../restock/RestockSettings';
 import { ScanAlertSetting } from './ScanAlertSetting';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export const SettingsPage = () => {
   const [rule, setRule] = useState('same_as_ran_out');

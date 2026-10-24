@@ -1,17 +1,23 @@
 const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
 
-const config = getDefaultConfig(__dirname);
+const projectRoot = __dirname;
+const sharedRoot = path.resolve(projectRoot, '../shared');
 
-// The phone imports the shared contract at frontend/src/api/contract.ts, plus
-// barcode formats and the scan cooldown. Jest resolves that same relative path.
-config.watchFolders = [path.resolve(__dirname, '../frontend/src')];
+const config = getDefaultConfig(projectRoot);
 
-// Babel helpers in that shared file are bare imports. Lookup starts at the
-// file, which is outside this package, so also search this app's modules.
-const mobileModules = path.resolve(__dirname, 'node_modules');
-if (!config.resolver.nodeModulesPaths.includes(mobileModules)) {
-  config.resolver.nodeModulesPaths.push(mobileModules);
-}
+// Shared modules live outside this package. Watch them, and resolve bare
+// imports (including Babel helpers injected into those files) from this app.
+config.watchFolders = [sharedRoot];
+config.resolver.nodeModulesPaths = [path.resolve(projectRoot, 'node_modules')];
+
+const sharedPrefix = '@stockbot/shared/';
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName.startsWith(sharedPrefix)) {
+    const target = path.join(sharedRoot, moduleName.slice(sharedPrefix.length));
+    return context.resolveRequest(context, target, platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
 
 module.exports = config;

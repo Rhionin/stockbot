@@ -18,5 +18,13 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          regex: '(^|/)mobile(/|$)',
+          message: 'The web app cannot import the phone app. Shared code lives in @stockbot/shared.',
+        }],
+      }],
+    },
   },
 ])

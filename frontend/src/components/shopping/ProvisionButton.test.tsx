@@ -2,7 +2,7 @@ import type { ComponentProps } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import type { ProviderInfo, ShoppingListEntry } from '../../types';
+import type { ProviderInfo, ShoppingListEntry } from '@stockbot/shared/types';
 import { ProvisionButton } from './ProvisionButton';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, NativeSelect, NumberInput, Stack } from '@mantine/core';
 import { getSupplyOverride, setSupplyOverride } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 type SupplyChoice = 'default' | 'months' | 'quantity';
 

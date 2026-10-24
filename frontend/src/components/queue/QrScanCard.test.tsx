@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 import { QrScanCard } from './QrScanCard';
 
 const entry = (barcode: string): ScanEntry => ({

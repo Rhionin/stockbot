@@ -1,6 +1,6 @@
-import { RESCAN_COOLDOWN_MS } from '../../../frontend/src/components/scanner/scanTiming';
-import { DEFAULT_BARCODE_FORMATS } from '../../../frontend/src/components/scanner/barcodeFormats';
-import type { ScannerConfig } from '../../../frontend/src/types';
+import { RESCAN_COOLDOWN_MS } from '@stockbot/shared/scanTiming';
+import { DEFAULT_BARCODE_FORMATS } from '@stockbot/shared/barcodeFormats';
+import type { ScannerConfig } from '@stockbot/shared/types';
 import { CAMERA_BARCODE_TYPES, EXPO_BARCODE_TYPES } from './formats';
 import { decideScan } from './decideScan';
 

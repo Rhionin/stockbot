@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { InventoryItem } from '../../types';
+import type { InventoryItem } from '@stockbot/shared/types';
 import { ungroupedProducts } from './candidates';
 
 const row = (productId: string, name: string, instanceCount: number, grouped = false): InventoryItem => ({

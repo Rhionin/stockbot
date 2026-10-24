@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Modal, Stack, TextInput } from '@mantine/core';
 import { addItemInstance } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface AddInstanceModalProps {
   itemId: string;

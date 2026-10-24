@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { clearOfflineBanner, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK } from '../../api/contract';
+import { clearOfflineBanner, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { ScanEntryCard } from './ScanEntryCard';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 const barcode = '049000000294';
 

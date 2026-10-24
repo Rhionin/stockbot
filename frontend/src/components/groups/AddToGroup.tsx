@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Button, Checkbox, Group, Stack, Text, TextInput } from '@mantine/core';
 import { addGroupMembers, ApiError } from '../../api/client';
-import type { GroupTarget, TargetConflictMember } from '../../types';
+import type { GroupTarget, TargetConflictMember } from '@stockbot/shared/types';
 import type { AddCandidate } from './candidates';
 import type { GroupSupply } from './copy';
 import { TargetConflictPrompt } from './TargetConflictPrompt';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface AddToGroupProps {
   groupId: string;

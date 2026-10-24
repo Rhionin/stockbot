@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderInfo } from '../../types';
+import type { ProviderInfo } from '@stockbot/shared/types';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { AppMenu } from './AppMenu';
 

@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { Alert, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import { login } from '../../api/client';
-import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, ServerNoticeError } from '../../api/contract';
-import '../../noticeBanner';
+import { CODE_AUTH_NOT_CONFIGURED, inlineFailure, ServerNoticeError } from '@stockbot/shared/contract';
+import '@stockbot/shared/noticeBanner';
 import './LoginPage.css';
 
 export interface LoginPageProps {

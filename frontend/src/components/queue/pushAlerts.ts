@@ -1,7 +1,7 @@
 import { deletePushSubscription, getVapidPublicKey, savePushSubscription } from '../../api/client';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import { report } from '../../telemetry/client';
-import type { ScanDirection } from '../../types';
+import type { ScanDirection } from '@stockbot/shared/types';
 
 const preferenceKey = 'pantry-scan-alerts';
 const deviceKey = 'pantry-push-device';

@@ -1,8 +1,8 @@
 import type { ReactElement } from 'react';
 import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE, raiseOfflineBanner } from '../../../frontend/src/api/contract';
-import type { InventoryItem, ScanEntry } from '../../../frontend/src/types';
+import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE, raiseOfflineBanner } from '@stockbot/shared/contract';
+import type { InventoryItem, ScanEntry } from '@stockbot/shared/types';
 import { createStockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { QueueScreen } from './QueueScreen';

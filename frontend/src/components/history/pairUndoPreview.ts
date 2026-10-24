@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { previewUndo } from '../../api/client';
-import { previewReshelves } from '../../api/contract';
+import { previewReshelves } from '@stockbot/shared/contract';
 
 // Each open gets its own answer. Closing drops the last one, so the next open
 // stays blank until that open's preview returns.

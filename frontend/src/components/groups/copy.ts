@@ -1,4 +1,4 @@
-import type { GroupMember, GroupTarget, NetDimension, ProductGroup, SuggestionMember, TargetConflictMember } from '../../types';
+import type { GroupMember, GroupTarget, NetDimension, ProductGroup, SuggestionMember, TargetConflictMember } from '@stockbot/shared/types';
 
 export const ruleLabels: Record<string, string> = {
   same_as_ran_out: 'Same product',

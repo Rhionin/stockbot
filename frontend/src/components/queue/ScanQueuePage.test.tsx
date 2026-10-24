@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ScanQueuePage } from './ScanQueuePage';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 // Records the URL a component connects to, the listeners it registers, and
 // whether it closes the connection, so tests can simulate the server pushing

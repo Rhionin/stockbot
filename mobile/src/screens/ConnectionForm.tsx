@@ -9,7 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '../../../frontend/src/api/contract';
+import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';

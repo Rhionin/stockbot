@@ -1,6 +1,6 @@
 import { memo, useRef, type ReactNode } from 'react';
 import { ActionIcon, Badge, Checkbox, Menu } from '@mantine/core';
-import type { GroupSuggestion, InventoryItem } from '../../types';
+import type { GroupSuggestion, InventoryItem } from '@stockbot/shared/types';
 import { ProvenanceBadge } from '../product/ProvenanceBadge';
 import { visibleCategory } from './inventoryUtils';
 import { ProductPhoto } from './ProductPhoto';

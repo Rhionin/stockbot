@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom/vitest';
 import { afterEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import { clearServerNotice } from './api/contract';
+import { clearServerNotice } from '@stockbot/shared/contract';
 
 // vite.config.ts does not set test.globals, so React Testing Library's
 // automatic afterEach cleanup (which relies on a global afterEach) never

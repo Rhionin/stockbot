@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '../../../frontend/src/types';
+import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   inlineFailure,
@@ -34,7 +34,7 @@ import {
   nothingOnHandPill,
   NO_CLOSE_MATCH,
   shelfHasNothingOnHand,
-} from '../../../frontend/src/api/contract';
+} from '@stockbot/shared/contract';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';

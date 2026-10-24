@@ -1,4 +1,4 @@
-import type { GroupSuggestion, InventoryGroup, InventoryItem, Product, ProductGroup, ProductSummary } from '../../types';
+import type { GroupSuggestion, InventoryGroup, InventoryItem, Product, ProductGroup, ProductSummary } from '@stockbot/shared/types';
 import {
   memberLine, memberPackage, onHandOunces, onHandPhrase, rulePillLabel, suggestionReason, type MemberPackage,
 } from '../groups/copy';

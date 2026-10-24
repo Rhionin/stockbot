@@ -1,4 +1,4 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '../../../frontend/src/api/contract';
+import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
 

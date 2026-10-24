@@ -11,6 +11,9 @@ FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
+# The web build imports @stockbot/shared, which resolves to /src/shared next
+# to this WORKDIR. Copy it before the production bundle.
+COPY shared/ /src/shared/
 COPY frontend/ ./
 RUN npm run build
 

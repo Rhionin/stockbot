@@ -3,10 +3,10 @@ import { Badge, Burger, Indicator, Menu } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import { disconnectProvider, listProviders, listSuggestions } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
-import type { ProviderInfo } from '../../types';
+import type { ProviderInfo } from '@stockbot/shared/types';
 import { BuildStamp } from '../build/BuildStamp';
 import { CredentialsDialog } from '../shopping/CredentialsDialog';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface AppMenuProps {
   onCredentialsChanged: () => void;

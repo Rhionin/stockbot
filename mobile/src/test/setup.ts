@@ -1,5 +1,5 @@
 import { afterEach } from '@jest/globals';
-import { clearServerNotice } from '../../../frontend/src/api/contract';
+import { clearServerNotice } from '@stockbot/shared/contract';
 
 afterEach(() => {
   clearServerNotice();

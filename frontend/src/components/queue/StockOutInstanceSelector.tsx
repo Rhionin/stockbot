@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Alert, Loader, Radio, Stack, Text } from '@mantine/core';
 import { listItemInstances } from '../../api/client';
-import type { ItemInstanceWithStatus } from '../../types';
+import type { ItemInstanceWithStatus } from '@stockbot/shared/types';
 import { formatExpiryDate, sortInstancesUseOldestFirst } from './queueUtils';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface StockOutInstanceSelectorProps {
   itemId: string;

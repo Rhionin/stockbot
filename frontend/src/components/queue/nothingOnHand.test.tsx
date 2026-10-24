@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE, OFFLINE_SENTENCE } from '../../api/contract';
+import { BATCH_FAILURE_FALLBACK, BUSY_SENTENCE, NOTHING_ON_HAND_TITLE, NO_SPACE_SENTENCE, OFFLINE_SENTENCE } from '@stockbot/shared/contract';
 import { ScanQueuePage } from './ScanQueuePage';
-import type { ScanEntry } from '../../types';
+import type { ScanEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];

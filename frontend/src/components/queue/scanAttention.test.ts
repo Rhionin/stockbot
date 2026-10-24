@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ProcessingFailure, ScanEntry } from '../../types';
+import type { ProcessingFailure, ScanEntry } from '@stockbot/shared/types';
 import { BATCH_GAP_MS } from './queueUtils';
 import { BATCH_SETTLE_MS, ScanAttention, type AttentionClock, type AttentionNotice } from './scanAttention';
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import type { InventoryItem } from '../types';
+import type { InventoryItem } from '@stockbot/shared/types';
 import { filterInventoryItems } from './inventoryFilter';
 
 const inventoryItem = (id: string, name: string, category: string): InventoryItem => ({

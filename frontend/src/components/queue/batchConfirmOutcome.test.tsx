@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { notifications, Notifications } from '@mantine/notifications';
-import { SERVER_ERROR_FALLBACK } from '../../api/contract';
+import { SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import { showUndo } from '../restock/undo';
 import { ScanQueuePage } from './ScanQueuePage';
 import { formatExpiryDate } from './queueUtils';
-import type { ItemInstanceWithStatus, ScanEntry } from '../../types';
+import type { ItemInstanceWithStatus, ScanEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];

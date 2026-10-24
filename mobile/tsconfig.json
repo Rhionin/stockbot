@@ -4,8 +4,10 @@
     "strict": true,
     "types": ["jest"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@stockbot/shared/*": ["../shared/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts", "../shared/**/*.ts"],
+  "exclude": ["node_modules", "../shared/**/*.test.ts", "../shared/**/*.test.tsx"]
 }

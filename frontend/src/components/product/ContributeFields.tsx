@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Checkbox, NativeSelect, Stack, Switch, Text } from '@mantine/core';
 import { getContributionSettings, updateContributionSettings } from '../../api/client';
-import type { ExternalSource } from '../../types';
+import type { ExternalSource } from '@stockbot/shared/types';
 import { DATABASE_NAMES } from './databaseNames';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ContributeChoice {
   contribute: boolean;

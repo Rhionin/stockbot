@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Button, Group, Select, Stack, Text, TextInput } from '@mantine/core';
 import { addGroupMembers, ApiError, createGroup } from '../../api/client';
-import type { GroupTarget, ProductGroup, TargetConflictMember } from '../../types';
+import type { GroupTarget, ProductGroup, TargetConflictMember } from '@stockbot/shared/types';
 import { TargetConflictPrompt } from '../groups/TargetConflictPrompt';
-import { inlineFailure } from '../../api/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface GroupSelectBarProps {
   productIds: string[];
