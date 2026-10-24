@@ -6,8 +6,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -123,15 +127,49 @@ func (r *Catalog) GetProductByID(ctx context.Context, id string) (*Product, erro
 	return &p, nil
 }
 
-// ListProducts returns products ordered by name. A product whose item for
-// userID is shelved stays out of the picker until that item is stocked in again.
-func (r *Catalog) ListProducts(ctx context.Context, userID string) ([]Product, error) {
+// AddHousehold inserts a household that is not the primary one.
+func (r *Catalog) AddHousehold(ctx context.Context, id, name string) (tenant.Scope, error) {
+	scope, err := tenant.New(id)
+	if err != nil {
+		return tenant.Scope{}, fmt.Errorf("could not add the household: %w", err)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return tenant.Scope{}, fmt.Errorf("a household name is required")
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, ?, '', ?, ?, 0)`,
+		id, name, time.Now().UTC().Format(time.RFC3339), strings.ReplaceAll(id, "-", ""),
+	)
+	if err != nil {
+		return tenant.Scope{}, fmt.Errorf("could not add the household: %w", err)
+	}
+	return scope, nil
+}
+
+// PrimaryScope is the seeded household this catalog's database serves
+// until a signed-in session names another.
+func (r *Catalog) PrimaryScope(ctx context.Context) (tenant.Scope, error) {
+	if r == nil || r.db == nil {
+		return tenant.Scope{}, fmt.Errorf("%w", tenant.ErrMissingHousehold)
+	}
+	return auth.PrimaryScope(ctx, r.db)
+}
+
+// ListProducts returns products this household may see, ordered by the name
+// it uses. A shelved item stays out of the picker. A name another household
+// typed is not included.
+func (r *Catalog) ListProducts(ctx context.Context, scope tenant.Scope) ([]Product, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+productSelectColumns+` FROM products
 		WHERE id NOT IN (
-			SELECT product_id FROM items WHERE user_id = ? AND shelved = 1
+			SELECT product_id FROM items WHERE household_id = ? AND shelved = 1
 		)
-		ORDER BY name`, userID)
+		ORDER BY name`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("ListProducts: %w", err)
 	}
@@ -148,7 +186,60 @@ func (r *Catalog) ListProducts(ctx context.Context, userID string) ([]Product, e
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("ListProducts rows: %w", err)
 	}
-	return products, nil
+	visible := make([]Product, 0, len(products))
+	for i := range products {
+		owned, err := r.ownsProduct(ctx, scope, &products[i])
+		if err != nil {
+			return nil, err
+		}
+		if !owned {
+			continue
+		}
+		name, overridden, err := r.overrideName(ctx, scope, products[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if overridden {
+			products[i].Name = name
+			products[i].NameOverridden = true
+		}
+		visible = append(visible, products[i])
+	}
+	sort.Slice(visible, func(i, j int) bool {
+		if visible[i].Name == visible[j].Name {
+			return visible[i].ID < visible[j].ID
+		}
+		return visible[i].Name < visible[j].Name
+	})
+	return visible, nil
+}
+
+// UpdateDetails writes category, unit, image, and size for one product.
+// It does not write the name. A household's name is an override.
+func (r *Catalog) UpdateDetails(ctx context.Context, product Product) error {
+	if err := product.validateNetSize(); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE products SET category = ?, unit_of_measure = ?, image_url = ?,
+		        net_base_value = ?, net_dimension = ?, net_size_origin = ?, pack_count = ?
+		 WHERE id = ?`,
+		nullableString(product.Category), nullableString(product.UnitOfMeasure),
+		nullableString(product.ImageURL),
+		nullableFloat(product.NetBaseValue), nullableString(product.NetDimension), nullableString(product.NetSizeOrigin), nullableIntPtr(product.PackCount),
+		product.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("could not save the product: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("could not save the product: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("could not save the product: product %q not found", product.ID)
+	}
+	return nil
 }
 
 // UpdateProduct updates the name, category, unit_of_measure, and image_url of
@@ -250,11 +341,18 @@ func (r *Catalog) MarkRefreshed(ctx context.Context, id string, refreshedAt time
 // source must be either "global" or "user_override".
 // For global entries pass userID = "".
 func (r *Catalog) UpsertBarcodeMapping(ctx context.Context, barcode, productID, source, userID string) error {
+	// A household id in userID scopes the override to that household. Any other
+	// value, including a global mapping, stays on the primary household row
+	// the column default used before scopes existed.
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO barcodes (barcode, product_id, source, user_id)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT (barcode, source, user_id) DO UPDATE SET product_id = excluded.product_id`,
-		barcode, productID, source, userID,
+		`INSERT INTO barcodes (barcode, product_id, source, user_id, household_id)
+		 VALUES (?, ?, ?, ?, COALESCE(
+		     (SELECT id FROM households WHERE id = ?),
+		     (SELECT id FROM households WHERE is_primary = 1)))
+		 ON CONFLICT (household_id, barcode, source, user_id) DO UPDATE SET
+		     product_id = excluded.product_id,
+		     household_id = excluded.household_id`,
+		barcode, productID, source, userID, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("UpsertBarcodeMapping: %w", err)
@@ -262,42 +360,10 @@ func (r *Catalog) UpsertBarcodeMapping(ctx context.Context, barcode, productID, 
 	return nil
 }
 
-// LookupByBarcode looks up the product associated with a barcode.
-//
-// Priority order:
-//  1. user_override rows matching the given userID
-//  2. global rows (user_id = ”)
-//
-// Returns the first matching product, or nil if no match is found.
-func (r *Catalog) LookupByBarcode(ctx context.Context, barcode, userID string) (*ProductSummary, error) {
-	// Find the highest-priority match.
-	// We use a CASE expression so user_override rows sort before global rows.
-	row := r.db.QueryRowContext(ctx, `
-		SELECT p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''),
-		       COALESCE(p.external_source, '')
-		FROM barcodes b
-		JOIN products p ON p.id = b.product_id
-		WHERE b.barcode = ?
-		  AND (
-		        (b.source = 'user_override' AND b.user_id = ?)
-		     OR (b.source = 'global'        AND b.user_id = '')
-		      )
-		ORDER BY CASE b.source WHEN 'user_override' THEN 0 ELSE 1 END ASC, p.name ASC
-		LIMIT 1`,
-		barcode, userID,
-	)
-
-	var summary ProductSummary
-	var externalSource string
-	if err := row.Scan(&summary.ID, &summary.Name, &summary.Category, &summary.UnitOfMeasure, &summary.ImageURL, &externalSource); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("LookupByBarcode: %w", err)
-	}
-
-	summary.ExternalSource = ExternalSource(externalSource)
-	return &summary, nil
+// LookupByBarcode resolves a barcode for one household.
+// That household's mapping wins. A global catalog mapping is next.
+func (r *Catalog) LookupByBarcode(ctx context.Context, scope tenant.Scope, barcode string) (*ProductSummary, error) {
+	return r.LookupBarcode(ctx, scope, barcode)
 }
 
 // RecordBarcodeMiss stamps barcode as confirmed-unknown at checkedAt,
@@ -343,10 +409,19 @@ func (r *Catalog) DeleteBarcodeMiss(ctx context.Context, barcode string) error {
 
 // ListBarcodesForProduct returns all barcodes associated with a product,
 // sorted ascending lexicographically.
-func (r *Catalog) ListBarcodesForProduct(ctx context.Context, productID string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT barcode FROM barcodes WHERE product_id = ? ORDER BY barcode ASC`,
-		productID)
+func (r *Catalog) ListBarcodesForProduct(ctx context.Context, scope tenant.Scope, productID string) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT barcode FROM barcodes
+		WHERE product_id = ?
+		  AND (
+		        (source = 'user_override' AND household_id = ?)
+		     OR (source = 'global' AND user_id = '')
+		      )
+		ORDER BY barcode ASC`,
+		productID, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("ListBarcodesForProduct: %w", err)
 	}

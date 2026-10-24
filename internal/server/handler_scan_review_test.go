@@ -89,10 +89,11 @@ func TestShelvedItemStaysHiddenUntilBackfill(t *testing.T) {
 	}
 	if err := env.ProductStore.CreateProduct(context.Background(), product.Product{
 		ID: "prod-other", Name: "Other household", Category: "Pantry", UnitOfMeasure: "unit",
+		Source: product.SourceExternal,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, product_id, shelved) VALUES ('item-other', 'user-2', 'prod-other', 1)`); err != nil {
+	if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, household_id, product_id, shelved) VALUES ('item-other', 'user-2', ?, 'prod-other', 1)`, cedarHousehold(t, env.DB)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,8 +102,8 @@ func TestShelvedItemStaysHiddenUntilBackfill(t *testing.T) {
 		t.Fatalf("product ids = %v", ids)
 	}
 	other := productIDs(t, handler, "/api/products?userId=user-2")
-	if !other["prod-live"] || !other["prod-hidden"] || other["prod-other"] {
-		t.Fatalf("user-2 product ids = %v", other)
+	if !other["prod-live"] || other["prod-hidden"] || !other["prod-other"] {
+		t.Fatalf("userId does not change the product list: %v", other)
 	}
 	exchangeJSON(t, handler, http.MethodGet, "/api/products/prod-hidden", "", http.StatusOK)
 
@@ -139,11 +140,12 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cedar := cedarHousehold(t, env.DB)
 	if _, err := env.DB.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-shared-1', 'user-1', 'prod-shared'),
-			('item-shared-2', 'user-2', 'prod-shared'),
-			('item-decoy', 'user-2', 'prod-decoy')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-shared-1', 'user-1', (SELECT id FROM households WHERE is_primary = 1), 'prod-shared'),
+			('item-shared-2', 'user-2', ?, 'prod-shared'),
+			('item-decoy', 'user-2', ?, 'prod-decoy')`, cedar, cedar); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.DB.Exec(`
@@ -155,7 +157,7 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoy := "prod-decoy"
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: "scan-shared", UserID: "user-2", Barcode: "077770000000", ScannedAt: at,
 		Direction: directionPtr(scan.StockOut), UnitCount: 1, ProductID: &decoy, Status: scan.Pending,
 	}); err != nil {
@@ -171,14 +173,14 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 	if err := json.Unmarshal(body, &linked); err != nil {
 		t.Fatal(err)
 	}
-	if linked.Status != "committed" || linked.OnHand != 2 {
+	if linked.Status != "committed" || linked.OnHand != 0 {
 		t.Fatalf("link commit = %+v", linked)
 	}
-	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-shared-1' AND removed_at IS NULL`); n != 1 {
-		t.Fatalf("user-1 on hand = %d", n)
+	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-shared-1' AND removed_at IS NULL`); n != 0 {
+		t.Fatalf("household on hand = %d", n)
 	}
-	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-shared-2' AND removed_at IS NULL`); n != 2 {
-		t.Fatalf("user-2 on hand = %d", n)
+	if n := mustCount(t, env.DB, `SELECT COUNT(*) FROM item_instances WHERE item_id = 'item-shared-2' AND removed_at IS NULL`); n != 3 {
+		t.Fatalf("other household on hand = %d", n)
 	}
 
 	t.Run("patch writes this household's item and barcode", func(t *testing.T) {
@@ -187,7 +189,7 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 			ID: "scan-patch-2", UserID: "user-2", Barcode: "088880000000", ScannedAt: at,
 			Direction: directionPtr(scan.StockOut), UnitCount: 1, Status: scan.Pending,
 		}); err != nil {
@@ -208,7 +210,7 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 			WHERE barcode = '088880000000' AND source = 'user_override'`).Scan(&overrideUser); err != nil {
 			t.Fatal(err)
 		}
-		if overrideUser != "user-2" {
+		if overrideUser != primaryScope(t, env.DB).HouseholdID() {
 			t.Fatalf("override user = %s", overrideUser)
 		}
 	})
@@ -220,15 +222,15 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := env.DB.Exec(`
-			INSERT INTO items (id, user_id, product_id) VALUES
-				('item-empty-1', 'user-1', 'prod-empty-2'),
-				('item-empty-2', 'user-2', 'prod-empty-2')`); err != nil {
+			INSERT INTO items (id, user_id, household_id, product_id) VALUES
+				('item-empty-1', 'user-1', ?, 'prod-empty-2'),
+				('item-empty-2', 'user-2', (SELECT id FROM households WHERE is_primary = 1), 'prod-empty-2')`, cedar); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := env.DB.Exec(`INSERT INTO item_instances (id, item_id, stock_in_at) VALUES ('empty-1', 'item-empty-1', ?)`, at); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+		if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 			ID: "scan-empty-2", UserID: "user-2", Barcode: "099990000000", ScannedAt: at,
 			Direction: directionPtr(scan.StockOut), UnitCount: 1, ProductID: &decoy, Status: scan.Pending,
 		}); err != nil {
@@ -253,7 +255,7 @@ func TestLinkUsesTheScansHousehold(t *testing.T) {
 			WHERE barcode = '099990000000' AND source = 'user_override' AND product_id = 'prod-empty-2'`).Scan(&overrideUser); err != nil {
 			t.Fatal(err)
 		}
-		if overrideUser != "user-2" {
+		if overrideUser != primaryScope(t, env.DB).HouseholdID() {
 			t.Fatalf("override user = %s", overrideUser)
 		}
 	})

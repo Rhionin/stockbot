@@ -13,7 +13,11 @@ type inventoryWipeRequest struct {
 }
 
 func (h *InventoryWipeHandler) Handle(req Request[inventoryWipeRequest, struct{}]) (struct{}, error) {
-	err := h.Supply.Wipe(req.Context, req.Body.Confirmation)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return struct{}{}, err
+	}
+	err = h.Supply.Wipe(req.Context, scope, req.Body.Confirmation)
 	if err == nil {
 		return struct{}{}, nil
 	}

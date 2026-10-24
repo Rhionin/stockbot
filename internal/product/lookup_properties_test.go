@@ -8,7 +8,18 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
+
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func propScope(tb rapidTB, db *sql.DB) tenant.Scope {
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		tb.Fatalf("primary household: %v", err)
+	}
+	return scope
+}
 
 // errNetwork simulates a non-not-found external error (e.g. a timeout), which
 // LookupService treats as a not-found result.
@@ -91,7 +102,7 @@ func TestProperty2_UserOverridePreservation(t *testing.T) {
 		before := countRows(rt, db)
 
 		service := &LookupService{Catalog: catalog, Upstream: notFoundLookup}
-		result, err := service.Lookup(ctx, barcode, userID)
+		result, err := service.Lookup(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("Lookup: %v", err)
 		}
@@ -126,11 +137,11 @@ func TestProperty2_GlobalPreservation(t *testing.T) {
 		ctx := context.Background()
 
 		barcode := rapid.StringMatching(`[0-9]{6,13}`).Draw(rt, "barcode")
-		userID := rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
+		_ = rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
 		globalID := rapid.StringMatching(`global-[a-z0-9]{1,8}`).Draw(rt, "globalID")
 		globalName := rapid.StringMatching(`[A-Za-z ]{1,20}`).Draw(rt, "globalName")
 
-		if err := catalog.CreateProduct(ctx, Product{ID: globalID, Name: globalName}); err != nil {
+		if err := catalog.CreateProduct(ctx, Product{ID: globalID, Name: globalName, Source: SourceExternal}); err != nil {
 			rt.Fatalf("CreateProduct: %v", err)
 		}
 		if err := catalog.UpsertBarcodeMapping(ctx, barcode, globalID, "global", ""); err != nil {
@@ -140,7 +151,7 @@ func TestProperty2_GlobalPreservation(t *testing.T) {
 		before := countRows(rt, db)
 
 		service := &LookupService{Catalog: catalog, Upstream: notFoundLookup}
-		result, err := service.Lookup(ctx, barcode, userID)
+		result, err := service.Lookup(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("Lookup: %v", err)
 		}
@@ -173,7 +184,7 @@ func TestProperty2_NotFoundPreservation(t *testing.T) {
 		ctx := context.Background()
 
 		barcode := rapid.StringMatching(`[0-9]{6,13}`).Draw(rt, "barcode")
-		userID := rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
+		_ = rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
 
 		// The external client either reports not-found or errors; both paths
 		// yield a not-found LookupResult on unfixed code.
@@ -189,7 +200,7 @@ func TestProperty2_NotFoundPreservation(t *testing.T) {
 		before := countRows(rt, db)
 
 		service := &LookupService{Catalog: catalog, Upstream: external}
-		result, err := service.Lookup(ctx, barcode, userID)
+		result, err := service.Lookup(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("Lookup: %v", err)
 		}
@@ -242,7 +253,7 @@ func TestProperty2_ResultEquality(t *testing.T) {
 			wantFound, wantProductID, wantSource = true, overrideID, "global"
 		case "global":
 			globalID := "global-" + barcode
-			if err := catalog.CreateProduct(ctx, Product{ID: globalID, Name: "Global"}); err != nil {
+			if err := catalog.CreateProduct(ctx, Product{ID: globalID, Name: "Global", Source: SourceExternal}); err != nil {
 				rt.Fatalf("CreateProduct: %v", err)
 			}
 			if err := catalog.UpsertBarcodeMapping(ctx, barcode, globalID, "global", ""); err != nil {
@@ -256,11 +267,11 @@ func TestProperty2_ResultEquality(t *testing.T) {
 		service := &LookupService{Catalog: catalog, Upstream: notFoundLookup}
 
 		// First observation is the baseline; a repeat must produce an identical result.
-		first, err := service.Lookup(ctx, barcode, userID)
+		first, err := service.Lookup(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("Lookup (first): %v", err)
 		}
-		second, err := service.Lookup(ctx, barcode, userID)
+		second, err := service.Lookup(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("Lookup (second): %v", err)
 		}
@@ -322,7 +333,7 @@ func TestProperty3_ExternalPersistenceIdempotent(t *testing.T) {
 
 		barcode := rapid.StringMatching(`[0-9]{6,13}`).Draw(rt, "barcode")
 		name := rapid.StringMatching(`[A-Za-z ]{1,20}`).Draw(rt, "name")
-		userID := rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
+		_ = rapid.StringMatching(`user-[a-z0-9]{1,8}`).Draw(rt, "userID")
 		n := rapid.IntRange(2, 5).Draw(rt, "lookups")
 
 		// The external client resolves this barcode to a fixed product every time.
@@ -337,7 +348,7 @@ func TestProperty3_ExternalPersistenceIdempotent(t *testing.T) {
 
 		var firstID string
 		for i := 0; i < n; i++ {
-			result, err := service.Lookup(ctx, barcode, userID)
+			result, err := service.Lookup(ctx, propScope(rt, db), barcode)
 			if err != nil {
 				rt.Fatalf("Lookup #%d: %v", i, err)
 			}
@@ -388,7 +399,7 @@ func TestProperty3_ExternalPersistenceIdempotent(t *testing.T) {
 		}
 
 		// A subsequent barcode lookup now resolves at Tier 2 as a global product.
-		summary, err := catalog.LookupByBarcode(ctx, barcode, userID)
+		summary, err := catalog.LookupByBarcode(ctx, propScope(rt, db), barcode)
 		if err != nil {
 			rt.Fatalf("LookupByBarcode: %v", err)
 		}
@@ -419,7 +430,7 @@ func TestExternalLookupPersistsImageURL(t *testing.T) {
 	}}
 
 	service := &LookupService{Catalog: catalog, Upstream: external}
-	result, err := service.Lookup(ctx, barcode, "user-1")
+	result, err := service.Lookup(ctx, propScope(t, db), barcode)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}

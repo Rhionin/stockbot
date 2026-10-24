@@ -2,14 +2,18 @@ package syncsnap
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	_ "modernc.org/sqlite"
 )
 
-func TestBuildEmptyHousehold(t *testing.T) {
+func openTestDB(t *testing.T) (*sql.DB, tenant.Scope) {
+	t.Helper()
 	conn, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -18,8 +22,17 @@ func TestBuildEmptyHousehold(t *testing.T) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatal(err)
 	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn, scope
+}
+
+func TestBuildEmptyHousehold(t *testing.T) {
+	conn, scope := openTestDB(t)
 	when := time.Date(2026, 10, 10, 1, 2, 3, 0, time.UTC)
-	snap, err := Build(context.Background(), conn, when)
+	snap, err := Build(context.Background(), scope, conn, when)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,22 +45,21 @@ func TestBuildEmptyHousehold(t *testing.T) {
 }
 
 func TestBuildReadsBrandFromTheProductName(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	if err := app.RunMigrations(conn); err != nil {
+	conn, scope := openTestDB(t)
+	hid := scope.HouseholdID()
+	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('p1', 'Hunt''s Tomato Paste'), ('p2', 'Tomato Paste')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
-		INSERT INTO products (id, name) VALUES ('p1', 'Hunt''s Tomato Paste'), ('p2', 'Tomato Paste');
-		INSERT INTO product_groups (id, user_id, name, name_key, rule) VALUES ('g1', 'user-1', 'Tomato Paste', 'tomato paste', 'favorite');
-		INSERT INTO product_group_members (product_id, group_id) VALUES ('p1', 'g1'), ('p2', 'g1');
-	`); err != nil {
+		INSERT INTO product_groups (id, user_id, household_id, name, name_key, rule)
+		VALUES ('g1', ?, ?, 'Tomato Paste', 'tomato paste', 'favorite')`, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := Build(context.Background(), conn, time.Now())
+	if _, err := conn.Exec(`
+		INSERT INTO product_group_members (product_id, group_id, household_id) VALUES ('p1', 'g1', ?), ('p2', 'g1', ?)`, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Build(context.Background(), scope, conn, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,31 +73,37 @@ func TestBuildReadsBrandFromTheProductName(t *testing.T) {
 }
 
 func TestBuildPrefersItemTargets(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	if err := app.RunMigrations(conn); err != nil {
+	conn, scope := openTestDB(t)
+	hid := scope.HouseholdID()
+	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('chips', 'Tortilla chips'), ('beans', 'Green beans'), ('salt', 'Salt')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
-		INSERT INTO products (id, name) VALUES ('chips', 'Tortilla chips'), ('beans', 'Green beans');
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-chips', 'user-1', 'chips'),
-			('item-beans', 'user-1', 'beans');
-		INSERT INTO products (id, name) VALUES ('salt', 'Salt');
-		INSERT INTO items (id, user_id, product_id) VALUES ('item-salt', 'user-1', 'salt');
-		INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-salt', (SELECT id FROM households WHERE is_primary = 1), 'Spices', 'spices');
-		INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'cat-salt', 'months', 0);
-		INSERT INTO item_categories (household_id, item_id, category_id, source) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-salt', 'cat-salt', 'user');
-		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES
-			((SELECT id FROM households WHERE is_primary = 1), 'item-chips', 'amount', 4.6),
-			((SELECT id FROM households WHERE is_primary = 1), 'item-beans', 'months', 0);
-	`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-chips', ?, ?, 'chips'),
+			('item-beans', ?, ?, 'beans'),
+			('item-salt', ?, ?, 'salt')`, hid, hid, hid, hid, hid, hid); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := Build(context.Background(), conn, time.Now())
+	if _, err := conn.Exec(`
+		INSERT INTO categories (id, household_id, name, name_key) VALUES ('cat-salt', ?, 'Spices', 'spices')`, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO category_targets (household_id, category_id, kind, value) VALUES (?, 'cat-salt', 'months', 0)`, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO item_categories (household_id, item_id, category_id, source) VALUES (?, 'item-salt', 'cat-salt', 'user')`, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES
+			(?, 'item-chips', 'amount', 4.6),
+			(?, 'item-beans', 'months', 0)`, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Build(context.Background(), scope, conn, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,39 +126,50 @@ func TestBuildPrefersItemTargets(t *testing.T) {
 }
 
 func TestBuildSkipsShelvedItems(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	if err := app.RunMigrations(conn); err != nil {
+	conn, scope := openTestDB(t)
+	hid := scope.HouseholdID()
+	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('milk', 'Milk'), ('bread', 'Bread')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
-		INSERT INTO products (id, name) VALUES ('milk', 'Milk'), ('bread', 'Bread');
-		INSERT INTO items (id, user_id, product_id, target_quantity) VALUES
-			('item-milk', 'user-1', 'milk', 4),
-			('item-bread', 'user-1', 'bread', 2);
+		INSERT INTO items (id, user_id, household_id, product_id, target_quantity) VALUES
+			('item-milk', ?, ?, 'milk', 4),
+			('item-bread', ?, ?, 'bread', 2)`, hid, hid, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
 		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES
-			((SELECT id FROM households WHERE is_primary = 1), 'item-milk', 'amount', 4),
-			((SELECT id FROM households WHERE is_primary = 1), 'item-bread', 'amount', 2);
-		INSERT INTO item_instances (id, item_id, stock_in_at) VALUES
-			('inst-milk', 'item-milk', '2026-01-01'),
-			('inst-milk-out', 'item-milk', '2026-01-02'),
-			('inst-bread', 'item-bread', '2026-01-01');
-		UPDATE item_instances SET removed_at = '2026-01-03', removal_reason = 'consumed' WHERE id = 'inst-milk-out';
-		INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source) VALUES
-			('move-milk', 'item-milk', 'milk', 'in', 1, '2026-01-01', 'scan'),
-			('move-bread', 'item-bread', 'bread', 'in', 1, '2026-01-01', 'scan');
-		INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source) VALUES
-			('shop-milk', 'user-1', 'item-milk', 1, 'manual'),
-			('shop-bread', 'user-1', 'item-bread', 1, 'manual');
-		UPDATE items SET shelved = 1 WHERE id = 'item-milk';
-	`); err != nil {
+			(?, 'item-milk', 'amount', 4),
+			(?, 'item-bread', 'amount', 2)`, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO item_instances (id, household_id, item_id, stock_in_at) VALUES
+			('inst-milk', ?, 'item-milk', '2026-01-01'),
+			('inst-milk-out', ?, 'item-milk', '2026-01-02'),
+			('inst-bread', ?, 'item-bread', '2026-01-01')`, hid, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE item_instances SET removed_at = '2026-01-03', removal_reason = 'consumed' WHERE household_id = ? AND id = 'inst-milk-out'`, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source) VALUES
+			('move-milk', ?, 'item-milk', 'milk', 'in', 1, '2026-01-01', 'scan'),
+			('move-bread', ?, 'item-bread', 'bread', 'in', 1, '2026-01-01', 'scan')`, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO shopping_list_items (id, user_id, household_id, item_id, quantity, source) VALUES
+			('shop-milk', ?, ?, 'item-milk', 1, 'manual'),
+			('shop-bread', ?, ?, 'item-bread', 1, 'manual')`, hid, hid, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE items SET shelved = 1 WHERE household_id = ? AND id = 'item-milk'`, hid); err != nil {
 		t.Fatal(err)
 	}
 
-	snap, err := Build(context.Background(), conn, time.Now())
+	snap, err := Build(context.Background(), scope, conn, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,5 +216,76 @@ func TestBuildSkipsShelvedItems(t *testing.T) {
 	}
 	if len(snap.ShoppingList) != 1 || snap.ShoppingList[0].ProductID != "bread" {
 		t.Fatalf("shopping: %+v", snap.ShoppingList)
+	}
+}
+
+func TestSnapshotRowsStayInTheirHousehold(t *testing.T) {
+	conn, home := openTestDB(t)
+	const cedarID = "0190bbbb-cccc-7000-8000-0000000000e5"
+	if _, err := conn.Exec(`
+		INSERT INTO households (id, name, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Cedar', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, cedarID); err != nil {
+		t.Fatal(err)
+	}
+	cedar, err := tenant.New(cedarID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('cedar-oats', 'Cedar oats')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-cedar', ?, ?, 'cedar-oats')`, cedarID, cedarID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO product_groups (id, user_id, household_id, name, name_key, rule)
+		VALUES ('g-cedar', ?, ?, 'Cedar oats', 'cedar oats', 'favorite')`, cedarID, cedarID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO shopping_list_items (id, user_id, household_id, item_id, quantity, source)
+		VALUES ('shop-cedar', ?, ?, 'item-cedar', 2, 'manual')`, cedarID, cedarID); err != nil {
+		t.Fatal(err)
+	}
+
+	homeSnap, err := Build(context.Background(), home, conn, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range homeSnap.Groups {
+		if group.ID == "g-cedar" || group.Name == "Cedar oats" {
+			t.Fatalf("primary snapshot included cedar's group %+v", group)
+		}
+	}
+	for _, line := range homeSnap.ShoppingList {
+		if line.ID == "shop-cedar" || line.ProductID == "cedar-oats" {
+			t.Fatalf("primary snapshot included cedar's shopping line %+v", line)
+		}
+	}
+	cedarSnap, err := Build(context.Background(), cedar, conn, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundGroup, foundLine bool
+	for _, group := range cedarSnap.Groups {
+		if group.ID == "g-cedar" && group.Name == "Cedar oats" {
+			foundGroup = true
+		}
+	}
+	for _, line := range cedarSnap.ShoppingList {
+		if line.ProductID == "cedar-oats" && line.Quantity == 2 {
+			foundLine = true
+		}
+	}
+	if !foundGroup || !foundLine {
+		t.Fatalf("cedar snapshot groups=%+v shopping=%+v", cedarSnap.Groups, cedarSnap.ShoppingList)
+	}
+	again, err := Build(context.Background(), home, conn, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Groups) != len(homeSnap.Groups) || len(again.ShoppingList) != len(homeSnap.ShoppingList) {
+		t.Fatalf("reading the primary household changed cedar's rows: groups %d shopping %d", len(again.Groups), len(again.ShoppingList))
 	}
 }

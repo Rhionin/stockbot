@@ -7,6 +7,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // shoppingProvision is the list after the supply snapshot has been written.
@@ -19,36 +20,39 @@ type shoppingProvision struct {
 }
 
 type shoppingListReader interface {
-	ListManualItems(ctx context.Context, userID string) ([]shopping.ShoppingListItem, error)
-	ListUnpurchased(ctx context.Context, userID string) ([]shopping.ShoppingListItem, error)
-	ListDeals(ctx context.Context, userID string) ([]shopping.Deal, error)
+	ListManualItems(ctx context.Context, scope tenant.Scope) ([]shopping.ShoppingListItem, error)
+	ListUnpurchased(ctx context.Context, scope tenant.Scope) ([]shopping.ShoppingListItem, error)
+	ListDeals(ctx context.Context, scope tenant.Scope) ([]shopping.Deal, error)
 }
 
 type shoppingPlanWriter interface {
 	shoppingListReader
-	SavePlannedLines(ctx context.Context, userID string, lines []shopping.PlannedLine, members []shopping.ShelfMember) error
+	SavePlannedLines(ctx context.Context, scope tenant.Scope, lines []shopping.PlannedLine, members []shopping.ShelfMember) error
 }
 
 type pantryLister interface {
-	ListItems(ctx context.Context, userID string) ([]inventory.Item, error)
-	ListItemInstances(ctx context.Context, itemID string) ([]inventory.ItemInstance, error)
+	ListItems(ctx context.Context, scope tenant.Scope) ([]inventory.Item, error)
+	ListItemInstances(ctx context.Context, scope tenant.Scope, itemID string) ([]inventory.ItemInstance, error)
 }
 
 // loadShoppingSnapshot reads the staged cart. It does not recompute the supply plan.
-func loadShoppingSnapshot(ctx context.Context, userID string, pantry pantryLister, list shoppingListReader) (shoppingProvision, error) {
-	items, err := pantry.ListItems(ctx, userID)
+func loadShoppingSnapshot(ctx context.Context, scope tenant.Scope, pantry pantryLister, list shoppingListReader) (shoppingProvision, error) {
+	if err := scope.Require(); err != nil {
+		return shoppingProvision{}, err
+	}
+	items, err := pantry.ListItems(ctx, scope)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
-	deals, err := list.ListDeals(ctx, userID)
+	deals, err := list.ListDeals(ctx, scope)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
-	counts, err := loadInstanceCounts(ctx, pantry.ListItemInstances, items)
+	counts, err := loadInstanceCounts(ctx, scope, pantry.ListItemInstances, items)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
-	rows, err := list.ListUnpurchased(ctx, userID)
+	rows, err := list.ListUnpurchased(ctx, scope)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
@@ -63,31 +67,34 @@ func loadShoppingSnapshot(ctx context.Context, userID string, pantry pantryListe
 
 // stageShoppingPlan snapshots the current supply plan into the staged cart.
 // A later read or send uses those rows, including quantities the owner changed.
-func stageShoppingPlan(ctx context.Context, userID string, pantry pantryLister, list shoppingPlanWriter, supplySvc *supply.Service, now time.Time) (shoppingProvision, error) {
-	snap, err := loadShoppingSnapshot(ctx, userID, pantry, list)
+func stageShoppingPlan(ctx context.Context, scope tenant.Scope, pantry pantryLister, list shoppingPlanWriter, supplySvc *supply.Service, now time.Time) (shoppingProvision, error) {
+	if err := scope.Require(); err != nil {
+		return shoppingProvision{}, err
+	}
+	snap, err := loadShoppingSnapshot(ctx, scope, pantry, list)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
 	if supplySvc == nil {
 		return snap, nil
 	}
-	planned, err := supplySvc.Plan(ctx, now)
+	planned, err := supplySvc.Plan(ctx, scope, now)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
 	groupOf := map[string]string{}
 	if lookup, ok := list.(interface {
-		ItemGroups(ctx context.Context, userID string) (map[string]string, error)
+		ItemGroups(ctx context.Context, scope tenant.Scope) (map[string]string, error)
 	}); ok {
-		groupOf, err = lookup.ItemGroups(ctx, userID)
+		groupOf, err = lookup.ItemGroups(ctx, scope)
 		if err != nil {
 			return shoppingProvision{}, err
 		}
 	}
-	if err := list.SavePlannedLines(ctx, userID, plannedLines(planned, snap.Items), shelfMembers(snap.Items, groupOf)); err != nil {
+	if err := list.SavePlannedLines(ctx, scope, plannedLines(planned, snap.Items), shelfMembers(snap.Items, groupOf)); err != nil {
 		return shoppingProvision{}, err
 	}
-	rows, err := list.ListUnpurchased(ctx, userID)
+	rows, err := list.ListUnpurchased(ctx, scope)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
@@ -156,10 +163,10 @@ func itemName(needs []shopping.ReplenishmentItem, itemID string) string {
 	return ""
 }
 
-func loadInstanceCounts(ctx context.Context, list func(context.Context, string) ([]inventory.ItemInstance, error), items []inventory.Item) (map[string]int, error) {
+func loadInstanceCounts(ctx context.Context, scope tenant.Scope, list func(context.Context, tenant.Scope, string) ([]inventory.ItemInstance, error), items []inventory.Item) (map[string]int, error) {
 	counts := make(map[string]int, len(items))
 	for _, item := range items {
-		instances, err := list(ctx, item.ID)
+		instances, err := list(ctx, scope, item.ID)
 		if err != nil {
 			return nil, err
 		}

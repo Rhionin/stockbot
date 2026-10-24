@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // TokenBroker implements result-sharing single flight for token refresh.
@@ -37,7 +39,10 @@ func NewTokenBroker(dir *Directory) *TokenBroker {
 // Refresh if and only if the remaining access-token lifetime is 60 seconds or less,
 // or no access token is persisted.
 // The key is ProviderID, so a slow provider's flight blocks no request to another provider.
-func (b *TokenBroker) AccessToken(ctx context.Context, provider string, refreshFn func(refreshToken string) (accessToken string, refreshTokenOut string, expiresIn time.Duration, err error)) (string, error) {
+func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provider string, refreshFn func(refreshToken string) (accessToken string, refreshTokenOut string, expiresIn time.Duration, err error)) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	b.mu.Lock()
 	if call, ok := b.inFlight[provider]; ok {
 		// Another request is already refreshing this provider's token
@@ -51,7 +56,7 @@ func (b *TokenBroker) AccessToken(ctx context.Context, provider string, refreshF
 
 	// Check if we need to refresh (single-flight setup)
 	// Read the connection record
-	conn, err := b.Directory.Read(ctx, provider)
+	conn, err := b.Directory.Read(ctx, scope, provider)
 	if err != nil {
 		b.mu.Unlock()
 		return "", err
@@ -107,7 +112,7 @@ func (b *TokenBroker) AccessToken(ctx context.Context, provider string, refreshF
 		RefreshToken: call.refreshToken,
 		ExpiresAt:    &expiresAt,
 	}
-	if err := b.Directory.Write(ctx, newConn); err != nil {
+	if err := b.Directory.Write(ctx, scope, newConn); err != nil {
 		return "", fmt.Errorf("failed to write connection: %w", err)
 	}
 

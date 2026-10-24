@@ -33,6 +33,8 @@ func TestPlanReplacesUseAcrossDenverUTCDayBoundary(t *testing.T) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatal(err)
 	}
+	scope := scopeOf(t, conn)
+	household := scope.HouseholdID()
 	if _, err := conn.Exec(`
 		INSERT INTO products (id, name, unit_of_measure) VALUES
 			('prod-rice', 'Rice', 'bag'),
@@ -40,13 +42,15 @@ func TestPlanReplacesUseAcrossDenverUTCDayBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-rice', 'user-1', 'prod-rice'),
-			('item-oats', 'user-1', 'prod-oats')`); err != nil {
+		INSERT INTO items (id, user_id, product_id, household_id) VALUES
+			('item-rice', ?, 'prod-rice', ?),
+			('item-oats', ?, 'prod-oats', ?)`,
+		household, household, household, household); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(
-		`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`,
+		`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		household,
 		started.UTC().Format(time.RFC3339),
 	); err != nil {
 		t.Fatal(err)
@@ -54,25 +58,25 @@ func TestPlanReplacesUseAcrossDenverUTCDayBoundary(t *testing.T) {
 	// Opening scans are not usage. This one is an hour before the snapshot,
 	// still on the Denver evening that UTC already calls the next day.
 	if _, err := conn.Exec(
-		`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('ce-oats', 'item-oats', ?)`,
-		started.Add(-time.Hour),
+		`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('ce-oats', ?, 'item-oats', ?)`,
+		household, started.Add(-time.Hour),
 	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(
-		`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('ce-rice', 'item-rice', ?)`,
-		used,
+		`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('ce-rice', ?, 'item-rice', ?)`,
+		household, used,
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	lines, err := Open(conn).Plan(context.Background(), used.Add(time.Minute))
+	lines, err := Open(conn).Plan(context.Background(), scope, used.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(lines) != 1 || lines[0].Product != "prod-rice" || lines[0].Buy != 1 || lines[0].Note != "replacing 1 you used" || lines[0].Source != SourceReplace {
 		var raw string
-		_ = conn.QueryRow(`SELECT consumed_at FROM consumption_events WHERE id = 'ce-rice'`).Scan(&raw)
+		_ = conn.QueryRow(`SELECT consumed_at FROM consumption_events WHERE id = ? AND household_id = ?`, "ce-rice", household).Scan(&raw)
 		t.Fatalf("lines = %#v\nstored consumed_at = %q\nstarted = %s\nused = %s", lines, raw, started.UTC().Format(time.RFC3339), used.Format(time.RFC3339))
 	}
 }

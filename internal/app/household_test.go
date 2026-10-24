@@ -387,7 +387,7 @@ func TestHouseholdTokensAndNames(t *testing.T) {
 	if _, err := householdReplacer(id, id, issued, "zzzz"); err == nil {
 		t.Fatal("short channel was accepted")
 	}
-	if !validChannel(channel) || validChannel(channel+"0") || validChannel("gggggggggggggggggggggggggggggggg") {
+	if !validChannel(channel) || validChannel(channel+"0") || validChannel("abcd") || validChannel("gggggggggggggggggggggggggggggggg") {
 		t.Fatal("channel check")
 	}
 	hexed, err := randomHex(16)
@@ -601,4 +601,22 @@ func seedSyntheticPantry(db *sql.DB) error {
 		INSERT INTO barcode_misses (barcode, checked_at) VALUES ('0000000000099', '2026-01-01T00:00:00Z');
 	`)
 	return err
+}
+
+func TestHouseholdReplacerRejectsUnsafeValues(t *testing.T) {
+	id := uuid.Must(uuid.NewV7()).String()
+	issued := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).Format(time.RFC3339)
+	channel := "0123456789abcdef0123456789abcdef"
+	if _, err := householdReplacer("", id, issued, channel); err == nil {
+		t.Fatal("empty household id was accepted")
+	}
+	if _, err := householdReplacer(id, id, issued, "abcd"); err == nil {
+		t.Fatal("short hex channel was accepted")
+	}
+	if validChannel("abcd") {
+		t.Fatal("abcd is not a channel key")
+	}
+	if _, err := householdReplacer(id, id, issued, channel); err != nil {
+		t.Fatal(err)
+	}
 }

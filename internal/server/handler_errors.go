@@ -8,7 +8,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/inventory"
-	"github.com/Rhionin/stockbot/internal/restock"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"modernc.org/sqlite"
 )
 
@@ -234,9 +234,9 @@ func logStorageWarning(r *http.Request, err error, event string) {
 	if r != nil {
 		method = r.Method
 		route = requestRoute(r)
-		// One household serves every request until logins name another.
-		// The id is not read from the query or body.
-		household = restock.HouseholdID
+		if scope, ok := tenant.FromContext(r.Context()); ok {
+			household = scope.HouseholdID()
+		}
 	}
 	attrs := []any{"event", event, "method", method, "route", route}
 	if household != "" {

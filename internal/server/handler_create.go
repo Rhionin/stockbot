@@ -8,6 +8,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -95,31 +96,28 @@ func (h *CreateHandler) Handle(req Request[productWriteBody, struct{}]) (Created
 	if err := applyWrittenSize(&prod, req.Body, true); err != nil {
 		return Created{}, err
 	}
-	if err := h.Catalog.CreateProduct(req.Context, prod); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, err
+	}
+	stored, err := h.Catalog.CreateTypedProduct(req.Context, scope, prod)
+	if err != nil {
 		return Created{}, inputOrInternal(err)
 	}
 
-	stored, err := h.Catalog.GetProductByID(req.Context, prod.ID)
+	outcome, err := recordWriteContribution(req.Context, scope, h.Catalog, h.Contributor, req.Body, stored)
 	if err != nil {
 		return Created{}, err
 	}
-	if stored == nil {
-		stored = &prod
-	}
-
-	outcome, err := recordWriteContribution(req.Context, h.Catalog, h.Contributor, req.Body, *stored)
-	if err != nil {
-		return Created{}, err
-	}
-	considerGroupProduct(req.Context, h.Groups, stored.ID)
-	return Created{Value: productWriteResponse{Product: *stored, Contribution: outcome}}, nil
+	considerGroupProduct(req.Context, scope, h.Groups, stored.ID)
+	return Created{Value: productWriteResponse{Product: stored, Contribution: outcome}}, nil
 }
 
-func considerGroupProduct(ctx context.Context, groups *group.Groups, productID string) {
+func considerGroupProduct(ctx context.Context, scope tenant.Scope, groups *group.Groups, productID string) {
 	if groups == nil || strings.TrimSpace(productID) == "" {
 		return
 	}
-	if err := groups.ConsiderProduct(ctx, productID); err != nil {
+	if err := groups.ConsiderProduct(ctx, scope, productID); err != nil {
 		log.Printf("could not update group suggestions: %v", err)
 	}
 }
@@ -131,8 +129,8 @@ func validateWriteContribution(body productWriteBody) error {
 	return nil
 }
 
-func recordWriteContribution(ctx context.Context, catalog *product.Catalog, contributor product.UpstreamContributor, body productWriteBody, prod product.Product) (*product.ShareOutcome, error) {
-	return product.RecordShare(ctx, catalog, contributor, product.ShareRequest{
+func recordWriteContribution(ctx context.Context, scope tenant.Scope, catalog *product.Catalog, contributor product.UpstreamContributor, body productWriteBody, prod product.Product) (*product.ShareOutcome, error) {
+	return product.RecordShare(ctx, scope, catalog, contributor, product.ShareRequest{
 		Contribute:            body.Contribute,
 		ProductID:             prod.ID,
 		Name:                  prod.Name,

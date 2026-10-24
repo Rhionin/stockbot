@@ -13,13 +13,13 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 	"modernc.org/sqlite"
 )
 
 const (
-	householdUser = "user-1"
-	settingRule   = "default_group_rule"
+	settingRule = "default_group_rule"
 
 	codeInvalid  = "invalid"
 	codeMissing  = "missing"
@@ -195,9 +195,12 @@ func ValidateTarget(in *TargetInput) error {
 }
 
 // List returns every group, with members.
-func (g *Groups) List(ctx context.Context) ([]Group, error) {
+func (g *Groups) List(ctx context.Context, scope tenant.Scope) ([]Group, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := g.db.QueryContext(ctx, `
-		SELECT id FROM product_groups WHERE user_id = ? ORDER BY name, id`, householdUser)
+		SELECT id FROM product_groups WHERE household_id = ? ORDER BY name, id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not load groups: %w", err)
 	}
@@ -215,7 +218,7 @@ func (g *Groups) List(ctx context.Context) ([]Group, error) {
 	}
 	out := make([]Group, 0, len(ids))
 	for _, id := range ids {
-		view, err := g.load(ctx, g.db, id)
+		view, err := g.load(ctx, scope, g.db, id)
 		if err != nil {
 			return nil, err
 		}
@@ -225,13 +228,19 @@ func (g *Groups) List(ctx context.Context) ([]Group, error) {
 }
 
 // Get returns one group.
-func (g *Groups) Get(ctx context.Context, id string) (Group, error) {
-	return g.load(ctx, g.db, id)
+func (g *Groups) Get(ctx context.Context, scope tenant.Scope, id string) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
+	return g.load(ctx, scope, g.db, id)
 }
 
 // Create inserts a group. productIDs may be empty.
 // A nil target leaves the account window, unless a product already has its own supply setting.
-func (g *Groups) Create(ctx context.Context, name string, productIDs []string, target *TargetInput) (Group, error) {
+func (g *Groups) Create(ctx context.Context, scope tenant.Scope, name string, productIDs []string, target *TargetInput) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	if err := ValidateTarget(target); err != nil {
 		return Group{}, err
 	}
@@ -239,7 +248,7 @@ func (g *Groups) Create(ctx context.Context, name string, productIDs []string, t
 	// A duplicate name is a conflict the caller can fix, and a reader can
 	// see it while that lock is held, so the answer does not have to wait.
 	// insertGroup checks again inside the write transaction.
-	if err := g.preflightName(ctx, name); err != nil {
+	if err := g.preflightName(ctx, scope, name); err != nil {
 		return Group{}, err
 	}
 	tx, err := g.db.BeginTx(ctx, nil)
@@ -247,18 +256,21 @@ func (g *Groups) Create(ctx context.Context, name string, productIDs []string, t
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
 	}
 	defer tx.Rollback()
-	id, err := createInTx(ctx, tx, name, productIDs, target)
+	id, err := createInTx(ctx, scope, tx, name, productIDs, target)
 	if err != nil {
 		return Group{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
 	}
-	return g.load(ctx, g.db, id)
+	return g.load(ctx, scope, g.db, id)
 }
 
 // Rename changes the group's name.
-func (g *Groups) Rename(ctx context.Context, id, name string) (Group, error) {
+func (g *Groups) Rename(ctx context.Context, scope tenant.Scope, id, name string) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return Group{}, err
@@ -268,13 +280,13 @@ func (g *Groups) Rename(ctx context.Context, id, name string) (Group, error) {
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ensureGroup(ctx, tx, id); err != nil {
+	if err := ensureGroup(ctx, scope, tx, id); err != nil {
 		return Group{}, err
 	}
-	if err := ensureNameFree(ctx, tx, key, id); err != nil {
+	if err := ensureNameFree(ctx, scope, tx, key, id); err != nil {
 		return Group{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE product_groups SET name = ?, name_key = ? WHERE id = ?`, strings.TrimSpace(name), key, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE product_groups SET name = ?, name_key = ? WHERE id = ? AND household_id = ?`, strings.TrimSpace(name), key, id, scope.HouseholdID()); err != nil {
 		if taken := nameConflict(err); taken != nil {
 			return Group{}, taken
 		}
@@ -283,23 +295,26 @@ func (g *Groups) Rename(ctx context.Context, id, name string) (Group, error) {
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
 	}
-	return g.load(ctx, g.db, id)
+	return g.load(ctx, scope, g.db, id)
 }
 
 // Delete removes a group and its members.
-func (g *Groups) Delete(ctx context.Context, id string) error {
+func (g *Groups) Delete(ctx context.Context, scope tenant.Scope, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not delete the group: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ensureGroup(ctx, tx, id); err != nil {
+	if err := ensureGroup(ctx, scope, tx, id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE group_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE group_id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not delete the group: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND user_id = ?`, id, householdUser); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not delete the group: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -310,7 +325,10 @@ func (g *Groups) Delete(ctx context.Context, id string) error {
 
 // AddMembers puts products in the group.
 // fromGroupID moves them out of that group. Without it, a product already in a group is refused.
-func (g *Groups) AddMembers(ctx context.Context, id string, productIDs []string, fromGroupID string, target *TargetInput) (Group, error) {
+func (g *Groups) AddMembers(ctx context.Context, scope tenant.Scope, id string, productIDs []string, fromGroupID string, target *TargetInput) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	if err := ValidateTarget(target); err != nil {
 		return Group{}, err
 	}
@@ -323,30 +341,33 @@ func (g *Groups) AddMembers(ctx context.Context, id string, productIDs []string,
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ensureGroup(ctx, tx, id); err != nil {
+	if err := ensureGroup(ctx, scope, tx, id); err != nil {
 		return Group{}, err
 	}
-	if err := addMembersInTx(ctx, tx, id, ids, fromGroupID, target); err != nil {
+	if err := addMembersInTx(ctx, scope, tx, id, ids, fromGroupID, target); err != nil {
 		return Group{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
-	return g.load(ctx, g.db, id)
+	return g.load(ctx, scope, g.db, id)
 }
 
 // RemoveMember takes one product out. The last member deletes the group.
 // Removing the pinned product clears the pin.
-func (g *Groups) RemoveMember(ctx context.Context, id, productID string) (Group, bool, error) {
+func (g *Groups) RemoveMember(ctx context.Context, scope tenant.Scope, id, productID string) (Group, bool, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, false, err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ensureGroup(ctx, tx, id); err != nil {
+	if err := ensureGroup(ctx, scope, tx, id); err != nil {
 		return Group{}, false, err
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE group_id = ? AND product_id = ?`, id, productID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE group_id = ? AND product_id = ? AND household_id = ?`, id, productID, scope.HouseholdID())
 	if err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
@@ -357,15 +378,15 @@ func (g *Groups) RemoveMember(ctx context.Context, id, productID string) (Group,
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE product_groups
 		SET pinned_product_id = NULL, rule_confirmed = 0
-		WHERE id = ? AND pinned_product_id = ?`, id, productID); err != nil {
+		WHERE id = ? AND pinned_product_id = ? AND household_id = ?`, id, productID, scope.HouseholdID()); err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
 	var left int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_group_members WHERE group_id = ?`, id).Scan(&left); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_group_members WHERE group_id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&left); err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
 	if left == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()); err != nil {
 			return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -376,13 +397,16 @@ func (g *Groups) RemoveMember(ctx context.Context, id, productID string) (Group,
 	if err := tx.Commit(); err != nil {
 		return Group{}, false, fmt.Errorf("could not update the group: %w", err)
 	}
-	view, err := g.load(ctx, g.db, id)
+	view, err := g.load(ctx, scope, g.db, id)
 	return view, false, err
 }
 
 // SetRule saves the rule. A non-empty pin must be a current member.
 // A nil pin keeps the pin already stored. confirm records that the sheet was saved.
-func (g *Groups) SetRule(ctx context.Context, id, rule string, pin *string, confirm bool) (Group, error) {
+func (g *Groups) SetRule(ctx context.Context, scope tenant.Scope, id, rule string, pin *string, confirm bool) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	if !Valid(rule) {
 		return Group{}, invalid("Pick one of the rules.")
 	}
@@ -391,7 +415,7 @@ func (g *Groups) SetRule(ctx context.Context, id, rule string, pin *string, conf
 		return Group{}, fmt.Errorf("could not save the rule: %w", err)
 	}
 	defer tx.Rollback()
-	view, err := g.load(ctx, tx, id)
+	view, err := g.load(ctx, scope, tx, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -415,56 +439,62 @@ func (g *Groups) SetRule(ctx context.Context, id, rule string, pin *string, conf
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE product_groups
 		SET rule = ?, pinned_product_id = ?, rule_confirmed = ?
-		WHERE id = ?`, rule, pinVal, confirmed, id); err != nil {
+		WHERE id = ? AND household_id = ?`, rule, pinVal, confirmed, id, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the rule: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not save the rule: %w", err)
 	}
-	return g.load(ctx, g.db, id)
+	return g.load(ctx, scope, g.db, id)
 }
 
 // SetMemberRestock keeps a product in the group and out of every shopping rule.
 // noRestock false puts it back in the rotation. The declaration is an item
 // target of 0, the same store every other don't-restock action uses.
-func (g *Groups) SetMemberRestock(ctx context.Context, groupID, productID string, noRestock bool) (Group, error) {
-	if err := ensureGroup(ctx, g.db, groupID); err != nil {
+func (g *Groups) SetMemberRestock(ctx context.Context, scope tenant.Scope, groupID, productID string, noRestock bool) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
+	if err := ensureGroup(ctx, scope, g.db, groupID); err != nil {
 		return Group{}, err
 	}
 	var exists int
 	err := g.db.QueryRowContext(ctx, `
-		SELECT 1 FROM product_group_members WHERE group_id = ? AND product_id = ?`, groupID, productID).Scan(&exists)
+		SELECT 1 FROM product_group_members WHERE group_id = ? AND product_id = ? AND household_id = ?`, groupID, productID, scope.HouseholdID()).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, missing("That product is not in this group.")
 	}
 	if err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
-	itemID, err := ensureHouseholdItem(ctx, g.db, productID)
+	itemID, err := ensureHouseholdItem(ctx, scope, g.db, productID)
 	if err != nil {
 		return Group{}, err
 	}
 	if noRestock {
 		_, err = g.db.ExecContext(ctx, `
 			INSERT INTO item_targets (household_id, item_id, kind, value)
-			VALUES ((SELECT id FROM households WHERE is_primary = 1), ?, 'months', 0)
+			VALUES (?, ?, 'months', 0)
 			ON CONFLICT (household_id, item_id) DO UPDATE SET kind = 'months', value = 0`,
-			itemID)
+			scope.HouseholdID(), itemID)
 	} else {
 		_, err = g.db.ExecContext(ctx, `
-			DELETE FROM item_targets WHERE household_id = (SELECT id FROM households WHERE is_primary = 1) AND item_id = ? AND value = 0`,
-			itemID)
+			DELETE FROM item_targets WHERE household_id = ? AND item_id = ? AND value = 0`,
+			scope.HouseholdID(), itemID)
 	}
 	if err != nil {
 		return Group{}, fmt.Errorf("could not update the group: %w", err)
 	}
-	return g.load(ctx, g.db, groupID)
+	return g.load(ctx, scope, g.db, groupID)
 }
 
-func ensureHouseholdItem(ctx context.Context, q querier, productID string) (string, error) {
+func ensureHouseholdItem(ctx context.Context, scope tenant.Scope, q querier, productID string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var id string
 	err := q.QueryRowContext(ctx, `
-		SELECT id FROM items WHERE user_id = ? AND product_id = ?`, householdUser, productID).Scan(&id)
+		SELECT id FROM items WHERE household_id = ? AND product_id = ?`, scope.HouseholdID(), productID).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -473,14 +503,17 @@ func ensureHouseholdItem(ctx context.Context, q querier, productID string) (stri
 	}
 	id = uuid.NewString()
 	if _, err := q.ExecContext(ctx, `
-		INSERT INTO items (id, user_id, product_id) VALUES (?, ?, ?)`, id, householdUser, productID); err != nil {
+		INSERT INTO items (id, household_id, user_id, product_id) VALUES (?, ?, ?, ?)`, id, scope.HouseholdID(), scope.HouseholdID(), productID); err != nil {
 		return "", fmt.Errorf("could not update the group: %w", err)
 	}
 	return id, nil
 }
 
 // SetTarget saves the group's target and does not change member supply settings.
-func (g *Groups) SetTarget(ctx context.Context, id string, target *TargetInput) (Group, error) {
+func (g *Groups) SetTarget(ctx context.Context, scope tenant.Scope, id string, target *TargetInput) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	if target == nil {
 		return Group{}, invalid("Choose a window, a quantity, or clearing the target.")
 	}
@@ -492,26 +525,29 @@ func (g *Groups) SetTarget(ctx context.Context, id string, target *TargetInput) 
 		return Group{}, fmt.Errorf("could not save the target: %w", err)
 	}
 	defer tx.Rollback()
-	view, err := g.load(ctx, tx, id)
+	view, err := g.load(ctx, scope, tx, id)
 	if err != nil {
 		return Group{}, err
 	}
 	ids := memberIDs(view.Members)
-	if err := applyTarget(ctx, tx, id, target, ids); err != nil {
+	if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
 		return Group{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not save the target: %w", err)
 	}
-	return g.load(ctx, g.db, id)
+	return g.load(ctx, scope, g.db, id)
 }
 
 // MemberGroupID returns the group a product belongs to.
 // An empty id means the product is not in a group.
-func (g *Groups) MemberGroupID(ctx context.Context, productID string) (string, error) {
+func (g *Groups) MemberGroupID(ctx context.Context, scope tenant.Scope, productID string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var id string
 	err := g.db.QueryRowContext(ctx, `
-		SELECT group_id FROM product_group_members WHERE product_id = ?`, productID).Scan(&id)
+		SELECT group_id FROM product_group_members WHERE product_id = ? AND household_id = ?`, productID, scope.HouseholdID()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -521,19 +557,26 @@ func (g *Groups) MemberGroupID(ctx context.Context, productID string) (string, e
 	return id, nil
 }
 
-// DefaultRule is the account rule. A missing setting means same as what ran out.
-func (g *Groups) DefaultRule(ctx context.Context) (Kind, error) {
-	return readDefault(ctx, g.db)
+// DefaultRule is this household's rule. A missing setting means same as what ran out.
+func (g *Groups) DefaultRule(ctx context.Context, scope tenant.Scope) (Kind, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	return readDefault(ctx, scope, g.db)
 }
 
-// SetDefaultRule stores the account rule.
-func (g *Groups) SetDefaultRule(ctx context.Context, rule string) error {
+// SetDefaultRule stores this household's rule.
+func (g *Groups) SetDefaultRule(ctx context.Context, scope tenant.Scope, rule string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if !Valid(rule) {
 		return invalid("Pick one of the rules.")
 	}
 	_, err := g.db.ExecContext(ctx, `
-		INSERT INTO app_settings (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, settingRule, rule)
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, ?)
+		ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
+		scope.HouseholdID(), settingRule, rule)
 	if err != nil {
 		return fmt.Errorf("could not save the default rule: %w", err)
 	}
@@ -541,19 +584,25 @@ func (g *Groups) SetDefaultRule(ctx context.Context, rule string) error {
 }
 
 // ListSuggestions refreshes look-alike and same-need cards, then returns the open ones.
-func (g *Groups) ListSuggestions(ctx context.Context) ([]Suggestion, error) {
-	if err := g.RefreshSuggestions(ctx); err != nil {
+func (g *Groups) ListSuggestions(ctx context.Context, scope tenant.Scope) ([]Suggestion, error) {
+	if err := scope.Require(); err != nil {
 		return nil, err
 	}
-	return g.listOpenSuggestions(ctx)
+	if err := g.RefreshSuggestions(ctx, scope); err != nil {
+		return nil, err
+	}
+	return g.listOpenSuggestions(ctx, scope)
 }
 
-func (g *Groups) listOpenSuggestions(ctx context.Context) ([]Suggestion, error) {
+func (g *Groups) listOpenSuggestions(ctx context.Context, scope tenant.Scope) ([]Suggestion, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := g.db.QueryContext(ctx, `
 		SELECT id, kind, title, proposed_rule, pinned_product_id, existing_group_id, status
 		FROM group_suggestions
-		WHERE user_id = ? AND status = 'open'
-		ORDER BY created_at, id`, householdUser)
+		WHERE household_id = ? AND status = 'open'
+		ORDER BY created_at, id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not load suggestions: %w", err)
 	}
@@ -573,7 +622,7 @@ func (g *Groups) listOpenSuggestions(ctx context.Context) ([]Suggestion, error) 
 		out = []Suggestion{}
 	}
 	for i := range out {
-		members, err := suggestionMembers(ctx, g.db, out[i].ID)
+		members, err := suggestionMembers(ctx, scope, g.db, out[i].ID)
 		if err != nil {
 			return nil, err
 		}
@@ -589,7 +638,10 @@ func (g *Groups) listOpenSuggestions(ctx context.Context) ([]Suggestion, error) 
 // Accept creates a group or adds to the card's existing group.
 // A nil productIDs uses the checked rows. Pairs between a checked product and an
 // unchecked one are dismissed. The card stays open when a target is still required.
-func (g *Groups) Accept(ctx context.Context, suggestionID string, productIDs []string, target *TargetInput, name string) (Group, error) {
+func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID string, productIDs []string, target *TargetInput, name string) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	if err := ValidateTarget(target); err != nil {
 		return Group{}, err
 	}
@@ -598,14 +650,14 @@ func (g *Groups) Accept(ctx context.Context, suggestionID string, productIDs []s
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
 	defer tx.Rollback()
-	s, err := loadSuggestion(ctx, tx, suggestionID)
+	s, err := loadSuggestion(ctx, scope, tx, suggestionID)
 	if err != nil {
 		return Group{}, err
 	}
 	if s.Status != "open" {
 		return Group{}, conflict("That suggestion is already settled.")
 	}
-	members, err := suggestionMembers(ctx, tx, suggestionID)
+	members, err := suggestionMembers(ctx, scope, tx, suggestionID)
 	if err != nil {
 		return Group{}, err
 	}
@@ -615,10 +667,10 @@ func (g *Groups) Accept(ctx context.Context, suggestionID string, productIDs []s
 	}
 	var groupID string
 	if s.ExistingGroupID != "" {
-		if err := ensureGroup(ctx, tx, s.ExistingGroupID); err != nil {
+		if err := ensureGroup(ctx, scope, tx, s.ExistingGroupID); err != nil {
 			return Group{}, err
 		}
-		if err := addMembersInTx(ctx, tx, s.ExistingGroupID, included, "", target); err != nil {
+		if err := addMembersInTx(ctx, scope, tx, s.ExistingGroupID, included, "", target); err != nil {
 			return Group{}, err
 		}
 		groupID = s.ExistingGroupID
@@ -627,7 +679,7 @@ func (g *Groups) Accept(ctx context.Context, suggestionID string, productIDs []s
 		if Valid(s.ProposedRule) {
 			rule = s.ProposedRule
 		} else {
-			def, err := readDefault(ctx, tx)
+			def, err := readDefault(ctx, scope, tx)
 			if err != nil {
 				return Group{}, err
 			}
@@ -641,38 +693,41 @@ func (g *Groups) Accept(ctx context.Context, suggestionID string, productIDs []s
 		if strings.TrimSpace(name) != "" {
 			title = name
 		}
-		groupID, err = insertGroup(ctx, tx, title, rule, pin, included, target)
+		groupID, err = insertGroup(ctx, scope, tx, title, rule, pin, included, target)
 		if err != nil {
 			return Group{}, err
 		}
 	}
-	if err := dismissPairs(ctx, tx, excluded, included); err != nil {
+	if err := dismissPairs(ctx, scope, tx, excluded, included); err != nil {
 		return Group{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'accepted' WHERE id = ?`, suggestionID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'accepted' WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
-	return g.load(ctx, g.db, groupID)
+	return g.load(ctx, scope, g.db, groupID)
 }
 
 // Dismiss marks every pair in the card and closes it.
-func (g *Groups) Dismiss(ctx context.Context, suggestionID string) error {
+func (g *Groups) Dismiss(ctx context.Context, scope tenant.Scope, suggestionID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not dismiss the suggestion: %w", err)
 	}
 	defer tx.Rollback()
-	s, err := loadSuggestion(ctx, tx, suggestionID)
+	s, err := loadSuggestion(ctx, scope, tx, suggestionID)
 	if err != nil {
 		return err
 	}
 	if s.Status != "open" {
 		return conflict("That suggestion is already settled.")
 	}
-	members, err := suggestionMembers(ctx, tx, suggestionID)
+	members, err := suggestionMembers(ctx, scope, tx, suggestionID)
 	if err != nil {
 		return err
 	}
@@ -680,23 +735,29 @@ func (g *Groups) Dismiss(ctx context.Context, suggestionID string) error {
 	for i, m := range members {
 		ids[i] = m.ProductID
 	}
-	if err := dismissPairs(ctx, tx, ids, ids); err != nil {
+	if err := dismissPairs(ctx, scope, tx, ids, ids); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'dismissed' WHERE id = ?`, suggestionID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'dismissed' WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not dismiss the suggestion: %w", err)
 	}
 	return tx.Commit()
 }
 
 // Skip leaves the card open.
-func (g *Groups) Skip(ctx context.Context, suggestionID string) error {
-	_, err := loadSuggestion(ctx, g.db, suggestionID)
+func (g *Groups) Skip(ctx context.Context, scope tenant.Scope, suggestionID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := loadSuggestion(ctx, scope, g.db, suggestionID)
 	return err
 }
 
 // DealsFor returns sales for the household items of these products.
-func (g *Groups) DealsFor(ctx context.Context, productIDs []string) ([]shopping.Deal, error) {
+func (g *Groups) DealsFor(ctx context.Context, scope tenant.Scope, productIDs []string) ([]shopping.Deal, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	ids := dedupe(productIDs)
 	if len(ids) == 0 {
 		return nil, nil
@@ -704,10 +765,10 @@ func (g *Groups) DealsFor(ctx context.Context, productIDs []string) ([]shopping.
 	query := `
 		SELECT d.item_id, d.price_cents, d.regular_price_cents, d.label, d.source, d.updated_at
 		FROM item_deals d
-		JOIN items i ON i.id = d.item_id AND i.user_id = d.user_id
-		WHERE d.user_id = ? AND i.product_id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, householdUser)
+		JOIN items i ON i.id = d.item_id AND i.household_id = d.household_id
+		WHERE d.household_id = ? AND i.household_id = ? AND i.product_id IN (` + placeholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, scope.HouseholdID(), scope.HouseholdID())
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -739,15 +800,21 @@ func (g *Groups) DealsFor(ctx context.Context, productIDs []string) ([]shopping.
 	return deals, nil
 }
 
-func createInTx(ctx context.Context, tx *sql.Tx, name string, productIDs []string, target *TargetInput) (string, error) {
-	rule, err := readDefault(ctx, tx)
+func createInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name string, productIDs []string, target *TargetInput) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	rule, err := readDefault(ctx, scope, tx)
 	if err != nil {
 		return "", err
 	}
-	return insertGroup(ctx, tx, name, string(rule), "", dedupe(productIDs), target)
+	return insertGroup(ctx, scope, tx, name, string(rule), "", dedupe(productIDs), target)
 }
 
-func insertGroup(ctx context.Context, tx *sql.Tx, name, rule, pin string, productIDs []string, target *TargetInput) (string, error) {
+func insertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name, rule, pin string, productIDs []string, target *TargetInput) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return "", err
@@ -755,17 +822,17 @@ func insertGroup(ctx context.Context, tx *sql.Tx, name, rule, pin string, produc
 	if !Valid(rule) {
 		return "", invalid("Pick one of the rules.")
 	}
-	if err := ensureNameFree(ctx, tx, key, ""); err != nil {
+	if err := ensureNameFree(ctx, scope, tx, key, ""); err != nil {
 		return "", err
 	}
 	ids := dedupe(productIDs)
 	if err := ensureProducts(ctx, tx, ids); err != nil {
 		return "", err
 	}
-	if err := ensureJoinable(ctx, tx, ids, "", ""); err != nil {
+	if err := ensureJoinable(ctx, scope, tx, ids, "", ""); err != nil {
 		return "", err
 	}
-	if err := requireTargetOrNone(ctx, tx, ids, target); err != nil {
+	if err := requireTargetOrNone(ctx, scope, tx, ids, target); err != nil {
 		return "", err
 	}
 	id := uuid.NewString()
@@ -774,70 +841,76 @@ func insertGroup(ctx context.Context, tx *sql.Tx, name, rule, pin string, produc
 		pinVal = pin
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO product_groups (id, user_id, name, name_key, rule, pinned_product_id)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		id, householdUser, strings.TrimSpace(name), key, rule, pinVal); err != nil {
+		INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, pinned_product_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, scope.HouseholdID(), scope.HouseholdID(), strings.TrimSpace(name), key, rule, pinVal); err != nil {
 		if taken := nameConflict(err); taken != nil {
 			return "", taken
 		}
 		return "", fmt.Errorf("could not save the group: %w", err)
 	}
 	for _, productID := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (product_id, group_id) VALUES (?, ?)`, productID, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (household_id, product_id, group_id) VALUES (?, ?, ?)`, scope.HouseholdID(), productID, id); err != nil {
 			return "", fmt.Errorf("could not save the group: %w", err)
 		}
 	}
 	if target != nil {
-		if err := applyTarget(ctx, tx, id, target, ids); err != nil {
+		if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
 			return "", err
 		}
-		if err := deleteOverrides(ctx, tx, ids); err != nil {
+		if err := deleteOverrides(ctx, scope, tx, ids); err != nil {
 			return "", err
 		}
 	}
 	return id, nil
 }
 
-func addMembersInTx(ctx context.Context, tx *sql.Tx, groupID string, productIDs []string, fromGroupID string, target *TargetInput) error {
+func addMembersInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, productIDs []string, fromGroupID string, target *TargetInput) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	ids := dedupe(productIDs)
 	if err := ensureProducts(ctx, tx, ids); err != nil {
 		return err
 	}
-	joining, err := classifyJoining(ctx, tx, groupID, ids, fromGroupID)
+	joining, err := classifyJoining(ctx, scope, tx, groupID, ids, fromGroupID)
 	if err != nil {
 		return err
 	}
-	if err := requireTargetOrNone(ctx, tx, joining, target); err != nil {
+	if err := requireTargetOrNone(ctx, scope, tx, joining, target); err != nil {
 		return err
 	}
 	for _, productID := range joining {
-		if err := moveMember(ctx, tx, groupID, productID, fromGroupID); err != nil {
+		if err := moveMember(ctx, scope, tx, groupID, productID, fromGroupID); err != nil {
 			return err
 		}
 	}
 	if target != nil {
-		all, err := memberIDsOf(ctx, tx, groupID)
+		all, err := memberIDsOf(ctx, scope, tx, groupID)
 		if err != nil {
 			return err
 		}
-		if err := applyTarget(ctx, tx, groupID, target, all); err != nil {
+		if err := applyTarget(ctx, scope, tx, groupID, target, all); err != nil {
 			return err
 		}
-		if err := deleteOverrides(ctx, tx, joining); err != nil {
+		if err := deleteOverrides(ctx, scope, tx, joining); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func moveMember(ctx context.Context, tx *sql.Tx, dest, productID, fromGroupID string) error {
+func moveMember(ctx context.Context, scope tenant.Scope, tx *sql.Tx, dest, productID, fromGroupID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var current sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT group_id FROM product_group_members WHERE product_id = ?`, productID).Scan(&current)
+	err := tx.QueryRowContext(ctx, `SELECT group_id FROM product_group_members WHERE product_id = ? AND household_id = ?`, productID, scope.HouseholdID()).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
 		if fromGroupID != "" {
 			return invalid("That product is not in the group you named.")
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (product_id, group_id) VALUES (?, ?)`, productID, dest); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (household_id, product_id, group_id) VALUES (?, ?, ?)`, scope.HouseholdID(), productID, dest); err != nil {
 			return fmt.Errorf("could not update the group: %w", err)
 		}
 		return nil
@@ -854,37 +927,40 @@ func moveMember(ctx context.Context, tx *sql.Tx, dest, productID, fromGroupID st
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE product_groups
 		SET pinned_product_id = NULL, rule_confirmed = 0
-		WHERE id = ? AND pinned_product_id = ?`, fromGroupID, productID); err != nil {
+		WHERE id = ? AND pinned_product_id = ? AND household_id = ?`, fromGroupID, productID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not update the group: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE product_id = ? AND group_id = ?`, productID, fromGroupID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_group_members WHERE product_id = ? AND group_id = ? AND household_id = ?`, productID, fromGroupID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not update the group: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (product_id, group_id) VALUES (?, ?)`, productID, dest); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO product_group_members (household_id, product_id, group_id) VALUES (?, ?, ?)`, scope.HouseholdID(), productID, dest); err != nil {
 		return fmt.Errorf("could not update the group: %w", err)
 	}
 	var left int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_group_members WHERE group_id = ?`, fromGroupID).Scan(&left); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_group_members WHERE group_id = ? AND household_id = ?`, fromGroupID, scope.HouseholdID()).Scan(&left); err != nil {
 		return fmt.Errorf("could not update the group: %w", err)
 	}
 	if left == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ?`, fromGroupID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM product_groups WHERE id = ? AND household_id = ?`, fromGroupID, scope.HouseholdID()); err != nil {
 			return fmt.Errorf("could not update the group: %w", err)
 		}
 	}
 	return nil
 }
 
-func classifyJoining(ctx context.Context, tx *sql.Tx, dest string, ids []string, fromGroupID string) ([]string, error) {
+func classifyJoining(ctx context.Context, scope tenant.Scope, tx *sql.Tx, dest string, ids []string, fromGroupID string) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if fromGroupID != "" {
-		if err := ensureGroup(ctx, tx, fromGroupID); err != nil {
+		if err := ensureGroup(ctx, scope, tx, fromGroupID); err != nil {
 			return nil, err
 		}
 	}
 	var joining []string
 	for _, id := range ids {
 		var current sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT group_id FROM product_group_members WHERE product_id = ?`, id).Scan(&current)
+		err := tx.QueryRowContext(ctx, `SELECT group_id FROM product_group_members WHERE product_id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&current)
 		if errors.Is(err, sql.ErrNoRows) {
 			if fromGroupID != "" {
 				return nil, invalid("That product is not in the group you named.")
@@ -906,16 +982,22 @@ func classifyJoining(ctx context.Context, tx *sql.Tx, dest string, ids []string,
 	return joining, nil
 }
 
-func ensureJoinable(ctx context.Context, tx *sql.Tx, ids []string, dest, fromGroupID string) error {
-	_, err := classifyJoining(ctx, tx, dest, ids, fromGroupID)
+func ensureJoinable(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []string, dest, fromGroupID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := classifyJoining(ctx, scope, tx, dest, ids, fromGroupID)
 	return err
 }
 
-func requireTargetOrNone(ctx context.Context, q querier, ids []string, target *TargetInput) error {
+func requireTargetOrNone(ctx context.Context, scope tenant.Scope, q querier, ids []string, target *TargetInput) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if target != nil || len(ids) == 0 {
 		return nil
 	}
-	notices, err := overrideNotices(ctx, q, ids)
+	notices, err := overrideNotices(ctx, scope, q, ids)
 	if err != nil {
 		return err
 	}
@@ -925,21 +1007,24 @@ func requireTargetOrNone(ctx context.Context, q querier, ids []string, target *T
 	return &Error{Code: codeTarget, Msg: targetRequiredMessage, Members: notices}
 }
 
-func overrideNotices(ctx context.Context, q querier, ids []string) ([]OverrideNotice, error) {
+func overrideNotices(ctx context.Context, scope tenant.Scope, q querier, ids []string) ([]OverrideNotice, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	query := `
-		SELECT i.product_id, p.name,
+		SELECT i.product_id, ` + product.DisplayNameSQL("p") + `,
 			CASE WHEN t.kind = 'months' THEN t.value END,
 			CASE WHEN t.kind = 'amount' THEN t.value END,
 			p.net_base_value, COALESCE(p.net_dimension, '')
 		FROM item_targets t
-		JOIN items i ON i.id = t.item_id AND i.user_id = ?
+		JOIN items i ON i.id = t.item_id AND i.household_id = t.household_id
 		JOIN products p ON p.id = i.product_id
-		WHERE t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, householdUser)
+		WHERE t.household_id = ? AND i.household_id = ? AND t.value > 0 AND i.product_id IN (` + placeholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID())
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -980,22 +1065,26 @@ func overrideNotices(ctx context.Context, q querier, ids []string) ([]OverrideNo
 	return notices, nil
 }
 
-func deleteOverrides(ctx context.Context, tx *sql.Tx, ids []string) error {
+func deleteOverrides(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(ids) == 0 {
 		return nil
 	}
-	query := `DELETE FROM supply_overrides WHERE product_id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+	query := `DELETE FROM supply_overrides WHERE household_id = ? AND product_id IN (` + placeholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, scope.HouseholdID())
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("could not update supply settings: %w", err)
 	}
-	itemQuery := `DELETE FROM item_targets WHERE value > 0 AND item_id IN (
-		SELECT id FROM items WHERE user_id = ? AND product_id IN (` + placeholders(len(ids)) + `))`
-	itemArgs := make([]any, 0, len(ids)+1)
-	itemArgs = append(itemArgs, householdUser)
+	itemQuery := `DELETE FROM item_targets WHERE household_id = ? AND value > 0 AND item_id IN (
+		SELECT id FROM items WHERE household_id = ? AND product_id IN (` + placeholders(len(ids)) + `))`
+	itemArgs := make([]any, 0, len(ids)+2)
+	itemArgs = append(itemArgs, scope.HouseholdID(), scope.HouseholdID())
 	for _, id := range ids {
 		itemArgs = append(itemArgs, id)
 	}
@@ -1005,7 +1094,10 @@ func deleteOverrides(ctx context.Context, tx *sql.Tx, ids []string) error {
 	return nil
 }
 
-func applyTarget(ctx context.Context, tx *sql.Tx, groupID string, in *TargetInput, inferIDs []string) error {
+func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, in *TargetInput, inferIDs []string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if in == nil {
 		return nil
 	}
@@ -1016,7 +1108,7 @@ func applyTarget(ctx context.Context, tx *sql.Tx, groupID string, in *TargetInpu
 		_, err := tx.ExecContext(ctx, `
 			UPDATE product_groups
 			SET window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL
-			WHERE id = ?`, groupID)
+			WHERE id = ? AND household_id = ?`, groupID, scope.HouseholdID())
 		if err != nil {
 			return fmt.Errorf("could not save the target: %w", err)
 		}
@@ -1026,7 +1118,7 @@ func applyTarget(ctx context.Context, tx *sql.Tx, groupID string, in *TargetInpu
 		_, err := tx.ExecContext(ctx, `
 			UPDATE product_groups
 			SET window_months = ?, quantity_base_value = NULL, quantity_dimension = NULL
-			WHERE id = ?`, *in.Window, groupID)
+			WHERE id = ? AND household_id = ?`, *in.Window, groupID, scope.HouseholdID())
 		if err != nil {
 			return fmt.Errorf("could not save the target: %w", err)
 		}
@@ -1043,7 +1135,7 @@ func applyTarget(ctx context.Context, tx *sql.Tx, groupID string, in *TargetInpu
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE product_groups
 		SET window_months = NULL, quantity_base_value = ?, quantity_dimension = ?
-		WHERE id = ?`, base, dim, groupID); err != nil {
+		WHERE id = ? AND household_id = ?`, base, dim, groupID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not save the target: %w", err)
 	}
 	return nil
@@ -1097,7 +1189,10 @@ func unitFor(dim string) string {
 	return "oz"
 }
 
-func (g *Groups) load(ctx context.Context, q querier, id string) (Group, error) {
+func (g *Groups) load(ctx context.Context, scope tenant.Scope, q querier, id string) (Group, error) {
+	if err := scope.Require(); err != nil {
+		return Group{}, err
+	}
 	var view Group
 	var pin, dim sql.NullString
 	var window sql.NullInt64
@@ -1105,7 +1200,7 @@ func (g *Groups) load(ctx context.Context, q querier, id string) (Group, error) 
 	var confirmed int
 	err := q.QueryRowContext(ctx, `
 		SELECT id, name, rule, rule_confirmed, pinned_product_id, window_months, quantity_base_value, quantity_dimension
-		FROM product_groups WHERE id = ? AND user_id = ?`, id, householdUser).Scan(
+		FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(
 		&view.ID, &view.Name, &view.Rule, &confirmed, &pin, &window, &qty, &dim)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, missing("That group is not here.")
@@ -1129,7 +1224,7 @@ func (g *Groups) load(ctx context.Context, q querier, id string) (Group, error) 
 			view.Quantity = &amount
 		}
 	}
-	members, err := loadMembers(ctx, q, id)
+	members, err := loadMembers(ctx, scope, q, id)
 	if err != nil {
 		return Group{}, err
 	}
@@ -1137,28 +1232,33 @@ func (g *Groups) load(ctx context.Context, q querier, id string) (Group, error) 
 	return view, nil
 }
 
-func loadMembers(ctx context.Context, q querier, groupID string) ([]Member, error) {
+func loadMembers(ctx context.Context, scope tenant.Scope, q querier, groupID string) ([]Member, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	household := scope.HouseholdID()
 	rows, err := q.QueryContext(ctx, `
-		SELECT m.product_id, p.name,
+		SELECT m.product_id, `+product.DisplayNameSQL("p")+`,
 		       (SELECT COUNT(*) FROM item_instances ii
-		         JOIN items i ON i.id = ii.item_id
-		         WHERE i.product_id = m.product_id AND i.user_id = ? AND ii.removed_at IS NULL),
-		       (SELECT i2.id FROM items i2 WHERE i2.product_id = m.product_id AND i2.user_id = ? LIMIT 1),
+		         JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		         WHERE i.product_id = m.product_id AND i.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL),
+		       (SELECT i2.id FROM items i2 WHERE i2.product_id = m.product_id AND i2.household_id = ? LIMIT 1),
 		       p.net_base_value, p.net_dimension,
 		       (SELECT MAX(c.consumed_at) FROM consumption_events c
-		         JOIN items i ON i.id = c.item_id
-		         WHERE i.product_id = m.product_id AND i.user_id = ?),
-		       (SELECT MAX(s.at) FROM stock_in_events s WHERE s.product_id = m.product_id),
+		         JOIN items i ON i.id = c.item_id AND i.household_id = c.household_id
+		         WHERE i.product_id = m.product_id AND i.household_id = ? AND c.household_id = ?),
+		       (SELECT MAX(s.at) FROM stock_in_events s WHERE s.product_id = m.product_id AND s.household_id = ?),
 		       COALESCE((
 		         SELECT 1 FROM item_targets t
-		         JOIN items it ON it.id = t.item_id AND it.user_id = ?
-		         WHERE it.product_id = m.product_id AND t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND t.value = 0
+		         JOIN items it ON it.id = t.item_id AND it.household_id = t.household_id
+		         WHERE it.product_id = m.product_id AND it.household_id = ? AND t.household_id = ? AND t.value = 0
 		         LIMIT 1
 		       ), 0)
 		FROM product_group_members m
 		JOIN products p ON p.id = m.product_id
-		WHERE m.group_id = ?
-		ORDER BY p.name, m.product_id`, householdUser, householdUser, householdUser, householdUser, groupID)
+		WHERE m.group_id = ? AND m.household_id = ?
+		ORDER BY `+product.DisplayNameSQL("p")+`, m.product_id`,
+		household, household, household, household, household, household, household, household, household, groupID, household, household)
 	if err != nil {
 		return nil, fmt.Errorf("could not load the group: %w", err)
 	}
@@ -1198,9 +1298,12 @@ func loadMembers(ctx context.Context, q querier, groupID string) ([]Member, erro
 	return members, nil
 }
 
-func ensureGroup(ctx context.Context, q querier, id string) error {
+func ensureGroup(ctx context.Context, scope tenant.Scope, q querier, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var found string
-	err := q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE id = ? AND user_id = ?`, id, householdUser).Scan(&found)
+	err := q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return missing("That group is not here.")
 	}
@@ -1224,7 +1327,10 @@ func ensureProducts(ctx context.Context, q querier, ids []string) error {
 	return nil
 }
 
-func (g *Groups) preflightName(ctx context.Context, name string) error {
+func (g *Groups) preflightName(ctx context.Context, scope tenant.Scope, name string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	key, err := nameKey(name)
 	if err != nil {
 		return err
@@ -1234,7 +1340,7 @@ func (g *Groups) preflightName(ctx context.Context, name string) error {
 		return fmt.Errorf("could not save the group: %w", err)
 	}
 	defer tx.Rollback()
-	return ensureNameFree(ctx, tx, key, "")
+	return ensureNameFree(ctx, scope, tx, key, "")
 }
 
 // nameConflict reports a duplicate group name. Only SQLITE_CONSTRAINT_UNIQUE
@@ -1248,9 +1354,12 @@ func nameConflict(err error) error {
 	return conflict("A group with that name already exists.")
 }
 
-func ensureNameFree(ctx context.Context, q querier, key, exceptID string) error {
+func ensureNameFree(ctx context.Context, scope tenant.Scope, q querier, key, exceptID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	var existing string
-	err := q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE user_id = ? AND name_key = ?`, householdUser, key).Scan(&existing)
+	err := q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE household_id = ? AND name_key = ?`, scope.HouseholdID(), key).Scan(&existing)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -1271,9 +1380,14 @@ func nameKey(name string) (string, error) {
 	return key, nil
 }
 
-func readDefault(ctx context.Context, q querier) (Kind, error) {
+func readDefault(ctx context.Context, scope tenant.Scope, q querier) (Kind, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var raw string
-	err := q.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, settingRule).Scan(&raw)
+	err := q.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), settingRule).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return KindSameAsRanOut, nil
 	}
@@ -1294,8 +1408,11 @@ func memberIDs(members []Member) []string {
 	return ids
 }
 
-func memberIDsOf(ctx context.Context, q querier, groupID string) ([]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT product_id FROM product_group_members WHERE group_id = ? ORDER BY product_id`, groupID)
+func memberIDsOf(ctx context.Context, scope tenant.Scope, q querier, groupID string) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT product_id FROM product_group_members WHERE group_id = ? AND household_id = ? ORDER BY product_id`, groupID, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not update the group: %w", err)
 	}
@@ -1411,7 +1528,10 @@ func chooseIncluded(members []SuggestionMember, productIDs []string) (included, 
 	return included, excluded, nil
 }
 
-func dismissPairs(ctx context.Context, tx *sql.Tx, left, right []string) error {
+func dismissPairs(ctx context.Context, scope tenant.Scope, tx *sql.Tx, left, right []string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	for _, a := range left {
 		for _, b := range right {
 			if a == b {
@@ -1422,10 +1542,10 @@ func dismissPairs(ctx context.Context, tx *sql.Tx, left, right []string) error {
 				lo, hi = hi, lo
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO group_suggestion_dismissals (user_id, product_id_a, product_id_b)
-				VALUES (?, ?, ?)
+				INSERT INTO group_suggestion_dismissals (household_id, user_id, product_id_a, product_id_b)
+				VALUES (?, ?, ?, ?)
 				ON CONFLICT(user_id, product_id_a, product_id_b) DO NOTHING`,
-				householdUser, lo, hi); err != nil {
+				scope.HouseholdID(), scope.HouseholdID(), lo, hi); err != nil {
 				return fmt.Errorf("could not remember that dismissal: %w", err)
 			}
 		}
@@ -1456,10 +1576,13 @@ func scanSuggestion(row suggestionRow) (Suggestion, error) {
 	return s, nil
 }
 
-func loadSuggestion(ctx context.Context, q querier, id string) (Suggestion, error) {
+func loadSuggestion(ctx context.Context, scope tenant.Scope, q querier, id string) (Suggestion, error) {
+	if err := scope.Require(); err != nil {
+		return Suggestion{}, err
+	}
 	row := q.QueryRowContext(ctx, `
 		SELECT id, kind, title, proposed_rule, pinned_product_id, existing_group_id, status
-		FROM group_suggestions WHERE id = ? AND user_id = ?`, id, householdUser)
+		FROM group_suggestions WHERE id = ? AND household_id = ?`, id, scope.HouseholdID())
 	s, err := scanSuggestion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Suggestion{}, missing("That suggestion is not here.")
@@ -1470,15 +1593,18 @@ func loadSuggestion(ctx context.Context, q querier, id string) (Suggestion, erro
 	return s, nil
 }
 
-func suggestionMembers(ctx context.Context, q querier, id string) ([]SuggestionMember, error) {
+func suggestionMembers(ctx context.Context, scope tenant.Scope, q querier, id string) ([]SuggestionMember, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT m.product_id, COALESCE(p.name, ''), m.included, m.caution,
+		SELECT m.product_id, COALESCE(`+product.DisplayNameSQL("p")+`, ''), m.included, m.caution,
 		       COALESCE(p.image_url, ''), COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''),
 		       p.net_base_value, COALESCE(p.net_dimension, ''), p.pack_count
 		FROM group_suggestion_members m
 		LEFT JOIN products p ON p.id = m.product_id
-		WHERE m.suggestion_id = ?
-		ORDER BY m.product_id`, id)
+		WHERE m.suggestion_id = ? AND m.household_id = ?
+		ORDER BY m.product_id`, scope.HouseholdID(), id, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not load suggestions: %w", err)
 	}
@@ -1510,27 +1636,31 @@ func suggestionMembers(ctx context.Context, q querier, id string) ([]SuggestionM
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("could not load suggestions: %w", err)
 	}
-	if err := attachBarcodes(ctx, q, members); err != nil {
+	if err := attachBarcodes(ctx, scope, q, members); err != nil {
 		return nil, err
 	}
 	return members, nil
 }
 
-func attachBarcodes(ctx context.Context, q querier, members []SuggestionMember) error {
+func attachBarcodes(ctx context.Context, scope tenant.Scope, q querier, members []SuggestionMember) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(members) == 0 {
 		return nil
 	}
 	holders := make([]string, len(members))
-	args := make([]any, len(members))
+	args := make([]any, 0, len(members)+1)
+	args = append(args, scope.HouseholdID())
 	index := make(map[string]int, len(members))
 	for i, member := range members {
 		holders[i] = "?"
-		args[i] = member.ProductID
+		args = append(args, member.ProductID)
 		index[member.ProductID] = i
 	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT product_id, barcode FROM barcodes
-		WHERE product_id IN (`+strings.Join(holders, ",")+`)
+		WHERE household_id = ? AND product_id IN (`+strings.Join(holders, ",")+`)
 		ORDER BY barcode`, args...)
 	if err != nil {
 		return fmt.Errorf("could not load suggestions: %w", err)

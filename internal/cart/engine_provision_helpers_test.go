@@ -6,11 +6,13 @@ import (
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/suggestion"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -26,6 +28,7 @@ type provisionEnv struct {
 	catalog      *product.Catalog
 	pantry       *inventory.Pantry
 	shoppingList *shopping.Store
+	scope        tenant.Scope
 }
 
 func newProvisionEnv(t *testing.T) *provisionEnv {
@@ -40,6 +43,8 @@ func newProvisionEnv(t *testing.T) *provisionEnv {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 	require.NoError(t, app.RunMigrations(db))
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	require.NoError(t, err)
 
 	registry := NewRegistry()
 	ledger := NewLedger(db)
@@ -61,6 +66,7 @@ func newProvisionEnv(t *testing.T) *provisionEnv {
 		catalog:      product.NewCatalog(db),
 		pantry:       inventory.NewPantry(db),
 		shoppingList: shopping.NewStore(db),
+		scope:        scope,
 	}
 }
 
@@ -68,18 +74,17 @@ func newProvisionEnv(t *testing.T) *provisionEnv {
 // mode with the given target and zero instances, and a manual shopping-list
 // entry for it. The computed quantity is therefore the full target, so the
 // entry reaches Provision with Quantity == target.
-func (env *provisionEnv) seedShortfall(t *testing.T, userID, productID, name, barcode string, target int) (itemID, entryID string) {
+func (env *provisionEnv) seedShortfall(t *testing.T, productID, name, barcode string, target int) (itemID, entryID string) {
 	t.Helper()
 	ctx := context.Background()
-
 	require.NoError(t, env.catalog.CreateProduct(ctx, product.Product{ID: productID, Name: name, Category: "Test"}))
 	require.NoError(t, env.catalog.UpsertBarcodeMapping(ctx, barcode, productID, "global", ""))
 
-	item, err := env.pantry.GetOrCreateItem(ctx, userID, productID)
+	item, err := env.pantry.GetOrCreateItem(ctx, env.scope, productID)
 	require.NoError(t, err)
-	require.NoError(t, env.pantry.UpdateTargetQuantity(ctx, item.ID, target))
+	require.NoError(t, env.pantry.UpdateTargetQuantity(ctx, env.scope, item.ID, target))
 
-	entry, err := env.shoppingList.AddManualItem(ctx, userID, item.ID, target)
+	entry, err := env.shoppingList.AddManualItem(ctx, env.scope, item.ID, target)
 	require.NoError(t, err)
 
 	return item.ID, entry.ID
@@ -89,7 +94,7 @@ func (env *provisionEnv) seedShortfall(t *testing.T, userID, productID, name, ba
 // passes Provision's connection gate.
 func (env *provisionEnv) connect(t *testing.T, providerID ProviderID) {
 	t.Helper()
-	require.NoError(t, env.directory.Write(context.Background(), &connection.Connection{
+	require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
 		Provider: string(providerID),
 		State:    connection.StateConnected,
 	}))

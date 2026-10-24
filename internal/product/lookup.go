@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // defaultMissTTL is the default age at which a confirmed-miss record expires.
@@ -27,7 +29,7 @@ func (r LookupResult) IsFound() bool {
 // global DB second, External Lookup API third.
 type LookupService struct {
 	Catalog interface {
-		LookupByBarcode(ctx context.Context, barcode, userID string) (*ProductSummary, error)
+		LookupByBarcode(ctx context.Context, scope tenant.Scope, barcode string) (*ProductSummary, error)
 		GetProductByID(ctx context.Context, id string) (*Product, error)
 		CreateProduct(ctx context.Context, product Product) error
 		SaveNetSize(ctx context.Context, product Product) error
@@ -97,16 +99,16 @@ func (s *LookupService) missTTL() time.Duration {
 // are resolved via the flagged entry workflow where users can create overrides.
 //
 // Requirements: 1.4, 1.6, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.8, 6.1, 6.2, 6.6, 10.5, 10.6
-func (s *LookupService) Lookup(ctx context.Context, barcode, userID string) (LookupResult, error) {
+func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (LookupResult, error) {
 	if barcode == "" {
 		return LookupResult{}, fmt.Errorf("barcode cannot be empty")
 	}
-	if userID == "" {
-		return LookupResult{}, fmt.Errorf("userID cannot be empty")
+	if err := scope.Require(); err != nil {
+		return LookupResult{}, err
 	}
 
-	// Tier 1 & 2: Check user overrides and global DB (handled by the catalog in priority order).
-	product, err := s.Catalog.LookupByBarcode(ctx, barcode, userID)
+	// Tier 1 & 2: this household's mapping, then the global catalog.
+	product, err := s.Catalog.LookupByBarcode(ctx, scope, barcode)
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("database lookup failed: %w", err)
 	}

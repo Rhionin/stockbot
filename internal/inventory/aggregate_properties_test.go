@@ -22,9 +22,9 @@ import (
 // Validates: Requirements 2.10, 2.11
 func TestProperty10_NeedsAttentionExactMatch(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		pantry, catalog, _ := newTestPantry(t)
+		pantry, catalog, db := newTestPantry(t)
 		ctx := context.Background()
-		userID := uuid.NewString()
+		scope := scopeOf(t, db)
 		now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 		warningDays := 7
 
@@ -54,7 +54,7 @@ func TestProperty10_NeedsAttentionExactMatch(t *testing.T) {
 				rt.Fatalf("CreateProduct failed: %v", err)
 			}
 
-			item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+			item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 			if err != nil {
 				rt.Fatalf("GetOrCreateItem failed: %v", err)
 			}
@@ -85,7 +85,7 @@ func TestProperty10_NeedsAttentionExactMatch(t *testing.T) {
 					expiresAt = nil
 				}
 
-				_, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+				_, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 					ItemID:    item.ID,
 					StockInAt: now.Add(-24 * time.Hour),
 					ExpiresAt: expiresAt,
@@ -103,7 +103,7 @@ func TestProperty10_NeedsAttentionExactMatch(t *testing.T) {
 			})
 		}
 
-		invItems, err := pantry.GetInventoryList(ctx, userID, now, warningDays, "")
+		invItems, err := pantry.GetInventoryList(ctx, scope, now, warningDays, "")
 		if err != nil {
 			rt.Fatalf("GetInventoryList failed: %v", err)
 		}
@@ -135,9 +135,9 @@ func TestProperty10_NeedsAttentionExactMatch(t *testing.T) {
 // Validates: Requirements 2.4
 func TestProperty11_SearchFilterExactMatch(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		pantry, catalog, _ := newTestPantry(t)
+		pantry, catalog, db := newTestPantry(t)
 		ctx := context.Background()
-		userID := uuid.NewString()
+		scope := scopeOf(t, db)
 		now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 		warningDays := 7
 
@@ -168,7 +168,7 @@ func TestProperty11_SearchFilterExactMatch(t *testing.T) {
 				rt.Fatalf("CreateProduct failed: %v", err)
 			}
 
-			item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+			item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 			if err != nil {
 				rt.Fatalf("GetOrCreateItem failed: %v", err)
 			}
@@ -197,7 +197,7 @@ func TestProperty11_SearchFilterExactMatch(t *testing.T) {
 			}
 		}
 
-		invItems, err := pantry.GetInventoryList(ctx, userID, now, warningDays, query)
+		invItems, err := pantry.GetInventoryList(ctx, scope, now, warningDays, query)
 		if err != nil {
 			rt.Fatalf("GetInventoryList failed: %v", err)
 		}
@@ -237,9 +237,9 @@ func TestProperty11_SearchFilterExactMatch(t *testing.T) {
 // Validates: Requirements 3.1, 3.2, 3.3
 func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		pantry, catalog, _ := newTestPantry(t)
+		pantry, catalog, db := newTestPantry(t)
 		ctx := context.Background()
-		userID := uuid.NewString()
+		scope := scopeOf(t, db)
 
 		prodID := uuid.NewString()
 		prodName := rapid.StringMatching(`[A-Z][a-z]+`).Draw(rt, "prodName")
@@ -252,7 +252,7 @@ func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 			rt.Fatalf("CreateProduct failed: %v", err)
 		}
 
-		item, err := pantry.GetOrCreateItem(ctx, userID, prodID)
+		item, err := pantry.GetOrCreateItem(ctx, scope, prodID)
 		if err != nil {
 			rt.Fatalf("GetOrCreateItem failed: %v", err)
 		}
@@ -262,7 +262,7 @@ func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 		numInstances := rapid.IntRange(1, 5).Draw(rt, "numInstances")
 		instanceIDs := make([]string, 0, numInstances)
 		for i := 0; i < numInstances; i++ {
-			inst, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+			inst, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 				ItemID:    item.ID,
 				StockInAt: time.Now(),
 			})
@@ -278,7 +278,7 @@ func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 		operation := rapid.IntRange(0, 2).Draw(rt, "operation")
 		switch operation {
 		case 0: // AddInstance
-			if _, err := pantry.AddInstance(ctx, inventory.ItemInstance{
+			if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{
 				ItemID:    item.ID,
 				StockInAt: time.Now(),
 			}); err != nil {
@@ -286,17 +286,17 @@ func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 			}
 		case 1: // RemoveInstance
 			instanceID := instanceIDs[rapid.IntRange(0, len(instanceIDs)-1).Draw(rt, "instanceIdx")]
-			if err := pantry.RemoveInstance(ctx, instanceID, "manual"); err != nil {
+			if err := pantry.RemoveInstance(ctx, scope, instanceID, "manual"); err != nil {
 				rt.Fatalf("RemoveInstance failed: %v", err)
 			}
 		case 2: // UpdateTargetQuantity
 			qty := rapid.IntRange(0, 100).Draw(rt, "qty")
-			if err := pantry.UpdateTargetQuantity(ctx, item.ID, qty); err != nil {
+			if err := pantry.UpdateTargetQuantity(ctx, scope, item.ID, qty); err != nil {
 				rt.Fatalf("UpdateTargetQuantity failed: %v", err)
 			}
 		}
 
-		want, err := pantry.GetInventoryItem(ctx, item.ID, time.Now(), inventory.DefaultWarningDays)
+		want, err := pantry.GetInventoryItem(ctx, scope, item.ID, time.Now(), inventory.DefaultWarningDays)
 		if err != nil {
 			rt.Fatalf("GetInventoryItem failed: %v", err)
 		}
@@ -322,8 +322,9 @@ func TestProperty7_PantryPublishesOnSuccess(t *testing.T) {
 // Validates: Requirements 3.6
 func TestProperty8_PantryPublishesNoneOnFailure(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		pantry, _, _ := newTestPantry(t)
+		pantry, _, db := newTestPantry(t)
 		ctx := context.Background()
+		scope := scopeOf(t, db)
 
 		broadcaster := &fakeBroadcaster{}
 		pantry.Broadcaster = broadcaster
@@ -334,10 +335,10 @@ func TestProperty8_PantryPublishesNoneOnFailure(t *testing.T) {
 		var err error
 		switch operation {
 		case 0: // RemoveInstance on an unknown instance ID
-			err = pantry.RemoveInstance(ctx, unknownID, "manual")
+			err = pantry.RemoveInstance(ctx, scope, unknownID, "manual")
 		case 1: // UpdateTargetQuantity on an unknown item ID
 			qty := rapid.IntRange(0, 100).Draw(rt, "qty")
-			err = pantry.UpdateTargetQuantity(ctx, unknownID, qty)
+			err = pantry.UpdateTargetQuantity(ctx, scope, unknownID, qty)
 		}
 
 		if !errors.Is(err, inventory.ErrInstanceNotFound) {

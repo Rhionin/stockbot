@@ -25,7 +25,12 @@ func (h *syncSnapshotHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusUnauthorized, codeUnauthorized, "The sync token is not valid.")
 		return
 	}
-	snap, err := syncsnap.Build(r.Context(), h.DB, time.Now())
+	scope, err := requestScope(r.Context())
+	if err != nil {
+		writeStatusError(r, w, httpStatusFromError(err), err)
+		return
+	}
+	snap, err := syncsnap.Build(r.Context(), scope, h.DB, time.Now())
 	if err != nil {
 		writeStatusError(r, w, httpStatusFromError(err), err)
 		return

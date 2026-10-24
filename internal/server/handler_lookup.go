@@ -5,11 +5,12 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type LookupHandler struct {
 	Service interface {
-		Lookup(ctx context.Context, barcode, userID string) (product.LookupResult, error)
+		Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error)
 	}
 	Groups *group.Groups
 }
@@ -20,14 +21,17 @@ func (h *LookupHandler) Handle(req Request[struct{}, struct{}]) (product.LookupR
 		return product.LookupResult{}, BadRequest("barcode query parameter is required")
 	}
 
-	userID := "user-1"
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return product.LookupResult{}, err
+	}
 
-	result, err := h.Service.Lookup(req.Context, barcode, userID)
+	result, err := h.Service.Lookup(req.Context, scope, barcode)
 	if err != nil {
 		return product.LookupResult{}, err
 	}
 	if result.Product != nil {
-		considerGroupProduct(req.Context, h.Groups, result.Product.ID)
+		considerGroupProduct(req.Context, scope, h.Groups, result.Product.ID)
 	}
 	return result, nil
 }

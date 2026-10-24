@@ -9,6 +9,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // GroupHandler serves product groups, suggestions, and the account rule.
@@ -121,14 +122,18 @@ type previewResponse struct {
 }
 
 func (h *GroupHandler) List(req Request[struct{}, struct{}]) ([]group.Group, error) {
-	rows, err := h.Groups.List(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.Groups.List(req.Context, scope)
 	if err != nil {
 		return nil, groupErr(err)
 	}
 	if rows == nil {
 		rows = []group.Group{}
 	}
-	account, err := h.accountMonths(req.Context)
+	account, err := h.accountMonths(req.Context, scope)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -139,11 +144,15 @@ func (h *GroupHandler) List(req Request[struct{}, struct{}]) ([]group.Group, err
 }
 
 func (h *GroupHandler) Create(req Request[createGroupBody, struct{}]) (Created, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, err
+	}
 	target, err := targetFromBody(req.Body.Target)
 	if err != nil {
 		return Created{}, groupErr(err)
 	}
-	view, err := h.Groups.Create(req.Context, req.Body.Name, req.Body.ProductIDs, target)
+	view, err := h.Groups.Create(req.Context, scope, req.Body.Name, req.Body.ProductIDs, target)
 	if err != nil {
 		return Created{}, groupErr(err)
 	}
@@ -158,34 +167,50 @@ type groupView struct {
 }
 
 func (h *GroupHandler) Get(req Request[struct{}, groupIDParams]) (*groupView, error) {
-	view, err := h.Groups.Get(req.Context, req.PathParams.ID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.Groups.Get(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, groupErr(err)
 	}
-	return h.withUsage(req.Context, view)
+	return h.withUsage(req.Context, scope, view)
 }
 
 func (h *GroupHandler) Patch(req Request[patchGroupBody, groupIDParams]) (*groupView, error) {
-	view, err := h.Groups.Rename(req.Context, req.PathParams.ID, req.Body.Name)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.Groups.Rename(req.Context, scope, req.PathParams.ID, req.Body.Name)
 	if err != nil {
 		return nil, groupErr(err)
 	}
-	return h.withUsage(req.Context, view)
+	return h.withUsage(req.Context, scope, view)
 }
 
 func (h *GroupHandler) Delete(req Request[struct{}, groupIDParams]) (NoContent, error) {
-	if err := h.Groups.Delete(req.Context, req.PathParams.ID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return NoContent{}, err
+	}
+	if err := h.Groups.Delete(req.Context, scope, req.PathParams.ID); err != nil {
 		return NoContent{}, groupErr(err)
 	}
 	return NoContent{}, nil
 }
 
 func (h *GroupHandler) AddMembers(req Request[addMembersBody, groupIDParams]) (*group.Group, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := targetFromBody(req.Body.Target)
 	if err != nil {
 		return nil, groupErr(err)
 	}
-	view, err := h.Groups.AddMembers(req.Context, req.PathParams.ID, req.Body.ProductIDs, req.Body.FromGroupID, target)
+	view, err := h.Groups.AddMembers(req.Context, scope, req.PathParams.ID, req.Body.ProductIDs, req.Body.FromGroupID, target)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -193,7 +218,11 @@ func (h *GroupHandler) AddMembers(req Request[addMembersBody, groupIDParams]) (*
 }
 
 func (h *GroupHandler) RemoveMember(req Request[struct{}, groupMemberParams]) (*removeMemberResponse, error) {
-	view, deleted, err := h.Groups.RemoveMember(req.Context, req.PathParams.ID, req.PathParams.ProductID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	view, deleted, err := h.Groups.RemoveMember(req.Context, scope, req.PathParams.ID, req.PathParams.ProductID)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -208,7 +237,11 @@ type restockBody struct {
 }
 
 func (h *GroupHandler) PutMemberRestock(req Request[restockBody, groupMemberParams]) (*group.Group, error) {
-	view, err := h.Groups.SetMemberRestock(req.Context, req.PathParams.ID, req.PathParams.ProductID, req.Body.NoRestock)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.Groups.SetMemberRestock(req.Context, scope, req.PathParams.ID, req.PathParams.ProductID, req.Body.NoRestock)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -219,7 +252,11 @@ func (h *GroupHandler) PutMemberRestock(req Request[restockBody, groupMemberPara
 }
 
 func (h *GroupHandler) PutRule(req Request[ruleBody, groupIDParams]) (*group.Group, error) {
-	view, err := h.Groups.SetRule(req.Context, req.PathParams.ID, req.Body.Rule, req.Body.PinnedProductID, req.Body.Confirm)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.Groups.SetRule(req.Context, scope, req.PathParams.ID, req.Body.Rule, req.Body.PinnedProductID, req.Body.Confirm)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -227,18 +264,22 @@ func (h *GroupHandler) PutRule(req Request[ruleBody, groupIDParams]) (*group.Gro
 }
 
 func (h *GroupHandler) PutTarget(req Request[targetBody, groupIDParams]) (*groupView, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := targetFromBody(&req.Body)
 	if err != nil {
 		return nil, groupErr(err)
 	}
-	view, err := h.Groups.SetTarget(req.Context, req.PathParams.ID, target)
+	view, err := h.Groups.SetTarget(req.Context, scope, req.PathParams.ID, target)
 	if err != nil {
 		return nil, groupErr(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
 		return nil, err
 	}
-	return h.withUsage(req.Context, view)
+	return h.withUsage(req.Context, scope, view)
 }
 
 func (h *GroupHandler) syncList(ctx context.Context) error {
@@ -251,19 +292,19 @@ func (h *GroupHandler) syncList(ctx context.Context) error {
 	return nil
 }
 
-func (h *GroupHandler) withUsage(ctx context.Context, view group.Group) (*groupView, error) {
-	usage, err := h.groupUsage(ctx, view.ID)
+func (h *GroupHandler) withUsage(ctx context.Context, scope tenant.Scope, view group.Group) (*groupView, error) {
+	usage, err := h.groupUsage(ctx, scope, view.ID)
 	if err != nil {
 		return nil, InternalError(err)
 	}
 	return &groupView{Group: view, Usage: usage}, nil
 }
 
-func (h *GroupHandler) groupUsage(ctx context.Context, id string) (*supply.Usage, error) {
+func (h *GroupHandler) groupUsage(ctx context.Context, scope tenant.Scope, id string) (*supply.Usage, error) {
 	if h.Supply == nil {
 		return nil, nil
 	}
-	return h.Supply.GroupUsage(ctx, id, time.Now())
+	return h.Supply.GroupUsage(ctx, scope, id, time.Now())
 }
 
 type fromScanBody struct {
@@ -271,14 +312,22 @@ type fromScanBody struct {
 }
 
 func (h *GroupHandler) NoteFromScan(req Request[fromScanBody, struct{}]) (NoContent, error) {
-	if err := h.Groups.NoteFromScan(req.Context, req.Body.ProductID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return NoContent{}, err
+	}
+	if err := h.Groups.NoteFromScan(req.Context, scope, req.Body.ProductID); err != nil {
 		return NoContent{}, groupErr(err)
 	}
 	return NoContent{}, nil
 }
 
 func (h *GroupHandler) Rescan(req Request[struct{}, struct{}]) ([]group.Suggestion, error) {
-	rows, err := h.Groups.Rescan(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.Groups.Rescan(req.Context, scope)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -289,7 +338,11 @@ func (h *GroupHandler) Rescan(req Request[struct{}, struct{}]) ([]group.Suggesti
 }
 
 func (h *GroupHandler) ListSuggestions(req Request[struct{}, struct{}]) ([]group.Suggestion, error) {
-	rows, err := h.Groups.ListSuggestions(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.Groups.ListSuggestions(req.Context, scope)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -300,6 +353,10 @@ func (h *GroupHandler) ListSuggestions(req Request[struct{}, struct{}]) ([]group
 }
 
 func (h *GroupHandler) AcceptSuggestion(req Request[acceptSuggestionBody, groupIDParams]) (*group.Group, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	target, err := targetFromBody(req.Body.Target)
 	if err != nil {
 		return nil, groupErr(err)
@@ -308,7 +365,7 @@ func (h *GroupHandler) AcceptSuggestion(req Request[acceptSuggestionBody, groupI
 	if req.Body.ProductIDs != nil {
 		productIDs = *req.Body.ProductIDs
 	}
-	view, err := h.Groups.Accept(req.Context, req.PathParams.ID, productIDs, target, req.Body.Name)
+	view, err := h.Groups.Accept(req.Context, scope, req.PathParams.ID, productIDs, target, req.Body.Name)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -316,21 +373,33 @@ func (h *GroupHandler) AcceptSuggestion(req Request[acceptSuggestionBody, groupI
 }
 
 func (h *GroupHandler) DismissSuggestion(req Request[struct{}, groupIDParams]) (NoContent, error) {
-	if err := h.Groups.Dismiss(req.Context, req.PathParams.ID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return NoContent{}, err
+	}
+	if err := h.Groups.Dismiss(req.Context, scope, req.PathParams.ID); err != nil {
 		return NoContent{}, groupErr(err)
 	}
 	return NoContent{}, nil
 }
 
 func (h *GroupHandler) SkipSuggestion(req Request[struct{}, groupIDParams]) (NoContent, error) {
-	if err := h.Groups.Skip(req.Context, req.PathParams.ID); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return NoContent{}, err
+	}
+	if err := h.Groups.Skip(req.Context, scope, req.PathParams.ID); err != nil {
 		return NoContent{}, groupErr(err)
 	}
 	return NoContent{}, nil
 }
 
 func (h *GroupHandler) GetDefaultRule(req Request[struct{}, struct{}]) (*defaultRuleResponse, error) {
-	rule, err := h.Groups.DefaultRule(req.Context)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	rule, err := h.Groups.DefaultRule(req.Context, scope)
 	if err != nil {
 		return nil, groupErr(err)
 	}
@@ -338,13 +407,21 @@ func (h *GroupHandler) GetDefaultRule(req Request[struct{}, struct{}]) (*default
 }
 
 func (h *GroupHandler) PutDefaultRule(req Request[defaultRuleBody, struct{}]) (*defaultRuleResponse, error) {
-	if err := h.Groups.SetDefaultRule(req.Context, req.Body.Rule); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.Groups.SetDefaultRule(req.Context, scope, req.Body.Rule); err != nil {
 		return nil, groupErr(err)
 	}
 	return &defaultRuleResponse{Rule: req.Body.Rule}, nil
 }
 
 func (h *GroupHandler) Preview(req Request[previewBody, struct{}]) (*previewResponse, error) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
 	body := req.Body
 	var members []group.Member
 	var deals []shopping.Deal
@@ -367,7 +444,7 @@ func (h *GroupHandler) Preview(req Request[previewBody, struct{}]) (*previewResp
 			})
 		}
 	} else if body.GroupID != "" {
-		view, err := h.Groups.Get(req.Context, body.GroupID)
+		view, err := h.Groups.Get(req.Context, scope, body.GroupID)
 		if err != nil {
 			return nil, groupErr(err)
 		}
@@ -398,7 +475,7 @@ func (h *GroupHandler) Preview(req Request[previewBody, struct{}]) (*previewResp
 			})
 		}
 	} else if stored != nil {
-		loaded, err := h.Groups.DealsFor(req.Context, memberProductIDs(members))
+		loaded, err := h.Groups.DealsFor(req.Context, scope, memberProductIDs(members))
 		if err != nil {
 			return nil, groupErr(err)
 		}
@@ -412,7 +489,7 @@ func (h *GroupHandler) Preview(req Request[previewBody, struct{}]) (*previewResp
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	target, rate, err := h.previewTarget(req, body, stored)
+	target, rate, err := h.previewTarget(req, scope, body, stored)
 	if err != nil {
 		return nil, err
 	}
@@ -426,12 +503,12 @@ func (h *GroupHandler) Preview(req Request[previewBody, struct{}]) (*previewResp
 	}, nil
 }
 
-func (h *GroupHandler) previewTarget(req Request[previewBody, struct{}], body previewBody, stored *group.Group) (group.BuyTarget, group.UsageRate, error) {
+func (h *GroupHandler) previewTarget(req Request[previewBody, struct{}], scope tenant.Scope, body previewBody, stored *group.Group) (group.BuyTarget, group.UsageRate, error) {
 	var rate group.UsageRate
 	if body.Rate != nil {
 		rate = group.UsageRate{PerDay: body.Rate.PerDay, OK: body.Rate.OK, ItemCount: body.Rate.ItemCount}
 	}
-	account, monthsErr := h.accountMonths(req.Context)
+	account, monthsErr := h.accountMonths(req.Context, scope)
 	if monthsErr != nil {
 		return group.BuyTarget{}, rate, InternalError(monthsErr)
 	}
@@ -469,11 +546,11 @@ func unitForDimension(dimension string) string {
 	return "oz"
 }
 
-func (h *GroupHandler) accountMonths(ctx context.Context) (int, error) {
+func (h *GroupHandler) accountMonths(ctx context.Context, scope tenant.Scope) (int, error) {
 	if h.Supply == nil {
 		return int(supply.DefaultMonths), nil
 	}
-	settings, err := h.Supply.Settings(ctx)
+	settings, err := h.Supply.Settings(ctx, scope)
 	if err != nil {
 		return 0, err
 	}

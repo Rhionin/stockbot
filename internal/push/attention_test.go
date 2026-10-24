@@ -7,6 +7,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type fakeClock struct {
@@ -77,7 +78,7 @@ type scriptedScans struct {
 	byID map[string]scan.ScanEntry
 }
 
-func (s scriptedScans) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+func (s scriptedScans) GetScanEntry(_ context.Context, _ tenant.Scope, id string) (*scan.ScanEntry, error) {
 	entry, ok := s.byID[id]
 	if !ok {
 		return nil, nil

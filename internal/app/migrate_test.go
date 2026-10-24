@@ -73,6 +73,7 @@ func TestMigrationApplies(t *testing.T) {
 		"group_suggestions",
 		"history_repair",
 		"household_password",
+		"household_product_overrides",
 		"household_settings",
 		"households",
 		"invites",
@@ -135,13 +136,13 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	// One schema_migrations row per applied .sql file; the second RunMigrations
 	// must not re-apply any file, so the count equals the number of migration
 	// files (001 through 005, both 006 files, both 007 files, 008 through 020,
-	// both 021 files, 022, and 022a through 022f).
+	// both 021 files, 022, 022a through 022f, 023, and 024).
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 31 {
-		t.Errorf("schema_migrations should have 31 rows after two runs, got %d", count)
+	if count != 33 {
+		t.Errorf("schema_migrations should have 33 rows after two runs, got %d", count)
 	}
 }
 
@@ -881,7 +882,7 @@ func TestMigration011ProductGroups(t *testing.T) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	if _, err := conn.Exec(`INSERT INTO product_groups (id, name, name_key, window_months) VALUES ('g', 'Beans', 'beans', 3)`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO product_groups (id, user_id, name, name_key, window_months) VALUES ('g', 'group-owner', 'Beans', 'beans', 3)`); err != nil {
 		t.Fatalf("insert window: %v", err)
 	}
 	if _, err := conn.Exec(`UPDATE product_groups SET quantity_base_value = 10, quantity_dimension = 'mass' WHERE id = 'g'`); err == nil {

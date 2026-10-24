@@ -245,7 +245,7 @@ func commitScanStockIn(t *testing.T, handler http.Handler, env testEnv, id, prod
 		ProductID: &productID,
 		Status:    scan.Pending,
 	}
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), entry); err != nil {
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(t, env.DB), entry); err != nil {
 		t.Fatalf("CreateScanEntry: %v", err)
 	}
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+id+"/commit", ``, http.StatusOK)

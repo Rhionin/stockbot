@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	_ "modernc.org/sqlite"
@@ -94,7 +95,11 @@ func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 	t.Setenv("KROGER_MODALITY", "PICKUP")
 
 	db := newCartDB(t)
-	if err := appcred.NewVault(db).Save(context.Background(), appcred.Saved{
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), scope, appcred.Saved{
 		ProviderID:   "kroger",
 		ClientID:     "saved-client",
 		ClientSecret: "saved-secret",
@@ -133,7 +138,11 @@ func TestLoadCartRegistryDropsUnusableSavedCredentials(t *testing.T) {
 	t.Setenv("KROGER_MODALITY", "")
 
 	db := newCartDB(t)
-	if err := appcred.NewVault(db).Save(context.Background(), appcred.Saved{
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), scope, appcred.Saved{
 		ProviderID:   "kroger",
 		ClientID:     "saved-client",
 		ClientSecret: "saved-secret",

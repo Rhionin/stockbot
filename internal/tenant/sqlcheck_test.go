@@ -1,0 +1,185 @@
+package tenant
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestUnscopedSQLLintPassesOnRepo(t *testing.T) {
+	root := moduleRoot(t)
+	problems, err := ScanRepo(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("unscoped household SQL:\n%s", strings.Join(problems, "\n"))
+	}
+}
+
+func TestUnscopedSQLLintRejectsEveryHouseholdTable(t *testing.T) {
+	for _, table := range HouseholdTables {
+		table := table
+		t.Run(table, func(t *testing.T) {
+			selectSQL := "SELECT id FROM " + table + " WHERE id = ?"
+			if got := CheckStatement(selectSQL); len(got) == 0 {
+				t.Fatalf("select without household_id was allowed: %s", selectSQL)
+			}
+			updateSQL := "UPDATE " + table + " SET id = id WHERE id = ?"
+			if got := CheckStatement(updateSQL); len(got) == 0 {
+				t.Fatalf("update without household_id was allowed: %s", updateSQL)
+			}
+			deleteSQL := "DELETE FROM " + table + " WHERE id = ?"
+			if got := CheckStatement(deleteSQL); len(got) == 0 {
+				t.Fatalf("delete without household_id was allowed: %s", deleteSQL)
+			}
+			insertSQL := "INSERT INTO " + table + " (id) VALUES (?)"
+			if got := CheckStatement(insertSQL); len(got) == 0 {
+				t.Fatalf("insert without household_id was allowed: %s", insertSQL)
+			}
+
+			scopedSelect := "SELECT id FROM " + table + " WHERE household_id = ? AND id = ?"
+			if got := CheckStatement(scopedSelect); len(got) != 0 {
+				t.Fatalf("scoped select rejected: %v", got)
+			}
+			alias := "SELECT id FROM " + table + " AS t WHERE t.household_id = ?"
+			if got := CheckStatement(alias); len(got) != 0 {
+				t.Fatalf("aliased predicate rejected: %v", got)
+			}
+			scopedInsert := "INSERT INTO " + table + " (household_id, id) VALUES (?, ?)"
+			if got := CheckStatement(scopedInsert); len(got) != 0 {
+				t.Fatalf("scoped insert rejected: %v", got)
+			}
+		})
+	}
+}
+
+func TestUnscopedSQLLintAllowsGlobalCatalog(t *testing.T) {
+	for table := range GlobalTables {
+		sqlText := "SELECT id, name FROM " + table + " WHERE id = ?"
+		if got := CheckStatement(sqlText); len(got) != 0 {
+			t.Fatalf("%s: %v", table, got)
+		}
+	}
+	joined := `
+		SELECT p.name
+		FROM products p
+		JOIN items i ON i.product_id = p.id
+		WHERE i.id = ?`
+	if got := CheckStatement(joined); len(got) == 0 {
+		t.Fatal("a join to items was treated as global")
+	}
+}
+
+func TestUnscopedSQLLintRequiresEveryJoinedHouseholdTable(t *testing.T) {
+	open := `
+		SELECT ic.item_id, c.name
+		FROM item_categories ic
+		JOIN categories c ON c.id = ic.category_id
+		WHERE ic.household_id = ?`
+	got := CheckStatement(open)
+	if len(got) == 0 {
+		t.Fatal("a joined household table without household_id was allowed")
+	}
+	if !strings.Contains(got[0], "c") {
+		t.Fatalf("report %q did not name the unconstrained alias", got[0])
+	}
+	scoped := `
+		SELECT ic.item_id, c.name
+		FROM item_categories ic
+		JOIN categories c ON c.id = ic.category_id AND c.household_id = ic.household_id
+		WHERE ic.household_id = ?`
+	if got := CheckStatement(scoped); len(got) != 0 {
+		t.Fatalf("scoped join rejected: %v", got)
+	}
+}
+
+func TestUnscopedSQLLintAllowsPreMigrationGuard(t *testing.T) {
+	sqlText := "SELECT COUNT(*) FROM items WHERE user_id NOT IN ('legacy', '')"
+	if got := checkStatement(sqlText, "internal/app/household.go"); len(got) != 0 {
+		t.Fatalf("guard rejected: %v", got)
+	}
+	if got := checkStatement(sqlText, "internal/inventory/inventory.go"); len(got) == 0 {
+		t.Fatal("the same SQL was allowed outside the migration guard")
+	}
+}
+
+func TestDirectScannerQueryIsAllowListed(t *testing.T) {
+	sqlText := `
+		SELECT d.id, d.household_id
+		FROM devices d
+		JOIN households h ON h.id = d.household_id
+		WHERE d.kind = 'direct'
+		  AND d.label = ?
+		  AND d.revoked_at IS NULL
+		  AND h.is_primary = 1`
+	if got := checkStatement(sqlText, "internal/auth/scope.go"); len(got) != 0 {
+		t.Fatalf("scanner lookup rejected: %v", got)
+	}
+}
+
+func TestUnscopedSQLReportStaysShort(t *testing.T) {
+	sqlText := "SELECT id FROM items WHERE note = '" + strings.Repeat("a", 220) + "'"
+	got := CheckStatement(sqlText)
+	if len(got) != 1 || !strings.Contains(got[0], "...") {
+		t.Fatalf("report = %v", got)
+	}
+}
+
+func TestScanRepoReportsParseErrorsAndUnscopedSQL(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "frontend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write("bad.go", "package p\nfunc (")
+	write("leak.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	write("leak_test.go", "package p\nconst q = `SELECT id FROM items WHERE id = ?`\n")
+	if err := os.WriteFile(filepath.Join(root, "frontend", "skip.go"), []byte("package p\nconst q = `SELECT id FROM items`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	problems, err := ScanRepo(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parse, sql bool
+	for _, problem := range problems {
+		if strings.Contains(problem, "bad.go") {
+			parse = true
+		}
+		if strings.Contains(problem, "leak.go") && strings.Contains(problem, "unscoped") {
+			sql = true
+		}
+		if strings.Contains(problem, "frontend") || strings.Contains(problem, "leak_test.go") {
+			t.Fatalf("skipped file reported: %s", problem)
+		}
+	}
+	if !parse || !sql {
+		t.Fatalf("problems = %v", problems)
+	}
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
+	}
+}

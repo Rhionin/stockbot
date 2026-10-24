@@ -60,7 +60,9 @@ func TestStoredStockInFinishesTheLine(t *testing.T) {
 	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('prod-fin', 'Finished')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-fin', 'user-1', 'prod-fin')`); err != nil {
+	scope := scopeOf(t, conn)
+	household := scope.HouseholdID()
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-fin', ?, 'prod-fin', ?)`, household, household); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -83,17 +85,17 @@ func TestStoredStockInFinishesTheLine(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if _, err := tx.Exec(`DELETE FROM stock_in_events`); err != nil {
+			if _, err := tx.Exec(`DELETE FROM stock_in_events WHERE household_id = ?`, household); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tx.Exec(`INSERT INTO stock_in_events (product_id, at) VALUES ('prod-fin', ?)`, tt.stockIn); err != nil {
+			if _, err := tx.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, 1, 'prod-fin', ?)`, household, tt.stockIn); err != nil {
 				t.Fatal(err)
 			}
 			added, err := parseStoredTime(tt.added)
 			if err != nil {
 				t.Fatal(err)
 			}
-			times, err := stockInTimes(ctx, tx, "item-fin")
+			times, err := stockInTimes(ctx, scope, tx, "item-fin")
 			if err != nil {
 				t.Fatal(err)
 			}

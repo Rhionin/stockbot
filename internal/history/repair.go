@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -29,34 +30,37 @@ type moveRow struct {
 // The history_repair row is updated first so two readers cannot both insert.
 // That update takes the write lock. Preview uses repair on a throwaway copy
 // and does not call ensure.
-func ensure(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE history_repair SET id = 1 WHERE id = 1`); err != nil {
+func ensure(ctx context.Context, scope tenant.Scope, tx *sql.Tx) error {
+	if err := scope.Require(); err != nil {
 		return err
 	}
-	return repair(ctx, tx)
+	if _, err := tx.ExecContext(ctx, `UPDATE history_repair SET id = 1 WHERE id = 1 AND household_id = ?`, scope.HouseholdID()); err != nil {
+		return err
+	}
+	return repair(ctx, scope, tx)
 }
 
 // repair is the grouping work inside ensure, without the history_repair update.
 // On a shelf that is already grouped it only reads. When older rows still need
 // a move, it writes those moves. Preview runs it on a copy that is thrown away.
-//
-// TODO(#224): repair is not scoped to one household. It still groups every
-// household's older rows. That stays until history follows the signed-in household.
-func repair(ctx context.Context, tx *sql.Tx) error {
-	scans, err := loadCommittedScans(ctx, tx)
+func repair(ctx context.Context, scope tenant.Scope, tx *sql.Tx) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	scans, err := loadCommittedScans(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
-	if err := ensureStockIns(ctx, tx, scans); err != nil {
+	if err := ensureStockIns(ctx, scope, tx, scans); err != nil {
 		return err
 	}
-	if err := ensureStockOuts(ctx, tx); err != nil {
+	if err := ensureStockOuts(ctx, scope, tx); err != nil {
 		return err
 	}
-	if err := ensureRemoved(ctx, tx, scans); err != nil {
+	if err := ensureRemoved(ctx, scope, tx, scans); err != nil {
 		return err
 	}
-	return relabelManualMoves(ctx, tx, scans)
+	return relabelManualMoves(ctx, scope, tx, scans)
 }
 
 type instanceRow struct {
@@ -69,13 +73,16 @@ type instanceRow struct {
 	Reason    string
 }
 
-func ensureStockIns(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
+func ensureStockIns(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scans scanIndex) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT ii.id, ii.item_id, i.product_id, i.user_id, ii.stock_in_at
 		FROM item_instances ii
-		JOIN items i ON i.id = ii.item_id
-		WHERE ii.stock_move_id IS NULL
-		ORDER BY ii.item_id, ii.stock_in_at, ii.id`)
+		JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		WHERE ii.household_id = ? AND ii.stock_move_id IS NULL
+		ORDER BY ii.item_id, ii.stock_in_at, ii.id`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -105,12 +112,12 @@ func ensureStockIns(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 			ids[i] = row.ID
 		}
 		scanID, source := scans.first(head.UserID, head.ProductID, "stock_in", head.At)
-		tracked, err := stockInTracked(ctx, tx, head.ProductID, head.At)
+		tracked, err := stockInTracked(ctx, scope, tx, head.ProductID, head.At)
 		if err != nil {
 			return err
 		}
 		current = nil
-		return AttachStockIn(ctx, tx, InNote{
+		return AttachStockIn(ctx, scope, tx, InNote{
 			ItemID: head.ItemID, ProductID: head.ProductID, At: head.At,
 			Source: source, ScanEntryID: scanID, Tracked: tracked, InstanceIDs: ids,
 		})
@@ -129,13 +136,16 @@ func ensureStockIns(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	return flush()
 }
 
-func ensureStockOuts(ctx context.Context, tx *sql.Tx) error {
+func ensureStockOuts(ctx context.Context, scope tenant.Scope, tx *sql.Tx) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT c.id, c.item_id, i.product_id, i.user_id, c.consumed_at, c.scan_entry_id
 		FROM consumption_events c
-		JOIN items i ON i.id = c.item_id
-		WHERE c.stock_move_id IS NULL
-		ORDER BY c.item_id, c.consumed_at, c.scan_entry_id, c.id`)
+		JOIN items i ON i.id = c.item_id AND i.household_id = c.household_id
+		WHERE c.household_id = ? AND c.stock_move_id IS NULL
+		ORDER BY c.item_id, c.consumed_at, c.scan_entry_id, c.id`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -176,19 +186,19 @@ func ensureStockOuts(ctx context.Context, tx *sql.Tx) error {
 			scan = head.ScanID.String
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked)
-			VALUES (?, ?, ?, 'out', ?, ?, ?, ?, 1)`,
-			id, head.ItemID, head.Product, len(current), head.At, source, scan,
+			INSERT INTO stock_moves (id, item_id, product_id, direction, quantity, at, source, scan_entry_id, tracked, household_id)
+			VALUES (?, ?, ?, 'out', ?, ?, ?, ?, 1, ?)`,
+			id, head.ItemID, head.Product, len(current), head.At, source, scan, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
 		for _, row := range current {
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE consumption_events SET stock_move_id = ? WHERE id = ?`, id, row.ID); err != nil {
+				UPDATE consumption_events SET stock_move_id = ? WHERE id = ? AND household_id = ?`, id, row.ID, scope.HouseholdID()); err != nil {
 				return err
 			}
 		}
-		if err := linkRemoved(ctx, tx, head.ItemID, id, head.At, len(current)); err != nil {
+		if err := linkRemoved(ctx, scope, tx, head.ItemID, id, head.At, len(current)); err != nil {
 			return err
 		}
 		current = nil
@@ -209,12 +219,15 @@ func ensureStockOuts(ctx context.Context, tx *sql.Tx) error {
 	return flush()
 }
 
-func linkRemoved(ctx context.Context, tx *sql.Tx, itemID, moveID string, at time.Time, quantity int) error {
+func linkRemoved(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID, moveID string, at time.Time, quantity int) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, removed_at FROM item_instances
-		WHERE item_id = ? AND removed_at IS NOT NULL AND removed_by_move_id IS NULL
+		WHERE household_id = ? AND item_id = ? AND removed_at IS NOT NULL AND removed_by_move_id IS NULL
 			AND (removal_reason IS NULL OR removal_reason = 'consumed')`,
-		itemID)
+		scope.HouseholdID(), itemID)
 	if err != nil {
 		return err
 	}
@@ -257,8 +270,8 @@ func linkRemoved(ctx context.Context, tx *sql.Tx, itemID, moveID string, at time
 	}
 	for i := 0; i < n; i++ {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE item_instances SET removed_by_move_id = ? WHERE id = ?`,
-			moveID, candidates[i].id,
+			UPDATE item_instances SET removed_by_move_id = ? WHERE id = ? AND household_id = ?`,
+			moveID, candidates[i].id, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
@@ -266,13 +279,16 @@ func linkRemoved(ctx context.Context, tx *sql.Tx, itemID, moveID string, at time
 	return nil
 }
 
-func ensureRemoved(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
+func ensureRemoved(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scans scanIndex) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT ii.id, ii.item_id, i.product_id, i.user_id, ii.removed_at
 		FROM item_instances ii
-		JOIN items i ON i.id = ii.item_id
-		WHERE ii.removed_at IS NOT NULL AND ii.removed_by_move_id IS NULL
-		ORDER BY ii.removed_at, ii.id`)
+		JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		WHERE ii.household_id = ? AND ii.removed_at IS NOT NULL AND ii.removed_by_move_id IS NULL
+		ORDER BY ii.removed_at, ii.id`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -296,7 +312,7 @@ func ensureRemoved(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
 	}
 	for _, row := range loaded {
 		scanID, source := scans.first(row.userID, row.productID, "stock_out", row.at)
-		if err := AttachStockOut(ctx, tx, OutNote{
+		if err := AttachStockOut(ctx, scope, tx, OutNote{
 			ItemID: row.itemID, ProductID: row.productID, At: row.at,
 			Source: source, ScanEntryID: scanID, Tracked: false, InstanceID: row.id,
 		}); err != nil {
@@ -324,12 +340,15 @@ type scanIndex struct {
 	byKey map[scanKey][]storedScan
 }
 
-func loadCommittedScans(ctx context.Context, tx *sql.Tx) (scanIndex, error) {
+func loadCommittedScans(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (scanIndex, error) {
+	if err := scope.Require(); err != nil {
+		return scanIndex{}, err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, user_id, product_id, direction, CAST(scanned_at AS TEXT)
 		FROM scan_entries
-		WHERE status = 'committed' AND product_id IS NOT NULL AND direction IS NOT NULL
-		ORDER BY id`)
+		WHERE household_id = ? AND status = 'committed' AND product_id IS NOT NULL AND direction IS NOT NULL
+		ORDER BY id`, scope.HouseholdID())
 	if err != nil {
 		return scanIndex{}, err
 	}
@@ -416,17 +435,20 @@ func moveScanDirection(direction string) (string, bool) {
 // taken in id order: the first is updated, then the scan is marked linked,
 // so the rest of the pass leaves it alone. Only source and scan_entry_id
 // change. A later pass finds nothing to update.
-func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error {
-	linked, err := linkedScanIDs(ctx, tx)
+func relabelManualMoves(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scans scanIndex) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	linked, err := linkedScanIDs(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.id, i.user_id, m.product_id, m.direction, m.at
 		FROM stock_moves m
-		JOIN items i ON i.id = m.item_id
-		WHERE m.source = 'manual' AND m.scan_entry_id IS NULL
-		ORDER BY m.id`)
+		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
+		WHERE m.household_id = ? AND m.source = 'manual' AND m.scan_entry_id IS NULL
+		ORDER BY m.id`, scope.HouseholdID())
 	if err != nil {
 		return err
 	}
@@ -477,8 +499,8 @@ func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE stock_moves
 			SET source = 'scan', scan_entry_id = ?
-			WHERE id = ? AND source = 'manual' AND scan_entry_id IS NULL`,
-			matched.id, move.id,
+			WHERE id = ? AND household_id = ? AND source = 'manual' AND scan_entry_id IS NULL`,
+			matched.id, move.id, scope.HouseholdID(),
 		); err != nil {
 			return err
 		}
@@ -487,10 +509,13 @@ func relabelManualMoves(ctx context.Context, tx *sql.Tx, scans scanIndex) error 
 	return nil
 }
 
-func linkedScanIDs(ctx context.Context, tx *sql.Tx) (map[string]struct{}, error) {
+func linkedScanIDs(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT scan_entry_id FROM stock_moves
-		WHERE scan_entry_id IS NOT NULL`)
+		WHERE household_id = ? AND scan_entry_id IS NOT NULL`, scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
@@ -508,12 +533,15 @@ func linkedScanIDs(ctx context.Context, tx *sql.Tx) (map[string]struct{}, error)
 	return linked, rows.Err()
 }
 
-func stockInTracked(ctx context.Context, tx *sql.Tx, productID string, at time.Time) (bool, error) {
+func stockInTracked(ctx context.Context, scope tenant.Scope, tx *sql.Tx, productID string, at time.Time) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
 	var one int
 	err := tx.QueryRowContext(ctx, `
 		SELECT 1 FROM stock_in_events
-		WHERE product_id = ? AND at = ? AND stock_move_id IS NULL
-		LIMIT 1`, productID, at).Scan(&one)
+		WHERE household_id = ? AND product_id = ? AND at = ? AND stock_move_id IS NULL
+		LIMIT 1`, scope.HouseholdID(), productID, at).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

@@ -181,8 +181,9 @@ func setTargetQuantity(t *testing.T, db *sql.DB, itemID string, qty int) {
 func beginUsing(t *testing.T, db *sql.DB, started time.Time) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		`INSERT INTO household_settings (household_id, key, value)
+		 SELECT id, 'onboarding_started_at', ? FROM households WHERE is_primary = 1
+		 ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`,
 		started.UTC().Format(time.RFC3339),
 	); err != nil {
 		t.Fatalf("beginUsing: %v", err)
@@ -211,7 +212,8 @@ func setSupplyQuantity(t *testing.T, db *sql.DB, productID string, qty int) {
 func insertStockIn(t *testing.T, db *sql.DB, productID string, at time.Time) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO stock_in_events (product_id, at) VALUES (?, ?)`,
+		`INSERT INTO stock_in_events (id, product_id, at)
+		 SELECT COALESCE(MAX(id), 0) + 1, ?, ? FROM stock_in_events`,
 		productID, at.UTC(),
 	); err != nil {
 		t.Fatalf("insertStockIn: %v", err)

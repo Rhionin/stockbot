@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // providerLedgerReset clears every registered provider's ledger row for one
@@ -15,12 +16,12 @@ type providerLedgerReset struct {
 	registry *cart.Registry
 }
 
-func (p providerLedgerReset) ResetForItemTx(ctx context.Context, tx *sql.Tx, itemID string, at time.Time) error {
+func (p providerLedgerReset) ResetForItemTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, at time.Time) error {
 	if p.ledger == nil || p.registry == nil {
 		return nil
 	}
 	for _, id := range p.registry.List() {
-		if err := p.ledger.ResetForItemTx(ctx, tx, id, itemID, at); err != nil {
+		if err := p.ledger.ResetForItemTx(ctx, scope, tx, id, itemID, at); err != nil {
 			return err
 		}
 	}

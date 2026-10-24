@@ -9,6 +9,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // Months is a supply window. A month is 30 days. Zero is invalid.
@@ -206,7 +207,10 @@ func Open(db *sql.DB) *Service {
 
 // GroupUsage is the amount rate for one product group, or nil when usage
 // is not known yet. It writes nothing.
-func (s *Service) GroupUsage(ctx context.Context, groupID string, now time.Time) (*Usage, error) {
+func (s *Service) GroupUsage(ctx context.Context, scope tenant.Scope, groupID string, now time.Time) (*Usage, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	if groupID == "" {
 		return nil, nil
 	}
@@ -216,11 +220,11 @@ func (s *Service) GroupUsage(ctx context.Context, groupID string, now time.Time)
 	}
 	defer tx.Rollback()
 
-	phase, _, err := readPhaseAndMonths(ctx, tx)
+	phase, _, err := readPhaseAndMonths(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	facts, err := loadFacts(ctx, tx, phase)
+	facts, err := loadFacts(ctx, scope, tx, phase)
 	if err != nil {
 		return nil, err
 	}
@@ -238,18 +242,21 @@ func (s *Service) GroupUsage(ctx context.Context, groupID string, now time.Time)
 
 // Plan loads phase, months, and facts in one read transaction, then calls plan.
 // It writes nothing.
-func (s *Service) Plan(ctx context.Context, now time.Time) ([]Line, error) {
+func (s *Service) Plan(ctx context.Context, scope tenant.Scope, now time.Time) ([]Line, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("could not read supply: %w", err)
 	}
 	defer tx.Rollback()
 
-	phase, months, err := readPhaseAndMonths(ctx, tx)
+	phase, months, err := readPhaseAndMonths(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	facts, err := loadFacts(ctx, tx, phase)
+	facts, err := loadFacts(ctx, scope, tx, phase)
 	if err != nil {
 		return nil, err
 	}
@@ -261,21 +268,30 @@ func (s *Service) Plan(ctx context.Context, now time.Time) ([]Line, error) {
 
 // Complete inserts onboarding_started_at only when the key is absent, then re-reads.
 // The stored instant wins. A second call does not move it. now is stored in UTC.
-func (s *Service) Complete(ctx context.Context, now time.Time) (Phase, error) {
-	return completeOpening(ctx, s.db, now.UTC())
+func (s *Service) Complete(ctx context.Context, scope tenant.Scope, now time.Time) (Phase, error) {
+	if err := scope.Require(); err != nil {
+		return Phase{}, err
+	}
+	return completeOpening(ctx, scope, s.db, now.UTC())
 }
 
 // Settings reads the banner and settings-page model.
-func (s *Service) Settings(ctx context.Context) (Settings, error) {
-	return readSettings(ctx, s.db)
+func (s *Service) Settings(ctx context.Context, scope tenant.Scope) (Settings, error) {
+	if err := scope.Require(); err != nil {
+		return Settings{}, err
+	}
+	return readSettings(ctx, scope, s.db)
 }
 
 // OpeningTx reports whether the household is still taking the opening snapshot.
 // The scan commit already holds tx. A second transaction cannot share that
 // connection: the process keeps a single SQLite connection, and an in-memory
 // test database is a different database on every extra connection.
-func (s *Service) OpeningTx(ctx context.Context, tx *sql.Tx) (bool, error) {
-	phase, err := readPhase(ctx, tx)
+func (s *Service) OpeningTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
+	phase, err := readPhase(ctx, scope, tx)
 	if err != nil {
 		return false, err
 	}
@@ -283,32 +299,38 @@ func (s *Service) OpeningTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 }
 
 // SetMonths stores the account window. Callers reject zero with ParseMonths first.
-func (s *Service) SetMonths(ctx context.Context, m Months) error {
+func (s *Service) SetMonths(ctx context.Context, scope tenant.Scope, m Months) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if _, err := ParseMonths(int(m)); err != nil {
 		return err
 	}
-	return writeMonths(ctx, s.db, m)
+	return writeMonths(ctx, scope, s.db, m)
 }
 
 // SetOverride with a zero Override deletes the product's row.
 // Deleting a missing row is success. A non-zero override upserts.
-func (s *Service) SetOverride(ctx context.Context, id ProductID, o Override) error {
-	return writeOverride(ctx, s.db, id, o)
+func (s *Service) SetOverride(ctx context.Context, scope tenant.Scope, id ProductID, o Override) error {
+	return writeOverride(ctx, scope, s.db, id, o)
 }
 
 // Override reads the product exception. The zero value means inherit the account window.
-func (s *Service) Override(ctx context.Context, id ProductID) (Override, error) {
-	return readOverride(ctx, s.db, id)
+func (s *Service) Override(ctx context.Context, scope tenant.Scope, id ProductID) (Override, error) {
+	return readOverride(ctx, scope, s.db, id)
 }
 
 // Wipe returns an error without opening a transaction when phrase != WipePhrase.
-// Otherwise one transaction clears that user's stock and the start date.
+// Otherwise one transaction clears that household's stock and the start date.
 // The item and every restock target stay. Deleting the item row is what removes its target.
-func (s *Service) Wipe(ctx context.Context, phrase string) error {
+func (s *Service) Wipe(ctx context.Context, scope tenant.Scope, phrase string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if phrase != WipePhrase {
 		return fmt.Errorf("Type WIPE INVENTORY to confirm wiping the inventory.")
 	}
-	return wipeHousehold(ctx, s.db)
+	return wipeHousehold(ctx, scope, s.db)
 }
 
 func plan(now time.Time, phase Phase, account Months, facts []Fact) []Line {

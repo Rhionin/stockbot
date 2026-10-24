@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // Ledger is every stock move the household can see, newest first.
@@ -44,7 +45,10 @@ type LedgerFilter struct {
 const historyListOrder = "m.at DESC, CASE m.direction WHEN 'in' THEN 0 WHEN 'out' THEN 1 ELSE 2 END, m.id DESC"
 
 // Household lists every stock move, newest first.
-func (j *Journal) Household(ctx context.Context, filter LedgerFilter) (Ledger, error) {
+func (j *Journal) Household(ctx context.Context, scope tenant.Scope, filter LedgerFilter) (Ledger, error) {
+	if err := scope.Require(); err != nil {
+		return Ledger{}, err
+	}
 	direction, err := canonicalDirection(filter.Direction)
 	if err != nil {
 		return Ledger{}, err
@@ -54,14 +58,14 @@ func (j *Journal) Household(ctx context.Context, filter LedgerFilter) (Ledger, e
 		return Ledger{}, err
 	}
 	defer tx.Rollback()
-	if err := ensure(ctx, tx); err != nil {
+	if err := ensure(ctx, scope, tx); err != nil {
 		return Ledger{}, err
 	}
-	moves, err := listHousehold(ctx, tx, direction, strings.TrimSpace(filter.Query))
+	moves, err := listHousehold(ctx, scope, tx, direction, strings.TrimSpace(filter.Query))
 	if err != nil {
 		return Ledger{}, err
 	}
-	setupAt, err := readSetupAt(ctx, tx)
+	setupAt, err := readSetupAt(ctx, scope, tx)
 	if err != nil {
 		return Ledger{}, err
 	}
@@ -71,9 +75,14 @@ func (j *Journal) Household(ctx context.Context, filter LedgerFilter) (Ledger, e
 	return Ledger{Moves: moves, SetupAt: setupAt}, nil
 }
 
-func readSetupAt(ctx context.Context, tx *sql.Tx) (string, error) {
+func readSetupAt(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = 'onboarding_started_at'`).Scan(&raw)
+	err := tx.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = 'onboarding_started_at'`,
+		scope.HouseholdID()).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -101,27 +110,31 @@ func canonicalDirection(raw string) (string, error) {
 	}
 }
 
-func listHousehold(ctx context.Context, tx *sql.Tx, direction, query string) ([]LedgerMove, error) {
-	where := `i.user_id = ?`
-	args := []any{householdUser}
+func listHousehold(ctx context.Context, scope tenant.Scope, tx *sql.Tx, direction, query string) ([]LedgerMove, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	nameSQL := product.DisplayNameSQL("p")
+	filter := ""
+	args := []any{scope.HouseholdID(), scope.HouseholdID()}
 	if direction != "" {
-		where += ` AND m.direction = ?`
+		filter += ` AND m.direction = ?`
 		args = append(args, direction)
 	}
 	if query != "" {
-		where += ` AND (INSTR(LOWER(p.name), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(g.name, '')), LOWER(?)) > 0)`
-		args = append(args, query, query)
+		filter += ` AND (INSTR(LOWER(` + nameSQL + `), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(g.name, '')), LOWER(?)) > 0)`
+		args = append(args, scope.HouseholdID(), query, query)
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.id, m.direction, m.quantity, m.at, m.source,
-			m.product_id, p.name, COALESCE(p.image_url, ''),
+			m.product_id, `+nameSQL+`, COALESCE(p.image_url, ''),
 			COALESCE(g.id, ''), COALESCE(g.name, '')
 		FROM stock_moves m
-		JOIN items i ON i.id = m.item_id
+		JOIN items i ON i.id = m.item_id AND i.household_id = m.household_id
 		JOIN products p ON p.id = m.product_id
-		LEFT JOIN product_group_members gm ON gm.product_id = p.id
-		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.user_id = i.user_id
-		WHERE `+where+`
+		LEFT JOIN product_group_members gm ON gm.product_id = p.id AND gm.household_id = m.household_id
+		LEFT JOIN product_groups g ON g.id = gm.group_id AND g.household_id = m.household_id
+		WHERE m.household_id = ?`+filter+`
 		ORDER BY `+historyListOrder, args...)
 	if err != nil {
 		return nil, err

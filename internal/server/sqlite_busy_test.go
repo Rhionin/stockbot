@@ -25,8 +25,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
-	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/getsentry/sentry-go"
 	"modernc.org/sqlite"
 )
@@ -279,11 +279,13 @@ func TestSyncSnapshotLockIsUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	_, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(100)", nil)
 	handler := &syncSnapshotHandler{DB: env.DB, Token: "sync-token"}
+	scope := primaryScope(t, env.DB)
 	release := holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
 	started := time.Now()
 	req := httptest.NewRequest(http.MethodGet, "/api/sync/snapshot", nil)
 	req.Header.Set("Authorization", "Bearer sync-token")
+	req = req.WithContext(tenant.WithScope(req.Context(), scope))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -513,7 +515,6 @@ func TestNoSpaceLogsTheOperatorLine(t *testing.T) {
 		"event=db_no_space",
 		"method=POST",
 		`route="POST /api/scans"`,
-		"household_id=" + restock.HouseholdID,
 		"sqlite_code=13",
 	} {
 		if !strings.Contains(line, part) {
@@ -831,16 +832,18 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	dir := connection.NewDirectory(env.DB)
 	ledger := cart.NewLedger(env.DB)
 	providers := ProvidersHandler{Registry: env.Registry, ConnectionDir: dir}
+	scope := primaryScope(t, env.DB)
+	ctx := tenant.WithScope(context.Background(), scope)
 
 	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
 	_, err := (&ProviderDisconnectHandler{ProvidersHandler: providers}).Handle(Request[struct{}, ProviderDisconnectRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderDisconnectRequest{ProviderID: "kroger"},
 	})
 	release()
 	requireDriverCause(t, err, "failed to disconnect")
 
-	if err := dir.Write(context.Background(), &connection.Connection{
+	if err := dir.Write(context.Background(), primaryScope(t, env.DB), &connection.Connection{
 		Provider:    "kroger",
 		State:       connection.StateConnected,
 		AccessToken: "tok",
@@ -849,7 +852,7 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	}
 	release = holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
 	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
 	})
 	release()
@@ -860,19 +863,19 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	release = holdSQLiteLock(t, path, "BEGIN EXCLUSIVE")
 	defer release()
 	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerGetRequest{ProviderID: "kroger"},
 	})
 	if err != nil {
 		t.Fatalf("reader blocked by the writer: %v", err)
 	}
 	_, err = (&ProviderLedgerResetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerResetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerResetRequest{ProviderID: "kroger"},
 	})
 	requireDriverCause(t, err, "failed to reset ledger")
 	_, err = (&ProviderLedgerGetHandler{ProviderLedgerHandler: ProviderLedgerHandler{ProvidersHandler: providers, Ledger: ledger}}).Handle(Request[struct{}, ProviderLedgerGetRequest]{
-		Context:    context.Background(),
+		Context:    ctx,
 		PathParams: ProviderLedgerGetRequest{ProviderID: string(open.ID())},
 	})
 	if err != nil {

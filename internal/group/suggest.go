@@ -7,18 +7,23 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // RefreshSuggestions inserts look-alike and same-need cards that are not
 // already grouped, already open, or fully dismissed. A second call does not
 // copy them. Products added after the first seed are included.
-func (g *Groups) RefreshSuggestions(ctx context.Context) error {
+func (g *Groups) RefreshSuggestions(ctx context.Context, scope tenant.Scope) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not refresh suggestions: %w", err)
 	}
 	defer tx.Rollback()
-	if err := refreshSuggestions(ctx, tx); err != nil {
+	if err := refreshSuggestions(ctx, scope, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -27,20 +32,26 @@ func (g *Groups) RefreshSuggestions(ctx context.Context) error {
 	return nil
 }
 
-func refreshSuggestions(ctx context.Context, tx *sql.Tx) error {
-	_, err := seedSuggestions(ctx, tx)
+func refreshSuggestions(ctx context.Context, scope tenant.Scope, tx *sql.Tx) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := seedSuggestions(ctx, scope, tx)
 	return err
 }
 
 // Rescan runs the same suggestion pass as a refresh and returns only the cards
 // that pass created. An empty slice means nothing new was found.
-func (g *Groups) Rescan(ctx context.Context) ([]Suggestion, error) {
+func (g *Groups) Rescan(ctx context.Context, scope tenant.Scope) ([]Suggestion, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}
 	defer tx.Rollback()
-	ids, err := seedSuggestions(ctx, tx)
+	ids, err := seedSuggestions(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +61,7 @@ func (g *Groups) Rescan(ctx context.Context) ([]Suggestion, error) {
 	if len(ids) == 0 {
 		return []Suggestion{}, nil
 	}
-	open, err := g.listOpenSuggestions(ctx)
+	open, err := g.listOpenSuggestions(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +83,10 @@ func (g *Groups) Rescan(ctx context.Context) ([]Suggestion, error) {
 
 // ConsiderProduct checks one newly created or recognized product against the
 // pantry. Matching groups and ungrouped products become suggestion cards.
-func (g *Groups) ConsiderProduct(ctx context.Context, productID string) error {
+func (g *Groups) ConsiderProduct(ctx context.Context, scope tenant.Scope, productID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	productID = strings.TrimSpace(productID)
 	if productID == "" {
 		return nil
@@ -85,15 +99,18 @@ func (g *Groups) ConsiderProduct(ctx context.Context, productID string) error {
 	if err != nil {
 		return fmt.Errorf("could not refresh suggestions: %w", err)
 	}
-	return g.RefreshSuggestions(ctx)
+	return g.RefreshSuggestions(ctx, scope)
 }
 
-func loadMembership(ctx context.Context, q querier) (map[string]string, []string, error) {
+func loadMembership(ctx context.Context, scope tenant.Scope, q querier) (map[string]string, []string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT m.product_id, m.group_id, g.name
 		FROM product_group_members m
-		JOIN product_groups g ON g.id = m.group_id
-		WHERE g.user_id = ?`, householdUser)
+		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
+		WHERE g.household_id = ? AND m.household_id = ?`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}
@@ -120,7 +137,7 @@ func loadMembership(ctx context.Context, q querier) (map[string]string, []string
 	if err := rows.Err(); err != nil {
 		return nil, nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}
-	nameRows, err := q.QueryContext(ctx, `SELECT name FROM product_groups WHERE user_id = ?`, householdUser)
+	nameRows, err := q.QueryContext(ctx, `SELECT name FROM product_groups WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}
@@ -146,9 +163,12 @@ func loadMembership(ctx context.Context, q querier) (map[string]string, []string
 	return groupOf, extra, nil
 }
 
-func loadDismissed(ctx context.Context, q querier) (map[string]struct{}, error) {
+func loadDismissed(ctx context.Context, scope tenant.Scope, q querier) (map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT product_id_a, product_id_b FROM group_suggestion_dismissals WHERE user_id = ?`, householdUser)
+		SELECT product_id_a, product_id_b FROM group_suggestion_dismissals WHERE household_id = ?`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}
@@ -167,13 +187,16 @@ func loadDismissed(ctx context.Context, q querier) (map[string]struct{}, error) 
 	return out, nil
 }
 
-func loadOpenSets(ctx context.Context, q querier) (map[string]struct{}, error) {
+func loadOpenSets(ctx context.Context, scope tenant.Scope, q querier) (map[string]struct{}, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT m.suggestion_id, m.product_id
 		FROM group_suggestion_members m
-		JOIN group_suggestions s ON s.id = m.suggestion_id
-		WHERE s.user_id = ? AND s.status = 'open'
-		ORDER BY m.suggestion_id, m.product_id`, householdUser)
+		JOIN group_suggestions s ON s.id = m.suggestion_id AND s.household_id = m.household_id
+		WHERE s.household_id = ? AND m.household_id = ? AND s.status = 'open'
+		ORDER BY m.suggestion_id, m.product_id`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
 	}

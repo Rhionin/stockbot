@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // RefreshHandler handles POST /api/products/{id}/refresh. It revalidates a
@@ -47,6 +48,19 @@ func (h *RefreshHandler) Handle(req Request[struct{}, refreshProductPathParams])
 	}
 	if prod == nil {
 		return refreshProductResponse{}, NotFound("product not found")
+	}
+	if catalog, ok := h.Catalog.(interface {
+		ProductFor(ctx context.Context, scope tenant.Scope, id string) (*product.Product, error)
+	}); ok {
+		if scope, scopeErr := requestScope(req.Context); scopeErr == nil {
+			overlaid, overlayErr := catalog.ProductFor(req.Context, scope, req.PathParams.ID)
+			if overlayErr != nil {
+				return refreshProductResponse{}, InternalError(overlayErr)
+			}
+			if overlaid != nil {
+				prod = overlaid
+			}
+		}
 	}
 
 	return refreshProductResponse{Product: *prod, Outcome: outcome}, nil

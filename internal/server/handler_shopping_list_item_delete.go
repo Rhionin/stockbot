@@ -5,17 +5,22 @@ import (
 	"errors"
 
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListItemDeleteHandler handles DELETE /api/shopping-list/items/{id}.
 type ShoppingListItemDeleteHandler struct {
 	ShoppingList interface {
-		RemoveItem(ctx context.Context, id string) error
+		RemoveItem(ctx context.Context, scope tenant.Scope, id string) error
 	}
 }
 
 func (h *ShoppingListItemDeleteHandler) Handle(req Request[struct{}, shoppingListItemPathParams]) (struct{}, error) {
-	err := h.ShoppingList.RemoveItem(req.Context, req.PathParams.ID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return struct{}{}, InternalError(err)
+	}
+	err = h.ShoppingList.RemoveItem(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		if errors.Is(err, shopping.ErrItemNotFound) {
 			return struct{}{}, NotFound("shopping list item not found")

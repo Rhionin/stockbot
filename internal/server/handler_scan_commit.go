@@ -8,16 +8,17 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type ScanCommitHandler struct {
 	Queue interface {
-		GetScanEntry(ctx context.Context, id string) (*scan.ScanEntry, error)
-		CommitStockIn(ctx context.Context, scanEntry *scan.ScanEntry) error
-		CommitStockOut(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
-		CommitStockOutLink(ctx context.Context, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) (int, error)
-		CommitBackfill(ctx context.Context, scanEntry *scan.ScanEntry) (scan.BackfillResult, error)
-		CountOnHand(ctx context.Context, userID, productID string) (int, error)
+		GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
+		CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry) error
+		CommitStockOut(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
+		CommitStockOutLink(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry, instanceID *string, linkProductID string) (int, error)
+		CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry) (scan.BackfillResult, error)
+		CountOnHand(ctx context.Context, scope tenant.Scope, productID string) (int, error)
 	}
 }
 
@@ -68,7 +69,12 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		return nil, BadRequest("scan entry id is required")
 	}
 
-	entry, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, commitClientError(err)
 	}
@@ -83,7 +89,7 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		return nil, commitClientError(scan.ErrDirectionUnset)
 	}
 	if req.Body.Backfill {
-		return h.commitBackfill(req.Context, entry)
+		return h.commitBackfill(req.Context, scope, entry)
 	}
 	if entry.ProductID == nil || *entry.ProductID == "" {
 		return nil, commitClientError(scan.ErrProductUnresolved)
@@ -103,12 +109,12 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		if linkProductID != "" {
 			return nil, BadRequest("linking a barcode is only available when scanning out")
 		}
-		if err := h.Queue.CommitStockIn(req.Context, entry); err != nil {
+		if err := h.Queue.CommitStockIn(req.Context, scope, entry); err != nil {
 			return nil, commitClientError(err)
 		}
 	} else if linkProductID != "" {
 		var err error
-		removed, err = h.Queue.CommitStockOutLink(req.Context, entry, req.Body.InstanceID, linkProductID)
+		removed, err = h.Queue.CommitStockOutLink(req.Context, scope, entry, req.Body.InstanceID, linkProductID)
 		if err != nil {
 			var empty *scan.EmptyShelfLink
 			if errors.As(err, &empty) {
@@ -118,13 +124,13 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		}
 	} else {
 		var err error
-		removed, err = h.Queue.CommitStockOut(req.Context, entry, req.Body.InstanceID)
+		removed, err = h.Queue.CommitStockOut(req.Context, scope, entry, req.Body.InstanceID)
 		if err != nil {
 			return nil, stockOutError(err)
 		}
 	}
 
-	committed, err := h.Queue.GetScanEntry(req.Context, req.PathParams.ID)
+	committed, err := h.Queue.GetScanEntry(req.Context, scope, req.PathParams.ID)
 	if err != nil {
 		return nil, commitClientError(err)
 	}
@@ -132,7 +138,7 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		return nil, nil
 	}
 	if linkProductID != "" {
-		onHand, err := h.Queue.CountOnHand(req.Context, entry.UserID, linkProductID)
+		onHand, err := h.Queue.CountOnHand(req.Context, scope, linkProductID)
 		if err != nil {
 			return nil, commitClientError(err)
 		}
@@ -148,12 +154,12 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 	return resp, nil
 }
 
-func (h *ScanCommitHandler) commitBackfill(ctx context.Context, entry *scan.ScanEntry) (any, error) {
+func (h *ScanCommitHandler) commitBackfill(ctx context.Context, scope tenant.Scope, entry *scan.ScanEntry) (any, error) {
 	if entry.ProductID == nil || *entry.ProductID == "" {
 		return nil, commitClientError(scan.ErrProductUnresolved)
 	}
 	passCommitCheck()
-	result, err := h.Queue.CommitBackfill(ctx, entry)
+	result, err := h.Queue.CommitBackfill(ctx, scope, entry)
 	if err != nil {
 		var stocked *scan.UnitsOnHandError
 		if errors.As(err, &stocked) {

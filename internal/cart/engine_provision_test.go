@@ -8,8 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const provisionUser = "user-1"
-
 // derivedNoneCaps is the simplest provisioning profile: no auth, server push,
 // per-request confirmation, add-only, identity derived from the barcode.
 func derivedNoneCaps(confirm ConfirmationCapability) Capabilities {
@@ -48,9 +46,9 @@ func TestNewEngine_SettersWireCollaborators(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(context.Background(), provisionUser, "fake-none")
+	report, err := env.engine.Provision(context.Background(), env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.Confirmed)
 }
@@ -58,7 +56,7 @@ func TestNewEngine_SettersWireCollaborators(t *testing.T) {
 func TestProvision_UnregisteredProvider(t *testing.T) {
 	env := newProvisionEnv(t)
 
-	_, err := env.engine.Provision(context.Background(), provisionUser, "ghost")
+	_, err := env.engine.Provision(context.Background(), env.scope, "ghost")
 
 	require.Error(t, err)
 	assert.Equal(t, `provider "ghost" not registered`, err.Error())
@@ -72,7 +70,7 @@ func TestProvision_NotConnected(t *testing.T) {
 	provider := newFakeProvider("fake-oauth", caps, &fakeScript{})
 	require.NoError(t, env.registry.Register(provider))
 
-	_, err := env.engine.Provision(context.Background(), provisionUser, "fake-oauth")
+	_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
 
 	require.Error(t, err)
 	assert.Equal(t, `provider "fake-oauth" is not connected`, err.Error())
@@ -88,9 +86,9 @@ func TestProvision_PerRequest_ConfirmsAndAdvancesLedger(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, ProviderID("fake-none"), report.Provider)
@@ -105,7 +103,7 @@ func TestProvision_PerRequest_ConfirmsAndAdvancesLedger(t *testing.T) {
 		Reason:   "",
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 2, ledger[itemID].Requested)
 }
@@ -121,9 +119,9 @@ func TestProvision_PerLine_FollowsResultMap(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 3)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 3)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	require.Len(t, report.Entries, 1)
@@ -136,7 +134,7 @@ func TestProvision_PerLine_FollowsResultMap(t *testing.T) {
 	}, report.Entries[0])
 	assert.Equal(t, 1, report.Confirmed)
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 3, ledger[itemID].Requested)
 }
@@ -151,9 +149,9 @@ func TestProvision_ConfirmNone_YieldsUnknownWithReason(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, report.Confirmed)
@@ -167,7 +165,7 @@ func TestProvision_ConfirmNone_YieldsUnknownWithReason(t *testing.T) {
 		Reason:   ReasonNoPerItemResult,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 0, ledger[itemID].Requested, "confirmation=none advances no ledger")
 }
@@ -182,9 +180,9 @@ func TestProvision_Rejected_FailsAndLeavesLedgerUntouched(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, report.Confirmed)
@@ -198,7 +196,7 @@ func TestProvision_Rejected_FailsAndLeavesLedgerUntouched(t *testing.T) {
 		Reason:   ReasonProviderRejected,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 0, ledger[itemID].Requested)
 }
@@ -213,9 +211,9 @@ func TestProvision_Indeterminate_UnknownAndLeavesLedgerUntouched(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, report.Confirmed)
@@ -229,7 +227,7 @@ func TestProvision_Indeterminate_UnknownAndLeavesLedgerUntouched(t *testing.T) {
 		Reason:   ReasonRequestIncomplete,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 0, ledger[itemID].Requested)
 }
@@ -244,9 +242,9 @@ func TestProvision_NoResolvableIdentity_FailsWithNoProductIdentity(t *testing.T)
 		identityByBar: map[string]ProductIdentity{},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, report.Confirmed)
@@ -260,7 +258,7 @@ func TestProvision_NoResolvableIdentity_FailsWithNoProductIdentity(t *testing.T)
 		Reason:   ReasonNoProductIdentity,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 0, ledger[itemID].Requested, "an unidentified entry submits no line")
 }
@@ -282,10 +280,10 @@ func TestProvision_PerRequest_SharedIdentityCountsEachEntry(t *testing.T) {
 		},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemA, _ := env.seedShortfall(t, provisionUser, "prod-a", "Milk", "0001", 2)
-	itemB, _ := env.seedShortfall(t, provisionUser, "prod-b", "Cream", "0002", 1)
+	itemA, _ := env.seedShortfall(t, "prod-a", "Milk", "0001", 2)
+	itemB, _ := env.seedShortfall(t, "prod-b", "Cream", "0002", 1)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, report.Confirmed)
@@ -294,7 +292,7 @@ func TestProvision_PerRequest_SharedIdentityCountsEachEntry(t *testing.T) {
 		assert.Equal(t, OutcomeConfirmed, entry.Outcome)
 	}
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	// Each account advances by its own quantity, so the shared line records 2 + 1.
 	advanced := ledger[itemA].Requested + ledger[itemB].Requested
@@ -314,9 +312,9 @@ func TestProvision_LookedUpIdentity(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "LOOKED-UP-SKU"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, report.Confirmed)
@@ -329,7 +327,7 @@ func TestProvision_LookedUpIdentity(t *testing.T) {
 		Outcome:  OutcomeConfirmed,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 2, ledger[itemID].Requested)
 }
@@ -350,17 +348,17 @@ func TestProvision_ConcurrencyGate(t *testing.T) {
 	caps := derivedNoneCaps(ConfirmPerRequest)
 	provider := newFakeProvider("fake-none", caps, script)
 	require.NoError(t, env.registry.Register(provider))
-	env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+		_, err := env.engine.Provision(ctx, env.scope, "fake-none")
 		firstDone <- err
 	}()
 
 	<-script.addStarted // the first call now holds the in-flight slot
 
-	_, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	_, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.Error(t, err)
 	assert.Equal(t, `provisioning operation already in progress for provider "fake-none"`, err.Error())
 
@@ -382,10 +380,10 @@ func TestProvision_PerLine_RejectedLineDoesNotAdvanceLedger(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-OK", "0002": "SKU-NO"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	okItem, _ := env.seedShortfall(t, provisionUser, "prod-ok", "Milk", "0001", 2)
-	noItem, _ := env.seedShortfall(t, provisionUser, "prod-no", "Bread", "0002", 4)
+	okItem, _ := env.seedShortfall(t, "prod-ok", "Milk", "0001", 2)
+	noItem, _ := env.seedShortfall(t, "prod-no", "Bread", "0002", 4)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.Confirmed)
 
@@ -397,7 +395,7 @@ func TestProvision_PerLine_RejectedLineDoesNotAdvanceLedger(t *testing.T) {
 	assert.Equal(t, OutcomeFailed, byItem[noItem].Outcome)
 	assert.Equal(t, ReasonProviderRejected, byItem[noItem].Reason)
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 2, ledger[okItem].Requested)
 	_, rejectedAdvanced := ledger[noItem]
@@ -414,10 +412,10 @@ func TestProvision_BatchSizeSplitsRequests(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2"},
 	})
 	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
-	env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
-	env.seedShortfall(t, provisionUser, "prod-2", "Bread", "0002", 3)
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
+	env.seedShortfall(t, "prod-2", "Bread", "0002", 3)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.Confirmed)
 
@@ -457,9 +455,9 @@ func TestProvision_ClientHandoff_RecordsUnknownAndDoesNotAdvanceLedger(t *testin
 		artifact:     HandoffArtifact{URL: "https://example.test/cart"},
 	}
 	require.NoError(t, env.registry.Register(provider))
-	itemID, entryID := env.seedShortfall(t, provisionUser, "prod-1", "Milk", "0001", 2)
+	itemID, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
 
-	report, err := env.engine.Provision(ctx, provisionUser, "fake-none")
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	assert.Equal(t, 0, report.Confirmed)
 	require.NotNil(t, report.Handoff)
@@ -474,7 +472,7 @@ func TestProvision_ClientHandoff_RecordsUnknownAndDoesNotAdvanceLedger(t *testin
 		Reason:   ReasonNoPerItemResult,
 	}, report.Entries[0])
 
-	ledger, err := env.ledger.ListForProvider(ctx, "fake-none")
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
 	_, advanced := ledger[itemID]
 	assert.False(t, advanced)

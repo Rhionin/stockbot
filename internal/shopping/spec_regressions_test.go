@@ -15,10 +15,11 @@ import (
 func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()
-	boughtID := createTestItem(t, deps, ctx, "user-1", "bought", "Bought Beans")
-	openID := createTestItem(t, deps, ctx, "user-1", "open", "Open Oats")
-	manualID := createTestItem(t, deps, ctx, "user-1", "manual", "Manual Milk")
-	if _, err := deps.shopping.AddManualItem(ctx, "user-1", manualID, 5); err != nil {
+	scope := scopeOf(t, deps.db)
+	boughtID := createTestItem(t, deps, ctx, "bought", "Bought Beans")
+	openID := createTestItem(t, deps, ctx, "open", "Open Oats")
+	manualID := createTestItem(t, deps, ctx, "manual", "Manual Milk")
+	if _, err := deps.shopping.AddManualItem(ctx, scope, manualID, 5); err != nil {
 		t.Fatal(err)
 	}
 
@@ -26,10 +27,10 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 		{ItemID: boughtID, Quantity: 2, Note: "keep 2"},
 		{ItemID: openID, Quantity: 3, Note: "keep 3"},
 	}
-	if err := deps.shopping.SavePlannedLines(ctx, "user-1", planned, nil); err != nil {
+	if err := deps.shopping.SavePlannedLines(ctx, scope, planned, nil); err != nil {
 		t.Fatal(err)
 	}
-	active, err := deps.shopping.ListUnpurchased(ctx, "user-1")
+	active, err := deps.shopping.ListUnpurchased(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,15 +43,15 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 	if boughtRow == "" {
 		t.Fatalf("setup: planned lines = %+v", active)
 	}
-	if err := deps.shopping.MarkPurchased(ctx, boughtRow); err != nil {
+	if err := deps.shopping.MarkPurchased(ctx, scope, boughtRow); err != nil {
 		t.Fatal(err)
 	}
 
 	// The target went to 0, so the plan no longer has those lines.
-	if err := deps.shopping.SavePlannedLines(ctx, "user-1", nil, nil); err != nil {
+	if err := deps.shopping.SavePlannedLines(ctx, scope, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	active, err = deps.shopping.ListUnpurchased(ctx, "user-1")
+	active, err = deps.shopping.ListUnpurchased(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 	if !hasManual(active, manualID, 5) {
 		t.Errorf("manual row did not survive dropping the plan: %+v", active)
 	}
-	purchased, err := deps.shopping.GetItemByID(ctx, boughtRow)
+	purchased, err := deps.shopping.GetItemByID(ctx, scope, boughtRow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +79,10 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 	}
 
 	// Undo of don't-restock puts the previous plan back.
-	if err := deps.shopping.SavePlannedLines(ctx, "user-1", planned, nil); err != nil {
+	if err := deps.shopping.SavePlannedLines(ctx, scope, planned, nil); err != nil {
 		t.Fatal(err)
 	}
-	active, err = deps.shopping.ListUnpurchased(ctx, "user-1")
+	active, err = deps.shopping.ListUnpurchased(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +105,7 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 	if !hasManual(active, manualID, 5) {
 		t.Errorf("manual row did not survive switching the target back: %+v", active)
 	}
-	purchased, err = deps.shopping.GetItemByID(ctx, boughtRow)
+	purchased, err = deps.shopping.GetItemByID(ctx, scope, boughtRow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,12 +119,13 @@ func TestPlanChangesOnlyTouchUnpurchasedPlannedLines(t *testing.T) {
 func TestTargetChangeLeavesThePurchasedRowAndPlansANewLine(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()
-	itemID := createTestItem(t, deps, ctx, "user-1", "bought", "Bought Beans")
+	scope := scopeOf(t, deps.db)
+	itemID := createTestItem(t, deps, ctx, "bought", "Bought Beans")
 	original := shopping.PlannedLine{ItemID: itemID, Quantity: 2, Note: "keep 2"}
-	if err := deps.shopping.SavePlannedLines(ctx, "user-1", []shopping.PlannedLine{original}, nil); err != nil {
+	if err := deps.shopping.SavePlannedLines(ctx, scope, []shopping.PlannedLine{original}, nil); err != nil {
 		t.Fatal(err)
 	}
-	active, err := deps.shopping.ListUnpurchased(ctx, "user-1")
+	active, err := deps.shopping.ListUnpurchased(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,22 +133,22 @@ func TestTargetChangeLeavesThePurchasedRowAndPlansANewLine(t *testing.T) {
 		t.Fatalf("setup: %+v", active)
 	}
 	boughtRow := active[0].ID
-	if err := deps.shopping.MarkPurchased(ctx, boughtRow); err != nil {
+	if err := deps.shopping.MarkPurchased(ctx, scope, boughtRow); err != nil {
 		t.Fatal(err)
 	}
 
 	changed := shopping.PlannedLine{ItemID: itemID, Quantity: 4, Note: "keep 4"}
-	if err := deps.shopping.SavePlannedLines(ctx, "user-1", []shopping.PlannedLine{changed}, nil); err != nil {
+	if err := deps.shopping.SavePlannedLines(ctx, scope, []shopping.PlannedLine{changed}, nil); err != nil {
 		t.Fatal(err)
 	}
-	purchased, err := deps.shopping.GetItemByID(ctx, boughtRow)
+	purchased, err := deps.shopping.GetItemByID(ctx, scope, boughtRow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if purchased == nil || purchased.PurchasedAt == nil || purchased.Quantity != 2 || purchased.Note != "keep 2" {
 		t.Errorf("the target change rewrote the purchased row instead of leaving it: %+v", purchased)
 	}
-	active, err = deps.shopping.ListUnpurchased(ctx, "user-1")
+	active, err = deps.shopping.ListUnpurchased(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -17,10 +18,14 @@ import (
 // basic_auth file once. A later start leaves the stored hash alone, so the
 // process no longer needs that file. An empty path does nothing.
 func ImportHouseholdPassword(ctx context.Context, db *sql.DB, authPath, sessionSecret string) error {
+	scope, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		return fmt.Errorf("could not read the household password: %w", err)
+	}
 	var existing string
-	err := db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
 		SELECT COALESCE(pw_hash, '') FROM household_password
-		WHERE household_id = (SELECT id FROM households WHERE is_primary = 1)`).Scan(&existing)
+		WHERE household_id = ?`, scope.HouseholdID()).Scan(&existing)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("could not read the household password: %w", err)
 	}
@@ -54,14 +59,14 @@ func ImportHouseholdPassword(ctx context.Context, db *sql.DB, authPath, sessionS
 	encoded := base64.StdEncoding.EncodeToString(key)
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key)
-		VALUES ((SELECT id FROM households WHERE is_primary = 1), ?, ?, 'on', ?)
+		VALUES (?, ?, ?, 'on', ?)
 		ON CONFLICT (household_id) DO UPDATE SET
 			login_name = excluded.login_name,
 			pw_hash = excluded.pw_hash,
 			session_key = excluded.session_key,
 			state = 'on'
 		WHERE household_password.pw_hash IS NULL OR household_password.pw_hash = ''`,
-		user, hash, encoded)
+		scope.HouseholdID(), user, hash, encoded)
 	if err != nil {
 		return fmt.Errorf("could not store the household password: %w", err)
 	}
@@ -72,11 +77,15 @@ func ImportHouseholdPassword(ctx context.Context, db *sql.DB, authPath, sessionS
 // It does not read the Caddy file. A missing hash, or a password that is
 // turned off, refuses the public hostname.
 func HouseholdAuthFromDB(ctx context.Context, db *sql.DB) (*HouseholdAuth, error) {
+	scope, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		return failClosed(), fmt.Errorf("could not read the household password: %w", err)
+	}
 	var login, hash, key, state string
-	err := db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
 		SELECT login_name, COALESCE(pw_hash, ''), COALESCE(session_key, ''), state
 		FROM household_password
-		WHERE household_id = (SELECT id FROM households WHERE is_primary = 1)`).Scan(&login, &hash, &key, &state)
+		WHERE household_id = ?`, scope.HouseholdID()).Scan(&login, &hash, &key, &state)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && hash == "") {
 		return failClosed(), fmt.Errorf("no household password is stored")
 	}

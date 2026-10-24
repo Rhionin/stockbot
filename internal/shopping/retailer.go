@@ -3,6 +3,8 @@ package shopping
 import (
 	"context"
 	"strings"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 const (
@@ -32,6 +34,9 @@ func (c RetailerDealConfig) Status() (string, string) {
 
 // LiveDeals would ask a store for current prices. No retailer adapter is
 // connected — a key alone must not invent prices or block cart building.
-func (c RetailerDealConfig) LiveDeals(context.Context, string, []string) ([]Deal, error) {
+func (c RetailerDealConfig) LiveDeals(_ context.Context, scope tenant.Scope, _ []string) ([]Deal, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }

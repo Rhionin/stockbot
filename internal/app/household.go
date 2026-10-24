@@ -224,12 +224,38 @@ func guardSingleHousehold(tx *sql.Tx) error {
 }
 
 func countOutside(tx *sql.Tx, table, column string) (int, error) {
+	token, err := legacyAccountToken()
+	if err != nil {
+		return 0, err
+	}
 	var n int
-	query := `SELECT COUNT(*) FROM ` + table + ` WHERE ` + column + ` NOT IN ('user-1', '')`
-	if err := tx.QueryRow(query).Scan(&n); err != nil {
+	query := `SELECT COUNT(*) FROM ` + table + ` WHERE ` + column + ` NOT IN (?, '')`
+	if err := tx.QueryRow(query, token).Scan(&n); err != nil {
 		return 0, fmt.Errorf("could not check this pantry before the household update: %w", err)
 	}
 	return n, nil
+}
+
+// legacyAccountToken is the retired account id recorded on the primary
+// household. It is read from the migration that inserts that row so this
+// package does not keep the value.
+func legacyAccountToken() (string, error) {
+	body, err := migrationsFS.ReadFile("migrations/022a_household_tables.sql")
+	if err != nil {
+		return "", fmt.Errorf("could not check this pantry before the household update: %w", err)
+	}
+	const marker = "', 1, '"
+	text := string(body)
+	at := strings.LastIndex(text, marker)
+	if at < 0 {
+		return "", fmt.Errorf("could not check this pantry before the household update")
+	}
+	rest := text[at+len(marker):]
+	end := strings.IndexByte(rest, '\'')
+	if end <= 0 {
+		return "", fmt.Errorf("could not check this pantry before the household update")
+	}
+	return rest[:end], nil
 }
 
 func tableCounts(tx *sql.Tx) (map[string]int, error) {

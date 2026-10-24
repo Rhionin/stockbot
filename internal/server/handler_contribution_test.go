@@ -25,7 +25,11 @@ func (r *recordingContributor) Contribute(_ context.Context, contribution produc
 }
 
 func enableContribution(env testEnv) {
-	if err := env.ProductStore.SetContributionEnabled(context.Background(), true); err != nil {
+	scope, err := env.ProductStore.PrimaryScope(context.Background())
+	if err != nil {
+		env.T.Fatalf("primary household: %v", err)
+	}
+	if err := env.ProductStore.SetContributionEnabled(context.Background(), scope, true); err != nil {
 		env.T.Fatalf("enable contribution: %v", err)
 	}
 }

@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -52,6 +54,8 @@ type ScanEntry struct {
 	GroupHint   *GroupHint `json:"groupHint,omitempty"`
 	CommittedAt *time.Time `json:"committedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// DeviceID is the scanner that captured this row. An HTTP scan leaves it empty.
+	DeviceID string `json:"-"`
 	// OnHand is the household's current shelf count. A link response sets it.
 	// The scan list sets it on a stock-out that already has an item: a shelved
 	// item is 0, and a removed unit is not counted. It is omitted when the
@@ -103,7 +107,7 @@ type Queue struct {
 	// Only required when providers are configured and the ledger needs
 	// to be reset on new stock.
 	Ledger interface {
-		ResetForItemTx(ctx context.Context, tx *sql.Tx, itemID string, at time.Time) error
+		ResetForItemTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, at time.Time) error
 	}
 
 	// Broadcaster publishes a Scan_Event (and, for commit paths, an
@@ -120,7 +124,7 @@ type Queue struct {
 	// Inventory_Event without duplicating inventory's aggregation logic.
 	// Only required when Broadcaster is set.
 	Pantry interface {
-		GetInventoryItem(ctx context.Context, itemID string, now time.Time, warningDays int) (*inventory.InventoryItem, error)
+		GetInventoryItem(ctx context.Context, scope tenant.Scope, itemID string, now time.Time, warningDays int) (*inventory.InventoryItem, error)
 	}
 
 	// Supply distinguishes an opening snapshot from a later restock.
@@ -137,8 +141,18 @@ func NewQueue(db *sql.DB) *Queue {
 	return &Queue{db: db}
 }
 
+// scopeUserID is the value stored in a NOT NULL user_id column.
+// The household scope is the tenant. An empty user id is filled with that
+// household so the column is never blank.
+func scopeUserID(scope tenant.Scope, userID string) string {
+	if userID == "" {
+		return scope.HouseholdID()
+	}
+	return userID
+}
+
 // CreateScanEntry inserts a new scan entry, unless a pending or flagged entry
-// already exists for the same user, barcode, and direction — in that case
+// already exists for the same household, user, barcode, and direction — in that case
 // the existing entry's unit_count is incremented instead of inserting a
 // duplicate row, and scanned_at moves to this scan. The queue orders by
 // scanned_at, so the open card returns to the top, where a new scan lands,
@@ -146,8 +160,12 @@ func NewQueue(db *sql.DB) *Queue {
 // as now. A time older than the card is ignored so a late timestamp cannot
 // bury it. If entry.ID is empty, a new UUID is generated for the inserted
 // row. Status defaults to "pending" if not set.
-func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntry, error) {
-	existing, err := r.findMergeableScanEntry(ctx, entry.UserID, entry.Barcode, entry.Direction)
+func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry ScanEntry) (*ScanEntry, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	entry.UserID = scopeUserID(scope, entry.UserID)
+	existing, err := r.findMergeableScanEntry(ctx, scope, entry.UserID, entry.Barcode, entry.Direction)
 	if err != nil {
 		return nil, err
 	}
@@ -163,10 +181,10 @@ func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntr
 		if !scannedAt.After(existing.ScannedAt) {
 			scannedAt = existing.ScannedAt
 		}
-		if err := r.recordMergedScan(ctx, existing.ID, existing.UnitCount+delta, scannedAt); err != nil {
+		if err := r.recordMergedScan(ctx, scope, existing.ID, existing.UnitCount+delta, scannedAt); err != nil {
 			return nil, err
 		}
-		return r.GetScanEntry(ctx, existing.ID)
+		return r.GetScanEntry(ctx, scope, existing.ID)
 	}
 
 	if entry.ID == "" {
@@ -182,10 +200,12 @@ func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntr
 	}
 
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO scan_entries (id, user_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO scan_entries (id, user_id, household_id, device_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
 		entry.UserID,
+		scope.HouseholdID(),
+		nullableString(ptr(entry.DeviceID)),
 		entry.Barcode,
 		entry.ScannedAt,
 		nullableString(directionStr),
@@ -198,7 +218,7 @@ func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntr
 		return nil, fmt.Errorf("CreateScanEntry: %w", err)
 	}
 
-	created, err := r.GetScanEntry(ctx, entry.ID)
+	created, err := r.GetScanEntry(ctx, scope, entry.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,10 +235,10 @@ func (r *Queue) CreateScanEntry(ctx context.Context, entry ScanEntry) (*ScanEntr
 // older clock must not pull the card backward. ListScanEntries orders by
 // scanned_at, and clients sort the same column newest-first, so one write
 // keeps live updates and reloads in the same order.
-func (r *Queue) recordMergedScan(ctx context.Context, id string, unitCount int, scannedAt time.Time) error {
+func (r *Queue) recordMergedScan(ctx context.Context, scope tenant.Scope, id string, unitCount int, scannedAt time.Time) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE scan_entries SET unit_count = ?, scanned_at = ? WHERE id = ?`,
-		unitCount, scannedAt, id,
+		`UPDATE scan_entries SET unit_count = ?, scanned_at = ? WHERE household_id = ? AND id = ?`,
+		unitCount, scannedAt, scope.HouseholdID(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("recordMergedScan: %w", err)
@@ -232,7 +252,7 @@ func (r *Queue) recordMergedScan(ctx context.Context, id string, unitCount int, 
 		return fmt.Errorf("recordMergedScan: scan entry %q not found", id)
 	}
 
-	updated, err := r.GetScanEntry(ctx, id)
+	updated, err := r.GetScanEntry(ctx, scope, id)
 	if err != nil {
 		return err
 	}
@@ -244,17 +264,20 @@ func (r *Queue) recordMergedScan(ctx context.Context, id string, unitCount int, 
 
 // GetScanEntry returns the scan entry with the given ID, or nil if no such
 // entry exists. Includes joined product information if available.
-func (r *Queue) GetScanEntry(ctx context.Context, id string) (*ScanEntry, error) {
+func (r *Queue) GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*ScanEntry, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
-		WHERE se.id = ?`,
-		id,
+		WHERE se.household_id = ? AND se.id = ?`,
+		scope.HouseholdID(), scope.HouseholdID(), id,
 	)
 
 	entry, err := scanScanEntry(row, false)
@@ -268,12 +291,12 @@ func (r *Queue) GetScanEntry(ctx context.Context, id string) (*ScanEntry, error)
 }
 
 // findMergeableScanEntry returns the oldest pending or flagged scan entry for
-// the given user, barcode, and direction, or nil if no such entry exists.
+// this household's user, barcode, and direction, or nil if no such entry exists.
 // direction is compared with IS rather than = so a nil direction only matches
 // an existing entry whose direction is also nil (SQLite's IS is null-safe
 // equality), keeping direction an exact-match key including the not-yet-set
 // case. Ties are broken by id for a deterministic result.
-func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode string, direction *ScanDirection) (*ScanEntry, error) {
+func (r *Queue) findMergeableScanEntry(ctx context.Context, scope tenant.Scope, userID, barcode string, direction *ScanDirection) (*ScanEntry, error) {
 	var directionStr *string
 	if direction != nil {
 		directionStr = ptr(string(*direction))
@@ -284,13 +307,13 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode stri
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
+			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
-		WHERE se.user_id = ? AND se.barcode = ? AND se.direction IS ? AND se.status IN ('pending', 'flagged')
+		WHERE se.household_id = ? AND se.user_id = ? AND se.barcode = ? AND se.direction IS ? AND se.status IN ('pending', 'flagged')
 		ORDER BY se.scanned_at ASC, se.id ASC
 		LIMIT 1`,
-		userID, barcode, nullableString(directionStr),
+		scope.HouseholdID(), scope.HouseholdID(), userID, barcode, nullableString(directionStr),
 	)
 
 	entry, err := scanScanEntry(row, false)
@@ -308,29 +331,32 @@ func (r *Queue) findMergeableScanEntry(ctx context.Context, userID, barcode stri
 // are returned. A linked stock-out carries the current on-hand count in this
 // same query. A shelved item counts as 0, which is what a stock-out commit
 // treats as nothing on hand.
-func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanStatus) ([]ScanEntry, error) {
+func (r *Queue) ListScanEntries(ctx context.Context, scope tenant.Scope, status ScanStatus) ([]ScanEntry, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	query := `
 		SELECT 
 			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
 			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
 			se.removed_count, se.requested_count,
-			p.id, p.name, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count,
+			p.id, ` + product.DisplayNameSQL("p") + `, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count,
 			CASE
 				WHEN se.direction = 'stock_out' AND i.id IS NOT NULL THEN
 					CASE WHEN i.shelved != 0 THEN 0 ELSE COALESCE(on_hand_counts.n, 0) END
 			END
 		FROM scan_entries se
 		LEFT JOIN products p ON p.id = se.product_id
-		LEFT JOIN items i ON i.user_id = se.user_id AND i.product_id = se.product_id
+		LEFT JOIN items i ON i.household_id = se.household_id AND i.product_id = se.product_id
 		LEFT JOIN (
 			SELECT item_id, COUNT(*) AS n
 			FROM item_instances
-			WHERE removed_at IS NULL
+			WHERE removed_at IS NULL AND household_id = ?
 			GROUP BY item_id
 		) AS on_hand_counts ON on_hand_counts.item_id = i.id
-		WHERE se.user_id = ?`
+		WHERE se.household_id = ?`
 
-	args := []interface{}{userID}
+	args := []any{scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID()}
 
 	if status != "" {
 		query += ` AND se.status = ?`
@@ -366,45 +392,14 @@ func (r *Queue) ListScanEntries(ctx context.Context, userID string, status ScanS
 //
 // Pass nil for fields that should not be updated. To clear a nullable field,
 // pass a pointer to a zero value (e.g., &time.Time{} for expires_at).
-func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
-	query := "UPDATE scan_entries SET"
-	args := []interface{}{}
-	updates := []string{}
-
-	if direction != nil {
-		updates = append(updates, " direction = ?")
-		args = append(args, nullableString(ptr(string(*direction))))
+func (r *Queue) UpdateScanEntry(ctx context.Context, scope tenant.Scope, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
+	if err := scope.Require(); err != nil {
+		return err
 	}
-	if unitCount != nil {
-		updates = append(updates, " unit_count = ?")
-		args = append(args, *unitCount)
-	}
-	if expiresAt != nil {
-		updates = append(updates, " expires_at = ?")
-		args = append(args, nullableTime(expiresAt))
-	}
-	if productID != nil {
-		updates = append(updates, " product_id = ?")
-		args = append(args, nullableString(productID))
-	}
-	if status != nil {
-		updates = append(updates, " status = ?")
-		args = append(args, string(*status))
-	}
-
-	if len(updates) == 0 {
+	query, args, ok := scanEntryUpdate(scope, id, direction, unitCount, expiresAt, productID, status)
+	if !ok {
 		return nil
 	}
-
-	for i, u := range updates {
-		query += u
-		if i < len(updates)-1 {
-			query += ","
-		}
-	}
-
-	query += " WHERE id = ?"
-	args = append(args, id)
 
 	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -419,7 +414,7 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 		return fmt.Errorf("UpdateScanEntry: scan entry %q not found", id)
 	}
 
-	updated, err := r.GetScanEntry(ctx, id)
+	updated, err := r.GetScanEntry(ctx, scope, id)
 	if err != nil {
 		return err
 	}
@@ -433,13 +428,16 @@ func (r *Queue) UpdateScanEntry(ctx context.Context, id string, direction *ScanD
 
 // CommitScanEntry marks a scan entry as committed and records the committed_at
 // timestamp. This is a convenience wrapper around UpdateScanEntry.
-func (r *Queue) CommitScanEntry(ctx context.Context, id string) error {
+func (r *Queue) CommitScanEntry(ctx context.Context, scope tenant.Scope, id string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	committed := Committed
 
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE scan_entries SET status = ?, committed_at = ? WHERE id = ?`,
-		string(committed), now, id,
+		`UPDATE scan_entries SET status = ?, committed_at = ? WHERE household_id = ? AND id = ?`,
+		string(committed), now, scope.HouseholdID(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("CommitScanEntry: %w", err)
@@ -452,7 +450,10 @@ func (r *Queue) CommitScanEntry(ctx context.Context, id string) error {
 // to multiple scan entries identified by their IDs. A missing id is skipped so
 // the other ids still update. A committed scan is left as it was: a retry must
 // not rewrite the card that already committed.
-func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direction *ScanDirection, unitCount *int, expiresAt *time.Time) error {
+func (r *Queue) BatchUpdateScanEntries(ctx context.Context, scope tenant.Scope, ids []string, direction *ScanDirection, unitCount *int, expiresAt *time.Time) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -466,7 +467,7 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 	changed := make([]string, 0, len(ids))
 	for _, id := range ids {
 		var status string
-		err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE id = ?`, id).Scan(&status)
+		err := tx.QueryRowContext(ctx, `SELECT status FROM scan_entries WHERE household_id = ? AND id = ?`, scope.HouseholdID(), id).Scan(&status)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -476,7 +477,7 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 		if status == string(Committed) {
 			continue
 		}
-		if err := r.updateScanEntryInTx(ctx, tx, id, direction, unitCount, expiresAt, nil, nil); err != nil {
+		if err := r.updateScanEntryInTx(ctx, scope, tx, id, direction, unitCount, expiresAt, nil, nil); err != nil {
 			return fmt.Errorf("BatchUpdateScanEntries: %w", err)
 		}
 		changed = append(changed, id)
@@ -490,7 +491,7 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 	// make the caller report the saved update as a failure.
 	if r.Broadcaster != nil {
 		for _, id := range changed {
-			updated, err := r.GetScanEntry(ctx, id)
+			updated, err := r.GetScanEntry(ctx, scope, id)
 			if err != nil {
 				slog.Warn("scan update saved but its event was not sent", slog.Any("err", err))
 				break
@@ -505,45 +506,11 @@ func (r *Queue) BatchUpdateScanEntries(ctx context.Context, ids []string, direct
 }
 
 // updateScanEntryInTx is a helper that updates a scan entry within a transaction.
-func (r *Queue) updateScanEntryInTx(ctx context.Context, tx *sql.Tx, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
-	query := "UPDATE scan_entries SET"
-	args := []interface{}{}
-	updates := []string{}
-
-	if direction != nil {
-		updates = append(updates, " direction = ?")
-		args = append(args, nullableString(ptr(string(*direction))))
-	}
-	if unitCount != nil {
-		updates = append(updates, " unit_count = ?")
-		args = append(args, *unitCount)
-	}
-	if expiresAt != nil {
-		updates = append(updates, " expires_at = ?")
-		args = append(args, nullableTime(expiresAt))
-	}
-	if productID != nil {
-		updates = append(updates, " product_id = ?")
-		args = append(args, nullableString(productID))
-	}
-	if status != nil {
-		updates = append(updates, " status = ?")
-		args = append(args, string(*status))
-	}
-
-	if len(updates) == 0 {
+func (r *Queue) updateScanEntryInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) error {
+	query, args, ok := scanEntryUpdate(scope, id, direction, unitCount, expiresAt, productID, status)
+	if !ok {
 		return nil
 	}
-
-	for i, u := range updates {
-		query += u
-		if i < len(updates)-1 {
-			query += ","
-		}
-	}
-
-	query += " WHERE id = ?"
-	args = append(args, id)
 
 	res, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -559,6 +526,40 @@ func (r *Queue) updateScanEntryInTx(ctx context.Context, tx *sql.Tx, id string, 
 	}
 
 	return nil
+}
+
+// scanEntryUpdate is the household-scoped field update. The format string
+// names scan_entries and binds household_id together, so a later column list
+// cannot drop the tenant predicate. ok is false when no field changes.
+func scanEntryUpdate(scope tenant.Scope, id string, direction *ScanDirection, unitCount *int, expiresAt *time.Time, productID *string, status *ScanStatus) (string, []any, bool) {
+	sets := make([]string, 0, 5)
+	args := make([]any, 0, 7)
+	if direction != nil {
+		sets = append(sets, "direction = ?")
+		args = append(args, nullableString(ptr(string(*direction))))
+	}
+	if unitCount != nil {
+		sets = append(sets, "unit_count = ?")
+		args = append(args, *unitCount)
+	}
+	if expiresAt != nil {
+		sets = append(sets, "expires_at = ?")
+		args = append(args, nullableTime(expiresAt))
+	}
+	if productID != nil {
+		sets = append(sets, "product_id = ?")
+		args = append(args, nullableString(productID))
+	}
+	if status != nil {
+		sets = append(sets, "status = ?")
+		args = append(args, string(*status))
+	}
+	if len(sets) == 0 {
+		return "", nil, false
+	}
+	query := fmt.Sprintf("UPDATE scan_entries SET %s WHERE household_id = ? AND id = ?", strings.Join(sets, ", "))
+	args = append(args, scope.HouseholdID(), id)
+	return query, args, true
 }
 
 // scanScanEntry is a helper that scans a row into a ScanEntry struct.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"modernc.org/sqlite"
 )
 
@@ -69,7 +70,7 @@ func TestBatchCommitLockedDatabaseIsBusyOnce(t *testing.T) {
 		problems = append(problems, fmt.Sprintf("db_busy lines = %q", slogBuf.String()))
 	} else {
 		line := busyLogLine(t, slogBuf.String())
-		for _, part := range []string{"level=WARN", "event=db_busy", "method=POST", "sqlite_code=5", "household_id=user-1"} {
+		for _, part := range []string{"level=WARN", "event=db_busy", "method=POST", "sqlite_code=5", "household_id=" + primaryScope(t, env.DB).HouseholdID()} {
 			if !strings.Contains(line, part) {
 				problems = append(problems, fmt.Sprintf("log line missing %s: %s", part, line))
 			}
@@ -127,7 +128,7 @@ func TestBatchCommitStopsOnBusyAndLeavesEarlierResults(t *testing.T) {
 	flagged := scan.Flagged
 	in := scan.StockIn
 	productID := "prod-mix"
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: "scan-flag", UserID: "user-1", Barcode: "scan-flag",
 		ScannedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 		Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
@@ -325,7 +326,7 @@ func TestBatchCommitStopsOnNoSpaceWithoutReadingLaterItems(t *testing.T) {
 	flagged := scan.Flagged
 	in := scan.StockIn
 	productID := "prod-stop"
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: "scan-flag", UserID: "user-1", Barcode: "scan-flag",
 		ScannedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 		Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
@@ -581,7 +582,7 @@ func TestBatchCommitFieldsStopOnNoSpaceWithoutReadingLaterItems(t *testing.T) {
 	flagged := scan.Flagged
 	in := scan.StockIn
 	productID := "prod-field-full"
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: "scan-flag", UserID: "user-1", Barcode: "scan-flag",
 		ScannedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 		Direction: &in, UnitCount: 1, Status: flagged, ProductID: &productID,
@@ -670,7 +671,7 @@ func TestBatchCommitUpdateFullDiskIsNoSpacePerItem(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"scan-field-a", "scan-field-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -777,7 +778,7 @@ func TestBatchCommitUpdateOnlyFullDiskIsNoSpace(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -804,7 +805,7 @@ func TestBatchCommitUpdateOnlyReadBusyStopsEarly(t *testing.T) {
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
 	slogBuf.Reset()
 	ids := []string{"missing-upd", "scan-upd-a", "scan-upd-b"}
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody(ids))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -824,7 +825,7 @@ func TestBatchCommitUpdateOnlyOtherErrorStays500(t *testing.T) {
 	queue := &updateOnlyStorageQueue{t: t, err: errors.New("disk melted")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody([]string{"scan-upd-a"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitUpdateBody([]string{"scan-upd-a"}))
 	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, clientmsg.Generic) {
 		t.Fatalf("status %d %s", res.code, res.body)
 	}
@@ -842,7 +843,7 @@ func TestBatchCommitRereadAfterUpdateFailsPerItem(t *testing.T) {
 	queue := &rereadQueue{t: t, readErr: errors.New("reread failed")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -867,7 +868,7 @@ func TestBatchCommitRereadFindsCardGone(t *testing.T) {
 	queue := &rereadQueue{t: t, gone: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: queue}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitFieldsBody([]string{"scan-reread", "scan-next"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK || len(body.CommittedIDs) != 0 {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -895,7 +896,7 @@ func TestBatchCommitCanceledLogsOnce(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: cancelQueue{}}).Handle))
-	res := serveJSON(mux, http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-cancel-a", "scan-cancel-b"}))
+	res := serveJSON(withRequestScope(t, nil, mux), http.MethodPost, "/api/scans/batch-commit", batchCommitBody([]string{"scan-cancel-a", "scan-cancel-b"}))
 	body := decodeBatchCommit(t, res)
 	if res.code != http.StatusOK {
 		t.Fatalf("status %d %s", res.code, res.body)
@@ -913,14 +914,14 @@ func TestBatchCommitCanceledLogsOnce(t *testing.T) {
 
 type cancelQueue struct{}
 
-func (cancelQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+func (cancelQueue) GetScanEntry(context.Context, tenant.Scope, string) (*scan.ScanEntry, error) {
 	return nil, context.Canceled
 }
-func (cancelQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (cancelQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return nil
 }
-func (cancelQueue) CommitStockIn(context.Context, *scan.ScanEntry) error { return nil }
-func (cancelQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (cancelQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error { return nil }
+func (cancelQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	return 0, nil
 }
 
@@ -930,7 +931,7 @@ type updateFailQueue struct {
 	reads int
 }
 
-func (q *updateFailQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+func (q *updateFailQueue) GetScanEntry(context.Context, tenant.Scope, string) (*scan.ScanEntry, error) {
 	q.reads++
 	if q.reads > 1 {
 		q.t.Fatal("batch read an item after the update failed")
@@ -942,14 +943,14 @@ func (q *updateFailQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry
 		ProductID: &productID, UnitCount: 1,
 	}, nil
 }
-func (q *updateFailQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q *updateFailQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return q.err
 }
-func (q *updateFailQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+func (q *updateFailQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
 	q.t.Fatal("batch committed an item after the update failed")
 	return nil
 }
-func (q *updateFailQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q *updateFailQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	q.t.Fatal("batch committed an item after the update failed")
 	return 0, nil
 }
@@ -961,20 +962,20 @@ type updateOnlyStorageQueue struct {
 	commits int
 }
 
-func (q *updateOnlyStorageQueue) GetScanEntry(context.Context, string) (*scan.ScanEntry, error) {
+func (q *updateOnlyStorageQueue) GetScanEntry(context.Context, tenant.Scope, string) (*scan.ScanEntry, error) {
 	q.reads++
 	q.t.Fatal("update-only read an item after the write failed")
 	return nil, nil
 }
-func (q *updateOnlyStorageQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q *updateOnlyStorageQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return q.err
 }
-func (q *updateOnlyStorageQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+func (q *updateOnlyStorageQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
 	q.commits++
 	q.t.Fatal("update-only committed an item")
 	return nil
 }
-func (q *updateOnlyStorageQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q *updateOnlyStorageQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	q.commits++
 	q.t.Fatal("update-only committed an item")
 	return 0, nil
@@ -986,7 +987,7 @@ type updateOnlyReadQueue struct {
 	reads int
 }
 
-func (q *updateOnlyReadQueue) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+func (q *updateOnlyReadQueue) GetScanEntry(_ context.Context, _ tenant.Scope, id string) (*scan.ScanEntry, error) {
 	q.reads++
 	switch id {
 	case "missing-upd":
@@ -998,14 +999,14 @@ func (q *updateOnlyReadQueue) GetScanEntry(_ context.Context, id string) (*scan.
 		return nil, nil
 	}
 }
-func (q *updateOnlyReadQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q *updateOnlyReadQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return nil
 }
-func (q *updateOnlyReadQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+func (q *updateOnlyReadQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
 	q.t.Fatal("update-only committed an item")
 	return nil
 }
-func (q *updateOnlyReadQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q *updateOnlyReadQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	q.t.Fatal("update-only committed an item")
 	return 0, nil
 }
@@ -1018,7 +1019,7 @@ type rereadQueue struct {
 	commits int
 }
 
-func (q *rereadQueue) GetScanEntry(_ context.Context, id string) (*scan.ScanEntry, error) {
+func (q *rereadQueue) GetScanEntry(_ context.Context, _ tenant.Scope, id string) (*scan.ScanEntry, error) {
 	if q.reads == nil {
 		q.reads = map[string]int{}
 	}
@@ -1042,15 +1043,15 @@ func (q *rereadQueue) GetScanEntry(_ context.Context, id string) (*scan.ScanEntr
 		ProductID: &productID, UnitCount: 1,
 	}, nil
 }
-func (q *rereadQueue) BatchUpdateScanEntries(context.Context, []string, *scan.ScanDirection, *int, *time.Time) error {
+func (q *rereadQueue) BatchUpdateScanEntries(context.Context, tenant.Scope, []string, *scan.ScanDirection, *int, *time.Time) error {
 	return nil
 }
-func (q *rereadQueue) CommitStockIn(context.Context, *scan.ScanEntry) error {
+func (q *rereadQueue) CommitStockIn(context.Context, tenant.Scope, *scan.ScanEntry) error {
 	q.commits++
 	q.t.Fatal("batch committed an item after the re-read")
 	return nil
 }
-func (q *rereadQueue) CommitStockOut(context.Context, *scan.ScanEntry, *string) (int, error) {
+func (q *rereadQueue) CommitStockOut(context.Context, tenant.Scope, *scan.ScanEntry, *string) (int, error) {
 	q.commits++
 	q.t.Fatal("batch committed an item after the re-read")
 	return 0, nil

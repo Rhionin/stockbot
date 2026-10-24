@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
 
@@ -36,7 +38,10 @@ type seedPref struct {
 // Seed inserts one inbox card for each combination the old shopping plan
 // already treated as one need, plus the wider look-alike clusters.
 // It runs once. A second call does nothing.
-func (g *Groups) Seed(ctx context.Context) error {
+func (g *Groups) Seed(ctx context.Context, scope tenant.Scope) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not prepare group suggestions: %w", err)
@@ -44,17 +49,21 @@ func (g *Groups) Seed(ctx context.Context) error {
 	defer tx.Rollback()
 
 	var existing string
-	err = tx.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = ?`, seededSetting).Scan(&existing)
+	err = tx.QueryRowContext(ctx, `
+		SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), seededSetting).Scan(&existing)
 	if err == nil {
 		return nil
 	}
 	if err != sql.ErrNoRows {
 		return fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
-	if _, err := seedSuggestions(ctx, tx); err != nil {
+	if _, err := seedSuggestions(ctx, scope, tx); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings (key, value) VALUES (?, '1')`, seededSetting); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, '1')`,
+		scope.HouseholdID(), seededSetting); err != nil {
 		return fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -63,24 +72,27 @@ func (g *Groups) Seed(ctx context.Context) error {
 	return nil
 }
 
-func seedSuggestions(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	products, err := loadSeedProducts(ctx, tx)
+func seedSuggestions(ctx context.Context, scope tenant.Scope, tx *sql.Tx) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	products, err := loadSeedProducts(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	groupOf, extraKeys, err := loadMembership(ctx, tx)
+	groupOf, extraKeys, err := loadMembership(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	dismissed, err := loadDismissed(ctx, tx)
+	dismissed, err := loadDismissed(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	openSets, err := loadOpenSets(ctx, tx)
+	openSets, err := loadOpenSets(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
-	prefs, err := loadSeedPrefs(ctx, tx)
+	prefs, err := loadSeedPrefs(ctx, scope, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +129,7 @@ func seedSuggestions(ctx context.Context, tx *sql.Tx) ([]string, error) {
 		if _, already := openSets[sig]; already {
 			continue
 		}
-		id, err := insertSeeded(ctx, tx, card, matchPref(card.ids, prefs, needMembers))
+		id, err := insertSeeded(ctx, scope, tx, card, matchPref(card.ids, prefs, needMembers))
 		if err != nil {
 			return nil, err
 		}
@@ -127,10 +139,14 @@ func seedSuggestions(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	return created, nil
 }
 
-func loadSeedProducts(ctx context.Context, q querier) ([]seedProduct, error) {
+func loadSeedProducts(ctx context.Context, scope tenant.Scope, q querier) ([]seedProduct, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT id, name, COALESCE(unit_of_measure, ''), COALESCE(category, '')
-		FROM products ORDER BY id`)
+		SELECT p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''), COALESCE(p.category, '')
+		FROM products p
+		ORDER BY p.id`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
@@ -141,6 +157,9 @@ func loadSeedProducts(ctx context.Context, q querier) ([]seedProduct, error) {
 		if err := rows.Scan(&p.id, &p.name, &p.unit, &p.category); err != nil {
 			return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
 		}
+		if strings.TrimSpace(p.name) == "" {
+			continue
+		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -149,13 +168,16 @@ func loadSeedProducts(ctx context.Context, q querier) ([]seedProduct, error) {
 	return out, nil
 }
 
-func loadSeedPrefs(ctx context.Context, q querier) ([]seedPref, error) {
+func loadSeedPrefs(ctx context.Context, scope tenant.Scope, q querier) ([]seedPref, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT bp.need_key, bp.ignore_price, i.product_id
 		FROM brand_preferences bp
-		LEFT JOIN items i ON i.id = bp.item_id
-		WHERE bp.user_id = ?
-		ORDER BY bp.need_key`, householdUser)
+		LEFT JOIN items i ON i.id = bp.item_id AND i.household_id = bp.household_id
+		WHERE bp.household_id = ?
+		ORDER BY bp.need_key`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
@@ -314,7 +336,10 @@ func matchPref(ids []string, prefs []seedPref, needMembers map[string][]string) 
 	return nil
 }
 
-func insertSeeded(ctx context.Context, tx *sql.Tx, card seedCluster, pref *seedPref) (string, error) {
+func insertSeeded(ctx context.Context, scope tenant.Scope, tx *sql.Tx, card seedCluster, pref *seedPref) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
 	id := uuid.NewString()
 	kind := "looks_alike"
 	var rule, pin any
@@ -331,9 +356,9 @@ func insertSeeded(ctx context.Context, tx *sql.Tx, card seedCluster, pref *seedP
 		existing = card.existing
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO group_suggestions (id, user_id, kind, title, proposed_rule, pinned_product_id, existing_group_id, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`,
-		id, householdUser, kind, card.title, rule, pin, existing); err != nil {
+		INSERT INTO group_suggestions (id, household_id, user_id, kind, title, proposed_rule, pinned_product_id, existing_group_id, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+		id, scope.HouseholdID(), scope.HouseholdID(), kind, card.title, rule, pin, existing); err != nil {
 		return "", fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
 	style := majorityCaution(card.ids, card.caution)
@@ -347,9 +372,9 @@ func insertSeeded(ctx context.Context, tx *sql.Tx, card seedCluster, pref *seedP
 			included = 0
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO group_suggestion_members (suggestion_id, product_id, included, caution)
-			VALUES (?, ?, ?, ?)`,
-			id, productID, included, caution); err != nil {
+			INSERT INTO group_suggestion_members (household_id, suggestion_id, product_id, included, caution)
+			VALUES (?, ?, ?, ?, ?)`,
+			scope.HouseholdID(), id, productID, included, caution); err != nil {
 			return "", fmt.Errorf("could not prepare group suggestions: %w", err)
 		}
 	}

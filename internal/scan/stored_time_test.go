@@ -11,16 +11,16 @@ import (
 )
 
 func TestScanWritesStoreCleanUTC(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID:  "user-1",
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID:  "actor",
 		Barcode: "000111222333",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.CommitScanEntry(ctx, created.ID); err != nil {
+	if err := queue.CommitScanEntry(ctx, scope, created.ID); err != nil {
 		t.Fatal(err)
 	}
 	var scanned, committed string
@@ -37,7 +37,7 @@ func TestScanWritesStoreCleanUTC(t *testing.T) {
 }
 
 func TestCommitStockInStoresTheInjectedClock(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
 	stamped := time.Date(2020, 1, 2, 3, 4, 5, 6, time.UTC)
 	queue.Now = func() time.Time { return stamped }
@@ -50,8 +50,8 @@ func TestCommitStockInStoresTheInjectedClock(t *testing.T) {
 	}
 	direction := scan.StockIn
 	pid := productID
-	created, err := queue.CreateScanEntry(ctx, scan.ScanEntry{
-		UserID:    "user-1",
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		UserID:    "actor",
 		Barcode:   "clock",
 		ScannedAt: time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC),
 		Direction: &direction,
@@ -62,7 +62,7 @@ func TestCommitStockInStoresTheInjectedClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.CommitStockIn(ctx, created); err != nil {
+	if err := queue.CommitStockIn(ctx, scope, created); err != nil {
 		t.Fatal(err)
 	}
 	var stored string
@@ -76,25 +76,26 @@ func TestCommitStockInStoresTheInjectedClock(t *testing.T) {
 }
 
 func TestSuffixedScanTimesReadBackInOrder(t *testing.T) {
-	queue, db := newTestQueue(t)
+	queue, db, scope := newTestQueue(t)
 	const suffix = "2026-10-17 18:00:00.5 +0000 UTC m=+9"
 	const later = "2026-10-17 18:00:01 +0000 UTC"
 	want := time.Date(2026, 10, 17, 18, 0, 0, 500000000, time.UTC)
 	if _, err := db.Exec(`
-		INSERT INTO scan_entries (id, user_id, barcode, scanned_at, unit_count, status, committed_at) VALUES
-			('later', 'user-1', '111', ?, 1, 'pending', NULL),
-			('suffix', 'user-1', '222', ?, 1, 'committed', ?)`,
-		later, suffix, suffix); err != nil {
+		INSERT INTO scan_entries (id, user_id, household_id, barcode, scanned_at, unit_count, status, committed_at) VALUES
+			('later', ?, ?, '111', ?, 1, 'pending', NULL),
+			('suffix', ?, ?, '222', ?, 1, 'committed', ?)`,
+		scope.HouseholdID(), scope.HouseholdID(), later,
+		scope.HouseholdID(), scope.HouseholdID(), suffix, suffix); err != nil {
 		t.Fatal(err)
 	}
-	got, err := queue.GetScanEntry(context.Background(), "suffix")
+	got, err := queue.GetScanEntry(context.Background(), scope, "suffix")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.ScannedAt.Equal(want) || got.CommittedAt == nil || !got.CommittedAt.Equal(want) {
 		t.Fatalf("scanned %s committed %v", got.ScannedAt, got.CommittedAt)
 	}
-	listed, err := queue.ListScanEntries(context.Background(), "user-1", "")
+	listed, err := queue.ListScanEntries(context.Background(), scope, "")
 	if err != nil {
 		t.Fatal(err)
 	}

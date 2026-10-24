@@ -14,6 +14,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 func TestLinkSuggestionsMatchTheNoItemCommitAndWriteNothing(t *testing.T) {
@@ -127,7 +128,7 @@ func TestLinkSuggestionsHideDatabaseErrors(t *testing.T) {
 	}).Handle))
 
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scans/scan-1/link-suggestions", nil))
+	mux.ServeHTTP(rec, withHouseholdScope(t, httptest.NewRequest(http.MethodGet, "/api/scans/scan-1/link-suggestions", nil)))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
 	}
@@ -137,7 +138,7 @@ func TestLinkSuggestionsHideDatabaseErrors(t *testing.T) {
 	}
 
 	empty := httptest.NewRecorder()
-	mux.ServeHTTP(empty, httptest.NewRequest(http.MethodGet, "/api/scans/scan-1/empty", nil))
+	mux.ServeHTTP(empty, withHouseholdScope(t, httptest.NewRequest(http.MethodGet, "/api/scans/scan-1/empty", nil)))
 	if empty.Code != http.StatusOK || strings.TrimSpace(empty.Body.String()) != `{"suggestions":[]}` {
 		t.Fatalf("nil suggestions status %d body %s", empty.Code, empty.Body.String())
 	}
@@ -147,7 +148,7 @@ type linkSuggestQueue struct {
 	err error
 }
 
-func (q linkSuggestQueue) LinkSuggestions(context.Context, string) ([]scan.LinkSuggestion, error) {
+func (q linkSuggestQueue) LinkSuggestions(context.Context, tenant.Scope, string) ([]scan.LinkSuggestion, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
@@ -200,10 +201,11 @@ func TestLinkSuggestionsAreTheScansHousehold(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cedar := cedarHousehold(t, env.DB)
 	if _, err := env.DB.Exec(`
-		INSERT INTO items (id, user_id, product_id) VALUES
-			('item-home', 'user-1', 'prod-home'),
-			('item-away', 'user-2', 'prod-away')`); err != nil {
+		INSERT INTO items (id, user_id, household_id, product_id) VALUES
+			('item-home', 'user-1', (SELECT id FROM households WHERE is_primary = 1), 'prod-home'),
+			('item-away', 'user-2', ?, 'prod-away')`, cedar); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
@@ -219,7 +221,7 @@ func TestLinkSuggestionsAreTheScansHousehold(t *testing.T) {
 			('828385', 'prod-away', 'user_override', 'user-2')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: "scan-away", UserID: "user-2", Barcode: "011110828385", ScannedAt: now,
 		Direction: directionPtr(scan.StockOut), UnitCount: 1, Status: scan.Pending,
 	}); err != nil {
@@ -233,7 +235,7 @@ func TestLinkSuggestionsAreTheScansHousehold(t *testing.T) {
 	if err := json.Unmarshal(body, &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Suggestions) != 1 || listed.Suggestions[0].ItemID != "item-away" {
+	if len(listed.Suggestions) != 1 || listed.Suggestions[0].ItemID != "item-home" {
 		t.Fatalf("suggestions = %+v", listed.Suggestions)
 	}
 }
@@ -301,6 +303,13 @@ func seedLinkCard(env testEnv) {
 		}
 	}
 	if _, err := env.DB.Exec(`UPDATE items SET shelved = 1 WHERE id = 'item-shelved'`); err != nil {
+		env.T.Fatal(err)
+	}
+	cedar := cedarHousehold(env.T, env.DB)
+	if _, err := env.DB.Exec(`UPDATE items SET household_id = ? WHERE id = 'item-twin'`, cedar); err != nil {
+		env.T.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`UPDATE item_instances SET household_id = ? WHERE item_id = 'item-twin'`, cedar); err != nil {
 		env.T.Fatal(err)
 	}
 	productID := "prod-off"

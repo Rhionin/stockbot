@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // SetReplenishmentModePathParams holds path parameters for the replenishment mode endpoint.
@@ -15,7 +16,7 @@ type SetReplenishmentModePathParams struct {
 // Sets the replenishment mode for an item (target or replenish).
 type SetReplenishmentModeHandler struct {
 	Pantry interface {
-		UpdateReplenishmentMode(ctx context.Context, itemID string, mode inventory.ReplenishmentMode) error
+		UpdateReplenishmentMode(ctx context.Context, scope tenant.Scope, itemID string, mode inventory.ReplenishmentMode) error
 	}
 }
 
@@ -42,8 +43,13 @@ func (h *SetReplenishmentModeHandler) Handle(req Request[SetReplenishmentModeBod
 		return nil, &HTTPError{Code: 422, Message: "mode must be \"target\" or \"replenish\""}
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, err
+	}
+
 	// Set the replenishment mode
-	if err := h.Pantry.UpdateReplenishmentMode(req.Context, itemID, mode); err != nil {
+	if err := h.Pantry.UpdateReplenishmentMode(req.Context, scope, itemID, mode); err != nil {
 		return nil, InternalError(err)
 	}
 

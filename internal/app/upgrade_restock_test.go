@@ -156,7 +156,7 @@ func applyMigrationsExcept(db *sql.DB, skip string) error {
 	}
 	var files []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == skip || isHouseholdMigration(entry.Name()) {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == skip || isHouseholdMigration(entry.Name()) || entry.Name() >= "023" {
 			continue
 		}
 		files = append(files, entry.Name())

@@ -8,10 +8,9 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
-)
 
-// userID is the placeholder owner until an auth layer supplies a real user.
-const userID = "user-1"
+	"github.com/Rhionin/stockbot/internal/tenant"
+)
 
 // Saved is one provider's application credentials, including the secret.
 // It is not safe to marshal.
@@ -46,7 +45,10 @@ func NewVault(db *sql.DB) *Vault {
 // Load returns the saved credentials for one provider. ok is false when no row
 // exists. The secret is included for applying it to the provider, not for an
 // HTTP response.
-func (v *Vault) Load(ctx context.Context, providerID string) (Saved, bool, error) {
+func (v *Vault) Load(ctx context.Context, scope tenant.Scope, providerID string) (Saved, bool, error) {
+	if err := scope.Require(); err != nil {
+		return Saved{}, false, err
+	}
 	if v == nil || v.db == nil {
 		return Saved{}, false, nil
 	}
@@ -54,8 +56,8 @@ func (v *Vault) Load(ctx context.Context, providerID string) (Saved, bool, error
 	err := v.db.QueryRowContext(ctx, `
 		SELECT provider_id, client_id, client_secret, redirect_uri, modality
 		FROM provider_app_credentials
-		WHERE user_id = ? AND provider_id = ?`,
-		userID, providerID,
+		WHERE household_id = ? AND provider_id = ?`,
+		scope.HouseholdID(), providerID,
 	).Scan(&saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
 	if err == sql.ErrNoRows {
 		return Saved{}, false, nil
@@ -68,8 +70,8 @@ func (v *Vault) Load(ctx context.Context, providerID string) (Saved, bool, error
 
 // Public returns the non-secret view of a saved row. ok is false when nothing
 // is saved. Source is "saved" when a row exists.
-func (v *Vault) Public(ctx context.Context, providerID string) (Public, bool, error) {
-	saved, ok, err := v.Load(ctx, providerID)
+func (v *Vault) Public(ctx context.Context, scope tenant.Scope, providerID string) (Public, bool, error) {
+	saved, ok, err := v.Load(ctx, scope, providerID)
 	if err != nil || !ok {
 		return Public{}, ok, err
 	}
@@ -84,11 +86,14 @@ func (v *Vault) Public(ctx context.Context, providerID string) (Public, bool, er
 
 // Save inserts or replaces the saved credentials. An empty secret keeps the
 // secret already stored. The first save must include a secret.
-func (v *Vault) Save(ctx context.Context, saved Saved) error {
+func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if v == nil || v.db == nil {
 		return fmt.Errorf("credential store is not available")
 	}
-	existing, ok, err := v.Load(ctx, saved.ProviderID)
+	existing, ok, err := v.Load(ctx, scope, saved.ProviderID)
 	if err != nil {
 		return err
 	}
@@ -99,18 +104,20 @@ func (v *Vault) Save(ctx context.Context, saved Saved) error {
 		}
 		secret = existing.ClientSecret
 	}
-	id := userID + ":" + saved.ProviderID
+	householdID := scope.HouseholdID()
+	id := householdID + ":" + saved.ProviderID
 	_, err = v.db.ExecContext(ctx, `
 		INSERT INTO provider_app_credentials
-			(id, user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			(id, household_id, user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (user_id, provider_id) DO UPDATE SET
 			client_id = excluded.client_id,
 			client_secret = excluded.client_secret,
 			redirect_uri = excluded.redirect_uri,
 			modality = excluded.modality,
-			updated_at = excluded.updated_at`,
-		id, userID, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality, time.Now().UTC().Format(time.RFC3339),
+			updated_at = excluded.updated_at
+		WHERE provider_app_credentials.household_id = excluded.household_id`,
+		id, householdID, householdID, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality, time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("save provider credentials: %w", err)
@@ -119,13 +126,16 @@ func (v *Vault) Save(ctx context.Context, saved Saved) error {
 }
 
 // Clear removes the saved credentials for one provider.
-func (v *Vault) Clear(ctx context.Context, providerID string) error {
+func (v *Vault) Clear(ctx context.Context, scope tenant.Scope, providerID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if v == nil || v.db == nil {
 		return nil
 	}
 	_, err := v.db.ExecContext(ctx, `
-		DELETE FROM provider_app_credentials WHERE user_id = ? AND provider_id = ?`,
-		userID, providerID,
+		DELETE FROM provider_app_credentials WHERE household_id = ? AND provider_id = ?`,
+		scope.HouseholdID(), providerID,
 	)
 	if err != nil {
 		return fmt.Errorf("clear provider credentials: %w", err)

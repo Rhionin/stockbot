@@ -12,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // commitGate holds every concurrent commit inside CommitStockOut until each
@@ -23,10 +24,10 @@ type commitGate struct {
 	ready sync.WaitGroup
 }
 
-func (g *commitGate) CommitStockOut(ctx context.Context, entry *scan.ScanEntry, instanceID *string) (int, error) {
+func (g *commitGate) CommitStockOut(ctx context.Context, scope tenant.Scope, entry *scan.ScanEntry, instanceID *string) (int, error) {
 	g.ready.Done()
 	<-g.start
-	return g.Queue.CommitStockOut(ctx, entry, instanceID)
+	return g.Queue.CommitStockOut(ctx, scope, entry, instanceID)
 }
 
 func waitForCommitGate(t *testing.T, ready *sync.WaitGroup) {
@@ -169,6 +170,7 @@ func TestConcurrentStockOutCommitRemovesOnce(t *testing.T) {
 	gate.ready.Add(n)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
+	scoped := withRequestScope(t, env.DB, mux)
 
 	results := make([]commitResult, n)
 	var wg sync.WaitGroup
@@ -176,7 +178,7 @@ func TestConcurrentStockOutCommitRemovesOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = postCommit(mux, "/api/scans/scan-race/commit", "")
+			results[i] = postCommit(scoped, "/api/scans/scan-race/commit", "")
 		}()
 	}
 
@@ -221,6 +223,7 @@ func TestConcurrentBatchCommitRemovesSharedScanOnce(t *testing.T) {
 	gate.ready.Add(n)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: gate}).Handle))
+	scoped := withRequestScope(t, env.DB, mux)
 
 	results := make([]commitResult, n)
 	var wg sync.WaitGroup
@@ -228,7 +231,7 @@ func TestConcurrentBatchCommitRemovesSharedScanOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = postCommit(mux, "/api/scans/batch-commit", `{"scanEntryIds":["scan-batch-race"],"commit":true}`)
+			results[i] = postCommit(scoped, "/api/scans/batch-commit", `{"scanEntryIds":["scan-batch-race"],"commit":true}`)
 		}()
 	}
 
@@ -273,17 +276,18 @@ func TestConcurrentSingleAndBatchCommitRemovesOnce(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/scans/{id}/commit", HandleJSON((&ScanCommitHandler{Queue: gate}).Handle))
 	mux.HandleFunc("POST /api/scans/batch-commit", HandleJSON((&ScanBatchCommitHandler{Queue: gate}).Handle))
+	scoped := withRequestScope(t, env.DB, mux)
 
 	var single, batch commitResult
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		single = postCommit(mux, "/api/scans/scan-mixed-race/commit", "")
+		single = postCommit(scoped, "/api/scans/scan-mixed-race/commit", "")
 	}()
 	go func() {
 		defer wg.Done()
-		batch = postCommit(mux, "/api/scans/batch-commit", `{"scanEntryIds":["scan-mixed-race"],"commit":true}`)
+		batch = postCommit(scoped, "/api/scans/batch-commit", `{"scanEntryIds":["scan-mixed-race"],"commit":true}`)
 	}()
 
 	waitForCommitGate(t, &gate.ready)

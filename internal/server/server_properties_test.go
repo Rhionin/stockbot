@@ -463,7 +463,7 @@ func buildComposedAndAPIHandlers(t *testing.T, seed func(env testEnv)) (http.Han
 	}
 	apiMux, _, _ := newAPIMux(catalogB, lookupB, refresherB, envB.DB, nil)
 
-	return composed, apiMux
+	return composed, withPrimaryScope(envB.DB, apiMux)
 }
 
 // TestMountingWebUIPerturbsNoRoute implements

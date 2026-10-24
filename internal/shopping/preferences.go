@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 const (
@@ -41,14 +43,17 @@ func (d Deal) OnSale() bool {
 	return *d.PriceCents < *d.RegularPriceCents
 }
 
-// ListDeals returns noted sales for the user, ordered by item.
-func (s *Store) ListDeals(ctx context.Context, userID string) ([]Deal, error) {
+// ListDeals returns noted sales for the household, ordered by item.
+func (s *Store) ListDeals(ctx context.Context, scope tenant.Scope) ([]Deal, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT item_id, price_cents, regular_price_cents, label, source, updated_at
 		 FROM item_deals
-		 WHERE user_id = ?
+		 WHERE household_id = ?
 		 ORDER BY item_id`,
-		userID,
+		scope.HouseholdID(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("could not load sales: %w", err)
@@ -71,23 +76,27 @@ func (s *Store) ListDeals(ctx context.Context, userID string) ([]Deal, error) {
 
 // SaveDeal inserts or replaces the noted sale for one item.
 // An empty source is stored as recorded.
-func (s *Store) SaveDeal(ctx context.Context, userID string, deal Deal) error {
+func (s *Store) SaveDeal(ctx context.Context, scope tenant.Scope, deal Deal) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	if deal.Source == "" {
 		deal.Source = DealSourceRecorded
 	}
 	if deal.Source != DealSourceRecorded && deal.Source != DealSourceRetailer {
 		return fmt.Errorf("could not save sale: unknown source %q", deal.Source)
 	}
+	household := scope.HouseholdID()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO item_deals (user_id, item_id, price_cents, regular_price_cents, label, source, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO item_deals (household_id, user_id, item_id, price_cents, regular_price_cents, label, source, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, item_id) DO UPDATE SET
 		   price_cents = excluded.price_cents,
 		   regular_price_cents = excluded.regular_price_cents,
 		   label = excluded.label,
 		   source = excluded.source,
 		   updated_at = excluded.updated_at`,
-		userID, deal.ItemID, nullableInt(deal.PriceCents), nullableInt(deal.RegularPriceCents),
+		household, household, deal.ItemID, nullableInt(deal.PriceCents), nullableInt(deal.RegularPriceCents),
 		deal.Label, deal.Source, time.Now().UTC(),
 	)
 	if err != nil {
@@ -97,10 +106,13 @@ func (s *Store) SaveDeal(ctx context.Context, userID string, deal Deal) error {
 }
 
 // DeleteDeal removes a noted sale. Missing rows are fine.
-func (s *Store) DeleteDeal(ctx context.Context, userID, itemID string) error {
+func (s *Store) DeleteDeal(ctx context.Context, scope tenant.Scope, itemID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM item_deals WHERE user_id = ? AND item_id = ?`,
-		userID, itemID,
+		`DELETE FROM item_deals WHERE household_id = ? AND item_id = ?`,
+		scope.HouseholdID(), itemID,
 	)
 	if err != nil {
 		return fmt.Errorf("could not clear sale: %w", err)

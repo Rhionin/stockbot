@@ -7,23 +7,35 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
+func TestShelfErrorsSpeakPlainly(t *testing.T) {
+	if (&EmptyShelfLink{}).Error() != "nothing on hand" {
+		t.Fatal("empty shelf")
+	}
+	if (&UnitsOnHandError{}).Error() != "units on hand" {
+		t.Fatal("units on hand")
+	}
+}
+
 func TestCommitReachesTheRowsAffectedGuard(t *testing.T) {
-	queue, db := newTestQueueInternal(t)
+	queue, db, scope := newTestQueueInternal(t)
 	ctx := context.Background()
 	at := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	const productID = "prod-guard"
 	if _, err := db.Exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES (?, 'Guard', 'Pantry', 'unit')`, productID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-guard', 'user-1', ?)`, productID); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-guard', ?, ?, ?)`, scope.HouseholdID(), productID, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	direction := StockIn
 	product := productID
-	entry, err := queue.CreateScanEntry(ctx, ScanEntry{
-		ID: "scan-guard", UserID: "user-1", Barcode: "scan-guard", ScannedAt: at,
+	entry, err := queue.CreateScanEntry(ctx, scope, ScanEntry{
+		ID: "scan-guard", UserID: "actor", Barcode: "scan-guard", ScannedAt: at,
 		Direction: &direction, UnitCount: 1, ProductID: &product, Status: Pending,
 	})
 	if err != nil {
@@ -35,10 +47,10 @@ func TestCommitReachesTheRowsAffectedGuard(t *testing.T) {
 
 	// requireOpenScan would reject this committed scan before the update.
 	// Skip that check so CommitStockIn reaches the rows-affected guard.
-	openScanCheck = func(context.Context, *sql.Tx, string) error { return nil }
+	openScanCheck = func(context.Context, tenant.Scope, *sql.Tx, string) error { return nil }
 	t.Cleanup(func() { openScanCheck = requireOpenScan })
 
-	err = queue.CommitStockIn(ctx, entry)
+	err = queue.CommitStockIn(ctx, scope, entry)
 	if !errors.Is(err, ErrNotPending) {
 		t.Fatalf("commit err = %v, want ErrNotPending", err)
 	}
@@ -62,7 +74,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 	at := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 
 	t.Run("instance insert", func(t *testing.T) {
-		queue, db := newTestQueueInternal(t)
+		queue, db, scope := newTestQueueInternal(t)
 		entry := pendingBackfill(t, db, queue, "scan-insert", at)
 		if _, err := db.Exec(`
 			CREATE TRIGGER fail_instance_insert BEFORE INSERT ON item_instances
@@ -71,7 +83,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 			END`); err != nil {
 			t.Fatal(err)
 		}
-		_, err := queue.CommitBackfill(context.Background(), entry)
+		_, err := queue.CommitBackfill(context.Background(), scope, entry)
 		if err == nil || !strings.Contains(err.Error(), "create instance") {
 			t.Fatalf("err = %v", err)
 		}
@@ -79,7 +91,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 	})
 
 	t.Run("stock-in move id", func(t *testing.T) {
-		queue, db := newTestQueueInternal(t)
+		queue, db, scope := newTestQueueInternal(t)
 		entry := pendingBackfill(t, db, queue, "scan-in-id", at)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
@@ -89,7 +101,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 			}
 		}
 		t.Cleanup(func() { backfillMoveRead = nil })
-		_, err := queue.CommitBackfill(ctx, entry)
+		_, err := queue.CommitBackfill(ctx, scope, entry)
 		if err == nil || !strings.Contains(err.Error(), "read backfill stock-in") || !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v", err)
 		}
@@ -97,7 +109,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 	})
 
 	t.Run("stock-out move id", func(t *testing.T) {
-		queue, db := newTestQueueInternal(t)
+		queue, db, scope := newTestQueueInternal(t)
 		entry := pendingBackfill(t, db, queue, "scan-out-id", at)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
@@ -107,7 +119,7 @@ func TestBackfillMoveReadsAndInstanceInsertFail(t *testing.T) {
 			}
 		}
 		t.Cleanup(func() { backfillMoveRead = nil })
-		_, err := queue.CommitBackfill(ctx, entry)
+		_, err := queue.CommitBackfill(ctx, scope, entry)
 		if err == nil || !strings.Contains(err.Error(), "read backfill stock-out") || !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v", err)
 		}
@@ -119,7 +131,7 @@ func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
 	at := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 
 	t.Run("scan update", func(t *testing.T) {
-		queue, db := newTestQueueInternal(t)
+		queue, db, scope := newTestQueueInternal(t)
 		db.SetMaxOpenConns(1)
 		entry := pendingBackfill(t, db, queue, "scan-update", at)
 		if _, err := db.Exec(`
@@ -130,7 +142,7 @@ func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
 			END`); err != nil {
 			t.Fatal(err)
 		}
-		_, err := queue.CommitBackfill(context.Background(), entry)
+		_, err := queue.CommitBackfill(context.Background(), scope, entry)
 		if err == nil || !strings.Contains(err.Error(), "update scan entry") {
 			t.Fatalf("err = %v", err)
 		}
@@ -138,7 +150,7 @@ func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
 	})
 
 	t.Run("commit", func(t *testing.T) {
-		queue, db := newTestQueueInternal(t)
+		queue, db, scope := newTestQueueInternal(t)
 		db.SetMaxOpenConns(1)
 		entry := pendingBackfill(t, db, queue, "scan-commit", at)
 		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
@@ -156,7 +168,7 @@ func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
 			END`); err != nil {
 			t.Fatal(err)
 		}
-		_, err := queue.CommitBackfill(context.Background(), entry)
+		_, err := queue.CommitBackfill(context.Background(), scope, entry)
 		if err == nil || !strings.Contains(err.Error(), "commit transaction") {
 			t.Fatalf("err = %v", err)
 		}
@@ -166,17 +178,21 @@ func TestBackfillScanUpdateAndCommitFail(t *testing.T) {
 
 func pendingBackfill(t *testing.T, db *sql.DB, queue *Queue, scanID string, at time.Time) *ScanEntry {
 	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	productID := "prod-" + scanID
 	itemID := "item-" + scanID
 	if _, err := db.Exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES (?, 'Oats', 'Pantry', 'unit')`, productID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id) VALUES (?, 'user-1', ?)`, itemID, productID); err != nil {
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`, itemID, scope.HouseholdID(), productID, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
 	direction := StockOut
-	entry, err := queue.CreateScanEntry(context.Background(), ScanEntry{
-		ID: scanID, UserID: "user-1", Barcode: scanID, ScannedAt: at,
+	entry, err := queue.CreateScanEntry(context.Background(), scope, ScanEntry{
+		ID: scanID, UserID: "actor", Barcode: scanID, ScannedAt: at,
 		Direction: &direction, UnitCount: 1, ProductID: &productID, Status: Pending,
 	})
 	if err != nil {

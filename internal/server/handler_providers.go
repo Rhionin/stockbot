@@ -11,6 +11,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ProvidersHandler handles provider-related operations.
@@ -75,6 +76,10 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 	if h.Registry == nil {
 		return []ProviderInfo{}, nil
 	}
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
 	ids := h.Registry.List()
 	infos := make([]ProviderInfo, 0, len(ids))
 	for _, id := range ids {
@@ -83,7 +88,7 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 			continue
 		}
 		caps := provider.Capabilities()
-		state, err := providerConnectionState(req.Context, h.ConnectionDir, string(id), caps.Auth)
+		state, err := providerConnectionState(req.Context, scope, h.ConnectionDir, string(id), caps.Auth)
 		if err != nil {
 			return nil, InternalError(err)
 		}
@@ -101,7 +106,7 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 			CredentialsConfigured: h.Registry.CredentialsConfigured(id),
 		}
 		if _, ok := provider.(cart.AppCredentialSink); ok {
-			view, viewErr := h.credentialView(req.Context, provider)
+			view, viewErr := h.credentialView(req.Context, scope, provider)
 			if viewErr != nil {
 				return nil, InternalError(viewErr)
 			}
@@ -112,14 +117,14 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 	return infos, nil
 }
 
-func providerConnectionState(ctx context.Context, dir *connection.Directory, providerID string, auth cart.AuthCapability) (string, error) {
+func providerConnectionState(ctx context.Context, scope tenant.Scope, dir *connection.Directory, providerID string, auth cart.AuthCapability) (string, error) {
 	if auth == cart.AuthNone {
 		return string(connection.StateNotRequired), nil
 	}
 	if dir == nil {
 		return string(connection.StateDisconnected), nil
 	}
-	conn, err := dir.Read(ctx, providerID)
+	conn, err := dir.Read(ctx, scope, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -169,7 +174,11 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	if err := h.ConnectionDir.GenerateAuthState(req.Context, string(providerID), state); err != nil {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if err := h.ConnectionDir.GenerateAuthState(req.Context, scope, string(providerID), state); err != nil {
 		return nil, InternalError(err)
 	}
 	authorizationURL, err := flow.AuthorizationURL(state)
@@ -216,13 +225,18 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 		return SeeOther{}, InternalError(fmt.Errorf("%s cannot finish a connection", provider.DisplayName()))
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return SeeOther{}, InternalError(err)
+	}
+
 	query := req.RawRequest.URL.Query()
 	if query.Get("error") != "" {
-		_, _ = h.ConnectionDir.ConsumeAuthState(req.Context, string(providerID), query.Get("state"))
+		_, _ = h.ConnectionDir.ConsumeAuthState(req.Context, scope, string(providerID), query.Get("state"))
 		return SeeOther{}, BadRequest("the provider declined the connection")
 	}
 
-	valid, err := h.ConnectionDir.ConsumeAuthState(req.Context, string(providerID), query.Get("state"))
+	valid, err := h.ConnectionDir.ConsumeAuthState(req.Context, scope, string(providerID), query.Get("state"))
 	if err != nil {
 		return SeeOther{}, InternalError(err)
 	}
@@ -245,7 +259,7 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 		RefreshToken: tokenSet.RefreshToken,
 		ExpiresAt:    &expiresAt,
 	}
-	if err := h.ConnectionDir.Write(req.Context, conn); err != nil {
+	if err := h.ConnectionDir.Write(req.Context, scope, conn); err != nil {
 		return SeeOther{}, InternalError(err)
 	}
 
@@ -279,8 +293,13 @@ func (h *ProviderDisconnectHandler) Handle(req Request[struct{}, ProviderDisconn
 		return Created{}, BadRequest(fmt.Sprintf("provider %q does not require authentication", providerID))
 	}
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, InternalError(err)
+	}
+
 	// Disconnect the provider
-	if err := h.ConnectionDir.Disconnect(req.Context, string(providerID)); err != nil {
+	if err := h.ConnectionDir.Disconnect(req.Context, scope, string(providerID)); err != nil {
 		return Created{}, InternalError(fmt.Errorf("failed to disconnect: %w", err))
 	}
 
@@ -326,9 +345,14 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 
 	caps := provider.Capabilities()
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+
 	// Check if provider requires authentication
 	if caps.Auth != cart.AuthNone {
-		conn, err := h.ConnectionDir.Read(req.Context, string(providerID))
+		conn, err := h.ConnectionDir.Read(req.Context, scope, string(providerID))
 		if err != nil {
 			return nil, InternalError(fmt.Errorf("failed to read connection: %w", err))
 		}
@@ -341,7 +365,7 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 	}
 
 	// Get ledger entries
-	ledgerMap, err := h.Ledger.ListForProvider(req.Context, providerID)
+	ledgerMap, err := h.Ledger.ListForProvider(req.Context, scope, providerID)
 	if err != nil {
 		return nil, InternalError(fmt.Errorf("failed to read ledger: %w", err))
 	}
@@ -367,7 +391,7 @@ func (h *ProviderLedgerGetHandler) Handle(req Request[struct{}, ProviderLedgerGe
 type ProviderLedgerResetHandler struct {
 	ProviderLedgerHandler
 	ShoppingList interface {
-		EndTrip(ctx context.Context, userID string) error
+		EndTrip(ctx context.Context, scope tenant.Scope) error
 	}
 }
 
@@ -387,9 +411,14 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 
 	caps := provider.Capabilities()
 
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, InternalError(err)
+	}
+
 	// Check if provider requires authentication
 	if caps.Auth != cart.AuthNone {
-		conn, err := h.ConnectionDir.Read(req.Context, string(providerID))
+		conn, err := h.ConnectionDir.Read(req.Context, scope, string(providerID))
 		if err != nil {
 			return Created{}, InternalError(fmt.Errorf("failed to read connection: %w", err))
 		}
@@ -402,13 +431,13 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 	}
 
 	// Reset ledger
-	if err := h.Ledger.ResetForProvider(req.Context, providerID); err != nil {
+	if err := h.Ledger.ResetForProvider(req.Context, scope, providerID); err != nil {
 		return Created{}, InternalError(fmt.Errorf("failed to reset ledger: %w", err))
 	}
 	// A new cart is a new trip. Checked-off lines from the previous trip
 	// no longer block the next list.
 	if h.ShoppingList != nil {
-		if err := h.ShoppingList.EndTrip(req.Context, "user-1"); err != nil {
+		if err := h.ShoppingList.EndTrip(req.Context, scope); err != nil {
 			return Created{}, InternalError(err)
 		}
 	}

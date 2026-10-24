@@ -28,10 +28,10 @@ func TestWipeKeepsRestockTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets := restock.NewTargets(env.DB)
-	if err := targets.SetHousehold(context.Background(), restock.Target{Kind: restock.KindMonths, Value: 6}); err != nil {
+	if err := targets.SetHousehold(context.Background(), primaryScope(t, env.DB), restock.Target{Kind: restock.KindMonths, Value: 6}); err != nil {
 		t.Fatal(err)
 	}
-	if err := targets.SetItem(context.Background(), "item-salt", restock.Target{Kind: restock.KindAmount, Value: 4}); err != nil {
+	if err := targets.SetItem(context.Background(), primaryScope(t, env.DB), "item-salt", restock.Target{Kind: restock.KindAmount, Value: 4}); err != nil {
 		t.Fatal(err)
 	}
 	produce := produceID(t, handler)
@@ -386,7 +386,7 @@ func assertKnownTargets(t *testing.T, handler http.Handler, categoryID string) {
 
 func assertPurchasedRow(t *testing.T, env testEnv, id string, quantity int) {
 	t.Helper()
-	row, err := shopping.NewStore(env.DB).GetItemByID(context.Background(), id)
+	row, err := shopping.NewStore(env.DB).GetItemByID(context.Background(), primaryScope(t, env.DB), id)
 	if err != nil {
 		t.Fatal(err)
 	}

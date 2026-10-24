@@ -22,29 +22,32 @@ func TestGroupUsageAndPlanReadMonotonicConsumption(t *testing.T) {
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatal(err)
 	}
+	scope := scopeOf(t, conn)
+	household := scope.HouseholdID()
 	if _, err := conn.Exec(`INSERT INTO products (id, name, unit_of_measure) VALUES ('prod-rice', 'Rice', 'bag')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id) VALUES ('item-rice', 'user-1', 'prod-rice')`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-rice', ?, 'prod-rice', ?)`, household, household); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO product_groups (id, user_id, name, name_key, rule) VALUES ('group-rice', 'user-1', 'Rice', 'rice', 'same_as_ran_out')`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO product_groups (id, user_id, household_id, name, name_key, rule) VALUES ('group-rice', ?, ?, 'Rice', 'rice', 'same_as_ran_out')`, household, household); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO product_group_members (product_id, group_id) VALUES ('prod-rice', 'group-rice')`); err != nil {
+	if _, err := conn.Exec(`INSERT INTO product_group_members (product_id, group_id, household_id) VALUES ('prod-rice', 'group-rice', ?)`, household); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := conn.Exec(
-		`INSERT INTO app_settings (key, value) VALUES ('onboarding_started_at', ?)`,
+		`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		household,
 		started.Format(time.RFC3339),
 	); err != nil {
 		t.Fatal(err)
 	}
 	const consumed = "2026-10-17 18:55:19.032067103 +0000 UTC m=+12.3"
 	if _, err := conn.Exec(
-		`INSERT INTO consumption_events (id, item_id, consumed_at) VALUES ('ce-rice', 'item-rice', ?)`,
-		consumed,
+		`INSERT INTO consumption_events (id, household_id, item_id, consumed_at) VALUES ('ce-rice', ?, 'item-rice', ?)`,
+		household, consumed,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -52,10 +55,10 @@ func TestGroupUsageAndPlanReadMonotonicConsumption(t *testing.T) {
 	svc := Open(conn)
 	now := time.Date(2026, 10, 17, 20, 0, 0, 0, time.UTC)
 	ctx := context.Background()
-	if _, err := svc.GroupUsage(ctx, "group-rice", now); err != nil {
+	if _, err := svc.GroupUsage(ctx, scope, "group-rice", now); err != nil {
 		t.Fatalf("GroupUsage: %v", err)
 	}
-	if _, err := svc.Plan(ctx, now); err != nil {
+	if _, err := svc.Plan(ctx, scope, now); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 }

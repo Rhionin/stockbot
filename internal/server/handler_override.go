@@ -29,9 +29,12 @@ func (h *OverrideCreateHandler) Handle(req Request[createOverrideRequest, struct
 		return Created{}, BadRequest("productId is required")
 	}
 
-	userID := "user-1"
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return Created{}, err
+	}
 
-	if err := h.Catalog.UpsertBarcodeMapping(req.Context, req.Body.Barcode, req.Body.ProductID, "user_override", userID); err != nil {
+	if err := h.Catalog.UpsertBarcodeMapping(req.Context, req.Body.Barcode, req.Body.ProductID, "user_override", scope.HouseholdID()); err != nil {
 		return Created{}, err
 	}
 

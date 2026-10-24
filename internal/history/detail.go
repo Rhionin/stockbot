@@ -9,12 +9,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/product"
 )
 
-const householdUser = "user-1"
-
-// DefaultHousehold is the household a history request uses when it does not
-// name one. The web client sends no household yet.
-func DefaultHousehold() string { return householdUser }
-
 // View is the history screen for one product or one group.
 type View struct {
 	Kind   string `json:"kind"`

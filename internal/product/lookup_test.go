@@ -11,7 +11,18 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func primaryScope(t *testing.T, db *sql.DB) tenant.Scope {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatalf("primary household: %v", err)
+	}
+	return scope
+}
 
 // setupTestDB opens an in-memory SQLite database, applies all migrations, and returns the connection.
 func setupTestDB(t *testing.T) *sql.DB {
@@ -86,7 +97,11 @@ func TestLookupService(t *testing.T) {
 				if err := catalog.UpsertBarcodeMapping(context.Background(), "12345", global.ID, "global", ""); err != nil {
 					t.Fatal(err)
 				}
-				if err := catalog.UpsertBarcodeMapping(context.Background(), "12345", override.ID, "user_override", "user-1"); err != nil {
+				scope, err := catalog.PrimaryScope(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := catalog.UpsertBarcodeMapping(context.Background(), "12345", override.ID, "user_override", scope.HouseholdID()); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -94,7 +109,7 @@ func TestLookupService(t *testing.T) {
 				return nil, ErrProductNotFound
 			},
 			barcode:           "12345",
-			userID:            "user-1",
+			userID:            "primary",
 			expectedFound:     true,
 			expectedSource:    "global",
 			expectedProductID: "prod-override",
@@ -102,7 +117,7 @@ func TestLookupService(t *testing.T) {
 		{
 			name: "global DB used when no user override exists",
 			setupDB: func(t *testing.T, catalog *Catalog) {
-				product := Product{ID: "prod-1", Name: "Milk"}
+				product := Product{ID: "prod-1", Name: "Milk", Source: SourceExternal}
 				if err := catalog.CreateProduct(context.Background(), product); err != nil {
 					t.Fatal(err)
 				}
@@ -114,7 +129,7 @@ func TestLookupService(t *testing.T) {
 				return nil, ErrProductNotFound
 			},
 			barcode:           "11111",
-			userID:            "user-1",
+			userID:            "primary",
 			expectedFound:     true,
 			expectedSource:    "global",
 			expectedProductID: "prod-1",
@@ -129,7 +144,7 @@ func TestLookupService(t *testing.T) {
 				return nil, ErrProductNotFound
 			},
 			barcode:           "99999",
-			userID:            "user-1",
+			userID:            "primary",
 			expectedFound:     true,
 			expectedSource:    "external",
 			expectedProductID: "99999",
@@ -141,7 +156,7 @@ func TestLookupService(t *testing.T) {
 				return nil, ErrProductNotFound
 			},
 			barcode:       "00000",
-			userID:        "user-1",
+			userID:        "primary",
 			expectedFound: false,
 		},
 		{
@@ -151,7 +166,7 @@ func TestLookupService(t *testing.T) {
 				return nil, errors.New("network timeout")
 			},
 			barcode:       "88888",
-			userID:        "user-1",
+			userID:        "primary",
 			expectedFound: false,
 		},
 		{
@@ -161,7 +176,7 @@ func TestLookupService(t *testing.T) {
 				return nil, ErrProductNotFound
 			},
 			barcode: "",
-			userID:  "user-1",
+			userID:  "primary",
 			errMsg:  "barcode cannot be empty",
 		},
 		{
@@ -172,7 +187,7 @@ func TestLookupService(t *testing.T) {
 			},
 			barcode: "12345",
 			userID:  "",
-			errMsg:  "userID cannot be empty",
+			errMsg:  "missing household",
 		},
 	}
 
@@ -186,7 +201,11 @@ func TestLookupService(t *testing.T) {
 				Catalog:  catalog,
 				Upstream: mockOpenFoodFacts{lookupFn: tt.openFoodFacts},
 			}
-			actual, err := service.Lookup(context.Background(), tt.barcode, tt.userID)
+			scope := tenant.Scope{}
+			if tt.userID != "" {
+				scope = primaryScope(t, db)
+			}
+			actual, err := service.Lookup(context.Background(), scope, tt.barcode)
 
 			// Check error
 			if tt.errMsg != "" {
@@ -256,7 +275,7 @@ func TestLookupService_MissGate(t *testing.T) {
 			missTime:      time.Unix(1000, 0),
 			missTTL:       1 * time.Hour,
 			barcode:       "miss-barcode",
-			userID:        "user-1",
+			userID:        "primary",
 			expectedFound: false,
 		},
 		{
@@ -282,7 +301,7 @@ func TestLookupService_MissGate(t *testing.T) {
 			missTime:      time.Unix(1000, 0),
 			missTTL:       1 * time.Hour,
 			barcode:       "expired-miss",
-			userID:        "user-1",
+			userID:        "primary",
 			expectedFound: true,
 		},
 		{
@@ -302,7 +321,7 @@ func TestLookupService_MissGate(t *testing.T) {
 			missTime:      time.Time{},
 			missTTL:       1 * time.Hour,
 			barcode:       "new-barcode",
-			userID:        "user-1",
+			userID:        "primary",
 			expectedFound: true,
 		},
 	}
@@ -320,7 +339,11 @@ func TestLookupService_MissGate(t *testing.T) {
 				Now:      func() time.Time { return now },
 				MissTTL:  tt.missTTL,
 			}
-			actual, err := service.Lookup(context.Background(), tt.barcode, tt.userID)
+			scope := tenant.Scope{}
+			if tt.userID != "" {
+				scope = primaryScope(t, db)
+			}
+			actual, err := service.Lookup(context.Background(), scope, tt.barcode)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -366,7 +389,7 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 	}
 
 	// Verify the barcode mapping was created
-	mapped, err := catalog.LookupByBarcode(context.Background(), "test-barcode", "")
+	mapped, err := catalog.LookupByBarcode(context.Background(), primaryScope(t, db), "test-barcode")
 	if err != nil {
 		t.Fatalf("LookupByBarcode failed: %v", err)
 	}
@@ -452,7 +475,7 @@ func TestLookupService_ConfirmedMissRecording(t *testing.T) {
 	}
 
 	// Lookup with confirmed miss outcome
-	result, err := service.Lookup(context.Background(), "test-barcode", "user-1")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -491,7 +514,7 @@ func TestLookupService_UnresolvedNotRecorded(t *testing.T) {
 	}
 
 	// Lookup with unresolved outcome
-	result, err := service.Lookup(context.Background(), "test-barcode", "user-1")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -537,7 +560,7 @@ func TestLookupService_MissTTLDefault(t *testing.T) {
 	}
 
 	// Lookup should skip the expired miss and query upstream
-	result, err := service.Lookup(context.Background(), "test-barcode", "user-1")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -553,7 +576,7 @@ func TestLookupService_RefreshScheduled(t *testing.T) {
 	catalog := NewCatalog(db)
 
 	// Create a product in the database
-	product := Product{ID: "refresh-test", Name: "Test"}
+	product := Product{ID: "refresh-test", Name: "Test", Source: SourceExternal}
 	if err := catalog.CreateProduct(context.Background(), product); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +603,7 @@ func TestLookupService_RefreshScheduled(t *testing.T) {
 	}
 
 	// Lookup should find the product and schedule refresh
-	result, err := service.Lookup(context.Background(), "refresh-barcode", "user-1")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "refresh-barcode")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

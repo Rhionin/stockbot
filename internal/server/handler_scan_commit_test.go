@@ -34,7 +34,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ExpiresAt: &expiresAt, ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -90,7 +90,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 3,
 					ExpiresAt: &expiresAt, ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -120,7 +120,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 2,
 					ExpiresAt: nil, ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -165,7 +165,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -204,7 +204,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Committed,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -228,7 +228,7 @@ func TestScanCommitStockIn(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: nil, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -291,7 +291,7 @@ func TestScanCommitStockOut(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -349,7 +349,7 @@ func TestScanCommitStockOut(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -402,7 +402,7 @@ func TestScanCommitStockOut(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -441,7 +441,7 @@ func TestScanCommitStockOut(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -494,7 +494,7 @@ func TestScanCommitStockInErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ExpiresAt: &expiresAt, ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -539,7 +539,7 @@ func TestScanCommitStockInErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 0,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -584,7 +584,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -627,7 +627,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -679,7 +679,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -725,7 +725,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -792,7 +792,7 @@ func TestScanCommitStockOutErrors(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -853,7 +853,7 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 					ID: "scan-resolve-1", UserID: "user-resolve-1", Barcode: "123456789999",
 					ScannedAt: now, UnitCount: 1, Status: scan.Flagged,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -871,8 +871,8 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				// The barcode override mapping is not exposed by any list endpoint.
 				var productID string
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"123456789999", "user-resolve-1",
+					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"123456789999", primaryScope(env.T, env.DB).HouseholdID(),
 				).Scan(&productID); err != nil {
 					env.T.Fatalf("query override: %v", err)
 				}
@@ -894,9 +894,10 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				}); err != nil {
 					env.T.Fatalf("CreateProduct 2: %v", err)
 				}
+				household := primaryScope(env.T, env.DB).HouseholdID()
 				if _, err := env.DB.ExecContext(context.Background(),
-					`INSERT INTO barcodes (barcode, product_id, source, user_id) VALUES (?, ?, 'user_override', ?)`,
-					"888999000111", "prod-resolve-2a", "user-resolve-2"); err != nil {
+					`INSERT INTO barcodes (barcode, product_id, source, user_id, household_id) VALUES (?, ?, 'user_override', ?, ?)`,
+					"888999000111", "prod-resolve-2a", household, household); err != nil {
 					env.T.Fatalf("create existing override: %v", err)
 				}
 				scanRepo := scan.NewQueue(env.DB)
@@ -904,7 +905,7 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 					ID: "scan-resolve-2", UserID: "user-resolve-2", Barcode: "888999000111",
 					ScannedAt: now, UnitCount: 1, Status: scan.Flagged,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -916,9 +917,10 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 			},
 			afterRequest: func(env testEnv) {
 				var productID string
+				household := primaryScope(env.T, env.DB).HouseholdID()
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"888999000111", "user-resolve-2",
+					`SELECT product_id FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"888999000111", household,
 				).Scan(&productID); err != nil {
 					env.T.Fatalf("query override: %v", err)
 				}
@@ -927,8 +929,8 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 				}
 				var count int
 				if err := env.DB.QueryRowContext(context.Background(),
-					`SELECT COUNT(*) FROM barcodes WHERE barcode = ? AND source = 'user_override' AND user_id = ?`,
-					"888999000111", "user-resolve-2",
+					`SELECT COUNT(*) FROM barcodes WHERE barcode = ? AND source = 'user_override' AND household_id = ?`,
+					"888999000111", household,
 				).Scan(&count); err != nil {
 					env.T.Fatalf("count overrides: %v", err)
 				}
@@ -962,7 +964,7 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 					ScannedAt: now, Direction: &direction, UnitCount: 1,
 					ProductID: &productID, Status: scan.Pending,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -981,7 +983,7 @@ func TestScanResolveFlaggedEntry(t *testing.T) {
 					ID: "scan-resolve-bad-prod", UserID: "user-resolve-bad-prod", Barcode: "666777888999",
 					ScannedAt: now, UnitCount: 1, Status: scan.Flagged,
 				}
-				if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+				if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 					env.T.Fatalf("CreateScanEntry: %v", err)
 				}
 			},
@@ -1077,7 +1079,7 @@ func TestScanCommitStockOutNoItemLink(t *testing.T) {
 			ScannedAt: now, Direction: &direction, UnitCount: 1,
 			ProductID: &productID, Status: scan.Pending,
 		}
-		if _, err := scanRepo.CreateScanEntry(context.Background(), entry); err != nil {
+		if _, err := scanRepo.CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), entry); err != nil {
 			env.T.Fatalf("CreateScanEntry: %v", err)
 		}
 	}
@@ -1615,7 +1617,7 @@ func seedRemovedInstanceScan(env testEnv, now, expiresAt time.Time, suffix strin
 		env.T.Fatalf("create removed instance: %v", err)
 	}
 	direction := scan.StockOut
-	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), scan.ScanEntry{
+	if _, err := scan.NewQueue(env.DB).CreateScanEntry(context.Background(), primaryScope(env.T, env.DB), scan.ScanEntry{
 		ID: scanID, UserID: userID, Barcode: "barcode-" + suffix,
 		ScannedAt: now, Direction: &direction, UnitCount: 1,
 		ProductID: &productID, Status: scan.Pending,

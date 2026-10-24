@@ -189,7 +189,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
-				if err := connection.NewDirectory(env.DB).Write(context.Background(), &connection.Connection{
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:    "kroger",
 					State:       connection.StateConnected,
 					AccessToken: "should-not-leak",
