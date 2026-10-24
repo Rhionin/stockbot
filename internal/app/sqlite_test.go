@@ -129,8 +129,8 @@ func TestSQLiteOpensGoThroughUTC(t *testing.T) {
 	}
 }
 
-func TestBusyTimeoutDSNPinsThreeSeconds(t *testing.T) {
-	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(3000)&_txlock=immediate"; got != want {
+func TestBusyTimeoutDSNPinsTwoSeconds(t *testing.T) {
+	if got, want := withSQLiteLocking("pantry.db"), "pantry.db?_pragma=busy_timeout(2000)&_txlock=immediate"; got != want {
 		t.Fatalf("dsn = %s, want %s", got, want)
 	}
 }
@@ -183,6 +183,13 @@ func TestOpenSQLiteSetsBusyTimeoutAndImmediateLock(t *testing.T) {
 	if !strings.EqualFold(mode, "delete") {
 		t.Fatalf("journal_mode = %s, want delete", mode)
 	}
+	var synchronous int
+	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 1 {
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", synchronous)
+	}
 	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +221,117 @@ func TestOpenSQLiteSetsBusyTimeoutAndImmediateLock(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "database is locked") && !strings.Contains(err.Error(), "SQLITE_BUSY") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWithSQLiteDurability(t *testing.T) {
+	mem := withSQLiteDurability(":memory:?_pragma=busy_timeout(2000)&_txlock=immediate")
+	if strings.Contains(mem, "journal_mode") {
+		t.Fatalf("memory set a journal: %s", mem)
+	}
+	if !strings.Contains(mem, "synchronous(NORMAL)") {
+		t.Fatalf("memory: %s", mem)
+	}
+	file := withSQLiteDurability("pantry.db?_pragma=busy_timeout(2000)&_txlock=immediate")
+	if strings.Contains(file, "journal_mode") || !strings.Contains(file, "synchronous(NORMAL)") {
+		t.Fatalf("file: %s", file)
+	}
+	ro := withSQLiteDurability("file:pantry.db?mode=ro&_txlock=deferred&_pragma=query_only(1)")
+	if strings.Contains(ro, "journal_mode") || strings.Contains(ro, "synchronous") {
+		t.Fatalf("reader: %s", ro)
+	}
+	kept := withSQLiteDurability("pantry.db?_pragma=journal_mode(DELETE)&_pragma=synchronous(FULL)")
+	if strings.Contains(kept, "WAL") || strings.Contains(kept, "NORMAL") {
+		t.Fatalf("explicit: %s", kept)
+	}
+}
+
+func TestOpenPantryOneWriterTwoReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry.db")
+	writer, reader, err := OpenPantry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		reader.Close()
+		writer.Close()
+	})
+	if writer.Stats().MaxOpenConnections != 1 {
+		t.Fatalf("writer pool %d", writer.Stats().MaxOpenConnections)
+	}
+	if reader.Stats().MaxOpenConnections != 2 {
+		t.Fatalf("reader pool %d", reader.Stats().MaxOpenConnections)
+	}
+	var mode string
+	if err := writer.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode %s", mode)
+	}
+	var synchronous, busy, queryOnly int
+	if err := writer.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRow(`PRAGMA query_only`).Scan(&queryOnly); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 1 || busy != sqliteBusyTimeoutMS || queryOnly != 1 {
+		t.Fatalf("synchronous %d busy %d query_only %d", synchronous, busy, queryOnly)
+	}
+	if _, err := reader.Exec(`CREATE TABLE nope (id INTEGER)`); err == nil {
+		t.Fatal("reader wrote")
+	}
+
+	if _, err := writer.Exec(`CREATE TABLE held (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	if _, err := tx.Exec(`INSERT INTO held (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	var n int
+	if err := reader.QueryRow(`SELECT COUNT(*) FROM held`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("reader saw an uncommitted row: %d", n)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("reader waited %s behind the writer", time.Since(started))
+	}
+
+	other, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.SetMaxOpenConns(1)
+	started = time.Now()
+	_, err = other.Exec(`BEGIN IMMEDIATE`)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("second writer took the lock")
+	}
+	if elapsed < 1500*time.Millisecond || elapsed > 4500*time.Millisecond {
+		t.Fatalf("busy returned after %s; the wait is 2s", elapsed)
+	}
+}
+
+func TestOpenPantryRejectsMemory(t *testing.T) {
+	writer, reader, err := OpenPantry(":memory:")
+	if err == nil {
+		writer.Close()
+		reader.Close()
+		t.Fatal("in-memory pantry opened a read pool")
 	}
 }
 

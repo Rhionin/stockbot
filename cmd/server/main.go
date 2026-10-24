@@ -163,14 +163,12 @@ func main() {
 	dbPath := envOrDefault("DB_PATH", "pantry.db")
 	addr := envOrDefault("ADDR", ":8080")
 
-	sqlDB, err := app.OpenSQLite(dbPath)
+	sqlDB, readDB, err := app.OpenPantry(dbPath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
 	defer sqlDB.Close()
-
-	// SQLite is single-writer; limit to one connection to avoid SQLITE_BUSY.
-	sqlDB.SetMaxOpenConns(1)
+	defer readDB.Close()
 
 	// Bind before migrations. /health is 503 with status migrating until the
 	// real handler is installed, and /api/build is already this binary.
@@ -204,6 +202,9 @@ func main() {
 		log.Fatalf("run migrations: %v", err)
 	}
 	log.Println("migrations applied")
+	if err := server.ImportHouseholdPassword(context.Background(), sqlDB, os.Getenv("PANTRY_AUTH_FILE"), os.Getenv("PANTRY_SESSION_SECRET")); err != nil {
+		log.Printf("household login: %s", err.Error())
+	}
 
 	if _, err := product.BackfillNetSizes(context.Background(), sqlDB); err != nil {
 		log.Fatalf("backfill product sizes: %v", err)
@@ -303,7 +304,7 @@ func main() {
 	if listenerOK {
 		opts = append(opts, server.WithScannerStatus(listener.Status))
 	}
-	opts = append(opts, server.WithHouseholdAuth(loadHouseholdAuth()))
+	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)))
 	handler, scanQueue := server.NewHandler(catalog, lookupService, refresher, sqlDB, opts...)
 	gate.use(handler)
 
@@ -379,6 +380,24 @@ func loadPushConfig() push.Config {
 		log.Println("scan alerts: web push is off until VAPID keys are set")
 	}
 	return cfg
+}
+
+// loadHouseholdGate reads the shared password from the database. The Caddy
+// file is only the one-time import source. A missing hash fails closed on
+// the public hostname. The LAN listener never sends X-Pantry-Entry, so it
+// stays open.
+func loadHouseholdGate(db *sql.DB) *server.HouseholdAuth {
+	household, err := server.HouseholdAuthFromDB(context.Background(), db)
+	if err != nil {
+		log.Printf("household login: %s", err.Error())
+	}
+	if household == nil {
+		return server.FailClosedHouseholdAuth()
+	}
+	if household.Configured {
+		log.Printf("household login: the public site signs in as %s", household.Username)
+	}
+	return household
 }
 
 // loadHouseholdAuth always returns a gate. An unset, empty, or unreadable

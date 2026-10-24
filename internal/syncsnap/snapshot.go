@@ -344,8 +344,8 @@ func attachItemTargets(ctx context.Context, db *sql.DB, byProduct map[string]*Pr
 	rows, err := db.QueryContext(ctx, `
 		SELECT i.product_id, t.kind, t.value
 		FROM item_targets t
-		JOIN items i ON i.id = t.item_id AND i.user_id = t.household_id
-		WHERE t.household_id = ? AND i.shelved = 0`, householdUser)
+		JOIN items i ON i.id = t.item_id AND i.user_id = ?
+		WHERE t.household_id = (SELECT id FROM households WHERE is_primary = 1) AND i.shelved = 0`, householdUser)
 	if err != nil {
 		return err
 	}

@@ -58,23 +58,33 @@ func TestMigrationApplies(t *testing.T) {
 
 	want := []string{
 		"app_settings",
+		"audit_log",
 		"barcode_misses",
 		"barcodes",
 		"brand_preferences",
 		"categories",
 		"category_suggestion_dismissals",
 		"category_targets",
+		"change_versions",
 		"consumption_events",
+		"device_tokens",
+		"devices",
 		"fulfillment_ledger",
 		"group_suggestion_dismissals",
 		"group_suggestion_members",
 		"group_suggestions",
 		"history_repair",
+		"household_password",
+		"household_settings",
+		"households",
+		"invites",
 		"item_categories",
 		"item_deals",
 		"item_instances",
 		"item_targets",
 		"items",
+		"memberships",
+		"pairing_codes",
 		"product_contributions",
 		"product_off_tags",
 		"product_group_members",
@@ -83,14 +93,18 @@ func TestMigrationApplies(t *testing.T) {
 		"provider_app_credentials",
 		"provider_connections",
 		"push_subscriptions",
+		"reset_links",
 		"scan_alert_schedule",
 		"scan_entries",
+		"sessions",
+		"setup_codes",
 		"shopping_list_entry_adjustments",
 		"shopping_list_items",
 		"staged_cart_skips",
 		"stock_in_events",
 		"stock_moves",
 		"supply_overrides",
+		"users",
 	}
 	sort.Strings(want) // already sorted, but be explicit
 
@@ -123,13 +137,13 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	// One schema_migrations row per applied .sql file; the second RunMigrations
 	// must not re-apply any file, so the count equals the number of migration
 	// files (001 through 005, both 006 files, both 007 files, 008 through 020,
-	// both 021 files, and 022).
+	// both 021 files, 022, and 022a through 022f).
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 25 {
-		t.Errorf("schema_migrations should have 25 rows after two runs, got %d", count)
+	if count != 31 {
+		t.Errorf("schema_migrations should have 31 rows after two runs, got %d", count)
 	}
 }
 
@@ -780,7 +794,7 @@ func TestMigration006PreservesItemsDataAndSetsDefaultMode(t *testing.T) {
 	seeds := []seedRow{
 		{id: "item-1", userID: "user-1", productID: "011110728227", targetQuantity: intPtr(5), createdAt: now},
 		{id: "item-2", userID: "user-1", productID: "some-uuid", targetQuantity: nil, createdAt: now.Add(time.Hour)},
-		{id: "item-3", userID: "user-2", productID: "another-uuid", targetQuantity: intPtr(3), createdAt: now.Add(2 * time.Hour)},
+		{id: "item-3", userID: "user-1", productID: "another-uuid", targetQuantity: intPtr(3), createdAt: now.Add(2 * time.Hour)},
 	}
 	for _, s := range seeds {
 		if _, err := conn.Exec(

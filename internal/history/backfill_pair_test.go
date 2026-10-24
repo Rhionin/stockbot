@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/inventory"
 )
 
 func TestBackfillPairsOnlyWithTheOppositeSource(t *testing.T) {
@@ -208,6 +210,9 @@ func recordHeldMove(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 		instanceID, itemID, at); err != nil {
 		t.Fatal(err)
 	}
+	if err := inventory.UnshelveItem(t.Context(), tx, itemID); err != nil {
+		t.Fatal(err)
+	}
 	var scan *string
 	if scanID != "" {
 		scan = &scanID
@@ -233,6 +238,9 @@ func recordConsumed(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 	if _, err := tx.ExecContext(t.Context(),
 		`INSERT INTO item_instances (id, item_id, stock_in_at, removed_at, removal_reason) VALUES (?, ?, ?, ?, 'consumed')`,
 		instanceID, itemID, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := inventory.UnshelveItem(t.Context(), tx, itemID); err != nil {
 		t.Fatal(err)
 	}
 	// The insert has no stock-in move. Point it at a manual stock-in so repair does not invent one.

@@ -205,6 +205,11 @@ func (r *Queue) recordStockInTx(ctx context.Context, tx *sql.Tx, itemID, product
 		}
 		ids = append(ids, instanceID)
 	}
+	if len(ids) > 0 {
+		if err := inventory.UnshelveItem(ctx, tx, itemID); err != nil {
+			return nil, err
+		}
+	}
 
 	trackRestock, err := r.trackRestock(ctx, tx)
 	if err != nil {
@@ -965,6 +970,11 @@ func (r *Queue) CommitBackfill(ctx context.Context, scanEntry *ScanEntry) (Backf
 			return BackfillResult{}, fmt.Errorf("create instance %d: %w", i+1, err)
 		}
 		ids = append(ids, instanceID)
+	}
+	if len(ids) > 0 {
+		if err := inventory.UnshelveItem(ctx, tx, itemID); err != nil {
+			return BackfillResult{}, err
+		}
 	}
 
 	scanID := scanEntry.ID

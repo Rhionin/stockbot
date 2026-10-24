@@ -29,7 +29,7 @@ func TestDeletingTheItemRemovesItsTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := db.Exec(`DELETE FROM items WHERE id = ?`, "item-salt"); err != nil {
+	if err := DeleteItem(ctx, db, "item-salt"); err != nil {
 		t.Fatalf("setup: deleting the item: %v", err)
 	}
 
