@@ -1014,6 +1014,76 @@ func TestWipe_ClearsOneUsersStockAndLeavesProductLookup(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM stock_in_events`, 0)
 }
 
+func TestListAndItemSettings(t *testing.T) {
+	pantry, catalog, db := newTestPantry(t)
+	ctx := context.Background()
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-1", Name: "Oats"}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := pantry.GetOrCreateItem(ctx, "user-1", "prod-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qty, err := pantry.GetTargetQuantity(ctx, item.ID)
+	if err != nil || qty != nil {
+		t.Fatalf("empty target qty=%v err=%v", qty, err)
+	}
+	mode, err := pantry.GetReplenishmentMode(ctx, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET target_quantity = 4, replenishment_mode = '' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	qty, err = pantry.GetTargetQuantity(ctx, item.ID)
+	if err != nil || qty == nil || *qty != 4 {
+		t.Fatalf("qty=%v err=%v", qty, err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("blank mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET replenishment_mode = 'nope' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, item.ID)
+	if err != nil || mode != inventory.TargetMode {
+		t.Fatalf("invalid mode %s err %v", mode, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET replenishment_mode = 'replenish' WHERE id = ?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	mode, err = pantry.GetReplenishmentMode(ctx, item.ID)
+	if err != nil || mode != inventory.ReplenishMode {
+		t.Fatalf("replenish mode %s err %v", mode, err)
+	}
+	if _, err := pantry.GetTargetQuantity(ctx, "missing"); err == nil {
+		t.Fatal("missing item returned a target")
+	}
+	if _, err := pantry.GetReplenishmentMode(ctx, "missing"); err == nil {
+		t.Fatal("missing item returned a mode")
+	}
+
+	added, err := pantry.AddInstance(ctx, inventory.ItemInstance{ItemID: item.ID, StockInAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := pantry.AddInstance(ctx, inventory.ItemInstance{ItemID: item.ID, StockInAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE item_instances SET removed_at = ? WHERE id = ?`, time.Now().UTC(), gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := pantry.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != added.ID {
+		t.Fatalf("listed %+v", listed)
+	}
+}
+
 func assertCount(t *testing.T, db *sql.DB, query string, want int) {
 	t.Helper()
 	var got int

@@ -4,11 +4,11 @@ import "testing"
 
 func TestDecodeKey(t *testing.T) {
 	tests := []struct {
-		name      string
-		code      uint16
-		shift     bool
-		wantRune  rune
-		wantKind  keyKind
+		name     string
+		code     uint16
+		shift    bool
+		wantRune rune
+		wantKind keyKind
 	}{
 		// Digit row
 		{"KEY_1 unshifted", 0x02, false, '1', keyPrintable},
@@ -64,6 +64,11 @@ func TestDecodeKey(t *testing.T) {
 		// Unmapped
 		{"unknown high keycode", 0xff, false, 0, keyUnmapped},
 		{"unknown low keycode", 0x40, false, 0, keyUnmapped},
+	}
+
+	for code := uint16(0); code < 0x70; code++ {
+		decodeKey(code, false)
+		decodeKey(code, true)
 	}
 
 	for _, tt := range tests {

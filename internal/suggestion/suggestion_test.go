@@ -268,3 +268,26 @@ func TestListConsumptionEvents(t *testing.T) {
 		})
 	}
 }
+
+func TestListConsumedAtByItems(t *testing.T) {
+	log, _ := newTestConsumptionLog(t)
+	ctx := context.Background()
+	empty, err := log.ListConsumedAtByItems(ctx, nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty %#v err %v", empty, err)
+	}
+	when := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := log.InsertConsumptionEvent(ctx, suggestion.ConsumptionEvent{ItemID: "item-1", ConsumedAt: when}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := log.ListConsumedAtByItems(ctx, []string{"item-1", "item-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["item-1"]) != 1 || !got["item-1"][0].Equal(when) {
+		t.Fatalf("times %#v", got)
+	}
+	if _, ok := got["item-2"]; ok {
+		t.Fatal("item-2 had events")
+	}
+}

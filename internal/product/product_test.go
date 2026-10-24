@@ -1058,3 +1058,39 @@ func TestProperty_MissesNotInProductQueries(t *testing.T) {
 		}
 	})
 }
+
+func TestSaveNetSize(t *testing.T) {
+	catalog := newTestCatalog(t)
+	ctx := context.Background()
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-1", Name: "Oats"}); err != nil {
+		t.Fatal(err)
+	}
+	grams := 500.0
+	pack := 2
+	err := catalog.SaveNetSize(ctx, product.Product{
+		ID:            "prod-1",
+		NetBaseValue:  &grams,
+		NetDimension:  product.DimensionMass,
+		NetSizeOrigin: product.OriginManual,
+		PackCount:     &pack,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := catalog.GetProductByID(ctx, "prod-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NetDimension != product.DimensionMass || got.NetBaseValue == nil || *got.NetBaseValue != 500 || got.PackCount == nil || *got.PackCount != 2 {
+		t.Fatalf("saved %+v", got)
+	}
+	bad := 0.0
+	if err := catalog.SaveNetSize(ctx, product.Product{
+		ID: "prod-1", NetBaseValue: &bad, NetDimension: product.DimensionMass, NetSizeOrigin: product.OriginManual,
+	}); err == nil {
+		t.Fatal("zero size was saved")
+	}
+	if err := catalog.SaveNetSize(ctx, product.Product{ID: "missing", NetSizeOrigin: product.OriginManual}); err == nil {
+		t.Fatal("missing product was saved")
+	}
+}

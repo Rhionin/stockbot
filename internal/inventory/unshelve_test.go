@@ -2,6 +2,7 @@ package inventory_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,5 +35,14 @@ func TestAddInstanceUnshelvesTheItem(t *testing.T) {
 	}
 	if shelved != 0 {
 		t.Fatalf("shelved = %d", shelved)
+	}
+}
+
+func TestUnshelveItemReportsAClosedDatabase(t *testing.T) {
+	_, _, db := newTestPantry(t)
+	db.Close()
+	err := inventory.UnshelveItem(context.Background(), db, "item-sample")
+	if err == nil || !strings.Contains(err.Error(), "could not put the item back on the shelf") {
+		t.Fatalf("err = %v", err)
 	}
 }
