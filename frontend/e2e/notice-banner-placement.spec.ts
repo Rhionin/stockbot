@@ -81,12 +81,7 @@ for (const viewport of viewports) {
 
   test(`startup banner box at ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
-    await page.route('**/api/auth/session', (route) => route.fulfill({
-      status: 404,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'not found' }),
-    }))
-    await page.route('**/api/session', (route) => route.abort('internetdisconnected'))
+    await page.route('**/api/auth/session', (route) => route.abort('internetdisconnected'))
     await page.goto('/')
     await expect(page.getByText(sentence)).toBeVisible()
     expectGate(await bannerBox(page), viewport.width)
@@ -102,7 +97,7 @@ for (const viewport of viewports) {
     await page.route('**/api/auth/login', (route) => route.abort('internetdisconnected'))
     await page.goto('/')
     await page.getByLabel('Email').fill('ada@example.com')
-    await page.getByLabel('Password').fill('correct-horse')
+    await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByText(sentence)).toBeVisible()
     expectGate(await bannerBox(page), viewport.width)

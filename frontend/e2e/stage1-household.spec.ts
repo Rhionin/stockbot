@@ -209,7 +209,7 @@ test.describe('stage-1 household screens', () => {
     await shot(page, 'sign-in', width)
 
     await page.getByLabel('Email').fill('ada@example.com')
-    await page.getByLabel('Password').fill('correct-horse-battery')
+    await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse-battery')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible()
 

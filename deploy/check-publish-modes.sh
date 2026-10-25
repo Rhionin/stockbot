@@ -334,9 +334,9 @@ have "$tunnel_cfg" 'ipv4_address: 10.77.77.3' "caddy has a fixed address"
 have "$tunnel_cfg" 'ip_range: 10.77.77.4/30' "dynamic addresses cannot take .2 or .3"
 have "$tunnel_cfg" 'gateway: 10.77.77.1' "cf-tunnel gateway stays .1"
 assert_only_cloudflared_on_trusted_ip "$tunnel_cfg"
-have "$public_cfg" 'Caddyfile.legacy' "certificate mode mounts the legacy snippet"
+lack "$public_cfg" 'Caddyfile.legacy' "certificate mode must not mount a legacy snippet"
 have "$tunnel_cfg" 'Caddyfile.tunnel' "tunnel mode mounts Caddyfile.tunnel"
-have "$tunnel_cfg" 'Caddyfile.tunnel.legacy' "tunnel mode mounts the legacy snippet"
+lack "$tunnel_cfg" 'Caddyfile.tunnel.legacy' "tunnel mode must not mount a legacy snippet"
 have "$tunnel_cfg" 'target: /etc/caddy/Caddyfile' "tunnel Caddyfile is what Caddy loads"
 have "$tunnel_cfg" 'container_name: pantry-cloudflared' "cloudflared container name"
 lack "$tunnel_cfg" 'CLOUDFLARE_TUNNEL_TOKEN: null' "token env must be the empty string when unset, not null"
@@ -344,7 +344,7 @@ lack "$tunnel_cfg" 'CLOUDFLARE_TUNNEL_TOKEN: null' "token env must be the empty 
 have "$tunnel_cfg" $'- tunnel\n      - run' "cloudflared runs tunnel run"
 
 adapt_dir=$(mktemp -d)
-cp deploy/Caddyfile deploy/Caddyfile.tunnel deploy/Caddyfile.legacy "$adapt_dir/"
+cp deploy/Caddyfile deploy/Caddyfile.tunnel "$adapt_dir/"
 # shellcheck disable=SC2016 # bcrypt hashes start with $2
 printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry $2a$14$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz012' '}' > "$adapt_dir/auth.caddy"
 
@@ -401,22 +401,6 @@ lack "$acme_json" "Service-Worker-Allowed" "certificate adapt must not set Servi
 lack "$tunnel_json" "Service-Worker-Allowed" "tunnel adapt must not set Service-Worker-Allowed"
 lack "$acme_json" "no-cache, no-transform" "certificate adapt must not set the worker Cache-Control"
 lack "$tunnel_json" "no-cache, no-transform" "tunnel adapt must not set the worker Cache-Control"
-
-# The previous name is a separate site that redirects. It is not in the
-# committed snippet; setup.sh writes it from LEGACY_PUBLIC_HOST.
-# shellcheck disable=SC2016 # Caddy expands {$PUBLIC_HOST}; the snippet keeps the placeholder.
-printf '%s {\n\tredir https://{$PUBLIC_HOST}{uri} 308\n}\n' 'pantry.rhionin.com' > "$adapt_dir/Caddyfile.legacy"
-acme_legacy=$(caddy_adapt "$adapt_dir/Caddyfile" "$adapt_dir")
-have "$acme_legacy" 'pantry.rhionin.com' "certificate adapt redirects the previous name"
-have "$acme_legacy" '308' "certificate adapt uses a permanent redirect"
-have "$acme_legacy" 'stockbot.rhionin.com' "certificate redirect target is PUBLIC_HOST"
-
-# shellcheck disable=SC2016 # Caddy expands {$PUBLIC_HOST}; the snippet keeps the placeholder.
-printf '%s {\n\tredir https://{$PUBLIC_HOST}{uri} 308\n}\n' 'http://pantry.rhionin.com' > "$adapt_dir/Caddyfile.legacy"
-tunnel_legacy=$(caddy_adapt "$adapt_dir/Caddyfile.tunnel" "$adapt_dir")
-have "$tunnel_legacy" 'pantry.rhionin.com' "tunnel adapt redirects the previous name"
-have "$tunnel_legacy" '308' "tunnel adapt uses a permanent redirect"
-lack "$tunnel_legacy" '"module": "acme"' "tunnel redirect must not request a certificate"
 
 rm -rf "$adapt_dir"
 
