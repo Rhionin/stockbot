@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { notifyApiSuccess, raiseOfflineBanner } from '@stockbot/shared/contract';
 import { MantineProvider } from '@mantine/core';
+import { Notifications } from '@mantine/notifications';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem } from '@stockbot/shared/types';
@@ -588,5 +589,44 @@ describe('InventoryPage', () => {
     const before = inventoryCalls;
     FakeEventSource.instances[0]?.dispatch('inventory', gv);
     await waitFor(() => expect(inventoryCalls).toBeGreaterThan(before));
+  });
+
+  it('adds a barcodeless product at zero on hand from the sheet', async () => {
+    let created = '';
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/products' && init?.method === 'POST') {
+        created = String(init.body);
+        return Promise.resolve(jsonResponse({
+          id: 'prod-jam',
+          name: 'Homemade jam',
+          category: 'Preserves',
+          unitOfMeasure: '',
+          itemId: 'item-jam',
+          createdAt: '2026-01-01T00:00:00Z',
+        }, 201));
+      }
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/settings/supply') {
+        return Promise.resolve(jsonResponse({ months: 3, opening: false, wipePhrase: 'WIPE INVENTORY' }));
+      }
+      return Promise.resolve(jsonResponse([]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<MantineProvider env="test"><Notifications /><MemoryRouter><InventoryPage /></MemoryRouter></MantineProvider>);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add an item' }));
+    await screen.findByRole('heading', { name: 'Add an item' });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Name' }), { target: { value: 'Homemade jam' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Brand' }), { target: { value: 'Pantry' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Category' }), { target: { value: 'Preserves' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add item' }));
+
+    await waitFor(() => expect(created).toContain('Homemade jam'));
+    expect(created).toContain('Pantry');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/inventory', expect.any(Object)));
   });
 });

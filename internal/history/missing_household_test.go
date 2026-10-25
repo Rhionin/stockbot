@@ -11,13 +11,13 @@ import (
 
 func TestMissingHouseholdIsRefused(t *testing.T) {
 	{
-		err := AttachStockIn(context.Background(), tenant.Scope{}, nil, InNote{})
+		_, err := AttachStockIn(context.Background(), tenant.Scope{}, nil, InNote{})
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("AttachStockIn: %v", err)
 		}
 	}
 	{
-		err := AttachStockOut(context.Background(), tenant.Scope{}, nil, OutNote{})
+		_, err := AttachStockOut(context.Background(), tenant.Scope{}, nil, OutNote{})
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("AttachStockOut: %v", err)
 		}

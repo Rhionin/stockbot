@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { notifications, Notifications } from '@mantine/notifications';
 import { ScanQueuePage } from './ScanQueuePage';
 import type { ScanEntry } from '@stockbot/shared/types';
 
@@ -2455,5 +2456,70 @@ describe('QR misread', () => {
       '/api/scans/qr-1',
       expect.objectContaining({ method: 'PATCH' }),
     ));
+  });
+});
+
+describe('ScanQueuePage find by name', () => {
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    notifications.clean();
+  });
+
+  it('searches, stocks in from a hit, and offers undo', async () => {
+    const instances: string[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('status=pending') || url.includes('status=flagged') || url.includes('status=qr')) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url.startsWith('/api/products/search')) {
+        return Promise.resolve(jsonResponse([
+          {
+            productId: 'prod-jam',
+            itemId: 'item-jam',
+            name: 'Homemade jam',
+            onHand: 0,
+          },
+        ]));
+      }
+      if (url === '/api/inventory/item-jam/instances' && init?.method === 'POST') {
+        instances.push('add');
+        return Promise.resolve(jsonResponse({ id: 'inst-jam', itemId: 'item-jam', stockInAt: '2026-01-01T00:00:00Z', expiresAt: null, removedAt: null, removalReason: null, createdAt: '2026-01-01T00:00:00Z' }));
+      }
+      if (url === '/api/inventory/instances/inst-jam' && init?.method === 'DELETE') {
+        instances.push('undo');
+        return Promise.resolve(jsonResponse({}));
+      }
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(jsonResponse([]));
+      if (url.endsWith('/api/scanner/config')) {
+        return Promise.resolve(jsonResponse({
+          stockInBarcode: 'STOCK_IN',
+          stockOutBarcode: 'STOCK_OUT',
+          currentMode: 'stock_in',
+        }));
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? ''}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<MantineProvider><Notifications /><ScanQueuePage /></MantineProvider>);
+    await expectScannerMode('stock_in');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find an item' }));
+    const search = await screen.findByRole('textbox', { name: 'Find an item' });
+    fireEvent.change(search, { target: { value: 'jam' } });
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/products/search'))).toBe(true);
+    });
+    const hit = await screen.findByRole('button', { name: /Homemade jam/ });
+    fireEvent.click(hit);
+
+    await waitFor(() => expect(instances).toEqual(['add']));
+    await screen.findByText('Added 1 Homemade jam.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(instances).toEqual(['add', 'undo']));
   });
 });

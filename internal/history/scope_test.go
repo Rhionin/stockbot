@@ -39,10 +39,10 @@ func TestHistoryRejectsMissingHousehold(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := AttachStockIn(ctx, scope, tx, InNote{}); !errors.Is(err, tenant.ErrMissingHousehold) {
+	if _, err := AttachStockIn(ctx, scope, tx, InNote{}); !errors.Is(err, tenant.ErrMissingHousehold) {
 		t.Fatalf("stock in: %v", err)
 	}
-	if err := AttachStockOut(ctx, scope, tx, OutNote{}); !errors.Is(err, tenant.ErrMissingHousehold) {
+	if _, err := AttachStockOut(ctx, scope, tx, OutNote{}); !errors.Is(err, tenant.ErrMissingHousehold) {
 		t.Fatalf("stock out: %v", err)
 	}
 }

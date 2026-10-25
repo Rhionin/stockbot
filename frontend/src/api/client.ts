@@ -22,8 +22,10 @@ import type {
   LookupResult,
   Product,
   ProductDetail,
+  ProductSearchHit,
   ProductWriteInput,
   ProductWriteResult,
+  StockOutItemResult,
   ContributionSettings,
   ScanDirection,
   ScannerConfig,
@@ -286,6 +288,17 @@ export function createProduct(input: ProductWriteInput): Promise<ProductWriteRes
   return apiFetch('/api/products', { method: 'POST', body: JSON.stringify(input) });
 }
 
+export function searchProducts(q: string, limit?: number): Promise<ProductSearchHit[]> {
+  return apiFetch(`/api/products/search${toQueryString({
+    q,
+    limit: limit === undefined ? undefined : String(limit),
+  })}`);
+}
+
+export function ensureProductItem(productId: string): Promise<{ itemId: string }> {
+  return apiFetch(`/api/products/${productId}/item`, { method: 'POST', body: '{}' });
+}
+
 export function updateProduct(id: string, input: ProductWriteInput): Promise<ProductWriteResult> {
   return apiFetch(`/api/products/${id}`, { method: 'PUT', body: JSON.stringify(input) });
 }
@@ -417,8 +430,9 @@ export function removeItemInstance(instanceId: string): Promise<void> {
   return apiFetch(`/api/inventory/instances/${instanceId}`, { method: 'DELETE' });
 }
 
-export function stockOutItem(itemId: string): Promise<void> {
-  return apiFetch(`/api/inventory/${itemId}/stock-out`, { method: 'POST', body: '{}' });
+export function stockOutItem(itemId: string, options?: { backfill?: boolean }): Promise<StockOutItemResult> {
+  const body = options?.backfill === true ? { backfill: true } : {};
+  return apiFetch(`/api/inventory/${itemId}/stock-out`, { method: 'POST', body: JSON.stringify(body) });
 }
 
 export function getItemHistory(itemId: string): Promise<HistoryView> {

@@ -216,20 +216,18 @@ describe('FlaggedEntryResolver', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create and use product' }));
 
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/products',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          name: milk.name,
-          category: milk.category,
-          unitOfMeasure: milk.unitOfMeasure,
-          contribute: true,
-          contributeTo: 'openproductsfacts',
-          barcode: flaggedEntry.barcode,
-        }),
-      }),
+    const createCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]) === '/api/products' && call[1]?.method === 'POST',
     );
+    expect(createCall).toBeDefined();
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
+      name: milk.name,
+      category: milk.category,
+      unitOfMeasure: milk.unitOfMeasure,
+      contribute: true,
+      contributeTo: 'openproductsfacts',
+      barcode: flaggedEntry.barcode,
+    });
   });
 
   const goneSentence = "That item isn't available anymore. Pick another.";

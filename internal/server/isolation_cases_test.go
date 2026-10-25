@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -62,7 +64,7 @@ type isolationCase struct {
 // Method routes use "METHOD /path". /api/sentry-tunnel is registered with
 // no method, so its key is that pattern.
 
-// publicAllowlist must match isPublicPath and isAuthEndpoint. The coverage
+// publicAllowlist must match isPublicPath. The coverage
 // test fails when either side gains or loses a path.
 var publicAllowlist = []allowEntry{
 	{pattern: "GET /api/build", reason: "build identity; isPublicPath leaves it open on the public entry"},
@@ -105,6 +107,52 @@ var isolationCases = map[string]isolationCase{
 		reason: "setting scanner mode writes only the caller's household and device slot",
 		check:  checkScannerModeStaysInHousehold,
 	},
+	"GET /api/products/search": {
+		kind:   kindListLeak,
+		reason: "another household's typed product name never appears in search results",
+		check:  checkProductSearchHidesForeignTypedProducts,
+	},
+	"POST /api/products/{id}/item": {
+		kind:   kindForeignID,
+		reason: "another household's product id cannot be forced into this shelf",
+		check:  checkEnsureItemRejectsForeignProduct,
+	},
+}
+
+func checkProductSearchHidesForeignTypedProducts(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/products/search?q=Secret", nil)
+	fx.principalFor(fx.Alder).Apply(req)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertNoLeak(t, rec.Body.Bytes(), fx.Birch)
+}
+
+func checkEnsureItemRejectsForeignProduct(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	cedarHousehold(t, fx.DB)
+	cedarScope, err := tenant.New(cedarHouseholdID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := product.NewCatalog(fx.DB)
+	typed, err := catalog.CreateTypedProduct(context.Background(), cedarScope, product.Product{
+		Name: fx.Birch.Marker + " typed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/products/"+typed.ID+"/item", nil)
+	fx.principalFor(fx.Alder).Apply(req)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertNoLeak(t, rec.Body.Bytes(), fx.Birch)
 }
 
 func checkPreviewHidesForeignMove(t *testing.T, fx *twoHouseholds) {

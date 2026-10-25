@@ -5,8 +5,10 @@ import (
 	stdjson "encoding/json"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/group"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
@@ -16,20 +18,28 @@ type CreateHandler struct {
 	Catalog     *product.Catalog
 	Contributor product.UpstreamContributor
 	Groups      *group.Groups
+	Pantry      *inventory.Pantry
+	Events      interface {
+		PublishInventoryEvent(householdID string, item inventory.InventoryItem)
+	}
 }
 
 type productWriteBody struct {
 	Name          string   `json:"name"`
+	Brand         string   `json:"brand"`
+	Size          string   `json:"size"`
 	Category      string   `json:"category"`
 	UnitOfMeasure string   `json:"unitOfMeasure"`
 	Contribute    bool     `json:"contribute"`
 	ContributeTo  string   `json:"contributeTo"`
 	Barcode       string   `json:"barcode"`
+	CreateItem    bool     `json:"createItem"`
 	NetAmount     *float64 `json:"netAmount"`
 	NetUnit       string   `json:"netUnit"`
 	PackCount     *int     `json:"packCount"`
 	NetSizeSet    bool     `json:"-"`
 	PackCountSet  bool     `json:"-"`
+	SizeSet       bool     `json:"-"`
 }
 
 func (b *productWriteBody) UnmarshalJSON(data []byte) error {
@@ -39,11 +49,14 @@ func (b *productWriteBody) UnmarshalJSON(data []byte) error {
 	}
 	var plain struct {
 		Name          string   `json:"name"`
+		Brand         string   `json:"brand"`
+		Size          string   `json:"size"`
 		Category      string   `json:"category"`
 		UnitOfMeasure string   `json:"unitOfMeasure"`
 		Contribute    bool     `json:"contribute"`
 		ContributeTo  string   `json:"contributeTo"`
 		Barcode       string   `json:"barcode"`
+		CreateItem    bool     `json:"createItem"`
 		NetAmount     *float64 `json:"netAmount"`
 		NetUnit       string   `json:"netUnit"`
 		PackCount     *int     `json:"packCount"`
@@ -53,14 +66,20 @@ func (b *productWriteBody) UnmarshalJSON(data []byte) error {
 	}
 	*b = productWriteBody{
 		Name:          plain.Name,
+		Brand:         plain.Brand,
+		Size:          plain.Size,
 		Category:      plain.Category,
 		UnitOfMeasure: plain.UnitOfMeasure,
 		Contribute:    plain.Contribute,
 		ContributeTo:  plain.ContributeTo,
 		Barcode:       plain.Barcode,
+		CreateItem:    plain.CreateItem,
 		NetAmount:     plain.NetAmount,
 		NetUnit:       plain.NetUnit,
 		PackCount:     plain.PackCount,
+	}
+	if _, ok := raw["size"]; ok {
+		b.SizeSet = true
 	}
 	if _, ok := raw["netAmount"]; ok {
 		b.NetSizeSet = true
@@ -76,7 +95,8 @@ func (b *productWriteBody) UnmarshalJSON(data []byte) error {
 
 type productWriteResponse struct {
 	product.Product
-	Contribution *product.ShareOutcome `json:"contribution,omitempty"`
+	ItemID       string                  `json:"itemId,omitempty"`
+	Contribution *product.ShareOutcome   `json:"contribution,omitempty"`
 }
 
 func (h *CreateHandler) Handle(req Request[productWriteBody, struct{}]) (Created, error) {
@@ -96,6 +116,9 @@ func (h *CreateHandler) Handle(req Request[productWriteBody, struct{}]) (Created
 	if err := applyWrittenSize(&prod, req.Body, true); err != nil {
 		return Created{}, err
 	}
+	if err := applySizeText(&prod, req.Body); err != nil {
+		return Created{}, err
+	}
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return Created{}, err
@@ -105,12 +128,48 @@ func (h *CreateHandler) Handle(req Request[productWriteBody, struct{}]) (Created
 		return Created{}, inputOrInternal(err)
 	}
 
+	if strings.TrimSpace(req.Body.Brand) != "" {
+		if err := h.Catalog.SaveBrand(req.Context, scope, stored.ID, req.Body.Brand); err != nil {
+			return Created{}, inputOrInternal(err)
+		}
+	}
 	outcome, err := recordWriteContribution(req.Context, scope, h.Catalog, h.Contributor, req.Body, stored)
 	if err != nil {
 		return Created{}, err
 	}
 	considerGroupProduct(req.Context, scope, h.Groups, stored.ID)
-	return Created{Value: productWriteResponse{Product: stored, Contribution: outcome}}, nil
+	resp := productWriteResponse{Product: stored, Contribution: outcome}
+	if shouldEnsureHouseholdItem(req.Body) {
+		itemID, err := ensureHouseholdItem(req.Context, scope, h.Pantry, h.Events, stored.ID)
+		if err != nil {
+			return Created{}, err
+		}
+		resp.ItemID = itemID
+	}
+	return Created{Value: resp}, nil
+}
+
+func shouldEnsureHouseholdItem(body productWriteBody) bool {
+	return strings.TrimSpace(body.Barcode) == "" || body.CreateItem
+}
+
+func ensureHouseholdItem(ctx context.Context, scope tenant.Scope, pantry *inventory.Pantry, events interface {
+	PublishInventoryEvent(householdID string, item inventory.InventoryItem)
+}, productID string) (string, error) {
+	if pantry == nil {
+		return "", InternalError(nil)
+	}
+	item, err := pantry.GetOrCreateItem(ctx, scope, productID)
+	if err != nil {
+		return "", InternalError(err)
+	}
+	if events != nil {
+		inv, err := pantry.GetInventoryItem(ctx, scope, item.ID, time.Now(), inventory.DefaultWarningDays)
+		if err == nil && inv != nil {
+			events.PublishInventoryEvent(scope.HouseholdID(), *inv)
+		}
+	}
+	return item.ID, nil
 }
 
 func considerGroupProduct(ctx context.Context, scope tenant.Scope, groups *group.Groups, productID string) {

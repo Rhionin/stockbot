@@ -41,12 +41,12 @@ type OutNote struct {
 
 // AttachStockIn records the move and points the new instances (and the
 // stock-in event, when this restock counts toward pace) at it.
-func AttachStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note InNote) error {
+func AttachStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note InNote) (string, error) {
 	if err := scope.Require(); err != nil {
-		return err
+		return "", err
 	}
 	if len(note.InstanceIDs) == 0 {
-		return nil
+		return "", nil
 	}
 	id := uuid.NewString()
 	tracked := 0
@@ -62,18 +62,18 @@ func AttachStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note InN
 		VALUES (?, ?, ?, 'in', ?, ?, ?, ?, ?, ?, ?)`,
 		id, note.ItemID, note.ProductID, len(note.InstanceIDs), note.At, note.Source, nullableString(note.ScanEntryID), tracked, unshelved, scope.HouseholdID(),
 	); err != nil {
-		return err
+		return "", err
 	}
 	for _, instanceID := range note.InstanceIDs {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE item_instances SET stock_move_id = ? WHERE id = ? AND household_id = ?`,
 			id, instanceID, scope.HouseholdID(),
 		); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if !note.Tracked {
-		return nil
+		return id, nil
 	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE stock_in_events SET stock_move_id = ?
@@ -83,22 +83,25 @@ func AttachStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note InN
 			ORDER BY id DESC
 			LIMIT 1
 		)`, id, scope.HouseholdID(), scope.HouseholdID(), note.ProductID, note.At)
-	return err
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // AttachStockOut records the move and points every removed unit (and each
 // consumption row, when this use counts toward pace) at it. Quantity is the
 // number of units, so undoing the move puts all of them back.
-func AttachStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note OutNote) error {
+func AttachStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note OutNote) (string, error) {
 	if err := scope.Require(); err != nil {
-		return err
+		return "", err
 	}
 	ids := note.InstanceIDs
 	if len(ids) == 0 && note.InstanceID != "" {
 		ids = []string{note.InstanceID}
 	}
 	if len(ids) == 0 {
-		return nil
+		return "", nil
 	}
 	consumptionIDs := note.ConsumptionIDs
 	if len(consumptionIDs) == 0 && note.ConsumptionID != "" {
@@ -114,14 +117,14 @@ func AttachStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note Ou
 		VALUES (?, ?, ?, 'out', ?, ?, ?, ?, ?, ?)`,
 		id, note.ItemID, note.ProductID, len(ids), note.At, note.Source, nullableString(note.ScanEntryID), tracked, scope.HouseholdID(),
 	); err != nil {
-		return err
+		return "", err
 	}
 	for _, instanceID := range ids {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE item_instances SET removed_by_move_id = ? WHERE id = ? AND household_id = ?`,
 			id, instanceID, scope.HouseholdID(),
 		); err != nil {
-			return err
+			return "", err
 		}
 	}
 	for _, consumptionID := range consumptionIDs {
@@ -132,10 +135,10 @@ func AttachStockOut(ctx context.Context, scope tenant.Scope, tx *sql.Tx, note Ou
 			UPDATE consumption_events SET stock_move_id = ? WHERE id = ? AND household_id = ?`,
 			id, consumptionID, scope.HouseholdID(),
 		); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return id, nil
 }
 
 func nullableString(value *string) any {

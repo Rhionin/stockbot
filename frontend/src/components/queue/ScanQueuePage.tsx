@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
-import { Alert, Badge, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
+import { Alert, Badge, Button, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode, stage1AuthActive } from '../../api/client';
 import { clearOfflineNotice } from './offlineNotice';
 import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, scanReportsNothingOnHand, skippedNothingOnHandBanner, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '@stockbot/shared/contract';
@@ -17,7 +17,9 @@ import { ProcessingScanCard } from './ProcessingScanCard';
 import { QrScanCard } from './QrScanCard';
 import { ScanEntryCard } from './ScanEntryCard';
 import { ScanSessionCard } from './ScanSessionCard';
+import { FIND_ITEM_BUTTON } from '../inventory/noBarcodeCopy';
 import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } from './browserScanAlert';
+import { FindItemSheet } from './FindItemSheet';
 import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from './queueUtils';
 import { scannerModeFromEventData } from './scannerModeEvent';
 
@@ -102,6 +104,8 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
   const inventoryEpoch = useRef(0);
   const inventoryLive = useRef<InventoryItem[]>([]);
   const [cuedNothing, setCuedNothing] = useState<ReadonlySet<string>>(() => new Set());
+  const [findItemOpen, setFindItemOpen] = useState(false);
+  const [findItemSession, setFindItemSession] = useState(0);
 
   // The selected tab is the scan direction. A refresh that reports the same
   // direction leaves the queue the user is reviewing in place.
@@ -629,6 +633,17 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
             onScan={noteCameraCapture}
             onOpenChange={setCameraOpen}
           />
+          <Button
+            size="xs"
+            variant="default"
+            className="scan-find-item"
+            onClick={() => {
+              setFindItemSession((session) => session + 1);
+              setFindItemOpen(true);
+            }}
+          >
+            {FIND_ITEM_BUTTON}
+          </Button>
         </div>
         {scanError !== '' && (
           <Alert color="red" py={4}>
@@ -803,6 +818,13 @@ export const ScanQueuePage = ({ userId = DEFAULT_SCAN_USER_ID }: ScanQueuePagePr
           );
         })}
       </Stack>
+      <FindItemSheet
+        key={findItemSession}
+        opened={findItemOpen}
+        direction={scannerMode}
+        onClose={() => setFindItemOpen(false)}
+        onInventoryChanged={() => void loadQueue(true)}
+      />
     </Stack>
   );
 };

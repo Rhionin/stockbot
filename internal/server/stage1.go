@@ -373,7 +373,7 @@ func eventStreamKey(r *http.Request) string {
 }
 
 func stage1ClientIP(r *http.Request) string {
-	if ip := visitorIP(r); ip != "" {
+	if ip := visitorIP(r, false); ip != "" {
 		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

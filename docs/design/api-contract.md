@@ -295,7 +295,7 @@ Stage 1 revokes this session row and clears the cookie. Stage 3, after that row 
 ```ts
 interface AuthSession {
   user: { id: string; email: string; name: string } | null;
-  kind: 'signed_out' | 'account' | 'household_password' | 'lan';
+  kind: 'signed_out' | 'account';
   memberships: { householdId: string; name: string; role: 'owner' | 'member'; deletedAt: string | null }[];
   households: { id: string; name: string; role: 'owner' | 'member'; deletedAt: string | null }[];
   activeHouseholdId: string | null;
@@ -303,7 +303,7 @@ interface AuthSession {
 }
 ```
 
-`user` is null when nobody is signed in. Then `kind` is `signed_out`, `memberships` and `households` are empty, `activeHouseholdId` is null, and `operator` is false. A household-password session has `kind` `household_password`, `user: null`, `operator: false`, `activeHouseholdId` set to household 1, and one membership with role `member`. The LAN principal uses `kind` `lan` and the same household 1 membership. On the LAN after retirement, `GET /api/auth/session` returns `401` `unauthorized`, and the lan-client rule sends the client to `appBaseUrl`. An account session has `kind` `account`.
+`user` is null when nobody is signed in. Then `kind` is `signed_out`, `memberships` and `households` are empty, `activeHouseholdId` is null, and `operator` is false. An account session has `kind` `account`.
 
 `memberships` is the #364 list. `households` is the same list with `id` in place of `householdId`, and it is the switcher list. Both include `deletedAt`, so the switcher can offer Restore while the household is soft-deleted and still inside the 30-day window. Neither list is a tenant the client can override. A later call follows the activeHouseholdId order above. `name` on `user` is the person's display name. `operator` is a flag, not a household role, and it does not grant another household's data.
 

@@ -308,6 +308,18 @@ func formatAmount(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
+// ApplyParsedSize stores a parsed size string on the product.
+func (p *Product) ApplyParsedSize(parsed ParsedSize) {
+	base := parsed.BaseValue
+	p.NetBaseValue = &base
+	p.NetDimension = parsed.Dimension
+	p.NetSizeOrigin = OriginManual
+	p.fillDisplay()
+	if parsed.HasPack {
+		p.PackCount = &parsed.PackCount
+	}
+}
+
 // ApplyTypedSize stores a size the person typed. present is false when the
 // request did not mention a size, which leaves the stored size alone.
 // Clearing a size that was already saved records origin manual so a later

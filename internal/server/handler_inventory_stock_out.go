@@ -11,7 +11,8 @@ import (
 
 type InventoryStockOutHandler struct {
 	Queue interface {
-		StockOut(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) error
+		StockOut(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) (string, error)
+		BackfillItem(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) (scan.BackfillResult, error)
 	}
 }
 
@@ -19,17 +20,42 @@ type inventoryStockOutPathParams struct {
 	ItemID string `json:"itemId"`
 }
 
-func (h *InventoryStockOutHandler) Handle(req Request[struct{}, inventoryStockOutPathParams]) (struct{}, error) {
+type inventoryStockOutRequest struct {
+	Backfill bool `json:"backfill,omitempty"`
+}
+
+type inventoryStockOutResponse struct {
+	StockOutMoveID string        `json:"stockOutMoveId,omitempty"`
+	Backfill       *backfillMoves `json:"backfill,omitempty"`
+}
+
+func (h *InventoryStockOutHandler) Handle(req Request[inventoryStockOutRequest, inventoryStockOutPathParams]) (inventoryStockOutResponse, error) {
 	scope, err := requestScope(req.Context)
 	if err != nil {
-		return struct{}{}, err
+		return inventoryStockOutResponse{}, err
 	}
-	err = h.Queue.StockOut(req.Context, scope, req.PathParams.ItemID, time.Now().UTC())
+	at := time.Now().UTC()
+	if req.Body.Backfill {
+		result, err := h.Queue.BackfillItem(req.Context, scope, req.PathParams.ItemID, at)
+		if err != nil {
+			if errors.Is(err, scan.ErrItemNotFound) {
+				return inventoryStockOutResponse{}, NotFound("item not found")
+			}
+			return inventoryStockOutResponse{}, commitClientError(err)
+		}
+		return inventoryStockOutResponse{
+			Backfill: &backfillMoves{
+				StockInMoveID:  result.StockInMoveID,
+				StockOutMoveID: result.StockOutMoveID,
+			},
+		}, nil
+	}
+	moveID, err := h.Queue.StockOut(req.Context, scope, req.PathParams.ItemID, at)
 	if err != nil {
 		if errors.Is(err, scan.ErrItemNotFound) {
-			return struct{}{}, NotFound("item not found")
+			return inventoryStockOutResponse{}, NotFound("item not found")
 		}
-		return struct{}{}, commitClientError(err)
+		return inventoryStockOutResponse{}, commitClientError(err)
 	}
-	return struct{}{}, nil
+	return inventoryStockOutResponse{StockOutMoveID: moveID}, nil
 }
