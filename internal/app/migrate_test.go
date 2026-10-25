@@ -142,8 +142,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 37 {
-		t.Errorf("schema_migrations should have 37 rows after two runs, got %d", count)
+	if count != 36 {
+		t.Errorf("schema_migrations should have 36 rows after two runs, got %d", count)
 	}
 }
 

@@ -51,6 +51,23 @@ func (r *Catalog) SaveDisplayName(ctx context.Context, scope tenant.Scope, produ
 	return nil
 }
 
+// productBrandSettingKey is the household_settings key for a product brand label.
+func productBrandSettingKey(productID string) string {
+	return "product_brand:" + productID
+}
+
+// BrandSQL is the brand label one household stored for a product alias.
+// The caller binds household id to the single placeholder.
+func BrandSQL(productAlias string) string {
+	if productAlias == "" {
+		productAlias = "p"
+	}
+	return fmt.Sprintf(
+		`COALESCE((SELECT hs.value FROM household_settings hs WHERE hs.household_id = ? AND hs.key = 'product_brand:' || %s.id), '')`,
+		productAlias,
+	)
+}
+
 // SaveBrand stores an optional brand label for a household product.
 func (r *Catalog) SaveBrand(ctx context.Context, scope tenant.Scope, productID, brand string) error {
 	if err := scope.Require(); err != nil {
@@ -61,18 +78,11 @@ func (r *Catalog) SaveBrand(ctx context.Context, scope tenant.Scope, productID, 
 		return fmt.Errorf("a product id is required")
 	}
 	brand = strings.TrimSpace(brand)
-	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO household_product_overrides (household_id, product_id, display_name, brand, updated_at)
-		VALUES (
-			?, ?,
-			COALESCE((SELECT display_name FROM household_product_overrides WHERE household_id = ? AND product_id = ?), ''),
-			?, ?
-		)
-		ON CONFLICT (household_id, product_id) DO UPDATE SET
-			brand = excluded.brand,
-			updated_at = excluded.updated_at`,
-		scope.HouseholdID(), productID, scope.HouseholdID(), productID, brand, now,
+		INSERT INTO household_settings (household_id, key, value)
+		VALUES (?, ?, ?)
+		ON CONFLICT (household_id, key) DO UPDATE SET value = excluded.value`,
+		scope.HouseholdID(), productBrandSettingKey(productID), brand,
 	)
 	if err != nil {
 		return fmt.Errorf("could not save the product brand: %w", err)

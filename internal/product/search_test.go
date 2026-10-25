@@ -114,7 +114,7 @@ func TestSearchCatalogProductWithoutHouseholdItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchProducts: %v", err)
 	}
-	if len(hits) != 1 || hits[0].ProductID != globalID || hits[0].ItemID != "" || hits[0].OnHand != 0 {
+	if len(hits) != 1 || hits[0].ProductID != globalID || hits[0].ItemID != nil || hits[0].OnHand != 0 {
 		t.Fatalf("hits = %+v", hits)
 	}
 }
@@ -154,7 +154,7 @@ func TestSearchOrdersHouseholdItemBeforeCatalog(t *testing.T) {
 	if len(hits) < 2 {
 		t.Fatalf("hits = %+v", hits)
 	}
-	if hits[0].ProductID != typed.ID || hits[0].ItemID == "" {
+	if hits[0].ProductID != typed.ID || hits[0].ItemID == nil || *hits[0].ItemID == "" {
 		t.Fatalf("household item should be first: %+v", hits)
 	}
 	foundCatalog := false

@@ -110,7 +110,7 @@ export function FindItemSheet({
   const modeSubtitle = direction === 'stock_in' ? SCANS_ADD_TO_STOCK : SCANS_REMOVE_FROM_STOCK;
 
   const resolveItemId = async (hit: ProductSearchHit): Promise<string> => {
-    if (hit.itemId !== undefined && hit.itemId !== '') return hit.itemId;
+    if (hit.itemId != null && hit.itemId !== '') return hit.itemId;
     const ensured = await ensureProductItem(hit.productId);
     return ensured.itemId;
   };

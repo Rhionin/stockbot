@@ -81,7 +81,7 @@ export interface ProductWriteInput {
 
 export interface ProductSearchHit {
   productId: string;
-  itemId?: string;
+  itemId: string | null;
   name: string;
   brand?: string;
   size?: string;

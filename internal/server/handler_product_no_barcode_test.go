@@ -144,10 +144,10 @@ func TestEnsureProductItemForCatalogProduct(t *testing.T) {
 			handler := handlerFromEnv(env)
 			searchBody := exchangeJSON(t, handler, http.MethodGet, "/api/products/search?q=oats", "", http.StatusOK)
 			var hits []struct {
-				ProductID string `json:"productId"`
-				ItemID    string `json:"itemId"`
+				ProductID string  `json:"productId"`
+				ItemID    *string `json:"itemId"`
 			}
-			if err := json.Unmarshal(searchBody, &hits); err != nil || len(hits) == 0 || hits[0].ItemID != "" {
+			if err := json.Unmarshal(searchBody, &hits); err != nil || len(hits) == 0 || hits[0].ItemID != nil {
 				env.T.Fatalf("search before ensure: %s (%v)", searchBody, err)
 			}
 			ensureBody := exchangeJSON(t, handler, http.MethodPost, "/api/products/"+hits[0].ProductID+"/item", "", http.StatusOK)

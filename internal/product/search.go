@@ -16,13 +16,18 @@ var ErrQueryTooShort = errors.New("query_too_short")
 
 // SearchHit is one row from GET /api/products/search.
 type SearchHit struct {
-	ProductID string `json:"productId"`
-	ItemID    string `json:"itemId,omitempty"`
-	Name      string `json:"name"`
-	Brand     string `json:"brand,omitempty"`
-	Size      string `json:"size,omitempty"`
-	Category  string `json:"category,omitempty"`
-	OnHand    int    `json:"onHand"`
+	ProductID string  `json:"productId"`
+	ItemID    *string `json:"itemId"`
+	Name      string  `json:"name"`
+	Brand     string  `json:"brand,omitempty"`
+	Size      string  `json:"size,omitempty"`
+	Category  string  `json:"category,omitempty"`
+	OnHand    int     `json:"onHand"`
+}
+
+type searchRow struct {
+	hit     SearchHit
+	hasItem bool
 }
 
 // SearchProducts finds products visible to the household by name or brand.
@@ -43,13 +48,15 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 	}
 	needle := "%" + strings.ToLower(query) + "%"
 	householdID := scope.HouseholdID()
+	display := DisplayNameSQL("p")
+	brand := BrandSQL("p")
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
 			p.id,
 			i.id,
-			`+DisplayNameSQL("p")+`,
-			COALESCE(o.brand, ''),
+			`+display+`,
+			`+brand+`,
 			COALESCE(p.category, ''),
 			p.net_base_value,
 			p.net_dimension,
@@ -60,60 +67,27 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 			) AS on_hand
 		FROM items i
 		JOIN products p ON p.id = i.product_id
-		LEFT JOIN household_product_overrides o
-			ON o.household_id = ? AND o.product_id = p.id
 		WHERE i.household_id = ?
 		  AND (
-		    LOWER(`+DisplayNameSQL("p")+`) LIKE ?
-		    OR LOWER(COALESCE(o.brand, '')) LIKE ?
+		    LOWER(`+display+`) LIKE ?
+		    OR LOWER(`+brand+`) LIKE ?
 		  )`,
-		householdID, householdID, householdID, householdID, householdID, needle, needle,
+		householdID, householdID, householdID, householdID, householdID, needle, householdID, needle,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	type row struct {
-		hit     SearchHit
-		hasItem bool
-	}
-	var hits []row
+	var hits []searchRow
 	seen := map[string]struct{}{}
 	for rows.Next() {
-		var productID, itemID, name, brand, category string
-		var netBase sql.NullFloat64
-		var netDim sql.NullString
-		var pack sql.NullInt64
-		var onHand int
-		if err := rows.Scan(&productID, &itemID, &name, &brand, &category, &netBase, &netDim, &pack, &onHand); err != nil {
+		row, productID, err := scanSearchRow(rows, true)
+		if err != nil {
 			return nil, err
 		}
-		prod := Product{ID: productID, Category: category}
-		if netBase.Valid {
-			v := netBase.Float64
-			prod.NetBaseValue = &v
-		}
-		if netDim.Valid {
-			prod.NetDimension = netDim.String
-		}
-		if pack.Valid {
-			p := int(pack.Int64)
-			prod.PackCount = &p
-		}
 		seen[productID] = struct{}{}
-		hits = append(hits, row{
-			hasItem: true,
-			hit: SearchHit{
-				ProductID: productID,
-				ItemID:    itemID,
-				Name:      name,
-				Brand:     strings.TrimSpace(brand),
-				Size:      formatProductSize(prod),
-				Category:  category,
-				OnHand:    onHand,
-			},
-		})
+		hits = append(hits, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -122,18 +96,16 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 	catalogRows, err := r.db.QueryContext(ctx, `
 		SELECT
 			p.id,
-			`+DisplayNameSQL("p")+`,
-			COALESCE(o.brand, ''),
+			`+display+`,
+			`+brand+`,
 			COALESCE(p.category, ''),
 			p.net_base_value,
 			p.net_dimension,
 			p.pack_count
 		FROM products p
-		LEFT JOIN household_product_overrides o
-			ON o.household_id = ? AND o.product_id = p.id
 		WHERE (
-		    LOWER(`+DisplayNameSQL("p")+`) LIKE ?
-		    OR LOWER(COALESCE(o.brand, '')) LIKE ?
+		    LOWER(`+display+`) LIKE ?
+		    OR LOWER(`+brand+`) LIKE ?
 		  )
 		  AND p.id NOT IN (
 		    SELECT product_id FROM items WHERE household_id = ?
@@ -145,7 +117,7 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 		      WHERE o2.product_id = p.id AND o2.household_id = ?
 		    )
 		  )`,
-		householdID, householdID, householdID, needle, needle, householdID, SourceUser, householdID,
+		householdID, householdID, householdID, needle, householdID, needle, householdID, SourceUser, householdID,
 	)
 	if err != nil {
 		return nil, err
@@ -153,40 +125,15 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 	defer catalogRows.Close()
 
 	for catalogRows.Next() {
-		var productID, name, brand, category string
-		var netBase sql.NullFloat64
-		var netDim sql.NullString
-		var pack sql.NullInt64
-		if err := catalogRows.Scan(&productID, &name, &brand, &category, &netBase, &netDim, &pack); err != nil {
+		row, productID, err := scanSearchRow(catalogRows, false)
+		if err != nil {
 			return nil, err
 		}
 		if _, ok := seen[productID]; ok {
 			continue
 		}
-		prod := Product{ID: productID, Category: category}
-		if netBase.Valid {
-			v := netBase.Float64
-			prod.NetBaseValue = &v
-		}
-		if netDim.Valid {
-			prod.NetDimension = netDim.String
-		}
-		if pack.Valid {
-			p := int(pack.Int64)
-			prod.PackCount = &p
-		}
 		seen[productID] = struct{}{}
-		hits = append(hits, row{
-			hasItem: false,
-			hit: SearchHit{
-				ProductID: productID,
-				Name:      name,
-				Brand:     strings.TrimSpace(brand),
-				Size:      formatProductSize(prod),
-				Category:  category,
-				OnHand:    0,
-			},
-		})
+		hits = append(hits, row)
 	}
 	if err := catalogRows.Err(); err != nil {
 		return nil, err
@@ -209,6 +156,53 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 		out[i] = h.hit
 	}
 	return out, nil
+}
+
+func scanSearchRow(rows *sql.Rows, hasItem bool) (searchRow, string, error) {
+	var productID, name, brand, category string
+	var netBase sql.NullFloat64
+	var netDim sql.NullString
+	var pack sql.NullInt64
+	var itemID string
+	var onHand int
+	if hasItem {
+		if err := rows.Scan(&productID, &itemID, &name, &brand, &category, &netBase, &netDim, &pack, &onHand); err != nil {
+			return searchRow{}, "", err
+		}
+	} else {
+		if err := rows.Scan(&productID, &name, &brand, &category, &netBase, &netDim, &pack); err != nil {
+			return searchRow{}, "", err
+		}
+	}
+	prod := productFromSizeColumns(productID, category, netBase, netDim, pack)
+	hit := SearchHit{
+		ProductID: productID,
+		Name:      name,
+		Brand:     strings.TrimSpace(brand),
+		Size:      formatProductSize(prod),
+		Category:  category,
+		OnHand:    onHand,
+	}
+	if hasItem {
+		hit.ItemID = &itemID
+	}
+	return searchRow{hit: hit, hasItem: hasItem}, productID, nil
+}
+
+func productFromSizeColumns(productID, category string, netBase sql.NullFloat64, netDim sql.NullString, pack sql.NullInt64) Product {
+	prod := Product{ID: productID, Category: category}
+	if netBase.Valid {
+		v := netBase.Float64
+		prod.NetBaseValue = &v
+	}
+	if netDim.Valid {
+		prod.NetDimension = netDim.String
+	}
+	if pack.Valid {
+		p := int(pack.Int64)
+		prod.PackCount = &p
+	}
+	return prod
 }
 
 func formatProductSize(prod Product) string {

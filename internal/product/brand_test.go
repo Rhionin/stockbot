@@ -30,6 +30,11 @@ func TestSaveBrandRoundTrip(t *testing.T) {
 	if err := catalog.SaveBrand(ctx, scope, created.ID, "Pantry"); err != nil {
 		t.Fatal(err)
 	}
+	var stored string
+	if err := conn.QueryRow(`SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
+		scope.HouseholdID(), "product_brand:"+created.ID).Scan(&stored); err != nil || stored != "Pantry" {
+		t.Fatalf("brand setting: %q (%v)", stored, err)
+	}
 	hits, err := catalog.SearchProducts(ctx, scope, "pantry", 20)
 	if err != nil {
 		t.Fatal(err)
