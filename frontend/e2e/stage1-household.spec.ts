@@ -8,16 +8,10 @@ const PAIRING = formatPairingCode('23456789')
 const shots = process.env.STAGE1_SCREENSHOT_DIR
   || (existsSync('/cursor/stores/self') ? '/cursor/stores/self/383' : '')
 
-const olderWarning = (count: number) =>
-  `${count} devices opened Stockbot with an older app version in the last 7 days. They'll need to update the app to keep using it.`
-
 interface Stage {
-  kind: 'signed_out' | 'account' | 'household_password'
+  kind: 'signed_out' | 'account'
   role: 'owner' | 'member'
-  passwordSignIn: boolean
   olderAppDevices: number
-  householdPasswordEnabled: boolean
-  restoreUntil: string | null
   invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
   deletedAt: string | null
   pairingExpired: boolean
@@ -26,10 +20,7 @@ interface Stage {
 const stage: Stage = {
   kind: 'signed_out',
   role: 'owner',
-  passwordSignIn: false,
   olderAppDevices: 3,
-  householdPasswordEnabled: true,
-  restoreUntil: null,
   invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
   deletedAt: null,
   pairingExpired: false,
@@ -75,15 +66,14 @@ const install = async (page: Page) => {
       return fulfillJson(route, { ...sessionBody(), activeHouseholdId: body.householdId })
     }
     if (path === '/api/auth/login' && method === 'POST') {
-      stage.kind = 'household_password'
-      stage.role = 'member'
+      stage.kind = 'account'
+      stage.role = 'owner'
       return fulfillJson(route, sessionBody())
     }
     if (path === '/api/config') {
       return fulfillJson(route, {
         live: 'sse',
         minClientVersion: { expo: '1.0.0' },
-        householdPasswordSignIn: stage.passwordSignIn,
         entry: 'public',
       })
     }
@@ -102,20 +92,7 @@ const install = async (page: Page) => {
       })
     }
     if (path === '/api/household/settings' && method === 'GET') {
-      return fulfillJson(route, {
-        restockMode: 'auto',
-        householdPasswordEnabled: stage.householdPasswordEnabled,
-        ...(stage.restoreUntil ? { householdPasswordRestoreUntil: stage.restoreUntil } : {}),
-      })
-    }
-    if (path === '/api/household/household-password/retire' && method === 'POST') {
-      stage.householdPasswordEnabled = false
-      stage.restoreUntil = '2026-05-01T00:00:00Z'
-      return fulfillJson(route, { restockMode: 'auto', householdPasswordEnabled: false, householdPasswordRestoreUntil: stage.restoreUntil })
-    }
-    if (path === '/api/household/household-password/restore' && method === 'POST') {
-      stage.householdPasswordEnabled = true
-      return fulfillJson(route, { restockMode: 'auto', householdPasswordEnabled: true })
+      return fulfillJson(route, { restockMode: 'auto' })
     }
     if (path === '/api/telemetry') return fulfillJson(route, { olderAppDevices: stage.olderAppDevices })
     if (path === '/api/households/hh-1/members') return fulfillJson(route, { members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] })
@@ -185,10 +162,7 @@ const install = async (page: Page) => {
 const resetStage = () => {
   stage.kind = 'signed_out'
   stage.role = 'owner'
-  stage.passwordSignIn = false
   stage.olderAppDevices = 3
-  stage.householdPasswordEnabled = true
-  stage.restoreUntil = null
   stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
   stage.deletedAt = null
   stage.pairingExpired = false
@@ -220,12 +194,11 @@ test.describe('stage-1 household screens', () => {
     if (shots) mkdirSync(shots, { recursive: true })
   })
 
-  test(`sign-in, changeover, households, devices, and export at ${width}`, async ({ page }) => {
+  test(`sign-in, households, devices, and export at ${width}`, async ({ page }) => {
     resetStage()
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
     await install(page)
     await page.goto('/')
-    await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
     const setup = page.getByRole('link', { name: 'Set up Stockbot' })
     await expect(setup).toBeVisible()
     await expect(setup).toHaveAttribute('href', '/setup')
@@ -233,33 +206,12 @@ test.describe('stage-1 household screens', () => {
     await setup.click()
     await expect(page.getByRole('heading', { name: 'Set up Stockbot' })).toBeVisible()
     await page.goto('/')
-    await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
-    await shot(page, 'sign-in-c2a3', width)
+    await shot(page, 'sign-in', width)
 
-    stage.passwordSignIn = true
-    await page.reload()
-    await expect(page.getByRole('button', { name: 'Sign in with the household password' })).toBeVisible()
-    await page.getByRole('button', { name: 'Sign in with the household password' }).click()
-    await page.getByRole('textbox', { name: 'Household password' }).fill('shared-secret')
+    await page.getByLabel('Email').fill('ada@example.com')
+    await page.getByLabel('Password').fill('correct-horse-battery')
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('status').filter({ hasText: 'shared household password' })).toBeVisible()
-    await shot(page, 'banner-c2a1', width)
-
-    stage.kind = 'account'
-    stage.role = 'owner'
-    await page.reload()
-    await page.getByRole('button', { name: 'Menu' }).click()
-    await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
-    await expect(page.getByText(olderWarning(3))).toBeVisible()
-    await shot(page, 'retire-n3', width, false)
-    await page.getByRole('button', { name: 'Cancel' }).click()
-
-    stage.olderAppDevices = 0
-    await page.getByRole('button', { name: 'Menu' }).click()
-    await page.getByRole('menuitem', { name: 'Turn off the household password' }).click()
-    await expect(page.getByText(/older app version/)).toHaveCount(0)
-    await shot(page, 'retire-n0', width, false)
-    await page.getByRole('button', { name: 'Turn off' }).click()
+    await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Household', exact: true }).click()

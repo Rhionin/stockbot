@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, SESSION_EXPIRED_SENTENCE, serverNoticeText, UnreachableError, type AuthSession } from '@stockbot/shared/contract';
-import { currentAuthSession, getSession, logout, setUnauthorizedHandler, stage1AuthActive } from '../../api/client';
+import { currentAuthSession, getSession, logout, setUnauthorizedHandler } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { AccountLoginPage } from './AccountLoginPage';
 import { HouseholdSessionContext } from './householdSession';

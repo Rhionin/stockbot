@@ -12,7 +12,7 @@ bash -n "$ROOT/deploy/systemd/pantry-update.sh"
 bash -n "$ROOT/deploy/publish-mode.sh"
 bash -n "$ROOT/deploy/check-publish-modes.sh"
 bash -n "$ROOT/deploy/check-deploy-hook.sh"
-bash -n "$ROOT/deploy/auth-migrate.sh"
+bash -n "$ROOT/deploy/runtime-setup.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -78,7 +78,7 @@ for arg in "$@"; do
   fi
   prev=$arg
 done
-if [[ "$*" == *"/api/session"* ]]; then
+if [[ "$*" == *"/api/auth/session"* ]]; then
   if [[ -n "$out" ]]; then
     printf '%s' "${CURL_SESSION_BODY:-}" > "$out"
   fi
@@ -249,19 +249,13 @@ printed=$(PANTRY_DIR="$lan" PANTRY_SETUP_SKIP_ROOT=1 bash "$SETUP" deploy-secret
 lack "$LAST_DOCKER" "docker-compose.tunnel.yml" "LAN must not select the tunnel file"
 lack "$LAST_DOCKER" "hash-password" "LAN must not hash a password"
 lack "$LAST_DOCKER" "pull pantry" "LAN must not pull before the public site exists"
-[[ -d "$lan/auth" ]] || fail "LAN setup did not create the auth directory"
-[[ ! -e "$lan/auth/household" ]] || fail "LAN setup invented a password hash"
-have "$LAST_CURL" "http://127.0.0.1:9090/api/session" "setup probes sign-in on loopback"
+have "$LAST_CURL" "http://127.0.0.1:9090/api/auth/session" "setup probes sign-in on loopback"
 have "$LAST_CURL" "http://127.0.0.1:9090/health" "setup probes health on loopback"
-have "$LAST_CHOWN" "65532:65532 $lan/auth" "LAN setup still gives the auth directory to uid 65532"
 grep -q '^PANTRY_SESSION_SECRET=$' "$lan/.env" || fail "LAN setup filled a session secret"
 lack "$LAST_DOCKER" "restart $(basename "$lan")-caddy" "LAN must not restart Caddy"
 lack "$LAST_IPTABLES" "--dport" "setup does not install a port filter"
 have "$LAST_OUT" "Stockbot setup complete" "LAN success"
 lack "$LAST_OUT" "Home Wi-Fi cannot open" "LAN-only must not warn about hairpin"
-have "$(cat "$lan/Caddyfile.legacy")" "No LEGACY_PUBLIC_HOST" "LAN snippet does not redirect"
-lack "$(cat "$lan/Caddyfile.legacy")" "redir" "LAN snippet is not a redirect"
-lack "$(cat "$lan/Caddyfile.tunnel.legacy")" "redir" "LAN tunnel snippet is not a redirect"
 have "$LAST_SYSTEMCTL" "disable --now pantry-lan-only.service pantry-mdns.service" "setup removes leftover LAN units"
 grep -q '127\.0\.0\.1:.*:8080' "$lan/docker-compose.yml" || fail "compose must publish the listener on loopback"
 lan_setup_mode=$(stat -c '%a' "$lan/setup")
@@ -293,14 +287,9 @@ have "$LAST_DOCKER" "restart $(basename "$pub")-caddy" "Caddyfile restart"
 lack "$LAST_DOCKER" "hash-password" "must not hash when auth.caddy exists"
 lack "$LAST_DOCKER" "stop caddy" "must not disable public HTTPS"
 have "$LAST_OUT" "Keeping existing" "kept auth.caddy"
-cmp "$pub/auth.caddy" "$pub/auth/household" || fail "household hash was not copied from auth.caddy"
-pub_mode=$(stat -c '%a' "$pub/auth/household")
-[[ "$pub_mode" == "600" || "$pub_mode" == "640" ]] || fail "household file mode is $pub_mode, want 600 or 640"
-have "$LAST_CHOWN" "65532:65532 $pub/auth" "setup chowns the auth directory to uid 65532"
-have "$LAST_CHOWN" "65532:65532 $pub/auth/household" "setup chowns the household file to uid 65532"
 lack "$LAST_CURL" "X-Pantry-Entry" "public setup probes sign-in without an entry header"
-have "$LAST_CURL" "http://127.0.0.1:8080/api/session" "public setup probes the listener on loopback"
-lack "$LAST_CURL" ":8081/api/session" "public setup does not probe a second listener"
+have "$LAST_CURL" "http://127.0.0.1:8080/api/auth/session" "public setup probes the listener on loopback"
+lack "$LAST_CURL" ":8081/api/auth/session" "public setup does not probe a second listener"
 grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "public setup did not set APP_BASE_URL from PUBLIC_HOST"
 pub_setup_mode=$(stat -c '%a' "$pub/setup")
 [[ "$pub_setup_mode" == "2750" ]] || fail "public setup dir mode is $pub_setup_mode, want 2750"
@@ -313,15 +302,13 @@ have "$LAST_DOCKER" "pull pantry" "public setup pulls the image before dropping 
 lack "$LAST_IPTABLES" "--dport" "public setup does not firewall a LAN port"
 have "$LAST_OUT" "Home Wi-Fi cannot open https://pantry.example.com" "hairpin warning names the public host"
 have "$LAST_SYSTEMCTL" "disable --now pantry-lan-only.service pantry-mdns.service" "public setup removes leftover LAN units"
-have "$LAST_OUT" "shared password" "public summary still mentions the password"
+lack "$LAST_OUT" "shared password" "public summary must not mention the retired household password"
 lack "$LAST_DOCKER" "stop caddy" "hairpin warning must not stop the public proxy"
 
 # A second run stays idempotent.
 run_setup "$pub"
 [[ "$LAST_RC" -eq 0 ]] || fail "second setup exited $LAST_RC: $LAST_OUT"
 cmp "$pub/auth.caddy" "$pub/auth.caddy.before" || fail "second run regenerated auth.caddy"
-cmp "$pub/auth.caddy" "$pub/auth/household" || fail "second run changed the household hash"
-have "$LAST_CHOWN" "65532:65532 $pub/auth/household" "second run chowns an existing household file"
 pub_secret_again=$(grep '^PANTRY_SESSION_SECRET=' "$pub/.env" | cut -d= -f2-)
 [[ "$pub_secret_again" == "$pub_secret" ]] || fail "second run rotated the session secret"
 grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "second run replaced APP_BASE_URL"
@@ -354,9 +341,6 @@ run_setup "$first"
 grep -q 'basic_auth bcrypt Pantry' "$first/auth.caddy" || fail "auth.caddy missing basic_auth block"
 grep -q 'abcdefghijklmnopqrstuu' "$first/auth.caddy" || fail "auth.caddy missing the hashed password"
 grep -q '^BASIC_AUTH_PASSWORD=correct-horse-battery$' "$first/.env" || fail "password was not kept in .env"
-cmp "$first/auth.caddy" "$first/auth/household" || fail "first public setup did not copy the new hash"
-first_mode=$(stat -c '%a' "$first/auth/household")
-[[ "$first_mode" == "600" || "$first_mode" == "640" ]] || fail "new household file mode is $first_mode"
 [[ $(grep '^PANTRY_SESSION_SECRET=' "$first/.env" | cut -d= -f2- | wc -c) -eq 65 ]] || fail "first public setup did not save a session secret"
 have "$LAST_DOCKER" "hash-password" "first public setup should hash"
 have "$LAST_DOCKER" "--profile public" "first public profile"
@@ -561,58 +545,6 @@ lack "$LAST_OUT" "PANTRY_SPLIT_DNS is on" "tunnel does not configure split-horiz
 [[ -z "$LAST_DNSMASQ" ]] || fail "tunnel setup wrote a dnsmasq answer"
 have "$LAST_DOCKER" "--profile tunnel" "split-horizon removal keeps the tunnel"
 
-# The previous public name redirects only when it is a different hostname.
-legacy=$(mktemp -d)
-write_env "$legacy" \
-  "PUBLIC_HOST=stockbot.rhionin.com" \
-  "LEGACY_PUBLIC_HOST=pantry.rhionin.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
-  "HOST_PORT=8080" \
-  "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$legacy/auth.caddy"
-run_setup "$legacy"
-[[ "$LAST_RC" -eq 0 ]] || fail "legacy host setup exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "https://pantry.rhionin.com redirects to https://stockbot.rhionin.com" "legacy redirect is logged"
-have "$(cat "$legacy/Caddyfile.legacy")" 'pantry.rhionin.com {' "certificate snippet names the previous host"
-# shellcheck disable=SC2016 # Caddy expands {$PUBLIC_HOST}; the snippet keeps the placeholder.
-have "$(cat "$legacy/Caddyfile.legacy")" 'redir https://{$PUBLIC_HOST}{uri} 308' "certificate snippet redirects"
-have "$(cat "$legacy/Caddyfile.tunnel.legacy")" 'http://pantry.rhionin.com {' "tunnel snippet names the previous host"
-# shellcheck disable=SC2016 # Caddy expands {$PUBLIC_HOST}; the snippet keeps the placeholder.
-have "$(cat "$legacy/Caddyfile.tunnel.legacy")" 'redir https://{$PUBLIC_HOST}{uri} 308' "tunnel snippet redirects"
-lack "$(cat "$legacy/Caddyfile.legacy")" "http://pantry.rhionin.com" "certificate snippet is not the tunnel site address"
-
-# The same name twice would make Caddy refuse to start. Leave a comment instead.
-write_env "$legacy" \
-  "PUBLIC_HOST=stockbot.rhionin.com" \
-  "LEGACY_PUBLIC_HOST=stockbot.rhionin.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
-  "HOST_PORT=8080"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$legacy/auth.caddy"
-run_setup "$legacy"
-[[ "$LAST_RC" -eq 0 ]] || fail "duplicate legacy host exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "is not a different hostname" "duplicate legacy host is ignored"
-have "$(cat "$legacy/Caddyfile.legacy")" "No LEGACY_PUBLIC_HOST" "duplicate legacy host writes a comment"
-lack "$(cat "$legacy/Caddyfile.tunnel.legacy")" "redir" "duplicate legacy host does not redirect"
-
-# A scheme is not a hostname. The primary site still starts.
-write_env "$legacy" \
-  "PUBLIC_HOST=stockbot.rhionin.com" \
-  "LEGACY_PUBLIC_HOST=https://pantry.rhionin.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
-  "HOST_PORT=8080"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$legacy/auth.caddy"
-run_setup "$legacy"
-[[ "$LAST_RC" -eq 0 ]] || fail "invalid legacy host exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "without a scheme or path" "invalid legacy host is named"
-lack "$(cat "$legacy/Caddyfile.legacy")" "redir" "invalid legacy host does not redirect"
-have "$LAST_DOCKER" "--profile public" "invalid legacy host still starts the primary proxy"
-
 # publish_mode_from_env
 # shellcheck disable=SC1091
 source "$ROOT/deploy/publish-mode.sh"
@@ -682,39 +614,14 @@ run_setup "$updates" --with-updates
 have "$LAST_SYSTEMCTL" "enable --now pantry-update.timer" "timer enabled"
 have "$LAST_SYSTEMCTL" "enable --now pantry-update.path" "path unit enabled"
 
-# An unreadable password file is 503 from /api/session. Setup must say so
-# instead of reporting success.
-unavailable=$(mktemp -d)
-write_env "$unavailable" \
-  "PUBLIC_HOST=pantry.example.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
-  "HOST_PORT=8080"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$unavailable/auth.caddy"
-CURL_SESSION_CODE=503 \
-  CURL_SESSION_BODY='{"error":"Sign-in is unavailable right now."}' \
-  run_setup "$unavailable"
-[[ "$LAST_RC" -ne 0 ]] || fail "unavailable sign-in should fail setup"
-have "$LAST_OUT" "Sign-in is unavailable" "unavailable sign-in is a loud error"
-have "$LAST_OUT" "uid 65532" "unavailable sign-in names the container user"
-lack "$LAST_CURL" "X-Pantry-Entry" "unavailable probe does not send an entry header"
-have "$LAST_CURL" "http://127.0.0.1:8080/api/session" "unavailable probe uses the loopback listener"
-lack "$LAST_CURL" ":8081/api/session" "unavailable probe does not use a second listener"
-
-# pantry-update.sh copies the hash, via the same function, before compose up.
+# pantry-update.sh prepares the setup directory before compose up.
 updater="$ROOT/deploy/systemd/pantry-update.sh"
-sync_line=$(grep -n 'sync_household_credential' "$updater" | head -1 | cut -d: -f1)
+prep_line=$(grep -n 'prepare_setup_dir' "$updater" | head -1 | cut -d: -f1)
 up_line=$(grep -n 'up -d' "$updater" | head -1 | cut -d: -f1)
-[[ -n "$sync_line" && -n "$up_line" && "$sync_line" -lt "$up_line" ]] || fail "pantry-update.sh must copy the household hash before compose up"
+[[ -n "$prep_line" && -n "$up_line" && "$prep_line" -lt "$up_line" ]] || fail "pantry-update.sh must prepare /run/setup before compose up"
 
-# A file left root-owned by a partial run is chowned again, and tightened to 600.
-# A failed chown stops the copy unless the no-sudo test seam is set.
-owned=$(mktemp -d)
-mkdir -p "$owned/auth"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$owned/auth.caddy"
-printf '%s\n' 'stale' > "$owned/auth/household"
-chmod 644 "$owned/auth/household"
+setup_dir=$(mktemp -d)
+mkdir -p "$setup_dir/setup"
 own_bin=$(mktemp -d)
 own_log=$(mktemp)
 cat > "$own_bin/chown" << 'EOF'
@@ -724,35 +631,11 @@ exit 0
 EOF
 chmod +x "$own_bin/chown"
 # shellcheck disable=SC1091
-CHOWN_LOG="$own_log" PANTRY_DIR="$owned" PATH="$own_bin:$PATH" \
-  bash -c 'source "$1"; sync_household_credential' _ "$ROOT/deploy/auth-migrate.sh"
-cmp "$owned/auth.caddy" "$owned/auth/household" || fail "direct copy did not replace a stale household file"
-owned_mode=$(stat -c '%a' "$owned/auth/household")
-[[ "$owned_mode" == "600" || "$owned_mode" == "640" ]] || fail "direct copy left mode $owned_mode"
-have "$(cat "$own_log")" "65532:65532 $owned/auth/household" "direct copy chowns an existing household file"
-have "$(cat "$own_log")" "65532:65532 $owned/auth" "direct copy chowns the auth directory"
-
-fail_bin=$(mktemp -d)
-cat > "$fail_bin/chown" << 'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-chmod +x "$fail_bin/chown"
-set +e
-PANTRY_DIR="$owned" PATH="$fail_bin:$PATH" \
-  bash -c 'source "$1"; sync_household_credential' _ "$ROOT/deploy/auth-migrate.sh" >/tmp/pantry-chown-fail.out 2>&1
-fail_rc=$?
-set -e
-[[ "$fail_rc" -ne 0 ]] || fail "chown failure should stop the household copy"
-have "$(cat /tmp/pantry-chown-fail.out)" "Could not give" "chown failure names the path"
-set +e
-PANTRY_SETUP_SKIP_ROOT=1 PANTRY_DIR="$owned" PATH="$fail_bin:$PATH" \
-  bash -c 'source "$1"; sync_household_credential' _ "$ROOT/deploy/auth-migrate.sh" >/tmp/pantry-chown-skip.out 2>&1
-skip_rc=$?
-set -e
-[[ "$skip_rc" -eq 0 ]] || fail "PANTRY_SETUP_SKIP_ROOT should warn instead of failing chown, rc=$skip_rc"
-have "$(cat /tmp/pantry-chown-skip.out)" "[warn] Could not give" "skip-root chown failure is a warning"
-unset CURL_SESSION_CODE CURL_SESSION_BODY
+CHOWN_LOG="$own_log" PANTRY_DIR="$setup_dir" PANTRY_SETUP_GROUP=testgroup PATH="$own_bin:$PATH" \
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/runtime-setup.sh"
+setup_mode=$(stat -c '%a' "$setup_dir/setup")
+[[ "$setup_mode" == "2750" ]] || fail "prepare_setup_dir left mode $setup_mode"
+have "$(cat "$own_log")" "65532:testgroup $setup_dir/setup" "prepare_setup_dir chowns the setup directory"
 
 # An origin the operator already chose is kept. A hostname with a scheme
 # is not a PUBLIC_HOST, so the origin stays empty.
@@ -797,7 +680,7 @@ chmod +x "$sg_bin/chown"
 printf 'PUBLIC_HOST=\n' > "$sg_dir/.env"
 CHOWN_LOG="$sg_log" PANTRY_DIR="$sg_dir" PANTRY_SETUP_GROUP=operators \
   PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$sg_bin:$PATH" \
-  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/runtime-setup.sh"
 sg_mode=$(stat -c '%a' "$sg_dir/setup")
 [[ "$sg_mode" == "2750" ]] || fail "setup dir mode after chown is $sg_mode, want 2750"
 have "$(cat "$sg_log")" "65532:operators $sg_dir/setup" "setup group override is the chown group"
@@ -822,7 +705,7 @@ chmod +x "$sudo_bin/chown" "$sudo_bin/id"
 printf 'PUBLIC_HOST=\n' > "$sudo_dir/.env"
 CHOWN_LOG="$sudo_log" PANTRY_DIR="$sudo_dir" PANTRY_SETUP_GROUP='' \
   PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER=cj PATH="$sudo_bin:$PATH" \
-  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/runtime-setup.sh"
 have "$(cat "$sudo_log")" "65532:rhionin $sudo_dir/setup" "setup dir uses the sudo user's group"
 
 fallback_dir=$(mktemp -d)
@@ -856,7 +739,7 @@ chmod +x "$fallback_bin/chown" "$fallback_bin/stat" "$fallback_bin/getent"
 printf 'PUBLIC_HOST=\n' > "$fallback_dir/.env"
 CHOWN_LOG="$fallback_log" PANTRY_DIR="$fallback_dir" PANTRY_SETUP_GROUP='' \
   PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$fallback_bin:$PATH" \
-  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/runtime-setup.sh"
 have "$(cat "$fallback_log")" "65532:rhionin $fallback_dir/setup" "setup dir falls back to group rhionin"
 
 numeric_log=$(mktemp)
@@ -867,23 +750,23 @@ EOF
 chmod +x "$fallback_bin/getent"
 CHOWN_LOG="$numeric_log" PANTRY_DIR="$fallback_dir" PANTRY_SETUP_GROUP='' \
   PANTRY_SETUP_SKIP_ROOT=1 SUDO_USER='' PATH="$fallback_bin:$PATH" \
-  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/auth-migrate.sh"
+  bash -c 'source "$1"; prepare_setup_dir' _ "$ROOT/deploy/runtime-setup.sh"
 have "$(cat "$numeric_log")" "65532:65532 $fallback_dir/setup" "setup dir falls back to uid 65532"
 
 mode_dir=$(mktemp -d)
 printf 'PUBLIC_HOST=stockbot.example\nAPP_BASE_URL=\n' > "$mode_dir/.env"
 chmod 640 "$mode_dir/.env"
-PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/runtime-setup.sh"
 grep -q '^APP_BASE_URL=https://stockbot.example$' "$mode_dir/.env" || fail "empty APP_BASE_URL was not filled from PUBLIC_HOST"
 [[ $(stat -c '%a' "$mode_dir/.env") == "640" ]] || fail "filling APP_BASE_URL changed .env mode"
 printf 'PUBLIC_HOST=stockbot.example\nAPP_BASE_URL=https://keep.example\n' > "$mode_dir/.env"
 chmod 600 "$mode_dir/.env"
-PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/runtime-setup.sh"
 grep -q '^APP_BASE_URL=https://keep.example$' "$mode_dir/.env" || fail "ensure_app_base_url replaced a set origin"
 [[ $(stat -c '%a' "$mode_dir/.env") == "600" ]] || fail "keeping APP_BASE_URL changed .env mode"
 printf 'PUBLIC_HOST=\n' > "$mode_dir/.env"
 chmod 600 "$mode_dir/.env"
-PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/auth-migrate.sh"
+PANTRY_DIR="$mode_dir" bash -c 'source "$1"; ensure_app_base_url' _ "$ROOT/deploy/runtime-setup.sh"
 grep -q '^APP_BASE_URL=' "$mode_dir/.env" && fail "LAN ensure_app_base_url invented an origin"
 
 # Scanner udev rules match the input parent's id/vendor and id/product.

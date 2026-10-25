@@ -81,8 +81,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if hasExactPort(caddy.Volumes, "./auth.caddy:/etc/caddy/auth.caddy:ro") {
 		t.Fatal("caddy must not mount auth.caddy; the login page reads the hash inside pantry")
 	}
-	if pantry.Environment["PANTRY_AUTH_FILE"] != "/etc/pantry/auth/household" {
-		t.Fatalf("PANTRY_AUTH_FILE = %q", pantry.Environment["PANTRY_AUTH_FILE"])
+	if pantry.Environment["PANTRY_AUTH_FILE"] != "" {
+		t.Fatalf("PANTRY_AUTH_FILE must be unset after household-password retirement, got %q", pantry.Environment["PANTRY_AUTH_FILE"])
 	}
 	if !strings.Contains(pantry.Environment["PANTRY_SESSION_SECRET"], "PANTRY_SESSION_SECRET") {
 		t.Fatalf("pantry must receive PANTRY_SESSION_SECRET from .env, got %q", pantry.Environment["PANTRY_SESSION_SECRET"])
@@ -92,8 +92,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 			t.Fatalf("pantry must receive %s from .env, got %q", key, pantry.Environment[key])
 		}
 	}
-	if !hasExactPort(pantry.Volumes, "./auth:/etc/pantry/auth:ro") {
-		t.Fatalf("pantry must mount the household password directory, got %v", pantry.Volumes)
+	if hasExactPort(pantry.Volumes, "./auth:/etc/pantry/auth:ro") {
+		t.Fatalf("pantry must not mount the retired household password directory, got %v", pantry.Volumes)
 	}
 	if !hasExactPort(pantry.Volumes, "./setup:/run/setup") {
 		t.Fatalf("pantry must mount the setup directory read-write, got %v", pantry.Volumes)
@@ -132,7 +132,6 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	text := string(caddyfile)
 	for _, want := range []string{
 		"{$PUBLIC_HOST}",
-		"import Caddyfile.legacy",
 		"{$ACME_EMAIL}",
 		"X-Pantry-Client-IP {client_ip}",
 		"header_up -X-Pantry-Entry",
@@ -264,7 +263,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"caddy hash-password",
 		"basic_auth bcrypt Pantry",
 		"Keeping existing",
-		"sync_household_credential",
+		"runtime-setup.sh",
 		"ensure_session_secret",
 		"pull pantry",
 		"retire_lan_host_helpers",
@@ -299,8 +298,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if strings.Contains(updaterText, "-f /opt/pantry/auth.caddy") {
 		t.Fatal("automatic updates must read the password file from PANTRY_DIR, not a hard-coded /opt/pantry path")
 	}
-	if !strings.Contains(updaterText, "auth-migrate.sh") || !strings.Contains(updaterText, "ensure_session_secret") {
-		t.Fatal("automatic updates must copy the existing password hash and keep the session secret")
+	if !strings.Contains(updaterText, "runtime-setup.sh") || !strings.Contains(updaterText, "ensure_session_secret") {
+		t.Fatal("automatic updates must keep the session secret via runtime-setup.sh")
 	}
 
 	ignore, err := os.ReadFile(filepath.Join("..", "..", ".gitignore"))
@@ -361,7 +360,6 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	for _, want := range []string{
 		"http://{$PUBLIC_HOST}",
-		"import Caddyfile.legacy",
 		"admin off",
 		"trusted_proxies static 10.77.77.2/32",
 		"client_ip_headers Cf-Connecting-Ip",
@@ -490,11 +488,11 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(tunnelYAML, "http://caddy:80") {
 		t.Fatal("tunnel compose must document the public-hostname service URL")
 	}
-	if !strings.Contains(tunnelYAML, "./Caddyfile.tunnel.legacy:/etc/caddy/Caddyfile.legacy:ro") {
-		t.Fatal("tunnel compose must mount the legacy-host redirect")
+	if strings.Contains(tunnelYAML, "Caddyfile.legacy") {
+		t.Fatal("tunnel compose must not mount removed legacy Caddy snippets")
 	}
-	if !hasExactPort(caddy.Volumes, "./Caddyfile.legacy:/etc/caddy/Caddyfile.legacy:ro") {
-		t.Fatalf("caddy volumes = %v, want the legacy-host snippet", caddy.Volumes)
+	if hasExactPort(caddy.Volumes, "./Caddyfile.legacy:/etc/caddy/Caddyfile.legacy:ro") {
+		t.Fatalf("caddy volumes must not mount removed legacy snippets: %v", caddy.Volumes)
 	}
 	if _, ok := tunnelCompose.Services["caddy"]; ok {
 		t.Fatal("tunnel compose must not redefine the certificate caddy service")
@@ -507,9 +505,7 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"http://caddy:80",
 		"publish_mode_from_env",
 		"drop_stale_cloudflared",
-		"LEGACY_PUBLIC_HOST",
-		"Caddyfile.legacy",
-		"write_legacy_public_host",
+		"runtime-setup.sh",
 	} {
 		if !strings.Contains(setupText, want) {
 			t.Fatalf("setup.sh missing %q", want)

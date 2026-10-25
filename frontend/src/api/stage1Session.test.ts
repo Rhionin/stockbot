@@ -20,19 +20,18 @@ describe('stage-1 session compatibility', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps a legacy session on /api/session when the stage-1 route is missing', async () => {
+  it('reads only the stage-1 session route', async () => {
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       urls.push(url);
-      if (url === '/api/auth/session') return Promise.resolve(new Response('missing', { status: 404 }));
-      if (url === '/api/session') return Promise.resolve(json({ required: false }));
+      if (url === '/api/auth/session') return Promise.resolve(json({ ...account, kind: 'signed_out', user: null, activeHouseholdId: null }));
       return Promise.reject(new Error(url));
     }));
     const session = await getSession();
-    expect(session).toEqual({ required: false, username: '', error: '' });
-    expect(stage1AuthActive()).toBe(false);
-    expect(urls).toEqual(['/api/auth/session', '/api/session']);
+    expect(session).toEqual({ required: true, username: '', error: '' });
+    expect(stage1AuthActive()).toBe(true);
+    expect(urls).toEqual(['/api/auth/session']);
   });
 
   it('does not fall back when the stage-1 route cannot be reached', async () => {

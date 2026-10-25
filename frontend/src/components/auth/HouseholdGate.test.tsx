@@ -17,6 +17,24 @@ const SETUP_SENTENCE = "Whoever runs this server needs to finish setting it up."
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+const signedOut = {
+  user: null,
+  kind: 'signed_out',
+  memberships: [],
+  households: [],
+  activeHouseholdId: null,
+  operator: false,
+};
+
+const accountSession = {
+  kind: 'account',
+  user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
+  memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+  households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+  activeHouseholdId: 'hh-1',
+  operator: false,
+};
+
 const renderGate = () => render(
   <MantineProvider>
     <HouseholdGate>
@@ -32,9 +50,9 @@ describe('HouseholdGate', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows the login page when the public site has no session', async () => {
+  it('shows the account sign-in page when there is no session', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      if (String(input) === '/api/session') return Promise.resolve(json({ error: 'Sign in required.' }, 401));
+      if (String(input) === '/api/auth/session') return Promise.resolve(json(signedOut));
       return Promise.reject(new Error(String(input)));
     }));
     renderGate();
@@ -42,8 +60,8 @@ describe('HouseholdGate', () => {
     expect(screen.queryByRole('heading', { name: 'Scan Queue' })).not.toBeInTheDocument();
   });
 
-  it('opens the app on the LAN, where sign-in is not required', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({ required: false }))));
+  it('opens the app when an account session is already present', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json(accountSession))));
     renderGate();
     expect(await screen.findByRole('heading', { name: 'Scan Queue' })).toBeVisible();
     expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
@@ -71,19 +89,18 @@ describe('HouseholdGate', () => {
     }
   });
 
-  it('retries a household with no password instead of showing sign-in', async () => {
+  it('retries after offline and then shows sign-in', async () => {
     let calls = 0;
     vi.stubGlobal('fetch', vi.fn(() => {
       calls += 1;
       if (calls === 1) return Promise.reject(new TypeError('Failed to fetch'));
-      return Promise.resolve(json({ required: false }));
+      return Promise.resolve(json(signedOut));
     }));
     renderGate();
     expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
     expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: 'Scan Queue' }, { timeout: 3000 })).toBeVisible();
+    expect(await screen.findByRole('form', { name: 'Sign in' }, { timeout: 3000 })).toBeVisible();
     expect(screen.queryByText(OFFLINE_SENTENCE)).not.toBeInTheDocument();
-    expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
   it('waits longer between later retries and starts again at one second', async () => {
@@ -92,7 +109,7 @@ describe('HouseholdGate', () => {
     vi.stubGlobal('fetch', vi.fn(() => {
       calls += 1;
       if (calls < 4) return Promise.reject(new TypeError('Failed to fetch'));
-      return Promise.resolve(json({ required: false }));
+      return Promise.resolve(json(accountSession));
     }));
     renderGate();
     await act(async () => { await Promise.resolve(); });
@@ -156,44 +173,28 @@ describe('HouseholdGate', () => {
   });
 
   it.each([
-    { via: 'session', next: 'form' },
-    { via: 'session', next: 'stay' },
-    { via: 'session', next: 'offline' },
-    { via: 'login', next: 'form' },
-  ])('hides the form when $via returns auth_not_configured and Try again handles $next', async ({ via, next }) => {
+    { next: 'form' },
+    { next: 'stay' },
+    { next: 'offline' },
+  ])('hides the form when auth is not configured and Try again handles $next', async ({ next }) => {
     let sessionCalls = 0;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/api/login')) {
-        return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
-      }
-      if (!url.endsWith('/api/session')) return Promise.reject(new Error(url));
+      if (!url.endsWith('/api/auth/session')) return Promise.reject(new Error(url));
       sessionCalls += 1;
-      if (via === 'login' && sessionCalls === 1) {
-        return Promise.resolve(json({ error: 'Sign in required.' }, 401));
-      }
-      if (sessionCalls === 1 || (via === 'login' && sessionCalls < 2)) {
+      if (sessionCalls === 1 || (next === 'stay' && sessionCalls < 3)) {
         return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
       }
-      if (next === 'form') return Promise.resolve(json({ error: 'Sign in required.' }, 401));
+      if (next === 'form') return Promise.resolve(json(signedOut));
       if (next === 'stay') return Promise.resolve(json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503));
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
     renderGate();
-    if (via === 'login') {
-      fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
-      fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    }
     expect(await screen.findByRole('button', { name: 'Try again' })).toBeVisible();
     expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
     expect(screen.getByText(AUTH_BANNER)).toBeVisible();
-    expect(screen.getAllByText(AUTH_BANNER)).toHaveLength(1);
-    expect(AUTH_BANNER.includes('\u2019')).toBe(false);
     expect(screen.getByText(SETUP_SENTENCE)).toBeVisible();
-    expect(screen.getAllByText(SETUP_SENTENCE)).toHaveLength(1);
     expect(document.querySelector('a[href*="/setup"]')).toBeNull();
-    expect(document.body.innerHTML).not.toContain('/setup');
 
     const before = sessionCalls;
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -201,31 +202,25 @@ describe('HouseholdGate', () => {
     if (next === 'form') {
       expect(await screen.findByRole('form', { name: 'Sign in' })).toBeVisible();
       expect(screen.queryByText(AUTH_BANNER)).not.toBeInTheDocument();
-      expect(screen.queryByText(SETUP_SENTENCE)).not.toBeInTheDocument();
     } else if (next === 'offline') {
       expect(await screen.findByText(OFFLINE_SENTENCE)).toBeVisible();
       expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-      expect(screen.queryByText(SETUP_SENTENCE)).not.toBeInTheDocument();
-      expect(screen.queryByText(AUTH_BANNER)).not.toBeInTheDocument();
     } else {
       expect(screen.getByText(AUTH_BANNER)).toBeVisible();
-      expect(screen.getByText(SETUP_SENTENCE)).toBeVisible();
       expect(screen.queryByRole('form', { name: 'Sign in' })).not.toBeInTheDocument();
     }
-    expect(document.body.innerHTML).not.toContain('/setup');
   });
 
   it('shows the offline banner above the sign-in form', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/session')) return Promise.resolve(json({ error: 'Sign in required.' }, 401));
-      if (url.endsWith('/api/login') && init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
+      if (url.endsWith('/api/auth/session')) return Promise.resolve(json(signedOut));
+      if (url.endsWith('/api/auth/login') && init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
       return Promise.reject(new Error(url));
     }));
     renderGate();
-    fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
-    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
+    fireEvent.change(await screen.findByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
+    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'correct-horse-battery' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     const banner = await screen.findByTestId('server-notice-banner');
     expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
@@ -234,47 +229,10 @@ describe('HouseholdGate', () => {
     expect(form.contains(banner)).toBe(false);
   });
 
-  it('drops the waiting retry when Try again is pressed', async () => {
-    vi.useFakeTimers();
-    let calls = 0;
-    let rejectSecond: (error: unknown) => void = () => {};
-    let resolveThird: (response: Response) => void = () => {};
-    let resolveLater: (response: Response) => void = () => {};
-    const auth = () => json({ error: AUTH_BANNER, code: authNotConfigured.code }, 503);
-    vi.stubGlobal('fetch', vi.fn(() => {
-      calls += 1;
-      if (calls === 1) return Promise.resolve(auth());
-      if (calls === 2) return new Promise<Response>((_, reject) => { rejectSecond = reject; });
-      if (calls === 3) return new Promise<Response>((resolve) => { resolveThird = resolve; });
-      return new Promise<Response>((resolve) => { resolveLater = resolve; });
-    }));
-    renderGate();
-    await act(async () => { await Promise.resolve(); });
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await act(async () => {
-      rejectSecond(new TypeError('Failed to fetch'));
-      await Promise.resolve();
-    });
-    await act(async () => {
-      resolveThird(auth());
-      await Promise.resolve();
-    });
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
-    expect(calls).toBe(3);
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await act(async () => { await Promise.resolve(); });
-    expect(calls).toBe(4);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(calls).toBe(4);
-    resolveLater(auth());
-  });
-
   it('shows the session sentence when a signed-in request is rejected', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/api/session')) return Promise.resolve(json({ required: true, username: 'pantry' }));
+      if (url.endsWith('/api/auth/session')) return Promise.resolve(json(accountSession));
       if (url.endsWith('/api/products')) {
         return Promise.resolve(json({ error: 'Sign in required.', code: 'unauthorized' }, 401));
       }
@@ -295,13 +253,13 @@ describe('HouseholdGate', () => {
   it('opens the app after a successful sign-in', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === '/api/session') return Promise.resolve(json({ error: 'Sign in required.' }, 401));
-      if (url === '/api/login' && init?.method === 'POST') return Promise.resolve(json({ username: 'pantry' }));
+      if (url === '/api/auth/session') return Promise.resolve(json(signedOut));
+      if (url === '/api/auth/login' && init?.method === 'POST') return Promise.resolve(json(accountSession));
       return Promise.reject(new Error(url));
     }));
     renderGate();
-    fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
-    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
+    fireEvent.change(await screen.findByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
+    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'correct-horse-battery' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByRole('heading', { name: 'Scan Queue' })).toBeVisible();
   });

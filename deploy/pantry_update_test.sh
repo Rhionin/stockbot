@@ -62,7 +62,7 @@ assert_no_literal_probe_paths() {
   for file in \
     "$UPDATE" \
     "$ROOT/deploy/publish-mode.sh" \
-    "$ROOT/deploy/auth-migrate.sh" \
+    "$ROOT/deploy/runtime-setup.sh" \
     "$ROOT/deploy/vapid-env.sh"
   do
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -577,7 +577,7 @@ EOF
 prepare_pantry() {
   local pantry="$1"
   mkdir -p "$pantry"
-  cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/auth-migrate.sh" "$ROOT/deploy/vapid-env.sh" "$pantry/"
+  cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/runtime-setup.sh" "$ROOT/deploy/vapid-env.sh" "$pantry/"
   cat > "$pantry/.env" << 'EOF'
 HOST_PORT=8080
 PUBLIC_HOST=

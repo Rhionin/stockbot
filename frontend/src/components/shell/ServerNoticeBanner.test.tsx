@@ -158,7 +158,7 @@ describe('server notice banner', () => {
 
   it('keeps the setup banner inside the sign-in screen padding', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      if (String(input).endsWith('/api/session')) {
+      if (String(input).endsWith('/api/auth/session')) {
         return Promise.resolve(json({ error: "Sign-in isn't set up yet.", code: authNotConfigured.code }, 503));
       }
       return Promise.reject(new Error(String(input)));
@@ -192,8 +192,8 @@ describe('server notice banner', () => {
   it('insets the sign-in banner by the screen padding', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/session')) return Promise.resolve(json({ error: 'Sign in required.' }, 401));
-      if (url.endsWith('/api/login') && init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
+      if (url.endsWith('/api/auth/session')) return Promise.resolve(json({ kind: 'signed_out', user: null, memberships: [], households: [], activeHouseholdId: null, operator: false }));
+      if (url.endsWith('/api/auth/login') && init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
       return Promise.reject(new Error(url));
     }));
     render(
@@ -203,7 +203,7 @@ describe('server notice banner', () => {
         </HouseholdGate>
       </MantineProvider>,
     );
-    fireEvent.change(await screen.findByLabelText(/Username/), { target: { value: 'pantry' } });
+    fireEvent.change(await screen.findByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'correct-horse-battery' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     const banner = await screen.findByTestId('server-notice-banner');
@@ -223,7 +223,16 @@ describe('server notice banner', () => {
     window.history.pushState({}, '', '/inventory');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/auth/session') || url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session')) {
+        return Promise.resolve(json({
+          kind: 'account',
+          user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
     render(

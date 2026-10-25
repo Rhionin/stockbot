@@ -345,30 +345,22 @@ refresh_backup_unit() {
   log_success "Refreshed pantry-backup units"
 }
 
-# verify_public_sign_in asks the loopback listener. A password file the
-# container cannot read makes GET /api/session return 503. A visitor who
-# has not signed in gets 401. Any other status means sign-in is not enforced.
+# verify_public_sign_in asks the loopback listener. A visitor who has not
+# signed in gets 401 on the stage-1 session route.
 verify_public_sign_in() {
   local host_port body code
   host_port=$(env_value HOST_PORT)
   host_port=${host_port:-8080}
   body=$(mktemp)
   if ! code=$(curl -sS -o "$body" -w '%{http_code}' --max-time 10 \
-    "http://127.0.0.1:${host_port}/api/session"); then
+    "http://127.0.0.1:${host_port}/api/auth/session"); then
     rm -f "$body"
     fatal "Could not check whether the site can sign in."
   fi
-  if [[ "$code" == "503" ]] || grep -q -F 'Sign-in is unavailable' "$body"; then
-    log_error "The site cannot read ${PANTRY_DIR}/auth/household."
-    log_error "The pantry container runs as distroless nonroot (uid 65532) and cannot open a root-owned password file."
-    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
-    rm -f "$body"
-    fatal "Sign-in is unavailable. The site is up, but login will not work until that file is readable by uid 65532."
-  fi
   if [[ "$code" != "401" ]]; then
-    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
+    log_error "GET /api/auth/session returned ${code}: $(tr '\n' ' ' < "$body")"
     rm -f "$body"
-    fatal "Sign-in is not enforced on http://127.0.0.1:${host_port}/api/session."
+    fatal "Sign-in is not enforced on http://127.0.0.1:${host_port}/api/auth/session."
   fi
   rm -f "$body"
 }

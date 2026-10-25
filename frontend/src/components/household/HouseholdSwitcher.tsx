@@ -7,7 +7,7 @@ import { announceHouseholdSwitch } from './liveHints';
 export function HouseholdSwitcher() {
   const navigate = useNavigate();
   const { auth, replaceAuth } = useHouseholdSession();
-  if (auth === null || auth.kind === 'signed_out' || auth.kind === 'lan') return null;
+  if (auth === null || auth.kind === 'signed_out') return null;
   const options = auth.households.map((household) => ({
     value: household.id,
     label: household.deletedAt ? `${household.name} (deleted)` : household.name,

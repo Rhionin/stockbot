@@ -243,7 +243,7 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		svc := auth.NewService(stageDB, t.TempDir())
 		stageHandler, _ := setupOnDB(t, stageDB, nil, WithStage1(svc, stage1Site(t)))
 		badBody := stage1Do(stageHandler, http.MethodPost, "/api/auth/login", "", "{", app.EntryPublic, "")
-		if badBody.Code != http.StatusBadRequest || badBody.Body.String() != `{"error":"Check the highlighted fields and try again.","code":"validation"}` {
+		if badBody.Code != http.StatusBadRequest || badBody.Body.String() != `{"error":"Check what you entered and try again.","code":"validation"}` {
 			t.Fatalf("login = %d %s", badBody.Code, badBody.Body.String())
 		}
 	})

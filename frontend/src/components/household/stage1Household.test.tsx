@@ -1,17 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  CHANGEOVER_BANNER,
   HOUSEHOLD_DELETE_SENTENCE,
-  MAKE_MY_ACCOUNT,
   OFFLINE_SENTENCE,
   PAIRING_EXPIRED_SENTENCE,
   PRINT_PAIRING_CODE_LABEL,
-  RESTORE_HOUSEHOLD_PASSWORD,
-  RETIRE_HOUSEHOLD_PASSWORD,
   UPDATING_SENTENCE,
   applyHttpResponse,
   formatPairingCode,
@@ -22,9 +18,7 @@ import {
 import { getSession, resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
-import { AppMenu } from '../shell/AppMenu';
 import { ScanQueuePage } from '../queue/ScanQueuePage';
-import { ChangeoverBanner } from './ChangeoverBanner';
 import { code128Bars } from './code128';
 import { DevicesPage } from './DevicesPage';
 import { HouseholdPage } from './HouseholdPage';
@@ -106,109 +100,11 @@ function renderStage(ui: React.ReactNode, auth: AuthSession, replaceAuth = vi.fn
   );
 }
 
-describe('changeover and household management', () => {
+describe('household management', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
     vi.stubGlobal('EventSource', FakeEventSource);
     resetStage1Client();
-  });
-
-  it('shows the changeover banner and opens make-my-account from an invite code', async () => {
-    const Location = () => {
-      const { pathname } = useLocation();
-      return <p>path {pathname}</p>;
-    };
-    renderStage(<><ChangeoverBanner /><Location /></>, session('member', 'household_password'));
-    expect(screen.getByRole('status')).toHaveTextContent(CHANGEOVER_BANNER);
-    fireEvent.click(screen.getByRole('button', { name: MAKE_MY_ACCOUNT }));
-    fireEvent.change(screen.getByLabelText('Invite code'), { target: { value: 'invite-code' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(await screen.findByText('path /invite/invite-code')).toBeVisible();
-  });
-
-  it('warns about older apps only when some opened Stockbot in the last 7 days', async () => {
-    const retireBodies: string[] = [];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === '/api/providers' || url === '/api/group-suggestions') return Promise.resolve(json([]));
-      if (url === '/api/build') return Promise.resolve(json({}));
-      if (url === '/api/household/settings') {
-        if (init?.method === 'POST' && url.endsWith('/retire')) {
-          retireBodies.push('retire');
-        }
-        return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: true }));
-      }
-      if (url.endsWith('/household-password/retire')) {
-        retireBodies.push(url);
-        return Promise.resolve(json({
-          restockMode: 'auto',
-          householdPasswordEnabled: false,
-          householdPasswordRestoreUntil: '2026-05-01T00:00:00Z',
-        }));
-      }
-      if (url.includes('/members')) {
-        return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
-      }
-      if (url === '/api/telemetry') return Promise.resolve(json({ olderAppDevices: 2 }));
-      return Promise.reject(new Error(url));
-    }));
-    const first = renderStage(<AppMenu onCredentialsChanged={vi.fn()} />, session('owner'));
-    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
-    await screen.findByRole('menuitem', { name: RETIRE_HOUSEHOLD_PASSWORD });
-    fireEvent.click(screen.getByRole('menuitem', { name: RETIRE_HOUSEHOLD_PASSWORD }));
-    expect(await screen.findByText(/2 devices opened Stockbot with an older app version/)).toBeVisible();
-    expect(screen.getByText('bea@example.com')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    first.unmount();
-
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === '/api/providers' || url === '/api/group-suggestions') return Promise.resolve(json([]));
-      if (url === '/api/build') return Promise.resolve(json({}));
-      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: true }));
-      if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
-      if (url === '/api/telemetry') return Promise.resolve(json({ olderAppDevices: 0 }));
-      if (url.endsWith('/household-password/retire')) {
-        return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: false }));
-      }
-      return Promise.reject(new Error(url));
-    }));
-    renderStage(<AppMenu onCredentialsChanged={vi.fn()} />, session('owner'));
-    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
-    await screen.findByRole('menuitem', { name: RETIRE_HOUSEHOLD_PASSWORD });
-    fireEvent.click(screen.getByRole('menuitem', { name: RETIRE_HOUSEHOLD_PASSWORD }));
-    expect(screen.queryByText(/older app version/)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Turn off' })).toHaveClass('household-danger');
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Turn off' })).not.toBeInTheDocument());
-  });
-
-  it('restores the household password from the menu', async () => {
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === '/api/providers' || url === '/api/group-suggestions') return Promise.resolve(json([]));
-      if (url === '/api/build') return Promise.resolve(json({}));
-      if (url.endsWith('/household-password/restore') && init?.method === 'POST') {
-        return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: true }));
-      }
-      if (url === '/api/household/settings') {
-        return Promise.resolve(json({
-          restockMode: 'ask_restock',
-          householdPasswordEnabled: false,
-          householdPasswordRestoreUntil: '2026-05-01T12:00:00Z',
-        }));
-      }
-      if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
-      if (url === '/api/telemetry') return Promise.resolve(json({ olderAppDevices: 0 }));
-      return Promise.reject(new Error(url));
-    }));
-    renderStage(<AppMenu onCredentialsChanged={vi.fn()} />, session('owner'));
-    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
-    await screen.findByRole('menuitem', { name: RESTORE_HOUSEHOLD_PASSWORD });
-    fireEvent.click(screen.getByRole('menuitem', { name: RESTORE_HOUSEHOLD_PASSWORD }));
-    expect(screen.getByText(/You can turn it back on until/)).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Turn back on' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument());
   });
 
   it('hides owner controls from a member and lets an owner manage people and invites', async () => {
@@ -234,7 +130,7 @@ describe('changeover and household management', () => {
         return Promise.resolve(json({}));
       }
       if (url === '/api/invites') return Promise.resolve(json({ invites }));
-      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: false }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
       if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'member', deletedAt: null, purgeAt: null }));
       return Promise.reject(new Error(url));
     }));
@@ -260,7 +156,7 @@ describe('changeover and household management', () => {
         return Promise.resolve(json({}));
       }
       if (url === '/api/invites') return Promise.resolve(json({ invites }));
-      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: false }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
       if (url === '/api/households/hh-1' && init?.method === 'DELETE') {
         return Promise.resolve(json({
           id: 'hh-1',
