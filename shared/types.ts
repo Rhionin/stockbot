@@ -55,6 +55,7 @@ export interface ContributionReceipt {
 }
 
 export interface ProductWriteResult extends Product {
+  itemId?: string;
   contribution?: ContributionReceipt;
 }
 
@@ -64,15 +65,36 @@ export interface ProductDetail extends Product {
 
 export interface ProductWriteInput {
   name: string;
+  brand?: string;
+  size?: string;
   category: string;
   unitOfMeasure: string;
   contribute?: boolean;
   contributeTo?: ExternalSource;
   barcode?: string;
+  createItem?: boolean;
   // Present only when the person changed the size. Null clears it.
   netAmount?: number | null;
   netUnit?: string | null;
   packCount?: number | null;
+}
+
+export interface ProductSearchHit {
+  productId: string;
+  itemId?: string;
+  name: string;
+  brand?: string;
+  size?: string;
+  category?: string;
+  onHand: number;
+}
+
+export interface StockOutItemResult {
+  stockOutMoveId?: string;
+  backfill?: {
+    stockInMoveId: string;
+    stockOutMoveId: string;
+  };
 }
 
 export type ScanDirection = 'stock_in' | 'stock_out';

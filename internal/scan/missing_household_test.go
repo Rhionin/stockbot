@@ -95,7 +95,7 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
-		err := (*Queue)(nil).StockOut(context.Background(), tenant.Scope{}, "", time.Time{})
+		_, err := (*Queue)(nil).StockOut(context.Background(), tenant.Scope{}, "", time.Time{})
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("StockOut: %v", err)
 		}

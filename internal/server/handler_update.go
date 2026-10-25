@@ -87,6 +87,22 @@ func applyWrittenSize(prod *product.Product, body productWriteBody, creating boo
 	return nil
 }
 
+func applySizeText(prod *product.Product, body productWriteBody) error {
+	if !body.SizeSet {
+		return nil
+	}
+	text := strings.TrimSpace(body.Size)
+	if text == "" {
+		return nil
+	}
+	parsed, ok := product.ParseNetSize(text)
+	if !ok {
+		return BadRequest("Enter a size and a unit together.")
+	}
+	prod.ApplyParsedSize(parsed)
+	return nil
+}
+
 func inputOrInternal(err error) error {
 	if product.IsInputError(err) {
 		return BadRequest(err.Error())

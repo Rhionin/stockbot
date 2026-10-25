@@ -35,7 +35,7 @@ func TestStockOutTakesTheEarlierExpiryAcrossDST(t *testing.T) {
 		scope.HouseholdID(), earlier, earlier, scope.HouseholdID(), earlier, later); err != nil {
 		t.Fatal(err)
 	}
-	if err := queue.StockOut(context.Background(), scope, "item", later); err != nil {
+	if _, err := queue.StockOut(context.Background(), scope, "item", later); err != nil {
 		t.Fatal(err)
 	}
 	var id, raw string

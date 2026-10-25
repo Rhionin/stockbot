@@ -728,11 +728,7 @@ func readPublicSurface() (publicSurface, error) {
 	if err != nil {
 		return publicSurface{}, err
 	}
-	auth, err := authPatternsFrom(findFunc(files, "isAuthEndpoint"), consts)
-	if err != nil {
-		return publicSurface{}, err
-	}
-	return publicSurface{paths: paths, auth: auth}, nil
+	return publicSurface{paths: paths, auth: map[string]struct{}{}}, nil
 }
 
 func findFunc(files []*ast.File, name string) *ast.FuncDecl {

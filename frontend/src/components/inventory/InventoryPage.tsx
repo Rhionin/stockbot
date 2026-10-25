@@ -11,7 +11,9 @@ import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@sto
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
+import { AddItemSheet } from './AddItemSheet';
 import { AddToGroupSheet } from './AddToGroupSheet';
+import { ADD_ITEM_BUTTON, addedItemToast } from './noBarcodeCopy';
 import { GroupRow } from './GroupRow';
 import { GroupSelectBar } from './GroupSelectBar';
 import { ItemInstanceList } from './ItemInstanceList';
@@ -90,6 +92,7 @@ export const InventoryPage = () => {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
+  const [addItemOpen, setAddItemOpen] = useState(false);
   const itemsRef = useRef<InventoryItem[]>([]);
   const rescanned = useRef(false);
   useEffect(() => {
@@ -363,7 +366,12 @@ export const InventoryPage = () => {
 
   return (
     <Stack gap="sm" className="page-wide bin-page shelf-page">
-      <Title order={1} size="h3" className="page-cluster">Inventory</Title>
+      <Group className="page-cluster" justify="space-between" align="center" wrap="nowrap">
+        <Title order={1} size="h3">Inventory</Title>
+        <Button size="xs" variant="default" onClick={() => setAddItemOpen(true)}>
+          {ADD_ITEM_BUTTON}
+        </Button>
+      </Group>
       {opening && <OpeningBanner onComplete={() => setOpening(false)} />}
       <Group className="page-cluster" gap="xs" align="flex-end" wrap="nowrap">
         <TextInput
@@ -486,6 +494,15 @@ export const InventoryPage = () => {
           }}
         />
       )}
+      <AddItemSheet
+        opened={addItemOpen}
+        mode="inventory"
+        onClose={() => setAddItemOpen(false)}
+        onCreated={(result) => {
+          showUndo({ detail: addedItemToast(result.name) });
+          void loadInventory(true);
+        }}
+      />
       {sheet && (
         <AddToGroupSheet
           opened

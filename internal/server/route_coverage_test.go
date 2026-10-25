@@ -142,12 +142,12 @@ func publicDrift(pattern string, decision routeDecision) string {
 	if err != nil {
 		return fmt.Sprintf("%s: %v", pattern, err)
 	}
-	open := isPublicPath(req) || isAuthEndpoint(req)
+	open := isPublicPath(req)
 	if open && decision.category != catPublic {
-		return fmt.Sprintf("%s is open on the public entry (isPublicPath or isAuthEndpoint) but its case category is %s, not the public allowlist", pattern, decision.category)
+		return fmt.Sprintf("%s is open on the public entry (isPublicPath) but its case category is %s, not the public allowlist", pattern, decision.category)
 	}
 	if !open && decision.category == catPublic {
-		return fmt.Sprintf("%s is on the public allowlist but isPublicPath and isAuthEndpoint are both false", pattern)
+		return fmt.Sprintf("%s is on the public allowlist but isPublicPath is false", pattern)
 	}
 	return ""
 }
@@ -169,23 +169,20 @@ func publicAllowlistMatchesSource() error {
 			return fmt.Errorf("%s: %w", entry.pattern, err)
 		}
 		openPath := isPublicPath(req)
-		auth := isAuthEndpoint(req)
-		switch {
-		case openPath && auth:
-			return fmt.Errorf("%s matches both isPublicPath and isAuthEndpoint", entry.pattern)
-		case openPath:
+		if openPath {
 			allowPaths[req.URL.Path] = struct{}{}
-		case auth:
-			allowAuth[entry.pattern] = struct{}{}
-		default:
-			return fmt.Errorf("%s is on the public allowlist but isPublicPath and isAuthEndpoint are both false", entry.pattern)
+		} else {
+			return fmt.Errorf("%s is on the public allowlist but isPublicPath is false", entry.pattern)
 		}
 	}
 	if msg := setDiff("isPublicPath", surface.paths, allowPaths); msg != "" {
 		return fmt.Errorf("public allowlist drifted from isPublicPath: %s", msg)
 	}
-	if msg := setDiff("isAuthEndpoint", surface.auth, allowAuth); msg != "" {
-		return fmt.Errorf("public allowlist drifted from isAuthEndpoint: %s", msg)
+	if len(allowAuth) != 0 {
+		return fmt.Errorf("public allowlist still lists auth routes: %v", allowAuth)
+	}
+	if len(surface.auth) != 0 {
+		return fmt.Errorf("isAuthEndpoint surface is not empty: %v", surface.auth)
 	}
 	return nil
 }

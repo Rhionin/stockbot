@@ -51,6 +51,35 @@ func (r *Catalog) SaveDisplayName(ctx context.Context, scope tenant.Scope, produ
 	return nil
 }
 
+// SaveBrand stores an optional brand label for a household product.
+func (r *Catalog) SaveBrand(ctx context.Context, scope tenant.Scope, productID, brand string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	productID = strings.TrimSpace(productID)
+	if productID == "" {
+		return fmt.Errorf("a product id is required")
+	}
+	brand = strings.TrimSpace(brand)
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO household_product_overrides (household_id, product_id, display_name, brand, updated_at)
+		VALUES (
+			?, ?,
+			COALESCE((SELECT display_name FROM household_product_overrides WHERE household_id = ? AND product_id = ?), ''),
+			?, ?
+		)
+		ON CONFLICT (household_id, product_id) DO UPDATE SET
+			brand = excluded.brand,
+			updated_at = excluded.updated_at`,
+		scope.HouseholdID(), productID, scope.HouseholdID(), productID, brand, now,
+	)
+	if err != nil {
+		return fmt.Errorf("could not save the product brand: %w", err)
+	}
+	return nil
+}
+
 // CreateTypedProduct stores a product this household named.
 // The typed name is not written on the shared catalog row.
 func (r *Catalog) CreateTypedProduct(ctx context.Context, scope tenant.Scope, product Product) (Product, error) {

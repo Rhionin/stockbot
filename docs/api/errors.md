@@ -80,7 +80,7 @@ committed items and a lock read:
 
 ## 503 sign-in not configured
 
-`GET /api/session` and `POST /api/login` return HTTP 503 when the public
+`GET /api/auth/session` and `POST /api/auth/login` return HTTP 503 when the public
 hostname requires a password and none is configured. The code is
 `auth_not_configured` and the message is `Sign-in isn't set up yet.`
 
@@ -201,20 +201,10 @@ screen shows the sentence, as it does today.
 
 | Status | Code | Sentence | Where |
 | --- | --- | --- | --- |
-| 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected Basic credential (`internal/server/household_auth.go:169`, `:182`, `:208`, `:215`). Also a protected `/api` route when a password is required and none is configured (`:150`), except `GET /api/session` and `POST /api/login`. |
-| 404 | `not_found` | `Sign-in is not used on this address.` | `POST /api/login` when this address does not require sign-in (`:221`). |
-| 400 | `validation` | `Enter your username and password.` | `POST /api/login` when the body is missing or not JSON (`:234`). This response does not include `field`. |
-| 401 | `unauthorized` | `The username or password is incorrect.` | `POST /api/login` when the username or password is wrong (`:244`). |
-| 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | The sign-in limiter on Basic auth, `GET /api/session`, and `POST /api/login` (`:160`, `:199`, `:239`, written at `:370`). |
-
-`GET /api/session` and `POST /api/login` when a password is required and
-none is configured are HTTP 503 `auth_not_configured`
-(`household_auth.go:193` and `:225`, written at `:357`). The sentence is
-`Sign-in isn't set up yet.` The body is the one in
-[503 sign-in not configured](#503-sign-in-not-configured). The code string
-is `testdata/contract/auth_not_configured.json`. This response does not
-include a `Retry-After` header. Unconfigured `POST /api/login` is that
-503, not the 401 at `:150`.
+| 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected bearer token. |
+| 400 | `validation` | Field-specific validation on `POST /api/auth/login` and related auth routes. |
+| 401 | `unauthorized` | Wrong email or password on `POST /api/auth/login`. |
+| 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | Rate limiter on `POST /api/auth/login` and related auth routes. |
 
 ## Request parsing
 
@@ -450,10 +440,10 @@ These stay. This contract does not rename them.
 | `target_decision_required` | 409 | `members` |
 
 `auth_not_configured` is the 503 in
-[503 sign-in not configured](#503-sign-in-not-configured): HTTP 503 on
-`GET /api/session` and `POST /api/login` when a password is required and
-none is configured. The sentence is `Sign-in isn't set up yet.` The
-fixture is `testdata/contract/auth_not_configured.json`.
+[503 sign-in not configured](#503-sign-in-not-configured) when operator
+sign-in is not configured on a hosted deployment. The sentence is
+`Sign-in isn't set up yet.` The fixture is
+`testdata/contract/auth_not_configured.json`.
 
 Shared constants for the codes on this page live in
 `frontend/src/api/contract.ts`. The phone imports that module.

@@ -475,7 +475,7 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 		t.Fatalf("link = %+v", scanBody)
 	}
 	var itemID string
-	if err := env.DB.QueryRow(`SELECT id FROM items WHERE user_id = 'user-1' AND product_id = ?`, product.ID).Scan(&itemID); err != nil {
+	if err := env.DB.QueryRow(`SELECT id FROM items WHERE product_id = ?`, product.ID).Scan(&itemID); err != nil {
 		t.Fatalf("item: %v", err)
 	}
 	assertNoStockEvents(t, env.DB, itemID, product.ID)
@@ -562,7 +562,7 @@ func TestStockOutCreateAndLinkWritesNoStockEvents(t *testing.T) {
 
 	t.Run("flagged stock-in does not create an item", func(t *testing.T) {
 		seedLooseScan(env, "scan-flagged-in", "044440000000", scan.StockIn, 1, nil, scan.Flagged, at)
-		fresh := exchangeJSON(t, handler, http.MethodPost, "/api/products", `{"name":"Inbound only"}`, http.StatusCreated)
+		fresh := exchangeJSON(t, handler, http.MethodPost, "/api/products", `{"name":"Inbound only","barcode":"0444400000999"}`, http.StatusCreated)
 		var inbound struct {
 			ID string `json:"id"`
 		}

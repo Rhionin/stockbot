@@ -365,4 +365,9 @@ func (q dbErrorQueue) CommitBackfill(context.Context, tenant.Scope, *scan.ScanEn
 func (q dbErrorQueue) CountOnHand(context.Context, tenant.Scope, string) (int, error) {
 	return 0, q.err
 }
-func (q dbErrorQueue) StockOut(context.Context, tenant.Scope, string, time.Time) error { return q.err }
+func (q dbErrorQueue) StockOut(context.Context, tenant.Scope, string, time.Time) (string, error) {
+	return "", q.err
+}
+func (q dbErrorQueue) BackfillItem(context.Context, tenant.Scope, string, time.Time) (scan.BackfillResult, error) {
+	return scan.BackfillResult{}, q.err
+}

@@ -413,8 +413,10 @@ func newAPIMux(
 	contributionsHandler := &ContributionsListHandler{Catalog: catalog}
 	productContributionsHandler := &ProductContributionsHandler{Catalog: catalog}
 	productGetHandler := &ProductGetHandler{Catalog: catalog}
+	productSearchHandler := &ProductSearchHandler{Catalog: catalog}
 
 	apiMux.HandleFunc("GET /api/products/lookup", HandleJSON(lookupHandler.Handle))
+	apiMux.HandleFunc("GET /api/products/search", HandleJSON(productSearchHandler.Handle))
 	apiMux.HandleFunc("GET /api/products", HandleJSON(listHandler.Handle))
 	apiMux.HandleFunc("GET /api/products/{id}", HandleJSON(productGetHandler.Handle))
 	apiMux.HandleFunc("POST /api/products", HandleJSON(createHandler.Handle))
@@ -459,6 +461,10 @@ func newAPIMux(
 	pantry := inventory.NewPantry(db)
 	pantry.Broadcaster = broadcaster
 	scanQueue.Pantry = pantry
+	createHandler.Pantry = pantry
+	createHandler.Events = broadcaster
+	productEnsureItemHandler := &ProductEnsureItemHandler{Catalog: catalog, Pantry: pantry, Events: broadcaster}
+	apiMux.HandleFunc("POST /api/products/{id}/item", HandleJSON(productEnsureItemHandler.Handle))
 	inventoryListHandler := &InventoryListHandler{Pantry: pantry, DB: db}
 	inventoryInstancesListHandler := &InventoryInstancesListHandler{Pantry: pantry}
 	inventoryInstanceCreateHandler := &InventoryInstanceCreateHandler{Queue: scanQueue}

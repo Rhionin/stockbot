@@ -315,6 +315,8 @@ setup_mount=$(awk '
   capture && /^      - / { exit }
 ' <<< "$public_cfg")
 lack "$setup_mount" 'read_only: true' "setup mount must be read-write"
+lack "$public_cfg" './auth:/etc/pantry/auth' "public compose must not bind-mount legacy auth"
+lack "$tunnel_cfg" './auth:/etc/pantry/auth' "tunnel compose must not bind-mount legacy auth"
 have "$public_cfg" 'published: "80"' "certificate mode publishes port 80"
 have "$public_cfg" 'published: "443"' "certificate mode publishes port 443"
 have "$public_cfg" "$cert_caddy" "certificate mode pins Caddy"

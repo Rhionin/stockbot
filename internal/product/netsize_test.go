@@ -80,6 +80,21 @@ func TestDisplayRoundTripOunces(t *testing.T) {
 	}
 }
 
+func TestApplyParsedSizeStoresPack(t *testing.T) {
+	var product Product
+	parsed, ok := ParseNetSize("6 x 12 fl oz")
+	if !ok {
+		t.Fatal("ParseNetSize")
+	}
+	product.ApplyParsedSize(parsed)
+	if product.NetDimension != DimensionVolume || product.PackCount == nil || *product.PackCount != 6 {
+		t.Fatalf("product = %+v", product)
+	}
+	if product.NetSizeOrigin != OriginManual {
+		t.Fatalf("origin = %q", product.NetSizeOrigin)
+	}
+}
+
 func TestApplyTypedSizeKeepsManualClear(t *testing.T) {
 	var product Product
 	amount := 14.5

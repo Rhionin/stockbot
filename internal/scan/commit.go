@@ -456,32 +456,41 @@ func (r *Queue) StockIn(ctx context.Context, scope tenant.Scope, itemID string, 
 
 // StockOut removes one on-hand unit of an item, choosing the same unit a
 // scan-out would. The usage ledger matches that committed scan.
-func (r *Queue) StockOut(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) error {
+func (r *Queue) StockOut(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) (string, error) {
 	if err := scope.Require(); err != nil {
-		return err
+		return "", err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return "", fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	var exists int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM items WHERE household_id = ? AND id = ?`, scope.HouseholdID(), itemID).Scan(&exists)
 	if err == sql.ErrNoRows {
-		return ErrItemNotFound
+		return "", ErrItemNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("find item: %w", err)
+		return "", fmt.Errorf("find item: %w", err)
 	}
 	if err := r.recordStockOutTx(ctx, scope, tx, itemID, nil, at, nil); err != nil {
-		return err
+		return "", err
+	}
+	var moveID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE household_id = ? AND item_id = ? AND direction = 'out' AND at = ?
+		ORDER BY id DESC LIMIT 1`,
+		scope.HouseholdID(), itemID, at,
+	).Scan(&moveID); err != nil {
+		return "", fmt.Errorf("read stock-out move: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+		return "", fmt.Errorf("commit transaction: %w", err)
 	}
 	r.publishInventory(ctx, scope, itemID)
-	return nil
+	return moveID, nil
 }
 
 // StockOutInstance removes one specific on-hand unit. It is the same stock-out
@@ -1104,6 +1113,127 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 		ItemID: itemID, Units: units,
 		StockInMoveID: stockInID, StockOutMoveID: stockOutID,
 	}, nil
+}
+
+// BackfillItem stocks in one unit and takes it back out when nothing is on hand.
+// It is the manual inventory path for find-by-name stock-out at zero on hand.
+func (r *Queue) BackfillItem(ctx context.Context, scope tenant.Scope, itemID string, at time.Time) (BackfillResult, error) {
+	if err := scope.Require(); err != nil {
+		return BackfillResult{}, err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var productID string
+	var shelved int
+	err = tx.QueryRowContext(ctx, `
+		SELECT product_id, shelved FROM items
+		WHERE household_id = ? AND id = ?`,
+		scope.HouseholdID(), itemID,
+	).Scan(&productID, &shelved)
+	if err == sql.ErrNoRows {
+		return BackfillResult{}, ErrItemNotFound
+	}
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("find item: %w", err)
+	}
+	wasShelved := shelved != 0
+	var onHand int
+	if !wasShelved {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM item_instances
+			WHERE household_id = ? AND item_id = ? AND removed_at IS NULL`, scope.HouseholdID(), itemID).Scan(&onHand); err != nil {
+			return BackfillResult{}, fmt.Errorf("count on hand: %w", err)
+		}
+	}
+	if onHand > 0 {
+		return BackfillResult{}, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
+	}
+
+	instanceID := uuid.NewString()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO item_instances (id, item_id, household_id, stock_in_at)
+		VALUES (?, ?, ?, ?)`,
+		instanceID, itemID, scope.HouseholdID(), at,
+	); err != nil {
+		return BackfillResult{}, fmt.Errorf("create instance: %w", err)
+	}
+	if err := inventory.UnshelveItem(ctx, tx, scope, itemID); err != nil {
+		return BackfillResult{}, err
+	}
+	if err := history.AttachStockIn(ctx, scope, tx, history.InNote{
+		ItemID: itemID, ProductID: productID, At: at, Source: "backfill",
+		Tracked: false, InstanceIDs: []string{instanceID}, Unshelved: wasShelved,
+	}); err != nil {
+		return BackfillResult{}, fmt.Errorf("record stock-in: %w", err)
+	}
+
+	usage, err := r.trackRestock(ctx, scope, tx)
+	if err != nil {
+		return BackfillResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE item_instances
+		SET removed_at = ?, removal_reason = 'consumed'
+		WHERE household_id = ? AND id = ?`, at, scope.HouseholdID(), instanceID); err != nil {
+		return BackfillResult{}, fmt.Errorf("remove instance: %w", err)
+	}
+	var consumptionID string
+	if usage {
+		consumptionID = uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO consumption_events (id, item_id, household_id, consumed_at)
+			VALUES (?, ?, ?, ?)`,
+			consumptionID, itemID, scope.HouseholdID(), at,
+		); err != nil {
+			return BackfillResult{}, fmt.Errorf("create consumption event: %w", err)
+		}
+	}
+	if err := history.AttachStockOut(ctx, scope, tx, history.OutNote{
+		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
+		Tracked: usage, InstanceIDs: []string{instanceID},
+		ConsumptionIDs: consumptionIDs(consumptionID),
+	}); err != nil {
+		return BackfillResult{}, fmt.Errorf("record stock-out: %w", err)
+	}
+	if err := stampStockMoves(ctx, scope, tx, itemID); err != nil {
+		return BackfillResult{}, err
+	}
+	var stockInID, stockOutID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE household_id = ? AND item_id = ? AND source = 'backfill' AND at = ?
+		ORDER BY id DESC LIMIT 1`,
+		scope.HouseholdID(), itemID, at,
+	).Scan(&stockInID); err != nil {
+		return BackfillResult{}, fmt.Errorf("read backfill stock-in: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM stock_moves
+		WHERE household_id = ? AND item_id = ? AND direction = 'out' AND at = ?
+		ORDER BY id DESC LIMIT 1`,
+		scope.HouseholdID(), itemID, at,
+	).Scan(&stockOutID); err != nil {
+		return BackfillResult{}, fmt.Errorf("read backfill stock-out: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return BackfillResult{}, fmt.Errorf("commit transaction: %w", err)
+	}
+	r.publishInventory(ctx, scope, itemID)
+	return BackfillResult{
+		ItemID: itemID, Units: 1,
+		StockInMoveID: stockInID, StockOutMoveID: stockOutID,
+	}, nil
+}
+
+func consumptionIDs(id string) []string {
+	if id == "" {
+		return nil
+	}
+	return []string{id}
 }
 
 // LinkStockOutProduct points a pending or flagged stock-out at a product,
