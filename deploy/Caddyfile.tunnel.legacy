@@ -1,3 +1,0 @@
-# No LEGACY_PUBLIC_HOST. Caddy serves PUBLIC_HOST only.
-# setup.sh replaces this file when LEGACY_PUBLIC_HOST is a different hostname.
-# Tunnel mode mounts this file as /etc/caddy/Caddyfile.legacy.

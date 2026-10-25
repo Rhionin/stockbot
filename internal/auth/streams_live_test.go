@@ -33,7 +33,7 @@ func TestStreamKickFollowsTheMemberNotTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	password, err := streams.BindLive(context.Background(), "hhpw", "house-north", "", "household_password")
+	anonymous, err := streams.BindLive(context.Background(), "anon:north", "house-north", "", "account")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,13 +45,13 @@ func TestStreamKickFollowsTheMemberNotTheKey(t *testing.T) {
 	}
 	streams.KickHousehold("", "user-a")
 	waitDone(t, south)
-	if kept.Err() != nil || password.Err() != nil {
+	if kept.Err() != nil || anonymous.Err() != nil {
 		t.Fatal("a user kick closed someone else")
 	}
 	streams.KickHousehold("house-north", "")
-	waitDone(t, password)
+	waitDone(t, anonymous)
 	if kept.Err() != nil {
-		t.Fatal("retiring the household password closed an account stream")
+		t.Fatal("a household-wide kick closed an account stream with a user id")
 	}
 }
 

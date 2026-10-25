@@ -125,21 +125,4 @@ func TestMemberRemovalAndRetirementDeletePushRows(t *testing.T) {
 	if len(left) != 1 || left[0].Endpoint != lan.Endpoint || left[0].UserID != "" {
 		t.Fatalf("after removal %#v", left)
 	}
-	if _, err := subs.db.Exec(`
-		INSERT INTO household_password (household_id, state, pw_hash)
-		VALUES (?, 'on', ?)
-		ON CONFLICT(household_id) DO UPDATE SET state = 'on', pw_hash = excluded.pw_hash`,
-		primary.HouseholdID(), hash); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RetireHouseholdPassword(ctx, owner, primary.HouseholdID()); err != nil {
-		t.Fatal(err)
-	}
-	left, err = subs.List(ctx, primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(left) != 0 {
-		t.Fatalf("after retirement %#v", left)
-	}
 }

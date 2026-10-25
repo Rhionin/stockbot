@@ -1,0 +1,25 @@
+---
+description: pstack per-role model choices (overrides skill defaults) — Grok 4.7 for planning/judgment, Composer 2.5 for building; NEVER use fast mode (-fast or fast=true)
+alwaysApply: true
+---
+# pstack model configuration. One line per role. Delete a line to fall back to the skill default.
+# `inherit-parent` or `auto` as a value: the role runs on the parent chat model (omit Task `model`). Alias entries in a panel list still count toward its fan-out.
+# Standing rule: NEVER use `-fast` model slugs or `fast: "true"` at any time, ever, even for urgent or verification tasks.
+# budget: small (medium) — Grok 4.7 (standard speed, never -fast) for planning & investigation, Composer 2.5 (standard speed, never -fast) for building
+feature, refactoring: composer-2.5
+bug-fix: composer-2.5
+perf-issue: composer-2.5
+hillclimb: composer-2.5
+judgment and prose: grok-4.7-medium
+hardest tasks: grok-4.7-high
+how explorer: grok-4.7-medium
+how explainer: grok-4.7-medium
+why investigators: grok-4.7-medium
+why synthesizer: grok-4.7-medium
+reflect tooling: grok-4.7-medium
+reflect judgment, divergent, synthesizer: grok-4.7-medium
+arena runners: composer-2.5, grok-4.7-medium
+arena cross-judge pool: grok-4.7-medium, composer-2.5
+swarm workers: composer-2.5
+architect runners: grok-4.7-medium, composer-2.5
+interrogate reviewers: grok-4.7-medium, composer-2.5

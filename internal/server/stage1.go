@@ -53,9 +53,6 @@ func (s *stage1) Middleware(next http.Handler) http.Handler {
 			s.serveSetupPage(w, r, next)
 			return
 		}
-		if gate, err := s.svc.LoadHouseholdGate(r.Context()); err == nil {
-			r = r.WithContext(withHouseholdGate(r.Context(), gate))
-		}
 		if syncAuthorized(r) || s.anonymousOpen(r) {
 			s.attachPrimary(r)
 			next.ServeHTTP(w, r)
@@ -119,17 +116,6 @@ func (s *stage1) anonymousOpen(r *http.Request) bool {
 }
 
 func (s *stage1) resolve(w http.ResponseWriter, r *http.Request, entry app.Entry) (auth.Principal, bool) {
-	if retiredBasic(r, entry) {
-		on, err := s.svc.HouseholdPasswordOn(r.Context())
-		if err != nil {
-			writeStage1(w, err)
-			return auth.Principal{}, false
-		}
-		if !on && !strings.HasPrefix(r.Header.Get(clientHeader), "expo/") {
-			writeStage1(w, &auth.Error{Code: auth.CodeUpgrade, Message: auth.SentenceUpgrade})
-			return auth.Principal{}, false
-		}
-	}
 	token := bearerToken(r)
 	if strings.HasPrefix(token, "sbd_") {
 		if !strings.HasPrefix(r.URL.Path, "/api/device/") {
@@ -164,49 +150,10 @@ func (s *stage1) resolve(w http.ResponseWriter, r *http.Request, entry app.Entry
 		p.FromCookie = true
 		return p, true
 	}
-	if entry == app.EntryPublic {
-		if p, ok := s.householdPrincipal(r); ok {
-			return p, true
-		}
-	}
 	if !requiresPrincipal(r) {
 		return auth.Principal{}, true
 	}
 	writeStage1(w, unauthorizedSentinel())
-	return auth.Principal{}, false
-}
-
-func retiredBasic(r *http.Request, entry app.Entry) bool {
-	if entry != app.EntryPublic {
-		return false
-	}
-	_, _, ok := basicCredentials(r)
-	return ok
-}
-
-func (s *stage1) householdPrincipal(r *http.Request) (auth.Principal, bool) {
-	gate, ok := householdGateFrom(r.Context())
-	if !ok || !gate.On {
-		return auth.Principal{}, false
-	}
-	if user, pass, ok := basicCredentials(r); ok {
-		match, err := s.svc.CheckHouseholdPassword(r.Context(), user, pass)
-		if err != nil || !match {
-			return auth.Principal{}, false
-		}
-		scope, err := s.svc.Primary(r.Context())
-		if err != nil {
-			return auth.Principal{}, false
-		}
-		return auth.Principal{Kind: "household_password", HouseholdID: scope.HouseholdID(), Role: "member"}, true
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil && pantryCookieOK(gate.Secret, gate.User, s.svc.Now(), c.Value) {
-		scope, err := s.svc.Primary(r.Context())
-		if err != nil {
-			return auth.Principal{}, false
-		}
-		return auth.Principal{Kind: "household_password", HouseholdID: scope.HouseholdID(), Role: "member", FromCookie: true}, true
-	}
 	return auth.Principal{}, false
 }
 
@@ -227,32 +174,13 @@ func (s *stage1) csrfOK(r *http.Request) bool {
 		return true
 	}
 	switch r.URL.Path {
-	case "/api/auth/login", "/api/auth/reset", "/api/invites/accept", "/setup", "/api/login":
+	case "/api/auth/login", "/api/auth/reset", "/api/invites/accept", "/setup":
 		return true
 	}
 	return s.site.AllowsOrigin(r.Header.Get("Origin"))
 }
 
 func (s *stage1) bindHousehold(w http.ResponseWriter, r *http.Request, p auth.Principal) (auth.Principal, bool) {
-	if p.Kind == "lan" || p.Kind == "household_password" {
-		scope, err := s.svc.Primary(r.Context())
-		if err != nil {
-			writeStage1(w, err)
-			return p, false
-		}
-		p.HouseholdID = scope.HouseholdID()
-		p.Role = "member"
-		gone, err := s.svc.HouseholdGone(r.Context(), p.HouseholdID)
-		if err != nil {
-			writeStage1(w, err)
-			return p, false
-		}
-		if gone && !allowsDeleted(r) {
-			writeStage1(w, &auth.Error{Code: auth.CodeNotFound, Message: auth.SentenceNotFound})
-			return p, false
-		}
-		return p, true
-	}
 	if p.Kind == "device" {
 		header := strings.TrimSpace(r.Header.Get(householdHeader))
 		if header != "" && canonicalID(header) != p.HouseholdID {
@@ -338,7 +266,7 @@ func needsHousehold(r *http.Request) bool {
 		"/api/auth/session/household", "/api/invites/preview", "/api/invites/accept",
 		"/api/devices/pair/complete", "/api/operator/household-invites",
 		"/api/households", "/api/config", "/api/build", "/api/telemetry",
-		"/api/telemetry/client", "/api/me", "/api/session", "/api/login", "/api/logout":
+		"/api/telemetry/client", "/api/me":
 		return false
 	}
 	if strings.HasPrefix(path, "/api/sessions/") {
@@ -396,6 +324,16 @@ func allowsDeleted(r *http.Request) bool {
 	return strings.HasSuffix(path, "/restore") && r.Method == http.MethodPost
 }
 
+func isDocument(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.URL.Path == "/health" || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		return false
+	}
+	return true
+}
+
 func requiresPrincipal(r *http.Request) bool {
 	if isDocument(r) || sOpen(r) {
 		return false
@@ -425,19 +363,13 @@ func eventStreamKey(r *http.Request) string {
 	if !ok {
 		return ""
 	}
-	switch p.Kind {
-	case "account":
+	if p.Kind == "account" {
 		if key := auth.SessionStreamKey(p.SessionID); key != "" {
 			return key
 		}
 		return auth.UserStreamKey(p.UserID)
-	case "household_password":
-		return auth.HouseholdPasswordStreamKey(stage1ClientIP(r))
-	case "lan":
-		return "lan:" + stage1ClientIP(r)
-	default:
-		return ""
 	}
+	return ""
 }
 
 func stage1ClientIP(r *http.Request) string {

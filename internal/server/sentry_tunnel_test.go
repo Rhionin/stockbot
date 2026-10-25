@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 )
 
 func TestSentryTunnel(t *testing.T) {
@@ -660,14 +663,16 @@ func TestSentryTunnelIngestFailure(t *testing.T) {
 
 func TestSentryTunnelLoginAndSyncExemption(t *testing.T) {
 	const token = "sync-token-value-ok"
-	gate := testHousehold(t, "pantry", "correct-horse-battery")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(upstream.Close)
 
-	handler, _ := setupTestWithContributor(t, nil,
-		WithHouseholdAuth(gate),
+	db := setupTestDB(t)
+	svc := auth.NewService(db, t.TempDir())
+	site := stage1Site(t)
+	handler, _ := setupOnDB(t, db, nil,
+		WithStage1(svc, site),
 		WithSyncToken(token),
 		WithSentryTunnel(SentryTunnelConfig{
 			IngestHost: "o1.ingest.example",
@@ -678,7 +683,7 @@ func TestSentryTunnelLoginAndSyncExemption(t *testing.T) {
 
 	open := httptest.NewRequest(http.MethodPost, sentryTunnelPath, strings.NewReader(envelope("https://key@o1.ingest.example/123")))
 	open.Header.Set("Content-Type", sentryEnvelopeMediaType)
-	open.Header.Set(entryHeader, entryPublic)
+	open = open.WithContext(app.WithEntry(open.Context(), app.EntryPublic))
 	open.Header.Set("Authorization", "Bearer "+token)
 	openRec := httptest.NewRecorder()
 	handler.ServeHTTP(openRec, open)
@@ -688,7 +693,7 @@ func TestSentryTunnelLoginAndSyncExemption(t *testing.T) {
 
 	closed := httptest.NewRequest(http.MethodPost, "/api/products", strings.NewReader(`{"name":"Nope"}`))
 	closed.Header.Set("Content-Type", "application/json")
-	closed.Header.Set(entryHeader, entryPublic)
+	closed = closed.WithContext(app.WithEntry(closed.Context(), app.EntryPublic))
 	closedRec := httptest.NewRecorder()
 	handler.ServeHTTP(closedRec, closed)
 	if closedRec.Code != http.StatusUnauthorized {
@@ -698,17 +703,17 @@ func TestSentryTunnelLoginAndSyncExemption(t *testing.T) {
 	syncOnly := httptest.NewRequest(http.MethodPost, "/api/products", strings.NewReader(`{"name":"Nope"}`))
 	syncOnly.Header.Set("Content-Type", "application/json")
 	syncOnly.Header.Set("Authorization", "Bearer "+token)
-	syncOnly.Header.Set(entryHeader, entryPublic)
+	syncOnly = syncOnly.WithContext(app.WithEntry(syncOnly.Context(), app.EntryPublic))
 	syncRec := httptest.NewRecorder()
 	handler.ServeHTTP(syncRec, syncOnly)
 	if syncRec.Code != http.StatusForbidden {
 		t.Fatalf("sync token on products = %d body %s", syncRec.Code, syncRec.Body.String())
 	}
 
-	hidden, _ := setupTestWithContributor(t, nil, WithHouseholdAuth(gate))
+	hidden, _ := setupTestWithContributor(t, nil)
 	miss := httptest.NewRequest(http.MethodPost, sentryTunnelPath, strings.NewReader(envelope("https://key@o1.ingest.example/123")))
 	miss.Header.Set("Content-Type", sentryEnvelopeMediaType)
-	miss.Header.Set(entryHeader, entryPublic)
+	miss = miss.WithContext(app.WithEntry(miss.Context(), app.EntryPublic))
 	missRec := httptest.NewRecorder()
 	hidden.ServeHTTP(missRec, miss)
 	if missRec.Code != http.StatusNotFound {

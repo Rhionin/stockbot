@@ -29,7 +29,7 @@ func (r *recordKick) Kick(householdID, userID string) {
 
 func (r *recordKick) DropSession(string) {}
 
-func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
+func TestPurgeDueOverwritesHouseholdRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	db, reader := openPurgeDB(t, path)
 	svc := NewService(db, t.TempDir())
@@ -40,19 +40,15 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 	const (
 		dueID  = "0190aaaa-bbbb-7000-8000-0000000000d1"
 		keepID = "0190aaaa-bbbb-7000-8000-0000000000d2"
-		passID = "0190aaaa-bbbb-7000-8000-0000000000d3"
 	)
 	sentinels := []string{
 		"due-pantry-name-q7", "due-item-label-q7", "due-device-label-q7",
-		"due-hash-q7", "due-session-q7", "due-channel-q7", "due-barcode-q7", "due-setting-q7",
-		"pass-hash-q7", "pass-session-q7", "sbd_dueq7",
+		"due-channel-q7", "due-barcode-q7", "due-setting-q7", "sbd_dueq7",
 	}
 	mustExec(t, db, `INSERT INTO households (id, name, restock_mode, created_at, deleted_at, purge_after, channel_key, is_primary)
 		VALUES (?, 'due-pantry-name-q7', '', '2026-01-01T00:00:00Z', '2026-05-01T00:00:00Z', '2026-05-31T00:00:00Z', 'due-channel-q7', 0)`, dueID)
 	mustExec(t, db, `INSERT INTO households (id, name, restock_mode, created_at, purge_after, channel_key, is_primary)
 		VALUES (?, 'keep-pantry-name-q7', '', '2026-01-01T00:00:00Z', '2026-07-01T00:00:00Z', 'keep-channel-q7', 0)`, keepID)
-	mustExec(t, db, `INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
-		VALUES (?, 'pass-pantry-name-q7', '', '2026-01-01T00:00:00Z', 'pass-channel-q7', 0)`, passID)
 	mustExec(t, db, `INSERT INTO products (id, name) VALUES ('p-due', 'catalog-keep-q7')`)
 	mustExec(t, db, `INSERT INTO household_product_overrides (household_id, product_id, display_name, updated_at)
 		VALUES (?, 'p-due', 'due-item-label-q7', '2026-01-01T00:00:00Z')`, dueID)
@@ -63,12 +59,6 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 		VALUES ('dev-due', ?, 'direct', 'due-device-label-q7', '2026-01-01T00:00:00Z')`, dueID)
 	mustExec(t, db, `INSERT INTO device_tokens (id, device_id, household_id, token_hash, prefix, created_at)
 		VALUES ('tok-due', 'dev-due', ?, 'sbd-hash-q7', 'sbd_dueq7', '2026-01-01T00:00:00Z')`, dueID)
-	mustExec(t, db, `INSERT INTO household_password (household_id, pw_hash, state, session_key, restore_until)
-		VALUES (?, 'due-hash-q7', 'off', 'due-session-q7', '2026-05-01T00:00:00Z')`, dueID)
-	mustExec(t, db, `INSERT INTO household_password (household_id, pw_hash, state, session_key, restore_until)
-		VALUES (?, 'pass-hash-q7', 'off', 'pass-session-q7', '2026-05-01T00:00:00Z')`, passID)
-	mustExec(t, db, `INSERT INTO household_password (household_id, pw_hash, state, session_key, restore_until)
-		VALUES (?, 'live-hash-q7', 'on', 'live-session-q7', '2026-05-01T00:00:00Z')`, keepID)
 	for i := 0; i < 1001; i++ {
 		mustExec(t, db, `INSERT INTO household_settings (household_id, key, value) VALUES (?, ?, 'due-setting-q7')`, dueID, settingKey(i))
 	}
@@ -85,7 +75,7 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 	if err := db.QueryRow(`PRAGMA secure_delete`).Scan(&secure); err != nil || secure != 0 {
 		t.Fatalf("secure_delete left on (%d, %v)", secure, err)
 	}
-	if result.Households != 1 || result.Largest != purgeBatch || result.Largest > 1000 || result.Batches < 2 || result.Passwords < 2 {
+	if result.Households != 1 || result.Largest != purgeBatch || result.Largest > 1000 || result.Batches < 2 {
 		t.Fatalf("result %+v", result)
 	}
 	var left int
@@ -104,16 +94,6 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM device_tokens WHERE household_id = ?`, dueID).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("due tokens %d %v", left, err)
 	}
-	var hash, sessionKey sql.NullString
-	if err := db.QueryRow(`SELECT pw_hash, session_key FROM household_password WHERE household_id = ?`, passID).Scan(&hash, &sessionKey); err != nil {
-		t.Fatal(err)
-	}
-	if hash.Valid || sessionKey.Valid {
-		t.Fatalf("retired password remained hash=%v key=%v", hash, sessionKey)
-	}
-	if err := db.QueryRow(`SELECT pw_hash FROM household_password WHERE household_id = ?`, keepID).Scan(&hash); err != nil || hash.String != "live-hash-q7" {
-		t.Fatalf("live password changed %v %v", hash, err)
-	}
 	var auditAction, auditTarget string
 	if err := db.QueryRow(`SELECT action, target_id FROM audit_log WHERE household_id = ? AND action = 'household.purged'`, dueID).Scan(&auditAction, &auditTarget); err != nil {
 		t.Fatal(err)
@@ -129,10 +109,6 @@ func TestPurgeDueOverwritesHouseholdRowsAndRetiredPasswords(t *testing.T) {
 		if strings.Contains(auditBlob, secret) {
 			t.Fatalf("audit kept %q", secret)
 		}
-	}
-	var passAudits int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action = 'household_password.purged' AND household_id = ?`, passID).Scan(&passAudits); err != nil || passAudits != 1 {
-		t.Fatalf("password audit %d %v", passAudits, err)
 	}
 	assertNoHouseholdRows(t, db, dueID)
 	if err := db.QueryRow(`SELECT COUNT(*) FROM products WHERE name = 'catalog-keep-q7'`).Scan(&left); err != nil || left != 1 {
@@ -482,61 +458,6 @@ func TestPurgeAfterIsThirtyDays(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM households WHERE id = ?`, house).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("household after cutoff %d %v", left, err)
-	}
-}
-
-func TestRetiredPasswordPurgeWaitsSevenDays(t *testing.T) {
-	db := openAuthDB(t)
-	svc := NewService(db, t.TempDir())
-	ctx := context.Background()
-	when := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	svc.SetClock(func() time.Time { return when })
-	if err := svc.RedeemSetup(ctx, mustSetup(t, svc), "Nia North", "nia@pantry.test", "correct horse", ""); err != nil {
-		t.Fatal(err)
-	}
-	var userID string
-	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'nia@pantry.test'`).Scan(&userID); err != nil {
-		t.Fatal(err)
-	}
-	primary, err := svc.Primary(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	house := primary.HouseholdID()
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, pw_hash, state, session_key) VALUES (?, 'pass-hash-q7', 'on', 'pass-session-q7')`, house); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RetireHouseholdPassword(ctx, userID, house); err != nil {
-		t.Fatal(err)
-	}
-	var until string
-	if err := db.QueryRow(`SELECT restore_until FROM household_password WHERE household_id = ?`, house).Scan(&until); err != nil {
-		t.Fatal(err)
-	}
-	if until != stamp(when.Add(7*24*time.Hour)) {
-		t.Fatalf("restore_until %s", until)
-	}
-	when = when.Add(6*24*time.Hour + 23*time.Hour)
-	result, err := svc.PurgeDue(ctx)
-	if err != nil || result.Passwords != 0 {
-		t.Fatalf("early purge %+v %v", result, err)
-	}
-	var hash string
-	if err := db.QueryRow(`SELECT COALESCE(pw_hash, '') FROM household_password WHERE household_id = ?`, house).Scan(&hash); err != nil || hash == "" {
-		t.Fatalf("hash cleared early %q %v", hash, err)
-	}
-	when = time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).Add(7*24*time.Hour - time.Second)
-	result, err = svc.PurgeDue(ctx)
-	if err != nil || result.Passwords != 0 {
-		t.Fatalf("one second early %+v %v", result, err)
-	}
-	when = time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).Add(7 * 24 * time.Hour)
-	result, err = svc.PurgeDue(ctx)
-	if err != nil || result.Passwords != 1 {
-		t.Fatalf("cutoff purge %+v %v", result, err)
-	}
-	if err := db.QueryRow(`SELECT COALESCE(pw_hash, '') FROM household_password WHERE household_id = ?`, house).Scan(&hash); err != nil || hash != "" {
-		t.Fatalf("hash remained %q %v", hash, err)
 	}
 }
 

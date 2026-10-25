@@ -46,7 +46,7 @@ fi
 # Determine script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/auth-migrate.sh"
+source "$SCRIPT_DIR/runtime-setup.sh"
 
 # Deploy root. Tests point this at a temp directory; the Pi uses /opt/pantry.
 PANTRY_DIR="${PANTRY_DIR:-/opt/pantry}"
@@ -153,7 +153,7 @@ copy_deploy_files() {
   log_info "Copying deployment files to ${PANTRY_DIR}..."
   mkdir -p "${PANTRY_DIR}"
   local item src dest
-  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel Caddyfile.legacy Caddyfile.tunnel.legacy publish-mode.sh auth-migrate.sh vapid-env.sh udev systemd; do
+  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel publish-mode.sh runtime-setup.sh vapid-env.sh udev systemd; do
     src="$SCRIPT_DIR/$item"
     dest="${PANTRY_DIR}/$item"
     if [[ ! -e "$src" ]]; then
@@ -226,48 +226,6 @@ write_auth_from_env() {
 valid_hostname() {
   local host="$1"
   [[ "$host" =~ ^[A-Za-z0-9.-]+$ && "$host" == *.* && "$host" != .* && "$host" != *. ]]
-}
-
-# write_legacy_snippet DEST SITE writes one Caddy site that redirects to
-# PUBLIC_HOST, or a comment when SITE is empty. SITE is a site address
-# (a hostname, or http://hostname in tunnel mode) and is already validated.
-write_legacy_snippet() {
-  local dest="$1" site="$2" tmp
-  tmp=$(mktemp "${dest}.XXXXXX")
-  if [[ -n "$site" ]]; then
-    # {$PUBLIC_HOST} is expanded by Caddy when the proxy starts.
-    # shellcheck disable=SC2016
-    printf '%s {\n\tredir https://{$PUBLIC_HOST}{uri} 308\n}\n' "$site" > "$tmp"
-  else
-    printf '%s\n' '# No LEGACY_PUBLIC_HOST. Caddy serves PUBLIC_HOST only.' > "$tmp"
-  fi
-  mv "$tmp" "$dest"
-}
-
-# write_legacy_public_host refreshes the redirect snippets from .env.
-# An empty LEGACY_PUBLIC_HOST serves PUBLIC_HOST only. The same value as
-# PUBLIC_HOST is ignored so Caddy does not get two blocks for one name.
-write_legacy_public_host() {
-  local legacy public site=""
-  legacy=$(env_value LEGACY_PUBLIC_HOST)
-  public=$(env_value PUBLIC_HOST)
-  if [[ -n "$legacy" ]]; then
-    if ! valid_hostname "$legacy"; then
-      log_warn "LEGACY_PUBLIC_HOST must be a hostname such as pantry.rhionin.com, without a scheme or path (got: $legacy). The previous name will not redirect."
-    elif [[ -z "$public" || "$legacy" == "$public" ]]; then
-      log_warn "LEGACY_PUBLIC_HOST ($legacy) is not a different hostname from PUBLIC_HOST. The previous name will not redirect."
-    else
-      site="$legacy"
-      log_info "https://${legacy} redirects to https://${public}"
-    fi
-  fi
-  if [[ -n "$site" ]]; then
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.legacy" "$site"
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.tunnel.legacy" "http://${site}"
-  else
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.legacy" ""
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.tunnel.legacy" ""
-  fi
 }
 
 # prepare_public_profile is 0 when compose should include the public profile.
@@ -542,7 +500,6 @@ cmd_apply() {
   if ! ensure_app_base_url; then
     fatal "Could not set APP_BASE_URL from PUBLIC_HOST"
   fi
-  write_legacy_public_host
   prepare_deploy_trigger_dir
   if ! prepare_setup_dir; then
     fatal "Could not prepare ${PANTRY_DIR}/setup for the setup code"
@@ -579,17 +536,9 @@ cmd_apply() {
     use_public=true
   fi
 
-  # The hash Caddy already checked becomes the login password. An existing
-  # auth.caddy is copied, not regenerated, and a saved session secret stays.
-  if ! sync_household_credential; then
-    fatal "Could not copy the household password hash. The running site was left unchanged."
-  fi
   if [[ -f "${PANTRY_DIR}/auth.caddy" ]]; then
     if ! ensure_session_secret; then
       fatal "Could not save the session secret. The running site was left unchanged."
-    fi
-    if [[ ! -s "${PANTRY_DIR}/auth/household" ]]; then
-      fatal "The public site needs the password hash in ${PANTRY_DIR}/auth/household. The running site was left unchanged."
     fi
   fi
 

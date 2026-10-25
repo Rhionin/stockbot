@@ -34,11 +34,6 @@
 	}
 }
 
-# Previous public name. setup.sh rewrites Caddyfile.tunnel.legacy when
-# LEGACY_PUBLIC_HOST is set, and this container mounts that file here.
-# A comment-only file serves PUBLIC_HOST only.
-import Caddyfile.legacy
-
 http://{$PUBLIC_HOST} {
 	# 1 MB covers every handle in this site: telemetry, the build
 	# identity, the deploy hook, and the public catch-all, which is

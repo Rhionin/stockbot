@@ -38,7 +38,6 @@ services:
         ipv4_address: 10.77.77.3
     volumes:
       - ./Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
-      - ./Caddyfile.tunnel.legacy:/etc/caddy/Caddyfile.legacy:ro
       - caddy-data:/data
       - caddy-config:/config
 

@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { ACCOUNT_PATH, applyHttpResponse, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_RESET_PATH, AUTH_SESSION_PATH, CONFIG_PATH, DEVICES_PAIR_PATH, DEVICES_PATH, EXPORT_PATH, HOUSEHOLD_PASSWORD_RESTORE_PATH, HOUSEHOLD_PASSWORD_RETIRE_PATH, HOUSEHOLD_SETTINGS_PATH, HOUSEHOLDS_PATH, IMPORT_PATH, IMPORT_UPLOADS_PATH, INVALID_CREDENTIALS_SENTENCE, INVITE_ACCEPT_PATH, INVITE_PREVIEW_PATH, INVITES_PATH, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, OPERATOR_HOUSEHOLD_INVITES_PATH, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, SETUP_PATH, stockbotCode, SWITCH_HOUSEHOLD_PATH, TELEMETRY_PATH, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type AcceptInviteRequest, type AcceptInviteResponse, type AuthSession, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type CreateHouseholdRequest, type CreateHouseholdResponse, type DeleteAccountRequest, type DeleteHouseholdRequest, type Device, type DeviceListResponse, type ExportJob, type ExportJobCreated, type Household, type HouseholdDeleted, type HouseholdSettings, type ImportJob, type ImportJobCreated, type ImportUploadCreated, type InviteCreated, type InviteListResponse, type InvitePreview, type LinkSuggestionsResponse, type LiveConfig, type LoginRequest, type Member, type MemberListResponse, type PairingCode, type PairingLookup, type RenameDeviceRequest, type ResetLinkCreated, type ResetPasswordRequest, type ScanListEntry, type SwitchHouseholdRequest, type UndoPreview } from '@stockbot/shared/contract';
+import { ACCOUNT_PATH, applyHttpResponse, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_RESET_PATH, AUTH_SESSION_PATH, CONFIG_PATH, DEVICES_PAIR_PATH, DEVICES_PATH, EXPORT_PATH, HOUSEHOLD_SETTINGS_PATH, HOUSEHOLDS_PATH, IMPORT_PATH, IMPORT_UPLOADS_PATH, INVITE_ACCEPT_PATH, INVITE_PREVIEW_PATH, INVITES_PATH, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, OPERATOR_HOUSEHOLD_INVITES_PATH, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, SETUP_PATH, stockbotCode, SWITCH_HOUSEHOLD_PATH, TELEMETRY_PATH, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type AcceptInviteRequest, type AcceptInviteResponse, type AuthSession, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type CreateHouseholdRequest, type CreateHouseholdResponse, type DeleteAccountRequest, type DeleteHouseholdRequest, type Device, type DeviceListResponse, type ExportJob, type ExportJobCreated, type Household, type HouseholdDeleted, type HouseholdSettings, type ImportJob, type ImportJobCreated, type ImportUploadCreated, type InviteCreated, type InviteListResponse, type InvitePreview, type LinkSuggestionsResponse, type LiveConfig, type LoginRequest, type Member, type MemberListResponse, type PairingCode, type PairingLookup, type RenameDeviceRequest, type ResetLinkCreated, type ResetPasswordRequest, type ScanListEntry, type SwitchHouseholdRequest, type UndoPreview } from '@stockbot/shared/contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -50,7 +50,6 @@ import {
   SCANNER_CONFIG_PATH,
   SCANNER_MODE_PATH,
   SCANS_PATH,
-  SESSION_PATH,
   type SetScannerModeResponse,
   inventoryListPath,
   scanCommitPath,
@@ -737,21 +736,16 @@ async function fetchResponse(path: string, init?: RequestInit): Promise<Response
 function isAuthSession(body: unknown): body is AuthSession {
   if (typeof body !== 'object' || body === null) return false;
   const kind = (body as { kind?: unknown }).kind;
-  return kind === 'signed_out' || kind === 'account' || kind === 'household_password' || kind === 'lan';
+  return kind === 'signed_out' || kind === 'account';
 }
 
 function authToHousehold(auth: AuthSession): HouseholdSession {
   if (auth.kind === 'signed_out') return { required: true, username: '', error: '' };
-  if (auth.kind === 'lan') return { required: false, username: '', error: '' };
-  const username = auth.user?.email || auth.user?.name || 'household';
+  const username = auth.user?.email || auth.user?.name || '';
   return { required: true, username, error: '' };
 }
 
-function isLegacySession(body: unknown): body is { required?: boolean; username?: string; error?: string; code?: string } {
-  return typeof body === 'object' && body !== null && !Array.isArray(body) && ('required' in body || 'username' in body);
-}
-
-async function readSessionResponse(res: Response): Promise<{ kind: 'auth'; session: HouseholdSession } | { kind: 'legacy'; session: HouseholdSession } | { kind: 'unknown' } | { kind: 'failure'; session: HouseholdSession }> {
+async function readSessionResponse(res: Response): Promise<{ kind: 'auth'; session: HouseholdSession } | { kind: 'failure'; session: HouseholdSession }> {
   if (res.status === 401) {
     rememberAuth(null);
     applyHttpResponse(res.status, '');
@@ -782,33 +776,14 @@ async function readSessionResponse(res: Response): Promise<{ kind: 'auth'; sessi
     rememberAuth(body);
     return { kind: 'auth', session: authToHousehold(body) };
   }
-  if (!isLegacySession(body)) return { kind: 'unknown' };
   rememberAuth(null);
-  if (!body.required) return { kind: 'legacy', session: { required: false, username: '', error: '' } };
-  return { kind: 'legacy', session: { required: true, username: body.username ?? '', error: '' } };
+  return { kind: 'failure', session: { required: true, username: '', error: '' } };
 }
 
 export async function getSession(): Promise<HouseholdSession> {
-  let primary: Response | null = null;
-  try {
-    primary = await fetchResponse(AUTH_SESSION_PATH, { credentials: 'same-origin' });
-  } catch (error) {
-    // A missing route is a 404. A mock that rejects an unknown URL, or any
-    // other non-network failure, still has the legacy session route.
-    if (error instanceof UnreachableError) throw error;
-  }
-  let res = primary;
-  if (res === null || res.status === 404) {
-    res = await fetchResponse(SESSION_PATH, { credentials: 'same-origin' });
-  }
+  const res = await fetchResponse(AUTH_SESSION_PATH, { credentials: 'same-origin' });
   const parsed = await readSessionResponse(res);
-  if (parsed.kind !== 'unknown') return parsed.session;
-  if (res === primary) {
-    const fallback = await readSessionResponse(await fetchResponse(SESSION_PATH, { credentials: 'same-origin' }));
-    if (fallback.kind !== 'unknown') return fallback.session;
-  }
-  rememberAuth(null);
-  return { required: false, username: '', error: '' };
+  return parsed.session;
 }
 
 function sessionFailure(status: number, code: string, errorText?: string): HouseholdSession {
@@ -819,30 +794,8 @@ function sessionFailure(status: number, code: string, errorText?: string): House
   return { required: true, username: '', error: errorText || 'Sign-in is unavailable right now.' };
 }
 
-export async function login(username: string, password: string): Promise<void> {
-  const res = await fetchResponse('/api/login', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!res.ok) {
-    let message = INVALID_CREDENTIALS_SENTENCE;
-    let code = '';
-    try {
-      const body = (await res.json()) as { error?: string; code?: string };
-      if (body.error) message = body.error;
-      code = stockbotCode(body);
-    } catch {
-      // The status is enough when the body is empty.
-    }
-    throw classifiedError(res.status, message, code);
-  }
-  notifyApiSuccess();
-}
-
 export async function logout(): Promise<void> {
-  const path = stage1AuthActive() ? AUTH_LOGOUT_PATH : '/api/logout';
+  const path = AUTH_LOGOUT_PATH;
   const res = await fetchResponse(path, { method: 'POST', credentials: 'same-origin' });
   if (!res.ok) {
     let code: string;
@@ -1017,14 +970,6 @@ export function submitSetup(body: { setupCode: string; name?: string; email: str
 
 export function getHouseholdSettings(): Promise<HouseholdSettings> {
   return apiFetch(HOUSEHOLD_SETTINGS_PATH);
-}
-
-export function retireHouseholdPassword(): Promise<HouseholdSettings> {
-  return apiFetch(HOUSEHOLD_PASSWORD_RETIRE_PATH, { method: 'POST' });
-}
-
-export function restoreHouseholdPassword(): Promise<HouseholdSettings> {
-  return apiFetch(HOUSEHOLD_PASSWORD_RESTORE_PATH, { method: 'POST' });
 }
 
 export function listHouseholds(): Promise<AuthSession['memberships']> {

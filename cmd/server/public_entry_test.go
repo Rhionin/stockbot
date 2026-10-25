@@ -53,7 +53,6 @@ func TestUnauthenticatedInventoryRequiresASession(t *testing.T) {
 	}
 	catalog := product.NewCatalog(sqlDB)
 	handler, _ := server.NewHandler(catalog, nil, nil, sqlDB,
-		server.WithHouseholdAuth(loadHouseholdGate(sqlDB)),
 		server.WithReadDB(readDB),
 		server.WithStage1(directory, site),
 	)

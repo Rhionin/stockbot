@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/tenant"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Service is the stage-1 directory, sessions, and household membership.
@@ -128,21 +127,10 @@ func (s *Service) Membership(ctx context.Context, userID, householdID string) (r
 // View is the session payload for a principal already resolved on this request.
 // The active household is the one stored on the session, not the header.
 func (s *Service) View(ctx context.Context, p Principal) (SessionView, error) {
-	switch p.Kind {
-	case "lan":
-		view, err := s.householdPasswordView(ctx, p.HouseholdID)
-		if err != nil {
-			return SessionView{}, err
-		}
-		view.Kind = "lan"
-		return view, nil
-	case "household_password":
-		return s.householdPasswordView(ctx, p.HouseholdID)
-	case "account":
+	if p.Kind == "account" {
 		return s.accountView(ctx, s.db, p.UserID, p.StoredHousehold)
-	default:
-		return emptySession("signed_out"), nil
 	}
+	return emptySession("signed_out"), nil
 }
 
 // SessionUser is the signed-in account. It is null for LAN and household-password sessions.
@@ -267,38 +255,6 @@ func (s *Service) LoginAccount(ctx context.Context, email, password, kind string
 	return view, nil
 }
 
-// LoginHousehold starts a household-password session for household 1.
-func (s *Service) LoginHousehold(ctx context.Context, user, pass, kind string) (SessionView, error) {
-	if strings.TrimSpace(user) == "" {
-		gate, err := s.LoadHouseholdGate(ctx)
-		if err != nil {
-			return SessionView{}, err
-		}
-		user = gate.User
-	}
-	ok, err := s.householdPasswordMatches(ctx, user, pass)
-	if err != nil {
-		return SessionView{}, err
-	}
-	if !ok {
-		return SessionView{}, failCount(CodeUnauthorized, SentenceUnauthorized)
-	}
-	scope, err := PrimaryScope(ctx, s.db)
-	if err != nil {
-		return SessionView{}, AsError(err)
-	}
-	token, err := s.insertSession(ctx, s.db, "", sessionKind(kind), "household_password", scope.HouseholdID())
-	if err != nil {
-		return SessionView{}, err
-	}
-	view, err := s.householdPasswordView(ctx, scope.HouseholdID())
-	if err != nil {
-		return SessionView{}, err
-	}
-	view.Token = token
-	return view, nil
-}
-
 func sessionKind(kind string) string {
 	if kind == "cookie" {
 		return "cookie"
@@ -369,25 +325,8 @@ func (s *Service) LookupSession(ctx context.Context, token string) (Principal, S
 			return Principal{}, SessionView{}, AsError(err)
 		}
 	}
-	if row.Origin == "household_password" {
-		on, err := s.HouseholdPasswordOn(ctx)
-		if err != nil {
-			return Principal{}, SessionView{}, err
-		}
-		if !on {
-			return Principal{}, SessionView{}, unauthorized()
-		}
-		view, err := s.householdPasswordView(ctx, row.Active)
-		if err != nil {
-			return Principal{}, SessionView{}, err
-		}
-		return Principal{
-			Kind:            "household_password",
-			HouseholdID:     row.Active,
-			StoredHousehold: row.Active,
-			Role:            "member",
-			SessionID:       HashOpaque(token),
-		}, view, nil
+	if row.Origin == "household_password" || row.UserID == "" {
+		return Principal{}, SessionView{}, unauthorized()
 	}
 	view, err := s.accountView(ctx, s.db, row.UserID, row.Active)
 	if err != nil {
@@ -562,89 +501,6 @@ func (s *Service) accountView(ctx context.Context, q queryer, userID, active str
 		view.ActiveHouseholdID = &active
 	}
 	return view, nil
-}
-
-func (s *Service) householdPasswordView(ctx context.Context, householdID string) (SessionView, error) {
-	var name string
-	if err := s.db.QueryRowContext(ctx, `SELECT name FROM households WHERE id = ?`, householdID).Scan(&name); err != nil {
-		return SessionView{}, AsError(err)
-	}
-	view := emptySession("household_password")
-	view.Memberships = []SessionHousehold{{HouseholdID: householdID, Name: name, Role: "member"}}
-	view.Households = []HouseholdCard{{ID: householdID, Name: name, Role: "member"}}
-	view.ActiveHouseholdID = &householdID
-	return view, nil
-}
-
-// HouseholdGate is the shared password as it is stored now.
-// On is public shared-password sign-in: state on and a nonempty hash.
-// Retirement (state off) keeps the hash so it can be restored.
-type HouseholdGate struct {
-	On           bool
-	User         string
-	Hash         []byte
-	Secret       []byte
-	RestoreUntil string
-}
-
-func (s *Service) LoadHouseholdGate(ctx context.Context) (HouseholdGate, error) {
-	scope, err := PrimaryScope(ctx, s.db)
-	if err != nil {
-		return HouseholdGate{}, AsError(err)
-	}
-	var login, hash, key, state, until string
-	err = s.db.QueryRowContext(ctx, `
-		SELECT login_name, COALESCE(pw_hash, ''), COALESCE(session_key, ''), state, COALESCE(restore_until, '')
-		FROM household_password WHERE household_id = ?`, scope.HouseholdID()).Scan(&login, &hash, &key, &state, &until)
-	if err == sql.ErrNoRows {
-		return HouseholdGate{}, nil
-	}
-	if err != nil {
-		return HouseholdGate{}, AsError(err)
-	}
-	secret, _ := base64.StdEncoding.DecodeString(key)
-	return HouseholdGate{
-		On:           state == "on" && hash != "",
-		User:         login,
-		Hash:         []byte(hash),
-		Secret:       secret,
-		RestoreUntil: until,
-	}, nil
-}
-
-// HouseholdPasswordOn reports whether household 1 still signs in with the shared password.
-// A missing row is off: public sign-in fails closed until a hash is stored.
-func (s *Service) HouseholdPasswordOn(ctx context.Context) (bool, error) {
-	gate, err := s.LoadHouseholdGate(ctx)
-	if err != nil {
-		return false, err
-	}
-	return gate.On, nil
-}
-
-// CheckHouseholdPassword reports whether the shared household password matches.
-func (s *Service) CheckHouseholdPassword(ctx context.Context, user, pass string) (bool, error) {
-	return s.householdPasswordMatches(ctx, user, pass)
-}
-
-func (s *Service) householdPasswordMatches(ctx context.Context, user, pass string) (bool, error) {
-	gate, err := s.LoadHouseholdGate(ctx)
-	if err != nil {
-		return false, err
-	}
-	if !gate.On || len(gate.Hash) == 0 {
-		return false, nil
-	}
-	if user != gate.User {
-		// Still compare so a wrong username is not faster in a way that
-		// skips bcrypt. The username must match as well.
-		_ = bcrypt.CompareHashAndPassword(gate.Hash, []byte(pass))
-		return false, nil
-	}
-	if bcrypt.CompareHashAndPassword(gate.Hash, []byte(pass)) != nil {
-		return false, nil
-	}
-	return true, nil
 }
 
 func (s *Service) membershipRole(ctx context.Context, q queryer, userID, householdID string) (role, deleted string, ok bool, err error) {

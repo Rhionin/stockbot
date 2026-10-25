@@ -17,12 +17,10 @@ type PurgeResult struct {
 	Households   int
 	Batches      int
 	Largest      int
-	Passwords    int
 	SecureDelete bool
 }
 
-// PurgeDue hard-deletes households whose restore window has ended, and clears
-// a retired household password once its seven days are over.
+// PurgeDue hard-deletes households whose restore window has ended.
 // The connection runs with PRAGMA secure_delete=ON so freed pages are overwritten.
 func (s *Service) PurgeDue(ctx context.Context) (PurgeResult, error) {
 	var result PurgeResult
@@ -52,11 +50,6 @@ func (s *Service) PurgeDue(ctx context.Context) (PurgeResult, error) {
 		return result, fmt.Errorf("secure_delete is not on")
 	}
 	now := stamp(s.clock())
-	n, err := s.purgeRetiredPasswords(ctx, now)
-	if err != nil {
-		return result, err
-	}
-	result.Passwords = n
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id FROM households
 		WHERE purge_after IS NOT NULL AND purge_after <= ?
@@ -93,7 +86,7 @@ func (s *Service) PurgeDue(ctx context.Context) (PurgeResult, error) {
 			result.Largest = largest
 		}
 	}
-	if result.Households == 0 && result.Passwords == 0 {
+	if result.Households == 0 {
 		return result, nil
 	}
 	// Checkpoint, then rewrite the file. secure_delete zeros a page when it
@@ -137,50 +130,6 @@ func (s *Service) RunPurge(ctx context.Context, every time.Duration) {
 			run()
 		}
 	}
-}
-
-func (s *Service) purgeRetiredPasswords(ctx context.Context, now string) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT household_id FROM household_password
-		WHERE state = 'off' AND restore_until IS NOT NULL AND restore_until <= ? AND household_id != ''
-		ORDER BY household_id`, now)
-	if err != nil {
-		return 0, AsError(err)
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, AsError(err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, AsError(err)
-	}
-	rows.Close()
-	n := 0
-	for _, id := range ids {
-		res, err := s.db.ExecContext(ctx, `
-			UPDATE household_password
-			SET pw_hash = NULL, session_key = NULL, restore_until = NULL
-			WHERE household_id = ? AND state = 'off' AND restore_until IS NOT NULL AND restore_until <= ?`,
-			id, now)
-		if err != nil {
-			return n, AsError(err)
-		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			continue
-		}
-		if err := writeAudit(ctx, s.db, id, "system", "purge", "household_password.purged", "household", id, now); err != nil {
-			return n, AsError(err)
-		}
-		n++
-	}
-	return n, nil
 }
 
 func (s *Service) purgeHousehold(ctx context.Context, householdID string, tables []string, now string) (batches, largest int, err error) {

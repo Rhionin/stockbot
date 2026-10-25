@@ -126,7 +126,7 @@ func runPurge(args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("purge: households %d, passwords %d", result.Households, result.Passwords)
+	log.Printf("purge: households %d", result.Households)
 	return nil
 }
 

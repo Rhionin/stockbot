@@ -144,12 +144,9 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 	handler, _ := setupTestWithDB(t)
 	registered := []string{
 		"/api/config", "/api/me", "/api/households", "/api/invites", "/api/devices",
-		"/api/login", "/api/logout", "/api/session",
 		"/api/auth/session", "/api/auth/session/household", "/api/auth/login",
 		"/api/auth/logout", "/api/auth/reset", "/api/auth/callback",
 		"/api/household/settings",
-		"/api/household/household-password/retire",
-		"/api/household/household-password/restore",
 		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
 		"/api/operator/household-invites", "/api/operator/alerts",
 		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
@@ -205,7 +202,7 @@ func stage1RegisteredPath(path string) bool {
 var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
 	`config|me|households|invites|devices|` +
 	`auth/(?:session(?:/household)?|login|logout|reset|callback)|` +
-	`household/settings|household/household-password/(?:retire|restore)|` +
+	`household/settings|` +
 	`invites/(?:preview|accept|[^/]+/revoke)|` +
 	`operator/(?:household-invites|alerts)|` +
 	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +

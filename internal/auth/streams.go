@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 )
@@ -69,8 +68,7 @@ func (s *Streams) BindLive(ctx context.Context, key, householdID, userID, kind s
 }
 
 // KickHousehold closes streams for one member of a household.
-// An empty household closes that user's streams in every household.
-// An empty user closes household-password streams in the household.
+// An empty user closes every stream registered for the household.
 func (s *Streams) KickHousehold(householdID, userID string) {
 	if s == nil || (householdID == "" && userID == "") {
 		return
@@ -96,7 +94,10 @@ func streamMatch(entry *streamCancel, householdID, userID string) bool {
 	if userID != "" {
 		return entry.userID == userID
 	}
-	return entry.householdID == householdID && entry.kind == "household_password"
+	if householdID != "" {
+		return entry.householdID == householdID && entry.userID == ""
+	}
+	return false
 }
 
 // Live is how many open streams are registered under key.
@@ -121,24 +122,6 @@ func (s *Streams) Kick(key string) {
 	}
 }
 
-// KickPrefix ends every stream whose key starts with prefix.
-// Retiring the household password closes every address bucket at once.
-func (s *Streams) KickPrefix(prefix string) {
-	if s == nil || prefix == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, live := range s.byKey {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		for entry := range live {
-			entry.cancel()
-		}
-	}
-}
-
 // UserStreamKey is the events bucket for one account.
 func UserStreamKey(userID string) string {
 	if userID == "" {
@@ -156,8 +139,3 @@ func SessionStreamKey(sessionID string) string {
 	return "session:" + sessionID
 }
 
-// HouseholdPasswordStreamKey is one address's bucket while the shared
-// password is on. One LAN client cannot use up another client's streams.
-func HouseholdPasswordStreamKey(clientIP string) string {
-	return "hhpw:" + strings.TrimSpace(clientIP)
-}

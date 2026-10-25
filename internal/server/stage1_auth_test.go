@@ -14,7 +14,6 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestStage1AuthFlow(t *testing.T) {
@@ -132,45 +131,6 @@ func TestStage1AuthFlow(t *testing.T) {
 		t.Fatal("pairing response included the household id")
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', 'c2VjcmV0')`, household, string(hash)); err != nil {
-		t.Fatal(err)
-	}
-	lan := stage1Do(handler, http.MethodGet, "/api/auth/session", rawCookie, nil, app.EntryPublic, "")
-	if lan.Code != http.StatusOK || !strings.Contains(lan.Body.String(), `"kind":"account"`) {
-		t.Fatalf("session = %d %s", lan.Code, lan.Body.String())
-	}
-	lanLogin := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{"email": "ada@pantry.test", "password": "correct horse"}, app.EntryPublic, "")
-	if lanLogin.Code != http.StatusOK {
-		t.Fatalf("login = %d %s", lanLogin.Code, lanLogin.Body.String())
-	}
-	bearerLAN := stage1Request(http.MethodGet, "/api/auth/session", "", nil, app.EntryPublic, "")
-	bearerLAN.Header.Set("Authorization", "Bearer "+rawCookie)
-	bearerRec := httptest.NewRecorder()
-	handler.ServeHTTP(bearerRec, bearerLAN)
-	if bearerRec.Code != http.StatusOK || !strings.Contains(bearerRec.Body.String(), `"kind":"account"`) {
-		t.Fatalf("bearer = %d %s", bearerRec.Code, bearerRec.Body.String())
-	}
-
-	retired := stage1Do(handler, http.MethodPost, "/api/household/household-password/retire", rawCookie, map[string]any{}, app.EntryPublic, "")
-	if retired.Code != http.StatusOK || !strings.Contains(retired.Body.String(), `"householdPasswordEnabled":false`) {
-		t.Fatalf("retire = %d %s", retired.Code, retired.Body.String())
-	}
-	lanAfter := stage1Do(handler, http.MethodGet, "/api/auth/session", "", nil, app.EntryPublic, "")
-	if lanAfter.Code != http.StatusOK || !strings.Contains(lanAfter.Body.String(), `"kind":"signed_out"`) {
-		t.Fatalf("signed out after retire = %d %s", lanAfter.Code, lanAfter.Body.String())
-	}
-	basic := stage1Request(http.MethodGet, "/api/inventory", "", nil, app.EntryPublic, "")
-	basic.SetBasicAuth("pantry", "shared-secret")
-	basicRec := httptest.NewRecorder()
-	handler.ServeHTTP(basicRec, basic)
-	if basicRec.Code != http.StatusUpgradeRequired || !strings.Contains(basicRec.Body.String(), auth.SentenceUpgrade) {
-		t.Fatalf("basic after retire = %d %s", basicRec.Code, basicRec.Body.String())
-	}
-
 	svc.SetClock(func() time.Time { return time.Now().Add(181 * 24 * time.Hour) })
 	capped := stage1Do(handler, http.MethodGet, "/api/auth/session", rawCookie, nil, app.EntryPublic, "")
 	if capped.Code != http.StatusUnauthorized || !strings.Contains(capped.Body.String(), "Sign in to continue.") {
@@ -223,7 +183,7 @@ func TestStage1LoginRateLimit(t *testing.T) {
 	}
 }
 
-func TestStage1FreshDatabaseKeepsLANOpenUntilRetirement(t *testing.T) {
+func TestStage1FreshDatabaseRequiresSignIn(t *testing.T) {
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "pantry.db"))
 	setupDir := t.TempDir()
 	svc := auth.NewService(db, setupDir)
@@ -259,68 +219,8 @@ func TestStage1FreshDatabaseKeepsLANOpenUntilRetirement(t *testing.T) {
 		t.Fatalf("public inventory = %d %s", publicInventory.Code, publicInventory.Body.String())
 	}
 	config := stage1Do(handler, http.MethodGet, "/api/config", "", nil, app.EntryPublic, "")
-	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"householdPasswordSignIn":false`) {
+	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"live":"sse"`) {
 		t.Fatalf("config = %d %s", config.Code, config.Body.String())
-	}
-
-	if rec := stage1Do(handler, http.MethodGet, "/setup", "", nil, app.EntryPublic, ""); rec.Code != http.StatusOK {
-		t.Fatalf("setup page %d %s", rec.Code, rec.Body.String())
-	}
-	code, err := auth.ReadSetupCode(setupDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
-		"setupCode": code, "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
-	}, app.EntryPublic, "")
-	if created.Code != http.StatusOK {
-		t.Fatalf("setup = %d %s", created.Code, created.Body.String())
-	}
-	login := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{
-		"email": "ada@pantry.test", "password": "correct horse",
-	}, app.EntryPublic, "")
-	if login.Code != http.StatusOK {
-		t.Fatalf("login = %d %s", login.Code, login.Body.String())
-	}
-	rawCookie := cookieFrom(t, login, site.SessionCookie().Name)
-	var household string
-	if err := db.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
-		t.Fatal(err)
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', 'c2VjcmV0')`, household, string(hash)); err != nil {
-		t.Fatal(err)
-	}
-	stillOpen := stage1Do(handler, http.MethodGet, "/api/inventory", "", nil, app.EntryPublic, "")
-	if stillOpen.Code != http.StatusUnauthorized {
-		t.Fatalf("inventory without a session = %d %s", stillOpen.Code, stillOpen.Body.String())
-	}
-	signedIn := stage1Do(handler, http.MethodGet, "/api/config", "", nil, app.EntryPublic, "")
-	if signedIn.Code != http.StatusOK || !strings.Contains(signedIn.Body.String(), `"householdPasswordSignIn":true`) {
-		t.Fatalf("config with a stored password = %d %s", signedIn.Code, signedIn.Body.String())
-	}
-
-	retired := stage1Do(handler, http.MethodPost, "/api/household/household-password/retire", rawCookie, map[string]any{}, app.EntryPublic, "")
-	if retired.Code != http.StatusOK || !strings.Contains(retired.Body.String(), `"householdPasswordEnabled":false`) {
-		t.Fatalf("retire = %d %s", retired.Code, retired.Body.String())
-	}
-	var state string
-	if err := db.QueryRow(`SELECT state FROM household_password WHERE household_id = ?`, household).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state != "off" {
-		t.Fatalf("household_password state = %q", state)
-	}
-	lanAfter := stage1Do(handler, http.MethodGet, "/api/auth/session", "", nil, app.EntryPublic, "")
-	if lanAfter.Code != http.StatusOK || !strings.Contains(lanAfter.Body.String(), `"kind":"signed_out"`) {
-		t.Fatalf("session after retire = %d %s", lanAfter.Code, lanAfter.Body.String())
-	}
-	inventoryAfter := stage1Do(handler, http.MethodGet, "/api/inventory", "", nil, app.EntryPublic, "")
-	if inventoryAfter.Code != http.StatusUnauthorized {
-		t.Fatalf("lan inventory after retire = %d %s", inventoryAfter.Code, inventoryAfter.Body.String())
 	}
 }
 

@@ -879,7 +879,7 @@ export interface HostedErrorBody {
   suggestions?: unknown;
 }
 
-export type SessionKind = 'signed_out' | 'account' | 'household_password' | 'lan';
+export type SessionKind = 'signed_out' | 'account';
 
 export interface SessionHousehold {
   householdId: string;
@@ -890,7 +890,7 @@ export interface SessionHousehold {
 }
 
 export interface AuthSession {
-  /** Null when nobody is signed in, and on a household-password or LAN session. */
+  /** Null when nobody is signed in. */
   user: { id: string; email: string; name: string } | null;
   kind: SessionKind;
   /** #364 list. `householdId` is the membership id. */
@@ -904,8 +904,6 @@ export interface AuthSession {
 export interface LoginRequest {
   email?: string;
   password?: string;
-  /** Only while household 1's shared password is on. */
-  householdPassword?: string;
 }
 
 /** Web sets the session cookie. Expo also receives `token` (`sbs_…`). */
@@ -1211,9 +1209,6 @@ export interface CreateHouseholdRequest {
 /** GET and PATCH /api/household/settings. State only: never the password or its hash. */
 export interface HouseholdSettings {
   restockMode: RestockMode;
-  householdPasswordEnabled: boolean;
-  /** RFC3339, only while a retired password can be restored. */
-  householdPasswordRestoreUntil?: string;
 }
 
 export interface ExportProductV1 {
@@ -1377,7 +1372,6 @@ export type LiveConfig =
   | {
       live: 'sse' | 'poll';
       minClientVersion: { expo: string };
-      householdPasswordSignIn: boolean;
       appBaseUrl?: string;
       entry?: 'lan' | 'public';
     }
@@ -1385,7 +1379,6 @@ export type LiveConfig =
       live: 'push';
       appsync: { httpUrl: string; realtimeUrl: string };
       minClientVersion: { expo: string };
-      householdPasswordSignIn: boolean;
       appBaseUrl?: string;
       entry?: 'public';
     };
@@ -1575,8 +1568,6 @@ export const AUTH_LOGOUT_PATH = '/api/auth/logout';
 export const AUTH_RESET_PATH = '/api/auth/reset';
 export const SWITCH_HOUSEHOLD_PATH = '/api/auth/session/household';
 export const HOUSEHOLD_SETTINGS_PATH = '/api/household/settings';
-export const HOUSEHOLD_PASSWORD_RETIRE_PATH = '/api/household/household-password/retire';
-export const HOUSEHOLD_PASSWORD_RESTORE_PATH = '/api/household/household-password/restore';
 export const HOUSEHOLDS_PATH = '/api/households';
 export const INVITES_PATH = '/api/invites';
 export const INVITE_PREVIEW_PATH = '/api/invites/preview';

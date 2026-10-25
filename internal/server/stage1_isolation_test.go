@@ -36,8 +36,6 @@ func init() {
 		{"POST /api/households/{id}/members/{userId}/reset-link", kindForeignID},
 		{"GET /api/household/settings", kindListLeak},
 		{"PATCH /api/household/settings", kindWriteScope},
-		{"POST /api/household/household-password/retire", kindWriteScope},
-		{"POST /api/household/household-password/restore", kindWriteScope},
 		{"POST /api/invites", kindWriteScope},
 		{"GET /api/invites", kindListLeak},
 		{"POST /api/invites/{id}/revoke", kindForeignID},

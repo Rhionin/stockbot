@@ -8,7 +8,6 @@ import (
 
 func TestSyncSnapshot(t *testing.T) {
 	const token = "sync-token-value-ok"
-	gate := testHousehold(t, "pantry", "correct-password")
 	runHandlerTests(t, []handlerTestCase{
 		{
 			name: "snapshot is hidden until a token is configured",
@@ -65,7 +64,7 @@ func TestSyncSnapshot(t *testing.T) {
 		},
 		{
 			name:    "the token works on the public site without a session",
-			options: []Option{WithSyncToken(token), WithHouseholdAuth(gate)},
+			options: []Option{WithSyncToken(token)},
 			setup: func(env testEnv) {
 				seedSyncSnapshot(env)
 			},

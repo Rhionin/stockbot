@@ -62,7 +62,6 @@ func TestLiveHubKickClosesOnlyTheMatchingStream(t *testing.T) {
 	b := events.NewBroadcaster()
 	north, _ := b.SubscribeHousehold("house-north", "user-north", "account")
 	otherHouse, _ := b.SubscribeHousehold("house-south", "user-north", "account")
-	password, _ := b.SubscribeHousehold("house-north", "", "household_password")
 	kept, cancelKept := b.SubscribeHousehold("house-north", "user-kept", "account")
 	defer cancelKept()
 
@@ -73,10 +72,6 @@ func TestLiveHubKickClosesOnlyTheMatchingStream(t *testing.T) {
 	b.PublishHint("house-south", "list")
 	if msg := recvMessage(t, otherHouse); msg.HouseholdID != "house-south" {
 		t.Fatalf("other household = %+v", msg)
-	}
-	b.Hub().Kick("house-north", "")
-	if _, ok := <-password; ok {
-		t.Fatal("household-password stream stayed open")
 	}
 	b.PublishHint("house-north", "devices")
 	if msg := recvMessage(t, kept); msg.EventType != "hint" {

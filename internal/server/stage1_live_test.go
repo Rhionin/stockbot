@@ -53,17 +53,22 @@ func TestEleventhStreamSendsRetryAfter(t *testing.T) {
 			cancel()
 		}
 	})
+	key := auth.SessionStreamKey("sess-cap")
 	for range 10 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels = append(cancels, cancel)
-		if _, err := streams.BindLive(ctx, "lan:192.0.2.20", "house-1", "", "lan"); err != nil {
+		if _, err := streams.BindLive(ctx, key, "house-1", "user-a", "account"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	handler := &EventsHandler{Broadcaster: events.NewBroadcaster(), Streams: streams, Keepalive: time.Hour}
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.RemoteAddr = "192.0.2.20:443"
-	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Kind: "lan", HouseholdID: "house-1"}))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
+		Kind:        "account",
+		HouseholdID: "house-1",
+		UserID:      "user-a",
+		SessionID:   "sess-cap",
+	}))
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, req)
 	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"code":"rate_limited"`) {

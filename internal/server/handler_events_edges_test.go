@@ -39,10 +39,11 @@ func TestEventsRefuseAnEleventhStreamAndAClosedWriter(t *testing.T) {
 			cancel()
 		}
 	})
+	key := auth.SessionStreamKey("sess-edge")
 	for range 10 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels = append(cancels, cancel)
-		if _, err := streams.Bind(ctx, "lan:192.0.2.10"); err != nil {
+		if _, err := streams.BindLive(ctx, key, "house-1", "user-edge", "account"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -50,8 +51,12 @@ func TestEventsRefuseAnEleventhStreamAndAClosedWriter(t *testing.T) {
 	broadcaster := events.NewBroadcaster()
 	handler := &EventsHandler{Broadcaster: broadcaster, Streams: streams, Keepalive: time.Hour}
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	req.RemoteAddr = "192.0.2.10:443"
-	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Kind: "lan"}))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
+		Kind:        "account",
+		HouseholdID: "house-1",
+		UserID:      "user-edge",
+		SessionID:   "sess-edge",
+	}))
 	rec := httptest.NewRecorder()
 	handler.Handle(rec, req)
 	if rec.Code != http.StatusTooManyRequests {

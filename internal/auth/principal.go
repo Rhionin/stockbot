@@ -3,7 +3,7 @@ package auth
 import "context"
 
 // Principal is who this request is allowed to act as.
-// Kind is account, household_password, lan, or device.
+// Kind is account or device.
 type Principal struct {
 	Kind            string
 	UserID          string

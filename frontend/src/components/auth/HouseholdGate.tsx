@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AUTH_NOT_CONFIGURED_SENTENCE, AUTH_SETUP_SENTENCE, SESSION_EXPIRED_SENTENCE, serverNoticeText, UnreachableError, type AuthSession } from '@stockbot/shared/contract';
-import { currentAuthSession, getLiveConfig, getSession, logout, setUnauthorizedHandler, stage1AuthActive } from '../../api/client';
+import { currentAuthSession, getSession, logout, setUnauthorizedHandler, stage1AuthActive } from '../../api/client';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 import { AccountLoginPage } from './AccountLoginPage';
 import { HouseholdSessionContext } from './householdSession';
-import { LoginPage } from './LoginPage';
 import './LoginPage.css';
 
 const RETRY_START_MS = 1000;
 const RETRY_CAP_MS = 30_000;
 
 export const HouseholdGate = ({ children }: { children: ReactNode }) => {
-  const [phase, setPhase] = useState<'checking' | 'offline' | 'login' | 'account' | 'setup' | 'app'>('checking');
+  const [phase, setPhase] = useState<'checking' | 'offline' | 'account' | 'setup' | 'app'>('checking');
   const [required, setRequired] = useState(false);
   const [error, setError] = useState('');
   const [auth, setAuth] = useState<AuthSession | null>(null);
@@ -31,18 +30,13 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
         setPhase('setup');
         return;
       }
-      if (next?.kind === 'signed_out' || (stage1AuthActive() && next === null && session.required && session.username === '')) {
+      if (next?.kind === 'signed_out' || next === null) {
         setError(session.error);
         setPhase('account');
         return;
       }
-      if (!session.required || session.username !== '') {
-        setError('');
-        setPhase('app');
-        return;
-      }
-      setError(session.error);
-      setPhase('login');
+      setError('');
+      setPhase('app');
     };
 
     const attempt = () => {
@@ -62,7 +56,7 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
         }
         setRequired(true);
         setError('Stockbot could not be reached.');
-        setPhase('login');
+        setPhase('account');
       });
     };
 
@@ -86,16 +80,15 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     setUnauthorizedHandler(() => {
       setError(SESSION_EXPIRED_SENTENCE);
       setAuth(null);
-      setPhase(stage1AuthActive() ? 'account' : 'login');
+      setPhase('account');
     });
     return () => setUnauthorizedHandler(null);
   }, [phase, required]);
 
   const signOut = () => {
-    const account = stage1AuthActive();
     void logout().finally(() => {
       setAuth(null);
-      setPhase(account ? 'account' : 'login');
+      setPhase('account');
     });
   };
 
@@ -120,11 +113,11 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     );
   }
 
-  if (phase === 'login') {
+  if (phase === 'account') {
     return (
       <>
         <ServerNoticeBanner inset />
-        <LoginPage
+        <AccountLoginPage
           initialError={error}
           onSignedIn={() => {
             setRequired(true);
@@ -132,26 +125,8 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
             setAuth(currentAuthSession());
             setPhase('app');
           }}
-          onNotConfigured={() => {
-            setError('');
-            setPhase('setup');
-          }}
         />
       </>
-    );
-  }
-
-  if (phase === 'account') {
-    return (
-      <AccountEntry
-        initialError={error}
-        onSignedIn={() => {
-          setRequired(true);
-          setError('');
-          setAuth(currentAuthSession());
-          setPhase('app');
-        }}
-      />
     );
   }
 
@@ -166,58 +141,3 @@ export const HouseholdGate = ({ children }: { children: ReactNode }) => {
     </HouseholdSessionContext.Provider>
   );
 };
-
-function AccountEntry({ initialError, onSignedIn }: { initialError: string; onSignedIn: () => void }) {
-  const [householdPasswordSignIn, setHouseholdPasswordSignIn] = useState<boolean | null>(null);
-  const [entry, setEntry] = useState<'lan' | 'public' | ''>('');
-  const [appBaseUrl, setAppBaseUrl] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    void getLiveConfig().then((config) => {
-      if (cancelled) return;
-      setHouseholdPasswordSignIn(Boolean(config.householdPasswordSignIn));
-      setEntry(config.entry ?? '');
-      setAppBaseUrl(config.appBaseUrl ?? '');
-    }).catch(() => {
-      if (!cancelled) setHouseholdPasswordSignIn(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (householdPasswordSignIn === null) {
-    return (
-      <main className="login-screen" aria-busy="true">
-        <p className="login-brand">Stockbot</p>
-      </main>
-    );
-  }
-
-  if (entry === 'lan') {
-    return (
-      <main className="login-screen">
-        <section className="login-card">
-          <p className="login-lede">
-            {appBaseUrl === ''
-              ? 'Sign-in is not used on this address.'
-              : `Sign in at ${appBaseUrl}.`}
-          </p>
-          {appBaseUrl !== '' && <a href={appBaseUrl}>Open {appBaseUrl}</a>}
-        </section>
-      </main>
-    );
-  }
-
-  return (
-    <>
-      <ServerNoticeBanner inset />
-      <AccountLoginPage
-        householdPasswordSignIn={householdPasswordSignIn}
-        initialError={initialError}
-        onSignedIn={onSignedIn}
-      />
-    </>
-  );
-}
