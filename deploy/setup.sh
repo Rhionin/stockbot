@@ -287,7 +287,7 @@ report_site() {
   public_host=$(env_value PUBLIC_HOST)
   mode="${publish_mode:-acme}"
   if [[ -n "$public_host" && "$mode" == acme ]]; then
-    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use Cloudflare Tunnel for this hostname. Cellular data still uses the public name and the shared password."
+    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use Cloudflare Tunnel for this hostname. Cellular data still uses the public name."
   fi
 }
 
@@ -667,11 +667,11 @@ cmd_apply() {
   log_success "Stockbot setup complete"
   report_site
   if [[ "$use_public" == true && "$publish_mode" == tunnel ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel (shared password). Nothing on this Pi is listening on ports 80 or 443."
+    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel. Nothing on this Pi is listening on ports 80 or 443."
     log_info "In Zero Trust, the public hostname service URL is ${PANTRY_TUNNEL_ORIGIN}"
     log_info "Open that https URL on home Wi-Fi and on cellular, then remove the router's forwards for ports 80 and 443."
   elif [[ "$use_public" == true ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) (shared password)"
+    log_info "Public: https://$(env_value PUBLIC_HOST)"
   fi
   log_info "Check: sudo ./setup.sh status"
 }
@@ -1003,7 +1003,7 @@ cmd_status() {
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing, so the tunnel will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh publish --tunnel"
     elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true \
       && docker inspect -f '{{.State.Running}}' "$cloud_container" 2>/dev/null | grep -qx true; then
-      log_success "Cloudflare Tunnel is running for https://$public_host (shared password required). Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
+      log_success "Cloudflare Tunnel is running for https://$public_host. Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
     else
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but the tunnel is not running. Start it with: sudo ./setup.sh publish --tunnel"
     fi
@@ -1011,7 +1011,7 @@ cmd_status() {
     if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
       log_warn "PUBLIC_HOST=$public_host but ${PANTRY_DIR}/auth.caddy is missing, so the proxy will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh"
     elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
-      log_success "Public proxy is running for https://$public_host (shared password required)"
+      log_success "Public proxy is running for https://$public_host"
     else
       log_warn "PUBLIC_HOST=$public_host but the proxy container is not running. Start it with: sudo ./setup.sh"
     fi

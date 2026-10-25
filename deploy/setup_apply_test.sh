@@ -946,6 +946,5 @@ for grocy_mode in lan tunnel; do
   rm -rf "$grocy_off" "$grocy_on"
 done
 
-rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$unavailable" "$owned" "$own_bin" "$fail_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
-rm -f /tmp/pantry-chown-fail.out /tmp/pantry-chown-skip.out
+rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$setup_dir" "$own_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
 echo "setup_apply_test ok"
