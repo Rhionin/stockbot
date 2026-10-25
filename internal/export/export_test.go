@@ -317,7 +317,7 @@ func TestBuildExportEdgesAndCancellation(t *testing.T) {
 	if len(rows) != 2 || rows[1][0] != "'=edge-catalog-q7" || rows[1][3] != "soon" || rows[1][6] != "1.5" {
 		t.Fatalf("items csv %+v", rows)
 	}
-	if csvCell("-1") != "-1" || csvCell("+cmd") != "'+cmd" || csvCell("@cmd") != "'@cmd" || csvCell("\tcmd") != "'\tcmd" || csvCell("\rcmd") != "'\rcmd" || csvCell("plain") != "plain" {
+	if csvCell("-1") != "-1" || csvCell("-2+3") != "'-2+3" || csvCell("+cmd") != "'+cmd" || csvCell("@cmd") != "'@cmd" || csvCell("\tcmd") != "'\tcmd" || csvCell("\rcmd") != "'\rcmd" || csvCell("plain") != "plain" {
 		t.Fatal("csvCell")
 	}
 	if !strings.Contains(string(bundle.JSON), `"barcodes":[]`) || !strings.Contains(string(bundle.JSON), `"productIds":[]`) {
