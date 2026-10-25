@@ -7,6 +7,10 @@ test.describe('find item by name', () => {
     const unique = `Jam ${Date.now()}`
     const newName = `Berry ${Date.now()}`
     const searchPrefix = unique.slice(0, 6)
+    const toastFor = (detail: string) =>
+      page.locator('.restock-toast').filter({
+        has: page.locator('.restock-toast-detail').getByText(detail, { exact: true }),
+      })
 
     await page.goto('/inventory')
     await page.getByRole('button', { name: 'Add an item' }).click()
@@ -16,7 +20,7 @@ test.describe('find item by name', () => {
     await page.getByRole('button', { name: 'Add item' }).click()
     await expect(page.getByRole('dialog', { name: 'Add an item' })).toBeHidden()
     await expect(page.getByRole('heading', { name: unique })).toBeVisible()
-    await expect(page.locator('.restock-toast').filter({ hasText: `Added ${unique}.` })).toBeVisible()
+    await expect(toastFor(`Added ${unique}.`)).toBeVisible()
 
     const openFindItem = async () => {
       await page.getByRole('button', { name: 'Find an item' }).click()
@@ -33,7 +37,7 @@ test.describe('find item by name', () => {
     await expect(dialog.getByText(unique, { exact: true })).toBeVisible()
     await expect(dialog.getByText('None on hand')).toBeVisible()
     await dialog.getByText(unique, { exact: true }).click()
-    const stockedToast = page.locator('.restock-toast').filter({ hasText: `Added 1 ${unique}.` })
+    const stockedToast = toastFor(`Added 1 ${unique}.`)
     await expect(stockedToast).toBeVisible()
     await stockedToast.getByRole('button', { name: 'Undo' }).click()
     await expect(stockedToast).toBeHidden()
@@ -44,20 +48,20 @@ test.describe('find item by name', () => {
     await dialog.getByText(unique, { exact: true }).click()
     await expect(dialog.getByText('None on hand')).toBeVisible()
     await dialog.getByRole('button', { name: 'Add it and take it out' }).click()
-    const backfillToast = page.locator('.restock-toast').filter({ hasText: `Added and took out 1 ${unique}.` })
+    const backfillToast = toastFor(`Added and took out 1 ${unique}.`)
     await expect(backfillToast).toBeVisible()
 
     await resetToStockIn(page)
     dialog = await openFindItem()
     await dialog.getByLabel('Find an item').fill(searchPrefix)
     await dialog.getByText(unique, { exact: true }).click()
-    await expect(page.locator('.restock-toast').filter({ hasText: `Added 1 ${unique}.` })).toBeVisible()
+    await expect(toastFor(`Added 1 ${unique}.`)).toBeVisible()
 
     await setScannerMode(page, 'stock_out')
     dialog = await openFindItem()
     await dialog.getByLabel('Find an item').fill(searchPrefix)
     await dialog.getByText(unique, { exact: true }).click()
-    await expect(page.locator('.restock-toast').filter({ hasText: `Took out 1 ${unique}.` })).toBeVisible()
+    await expect(toastFor(`Took out 1 ${unique}.`)).toBeVisible()
 
     await resetToStockIn(page)
     dialog = await openFindItem()
@@ -68,13 +72,13 @@ test.describe('find item by name', () => {
     await addDialog.getByLabel('Name').fill(newName)
     await addDialog.getByRole('button', { name: 'Add and stock in' }).click()
     await expect(addDialog).toBeHidden()
-    await expect(page.locator('.restock-toast').filter({ hasText: `Added 1 ${newName}.` })).toBeVisible()
+    await expect(toastFor(`Added 1 ${newName}.`)).toBeVisible()
 
     await setScannerMode(page, 'stock_out')
     dialog = await openFindItem()
     await dialog.getByLabel('Find an item').fill(newName.slice(0, 6))
     await dialog.getByText(newName, { exact: true }).click()
-    await expect(page.locator('.restock-toast').filter({ hasText: `Took out 1 ${newName}.` })).toBeVisible()
+    await expect(toastFor(`Took out 1 ${newName}.`)).toBeVisible()
 
     const search = await request.get(`/api/products/search?q=${encodeURIComponent(searchPrefix)}`)
     expect(search.ok()).toBe(true)
