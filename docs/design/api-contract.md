@@ -142,7 +142,7 @@ At startup and on each `/setup` request, if no account exists and there is no un
 
 `issued_at` is RFC 3339 UTC. A code is expired when `now - issued_at >= 24 h`. An `issued_at` more than 24 h in the future counts as expired. If the clock reads earlier than `issued_at` by less than 24 h (the Pi booted before NTP synced), the code counts as valid and is not reissued. A clock jump forward can at worst expire it early, which just means a new code is issued.
 
-The file holds the code, the issued-at timestamp, the mode (`setup` or `recover`), and the human instruction line from the staged plan: `Stockbot setup code: XXXX-XXXX (open http://<pi>:8080/setup on your home network; expires in 24 h)`. The code and the file contents are never logged. The server logs only that the code was written to the configured host path, plus the expiry.
+The file holds the code, the issued-at timestamp, the mode (`setup` or `recover`), and the human instruction line from the staged plan: `Stockbot setup code: XXXX-XXXX (open /setup to finish setup; expires in 24 h)`. The code and the file contents are never logged. The server logs only that the code was written to the configured host path, plus the expiry.
 
 At startup, the server deletes the file only if no unused, unexpired row exists.
 

@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import { Alert, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Button, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
 import {
   HOSTED_ERROR_SENTENCES,
   PASSWORD_TOO_SHORT,
+  SETUP_PATH,
   hostedErrorSentence,
   inlineFailure,
   type HostedErrorCode,
@@ -84,6 +85,9 @@ export const AccountLoginPage = ({
             <Button className="login-submit" type="submit" size="lg" fullWidth loading={pending}>Sign in</Button>
           </Stack>
         </form>
+        <Text className="login-setup-link">
+          <Anchor href={SETUP_PATH}>Set up Stockbot</Anchor>
+        </Text>
       </section>
     </main>
   );

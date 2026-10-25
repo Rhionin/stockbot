@@ -94,6 +94,27 @@
   margin-top: 28px;
 }
 
+.login-setup-link {
+  margin: 22px 0 0;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.login-setup-link a {
+  font-weight: 700;
+}
+
+.login-ready {
+  margin-top: 28px;
+}
+
+.login-ready a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-weight: 700;
+}
+
 .login-submit {
   margin-top: 4px;
 }

@@ -66,8 +66,9 @@ const install = async (page: Page) => {
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
-    if (!path.startsWith('/api') && path !== '/setup') return route.continue()
     const method = route.request().method()
+    if (path === '/setup' && method !== 'POST') return route.continue()
+    if (!path.startsWith('/api') && path !== '/setup') return route.continue()
     if (path === '/api/auth/session' && method === 'GET') return fulfillJson(route, sessionBody())
     if (path === '/api/auth/session/household' && method === 'POST') {
       const body = route.request().postDataJSON() as { householdId: string }
@@ -223,6 +224,14 @@ test.describe('stage-1 household screens', () => {
     resetStage()
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
     await install(page)
+    await page.goto('/')
+    await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
+    const setup = page.getByRole('link', { name: 'Set up Stockbot' })
+    await expect(setup).toBeVisible()
+    await expect(setup).toHaveAttribute('href', '/setup')
+    await expect(page.getByText('pi:8080')).toHaveCount(0)
+    await setup.click()
+    await expect(page.getByRole('heading', { name: 'Set up Stockbot' })).toBeVisible()
     await page.goto('/')
     await expect(page.getByRole('note')).toContainText('The shared household password no longer signs in')
     await shot(page, 'sign-in-c2a3', width)
