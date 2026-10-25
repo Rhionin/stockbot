@@ -50,6 +50,9 @@ func TestBuildExportV1IsIsolatedAndRemapped(t *testing.T) {
 	if doc.Settings.RestockMode != "ask_hold" || doc.Settings.SupplyDefault != "months:2" {
 		t.Fatalf("settings %+v", doc.Settings)
 	}
+	if doc.Settings.ProductBrands == nil || doc.Settings.ProductBrands["p-north"] != "north-brand-q7" {
+		t.Fatalf("product brands %+v", doc.Settings.ProductBrands)
+	}
 
 	if len(doc.Products) != 1 || doc.Products[0].ID != "p-north" || doc.Products[0].Name != "north-typed-q7" {
 		t.Fatalf("products %+v", doc.Products)
@@ -240,7 +243,8 @@ func seedTwoHouseholds(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO household_settings (household_id, key, value) VALUES
 		(?, 'supply_target_kind', 'months'),
 		(?, 'supply_target_value', '2'),
-		(?, 'secret_note', 'secret-setting-q7')`, northID, northID, northID)
+		(?, 'product_brand:p-north', 'north-brand-q7'),
+		(?, 'secret_note', 'secret-setting-q7')`, northID, northID, northID, northID)
 	exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES
 		(?, 'keeper', 'pw-hash-sentinel-q7', 'on', 'session-key-sentinel-q7')`, northID)
 	exec(`INSERT INTO devices (id, household_id, kind, label, created_at) VALUES

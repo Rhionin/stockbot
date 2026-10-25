@@ -78,9 +78,6 @@ func (b *productWriteBody) UnmarshalJSON(data []byte) error {
 		NetUnit:       plain.NetUnit,
 		PackCount:     plain.PackCount,
 	}
-	if _, ok := raw["brand"]; ok {
-		// brand is optional; presence is tracked only when needed later
-	}
 	if _, ok := raw["size"]; ok {
 		b.SizeSet = true
 	}

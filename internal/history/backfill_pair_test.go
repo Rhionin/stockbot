@@ -221,7 +221,7 @@ func recordHeldMove(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 	if scanID != "" {
 		scan = &scanID
 	}
-	if err := AttachStockIn(t.Context(), scope, tx, InNote{
+	if _, err := AttachStockIn(t.Context(), scope, tx, InNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: source,
 		ScanEntryID: scan, InstanceIDs: []string{instanceID}, Unshelved: unshelved,
 	}); err != nil {
@@ -249,14 +249,14 @@ func recordConsumed(t *testing.T, db *sql.DB, itemID, productID, scanID, instanc
 		t.Fatal(err)
 	}
 	// The insert has no stock-in move. Point it at a manual stock-in so repair does not invent one.
-	if err := AttachStockIn(t.Context(), scope, tx, InNote{
+	if _, err := AttachStockIn(t.Context(), scope, tx, InNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
 		InstanceIDs: []string{instanceID},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	scan := scanID
-	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
+	if _, err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: source,
 		ScanEntryID: &scan, InstanceID: instanceID,
 	}); err != nil {
@@ -276,7 +276,7 @@ func recordConsumedMove(t *testing.T, db *sql.DB, itemID, productID, scanID, ins
 	}
 	defer tx.Rollback()
 	scan := scanID
-	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
+	if _, err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "scan",
 		ScanEntryID: &scan, InstanceID: instanceID,
 	}); err != nil {
@@ -301,7 +301,7 @@ func useUp(t *testing.T, db *sql.DB, itemID, productID, instanceID string, at ti
 		WHERE id = ? AND household_id = ?`, at, instanceID, scope.HouseholdID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := AttachStockOut(t.Context(), scope, tx, OutNote{
+	if _, err := AttachStockOut(t.Context(), scope, tx, OutNote{
 		ItemID: itemID, ProductID: productID, At: at, Source: "manual",
 		InstanceID: instanceID,
 	}); err != nil {

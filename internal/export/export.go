@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -141,8 +142,9 @@ type Category struct {
 
 // Settings is the allowlist. channel_key is never a field.
 type Settings struct {
-	RestockMode   string `json:"restockMode"`
-	SupplyDefault string `json:"supplyDefault"`
+	RestockMode   string            `json:"restockMode"`
+	SupplyDefault string            `json:"supplyDefault"`
+	ProductBrands map[string]string `json:"productBrands,omitempty"`
 }
 
 type rawItem struct {
@@ -225,6 +227,10 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 	if err != nil {
 		return Bundle{}, err
 	}
+	productBrands, err := loadProductBrands(ctx, db, householdID)
+	if err != nil {
+		return Bundle{}, err
+	}
 	globals, err := loadGlobalBarcodes(ctx, db, householdID, productIDs(products))
 	if err != nil {
 		return Bundle{}, err
@@ -246,7 +252,7 @@ func Build(ctx context.Context, db *sql.DB, householdID string, now time.Time) (
 		StockMoves:        make([]StockMove, 0, len(moves)),
 		Groups:            make([]Group, 0, len(groups)),
 		Categories:        make([]Category, 0, len(categories)),
-		Settings:          Settings{RestockMode: mode, SupplyDefault: supply},
+		Settings:          Settings{RestockMode: mode, SupplyDefault: supply, ProductBrands: productBrands},
 	}
 	for _, id := range sortedKeys(products) {
 		row := products[id]
@@ -694,6 +700,39 @@ func loadItemTarget(ctx context.Context, db *sql.DB, householdID string) (map[st
 		out[id] = value
 	}
 	return out, rows.Err()
+}
+
+func loadProductBrands(ctx context.Context, db *sql.DB, householdID string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT key, value FROM household_settings
+		WHERE household_id = ? AND key LIKE 'product_brand:%'`, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	const prefix = "product_brand:"
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		productID := strings.TrimPrefix(key, prefix)
+		if productID == "" {
+			continue
+		}
+		out[productID] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func loadSupplyDefault(ctx context.Context, db *sql.DB, householdID string) (string, error) {

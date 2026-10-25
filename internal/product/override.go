@@ -69,6 +69,8 @@ func BrandSQL(productAlias string) string {
 }
 
 // SaveBrand stores an optional brand label for a household product.
+// There is no product-delete API today; a removed catalog row can leave a
+// product_brand:{id} setting behind until the household clears it manually.
 func (r *Catalog) SaveBrand(ctx context.Context, scope tenant.Scope, productID, brand string) error {
 	if err := scope.Require(); err != nil {
 		return err

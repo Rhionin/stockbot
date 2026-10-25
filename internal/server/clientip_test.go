@@ -38,6 +38,18 @@ func TestVisitorIPFallsBackToClientHeader(t *testing.T) {
 	}
 }
 
+func TestVisitorIPRejectsCloudflareConnectingIPList(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("CF-Connecting-IP", "198.51.100.1, 198.51.100.2")
+	req.RemoteAddr = "10.0.0.5:1234"
+	if got := visitorIP(req, false); got != "" {
+		t.Fatalf("visitorIP = %q", got)
+	}
+	if got := clientKey(req); got != "ip:10.0.0.5" {
+		t.Fatalf("clientKey = %q", got)
+	}
+}
+
 func TestVisitorIPPrefersCloudflareConnectingIP(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("CF-Connecting-IP", "203.0.113.55")

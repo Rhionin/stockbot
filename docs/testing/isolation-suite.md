@@ -10,7 +10,7 @@ Every registered route is in exactly one category. The key is the pattern the ro
 
 | Category | What it means | Runs today |
 | --- | --- | --- |
-| Public allowlist | Open on the public entry. Must match `isPublicPath` or `isAuthEndpoint`. | Yes. The body must contain no household marker. |
+| Public allowlist | Open on the public entry. Must match `isPublicPath`. | Yes. The body must contain no household marker. |
 | Ops allowlist | Process liveness, not household data. `GET /health` is the entry. | Yes. Same marker check. |
 | Isolation cases | A real cross-household check. | The map is empty until a route leaves quarantine with a check. |
 | Quarantine | Waiting on #377. Includes `GET /api/events` and `GET /api/sync/snapshot`, which carry household data and are not exempt. | No. |
@@ -35,7 +35,7 @@ The root mux also registers five composition mounts: `/api`, `/api/`, `/health`,
 
 1. Run `go test ./internal/server -run TestEveryRouteHasIsolationCase`. A new route fails with `unlisted route`.
 2. Put the pattern in exactly one list in `isolation_cases_test.go`: `publicAllowlist`, `opsAllowlist`, `isolationCases`, or (only by removing something else, and only while it still waits on #377) `quarantine`.
-3. A public entry needs a reason, and it must agree with `isPublicPath` / `isAuthEndpoint`. The test reads those functions and calls them. Adding a path to one side only fails the build.
+3. A public entry needs a reason, and it must agree with `isPublicPath`. The test reads that function and calls it. Adding a path to one side only fails the build.
 4. An ops entry needs a reason and must not carry household data. The runner requests it and applies `assertNoLeak`. Do not park a household route here.
 5. A real isolation case is an `isolationCases` entry with a `check` function. Drive the HTTP API as one household (`principal.Apply`) and call `assertNoLeak` with the other household. The kind is `foreign-id`, `list-leak`, `write-scope`, or `scoped-collection`.
 6. A route that leaves quarantine is deleted from `quarantine` in the same change. Set `maxQuarantined` to the new length. Do not raise that constant. Raising it requires explicit reviewer sign-off, and it is not an acceptable way to add a route.

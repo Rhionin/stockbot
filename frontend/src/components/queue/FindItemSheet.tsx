@@ -39,6 +39,8 @@ import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
+const runeLength = (text: string) => [...text].length;
+
 export interface FindItemSheetProps {
   opened: boolean;
   direction: ScanDirection;
@@ -72,7 +74,7 @@ export function FindItemSheet({
   useEffect(() => {
     if (!opened) return undefined;
     const q = debouncedQuery;
-    if (q.length < 2) return undefined;
+    if (runeLength(q) < 2) return undefined;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch lifecycle
     setLoading(true);
@@ -96,18 +98,28 @@ export function FindItemSheet({
   }, [opened, debouncedQuery]);
 
   const trimmedQuery = query.trim();
-  const shortQuery = trimmedQuery.length > 0 && trimmedQuery.length < 2;
+  const shortQuery = runeLength(trimmedQuery) > 0 && runeLength(trimmedQuery) < 2;
   const resultRows = useMemo(
-    () => (debouncedQuery.length >= 2 ? results : []),
+    () => (runeLength(debouncedQuery) >= 2 ? results : []),
     [debouncedQuery, results],
   );
   const hasExactNameMatch = resultRows.some(
     (hit) => hit.name.toLowerCase() === trimmedQuery.toLowerCase(),
   );
-  const showAddNamed = trimmedQuery.length >= 2 && !hasExactNameMatch;
+  const showAddNamed = runeLength(trimmedQuery) >= 2 && !hasExactNameMatch;
 
   const addMode: AddItemSheetMode = direction === 'stock_out' ? 'stock_out' : 'stock_in';
   const modeSubtitle = direction === 'stock_in' ? SCANS_ADD_TO_STOCK : SCANS_REMOVE_FROM_STOCK;
+
+  const undoBackfillMoves = (stockOutMoveId: string, stockInMoveId: string) => {
+    void undoMove(stockOutMoveId)
+      .then(() => undoMove(stockInMoveId))
+      .then(() => onInventoryChanged())
+      .catch((requestError: unknown) => {
+        const message = inlineFailure(requestError, 'Unable to undo.');
+        if (message !== null) setError(message);
+      });
+  };
 
   const resolveItemId = async (hit: ProductSearchHit): Promise<string> => {
     if (hit.itemId != null && hit.itemId !== '') return hit.itemId;
@@ -149,17 +161,13 @@ export function FindItemSheet({
       const result = await stockOutItem(itemId, backfill ? { backfill: true } : undefined);
       onInventoryChanged();
       if (backfill && result.backfill !== undefined) {
-        const moveId = result.backfill.stockInMoveId;
+        const { stockInMoveId, stockOutMoveId } = result.backfill;
         showUndo({
           detail: addedAndTookOutOneToast(hit.name),
-          onUndo: moveId === '' ? undefined : () => {
-            void undoMove(moveId)
-              .then(() => onInventoryChanged())
-              .catch((requestError: unknown) => {
-                const message = inlineFailure(requestError, 'Unable to undo.');
-                if (message !== null) setError(message);
-              });
-          },
+          onUndo:
+            stockOutMoveId !== '' && stockInMoveId !== ''
+              ? () => undoBackfillMoves(stockOutMoveId, stockInMoveId)
+              : undefined,
         });
       } else {
         const moveId = result.stockOutMoveId ?? '';
@@ -233,13 +241,17 @@ export function FindItemSheet({
     result: { itemId?: string; id: string; name: string },
     mode: AddItemSheetMode,
   ) => {
-    const itemId = result.itemId;
-    if (itemId === undefined || itemId === '') {
-      const ensured = await ensureProductItem(result.id);
-      await finishCreated(ensured.itemId, result.name, mode);
-      return;
+    try {
+      const itemId = result.itemId;
+      if (itemId === undefined || itemId === '') {
+        const ensured = await ensureProductItem(result.id);
+        await finishCreated(ensured.itemId, result.name, mode);
+        return;
+      }
+      await finishCreated(itemId, result.name, mode);
+    } catch (requestError) {
+      setError(inlineFailure(requestError, 'Unable to add item.') ?? '');
     }
-    await finishCreated(itemId, result.name, mode);
   };
 
   const finishCreated = async (itemId: string, name: string, mode: AddItemSheetMode) => {
@@ -249,7 +261,12 @@ export function FindItemSheet({
       showUndo({
         detail: addedOneToast(name),
         onUndo: () => {
-          void removeItemInstance(instance.id).then(() => onInventoryChanged());
+          void removeItemInstance(instance.id)
+            .then(() => onInventoryChanged())
+            .catch((requestError: unknown) => {
+              const message = inlineFailure(requestError, 'Unable to undo.');
+              if (message !== null) setError(message);
+            });
         },
       });
       onClose();
@@ -258,12 +275,14 @@ export function FindItemSheet({
     if (mode === 'stock_out') {
       const out = await stockOutItem(itemId, { backfill: true });
       onInventoryChanged();
-      const moveId = out.backfill?.stockInMoveId ?? '';
+      const stockInMoveId = out.backfill?.stockInMoveId ?? '';
+      const stockOutMoveId = out.backfill?.stockOutMoveId ?? '';
       showUndo({
         detail: addedAndTookOutOneToast(name),
-        onUndo: moveId === '' ? undefined : () => {
-          void undoMove(moveId).then(() => onInventoryChanged());
-        },
+        onUndo:
+          stockOutMoveId !== '' && stockInMoveId !== ''
+            ? () => undoBackfillMoves(stockOutMoveId, stockInMoveId)
+            : undefined,
       });
       onClose();
     }
@@ -338,7 +357,7 @@ export function FindItemSheet({
                   ))}
                 </Stack>
               )}
-              {pendingZero === null && !loading && debouncedQuery.length >= 2 && resultRows.length === 0 && error === '' && (
+              {pendingZero === null && !loading && runeLength(debouncedQuery) >= 2 && resultRows.length === 0 && error === '' && (
                 <Text size="sm" c="dimmed">{nothingCalledYet(debouncedQuery)}</Text>
               )}
               {pendingZero === null && showAddNamed && (

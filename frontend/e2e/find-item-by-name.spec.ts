@@ -50,6 +50,8 @@ test.describe('find item by name', () => {
     await dialog.getByRole('button', { name: 'Add it and take it out' }).click()
     const backfillToast = toastFor(`Added and took out 1 ${unique}.`)
     await expect(backfillToast).toBeVisible()
+    await backfillToast.getByRole('button', { name: 'Undo' }).click()
+    await expect(backfillToast).toBeHidden()
 
     await resetToStockIn(page)
     dialog = await openFindItem()

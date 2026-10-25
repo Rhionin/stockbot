@@ -74,10 +74,10 @@ func TestJournalReadsRepairedEventsAndCorrections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := AttachStockIn(ctx, scope, tx, InNote{}); err != nil {
+	if _, err := AttachStockIn(ctx, scope, tx, InNote{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := AttachStockOut(ctx, scope, tx, OutNote{}); err != nil {
+	if _, err := AttachStockOut(ctx, scope, tx, OutNote{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

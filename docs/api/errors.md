@@ -202,8 +202,8 @@ screen shows the sentence, as it does today.
 | Status | Code | Sentence | Where |
 | --- | --- | --- | --- |
 | 401 | `unauthorized` | `Sign in required.` | A protected `/api` route with no session or a rejected bearer token. |
-| 400 | `validation` | Field-specific validation on `POST /api/auth/login` and related auth routes. |
-| 401 | `unauthorized` | Wrong email or password on `POST /api/auth/login`. |
+| 400 | `validation` | Field-specific validation on `POST /api/auth/login` and related auth routes. | `POST /api/auth/login` and related auth routes. |
+| 401 | `unauthorized` | Wrong email or password. | `POST /api/auth/login`. |
 | 429 | `rate_limited` | `Too many sign-in attempts. Try again later.` | Rate limiter on `POST /api/auth/login` and related auth routes. |
 
 ## Request parsing
@@ -247,6 +247,7 @@ do not include `field`.
 | `POST /api/shopping-list/items/{id}/unknown-resolution` | `handler_unknown_resolution.go:40` | `missing id path parameter` |
 | same | `:56` | `missing provider` |
 | `GET /api/products/lookup` | `handler_lookup.go:20` | `barcode query parameter is required` |
+| `GET /api/products/search` | `handler_product_search.go:29` | `Type at least 2 letters.` (`code` is `query_too_short`) |
 | `POST /api/products/overrides` | `handler_override.go:26` | `barcode is required` |
 | same | `:29` | `productId is required` |
 | `GET /api/providers/{providerId}/authorize` | `handler_providers.go:158` | `{Name} does not use an authorization-code connection` |

@@ -117,10 +117,11 @@ func ensureStockIns(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scans s
 			return err
 		}
 		current = nil
-		return AttachStockIn(ctx, scope, tx, InNote{
+		_, err = AttachStockIn(ctx, scope, tx, InNote{
 			ItemID: head.ItemID, ProductID: head.ProductID, At: head.At,
 			Source: source, ScanEntryID: scanID, Tracked: tracked, InstanceIDs: ids,
 		})
+		return err
 	}
 	for _, row := range loaded {
 		if len(current) > 0 {
@@ -312,7 +313,7 @@ func ensureRemoved(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scans sc
 	}
 	for _, row := range loaded {
 		scanID, source := scans.first(row.userID, row.productID, "stock_out", row.at)
-		if err := AttachStockOut(ctx, scope, tx, OutNote{
+		if _, err := AttachStockOut(ctx, scope, tx, OutNote{
 			ItemID: row.itemID, ProductID: row.productID, At: row.at,
 			Source: source, ScanEntryID: scanID, Tracked: false, InstanceID: row.id,
 		}); err != nil {

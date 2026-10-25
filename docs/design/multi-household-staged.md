@@ -379,12 +379,7 @@ The WAF rule (§6) is an edge backstop only.
   - Add `request_body { max_size 1MB }` on the catch-all, and a nested `handle /api/device/*` with `max_size 64KB` (§8).
   - Files that still use `X-Pantry-Entry`, the full list from the #364 contract: Network Engineer (S9): `deploy/Caddyfile`, `deploy/Caddyfile.tunnel`, `deploy/setup.sh`, `check-publish-modes.sh`, `setup_apply_test.sh`, `deploy/README.md`. Backend (S1): `cmd/server/README.md`, `cmd/server/public_compose_test.go`, `internal/server/household_auth.go`, `cmd/server/main.go`, `internal/server/server.go`, `cmd/server/household_gate_test.go`, `internal/server/handler_sync_test.go`, `internal/server/household_auth_test.go`, `internal/server/handler_push_test.go`, `internal/server/sentry_test.go`, `internal/server/sentry_tunnel_test.go`. Also named there: `docs/design/multi-household-staged.md`, `docs/design/multi-tenant-saas.md`.
 - **App rule:** sign-in is the app's own for every entry point. A request needs **a principal** (§3.2). `SessionAuth`, `DeviceAuth`, `SyncAuth` and (only while the household password is on) `HouseholdPasswordAuth` form an `Authenticator` chain.
-- **`isAuthEndpoint`:**
-  - `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`, `/api/auth/reset`;
-  - `/api/invites/preview`, `/api/invites/accept`;
-  - `/api/devices/pair/complete`;
-  - `/setup` (§3.9 A1).
-  - `/api/auth/login`, `/api/auth/reset`, and `/setup` behave differently on each listener (§3.7, §3.9 A1).
+- **Auth routes** (`/api/auth/login`, `/api/auth/logout`, `/api/auth/session`, `/api/auth/reset`, `/api/invites/preview`, `/api/invites/accept`, `/api/devices/pair/complete`, `/setup`) are not on the public allowlist. They require a principal or follow the listener-specific rules in §3.7 and §3.9 A1.
   - The old `/api/login`, `/api/logout` and `/api/session` are kept for old builds while the password is on, and removed in phase C.
 - **`isPublicPath` is unchanged.**
 

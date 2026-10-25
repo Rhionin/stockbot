@@ -90,15 +90,31 @@ func (r *Pantry) GetOrCreateItem(ctx context.Context, scope tenant.Scope, produc
 
 	itemID := uuid.NewString()
 	householdID := scope.HouseholdID()
-	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(user_id, product_id) DO NOTHING`,
 		itemID, householdID, productID, householdID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("GetOrCreateItem insert: %w", err)
 	}
-
-	return r.getItemByID(ctx, scope, itemID)
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("GetOrCreateItem insert: %w", err)
+	}
+	if inserted > 0 {
+		if err := changes.Bump(ctx, r.db, householdID, changes.ScopeStock); err != nil {
+			return nil, fmt.Errorf("GetOrCreateItem insert: %w", err)
+		}
+	}
+	item, err = r.getItemByProduct(ctx, scope, productID)
+	if err != nil {
+		return nil, fmt.Errorf("GetOrCreateItem get: %w", err)
+	}
+	if item == nil {
+		return nil, fmt.Errorf("GetOrCreateItem insert: item not found after insert")
+	}
+	return item, nil
 }
 
 // getItemByProduct returns the item for this household and product, or nil.

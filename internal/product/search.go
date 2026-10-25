@@ -46,7 +46,7 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 	if limit > 50 {
 		limit = 50
 	}
-	needle := "%" + strings.ToLower(query) + "%"
+	needle := "%" + escapeLike(strings.ToLower(query)) + "%"
 	householdID := scope.HouseholdID()
 	display := DisplayNameSQL("p")
 	brand := BrandSQL("p")
@@ -69,8 +69,8 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 		JOIN products p ON p.id = i.product_id
 		WHERE i.household_id = ?
 		  AND (
-		    LOWER(`+display+`) LIKE ?
-		    OR LOWER(`+brand+`) LIKE ?
+		    LOWER(`+display+`) LIKE ? ESCAPE '\'
+		    OR LOWER(`+brand+`) LIKE ? ESCAPE '\'
 		  )`,
 		householdID, householdID, householdID, householdID, householdID, needle, householdID, needle,
 	)
@@ -104,8 +104,8 @@ func (r *Catalog) SearchProducts(ctx context.Context, scope tenant.Scope, query 
 			p.pack_count
 		FROM products p
 		WHERE (
-		    LOWER(`+display+`) LIKE ?
-		    OR LOWER(`+brand+`) LIKE ?
+		    LOWER(`+display+`) LIKE ? ESCAPE '\'
+		    OR LOWER(`+brand+`) LIKE ? ESCAPE '\'
 		  )
 		  AND p.id NOT IN (
 		    SELECT product_id FROM items WHERE household_id = ?
@@ -203,6 +203,13 @@ func productFromSizeColumns(productID, category string, netBase sql.NullFloat64,
 		prod.PackCount = &p
 	}
 	return prod
+}
+
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
 }
 
 func formatProductSize(prod Product) string {
