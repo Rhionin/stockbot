@@ -16,11 +16,9 @@ type HouseholdDetail struct {
 	Message   string  `json:"message,omitempty"`
 }
 
-// HouseholdSettings is the state a member can read. The password itself is never included.
+// HouseholdSettings is the state a member can read.
 type HouseholdSettings struct {
-	RestockMode                   string  `json:"restockMode"`
-	HouseholdPasswordEnabled      bool    `json:"householdPasswordEnabled"`
-	HouseholdPasswordRestoreUntil *string `json:"householdPasswordRestoreUntil,omitempty"`
+	RestockMode string `json:"restockMode"`
 }
 
 // Member is one person in a household.
@@ -95,25 +93,7 @@ func (s *Service) Settings(ctx context.Context, householdID string) (HouseholdSe
 	if mode == "" {
 		mode = "auto"
 	}
-	out := HouseholdSettings{RestockMode: mode}
-	scope, err := PrimaryScope(ctx, s.db)
-	if err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if householdID != scope.HouseholdID() {
-		return out, nil
-	}
-	gate, err := s.LoadHouseholdGate(ctx)
-	if err != nil {
-		return HouseholdSettings{}, err
-	}
-	out.HouseholdPasswordEnabled = gate.On
-	if !gate.On && gate.RestoreUntil != "" {
-		if until, ok := parseStamp(gate.RestoreUntil); ok && s.clock().Before(until) {
-			out.HouseholdPasswordRestoreUntil = &gate.RestoreUntil
-		}
-	}
-	return out, nil
+	return HouseholdSettings{RestockMode: mode}, nil
 }
 
 func (s *Service) UpdateRestock(ctx context.Context, userID, householdID, mode string) (HouseholdSettings, error) {
@@ -140,107 +120,6 @@ func (s *Service) UpdateRestock(ctx context.Context, userID, householdID, mode s
 		return HouseholdSettings{}, AsError(err)
 	}
 	return s.Settings(ctx, householdID)
-}
-
-func (s *Service) RetireHouseholdPassword(ctx context.Context, userID, householdID string) (HouseholdSettings, error) {
-	if err := s.requirePrimaryOwner(ctx, userID, householdID); err != nil {
-		return HouseholdSettings{}, err
-	}
-	key, err := randomKey()
-	if err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	now := s.clock()
-	until := now.Add(restoreLife)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE household_password
-		SET state = 'off', retired_at = ?, restore_until = ?, session_key = ?
-		WHERE household_id = ? AND state = 'on'`,
-		stamp(now), stamp(until), key, householdID)
-	if err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return HouseholdSettings{}, notFound()
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE sessions SET revoked_at = ?
-		WHERE origin = 'household_password' AND revoked_at IS NULL`, stamp(now)); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM push_subscriptions WHERE household_id = ? AND (user_id IS NULL OR user_id = '')`, householdID); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if err := writeAudit(ctx, tx, householdID, "account", userID, "household_password_retire", "household", householdID, stamp(now)); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	s.streams.KickPrefix("hhpw:")
-	s.streams.KickHousehold(householdID, "")
-	s.kickLive(householdID, "")
-	return s.Settings(ctx, householdID)
-}
-
-func (s *Service) RestoreHouseholdPassword(ctx context.Context, userID, householdID string) (HouseholdSettings, error) {
-	if err := s.requirePrimaryOwner(ctx, userID, householdID); err != nil {
-		return HouseholdSettings{}, err
-	}
-	gate, err := s.LoadHouseholdGate(ctx)
-	if err != nil {
-		return HouseholdSettings{}, err
-	}
-	until, ok := parseStamp(gate.RestoreUntil)
-	if gate.On || !ok || !s.clock().Before(until) {
-		return HouseholdSettings{}, notFound()
-	}
-	now := s.clock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE household_password
-		SET state = 'on', retired_at = NULL
-		WHERE household_id = ?`, householdID); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if err := writeAudit(ctx, tx, householdID, "account", userID, "household_password_restore", "household", householdID, stamp(now)); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return HouseholdSettings{}, AsError(err)
-	}
-	return s.Settings(ctx, householdID)
-}
-
-func (s *Service) requirePrimaryOwner(ctx context.Context, userID, householdID string) error {
-	scope, err := PrimaryScope(ctx, s.db)
-	if err != nil {
-		return AsError(err)
-	}
-	if householdID != scope.HouseholdID() {
-		return notFound()
-	}
-	role, deleted, ok, err := s.membershipRole(ctx, s.db, userID, householdID)
-	if err != nil || !ok || deleted != "" {
-		if err != nil {
-			return err
-		}
-		return notFound()
-	}
-	if role != "owner" {
-		return fail(CodeForbiddenRole, SentenceForbidden)
-	}
-	return nil
 }
 
 func (s *Service) ListMembers(ctx context.Context, userID, householdID string) ([]Member, error) {

@@ -46,7 +46,7 @@ fi
 # Determine script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/auth-migrate.sh"
+source "$SCRIPT_DIR/runtime-setup.sh"
 
 # Deploy root. Tests point this at a temp directory; the Pi uses /opt/pantry.
 PANTRY_DIR="${PANTRY_DIR:-/opt/pantry}"
@@ -153,7 +153,7 @@ copy_deploy_files() {
   log_info "Copying deployment files to ${PANTRY_DIR}..."
   mkdir -p "${PANTRY_DIR}"
   local item src dest
-  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel Caddyfile.legacy Caddyfile.tunnel.legacy publish-mode.sh auth-migrate.sh vapid-env.sh udev systemd; do
+  for item in docker-compose.yml docker-compose.tunnel.yml docker-compose.grocy.yml .env.example Caddyfile Caddyfile.tunnel publish-mode.sh runtime-setup.sh vapid-env.sh udev systemd; do
     src="$SCRIPT_DIR/$item"
     dest="${PANTRY_DIR}/$item"
     if [[ ! -e "$src" ]]; then
@@ -228,48 +228,6 @@ valid_hostname() {
   [[ "$host" =~ ^[A-Za-z0-9.-]+$ && "$host" == *.* && "$host" != .* && "$host" != *. ]]
 }
 
-# write_legacy_snippet DEST SITE writes one Caddy site that redirects to
-# PUBLIC_HOST, or a comment when SITE is empty. SITE is a site address
-# (a hostname, or http://hostname in tunnel mode) and is already validated.
-write_legacy_snippet() {
-  local dest="$1" site="$2" tmp
-  tmp=$(mktemp "${dest}.XXXXXX")
-  if [[ -n "$site" ]]; then
-    # {$PUBLIC_HOST} is expanded by Caddy when the proxy starts.
-    # shellcheck disable=SC2016
-    printf '%s {\n\tredir https://{$PUBLIC_HOST}{uri} 308\n}\n' "$site" > "$tmp"
-  else
-    printf '%s\n' '# No LEGACY_PUBLIC_HOST. Caddy serves PUBLIC_HOST only.' > "$tmp"
-  fi
-  mv "$tmp" "$dest"
-}
-
-# write_legacy_public_host refreshes the redirect snippets from .env.
-# An empty LEGACY_PUBLIC_HOST serves PUBLIC_HOST only. The same value as
-# PUBLIC_HOST is ignored so Caddy does not get two blocks for one name.
-write_legacy_public_host() {
-  local legacy public site=""
-  legacy=$(env_value LEGACY_PUBLIC_HOST)
-  public=$(env_value PUBLIC_HOST)
-  if [[ -n "$legacy" ]]; then
-    if ! valid_hostname "$legacy"; then
-      log_warn "LEGACY_PUBLIC_HOST must be a hostname such as pantry.rhionin.com, without a scheme or path (got: $legacy). The previous name will not redirect."
-    elif [[ -z "$public" || "$legacy" == "$public" ]]; then
-      log_warn "LEGACY_PUBLIC_HOST ($legacy) is not a different hostname from PUBLIC_HOST. The previous name will not redirect."
-    else
-      site="$legacy"
-      log_info "https://${legacy} redirects to https://${public}"
-    fi
-  fi
-  if [[ -n "$site" ]]; then
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.legacy" "$site"
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.tunnel.legacy" "http://${site}"
-  else
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.legacy" ""
-    write_legacy_snippet "${PANTRY_DIR}/Caddyfile.tunnel.legacy" ""
-  fi
-}
-
 # prepare_public_profile is 0 when compose should include the public profile.
 # An existing auth.caddy is never rewritten and the operator is never prompted,
 # so a re-run cannot wipe BASIC_AUTH_PASSWORD or force it to be typed again.
@@ -329,7 +287,7 @@ report_site() {
   public_host=$(env_value PUBLIC_HOST)
   mode="${publish_mode:-acme}"
   if [[ -n "$public_host" && "$mode" == acme ]]; then
-    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use Cloudflare Tunnel for this hostname. Cellular data still uses the public name and the shared password."
+    log_warn "Home Wi-Fi cannot open https://${public_host} when the router does not hairpin NAT back to itself. That connection hangs. Use Cloudflare Tunnel for this hostname. Cellular data still uses the public name."
   fi
 }
 
@@ -387,30 +345,22 @@ refresh_backup_unit() {
   log_success "Refreshed pantry-backup units"
 }
 
-# verify_public_sign_in asks the loopback listener. A password file the
-# container cannot read makes GET /api/session return 503. A visitor who
-# has not signed in gets 401. Any other status means sign-in is not enforced.
+# verify_public_sign_in asks the loopback listener. A visitor who has not
+# signed in gets 401 on the stage-1 session route.
 verify_public_sign_in() {
   local host_port body code
   host_port=$(env_value HOST_PORT)
   host_port=${host_port:-8080}
   body=$(mktemp)
   if ! code=$(curl -sS -o "$body" -w '%{http_code}' --max-time 10 \
-    "http://127.0.0.1:${host_port}/api/session"); then
+    "http://127.0.0.1:${host_port}/api/auth/session"); then
     rm -f "$body"
     fatal "Could not check whether the site can sign in."
   fi
-  if [[ "$code" == "503" ]] || grep -q -F 'Sign-in is unavailable' "$body"; then
-    log_error "The site cannot read ${PANTRY_DIR}/auth/household."
-    log_error "The pantry container runs as distroless nonroot (uid 65532) and cannot open a root-owned password file."
-    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
-    rm -f "$body"
-    fatal "Sign-in is unavailable. The site is up, but login will not work until that file is readable by uid 65532."
-  fi
   if [[ "$code" != "401" ]]; then
-    log_error "GET /api/session returned ${code}: $(tr '\n' ' ' < "$body")"
+    log_error "GET /api/auth/session returned ${code}: $(tr '\n' ' ' < "$body")"
     rm -f "$body"
-    fatal "Sign-in is not enforced on http://127.0.0.1:${host_port}/api/session."
+    fatal "Sign-in is not enforced on http://127.0.0.1:${host_port}/api/auth/session."
   fi
   rm -f "$body"
 }
@@ -542,7 +492,6 @@ cmd_apply() {
   if ! ensure_app_base_url; then
     fatal "Could not set APP_BASE_URL from PUBLIC_HOST"
   fi
-  write_legacy_public_host
   prepare_deploy_trigger_dir
   if ! prepare_setup_dir; then
     fatal "Could not prepare ${PANTRY_DIR}/setup for the setup code"
@@ -579,17 +528,9 @@ cmd_apply() {
     use_public=true
   fi
 
-  # The hash Caddy already checked becomes the login password. An existing
-  # auth.caddy is copied, not regenerated, and a saved session secret stays.
-  if ! sync_household_credential; then
-    fatal "Could not copy the household password hash. The running site was left unchanged."
-  fi
   if [[ -f "${PANTRY_DIR}/auth.caddy" ]]; then
     if ! ensure_session_secret; then
       fatal "Could not save the session secret. The running site was left unchanged."
-    fi
-    if [[ ! -s "${PANTRY_DIR}/auth/household" ]]; then
-      fatal "The public site needs the password hash in ${PANTRY_DIR}/auth/household. The running site was left unchanged."
     fi
   fi
 
@@ -726,11 +667,11 @@ cmd_apply() {
   log_success "Stockbot setup complete"
   report_site
   if [[ "$use_public" == true && "$publish_mode" == tunnel ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel (shared password). Nothing on this Pi is listening on ports 80 or 443."
+    log_info "Public: https://$(env_value PUBLIC_HOST) through Cloudflare Tunnel. Nothing on this Pi is listening on ports 80 or 443."
     log_info "In Zero Trust, the public hostname service URL is ${PANTRY_TUNNEL_ORIGIN}"
     log_info "Open that https URL on home Wi-Fi and on cellular, then remove the router's forwards for ports 80 and 443."
   elif [[ "$use_public" == true ]]; then
-    log_info "Public: https://$(env_value PUBLIC_HOST) (shared password)"
+    log_info "Public: https://$(env_value PUBLIC_HOST)"
   fi
   log_info "Check: sudo ./setup.sh status"
 }
@@ -1062,7 +1003,7 @@ cmd_status() {
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing, so the tunnel will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh publish --tunnel"
     elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true \
       && docker inspect -f '{{.State.Running}}' "$cloud_container" 2>/dev/null | grep -qx true; then
-      log_success "Cloudflare Tunnel is running for https://$public_host (shared password required). Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
+      log_success "Cloudflare Tunnel is running for https://$public_host. Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
     else
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but the tunnel is not running. Start it with: sudo ./setup.sh publish --tunnel"
     fi
@@ -1070,7 +1011,7 @@ cmd_status() {
     if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
       log_warn "PUBLIC_HOST=$public_host but ${PANTRY_DIR}/auth.caddy is missing, so the proxy will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh"
     elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
-      log_success "Public proxy is running for https://$public_host (shared password required)"
+      log_success "Public proxy is running for https://$public_host"
     else
       log_warn "PUBLIC_HOST=$public_host but the proxy container is not running. Start it with: sudo ./setup.sh"
     fi

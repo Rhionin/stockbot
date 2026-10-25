@@ -14,7 +14,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/events"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
@@ -74,9 +73,6 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"email": "ada@pantry.test", "password": "short"}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), auth.SentencePasswordShort) {
 		t.Fatalf("short password %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"email": "ada@pantry.test", "password": "correct horse", "householdPassword": "x"}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest {
-		t.Fatalf("both forms %d %s", rec.Code, rec.Body.String())
-	}
 	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"email": "not an email", "password": "correct horse"}, app.EntryPublic, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad email %d %s", rec.Code, rec.Body.String())
 	}
@@ -118,10 +114,6 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 	}
 	if rec := c.authed(http.MethodPatch, "/api/household/settings", map[string]string{"restockMode": "ask_restock"}); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ask_restock") {
 		t.Fatalf("restock %d %s", rec.Code, rec.Body.String())
-	}
-	enabled := true
-	if rec := c.authed(http.MethodPatch, "/api/household/settings", map[string]any{"householdPasswordEnabled": enabled}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("password flag %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := c.authed(http.MethodGet, "/api/households/"+house+"/members", nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), adaID) {
 		t.Fatalf("members %d %s", rec.Code, rec.Body.String())
@@ -414,36 +406,6 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 		t.Fatalf("revoked device %d %s", rec.Code, rec.Body.String())
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', 'c2VjcmV0')`, house, string(hash)); err != nil {
-		t.Fatal(err)
-	}
-	shared := c.call(http.MethodPost, "/api/auth/login", map[string]string{"householdPassword": "shared-secret"}, app.EntryPublic, nil)
-	if shared.Code != http.StatusOK || !strings.Contains(shared.Body.String(), `"kind":"household_password"`) {
-		t.Fatalf("shared login %d %s", shared.Code, shared.Body.String())
-	}
-	if rec := c.call(http.MethodPost, "/api/auth/login", map[string]string{"householdPassword": "nope-nope-no"}, app.EntryPublic, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("bad shared %d %s", rec.Code, rec.Body.String())
-	}
-	basic := stage1Request(http.MethodGet, "/api/household/settings", "", nil, app.EntryPublic, "")
-	basic.SetBasicAuth("pantry", "shared-secret")
-	basicRec := httptest.NewRecorder()
-	handler.ServeHTTP(basicRec, basic)
-	if basicRec.Code != http.StatusOK {
-		t.Fatalf("basic while on %d %s", basicRec.Code, basicRec.Body.String())
-	}
-	if rec := c.authed(http.MethodPost, "/api/household/household-password/retire", nil); rec.Code != http.StatusOK {
-		t.Fatalf("retire %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := c.authed(http.MethodPost, "/api/household/household-password/restore", nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"householdPasswordEnabled":true`) {
-		t.Fatalf("restore password %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := c.authed(http.MethodPost, "/api/household/household-password/retire", nil); rec.Code != http.StatusOK {
-		t.Fatalf("retire again %d %s", rec.Code, rec.Body.String())
-	}
 	if rec := c.call(http.MethodGet, "/", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("home %d", rec.Code)
 	}

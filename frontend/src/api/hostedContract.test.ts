@@ -165,20 +165,15 @@ describe('hosted API contract', () => {
     expect(source).toContain('heartbeat?: boolean');
     expect(source).toContain("status: 'accepted' | 'duplicate'");
     expect(source).toContain("status: 'open' | 'revoked' | 'used' | 'expired'");
-    expect(source).toContain('householdPasswordEnabled: boolean');
     expect(source).toContain('minClientVersion: { expo: string }');
     expect(source).toContain("type: 'devices'");
     expect(doc).toContain('__Host-stockbot_session');
     expect(doc).toContain('POST /api/auth/login');
     expect(doc).toContain('POST /api/auth/reset');
-    expect(doc).toContain('POST /api/household/household-password/retire');
     expect(doc).toContain('Clients label `revoked` as Cancelled.');
     expect(doc).toContain('A missing `X-Stockbot-Client` header means web, so there is no version gate.');
     expect(doc).toContain('Any `X-Stockbot-Client` value that does not start with `expo/` is web too, the same as a missing header, so there is no version gate.');
     expect(doc).toContain('The same `426` applies when that Basic request carries a value that does not start with `expo/`.');
-    expect(doc).toContain('On the LAN, `GET /api/telemetry` is open only while the household password is on.');
-    expect(doc).toContain('After retirement it follows the LAN `401` rule.');
-    expect(doc).toContain('The LAN response never includes the changeover counts.');
     expect(doc).not.toContain('On the LAN it stays open, with no session.');
     expect(doc).not.toContain('Superseded by PM');
     expect(doc).toContain('S6 (#379) must run the production classifier in `internal/scan/qr.go` against `testdata/pairing-codes.json`.');
@@ -188,7 +183,6 @@ describe('hosted API contract', () => {
     expect(source).toContain('export interface LoginResponse');
     expect(doc).toContain('"inviteCode"?: string');
     expect(source).toContain('inviteCode?: string');
-    expect(doc).toContain('householdPasswordEnabled: false');
     expect(doc).toContain('not_found');
     expect(doc).toContain('BEGIN IMMEDIATE');
     expect(doc).toContain('UUIDv7 text ids preserved; no sequences');
@@ -218,7 +212,6 @@ describe('hosted API contract', () => {
     expect(doc).not.toContain('Today LAN and public share `:8080`');
     expect(doc).not.toContain('one matching no public hostname');
     expect(doc).not.toContain('differs from `appBaseUrl`');
-    expect(doc).toContain('On the LAN: the LAN principal while the household password is on.');
     expect(doc).toContain('on the LAN after retirement, unauthorized even with no cookie or bearer; Bearer sbs_ on the LAN is always unauthorized.');
     expect(doc).toContain('`unauthorized`, `validation`, `rate_limited`, `busy`. On the LAN, `404` `not_found`');
     expect(doc).toContain('`validation`, `reset_expired`, `not_found`, `rate_limited`, `busy`. On the LAN, `404` `not_found`');
@@ -270,7 +263,6 @@ describe('hosted API contract', () => {
     expect(doc).toContain('`/health` carries a warning field `setupCode` `"unwritable"` only while no account exists.');
     expect(doc).toContain('`docker exec pantry stockbot-server admin setup-code --recover`');
     expect(doc).toContain('https://github.com/Rhionin/stockbot/pull/394#issuecomment-6374556040');
-    expect(doc).toContain('`internal/server/household_auth_test.go` (it uses the header from about line 57 through line 725)');
     expect(doc).not.toContain('updater writes');
     expect(doc).not.toContain('each server start writes');
     expect(doc).not.toContain('treated as consumed');
@@ -296,7 +288,7 @@ describe('hosted API contract', () => {
     expect(doc).not.toContain('the setup rate limits apply');
     expect(doc).toContain('(f) The 6th failing `POST /setup` from one `RemoteAddr` on `:8080` within 15 minutes gets `429` `rate_limited` with `Retry-After`, sharing `POST /api/auth/login`\'s per-IP bucket (5 failures per 15 minutes). The rate limit is checked before the code, so a limited request gets `429` and doesn\'t count again.');
     expect(doc).toContain('The server\'s listener change and both Caddyfile changes (every handle to `pantry:8081`, `X-Pantry-Entry` dropped) must ship in the same release. If the server stops reading `X-Pantry-Entry` while Caddy still targets `:8080`, all internet traffic is LAN, and the startup check can\'t catch it.');
-    expect(doc).toContain('That same release updates every current `X-Pantry-Entry` user: `deploy/Caddyfile`, `deploy/Caddyfile.tunnel`, `deploy/setup.sh` (it probes with the header, around lines 546 and 554), `check-publish-modes.sh` (around lines 256–257), `setup_apply_test.sh` (around lines 313 and 766), `deploy/README.md` (around line 16), `cmd/server/README.md` (around line 172), `cmd/server/public_compose_test.go` (around line 111 it asserts `deploy/Caddyfile` contains `X-Pantry-Entry public` and `reverse_proxy pantry:8080`, and around line 321 the same header in the tunnel file; this test must change in the same release as the Caddyfile change, or CI fails), `internal/server/household_auth.go` (the header constant around line 25, and the reads around lines 118, 334, and 471), `cmd/server/main.go` (around line 386), `internal/server/server.go` (around line 295), `cmd/server/household_gate_test.go` (around lines 42, 56, 64, and 72), `internal/server/handler_sync_test.go` (around line 77), `internal/server/household_auth_test.go` (it uses the header from about line 57 through line 725), `internal/server/handler_push_test.go` (around lines 293, 301, 316, and 331), `internal/server/sentry_test.go` (around line 720), `internal/server/sentry_tunnel_test.go` (around lines 671, 681, 691, 701, and 743), `docs/design/multi-household-staged.md`, and `docs/design/multi-tenant-saas.md`.');
+    expect(doc).toContain('That same release updates every current `X-Pantry-Entry` user: `deploy/Caddyfile`, `deploy/Caddyfile.tunnel`, `deploy/setup.sh` (it probes with the header, around lines 546 and 554), `check-publish-modes.sh` (around lines 256–257), `setup_apply_test.sh` (around lines 313 and 766), `deploy/README.md` (around line 16), `cmd/server/README.md` (around line 172), `cmd/server/public_compose_test.go` (around line 111 it asserts `deploy/Caddyfile` contains `X-Pantry-Entry public` and `reverse_proxy pantry:8080`, and around line 321 the same header in the tunnel file; this test must change in the same release as the Caddyfile change, or CI fails), `cmd/server/main.go` (around line 386), `internal/server/server.go` (around line 295), `internal/server/handler_sync_test.go` (around line 77), `internal/server/handler_push_test.go` (around lines 293, 301, 316, and 331), `internal/server/sentry_test.go` (around line 720), `internal/server/sentry_tunnel_test.go` (around lines 671, 681, 691, 701, and 743), `docs/design/multi-household-staged.md`, and `docs/design/multi-tenant-saas.md`.');
     expect(doc).toContain('During rollout, a `:8080` request carrying `X-Pantry-Entry` is ignored, never refused, and the server logs it at info.');
     expect(doc).not.toContain('may refuse');
     expect(doc).toContain('(g) Both `deploy/Caddyfile` and `deploy/Caddyfile.tunnel` point every handle at `pantry:8081`, and neither contains `pantry:8080`.');
@@ -322,7 +314,6 @@ describe('hosted API contract', () => {
     expect(doc).not.toContain('signs them in, and sets `activeHouseholdId`');
     expect(doc).toContain('clientmsg.Generic');
     expect(doc).not.toContain('clientmsg.ServerError');
-    expect(doc).toContain('"householdPasswordSignIn": boolean');
     expect(doc).toContain('Required in stage 3 only. The Pi takes the household from the job row.');
     expect(doc).toContain('Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR.');
     expect(doc).toContain('typed `*`, `~`, `$`, and `=` are allowed');
@@ -354,7 +345,6 @@ describe('hosted API contract', () => {
     expect(doc).toContain('Clients use `entry` as the exact signal.');
     expect(doc).toContain('Dev builds that sign in must set `APP_BASE_URL`, and servers without it run LAN only.');
     expect(doc).not.toContain('Dev and test servers must set `APP_BASE_URL`, or dev builds would point at prod.');
-    expect(doc).toContain('While the household password is on, Expo on a LAN URL may keep using the shared household-1 access, and should offer to move to `appBaseUrl`.');
     expect(doc).toContain('"entry": "lan" | "public"');
     expect(source).toContain("export const CLIENT_HEADER = 'X-Stockbot-Client'");
     expect(EXPO_CLIENT_PREFIX).toBe('expo/');
@@ -369,7 +359,6 @@ describe('hosted API contract', () => {
     expect(source).toContain("entry?: 'public'");
     expect(source).toContain("export const AUTH_SESSION_PATH = '/api/auth/session'");
     expect(source).toContain("export const SESSION_COOKIE_NAME = '__Host-stockbot_session'");
-    expect(source).toContain('householdPasswordSignIn: boolean');
     expect(source).toContain("kind: SessionKind");
     expect(source).toContain('field?: string');
     expect(doc).toContain('https://stockbot.rhionin.com');
@@ -383,48 +372,26 @@ describe('hosted API contract', () => {
     expect(source).not.toContain('pairingCodeCollidesWithBarcode');
   });
 
-  it('sets invite role at create and exposes only the household-password state', () => {
+  it('sets invite role at create and keeps household settings to restock mode', () => {
     type AcceptHasNoRole = 'role' extends keyof AcceptInviteRequest ? false : true;
-    type SettingsHasEnabled = HouseholdSettings['householdPasswordEnabled'] extends boolean ? true : false;
     type SettingsDroppedSecret = 'householdPassword' extends keyof HouseholdSettings ? false : true;
     type CreateSetsRole = NonNullable<InviteCreateRequest['role']> extends 'member' | 'owner' ? true : false;
-    const typePins: [AcceptHasNoRole, SettingsHasEnabled, SettingsDroppedSecret, CreateSetsRole] = [
-      true,
-      true,
-      true,
-      true,
-    ];
-    expect(typePins).toEqual([true, true, true, true]);
+    const typePins: [AcceptHasNoRole, SettingsDroppedSecret, CreateSetsRole] = [true, true, true];
+    expect(typePins).toEqual([true, true, true]);
 
     const accept: AcceptInviteRequest = { code: 'invite-code' };
     expect(accept).not.toHaveProperty('role');
 
-    const enabled: HouseholdSettings = { restockMode: 'auto', householdPasswordEnabled: true };
-    const retired: HouseholdSettings = {
-      restockMode: 'auto',
-      householdPasswordEnabled: false,
-      householdPasswordRestoreUntil: '2026-10-30T00:00:00Z',
-    };
-    for (const settings of [enabled, retired]) {
-      const keys = Object.keys(settings);
-      expect(keys).not.toContain('householdPassword');
-      expect(keys).not.toContain('password');
-      expect(keys.join(' ').toLowerCase()).not.toContain('hash');
-      expect(Object.values(settings).join(' ')).not.toMatch(/\$2[aby]\$/);
-    }
+    const settings: HouseholdSettings = { restockMode: 'auto' };
+    expect(Object.keys(settings)).toEqual(['restockMode']);
 
     expect(doc).toContain(
       'invite-role: The role is set when the invite is created. Only an owner can create an owner invite. A member who sends `role` `owner` gets `forbidden_role`. Omitting `role` stores `member`. Accept echoes that role and does not accept a role in the body. The person accepting cannot choose or raise it.',
     );
-    expect(doc).toContain(
-      'password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`.',
-    );
 
     const settingsType = source.slice(source.indexOf('export interface HouseholdSettings'), source.indexOf('export interface ExportProductV1'));
-    expect(settingsType).toContain('householdPasswordEnabled: boolean');
-    expect(settingsType).toContain('householdPasswordRestoreUntil?: string');
-    expect(settingsType).not.toContain('householdPassword:');
-    expect(settingsType.toLowerCase()).not.toContain('hash');
+    expect(settingsType).toContain('restockMode:');
+    expect(settingsType).not.toContain('householdPassword');
 
     const acceptType = source.slice(source.indexOf('export interface AcceptInviteRequest'), source.indexOf('export interface AcceptInviteResponse'));
     expect(acceptType).not.toContain('role');

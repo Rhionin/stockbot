@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Copy the existing Caddy bcrypt hash into the file Stockbot reads, and keep
-# one session secret. Sourced by setup.sh and pantry-update.sh.
-# auth.caddy is never rewritten. A secret that is already set is never rotated,
-# so a redeploy does not sign phones out or require a new password.
+# Session secret, setup-code directory, and APP_BASE_URL helpers for deploy.
+# Sourced by setup.sh and pantry-update.sh.
 
 # pantry_runtime_uid is the distroless nonroot account. The runtime image is
 # gcr.io/distroless/static-debian12:nonroot and Dockerfile sets
@@ -26,32 +24,6 @@ give_auth_to_pantry() {
   return 1
 }
 
-sync_household_credential() {
-  local dir dest tmp
-  if [[ -z "${PANTRY_DIR:-}" ]]; then
-    echo "PANTRY_DIR is not set" >&2
-    return 1
-  fi
-  dir="${PANTRY_DIR}/auth"
-  dest="${dir}/household"
-  mkdir -p "$dir" || return 1
-  chmod 700 "$dir" || return 1
-  # Every run, including one that finds a root-owned file from a partial setup.
-  give_auth_to_pantry "$dir" || return 1
-  if [[ -f "${PANTRY_DIR}/auth.caddy" ]]; then
-    tmp=$(mktemp "${dir}/household.XXXXXX") || return 1
-    if ! cp "${PANTRY_DIR}/auth.caddy" "$tmp"; then
-      rm -f "$tmp"
-      return 1
-    fi
-    chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
-  fi
-  if [[ -f "$dest" ]]; then
-    chmod 600 "$dest" || return 1
-    give_auth_to_pantry "$dest" || return 1
-  fi
-}
 
 ensure_session_secret() {
   local env current secret tmp

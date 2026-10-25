@@ -404,19 +404,16 @@ func TestDeviceOnlineSweeperAndRevoke(t *testing.T) {
 	}
 }
 
-func TestDeviceSurvivesPasswordRetirementAndMemberRemoval(t *testing.T) {
+func TestDeviceSurvivesMemberRemoval(t *testing.T) {
 	ctx, svc, owner, house := bootDeviceAPI(t)
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
+	hash, err := HashPassword(ctx, "correct horse")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', 'c2VjcmV0')`, house, string(hash)); err != nil {
 		t.Fatal(err)
 	}
 	member := newID()
 	if _, err := svc.db.Exec(`
 		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
-		VALUES (?, 'Member South', 'member@example.test', ?, 'local', 0, ?)`, member, string(hash), stamp(time.Now())); err != nil {
+		VALUES (?, 'Member South', 'member@example.test', ?, 'local', 0, ?)`, member, hash, stamp(time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.db.Exec(`
@@ -433,12 +430,6 @@ func TestDeviceSurvivesPasswordRetirementAndMemberRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := svc.RemoveMember(ctx, owner, house, member); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.AuthenticateDevice(ctx, paired.Token); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RetireHouseholdPassword(ctx, owner, house); err != nil {
 		t.Fatal(err)
 	}
 	principal, err := svc.AuthenticateDevice(ctx, paired.Token)

@@ -83,7 +83,6 @@ const (
 	codeLife     = 24 * time.Hour
 	inviteLife   = 7 * 24 * time.Hour
 	pairLife     = 10 * time.Minute
-	restoreLife  = 7 * 24 * time.Hour
 	onlineWindow = 300 * time.Second
 	presenceSave = 5 * time.Minute
 	tokenRotate  = 30 * 24 * time.Hour

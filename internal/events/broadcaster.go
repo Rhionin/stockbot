@@ -325,7 +325,7 @@ func kickMatch(sub *subscriber, householdID, userID string) bool {
 	if userID != "" {
 		return sub.userID == userID
 	}
-	return sub.householdID == householdID && sub.kind == "household_password"
+	return sub.householdID == householdID && sub.userID == ""
 }
 
 func (b *Broadcaster) publish(eventType string, payload any, ingestAt time.Time, householdID string) {

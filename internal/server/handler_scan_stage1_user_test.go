@@ -121,25 +121,17 @@ func TestScanCreateDerivesUserIDFromPrincipal(t *testing.T) {
 		return created
 	}
 
-	lan := post(&auth.Principal{Kind: "lan"}, `{"barcode":"101010101010","direction":"stock_in"}`)
-	if lan.UserID != "lan" {
-		t.Fatalf("lan userId = %q", lan.UserID)
-	}
-	shared := post(&auth.Principal{Kind: "household_password"}, `{"barcode":"202020202020","direction":"stock_in"}`)
-	if shared.UserID != "household_password" {
-		t.Fatalf("household password userId = %q", shared.UserID)
-	}
 	account := post(&auth.Principal{Kind: "account", UserID: "user-ada"}, `{"barcode":"303030303030","direction":"stock_in"}`)
 	if account.UserID != "user-ada" {
 		t.Fatalf("account userId = %q", account.UserID)
 	}
-	legacy := post(&auth.Principal{Kind: "lan"}, `{"barcode":"404040404040","userId":"user-legacy","direction":"stock_in"}`)
+	legacy := post(&auth.Principal{Kind: "account", UserID: "user-ada"}, `{"barcode":"404040404040","userId":"user-legacy","direction":"stock_in"}`)
 	if legacy.UserID != "user-legacy" {
 		t.Fatalf("supplied userId = %q", legacy.UserID)
 	}
-	blank := post(&auth.Principal{Kind: "lan"}, `{"barcode":"505050505050","userId":"  ","direction":"stock_in"}`)
-	if blank.UserID != "lan" {
-		t.Fatalf("blank userId = %q", blank.UserID)
+	device := post(&auth.Principal{Kind: "device", DeviceID: "dev-1"}, `{"barcode":"505050505050","userId":"  ","direction":"stock_in"}`)
+	if device.UserID != "device" {
+		t.Fatalf("device userId = %q", device.UserID)
 	}
 	householdOnly := post(nil, `{"barcode":"606060606060","direction":"stock_in"}`)
 	if householdOnly.UserID != household {
@@ -148,7 +140,7 @@ func TestScanCreateDerivesUserIDFromPrincipal(t *testing.T) {
 
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/scans", nil))
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "101010101010") {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "303030303030") {
 		t.Fatalf("GET /api/scans = %d %s", list.Code, list.Body.String())
 	}
 	history := httptest.NewRecorder()

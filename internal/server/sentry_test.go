@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/buildinfo"
 	"github.com/getsentry/sentry-go"
 	"github.com/go-json-experiment/json"
@@ -710,14 +712,15 @@ func TestUnmatchedAndUnauthorizedTransactionNames(t *testing.T) {
 		t.Fatalf("build status = %d", buildRec.Code)
 	}
 
-	gate := testHousehold(t, "pantry", "correct-horse-battery")
+	db := setupTestDB(t)
+	svc := auth.NewService(db, t.TempDir())
+	site := stage1Site(t)
 	authed := http.NewServeMux()
 	authed.HandleFunc("POST /api/items/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	locked := withSentry(gate.Middleware(authed))
-	denied := httptest.NewRequest(http.MethodPost, "/api/items/item-9", nil)
-	denied.Header.Set(entryHeader, entryPublic)
+	locked := withSentry((&stage1{svc: svc, site: site}).Middleware(authed))
+	denied := stage1Request(http.MethodPost, "/api/items/item-9", "", nil, app.EntryPublic, "")
 	deniedRec := httptest.NewRecorder()
 	locked.ServeHTTP(deniedRec, denied)
 	if deniedRec.Code != http.StatusUnauthorized {

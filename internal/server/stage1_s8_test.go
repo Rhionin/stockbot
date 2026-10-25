@@ -32,7 +32,6 @@ func TestStage1ExportRoutesAreOwnerOnlyAndSecretFree(t *testing.T) {
 	execSQL(t, db, `INSERT INTO household_product_overrides (household_id, product_id, display_name, updated_at) VALUES (?, 'p-north', 'north-typed-q7', '2026-01-01T00:00:00Z'), (?, 'p-north', 'foreign-typed-q7', '2026-01-01T00:00:00Z'), (?, 'p-south', 'south-typed-q7', '2026-01-01T00:00:00Z')`, house, south, south)
 	execSQL(t, db, `INSERT INTO items (id, user_id, product_id, household_id) VALUES ('i-north', ?, 'p-north', ?), ('i-south', 'acct-south', 'p-south', ?)`, userID, house, south)
 	execSQL(t, db, `INSERT INTO shopping_list_items (id, user_id, item_id, quantity, source, household_id) VALUES ('shop-north', ?, 'i-north', 2, 'manual', ?)`, userID, house)
-	execSQL(t, db, `INSERT INTO household_password (household_id, pw_hash, state, session_key) VALUES (?, 'pw-hash-sentinel-q7', 'on', 'session-key-sentinel-q7')`, house)
 	execSQL(t, db, `INSERT INTO users (id, name, email_norm, pw_hash, created_at) VALUES ('acct-south', 'Bea South', 'bea-south@pantry.test', 'account-hash-q7', '2026-01-01T00:00:00Z')`)
 
 	invite := owner.authed(http.MethodPost, "/api/invites", map[string]string{"role": "member"})

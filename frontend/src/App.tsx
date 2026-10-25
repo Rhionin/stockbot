@@ -5,8 +5,6 @@ import { HouseholdGate } from './components/auth/HouseholdGate';
 import { InviteAcceptPage } from './components/auth/InviteAcceptPage';
 import { ResetPasswordPage } from './components/auth/ResetPasswordPage';
 import { SetupPage } from './components/auth/SetupPage';
-import { useHouseholdSession } from './components/auth/householdSession';
-import { ChangeoverBanner } from './components/household/ChangeoverBanner';
 import { DevicesPage } from './components/household/DevicesPage';
 import { HouseholdPage } from './components/household/HouseholdPage';
 import { HouseholdSwitcher } from './components/household/HouseholdSwitcher';
@@ -38,7 +36,6 @@ function RouteTelemetry() {
 
 function SignedInApp() {
   const { pathname } = useLocation();
-  const session = useHouseholdSession();
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const notifyCredentialsChanged = useCallback(() => {
     setCredentialsRevision((current) => current + 1);
@@ -71,7 +68,6 @@ function SignedInApp() {
             </div>
           </AppShell.Header>
           <AppShell.Main>
-            {session.auth?.kind === 'household_password' && <ChangeoverBanner />}
             {pathname !== '/' && <ServerNoticeBanner shell />}
             <div className="page-frame">
               <Routes>

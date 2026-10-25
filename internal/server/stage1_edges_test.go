@@ -12,39 +12,9 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/events"
-	"golang.org/x/crypto/bcrypt"
 )
 
-func TestPantryCookieAndStage1Edges(t *testing.T) {
-	now := time.Now()
-	secret := []byte("secret")
-	good := signPayload(secret, "pantry", now.Add(time.Hour))
-	if !pantryCookieOK(secret, "pantry", now, good) {
-		t.Fatal("valid cookie")
-	}
-	if pantryCookieOK(nil, "pantry", now, good) || pantryCookieOK(secret, "", now, good) || pantryCookieOK(secret, "pantry", now, "") {
-		t.Fatal("empty cookie material was accepted")
-	}
-	if pantryCookieOK(secret, "pantry", now, "nodot") || pantryCookieOK(secret, "pantry", now, "@@@.@@@") {
-		t.Fatal("malformed cookie was accepted")
-	}
-	forged := signPayload([]byte("other"), "pantry", now.Add(time.Hour))
-	if pantryCookieOK(secret, "pantry", now, forged) {
-		t.Fatal("forged cookie was accepted")
-	}
-	otherUser := signPayload(secret, "someone", now.Add(time.Hour))
-	if pantryCookieOK(secret, "pantry", now, otherUser) {
-		t.Fatal("other user was accepted")
-	}
-	expired := signPayload(secret, "pantry", now.Add(-time.Hour))
-	if pantryCookieOK(secret, "pantry", now, expired) {
-		t.Fatal("expired cookie was accepted")
-	}
-	broken := signPayload(secret, "pantry", now.Add(time.Hour))
-	if pantryCookieOK(secret, "pantry", now, broken+"x") {
-		t.Fatal("tampered mac was accepted")
-	}
-
+func TestStage1Edges(t *testing.T) {
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "pantry.db"))
 	setupDir := t.TempDir()
 	svc := auth.NewService(db, setupDir)
@@ -63,44 +33,12 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 	if setup.Code != http.StatusOK {
 		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
 	}
-	var house string
-	if err := db.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&house); err != nil {
-		t.Fatal(err)
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', 'c2VjcmV0')`, house, string(hash)); err != nil {
-		t.Fatal(err)
-	}
 
 	for _, path := range []string{"/health", "/terms", "/privacy", "/api/build", "/brand/logo.png", "/api/telemetry"} {
 		rec := stage1Do(handler, http.MethodGet, path, "", nil, app.EntryPublic, "")
 		if rec.Code == 0 {
 			t.Fatalf("%s produced no status", path)
 		}
-	}
-	lanTelemetry := stage1Do(handler, http.MethodGet, "/api/telemetry", "", nil, app.EntryPublic, "")
-	if lanTelemetry.Code == http.StatusUnauthorized {
-		t.Fatalf("lan telemetry while the password is on: %d %s", lanTelemetry.Code, lanTelemetry.Body.String())
-	}
-	cookie := signPayload(secret, "pantry", time.Now().Add(time.Hour))
-	settings := httptest.NewRecorder()
-	req := stage1Request(http.MethodGet, "/api/household/settings", "", nil, app.EntryPublic, "203.0.113.8:443")
-	req.Header.Set("X-Pantry-Client-IP", "203.0.113.9")
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: cookie})
-	handler.ServeHTTP(settings, req)
-	if settings.Code != http.StatusOK {
-		t.Fatalf("household cookie %d %s", settings.Code, settings.Body.String())
-	}
-	badCookie := httptest.NewRecorder()
-	bad := stage1Request(http.MethodGet, "/api/household/settings", "", nil, app.EntryPublic, "203.0.113.8")
-	bad.Header.Set("X-Pantry-Client-IP", "203.0.113.9, 198.51.100.2")
-	bad.AddCookie(&http.Cookie{Name: sessionCookie, Value: "not-a-cookie"})
-	handler.ServeHTTP(badCookie, bad)
-	if badCookie.Code != http.StatusUnauthorized {
-		t.Fatalf("bad household cookie %d %s", badCookie.Code, badCookie.Body.String())
 	}
 
 	gate := &stage1{svc: svc, site: site}
@@ -176,31 +114,16 @@ func TestPantryCookieAndStage1Edges(t *testing.T) {
 	}
 
 	account := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	account = account.WithContext(auth.WithPrincipal(account.Context(), auth.Principal{Kind: "household_password"}))
-	if eventStreamKey(account) != auth.HouseholdPasswordStreamKey("192.0.2.1") {
-		t.Fatalf("household stream %q", eventStreamKey(account))
-	}
-	lan := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	lan.RemoteAddr = "192.0.2.10:9"
-	lan = lan.WithContext(auth.WithPrincipal(lan.Context(), auth.Principal{Kind: "lan"}))
-	if eventStreamKey(lan) != "lan:192.0.2.10" {
-		t.Fatalf("lan stream %q", eventStreamKey(lan))
-	}
-	public := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	public.RemoteAddr = "192.0.2.10"
-	public.Header.Set(clientIPHeader, "198.51.100.20")
-	public = public.WithContext(app.WithEntry(public.Context(), app.EntryPublic))
-	public = public.WithContext(auth.WithPrincipal(public.Context(), auth.Principal{Kind: "lan"}))
-	if eventStreamKey(public) != "lan:198.51.100.20" {
-		t.Fatalf("public stream %q", eventStreamKey(public))
+	account = account.WithContext(auth.WithPrincipal(account.Context(), auth.Principal{Kind: "account", UserID: "user-1", SessionID: "sess-hash"}))
+	if eventStreamKey(account) != auth.SessionStreamKey("sess-hash") {
+		t.Fatalf("account stream %q", eventStreamKey(account))
 	}
 	unknown := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	unknown = unknown.WithContext(auth.WithPrincipal(unknown.Context(), auth.Principal{Kind: "device"}))
 	if eventStreamKey(unknown) != "" || eventStreamKey(httptest.NewRequest(http.MethodGet, "/api/events", nil)) != "" {
 		t.Fatal("unexpected stream key")
 	}
-	openStream(t, svc, auth.Principal{Kind: "household_password"})
-	openStream(t, svc, auth.Principal{Kind: "lan"})
+	openStream(t, svc, auth.Principal{Kind: "account", UserID: "user-1", SessionID: "sess-hash"})
 }
 
 func openStream(t *testing.T, svc *auth.Service, principal auth.Principal) {

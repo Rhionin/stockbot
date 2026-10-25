@@ -130,7 +130,7 @@ func TestAccountEventsWithoutAHouseholdAreValidation(t *testing.T) {
 	}
 }
 
-func TestHouseholdPasswordStreamsAreCappedPerAddress(t *testing.T) {
+func TestAccountStreamsAreCappedPerSession(t *testing.T) {
 	streams := auth.NewStreams()
 	handler := &EventsHandler{Broadcaster: events.NewBroadcaster(), Streams: streams, Keepalive: time.Hour}
 	var cancels []context.CancelFunc
@@ -139,32 +139,30 @@ func TestHouseholdPasswordStreamsAreCappedPerAddress(t *testing.T) {
 			cancel()
 		}
 	})
-	open := func(ip string) *httptest.ResponseRecorder {
+	open := func(sessionID string) *httptest.ResponseRecorder {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels = append(cancels, cancel)
 		req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-		req.RemoteAddr = ip + ":9"
-		req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "household_password", HouseholdID: "house-1"}))
+		req = req.WithContext(auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: "user-1", SessionID: sessionID, HouseholdID: "house-1"}))
 		rec := httptest.NewRecorder()
 		go handler.Handle(rec, req)
 		return rec
 	}
-	const firstIP = "192.0.2.10"
-	const secondIP = "198.51.100.8"
+	const firstSession = "sess-a"
+	const secondSession = "sess-b"
 	for range 10 {
-		open(firstIP)
+		open(firstSession)
 	}
-	key := auth.HouseholdPasswordStreamKey(firstIP)
+	key := auth.SessionStreamKey(firstSession)
 	deadline := time.Now().Add(2 * time.Second)
 	for streams.Live(key) < 10 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if streams.Live(key) != 10 {
-		t.Fatalf("address bucket has %d streams", streams.Live(key))
+		t.Fatalf("session bucket has %d streams", streams.Live(key))
 	}
 	blocked := httptest.NewRequest(http.MethodGet, "/api/events", nil)
-	blocked.RemoteAddr = firstIP + ":9"
-	blocked = blocked.WithContext(auth.WithPrincipal(blocked.Context(), auth.Principal{Kind: "household_password", HouseholdID: "house-1"}))
+	blocked = blocked.WithContext(auth.WithPrincipal(blocked.Context(), auth.Principal{Kind: "account", UserID: "user-1", SessionID: firstSession, HouseholdID: "house-1"}))
 	blockedRec := httptest.NewRecorder()
 	finished := make(chan struct{})
 	go func() {
@@ -179,17 +177,17 @@ func TestHouseholdPasswordStreamsAreCappedPerAddress(t *testing.T) {
 	if blockedRec.Code != http.StatusTooManyRequests || blockedRec.Header().Get("Retry-After") == "" {
 		t.Fatalf("eleventh %d %s", blockedRec.Code, blockedRec.Body.String())
 	}
-	other := auth.HouseholdPasswordStreamKey(secondIP)
+	other := auth.SessionStreamKey(secondSession)
 	if other == key {
-		t.Fatal("addresses shared one stream bucket")
+		t.Fatal("sessions shared one stream bucket")
 	}
-	second := open(secondIP)
+	second := open(secondSession)
 	deadline = time.Now().Add(2 * time.Second)
 	for streams.Live(other) < 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if streams.Live(other) != 1 || second.Code == http.StatusTooManyRequests {
-		t.Fatalf("second address live %d status %d", streams.Live(other), second.Code)
+		t.Fatalf("second session live %d status %d", streams.Live(other), second.Code)
 	}
 }
 

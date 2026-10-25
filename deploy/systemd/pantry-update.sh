@@ -214,7 +214,7 @@ fi
 echo "pantry update: lock acquired"
 
 # shellcheck disable=SC1091
-source "$PANTRY_DIR/auth-migrate.sh"
+source "$PANTRY_DIR/runtime-setup.sh"
 if ! prepare_setup_dir; then
   echo "Could not prepare ${PANTRY_DIR}/setup for the setup code" >&2
   exit 1
@@ -223,17 +223,9 @@ if ! ensure_app_base_url; then
   echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
   exit 1
 fi
-if ! sync_household_credential; then
-  echo "Could not copy the household password hash; leaving containers unchanged." >&2
-  exit 1
-fi
 if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
   if ! ensure_session_secret; then
     echo "Could not save the session secret; leaving containers unchanged." >&2
-    exit 1
-  fi
-  if [[ ! -s "$PANTRY_DIR/auth/household" ]]; then
-    echo "auth.caddy is present but the login hash was not copied; leaving containers unchanged." >&2
     exit 1
   fi
 fi

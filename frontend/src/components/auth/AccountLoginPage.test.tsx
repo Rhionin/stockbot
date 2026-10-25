@@ -1,12 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  CHANGEOVER_SIGN_IN_NOTE,
-  HOUSEHOLD_PASSWORD_LINK,
-  PASSWORD_TOO_SHORT,
-  SETUP_PATH,
-} from '@stockbot/shared/contract';
+import { PASSWORD_TOO_SHORT, SETUP_PATH } from '@stockbot/shared/contract';
 import { AccountLoginPage } from './AccountLoginPage';
 import { HouseholdGate } from './HouseholdGate';
 
@@ -22,19 +17,18 @@ const signedOut = {
   operator: false,
 };
 
-const config = (householdPasswordSignIn: boolean) => ({
+const config = () => ({
   live: 'sse',
   minClientVersion: { expo: '1.0.0' },
-  householdPasswordSignIn,
   entry: 'public',
 });
 
 describe('AccountLoginPage', () => {
-  it('asks for email and password and hides the household-password link when that sign-in is off', async () => {
+  it('asks for email and password and links to setup', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/auth/session') return Promise.resolve(json(signedOut));
-      if (url === '/api/config') return Promise.resolve(json(config(false)));
+      if (url === '/api/config') return Promise.resolve(json(config()));
       if (url === '/api/auth/login') {
         expect(JSON.parse(String(init?.body))).toEqual({ email: 'ada@example.com', password: 'long-password' });
         return Promise.resolve(json({
@@ -54,9 +48,7 @@ describe('AccountLoginPage', () => {
         <HouseholdGate><h1>Inside</h1></HouseholdGate>
       </MantineProvider>,
     );
-    expect(await screen.findByRole('note')).toHaveTextContent(CHANGEOVER_SIGN_IN_NOTE);
-    expect(screen.queryByRole('button', { name: HOUSEHOLD_PASSWORD_LINK })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Set up Stockbot' })).toHaveAttribute('href', SETUP_PATH);
+    expect(await screen.findByRole('link', { name: 'Set up Stockbot' })).toHaveAttribute('href', SETUP_PATH);
     expect(document.body.textContent).not.toMatch(/pi:8080/);
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'short' } });
@@ -69,49 +61,17 @@ describe('AccountLoginPage', () => {
     expect(await screen.findByRole('heading', { name: 'Inside' })).toBeVisible();
   });
 
-  it('offers the household password only while that sign-in is still on', async () => {
-    const bodies: unknown[] = [];
+  it('shows the hosted sentence for a known code', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === '/api/auth/login' && init?.body) bodies.push(JSON.parse(String(init.body)));
-      if (url === '/api/auth/login') {
-        return Promise.resolve(json({
-          user: null,
-          kind: 'household_password',
-          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'member', deletedAt: null }],
-          households: [{ id: 'hh-1', name: 'Pantry', role: 'member', deletedAt: null }],
-          activeHouseholdId: 'hh-1',
-          operator: false,
-        }));
+      if (url === '/api/auth/login' && init?.method === 'POST') {
+        return Promise.resolve(json({ error: 'ignored', code: 'rate_limited' }, 429));
       }
       return Promise.reject(new Error(url));
     }));
-    const onSignedIn = vi.fn();
     render(
       <MantineProvider>
-        <AccountLoginPage householdPasswordSignIn onSignedIn={onSignedIn} />
-      </MantineProvider>,
-    );
-    expect(screen.queryByRole('note')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Set up Stockbot' })).toHaveAttribute('href', '/setup');
-    expect(document.body.innerHTML).not.toContain('http://pi:8080');
-    expect(document.body.innerHTML).not.toContain('pi:8080/setup');
-    fireEvent.click(screen.getByRole('button', { name: HOUSEHOLD_PASSWORD_LINK }));
-    const householdForm = screen.getByRole('form', { name: 'Household password' });
-    fireEvent.change(within(householdForm).getByLabelText(/^Household password/), { target: { value: 'shared-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await waitFor(() => expect(onSignedIn).toHaveBeenCalled());
-    expect(bodies).toEqual([{ householdPassword: 'shared-secret' }]);
-  });
-
-  it('shows the hosted sentence for a known code', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
-      error: 'ignored',
-      code: 'rate_limited',
-    }, 429))));
-    render(
-      <MantineProvider>
-        <AccountLoginPage householdPasswordSignIn={false} onSignedIn={vi.fn()} />
+        <AccountLoginPage onSignedIn={vi.fn()} />
       </MantineProvider>,
     );
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });

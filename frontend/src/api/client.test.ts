@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as telemetry from '../telemetry/client';
-import { ApiError, commitScanEntry, getSession, listProducts, login, logout } from './client';
+import { ApiError, commitScanEntry, getSession, listProducts, loginAccount, logout } from './client';
 import { AUTH_NOT_CONFIGURED_SENTENCE, OFFLINE_SENTENCE, SERVER_ERROR_FALLBACK, ServerNoticeError, UPDATING_SENTENCE, UnreachableError, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 
 const authNotConfigured = JSON.parse(
@@ -247,11 +247,14 @@ describe('api error messages', () => {
   });
 
   it('clears the banner when session, login, and logout succeed', async () => {
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const signedOut = { kind: 'signed_out', user: null, memberships: [], households: [], activeHouseholdId: null, operator: false };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/session')) return Promise.resolve(new Response(JSON.stringify({ required: false }), { status: 200 }));
-      if (url.endsWith('/api/login')) return Promise.resolve(new Response('{}', { status: 200 }));
-      if (url.endsWith('/api/logout')) return Promise.resolve(new Response('{}', { status: 200 }));
+      if (url.endsWith('/api/auth/session')) return Promise.resolve(new Response(JSON.stringify(signedOut), { status: 200 }));
+      if (url.endsWith('/api/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ ...signedOut, kind: 'account', user: { id: 'u1', email: 'a@b.c', name: 'A' } }), { status: 200 }));
+      }
+      if (url.endsWith('/api/auth/logout')) return Promise.resolve(new Response(null, { status: 204 }));
       return Promise.reject(new Error(url));
     }));
 
@@ -259,7 +262,7 @@ describe('api error messages', () => {
     await getSession();
     expect(offlineBannerActive()).toBe(false);
     raiseOfflineBanner();
-    await login('pantry', 'secret');
+    await loginAccount({ email: 'a@b.c', password: 'long-enough' });
     expect(offlineBannerActive()).toBe(false);
     raiseOfflineBanner();
     await logout();

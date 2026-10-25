@@ -56,7 +56,6 @@ type config struct {
 	scannerMode      *scannerMode
 	deployHookSecret string
 	deployHookPath   string
-	household        *HouseholdAuth
 	syncToken        string
 	readDB           *sql.DB
 	push             push.Config
@@ -229,17 +228,10 @@ func NewHandler(
 	root.Handle("/", webui.NewHandler())
 
 	var handler http.Handler = root
-	if cfg.household != nil {
-		handler = cfg.household.Middleware(root)
-	}
 	var syncToken string
 	if cfg != nil {
 		syncToken = cfg.syncToken
 	}
-	// Outside household login so the sidecar can read while the public site
-	// still asks a person to sign in. A wrong or missing token never falls
-	// through to the open LAN listener.
-	handler = syncGate(syncToken, handler)
 	readDB := db
 	if cfg != nil && cfg.readDB != nil {
 		readDB = cfg.readDB
@@ -249,6 +241,10 @@ func NewHandler(
 	} else {
 		handler = withPrimaryScope(readDB, handler)
 	}
+	// After stage-1 auth wiring so a sync token on the wrong route is
+	// refused before session checks, while snapshot/event reads set
+	// syncAuthKey and bypass the gate above.
+	handler = syncGate(syncToken, handler)
 	return withSentry(observeHTTP(reg, secureHeaders(handler))), scanQueue
 }
 
@@ -263,14 +259,6 @@ func newAPIMux(
 	cfg *config,
 ) (*http.ServeMux, *scan.Queue, *telemetry.Registry) {
 	apiMux := http.NewServeMux()
-
-	var household *HouseholdAuth
-	if cfg != nil {
-		household = cfg.household
-	}
-	apiMux.HandleFunc("GET /api/session", household.ServeSession)
-	apiMux.HandleFunc("POST /api/login", household.ServeLogin)
-	apiMux.HandleFunc("POST /api/logout", household.ServeLogout)
 
 	reg := telemetry.NewRegistry()
 	broadcaster := events.NewBroadcaster()

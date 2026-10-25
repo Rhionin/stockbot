@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/push"
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -282,16 +283,32 @@ func TestPushUnrecognizedScan(t *testing.T) {
 	}
 }
 
-func TestPushStaysBehindHouseholdLogin(t *testing.T) {
+func TestPushRequiresAccountSession(t *testing.T) {
 	cfg := testPushConfig(t, nil)
-	gate := testHousehold(t, "pantry", "correct-horse-battery")
-	handler, _ := setupTestWithContributor(t, nil, WithHouseholdAuth(gate), WithPush(cfg))
+	db := setupTestDB(t)
+	setupDir := t.TempDir()
+	svc := auth.NewService(db, setupDir)
+	site := stage1Site(t)
+	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site), WithPush(cfg))
+	if err := svc.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	code, err := auth.ReadSetupCode(setupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
+		"setupCode": code, "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
+	}, app.EntryPublic, "")
+	if setup.Code != http.StatusOK {
+		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
+	}
 
 	open := httptest.NewRequest(http.MethodPost, "/api/push/subscriptions", strings.NewReader(
 		`{"endpoint":"https://push.example/phone","keys":{"p256dh":"phone-p256","auth":"phone-auth"}}`,
 	))
 	open.Header.Set("Content-Type", "application/json")
-	open.Header.Set(entryHeader, entryPublic)
+	open = open.WithContext(app.WithEntry(open.Context(), app.EntryPublic))
 	openRec := httptest.NewRecorder()
 	handler.ServeHTTP(openRec, open)
 	if openRec.Code != http.StatusUnauthorized {
@@ -299,38 +316,33 @@ func TestPushStaysBehindHouseholdLogin(t *testing.T) {
 	}
 
 	worker := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
-	worker.Header.Set(entryHeader, entryPublic)
+	worker = worker.WithContext(app.WithEntry(worker.Context(), app.EntryPublic))
 	workerRec := httptest.NewRecorder()
 	handler.ServeHTTP(workerRec, worker)
 	if workerRec.Code == http.StatusUnauthorized {
-		t.Fatal("the service worker was blocked by household login")
+		t.Fatal("the service worker was blocked")
 	}
 	body, _ := io.ReadAll(workerRec.Result().Body)
 	if strings.Contains(string(body), cfg.PrivateKey) {
 		t.Fatal("service worker response included the VAPID private key")
 	}
 
-	login := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(
-		`{"username":"pantry","password":"correct-horse-battery"}`,
-	))
-	login.Header.Set("Content-Type", "application/json")
-	login.Header.Set(entryHeader, entryPublic)
-	loginRec := httptest.NewRecorder()
-	handler.ServeHTTP(loginRec, login)
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login = %d %s", loginRec.Code, loginRec.Body.String())
+	login := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{
+		"email": "ada@pantry.test", "password": "correct horse",
+	}, app.EntryPublic, "")
+	if login.Code != http.StatusOK {
+		t.Fatalf("login = %d %s", login.Code, login.Body.String())
 	}
-	cookie := loginRec.Result().Cookies()
-	if len(cookie) == 0 {
-		t.Fatal("login did not set a session cookie")
-	}
+	sessionCookie := cookieFrom(t, login, site.SessionCookie().Name)
 
 	authed := httptest.NewRequest(http.MethodPost, "/api/push/subscriptions", strings.NewReader(
 		`{"endpoint":"https://push.example/phone","keys":{"p256dh":"phone-p256","auth":"phone-auth"}}`,
 	))
 	authed.Header.Set("Content-Type", "application/json")
-	authed.Header.Set(entryHeader, entryPublic)
-	authed.AddCookie(cookie[0])
+	authed.Header.Set("Origin", "https://pantry.test")
+	authed.Host = "pantry.test"
+	authed = authed.WithContext(app.WithEntry(authed.Context(), app.EntryPublic))
+	authed.AddCookie(&http.Cookie{Name: site.SessionCookie().Name, Value: sessionCookie})
 	authedRec := httptest.NewRecorder()
 	handler.ServeHTTP(authedRec, authed)
 	if authedRec.Code != http.StatusOK {

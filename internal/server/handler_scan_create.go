@@ -128,7 +128,7 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 }
 
 // scanActorID names who scanned. A body userId is kept. Otherwise the
-// principal's account id, then its kind (lan, device, household password),
+// principal's account id, then its kind (for example device),
 // then the household itself.
 func scanActorID(ctx context.Context, scope tenant.Scope, supplied string) string {
 	if id := strings.TrimSpace(supplied); id != "" {

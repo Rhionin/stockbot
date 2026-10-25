@@ -65,9 +65,6 @@ type isolationCase struct {
 // publicAllowlist must match isPublicPath and isAuthEndpoint. The coverage
 // test fails when either side gains or loses a path.
 var publicAllowlist = []allowEntry{
-	{pattern: "GET /api/session", reason: "auth endpoint; isAuthEndpoint leaves it open before the household password"},
-	{pattern: "POST /api/login", reason: "auth endpoint; isAuthEndpoint leaves it open before the household password"},
-	{pattern: "POST /api/logout", reason: "auth endpoint; isAuthEndpoint leaves it open before the household password"},
 	{pattern: "GET /api/build", reason: "build identity; isPublicPath leaves it open on the public entry"},
 	{pattern: "GET /api/telemetry", reason: "process-wide counters; isPublicPath, and the body must not carry household ids or names"},
 	{pattern: "POST /api/telemetry/client", reason: "browser report; isPublicPath leaves it open on the public entry"},

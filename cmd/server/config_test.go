@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +12,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/server"
 	"github.com/SherClockHolmes/webpush-go"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestDurationAndBatchDefaults(t *testing.T) {
@@ -149,24 +146,6 @@ func TestLoadPushAndHousehold(t *testing.T) {
 		t.Fatal("a VAPID pair should turn push on")
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte("correct-horse-battery"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "household")
-	body := "basic_auth bcrypt Pantry {\n\tpantry " + string(hash) + "\n}\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	t.Setenv("PANTRY_AUTH_FILE", path)
-	t.Setenv("PANTRY_SESSION_SECRET", "")
-	if gate := loadHouseholdAuth(); gate == nil || !gate.Configured || gate.Username != "pantry" {
-		t.Fatalf("login without a session secret = %+v", gate)
-	}
-	t.Setenv("PANTRY_SESSION_SECRET", "0123456789abcdef0123456789abcdef")
-	if gate := loadHouseholdAuth(); gate == nil || !gate.Configured || gate.Username != "pantry" {
-		t.Fatalf("configured login = %+v", gate)
-	}
 }
 
 func TestConfiguredStartupServesHealth(t *testing.T) {
@@ -197,7 +176,6 @@ func TestConfiguredStartupServesHealth(t *testing.T) {
 	handler, _ := server.NewHandler(catalog, lookup, refresher, db,
 		server.WithCartRegistry(registry, ledger),
 		server.WithProviderEnv(providerEnv),
-		server.WithHouseholdAuth(loadHouseholdAuth()),
 		server.WithPush(loadPushConfig()),
 		server.WithScannerConfig(server.ScannerConfig{StockInBarcode: listener.StockInBarcode, StockOutBarcode: listener.StockOutBarcode}),
 	)

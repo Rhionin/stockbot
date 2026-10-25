@@ -60,8 +60,6 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("POST /api/households/{id}/members/{userId}/reset-link", gate.serveResetLink)
 	apiMux.HandleFunc("GET /api/household/settings", gate.serveSettings)
 	apiMux.HandleFunc("PATCH /api/household/settings", gate.servePatchSettings)
-	apiMux.HandleFunc("POST /api/household/household-password/retire", gate.serveRetirePassword)
-	apiMux.HandleFunc("POST /api/household/household-password/restore", gate.serveRestorePassword)
 	apiMux.HandleFunc("POST /api/invites", gate.serveCreateInvite)
 	apiMux.HandleFunc("GET /api/invites", gate.serveListInvites)
 	apiMux.HandleFunc("POST /api/invites/{id}/revoke", gate.serveRevokeInvite)
@@ -119,7 +117,7 @@ func (s *stage1) people(w http.ResponseWriter, r *http.Request) (auth.Principal,
 		return auth.Principal{}, false
 	}
 	p, ok := auth.PrincipalFrom(r.Context())
-	if !ok || (p.Kind != "account" && p.Kind != "lan" && p.Kind != "household_password") {
+	if !ok || p.Kind != "account" {
 		writeStage1(w, unauthorizedSentinel())
 		return auth.Principal{}, false
 	}
@@ -185,23 +183,16 @@ func (s *stage1) serveConfig(w http.ResponseWriter, r *http.Request) {
 	if s.unavailable(w) {
 		return
 	}
-	on, err := s.svc.HouseholdPasswordOn(r.Context())
-	if err != nil {
-		writeStage1(w, err)
-		return
-	}
 	body := struct {
 		Live             string `json:"live"`
 		MinClientVersion struct {
 			Expo string `json:"expo"`
 		} `json:"minClientVersion"`
-		HouseholdPasswordSignIn bool   `json:"householdPasswordSignIn"`
-		AppBaseURL              string `json:"appBaseUrl,omitempty"`
-		Entry                   string `json:"entry,omitempty"`
+		AppBaseURL string `json:"appBaseUrl,omitempty"`
+		Entry      string `json:"entry,omitempty"`
 	}{
-		Live:                    "sse",
-		HouseholdPasswordSignIn: on,
-		AppBaseURL:              s.site.AppBaseURL,
+		Live:       "sse",
+		AppBaseURL: s.site.AppBaseURL,
 	}
 	body.MinClientVersion.Expo = s.site.ExpoMinVersion
 	if entry, ok := app.EntryFrom(r.Context()); ok {
@@ -228,9 +219,8 @@ func (s *stage1) serveSession(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginBody struct {
-	Email             string `json:"email"`
-	Password          string `json:"password"`
-	HouseholdPassword string `json:"householdPassword"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 func (s *stage1) serveLogin(w http.ResponseWriter, r *http.Request) {
@@ -241,51 +231,33 @@ func (s *stage1) serveLogin(w http.ResponseWriter, r *http.Request) {
 	if !readStage1(w, r, &body) {
 		return
 	}
-	account := body.Email != "" || body.Password != ""
-	shared := body.HouseholdPassword != ""
-	if account == shared {
-		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
+	if _, ok := normalizeLoginEmail(body.Email); !ok {
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation, Field: "email"})
+		return
+	}
+	if len(body.Password) < 10 {
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentencePasswordShort, Field: "password"})
+		return
+	}
+	if len(body.Password) > 256 {
+		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation, Field: "password"})
 		return
 	}
 	ip := stage1ClientIP(r)
-	if account {
-		if _, ok := normalizeLoginEmail(body.Email); !ok {
-			writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation, Field: "email"})
-			return
-		}
-		if len(body.Password) < 10 {
-			writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentencePasswordShort, Field: "password"})
-			return
-		}
-		if len(body.Password) > 256 {
-			writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation, Field: "password"})
-			return
-		}
-	}
 	if err := s.svc.BlockLoginIP(ip); err != nil {
 		writeStage1(w, err)
 		return
 	}
-	if account {
-		if err := s.svc.BlockLoginEmail(body.Email); err != nil {
-			writeStage1(w, err)
-			return
-		}
+	if err := s.svc.BlockLoginEmail(body.Email); err != nil {
+		writeStage1(w, err)
+		return
 	}
-	var view auth.SessionView
-	var err error
-	if account {
-		view, err = s.svc.LoginAccount(r.Context(), body.Email, body.Password, sessionKindFor(r))
-	} else {
-		view, err = s.svc.LoginHousehold(r.Context(), "", body.HouseholdPassword, sessionKindFor(r))
-	}
+	view, err := s.svc.LoginAccount(r.Context(), body.Email, body.Password, sessionKindFor(r))
 	if err != nil {
 		var ae *auth.Error
 		if errorsAs(err, &ae) && ae.Count {
 			_ = s.svc.FailLoginIP(ip)
-			if account {
-				_ = s.svc.FailLoginEmail(body.Email)
-			}
+			_ = s.svc.FailLoginEmail(body.Email)
 		}
 		writeStage1(w, err)
 		return
@@ -592,9 +564,7 @@ func (s *stage1) serveSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type settingsBody struct {
-	RestockMode                   string  `json:"restockMode"`
-	HouseholdPasswordEnabled      *bool   `json:"householdPasswordEnabled"`
-	HouseholdPasswordRestoreUntil *string `json:"householdPasswordRestoreUntil"`
+	RestockMode string `json:"restockMode"`
 }
 
 func (s *stage1) servePatchSettings(w http.ResponseWriter, r *http.Request) {
@@ -606,37 +576,7 @@ func (s *stage1) servePatchSettings(w http.ResponseWriter, r *http.Request) {
 	if !readStage1(w, r, &body) {
 		return
 	}
-	if body.HouseholdPasswordEnabled != nil || body.HouseholdPasswordRestoreUntil != nil {
-		writeStage1(w, &auth.Error{Code: auth.CodeValidation, Message: auth.SentenceValidation})
-		return
-	}
 	settings, err := s.svc.UpdateRestock(r.Context(), p.UserID, p.HouseholdID, body.RestockMode)
-	if err != nil {
-		writeStage1(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, settings)
-}
-
-func (s *stage1) serveRetirePassword(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.account(w, r)
-	if !ok {
-		return
-	}
-	settings, err := s.svc.RetireHouseholdPassword(r.Context(), p.UserID, p.HouseholdID)
-	if err != nil {
-		writeStage1(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, settings)
-}
-
-func (s *stage1) serveRestorePassword(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.account(w, r)
-	if !ok {
-		return
-	}
-	settings, err := s.svc.RestoreHouseholdPassword(r.Context(), p.UserID, p.HouseholdID)
 	if err != nil {
 		writeStage1(w, err)
 		return

@@ -29,7 +29,7 @@ describe('setup, invites, and import', () => {
         bodies.push(JSON.parse(String(init.body)));
         return Promise.resolve(json({}));
       }
-      if (url === '/api/config') return Promise.resolve(json({ live: 'sse', minClientVersion: { expo: '1' }, householdPasswordSignIn: false, appBaseUrl: 'https://app.example' }));
+      if (url === '/api/config') return Promise.resolve(json({ live: 'sse', minClientVersion: { expo: '1' }, appBaseUrl: 'https://app.example' }));
       return Promise.reject(new Error(url));
     }));
     render(<MantineProvider><SetupPage /></MantineProvider>);
@@ -156,7 +156,7 @@ describe('setup, invites, and import', () => {
       const url = String(input);
       if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
       if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
-      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto', householdPasswordEnabled: false }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
       if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
       if (url === '/api/household/import/uploads') return Promise.resolve(json({ uploadUrl: 'https://uploads.example/file', key: 'import-key', maxBytes: 33554432 }));
       if (url === 'https://uploads.example/file' && init?.method === 'PUT') return Promise.resolve(new Response(null, { status: 200 }));

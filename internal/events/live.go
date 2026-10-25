@@ -10,7 +10,7 @@ type LiveHint struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
-// Principal is who holds a live stream. Kind is account, household_password, or lan.
+// Principal is who holds a live stream. Kind is account or device.
 type Principal struct {
 	Kind        string
 	UserID      string

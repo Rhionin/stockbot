@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestDirectoryEdges(t *testing.T) {
@@ -92,12 +91,9 @@ func TestDirectoryEdges(t *testing.T) {
 	if _, _, err := svc.LookupSession(ctx, "sbs_missing"); err == nil {
 		t.Fatal("unknown session looked up")
 	}
-	lan, err := svc.View(ctx, Principal{Kind: "lan", HouseholdID: house})
-	if err != nil || lan.Kind != "lan" {
-		t.Fatalf("lan view %#v %v", lan, err)
-	}
-	if _, err := svc.View(ctx, Principal{Kind: "nope"}); err != nil {
-		t.Fatal(err)
+	unknown, err := svc.View(ctx, Principal{Kind: "nope"})
+	if err != nil || unknown.Kind != "signed_out" {
+		t.Fatalf("unknown view %#v %v", unknown, err)
 	}
 
 	expectCode(t, take2(svc.CreateJoinInvite(ctx, ada.ID, house, "guest")), CodeValidation)
@@ -160,12 +156,10 @@ func TestDirectoryEdges(t *testing.T) {
 	if err != nil || loft.Name != "Loft" {
 		t.Fatalf("loft %#v %v", loft, err)
 	}
-	settings, err := svc.Settings(ctx, loft.ID)
-	if err != nil || settings.HouseholdPasswordEnabled {
-		t.Fatalf("loft settings %#v %v", settings, err)
+	if _, err := svc.Settings(ctx, loft.ID); err != nil {
+		t.Fatalf("loft settings %v", err)
 	}
 	expectCode(t, take2(svc.UpdateRestock(ctx, deeID, loft.ID, "nope")), CodeValidation)
-	expectCode(t, take2(svc.RetireHouseholdPassword(ctx, deeID, loft.ID)), CodeNotFound)
 
 	memberJoin, err := svc.CreateJoinInvite(ctx, ada.ID, house, "member")
 	if err != nil {
@@ -241,42 +235,6 @@ func TestDirectoryEdges(t *testing.T) {
 	if _, err := svc.RestoreHousehold(ctx, deeID, loft.ID); err != nil {
 		t.Fatal(err)
 	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte("shared-secret"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO household_password (household_id, login_name, pw_hash, state, session_key) VALUES (?, 'pantry', ?, 'on', ?)`, house, string(hash), "c2VjcmV0"); err != nil {
-		t.Fatal(err)
-	}
-	shared, err := svc.LoginHousehold(ctx, "", "shared-secret", "")
-	if err != nil || shared.Token == "" || shared.Kind != "household_password" {
-		t.Fatalf("shared %#v %v", shared, err)
-	}
-	if _, _, err := svc.LookupSession(ctx, shared.Token); err != nil {
-		t.Fatal(err)
-	}
-	expectCode(t, take2(svc.SwitchHousehold(ctx, shared.Token, house)), CodeNotFound)
-	if _, err := svc.View(ctx, Principal{Kind: "household_password", HouseholdID: house}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RetireHouseholdPassword(ctx, ada.ID, house); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := svc.LookupSession(ctx, shared.Token); err == nil {
-		t.Fatal("retired household session stayed valid")
-	}
-	expectCode(t, take2(svc.RetireHouseholdPassword(ctx, ada.ID, house)), CodeNotFound)
-	if _, err := svc.RestoreHouseholdPassword(ctx, ada.ID, house); err != nil {
-		t.Fatal(err)
-	}
-	expectCode(t, take2(svc.RestoreHouseholdPassword(ctx, ada.ID, house)), CodeNotFound)
-	if _, err := svc.RetireHouseholdPassword(ctx, ada.ID, house); err != nil {
-		t.Fatal(err)
-	}
-	svc.SetClock(func() time.Time { return time.Now().Add(8 * 24 * time.Hour) })
-	expectCode(t, take2(svc.RestoreHouseholdPassword(ctx, ada.ID, house)), CodeNotFound)
-	svc.SetClock(wallClock)
 
 	pair, err := svc.StartPairing(ctx, ada.ID, house)
 	if err != nil {

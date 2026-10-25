@@ -20,6 +20,15 @@ class FakeEventSource {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+const accountSession = {
+  kind: 'account',
+  user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
+  memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+  households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+  activeHouseholdId: 'hh-1',
+  operator: false,
+};
+
 const scan = (id: string, barcode: string): ScanEntry => ({
   id,
   userId: 'user-1',
@@ -49,7 +58,7 @@ describe('offline surfaces', () => {
     window.history.pushState({}, '', '/');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/auth/session') || url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session')) return Promise.resolve(json(accountSession));
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
     render(
@@ -125,7 +134,7 @@ describe('offline surfaces', () => {
     window.history.pushState({}, '', '/inventory');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/auth/session') || url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session')) return Promise.resolve(json(accountSession));
       return Promise.reject(new TypeError('Failed to fetch'));
     }));
 
@@ -144,7 +153,7 @@ describe('offline surfaces', () => {
 
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/api/session')) return Promise.resolve(json({ required: false }));
+      if (url.includes('/api/auth/session')) return Promise.resolve(json(accountSession));
       return Promise.resolve(json([]));
     }));
     notifyApiSuccess();

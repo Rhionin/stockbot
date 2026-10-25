@@ -41,10 +41,6 @@ services:
       # Empty leaves GET /api/sync/snapshot hidden. The grocy-sync sidecar
       # sends this same value. It is not a household password.
       PANTRY_SYNC_TOKEN: ${PANTRY_SYNC_TOKEN:-}
-      # setup.sh copies auth.caddy here when the public site has a password.
-      # The file is mode 0600 and owned by uid 65532, this image's nonroot
-      # user. A root-owned file is unreadable once capabilities are dropped.
-      PANTRY_AUTH_FILE: /etc/pantry/auth/household
       PANTRY_SESSION_SECRET: ${PANTRY_SESSION_SECRET:-}
       # Scan alerts while the pantry tab is closed. setup.sh fills these
       # once when they are empty and does not rotate them. The private key
@@ -85,7 +81,6 @@ services:
       # is uid 65532 and setgid so the Pi user can read the code. Read-write:
       # a :ro mount would make that file unwritable.
       - ./setup:/run/setup
-      - ./auth:/etc/pantry/auth:ro
       # Bind-mount the /dev/input directory (not a single node) so that device
       # nodes udev creates later become visible inside the container without
       # recreating it. Read-only is safe: openEvdev opens O_RDONLY, and
@@ -122,7 +117,6 @@ services:
       - no-new-privileges:true
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./Caddyfile.legacy:/etc/caddy/Caddyfile.legacy:ro
       - caddy-data:/data
       - caddy-config:/config
 

@@ -228,10 +228,6 @@ func start(stop <-chan struct{}) error {
 	if err := directory.Boot(context.Background()); err != nil {
 		log.Printf("setup code: %s", err.Error())
 	}
-	if err := server.ImportHouseholdPassword(context.Background(), sqlDB, os.Getenv("PANTRY_AUTH_FILE"), os.Getenv("PANTRY_SESSION_SECRET")); err != nil {
-		log.Printf("household login: %s", err.Error())
-	}
-
 	if _, err := product.BackfillNetSizes(context.Background(), sqlDB); err != nil {
 		return fmt.Errorf("backfill product sizes: %w", err)
 	}
@@ -353,7 +349,7 @@ func start(stop <-chan struct{}) error {
 	if listenerOK {
 		opts = append(opts, server.WithScannerStatus(listener.Status))
 	}
-	opts = append(opts, server.WithHouseholdAuth(loadHouseholdGate(sqlDB)), server.WithReadDB(readDB), server.WithStage1(directory, site))
+	opts = append(opts, server.WithReadDB(readDB), server.WithStage1(directory, site))
 	handler, scanQueue := server.NewHandler(catalog, lookupService, refresher, sqlDB, opts...)
 	directory.SetBarcodeLookup(func(ctx context.Context, householdID, scanID, barcode string) {
 		scope, err := tenant.New(householdID)
@@ -423,43 +419,6 @@ func loadPushConfig() push.Config {
 		log.Println("scan alerts: web push is off until VAPID keys are set")
 	}
 	return cfg
-}
-
-// loadHouseholdGate reads the shared password from the database. The Caddy
-// file is only the one-time import source. A missing hash fails closed.
-func loadHouseholdGate(db *sql.DB) *server.HouseholdAuth {
-	household, err := server.HouseholdAuthFromDB(context.Background(), db)
-	if err != nil {
-		log.Printf("household login: %s", err.Error())
-	}
-	if household == nil {
-		return server.FailClosedHouseholdAuth()
-	}
-	if household.Configured {
-		log.Printf("household login: the public site signs in as %s", household.Username)
-	}
-	return household
-}
-
-// loadHouseholdAuth always returns a gate. An unset, empty, or unreadable
-// password file fails closed instead of serving the site with no login.
-func loadHouseholdAuth() *server.HouseholdAuth {
-	path := strings.TrimSpace(os.Getenv("PANTRY_AUTH_FILE"))
-	if path == "" {
-		log.Print("household login: no password file is configured; the public site refuses requests")
-		return server.FailClosedHouseholdAuth()
-	}
-	household, err := server.LoadHouseholdAuth(path, os.Getenv("PANTRY_SESSION_SECRET"))
-	if err != nil {
-		log.Printf("household login: %s", err.Error())
-	}
-	if household == nil {
-		return server.FailClosedHouseholdAuth()
-	}
-	if household.Configured {
-		log.Printf("household login: the public site signs in as %s", household.Username)
-	}
-	return household
 }
 
 type disabledExternalLookup struct{}

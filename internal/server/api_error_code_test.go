@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
@@ -96,21 +97,6 @@ func TestAPIJSONErrorsCarryACode(t *testing.T) {
 	readOnly := callAPI(syncHandler, http.MethodPost, "/api/products", `{"name":"Nope"}`, header("Authorization", "Bearer "+token))
 	assertCodedJSON(t, "POST /api/products with sync token", readOnly, codeSyncReadOnly)
 
-	gate := testHousehold(t, "pantry", "correct-horse-battery")
-	authed, _ := setupTestWithContributor(t, nil, WithHouseholdAuth(gate))
-	open := callAPI(authed, http.MethodGet, "/api/inventory", "", publicHeaders())
-	assertCodedJSON(t, "GET /api/inventory unsigned", open, codeUnauthorized)
-
-	closed, err := LoadHouseholdAuth(filepath.Join(t.TempDir(), "missing"), "")
-	if err == nil {
-		t.Fatal("missing password file returned no error")
-	}
-	closedHandler, _ := NewHandler(nil, nil, nil, nil, WithHouseholdAuth(closed))
-	session := callAPI(closedHandler, http.MethodGet, "/api/session", "", publicHeaders())
-	assertSignInNotConfigured(t, session)
-	login := callAPI(closedHandler, http.MethodPost, "/api/login", `{"username":"pantry","password":"x"}`, publicHeaders())
-	assertSignInNotConfigured(t, login)
-
 	sentry := callAPI(handler, http.MethodPost, sentryTunnelPath, "")
 	if sentry.Code != http.StatusNotFound {
 		t.Fatalf("sentry = %d %s", sentry.Code, sentry.Body.String())
@@ -188,50 +174,56 @@ func TestAppFacingErrorCodes(t *testing.T) {
 	})
 
 	t.Run("rate_limited", func(t *testing.T) {
-		gate := testHousehold(t, "pantry", "correct-horse-battery")
-		now := time.Date(2026, 10, 8, 15, 0, 0, 0, time.UTC)
-		gate.now = func() time.Time { return now }
-		handler := publicHandler(gate)
-		for i := 0; i < maxAuthFailures; i++ {
-			rec := callAPI(handler, http.MethodPost, "/api/login", `{"username":"pantry","password":"wrong-password-value"}`, publicHeaders())
+		db := setupTestDB(t)
+		setupDir := t.TempDir()
+		svc := auth.NewService(db, setupDir)
+		site := stage1Site(t)
+		handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
+		if err := svc.Ensure(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		code, err := auth.ReadSetupCode(setupDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
+			"setupCode": code, "name": "Ada Lovelace", "email": "ada@pantry.test", "password": "correct horse",
+		}, app.EntryPublic, "")
+		if setup.Code != http.StatusOK {
+			t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
+		}
+		for i := 0; i < 5; i++ {
+			rec := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{
+				"email": "ada@pantry.test", "password": "wrong-password-value",
+			}, app.EntryPublic, "")
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("attempt %d = %d %s", i+1, rec.Code, rec.Body.String())
 			}
 		}
-		locked := callAPI(handler, http.MethodPost, "/api/login", `{"username":"pantry","password":"correct-horse-battery"}`, publicHeaders())
+		locked := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{
+			"email": "ada@pantry.test", "password": "correct horse",
+		}, app.EntryPublic, "")
 		assertRetryAfter(t, locked)
-		if locked.Body.String() != `{"error":"Too many sign-in attempts. Try again later.","code":"rate_limited"}` {
+		if locked.Body.String() != `{"error":"Too many tries. Wait a moment and try again.","code":"rate_limited"}` {
 			t.Fatalf("login = %s", locked.Body.String())
-		}
-		basicReq := httptest.NewRequest(http.MethodGet, "/api/scans", nil)
-		for key, value := range publicHeaders() {
-			basicReq.Header.Set(key, value)
-		}
-		basicReq.SetBasicAuth("pantry", "correct-horse-battery")
-		basic := httptest.NewRecorder()
-		handler.ServeHTTP(basic, basicReq)
-		if basic.Code != http.StatusTooManyRequests {
-			t.Fatalf("basic = %d %s", basic.Code, basic.Body.String())
-		}
-		assertRetryAfter(t, basic)
-		if !strings.Contains(basic.Body.String(), `"code":"rate_limited"`) {
-			t.Fatalf("basic = %s", basic.Body.String())
 		}
 	})
 
 	t.Run("unauthorized", func(t *testing.T) {
-		gate := testHousehold(t, "pantry", "correct-horse-battery")
-		handler, _ := setupTestWithContributor(t, nil, WithHouseholdAuth(gate))
-		rec := callAPI(handler, http.MethodGet, "/api/inventory", "", publicHeaders())
+		db := setupTestDB(t)
+		svc := auth.NewService(db, t.TempDir())
+		handler, _ := setupOnDB(t, db, nil, WithStage1(svc, stage1Site(t)))
+		rec := stage1Do(handler, http.MethodGet, "/api/inventory", "", nil, app.EntryPublic, "")
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
 		}
-		if rec.Body.String() != `{"error":"Sign in required.","code":"unauthorized"}` {
+		if rec.Body.String() != `{"error":"Sign in to continue.","code":"unauthorized"}` {
 			t.Fatalf("body = %s", rec.Body.String())
 		}
-		login := publicHandler(gate)
-		badPassword := callAPI(login, http.MethodPost, "/api/login", `{"username":"pantry","password":"wrong-password-value"}`, publicHeaders())
-		if badPassword.Code != http.StatusUnauthorized || badPassword.Body.String() != `{"error":"The username or password is incorrect.","code":"unauthorized"}` {
+		badPassword := stage1Do(handler, http.MethodPost, "/api/auth/login", "", map[string]string{
+			"email": "nobody@pantry.test", "password": "wrong-password-value",
+		}, app.EntryPublic, "")
+		if badPassword.Code != http.StatusUnauthorized || badPassword.Body.String() != `{"error":"Sign in to continue.","code":"unauthorized"}` {
 			t.Fatalf("login = %d %s", badPassword.Code, badPassword.Body.String())
 		}
 	})
@@ -247,10 +239,11 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		if strings.Contains(rec.Body.String(), `"field"`) {
 			t.Fatalf("validation body included field: %s", rec.Body.String())
 		}
-		gate := testHousehold(t, "pantry", "correct-horse-battery")
-		login := publicHandler(gate)
-		badBody := callAPI(login, http.MethodPost, "/api/login", "{", publicHeaders())
-		if badBody.Code != http.StatusBadRequest || badBody.Body.String() != `{"error":"Enter your username and password.","code":"validation"}` {
+		stageDB := setupTestDB(t)
+		svc := auth.NewService(stageDB, t.TempDir())
+		stageHandler, _ := setupOnDB(t, stageDB, nil, WithStage1(svc, stage1Site(t)))
+		badBody := stage1Do(stageHandler, http.MethodPost, "/api/auth/login", "", "{", app.EntryPublic, "")
+		if badBody.Code != http.StatusBadRequest || badBody.Body.String() != `{"error":"Check what you entered and try again.","code":"validation"}` {
 			t.Fatalf("login = %d %s", badBody.Code, badBody.Body.String())
 		}
 	})
@@ -709,4 +702,10 @@ func assertRetryAfter(t *testing.T, rec *httptest.ResponseRecorder) {
 	if err != nil || secs < 1 {
 		t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
