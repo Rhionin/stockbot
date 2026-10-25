@@ -150,11 +150,11 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
         netAmount: written.netAmount,
         netUnit: written.netUnit,
         packCount: written.packCount,
+        barcode: entry.barcode,
       };
       if (share.contribute) {
         input.contribute = true;
         input.contributeTo = share.contributeTo;
-        input.barcode = entry.barcode;
       }
       const created = await createProduct(input);
       showShareNotice(created);

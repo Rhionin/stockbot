@@ -521,6 +521,7 @@ export const ScanEntryCard = ({
         name,
         category: summary?.category ?? '',
         unitOfMeasure: summary?.unitOfMeasure ?? '',
+        barcode: entry.barcode,
       });
       if (created.id === '') throw new Error('Created product could not be loaded.');
       createdId = created.id;

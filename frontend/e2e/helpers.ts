@@ -21,6 +21,7 @@ export const createKnownProduct = async (
       name: input.name,
       category: input.category,
       unitOfMeasure: input.unitOfMeasure,
+      barcode: input.barcode,
     },
   })
   expect(createResponse.ok()).toBe(true)
