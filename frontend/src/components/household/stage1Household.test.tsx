@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HOUSEHOLD_DELETE_SENTENCE,
@@ -22,7 +22,10 @@ import { ScanQueuePage } from '../queue/ScanQueuePage';
 import { code128Bars } from './code128';
 import { DevicesPage } from './DevicesPage';
 import { HouseholdPage } from './HouseholdPage';
-import { HouseholdsPage, extractInviteCode } from './HouseholdsPage';
+import App from '../../App';
+import { AppMenu } from '../shell/AppMenu';
+import { HouseholdsPage } from './HouseholdsPage';
+import { extractInviteCode } from './inviteCode';
 import { HouseholdSwitcher } from './HouseholdSwitcher';
 import { useLiveHint } from './liveHints';
 
@@ -95,6 +98,28 @@ function renderStage(ui: React.ReactNode, auth: AuthSession, replaceAuth = vi.fn
       <MemoryRouter>
         <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth, replaceAuth }}>
           {ui}
+        </HouseholdSessionContext.Provider>
+      </MemoryRouter>
+    </MantineProvider>,
+  );
+}
+
+function renderStageRoutes(
+  ui: React.ReactNode,
+  auth: AuthSession,
+  replaceAuth = vi.fn(),
+  initialPath = '/',
+) {
+  return render(
+    <MantineProvider env="test">
+      <Notifications />
+      <MemoryRouter initialEntries={[initialPath]}>
+        <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth, replaceAuth }}>
+          <Routes>
+            <Route path="/" element={ui} />
+            <Route path="/households" element={<HouseholdsPage />} />
+            <Route path="/household" element={<div>Active household page</div>} />
+          </Routes>
         </HouseholdSessionContext.Provider>
       </MemoryRouter>
     </MantineProvider>,
@@ -226,6 +251,106 @@ describe('household management', () => {
     expect(screen.getByRole('button', { name: 'Pantry' })).toHaveClass('household-switch-name');
     expect(screen.queryByRole('combobox', { name: 'Household' })).not.toBeInTheDocument();
     expect(document.querySelector('select')).toBeNull();
+  });
+
+  it('navigates to other households from the single-household switcher', async () => {
+    const auth = session('owner');
+    auth.households = [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
+    auth.memberships = [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
+    renderStageRoutes(<HouseholdSwitcher />, auth);
+    fireEvent.click(screen.getByRole('button', { name: 'Pantry' }));
+    expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
+  });
+
+  it('navigates to other households from the multi-household switcher', async () => {
+    renderStageRoutes(<HouseholdSwitcher />, session('owner'));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Household' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Other households…' }));
+    expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
+  });
+
+  it('hides operator-only household controls from non-operators', () => {
+    renderStage(<HouseholdsPage />, session('owner'));
+    const start = screen.getByRole('form', { name: 'Start a household' });
+    expect(within(start).getByRole('textbox', { name: /Invite code/i })).toBeRequired();
+    expect(screen.queryByRole('heading', { name: 'Invite someone else to start a household' })).not.toBeInTheDocument();
+  });
+
+  it('navigates to the active household page from Manage household', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('unused'))));
+    renderStageRoutes(<HouseholdsPage />, session('owner'), vi.fn(), '/households');
+    fireEvent.click(screen.getByRole('button', { name: 'Manage household' }));
+    expect(await screen.findByText('Active household page')).toBeVisible();
+  });
+
+  it('shows invite errors inline in the Invites section', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
+      }
+      if (url === '/api/invites' && init?.method === 'POST') {
+        return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Create invite' }));
+    const invites = screen.getByRole('heading', { name: 'Invites' }).closest('section');
+    expect(invites).not.toBeNull();
+    await waitFor(() => expect(within(invites!).getByRole('alert')).toBeVisible());
+  });
+
+  it('opens other households from the app menu', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(json([]));
+      if (url === '/api/group-suggestions') return Promise.resolve(json([]));
+      if (url === '/api/build') return Promise.resolve(json({}));
+      return Promise.reject(new Error(url));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter initialEntries={['/']}>
+          <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth: session('owner'), replaceAuth: vi.fn() }}>
+            <Routes>
+              <Route path="/" element={<AppMenu onCredentialsChanged={() => undefined} />} />
+              <Route path="/households" element={<HouseholdsPage />} />
+            </Routes>
+          </HouseholdSessionContext.Provider>
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Other households' }));
+    expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
+  });
+
+  it('renders HouseholdsPage at /households in App', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const auth = session('owner');
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/session') return Promise.resolve(json(auth));
+      if (url === '/api/config') return Promise.resolve(json({ live: 'sse', minClientVersion: { expo: '1.0.0' }, entry: 'public' }));
+      if (url === '/api/providers' || url === '/api/group-suggestions') return Promise.resolve(json([]));
+      if (url === '/api/build') return Promise.resolve(json({}));
+      if (url === '/api/scanner/config') {
+        return Promise.resolve(json({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' }));
+      }
+      return Promise.resolve(json({}));
+    }));
+    window.history.pushState({}, '', '/households');
+    render(
+      <MantineProvider env="test">
+        <App />
+      </MantineProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
+    window.history.pushState({}, '', '/');
   });
 
   it('links to other households instead of starting another household inline', () => {

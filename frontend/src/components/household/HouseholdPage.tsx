@@ -48,6 +48,15 @@ function copyLink(url: string) {
   void navigator.clipboard?.writeText(url);
 }
 
+type MemberBusy = { id: string; action: 'role' | 'remove' | 'reset' } | null;
+
+function memberActionError(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'last_owner') {
+    return hostedErrorSentence('last_owner');
+  }
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
 export function HouseholdPage() {
   const navigate = useNavigate();
   const { auth, logout } = useHouseholdSession();
@@ -61,7 +70,7 @@ export function HouseholdPage() {
   const [loadError, setLoadError] = useState('');
   const [membersError, setMembersError] = useState('');
   const [memberResetUrls, setMemberResetUrls] = useState<Record<string, string>>({});
-  const [memberBusyId, setMemberBusyId] = useState('');
+  const [memberBusy, setMemberBusy] = useState<MemberBusy>(null);
   const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
   const [createdInviteUrl, setCreatedInviteUrl] = useState('');
   const [inviteError, setInviteError] = useState('');
@@ -194,31 +203,35 @@ export function HouseholdPage() {
     }
   };
 
-  const runMemberAction = async (userId: string, action: () => Promise<void>) => {
+  const runMemberAction = async (userId: string, action: 'role' | 'remove', fn: () => Promise<void>) => {
     setMembersError('');
-    setMemberBusyId(userId);
+    setMemberBusy({ id: userId, action });
     try {
-      await action();
+      await fn();
       await load();
     } catch (requestError) {
-      setMembersError(hosted(requestError, hostedErrorSentence('last_owner')));
+      setMembersError(memberActionError(requestError));
     } finally {
-      setMemberBusyId('');
+      setMemberBusy(null);
     }
   };
 
   const resetMemberLink = async (member: Member) => {
     setMembersError('');
-    setMemberBusyId(member.userId);
+    setMemberBusy({ id: member.userId, action: 'reset' });
     try {
       const link = await createResetLink(householdId, member.userId);
       setMemberResetUrls((current) => ({ ...current, [member.userId]: link.url }));
     } catch (requestError) {
-      setMembersError(hosted(requestError, 'Could not create a reset link.'));
+      setMembersError(memberActionError(requestError));
     } finally {
-      setMemberBusyId('');
+      setMemberBusy(null);
     }
   };
+
+  const memberRowBusy = (userId: string) => memberBusy?.id === userId;
+  const memberActionLoading = (userId: string, action: 'role' | 'remove' | 'reset') =>
+    memberBusy?.id === userId && memberBusy.action === action;
 
   const revoke = async (inviteId: string) => {
     setInviteError('');
@@ -260,9 +273,10 @@ export function HouseholdPage() {
                   <Button
                     size="compact-sm"
                     variant="default"
-                    loading={memberBusyId === member.userId}
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'role')}
                     onClick={() => {
-                      void runMemberAction(member.userId, () =>
+                      void runMemberAction(member.userId, 'role', () =>
                         changeMemberRole(householdId, member.userId, member.role === 'owner' ? 'member' : 'owner').then(() => undefined),
                       );
                     }}
@@ -272,9 +286,10 @@ export function HouseholdPage() {
                   <Button
                     size="compact-sm"
                     variant="default"
-                    loading={memberBusyId === member.userId}
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'remove')}
                     onClick={() => {
-                      void runMemberAction(member.userId, () => removeMember(householdId, member.userId).then(() => undefined));
+                      void runMemberAction(member.userId, 'remove', () => removeMember(householdId, member.userId).then(() => undefined));
                     }}
                   >
                     Remove
@@ -282,7 +297,8 @@ export function HouseholdPage() {
                   <Button
                     size="compact-sm"
                     variant="subtle"
-                    loading={memberBusyId === member.userId}
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'reset')}
                     onClick={() => { void resetMemberLink(member); }}
                   >
                     Reset link

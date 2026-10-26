@@ -11,6 +11,7 @@ import {
   switchHousehold,
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
+import { extractInviteCode } from './inviteCode';
 import { announceHouseholdSwitch } from './liveHints';
 
 const RESTOCK: { value: RestockMode; label: string }[] = [
@@ -22,15 +23,6 @@ const RESTOCK: { value: RestockMode; label: string }[] = [
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
   return error instanceof Error ? error.message : fallback;
-}
-
-export function extractInviteCode(input: string): string {
-  const trimmed = input.trim();
-  const match = /\/invite\/([^/?#]+)/.exec(trimmed);
-  if (match) {
-    return decodeURIComponent(match[1]);
-  }
-  return trimmed;
 }
 
 function copyLink(url: string) {
