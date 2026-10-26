@@ -137,6 +137,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
           {stage1 && (
             <>
               <Menu.Item onClick={() => { setOpened(false); navigate('/household'); }}>Household</Menu.Item>
+              <Menu.Item onClick={() => { setOpened(false); navigate('/households'); }}>Other households</Menu.Item>
               <Menu.Item onClick={() => { setOpened(false); navigate('/devices'); }}>Devices</Menu.Item>
             </>
           )}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
+import { useNavigate } from 'react-router-dom';
 import {
   HOUSEHOLD_DELETE_SENTENCE,
   classifyImportDocument,
@@ -8,16 +9,11 @@ import {
   type HouseholdSettings,
   type InviteSummary,
   type Member,
-  type RestockMode,
 } from '@stockbot/shared/contract';
 import {
   ApiError,
   changeMemberRole,
-  currentAuthSession,
-  getSession,
-  createHousehold,
   createInvite,
-  createOperatorHouseholdInvite,
   createResetLink,
   deleteAccount,
   deleteHousehold,
@@ -36,12 +32,6 @@ import {
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 
-const RESTOCK: { value: RestockMode; label: string }[] = [
-  { value: 'auto', label: 'Restock new items automatically' },
-  { value: 'ask_restock', label: 'Ask me before restocking a new item' },
-  { value: 'ask_hold', label: 'Ask me, and hold the item until I answer' },
-];
-
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
   return error instanceof Error ? error.message : fallback;
@@ -54,8 +44,22 @@ function inviteLabel(invite: InviteSummary): string {
   return `Expires ${new Date(invite.expiresAt).toLocaleString()}`;
 }
 
+function copyLink(url: string) {
+  void navigator.clipboard?.writeText(url);
+}
+
+type MemberBusy = { id: string; action: 'role' | 'remove' | 'reset' } | null;
+
+function memberActionError(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'last_owner') {
+    return hostedErrorSentence('last_owner');
+  }
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
 export function HouseholdPage() {
-  const { auth, replaceAuth, logout } = useHouseholdSession();
+  const navigate = useNavigate();
+  const { auth, logout } = useHouseholdSession();
   const active = auth?.households.find((row) => row.id === auth.activeHouseholdId) ?? null;
   const owner = active?.role === 'owner';
   const householdId = auth?.activeHouseholdId ?? '';
@@ -63,18 +67,23 @@ export function HouseholdPage() {
   const [invites, setInvites] = useState<InviteSummary[]>([]);
   const [settings, setSettings] = useState<HouseholdSettings | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [membersError, setMembersError] = useState('');
+  const [memberResetUrls, setMemberResetUrls] = useState<Record<string, string>>({});
+  const [memberBusy, setMemberBusy] = useState<MemberBusy>(null);
   const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
-  const [createdUrl, setCreatedUrl] = useState('');
+  const [createdInviteUrl, setCreatedInviteUrl] = useState('');
+  const [inviteError, setInviteError] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [revokingInviteId, setRevokingInviteId] = useState('');
   const [exportLinks, setExportLinks] = useState<{ jsonUrl: string | null; csvUrl: string | null } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const [exportNotice, setExportNotice] = useState('');
   const [importing, setImporting] = useState(false);
   const [deleteName, setDeleteName] = useState('');
   const [accountEmail, setAccountEmail] = useState('');
-  const [startName, setStartName] = useState('');
-  const [startCode, setStartCode] = useState('');
-  const [restockMode, setRestockMode] = useState<RestockMode>('auto');
+  const [accountError, setAccountError] = useState('');
 
   const load = useCallback(async () => {
     if (householdId === '') return;
@@ -89,9 +98,9 @@ export function HouseholdPage() {
       setInvites(pending);
       setSettings(nextSettings);
       setHousehold(detail);
-      setError('');
+      setLoadError('');
     } catch (requestError) {
-      setError(hosted(requestError, 'Stockbot could not load this household.'));
+      setLoadError(hosted(requestError, 'Stockbot could not load this household.'));
     }
   }, [householdId]);
 
@@ -101,20 +110,23 @@ export function HouseholdPage() {
 
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setError('');
+    setInviteError('');
+    setInviteLoading(true);
     try {
       const created = await createInvite(owner && inviteRole === 'owner' ? { role: 'owner' } : {});
-      setCreatedUrl(created.url);
+      setCreatedInviteUrl(created.url);
       await load();
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('forbidden_role')));
+      setInviteError(hosted(requestError, hostedErrorSentence('forbidden_role')));
+    } finally {
+      setInviteLoading(false);
     }
   };
 
   const exportHousehold = async () => {
     setExporting(true);
-    setError('');
-    setNotice('');
+    setExportError('');
+    setExportNotice('');
     try {
       const created = await startExport();
       let job = await getExportJob(created.jobId);
@@ -123,13 +135,13 @@ export function HouseholdPage() {
         job = await getExportJob(created.jobId);
       }
       if (job.status === 'failed') {
-        setError('The export failed. Try again.');
+        setExportError('The export failed. Try again.');
       } else {
         setExportLinks({ jsonUrl: job.jsonUrl, csvUrl: job.csvUrl });
-        setNotice(job.status === 'ready' ? 'Export ready.' : 'Export in progress.');
+        setExportNotice(job.status === 'ready' ? 'Export ready.' : 'Export in progress.');
       }
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('forbidden_role')));
+      setExportError(hosted(requestError, hostedErrorSentence('forbidden_role')));
     } finally {
       setExporting(false);
     }
@@ -137,13 +149,14 @@ export function HouseholdPage() {
 
   const importFile = async (file: File) => {
     setImporting(true);
-    setError('');
+    setExportError('');
+    setExportNotice('');
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as unknown;
       const classification = classifyImportDocument(parsed);
       if (!classification.ok) {
-        setError(hostedErrorSentence('validation'));
+        setExportError(hostedErrorSentence('validation'));
         return;
       }
       const upload = await createImportUpload(file.size);
@@ -157,9 +170,9 @@ export function HouseholdPage() {
         await new Promise((resolve) => window.setTimeout(resolve, 200));
         job = await getImportJob(started.jobId);
       }
-      setNotice(job.status === 'ready' ? 'Import finished.' : 'Import in progress.');
+      setExportNotice(job.status === 'ready' ? 'Import finished.' : 'Import in progress.');
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('household_not_empty')));
+      setExportError(hosted(requestError, hostedErrorSentence('household_not_empty')));
     } finally {
       setImporting(false);
     }
@@ -168,38 +181,68 @@ export function HouseholdPage() {
   const removeHousehold = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (household === null) return;
-    setError('');
+    setExportError('');
+    setExportNotice('');
     try {
       const deleted = await deleteHousehold(household.id, deleteName);
       setHousehold(deleted);
-      setNotice(deleted.message);
+      setExportNotice(deleted.message);
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('confirmation_mismatch')));
+      setExportError(hosted(requestError, hostedErrorSentence('confirmation_mismatch')));
     }
   };
 
   const removeAccount = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setError('');
+    setAccountError('');
     try {
       await deleteAccount(accountEmail);
       logout();
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('last_owner')));
+      setAccountError(hosted(requestError, hostedErrorSentence('last_owner')));
     }
   };
 
-  const startAnother = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError('');
+  const runMemberAction = async (userId: string, action: 'role' | 'remove', fn: () => Promise<void>) => {
+    setMembersError('');
+    setMemberBusy({ id: userId, action });
     try {
-      await createHousehold({ name: startName.trim(), restockMode, inviteCode: startCode.trim() });
-      await getSession();
-      const session = currentAuthSession();
-      if (session) replaceAuth(session);
-      setNotice(`${startName.trim()} was created.`);
+      await fn();
+      await load();
     } catch (requestError) {
-      setError(hosted(requestError, hostedErrorSentence('invite_required')));
+      setMembersError(memberActionError(requestError));
+    } finally {
+      setMemberBusy(null);
+    }
+  };
+
+  const resetMemberLink = async (member: Member) => {
+    setMembersError('');
+    setMemberBusy({ id: member.userId, action: 'reset' });
+    try {
+      const link = await createResetLink(householdId, member.userId);
+      setMemberResetUrls((current) => ({ ...current, [member.userId]: link.url }));
+    } catch (requestError) {
+      setMembersError(memberActionError(requestError));
+    } finally {
+      setMemberBusy(null);
+    }
+  };
+
+  const memberRowBusy = (userId: string) => memberBusy?.id === userId;
+  const memberActionLoading = (userId: string, action: 'role' | 'remove' | 'reset') =>
+    memberBusy?.id === userId && memberBusy.action === action;
+
+  const revoke = async (inviteId: string) => {
+    setInviteError('');
+    setRevokingInviteId(inviteId);
+    try {
+      await revokeInvite(inviteId);
+      await load();
+    } catch (requestError) {
+      setInviteError(hosted(requestError, hostedErrorSentence('forbidden_role')));
+    } finally {
+      setRevokingInviteId('');
     }
   };
 
@@ -207,25 +250,35 @@ export function HouseholdPage() {
     <Stack className="household-page" gap="lg">
       <Title order={2}>{household?.name ?? active?.name ?? 'Household'}</Title>
       {settings && <Text>Restock mode: {settings.restockMode.replaceAll('_', ' ')}</Text>}
-      {error !== '' && <Alert color="red" variant="light" role="alert">{error}</Alert>}
-      {notice !== '' && <Alert color="teal" variant="light" role="status">{notice}</Alert>}
 
       <section aria-labelledby="members-heading">
         <Title id="members-heading" order={3}>Members</Title>
+        {loadError !== '' && <Alert color="red" variant="light" role="alert">{loadError}</Alert>}
+        {membersError !== '' && <Alert color="red" variant="light" role="alert">{membersError}</Alert>}
         <ul className="household-list">
           {members.map((member) => (
             <li key={member.userId}>
               <span>{member.email}</span>
               <span>{member.role === 'owner' ? 'Owner' : 'Member'}</span>
+              {memberResetUrls[member.userId] && (
+                <Group gap="xs" wrap="wrap">
+                  <Text role="status">Reset link for {member.email}: {memberResetUrls[member.userId]}</Text>
+                  <Button size="compact-sm" variant="default" onClick={() => copyLink(memberResetUrls[member.userId] ?? '')}>
+                    Copy link
+                  </Button>
+                </Group>
+              )}
               {owner && (
                 <Group gap="xs">
                   <Button
                     size="compact-sm"
                     variant="default"
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'role')}
                     onClick={() => {
-                      void changeMemberRole(householdId, member.userId, member.role === 'owner' ? 'member' : 'owner')
-                        .then(load)
-                        .catch((requestError: unknown) => setError(hosted(requestError, hostedErrorSentence('last_owner'))));
+                      void runMemberAction(member.userId, 'role', () =>
+                        changeMemberRole(householdId, member.userId, member.role === 'owner' ? 'member' : 'owner').then(() => undefined),
+                      );
                     }}
                   >
                     {member.role === 'owner' ? 'Make member' : 'Make owner'}
@@ -233,10 +286,10 @@ export function HouseholdPage() {
                   <Button
                     size="compact-sm"
                     variant="default"
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'remove')}
                     onClick={() => {
-                      void removeMember(householdId, member.userId)
-                        .then(load)
-                        .catch((requestError: unknown) => setError(hosted(requestError, hostedErrorSentence('last_owner'))));
+                      void runMemberAction(member.userId, 'remove', () => removeMember(householdId, member.userId).then(() => undefined));
                     }}
                   >
                     Remove
@@ -244,9 +297,9 @@ export function HouseholdPage() {
                   <Button
                     size="compact-sm"
                     variant="subtle"
-                    onClick={() => {
-                      void createResetLink(householdId, member.userId).then((link) => setCreatedUrl(link.url));
-                    }}
+                    disabled={memberRowBusy(member.userId)}
+                    loading={memberActionLoading(member.userId, 'reset')}
+                    onClick={() => { void resetMemberLink(member); }}
                   >
                     Reset link
                   </Button>
@@ -259,6 +312,7 @@ export function HouseholdPage() {
 
       <section aria-labelledby="invites-heading">
         <Title id="invites-heading" order={3}>Invites</Title>
+        {inviteError !== '' && <Alert color="red" variant="light" role="alert">{inviteError}</Alert>}
         <form aria-label="Create invite" onSubmit={(event) => { void create(event); }}>
           <Group align="flex-end">
             {owner && (
@@ -269,10 +323,17 @@ export function HouseholdPage() {
                 </Group>
               </Radio.Group>
             )}
-            <Button type="submit">Create invite</Button>
+            <Button type="submit" loading={inviteLoading}>Create invite</Button>
           </Group>
         </form>
-        {createdUrl !== '' && <Text role="status">Invite link: {createdUrl}</Text>}
+        {createdInviteUrl !== '' && (
+          <Group gap="xs" mt="sm" wrap="wrap">
+            <Text role="status">Invite link: {createdInviteUrl}</Text>
+            <Button size="compact-sm" variant="default" onClick={() => copyLink(createdInviteUrl)}>
+              Copy link
+            </Button>
+          </Group>
+        )}
         <ul className="household-list">
           {invites.filter((invite) => invite.status === 'open' || invite.status === 'revoked').map((invite) => (
             <li key={invite.id}>
@@ -280,7 +341,12 @@ export function HouseholdPage() {
               <span>{invite.role === 'owner' ? 'Owner' : 'Member'}</span>
               <span>{inviteLabel(invite)}</span>
               {invite.status === 'open' && (
-                <Button size="compact-sm" variant="default" onClick={() => { void revokeInvite(invite.id).then(load); }}>
+                <Button
+                  size="compact-sm"
+                  variant="default"
+                  loading={revokingInviteId === invite.id}
+                  onClick={() => { void revoke(invite.id); }}
+                >
                   Revoke invite
                 </Button>
               )}
@@ -293,6 +359,8 @@ export function HouseholdPage() {
         <section aria-labelledby="export-heading">
           <Title id="export-heading" order={3}>Export and delete</Title>
           <Text>{HOUSEHOLD_DELETE_SENTENCE}</Text>
+          {exportError !== '' && <Alert color="red" variant="light" role="alert">{exportError}</Alert>}
+          {exportNotice !== '' && <Alert color="teal" variant="light" role="status">{exportNotice}</Alert>}
           <Group>
             <Button loading={exporting} onClick={() => { void exportHousehold(); }}>Export household</Button>
           </Group>
@@ -316,7 +384,16 @@ export function HouseholdPage() {
             />
           </label>
           {household?.deletedAt ? (
-            <Button onClick={() => { void restoreHousehold(household.id).then((restored) => { setHousehold(restored); setNotice('Household restored.'); }); }}>
+            <Button onClick={() => {
+              void restoreHousehold(household.id)
+                .then((restored) => {
+                  setHousehold(restored);
+                  setExportNotice('Household restored.');
+                })
+                .catch((requestError: unknown) => {
+                  setExportError(hosted(requestError, 'Could not restore this household.'));
+                });
+            }}>
               Restore household
             </Button>
           ) : (
@@ -334,6 +411,7 @@ export function HouseholdPage() {
 
       <section aria-labelledby="account-heading">
         <Title id="account-heading" order={3}>Your account</Title>
+        {accountError !== '' && <Alert color="red" variant="light" role="alert">{accountError}</Alert>}
         <form aria-label="Delete account" onSubmit={(event) => { void removeAccount(event); }}>
           <TextInput
             label={`Type ${auth?.user?.email ?? 'your email'} to delete the account`}
@@ -344,25 +422,12 @@ export function HouseholdPage() {
         </form>
       </section>
 
-      <section aria-labelledby="another-heading">
-        <Title id="another-heading" order={3}>Another household</Title>
-        <form aria-label="Start a household" onSubmit={(event) => { void startAnother(event); }}>
-          <Stack gap="sm">
-            <TextInput label="Invite code" value={startCode} onChange={(event) => setStartCode(event.currentTarget.value)} required />
-            <TextInput label="Household name" value={startName} onChange={(event) => setStartName(event.currentTarget.value)} required />
-            <Radio.Group label="When a new item shows up" value={restockMode} onChange={(value) => setRestockMode(value as RestockMode)}>
-              <Stack gap="xs" mt="xs">
-                {RESTOCK.map((choice) => <Radio key={choice.value} value={choice.value} label={choice.label} />)}
-              </Stack>
-            </Radio.Group>
-            <Button type="submit">Create household</Button>
-            {auth?.operator && (
-              <Button type="button" variant="default" onClick={() => { void createOperatorHouseholdInvite().then((invite) => setCreatedUrl(invite.url)); }}>
-                Create a start-household invite
-              </Button>
-            )}
-          </Stack>
-        </form>
+      <section aria-labelledby="other-households-heading">
+        <Title id="other-households-heading" order={3}>Other households</Title>
+        <Text>Switch between households or start a new one.</Text>
+        <Button variant="default" mt="sm" onClick={() => navigate('/households')}>
+          Switch or add a household
+        </Button>
       </section>
     </Stack>
   );

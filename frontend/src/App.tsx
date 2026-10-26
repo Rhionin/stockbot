@@ -7,6 +7,7 @@ import { ResetPasswordPage } from './components/auth/ResetPasswordPage';
 import { SetupPage } from './components/auth/SetupPage';
 import { DevicesPage } from './components/household/DevicesPage';
 import { HouseholdPage } from './components/household/HouseholdPage';
+import { HouseholdsPage } from './components/household/HouseholdsPage';
 import { HouseholdSwitcher } from './components/household/HouseholdSwitcher';
 import './components/household/household.css';
 import { ScanAlertHost } from './components/queue/ScanAlertHost';
@@ -79,6 +80,7 @@ function SignedInApp() {
                 <Route path="/shopping" element={<ShoppingListPage />} />
                 <Route path="/diagnostics" element={<DiagnosticsPage />} />
                 <Route path="/household" element={<HouseholdPage />} />
+                <Route path="/households" element={<HouseholdsPage />} />
                 <Route path="/devices" element={<DevicesPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/settings/categories" element={<SuggestionsPage />} />

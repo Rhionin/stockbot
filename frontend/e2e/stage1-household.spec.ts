@@ -225,6 +225,19 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByText('Cancelled')).toBeVisible()
     await shot(page, 'members-invites', width)
 
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Other households' }).click()
+    await expect(page.getByRole('heading', { name: 'Households' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Your households' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Start a household' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Switch or add a household' })).toHaveCount(0)
+    await shot(page, 'households', width)
+
+    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Switch or add a household' })).toBeVisible()
+    await shot(page, 'household-other-link', width)
+
     await page.getByRole('button', { name: 'Export household' }).click()
     await expect(page.getByRole('link', { name: 'Download JSON' })).toBeVisible()
     await expect(page.getByText('Your household will be permanently deleted after 30 days.')).toBeVisible()
