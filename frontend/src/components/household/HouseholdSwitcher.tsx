@@ -14,13 +14,17 @@ export function HouseholdSwitcher() {
   }));
   if (options.length === 0) {
     return (
-      <button type="button" className="household-switch-link" onClick={() => navigate('/household')}>
+      <button type="button" className="household-switch-link" onClick={() => navigate('/households')}>
         Choose a household
       </button>
     );
   }
   if (options.length === 1 && auth.activeHouseholdId) {
-    return <span className="household-switch-name">{options[0]?.label}</span>;
+    return (
+      <button type="button" className="household-switch-name" onClick={() => navigate('/households')}>
+        {options[0]?.label}
+      </button>
+    );
   }
   return (
     <Select

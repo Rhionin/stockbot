@@ -22,6 +22,7 @@ import { ScanQueuePage } from '../queue/ScanQueuePage';
 import { code128Bars } from './code128';
 import { DevicesPage } from './DevicesPage';
 import { HouseholdPage } from './HouseholdPage';
+import { HouseholdsPage, extractInviteCode } from './HouseholdsPage';
 import { HouseholdSwitcher } from './HouseholdSwitcher';
 import { useLiveHint } from './liveHints';
 
@@ -222,9 +223,186 @@ describe('household management', () => {
     auth.households = [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     auth.memberships = [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     renderStage(<HouseholdSwitcher />, auth);
-    expect(screen.getByText('Pantry')).toHaveClass('household-switch-name');
+    expect(screen.getByRole('button', { name: 'Pantry' })).toHaveClass('household-switch-name');
     expect(screen.queryByRole('combobox', { name: 'Household' })).not.toBeInTheDocument();
     expect(document.querySelector('select')).toBeNull();
+  });
+
+  it('links to other households instead of starting another household inline', () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    expect(screen.queryByRole('form', { name: 'Start a household' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Switch or add a household' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Other households' })).toBeVisible();
+  });
+
+  it('renders reset links inline in Members', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
+      }
+      if (url.includes('/reset-link') && init?.method === 'POST') {
+        return Promise.resolve(json({ url: 'https://app.example/reset/secret' }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset link' }));
+    expect(await screen.findByText(/Reset link for bea@example.com: https:\/\/app.example\/reset\/secret/)).toBeVisible();
+  });
+
+  it('surfaces reset link errors inline in Members', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
+      }
+      if (url.includes('/reset-link') && init?.method === 'POST') {
+        return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset link' }));
+    const members = screen.getByRole('heading', { name: 'Members' }).closest('section');
+    expect(members).not.toBeNull();
+    await waitFor(() => expect(within(members!).getByRole('alert')).toBeVisible());
+  });
+
+  it('lists households and switches active household', async () => {
+    const replaceAuth = vi.fn();
+    const next = session('owner');
+    next.activeHouseholdId = 'hh-2';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/auth/session/household' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ householdId: 'hh-2' });
+        return Promise.resolve(json(next));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, session('owner'), replaceAuth);
+    expect(screen.getByText('Cabin')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Switch' }));
+    await waitFor(() => expect(replaceAuth).toHaveBeenCalledWith(expect.objectContaining({ activeHouseholdId: 'hh-2' })));
+    expect(await screen.findByRole('status')).toHaveTextContent('Switched to Cabin.');
+  });
+
+  it('creates a household for operators without an invite code', async () => {
+    const replaceAuth = vi.fn();
+    const auth = session('owner');
+    auth.operator = true;
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url === '/api/operator/household-invites' && init?.method === 'POST') {
+        return Promise.resolve(json({ id: 'op-1', code: 'AUTO-CODE', url: 'https://app.example/invite/AUTO-CODE', email: null, role: 'owner', expiresAt: '2026-06-01T00:00:00Z' }));
+      }
+      if (url === '/api/households' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ name: 'Cabin', restockMode: 'auto', inviteCode: 'AUTO-CODE' });
+        return Promise.resolve(json({ id: 'hh-3', name: 'Cabin', role: 'owner' }));
+      }
+      if (url === '/api/auth/session/household' && init?.method === 'POST') {
+        const switched = { ...auth, activeHouseholdId: 'hh-3', households: [...auth.households, { id: 'hh-3', name: 'Cabin', role: 'owner', deletedAt: null }] };
+        return Promise.resolve(json(switched));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, auth, replaceAuth);
+    const start = screen.getByRole('form', { name: 'Start a household' });
+    fireEvent.change(within(start).getByRole('textbox', { name: /Household name/ }), { target: { value: 'Cabin' } });
+    fireEvent.click(within(start).getByRole('button', { name: 'Create household' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Cabin was created.');
+    expect(calls.some((row) => row.includes('/api/operator/household-invites'))).toBe(true);
+    await waitFor(() => expect(replaceAuth).toHaveBeenCalled());
+  });
+
+  it('extracts invite codes from full invite URLs when starting a household', async () => {
+    expect(extractInviteCode('https://stockbot.rhionin.com/invite/START-9999')).toBe('START-9999');
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/households' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ name: 'Lake', restockMode: 'auto', inviteCode: 'START-9999' });
+        return Promise.resolve(json({ id: 'hh-9', name: 'Lake', role: 'owner' }));
+      }
+      if (url === '/api/auth/session/household' && init?.method === 'POST') {
+        return Promise.resolve(json(session('owner')));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, session('owner'));
+    const start = screen.getByRole('form', { name: 'Start a household' });
+    fireEvent.change(within(start).getByRole('textbox', { name: /Household name/ }), { target: { value: 'Lake' } });
+    fireEvent.change(within(start).getByRole('textbox', { name: /Invite code/ }), { target: { value: 'https://stockbot.rhionin.com/invite/START-9999' } });
+    fireEvent.click(within(start).getByRole('button', { name: 'Create household' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Lake was created.');
+  });
+
+  it('shows an inline invite-not-found error when creating a household', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/households' && init?.method === 'POST') {
+        return Promise.resolve(json({ error: 'missing', code: 'not_found' }, 404));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, session('owner'));
+    const startForm = screen.getByRole('form', { name: 'Start a household' });
+    fireEvent.change(within(startForm).getByRole('textbox', { name: /Household name/ }), { target: { value: 'Lake' } });
+    fireEvent.change(within(startForm).getByRole('textbox', { name: /Invite code/ }), { target: { value: 'BAD-CODE' } });
+    fireEvent.click(within(startForm).getByRole('button', { name: 'Create household' }));
+    const start = screen.getByRole('heading', { name: 'Start a household' }).closest('section');
+    expect(start).not.toBeNull();
+    await waitFor(() => {
+      expect(within(start!).getByRole('alert')).toHaveTextContent("That invite code wasn't found. Check the code or ask for a new invite.");
+    });
+  });
+
+  it('creates operator start-household invites with inline feedback', async () => {
+    const auth = session('owner');
+    auth.operator = true;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/operator/household-invites' && init?.method === 'POST') {
+        return Promise.resolve(json({ id: 'op-2', code: 'OP-CODE', url: 'https://app.example/invite/OP-CODE', email: null, role: 'owner', expiresAt: '2026-06-01T00:00:00Z' }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, auth);
+    fireEvent.click(screen.getByRole('button', { name: 'Create a start-household invite' }));
+    expect(await screen.findByText(/Invite link: https:\/\/app.example\/invite\/OP-CODE/)).toBeVisible();
+  });
+
+  it('surfaces operator start-household invite errors inline', async () => {
+    const auth = session('owner');
+    auth.operator = true;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/operator/household-invites' && init?.method === 'POST') {
+        return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdsPage />, auth);
+    fireEvent.click(screen.getByRole('button', { name: 'Create a start-household invite' }));
+    const operator = screen.getByRole('heading', { name: 'Invite someone else to start a household' }).closest('section');
+    expect(operator).not.toBeNull();
+    await waitFor(() => expect(within(operator!).getByRole('alert')).toBeVisible());
   });
 });
 
