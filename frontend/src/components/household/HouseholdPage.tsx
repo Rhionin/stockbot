@@ -88,15 +88,12 @@ export function HouseholdPage() {
   const [deleteName, setDeleteName] = useState('');
   const [accountEmail, setAccountEmail] = useState('');
   const [accountError, setAccountError] = useState('');
-  const [householdName, setHouseholdName] = useState('');
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [renameLoading, setRenameLoading] = useState(false);
   const [renameError, setRenameError] = useState('');
   const [renameNotice, setRenameNotice] = useState('');
 
-  useEffect(() => {
-    const next = household?.name ?? active?.name ?? '';
-    setHouseholdName(next);
-  }, [household?.name, active?.name]);
+  const displayedHouseholdName = nameDraft ?? household?.name ?? active?.name ?? '';
 
   const load = useCallback(async () => {
     if (householdId === '') return;
@@ -111,6 +108,7 @@ export function HouseholdPage() {
       setInvites(pending);
       setSettings(nextSettings);
       setHousehold(detail);
+      setNameDraft(null);
       setLoadError('');
     } catch (requestError) {
       setLoadError(hosted(requestError, 'Stockbot could not load this household.'));
@@ -253,13 +251,13 @@ export function HouseholdPage() {
     setRenameNotice('');
     setRenameLoading(true);
     try {
-      const trimmed = householdName.trim();
+      const trimmed = displayedHouseholdName.trim();
       const updated = await renameHousehold(householdId, trimmed);
       setHousehold(updated);
       await getSession();
       const session = currentAuthSession();
       if (session) replaceAuth(session);
-      setHouseholdName(updated.name);
+      setNameDraft(null);
       setRenameNotice('Household name saved.');
     } catch (requestError) {
       setRenameError(hosted(requestError, hostedErrorSentence('invalid_input')));
@@ -292,8 +290,8 @@ export function HouseholdPage() {
               <TextInput
                 label="Household name"
                 aria-label="Household name"
-                value={householdName}
-                onChange={(event) => setHouseholdName(event.currentTarget.value)}
+                value={displayedHouseholdName}
+                onChange={(event) => setNameDraft(event.currentTarget.value)}
                 disabled={renameLoading}
                 style={{ flex: 1, minWidth: '12rem' }}
               />

@@ -72,7 +72,7 @@ export function HouseholdsPage() {
   }, [operator]);
 
   useEffect(() => {
-    void loadOperatorHouseholds();
+    void Promise.resolve().then(loadOperatorHouseholds);
   }, [loadOperatorHouseholds]);
 
   const switchTo = async (householdId: string, householdName: string) => {
