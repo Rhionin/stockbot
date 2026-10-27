@@ -341,7 +341,7 @@ jobs:
           tags: ${{ steps.tags.outputs.sidecar_tags }}
 
   docker-publish:
-    name: Build and push container image
+    name: Publish container image
     runs-on: ubuntu-latest
     needs: [go, frontend, shell, e2e, denver, watch-worker]
     # Release calls this workflow on master after tests pass. Pull requests use
