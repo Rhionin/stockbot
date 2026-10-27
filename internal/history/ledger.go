@@ -39,10 +39,10 @@ type LedgerFilter struct {
 	Query     string
 }
 
-// historyListOrder is newest first. Moves that share a timestamp list the
-// stock-in before the stock-out, then the id. A backfill pair is written at
-// one scannedAt, so the id must not decide which move comes first.
-const historyListOrder = "m.at DESC, CASE m.direction WHEN 'in' THEN 0 WHEN 'out' THEN 1 ELSE 2 END, m.id DESC"
+// historyListOrder is newest first (m.at DESC). When two moves share a
+// timestamp, the later event sorts above the earlier one. A backfill pair is
+// written at one instant: stock-out happens second and lists above stock-in.
+const historyListOrder = "m.at DESC, CASE m.direction WHEN 'out' THEN 0 WHEN 'in' THEN 1 ELSE 2 END, m.id DESC"
 
 // Household lists every stock move, newest first.
 func (j *Journal) Household(ctx context.Context, scope tenant.Scope, filter LedgerFilter) (Ledger, error) {
