@@ -10,12 +10,8 @@ permissions:
 
 jobs:
   validate:
-    # Tests still gate the version tag. This reusable run must not push
-    # :latest or :master; the push-triggered CI workflow already does, and
-    # that run is the one deploy-hook call.
+    # Tests gate the version tag and the master image publish (docker-publish).
     uses: ./.github/workflows/ci.yml
-    with:
-      publish_image: skip
 
   tag-release:
     needs: validate
