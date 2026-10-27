@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Notifications, notifications } from '@mantine/notifications';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { GroupDetailPage } from './GroupDetailPage';
@@ -45,6 +46,21 @@ const inventoryRow = (id: string, name: string, count: number): InventoryItem =>
   needsAttention: false,
 });
 
+function InventoryLanding() {
+  const location = useLocation();
+  return <p>Inventory{location.search}</p>;
+}
+
+const defaultDetailGets = (current: ProductGroup) => (url: string, init?: RequestInit) => {
+  const method = init?.method ?? 'GET';
+  if (url === `/api/groups/${current.id}` && method === 'GET') return json(current);
+  if (url === '/api/groups' && method === 'GET') return json([current]);
+  if (url === '/api/products' && method === 'GET') return json([]);
+  if (url === '/api/inventory') return json([]);
+  if (url.startsWith('/api/products/')) return json({ barcodes: [] });
+  return undefined;
+};
+
 const renderDetail = (
   handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
 ) => {
@@ -53,10 +69,11 @@ const renderDetail = (
     // env="test" disables Popover hideDetached. Mantine 8+ turns that on,
     // and jsdom elements have no box, so the rule sheet's options never open.
     <MantineProvider env="test">
+      <Notifications />
       <MemoryRouter initialEntries={['/groups/g1']}>
         <Routes>
           <Route path="/groups/:id" element={<GroupDetailPage />} />
-          <Route path="/inventory" element={<p>Inventory</p>} />
+          <Route path="/inventory" element={<InventoryLanding />} />
         </Routes>
       </MemoryRouter>
     </MantineProvider>,
@@ -516,5 +533,144 @@ describe('GroupDetailPage', () => {
     expect(within(picker).getByRole('radio', { name: 'Favor variety' })).toBeChecked();
     expect(within(picker).getByText("Rotate to the product you've had least recently.")).toBeInTheDocument();
     expect(within(picker).getByText('Products marked "Don\'t restock" are skipped.')).toBeInTheDocument();
+  });
+
+  it('opens delete confirmation from the actions menu and cancel skips DELETE', async () => {
+    const current = baseGroup();
+    const deletes: string[] = [];
+    renderDetail((url, init) => {
+      const method = init?.method ?? 'GET';
+      const preset = defaultDetailGets(current)(url, init);
+      if (preset) return preset;
+      if (url === '/api/groups/g1' && method === 'DELETE') {
+        deletes.push(url);
+        return json({});
+      }
+      throw new Error(`Unexpected ${method} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: `Actions for ${current.name}` }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: `Delete ${current.name}?` });
+    expect(within(dialog).getByText(
+      'Your 2 products stay in inventory with their current stock on hand. They will no longer share a group target or rotation rule.',
+    )).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: `Delete ${current.name}?` })).not.toBeInTheDocument());
+    expect(deletes).toHaveLength(0);
+  });
+
+  it('shows singular and empty-group reassurance copy in the delete dialog', async () => {
+    const oneMember: ProductGroup = {
+      ...baseGroup(),
+      name: 'Solo bin',
+      members: [member('solo', 'Only product', 1)],
+    };
+    renderDetail((url, init) => {
+      const preset = defaultDetailGets(oneMember)(url, init);
+      if (preset) return preset;
+      throw new Error(`Unexpected ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for Solo bin' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+    const soloDialog = await screen.findByRole('dialog', { name: 'Delete Solo bin?' });
+    expect(within(soloDialog).getByText(
+      'Your 1 product stays in inventory with their current stock on hand. They will no longer share a group target or rotation rule.',
+    )).toBeInTheDocument();
+    fireEvent.click(within(soloDialog).getByRole('button', { name: 'Cancel' }));
+
+    const emptyGroup: ProductGroup = {
+      ...baseGroup(),
+      name: 'Empty bin',
+      members: [],
+    };
+    renderDetail((url, init) => {
+      const preset = defaultDetailGets(emptyGroup)(url, init);
+      if (preset) return preset;
+      throw new Error(`Unexpected ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for Empty bin' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+    const emptyDialog = await screen.findByRole('dialog', { name: 'Delete Empty bin?' });
+    expect(within(emptyDialog).getByText("This empty group will be removed. Your inventory won't change.")).toBeInTheDocument();
+  });
+
+  it('deletes the group, shows a toast, and returns to grouped inventory', async () => {
+    notifications.clean();
+    const current: ProductGroup = {
+      ...baseGroup(),
+      name: 'Pasta Sauce',
+      members: [member('jar', 'Marinara', 2)],
+    };
+    renderDetail((url, init) => {
+      const method = init?.method ?? 'GET';
+      const preset = defaultDetailGets(current)(url, init);
+      if (preset) return preset;
+      if (url === '/api/groups/g1' && method === 'DELETE') return json({});
+      throw new Error(`Unexpected ${method} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for Pasta Sauce' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete Pasta Sauce?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+    expect(await screen.findByText('Inventory?filter=groups')).toBeInTheDocument();
+    expect(await screen.findByText('Deleted Pasta Sauce. Items stay in inventory.')).toBeInTheDocument();
+    notifications.clean();
+  });
+
+  it('keeps the delete dialog open on failure, allows retry, and navigates after success', async () => {
+    let attempts = 0;
+    const current = baseGroup();
+    renderDetail((url, init) => {
+      const method = init?.method ?? 'GET';
+      const preset = defaultDetailGets(current)(url, init);
+      if (preset) return preset;
+      if (url === '/api/groups/g1' && method === 'DELETE') {
+        attempts += 1;
+        if (attempts === 1) return json({ error: 'Group is locked' }, 409);
+        return json({});
+      }
+      throw new Error(`Unexpected ${method} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: `Actions for ${current.name}` }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+    const dialog = await screen.findByRole('dialog', { name: `Delete ${current.name}?` });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent('Group is locked');
+    expect(screen.queryByText('Inventory?filter=groups')).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+    await waitFor(() => expect(attempts).toBe(2));
+    expect(await screen.findByText('Inventory?filter=groups')).toBeInTheDocument();
+  });
+
+  it('shows a fallback delete error and closes the dialog on cancel', async () => {
+    const current = baseGroup();
+    renderDetail((url, init) => {
+      const method = init?.method ?? 'GET';
+      const preset = defaultDetailGets(current)(url, init);
+      if (preset) return preset;
+      if (url === '/api/groups/g1' && method === 'DELETE') return json({}, 500);
+      throw new Error(`Unexpected ${method} ${url}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: `Actions for ${current.name}` }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete group…' }));
+    const dialog = await screen.findByRole('dialog', { name: `Delete ${current.name}?` });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Something went wrong. Try again.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: `Delete ${current.name}?` })).not.toBeInTheDocument());
+    expect(screen.queryByText('Inventory?filter=groups')).not.toBeInTheDocument();
   });
 });
