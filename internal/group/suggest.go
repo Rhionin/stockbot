@@ -3,6 +3,7 @@ package group
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -351,4 +352,276 @@ func majorityCaution(ids []string, cautionOf map[string]string) string {
 		return labels[i] < labels[j]
 	})
 	return labels[0]
+}
+
+func loadProductGroupOf(ctx context.Context, scope tenant.Scope, q querier) (map[string]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT product_id, group_id FROM product_group_members WHERE household_id = ?`, scope.HouseholdID())
+	if err != nil {
+		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var productID, groupID string
+		if err := rows.Scan(&productID, &groupID); err != nil {
+			return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+		}
+		out[productID] = groupID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	return out, nil
+}
+
+func suggestionProductIDs(ctx context.Context, scope tenant.Scope, q querier, suggestionID string) ([]string, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT product_id FROM group_suggestion_members
+		WHERE suggestion_id = ? AND household_id = ?
+		ORDER BY product_id`, suggestionID, scope.HouseholdID())
+	if err != nil {
+		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	return ids, nil
+}
+
+func groupExists(ctx context.Context, scope tenant.Scope, q querier, groupID string) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
+	if groupID == "" {
+		return false, nil
+	}
+	var found string
+	err := q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE id = ? AND household_id = ?`, groupID, scope.HouseholdID()).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	return true, nil
+}
+
+func groupIDByTitle(ctx context.Context, scope tenant.Scope, q querier, title string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	key, err := nameKey(title)
+	if err != nil {
+		return "", nil
+	}
+	var id string
+	err = q.QueryRowContext(ctx, `SELECT id FROM product_groups WHERE household_id = ? AND name_key = ?`, scope.HouseholdID(), key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	return id, nil
+}
+
+func groupedProductsShareOneGroup(productIDs []string, groupOf map[string]string) string {
+	seen := map[string]struct{}{}
+	var only string
+	for _, id := range productIDs {
+		gid := groupOf[id]
+		if gid == "" {
+			continue
+		}
+		seen[gid] = struct{}{}
+		only = gid
+	}
+	if len(seen) != 1 {
+		return ""
+	}
+	return only
+}
+
+// sharedGroupForSuggestion links a card to a group when every grouped product
+// on the card is already in one group and at least two of the card's products
+// are there, so a lone overlap with an unrelated group does not hijack the card.
+func sharedGroupForSuggestion(productIDs []string, groupOf map[string]string) string {
+	gid := groupedProductsShareOneGroup(productIDs, groupOf)
+	if gid == "" {
+		return ""
+	}
+	n := 0
+	for _, id := range productIDs {
+		if groupOf[id] == gid {
+			n++
+		}
+	}
+	if n < 2 {
+		return ""
+	}
+	return gid
+}
+
+func countUngrouped(productIDs []string, groupOf map[string]string) int {
+	n := 0
+	for _, id := range productIDs {
+		if groupOf[id] == "" {
+			n++
+		}
+	}
+	return n
+}
+
+func (g *Groups) reconcileOpenSuggestions(ctx context.Context, scope tenant.Scope, q querier) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT id, kind, title, existing_group_id
+		FROM group_suggestions
+		WHERE household_id = ? AND status = 'open'`, scope.HouseholdID())
+	if err != nil {
+		return fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	defer rows.Close()
+	type openRow struct {
+		id       string
+		kind     string
+		title    string
+		existing sql.NullString
+	}
+	var pending []openRow
+	for rows.Next() {
+		var row openRow
+		if err := rows.Scan(&row.id, &row.kind, &row.title, &row.existing); err != nil {
+			return fmt.Errorf("could not refresh suggestions: %w", err)
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	groupOf, err := loadProductGroupOf(ctx, scope, q)
+	if err != nil {
+		return err
+	}
+	for _, row := range pending {
+		ids, err := suggestionProductIDs(ctx, scope, q, row.id)
+		if err != nil {
+			return err
+		}
+		if err := reconcileOneOpenSuggestion(ctx, scope, q, row.kind, row.id, row.title, row.existing.String, ids, groupOf); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reconcileOneOpenSuggestion(ctx context.Context, scope tenant.Scope, q querier, kind, suggestionID, title, existingGroupID string, productIDs []string, groupOf map[string]string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if kind == "from_scan" {
+		return reconcileFromScanSuggestion(ctx, scope, q, suggestionID, existingGroupID)
+	}
+	if len(productIDs) == 0 {
+		return nil
+	}
+	ungrouped := countUngrouped(productIDs, groupOf)
+	if ungrouped == 0 {
+		_, err := q.ExecContext(ctx, `
+			UPDATE group_suggestions SET status = 'accepted'
+			WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID())
+		return err
+	}
+
+	matchID := ""
+	existingValid := false
+	if existingGroupID != "" {
+		ok, err := groupExists(ctx, scope, q, existingGroupID)
+		if err != nil {
+			return err
+		}
+		existingValid = ok
+		if ok {
+			matchID = existingGroupID
+		}
+	}
+	if matchID == "" {
+		byName, err := groupIDByTitle(ctx, scope, q, title)
+		if err != nil {
+			return err
+		}
+		if byName != "" {
+			matchID = byName
+		} else {
+			matchID = sharedGroupForSuggestion(productIDs, groupOf)
+		}
+	}
+
+	if matchID != "" {
+		if !existingValid || existingGroupID != matchID {
+			_, err := q.ExecContext(ctx, `
+				UPDATE group_suggestions SET existing_group_id = ?
+				WHERE id = ? AND household_id = ?`, matchID, suggestionID, scope.HouseholdID())
+			if err != nil {
+				return fmt.Errorf("could not refresh suggestions: %w", err)
+			}
+		}
+		return nil
+	}
+
+	if existingGroupID != "" && !existingValid {
+		if _, err := q.ExecContext(ctx, `
+			UPDATE group_suggestions SET existing_group_id = NULL
+			WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
+			return fmt.Errorf("could not refresh suggestions: %w", err)
+		}
+	}
+
+	if ungrouped < 2 {
+		_, err := q.ExecContext(ctx, `
+			UPDATE group_suggestions SET status = 'dismissed'
+			WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID())
+		return err
+	}
+	return nil
+}
+
+func reconcileFromScanSuggestion(ctx context.Context, scope tenant.Scope, q querier, suggestionID, existingGroupID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if existingGroupID == "" {
+		return nil
+	}
+	ok, err := groupExists(ctx, scope, q, existingGroupID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	_, err = q.ExecContext(ctx, `
+		UPDATE group_suggestions SET existing_group_id = NULL
+		WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID())
+	if err != nil {
+		return fmt.Errorf("could not refresh suggestions: %w", err)
+	}
+	return nil
 }

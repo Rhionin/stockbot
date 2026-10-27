@@ -101,8 +101,8 @@ func TestRefreshSuggestionsJoinsAnExistingGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(left) != 1 || left[0].ID != cards[0].ID {
-		t.Fatalf("open card changed after the product joined: %+v", left)
+	if len(left) != 0 {
+		t.Fatalf("expected the suggestion to close once every product joined: %+v", left)
 	}
 }
 
