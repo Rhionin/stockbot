@@ -346,7 +346,9 @@ jobs:
     needs: [go, frontend, shell, e2e, denver, watch-worker]
     # Release calls this workflow on master after tests pass. Pull requests use
     # the docker job above so the image build does not wait on e2e.
-    if: inputs.publish_image != 'skip' && github.event_name == 'workflow_call'
+    # Inside workflow_call, github.event_name is the caller's trigger (push from
+    # release.yml), not the string workflow_call.
+    if: inputs.publish_image != 'skip' && github.event_name != 'pull_request'
     concurrency:
       group: ${{ github.ref == 'refs/heads/master' && 'deploy-master' || format('image-{0}', github.run_id) }}
       cancel-in-progress: false

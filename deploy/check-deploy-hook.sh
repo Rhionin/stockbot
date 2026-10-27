@@ -32,8 +32,42 @@ have .github/workflows/ci.yml 'X-Pantry-Deploy-Signature' "workflow sends the si
 have .github/workflows/ci.yml 'https://stockbot.rhionin.com/api/deploy-hook' "workflow posts to the public hook"
 have .github/workflows/ci.yml 'https://pantry.rhionin.com/api/deploy-hook' "workflow falls back to the previous host"
 have .github/workflows/ci.yml 'DEPLOY_HOOK_SECRET is not set; skipping the deploy hook' "workflow skips when the repo secret is unset"
-have .github/workflows/ci.yml "github.ref == 'refs/heads/master'" "workflow notifies only on master"
 have .github/workflows/ci.yml "inputs.publish_image != 'skip'" "publish job is gated on publish_image"
+
+if grep -q "github.event_name == 'workflow_call'" .github/workflows/ci.yml; then
+  fail "ci.yml must not gate docker-publish on workflow_call (reusable runs inherit the caller event_name)"
+fi
+docker_publish_if=$(
+  awk '
+    /^  docker-publish:/ { in_job = 1; next }
+    in_job && /^  [a-zA-Z0-9_-]+:/ && $0 !~ /^  docker-publish:/ { exit }
+    in_job && /^    if:/ { sub(/^    if: */, ""); print; exit }
+  ' .github/workflows/ci.yml
+)
+if [ -z "$docker_publish_if" ]; then
+  fail "docker-publish job is missing a job-level if:"
+fi
+if ! printf '%s\n' "$docker_publish_if" | grep -qE "github\.event_name != 'pull_request'|github\.event_name == 'push'"; then
+  fail "docker-publish if must exclude pull_request or require push (got: ${docker_publish_if})"
+fi
+
+deploy_hook_if=$(
+  awk '
+    /- name: Ask the Stockbot host to deploy/ {
+      if (getline > 0 && $0 ~ /^        if:/) {
+        sub(/^        if: */, "")
+        print
+      }
+      exit
+    }
+  ' .github/workflows/ci.yml
+)
+if [ -z "$deploy_hook_if" ]; then
+  fail "Ask the Stockbot host to deploy step is missing an if:"
+fi
+if ! printf '%s\n' "$deploy_hook_if" | grep -q "github.ref == 'refs/heads/master'"; then
+  fail "deploy hook step must gate on github.ref == refs/heads/master (got: ${deploy_hook_if})"
+fi
 have .github/workflows/ci.yml 'deploy-master' "master image publish shares one queue"
 have .github/workflows/ci.yml 'cancel-in-progress: false' "a running master publish is not cancelled"
 have .github/workflows/ci.yml 'queue: max' "waiting master publishes stay queued"
