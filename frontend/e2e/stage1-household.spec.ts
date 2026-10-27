@@ -347,7 +347,7 @@ test('owner renames household and operator sees admin households list', async ({
 
   await page.getByRole('button', { name: 'Menu' }).click()
   await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
-  await page.getByLabel('Household name').fill('Cupboard')
+  await page.getByRole('textbox', { name: 'Household name', exact: true }).fill('Cupboard')
   await page.getByRole('button', { name: 'Save name' }).click()
   await expect(page.getByText('Household name saved.')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Cupboard' })).toBeVisible()
