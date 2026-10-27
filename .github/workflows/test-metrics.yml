@@ -208,7 +208,7 @@ jobs:
 
       - name: Restore base coverage cache
         id: base-coverage-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/test-metrics
           key: test-metrics-base-v1-${{ needs.pin.outputs.base_sha }}
