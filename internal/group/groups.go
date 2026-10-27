@@ -290,6 +290,9 @@ func (g *Groups) Create(ctx context.Context, scope tenant.Scope, name string, pr
 	if err != nil {
 		return Group{}, err
 	}
+	if err := g.reconcileOpenSuggestions(ctx, scope, tx); err != nil {
+		return Group{}, err
+	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the group: %w", err)
 	}
@@ -321,6 +324,9 @@ func (g *Groups) Rename(ctx context.Context, scope tenant.Scope, id, name string
 			return Group{}, taken
 		}
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
+	}
+	if err := g.reconcileOpenSuggestions(ctx, scope, tx); err != nil {
+		return Group{}, err
 	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not rename the group: %w", err)
@@ -375,6 +381,9 @@ func (g *Groups) AddMembers(ctx context.Context, scope tenant.Scope, id string, 
 		return Group{}, err
 	}
 	if err := addMembersInTx(ctx, scope, tx, id, ids, fromGroupID, target); err != nil {
+		return Group{}, err
+	}
+	if err := g.reconcileOpenSuggestions(ctx, scope, tx); err != nil {
 		return Group{}, err
 	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
@@ -643,6 +652,9 @@ func (g *Groups) listOpenSuggestions(ctx context.Context, scope tenant.Scope) ([
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
+	if err := g.reconcileOpenSuggestions(ctx, scope, g.db); err != nil {
+		return nil, err
+	}
 	rows, err := g.db.QueryContext(ctx, `
 		SELECT id, kind, title, proposed_rule, pinned_product_id, existing_group_id, status
 		FROM group_suggestions
@@ -710,15 +722,34 @@ func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID st
 	if err != nil {
 		return Group{}, err
 	}
+	title := s.Title
+	if strings.TrimSpace(name) != "" {
+		title = name
+	}
+	existingID := s.ExistingGroupID
+	if existingID != "" {
+		if err := ensureGroup(ctx, scope, tx, existingID); err != nil {
+			var ge *Error
+			if errors.As(err, &ge) && ge.Code == codeMissing {
+				existingID = ""
+			} else {
+				return Group{}, err
+			}
+		}
+	}
+	if existingID == "" {
+		byName, err := groupIDByTitle(ctx, scope, tx, title)
+		if err != nil {
+			return Group{}, err
+		}
+		existingID = byName
+	}
 	var groupID string
-	if s.ExistingGroupID != "" {
-		if err := ensureGroup(ctx, scope, tx, s.ExistingGroupID); err != nil {
+	if existingID != "" {
+		if err := addMembersInTx(ctx, scope, tx, existingID, included, "", target); err != nil {
 			return Group{}, err
 		}
-		if err := addMembersInTx(ctx, scope, tx, s.ExistingGroupID, included, "", target); err != nil {
-			return Group{}, err
-		}
-		groupID = s.ExistingGroupID
+		groupID = existingID
 	} else {
 		rule := string(KindSameAsRanOut)
 		if Valid(s.ProposedRule) {
@@ -734,10 +765,6 @@ func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID st
 		if s.PinnedProductID != "" && contains(included, s.PinnedProductID) {
 			pin = s.PinnedProductID
 		}
-		title := s.Title
-		if strings.TrimSpace(name) != "" {
-			title = name
-		}
 		groupID, err = insertGroup(ctx, scope, tx, title, rule, pin, included, target)
 		if err != nil {
 			return Group{}, err
@@ -746,7 +773,9 @@ func (g *Groups) Accept(ctx context.Context, scope tenant.Scope, suggestionID st
 	if err := dismissPairs(ctx, scope, tx, excluded, included); err != nil {
 		return Group{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE group_suggestions SET status = 'accepted' WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID()); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE group_suggestions SET status = 'accepted', existing_group_id = ?, title = ?
+		WHERE id = ? AND household_id = ?`, groupID, title, suggestionID, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not accept the suggestion: %w", err)
 	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {

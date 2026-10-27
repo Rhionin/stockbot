@@ -723,6 +723,35 @@ func TestGroupHandlers(t *testing.T) {
 				},
 			),
 		},
+		{
+			name: "accept suggestion merges into existing group on duplicate name",
+			setup: func(env testEnv) {
+				mustGroupProduct(env, "aqua-a", "Aqua Fresh Cool Mint Gel")
+				mustGroupProduct(env, "aqua-b", "Aqua Fresh Extreme Clean")
+				mustGroupProduct(env, "aqua-c", "Aqua Fresh Whitening")
+				insertGroup(env, "grp-aqua", "Aqua fresh toothpaste")
+				insertMember(env, "grp-aqua", "aqua-a")
+				insertMember(env, "grp-aqua", "aqua-b")
+				mustExec(env, `INSERT INTO group_suggestions (id, user_id, kind, title, status) VALUES ('sug-aqua', 'user-1', 'looks_alike', 'Aqua fresh toothpaste', 'open')`)
+				mustExec(env, `INSERT INTO group_suggestion_members (suggestion_id, product_id, included) VALUES ('sug-aqua', 'aqua-a', 1), ('sug-aqua', 'aqua-b', 1), ('sug-aqua', 'aqua-c', 1)`)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/group-suggestions/sug-aqua/accept",
+				body:           `{"productIds":["aqua-c"]}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.id", value: "grp-aqua"},
+					{path: "$.name", value: "Aqua fresh toothpaste"},
+				},
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         http.MethodGet,
+				path:           "/api/group-suggestions",
+				expectedStatus: http.StatusOK,
+				bodyContains:   []string{"[]"},
+			}),
+		},
 	})
 }
 
