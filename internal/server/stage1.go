@@ -264,7 +264,7 @@ func needsHousehold(r *http.Request) bool {
 	switch path {
 	case "/api/auth/session", "/api/auth/login", "/api/auth/logout", "/api/auth/reset",
 		"/api/auth/session/household", "/api/invites/preview", "/api/invites/accept",
-		"/api/devices/pair/complete", "/api/operator/household-invites",
+		"/api/devices/pair/complete", "/api/operator/household-invites", "/api/operator/alerts", "/api/operator/households",
 		"/api/households", "/api/config", "/api/build", "/api/telemetry",
 		"/api/telemetry/client", "/api/me":
 		return false
@@ -408,11 +408,11 @@ func stage1Status(code string) int {
 	switch code {
 	case auth.CodeUnauthorized, auth.CodeDeviceRevoked:
 		return http.StatusUnauthorized
-	case auth.CodeForbiddenRole, auth.CodeInviteRequired:
+	case auth.CodeForbiddenRole, auth.CodeForbiddenOwner, auth.CodeForbiddenOperator, auth.CodeInviteRequired:
 		return http.StatusForbidden
-	case auth.CodeNotFound:
+	case auth.CodeNotFound, auth.CodeHouseholdNotFound:
 		return http.StatusNotFound
-	case auth.CodeValidation, auth.CodeConfirm:
+	case auth.CodeValidation, auth.CodeConfirm, auth.CodeInvalidInput:
 		return http.StatusBadRequest
 	case auth.CodeRateLimited:
 		return http.StatusTooManyRequests

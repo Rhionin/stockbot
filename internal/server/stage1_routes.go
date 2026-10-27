@@ -67,6 +67,7 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("POST /api/invites/accept", gate.serveAcceptInvite)
 	apiMux.HandleFunc("POST /api/operator/household-invites", gate.serveOperatorInvite)
 	apiMux.HandleFunc("GET /api/operator/alerts", gate.serveOperatorAlerts)
+	apiMux.HandleFunc("GET /api/operator/households", gate.serveOperatorHouseholds)
 	apiMux.HandleFunc("POST /api/devices/pair", gate.serveStartPairing)
 	apiMux.HandleFunc("GET /api/devices/pair/{id}", gate.servePairingStatus)
 	apiMux.HandleFunc("POST /api/devices/pair/complete", gate.serveCompletePairing)
@@ -1234,6 +1235,28 @@ func (s *stage1) serveRotateToken(w http.ResponseWriter, r *http.Request) {
 		Token      string `json:"token"`
 		GraceUntil string `json:"graceUntil,omitempty"`
 	}{Token: next.Token, GraceUntil: next.GraceUntil})
+}
+
+func (s *stage1) serveOperatorHouseholds(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.account(w, r)
+	if !ok {
+		return
+	}
+	if !p.Operator {
+		writeStage1(w, auth.OperatorForbidden())
+		return
+	}
+	list, err := s.svc.ListAllHouseholdsForOperator(r.Context())
+	if err != nil {
+		writeStage1(w, err)
+		return
+	}
+	if list == nil {
+		list = []auth.OperatorHouseholdSummary{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Households []auth.OperatorHouseholdSummary `json:"households"`
+	}{Households: list})
 }
 
 func (s *stage1) serveOperatorAlerts(w http.ResponseWriter, r *http.Request) {

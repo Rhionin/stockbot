@@ -11,9 +11,13 @@ import (
 
 const (
 	CodeUnauthorized   = "unauthorized"
-	CodeForbiddenRole  = "forbidden_role"
-	CodeNotFound       = "not_found"
-	CodeValidation     = "validation"
+	CodeForbiddenRole     = "forbidden_role"
+	CodeForbiddenOwner    = "forbidden_owner"
+	CodeForbiddenOperator = "forbidden_operator"
+	CodeHouseholdNotFound = "household_not_found"
+	CodeInvalidInput      = "invalid_input"
+	CodeNotFound          = "not_found"
+	CodeValidation        = "validation"
 	CodeRateLimited    = "rate_limited"
 	CodeBusy           = "busy"
 	CodeNoSpace        = "no_space"
@@ -29,8 +33,9 @@ const (
 	CodeTooLarge       = "payload_too_large"
 
 	SentenceUnauthorized   = "Sign in to continue."
-	SentenceForbidden      = "Only an owner can do that."
-	SentenceNotFound       = "Stockbot couldn't find that. It may have been removed."
+	SentenceForbidden         = "Only an owner can do that."
+	SentenceForbiddenOperator = "Operator access required."
+	SentenceNotFound          = "Stockbot couldn't find that. It may have been removed."
 	SentenceValidation     = "Check what you entered and try again."
 	SentenceRate           = "Too many tries. Wait a moment and try again."
 	SentenceInviteExpired  = "This invite has expired or was already used. Ask for a new one."

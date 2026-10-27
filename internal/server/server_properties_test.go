@@ -148,7 +148,7 @@ func TestStage1RoutesAreExcludedFromUnmatchedAPIPaths(t *testing.T) {
 		"/api/auth/logout", "/api/auth/reset", "/api/auth/callback",
 		"/api/household/settings",
 		"/api/invites/preview", "/api/invites/accept", "/api/invites/abc/revoke",
-		"/api/operator/household-invites", "/api/operator/alerts",
+		"/api/operator/household-invites", "/api/operator/alerts", "/api/operator/households",
 		"/api/devices/pair", "/api/devices/pair/complete", "/api/devices/pair/abc",
 		"/api/devices/abc", "/api/sessions/abc",
 		"/api/device/scans", "/api/device/heartbeat", "/api/device/token/rotate",
@@ -204,7 +204,7 @@ var stage1RoutePattern = regexp.MustCompile(`^/api/(?:` +
 	`auth/(?:session(?:/household)?|login|logout|reset|callback)|` +
 	`household/settings|` +
 	`invites/(?:preview|accept|[^/]+/revoke)|` +
-	`operator/(?:household-invites|alerts)|` +
+	`operator/(?:household-invites|alerts|households)|` +
 	`devices(?:/pair(?:/complete|/[^/]+)?|/[^/]+)?|` +
 	`sessions/[^/]+|` +
 	`device/(?:scans|heartbeat|token/rotate)|` +

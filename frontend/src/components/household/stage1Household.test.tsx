@@ -225,6 +225,115 @@ describe('household management', () => {
     expect(calls.length).toBeGreaterThan(0);
   });
 
+  it('lets an owner rename the household and refresh the session', async () => {
+    const replaceAuth = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1' && init?.method === 'PATCH') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Cupboard', role: 'owner', deletedAt: null, purgeAt: null }));
+      }
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Cupboard', role: 'owner', deletedAt: null, purgeAt: null }));
+      }
+      if (url === '/api/auth/session') {
+        return Promise.resolve(json({
+          ...session('owner'),
+          households: [{ id: 'hh-1', name: 'Cupboard', role: 'owner', deletedAt: null }],
+          memberships: [{ householdId: 'hh-1', name: 'Cupboard', role: 'owner', deletedAt: null }],
+        }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'), replaceAuth);
+    const nameInput = await screen.findByRole('textbox', { name: 'Household name' });
+    fireEvent.change(nameInput, { target: { value: 'Cupboard' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(await screen.findByText('Household name saved.')).toBeVisible();
+    expect(replaceAuth).toHaveBeenCalled();
+  });
+
+  it('shows rename errors inline and hides rename controls from members', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'member' }] }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'member', deletedAt: null, purgeAt: null }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('member'));
+    expect(await screen.findByRole('heading', { name: 'Pantry' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Save name' })).not.toBeInTheDocument();
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1' && init?.method === 'PATCH') {
+        return Promise.resolve(json({ error: 'bad', code: 'invalid_input' }, 400));
+      }
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    const nameInput = await screen.findByRole('textbox', { name: 'Household name' });
+    fireEvent.change(nameInput, { target: { value: ' ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Check what you entered and try again.');
+  });
+
+  it('loads operator households only for operators', async () => {
+    const operatorList = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        operatorList();
+        return Promise.resolve(json({
+          households: [{
+            id: 'hh-9',
+            name: 'Loft',
+            isPrimary: false,
+            restockMode: 'auto',
+            createdAt: '2026-04-01T00:00:00Z',
+            members: [{ userId: 'user-9', email: 'dee@example.com', name: 'Dee', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
+            memberCount: 1,
+            productCount: 2,
+            itemsOnHand: 3,
+            pendingScans: 1,
+            lastActivityAt: '2026-04-02T00:00:00Z',
+          }],
+        }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    const { unmount: unmountOperator } = renderStage(<HouseholdsPage />, { ...session('owner'), operator: true });
+    expect(await screen.findByTestId('operator-households-section')).toBeVisible();
+    expect(screen.getByText('Loft')).toBeVisible();
+    expect(screen.getByText('dee@example.com')).toBeVisible();
+    expect(operatorList).toHaveBeenCalled();
+    unmountOperator();
+
+    operatorList.mockClear();
+    const { unmount } = renderStage(<HouseholdsPage />, session('owner'));
+    expect(screen.queryByTestId('operator-households-section')).not.toBeInTheDocument();
+    expect(operatorList).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it('switches the active household', async () => {
     const replaceAuth = vi.fn();
     const next = session('owner');

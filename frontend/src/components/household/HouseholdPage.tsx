@@ -21,9 +21,12 @@ import {
   getHousehold,
   getHouseholdSettings,
   getImportJob,
+  currentAuthSession,
+  getSession,
   listInvites,
   listMembers,
   removeMember,
+  renameHousehold,
   restoreHousehold,
   revokeInvite,
   startExport,
@@ -59,9 +62,10 @@ function memberActionError(error: unknown): string {
 
 export function HouseholdPage() {
   const navigate = useNavigate();
-  const { auth, logout } = useHouseholdSession();
+  const { auth, logout, replaceAuth } = useHouseholdSession();
   const active = auth?.households.find((row) => row.id === auth.activeHouseholdId) ?? null;
-  const owner = active?.role === 'owner';
+  const isOwner = active?.role === 'owner';
+  const owner = isOwner;
   const householdId = auth?.activeHouseholdId ?? '';
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<InviteSummary[]>([]);
@@ -84,6 +88,12 @@ export function HouseholdPage() {
   const [deleteName, setDeleteName] = useState('');
   const [accountEmail, setAccountEmail] = useState('');
   const [accountError, setAccountError] = useState('');
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const [renameLoading, setRenameLoading] = useState(false);
+  const [renameError, setRenameError] = useState('');
+  const [renameNotice, setRenameNotice] = useState('');
+
+  const displayedHouseholdName = nameDraft ?? household?.name ?? active?.name ?? '';
 
   const load = useCallback(async () => {
     if (householdId === '') return;
@@ -98,6 +108,7 @@ export function HouseholdPage() {
       setInvites(pending);
       setSettings(nextSettings);
       setHousehold(detail);
+      setNameDraft(null);
       setLoadError('');
     } catch (requestError) {
       setLoadError(hosted(requestError, 'Stockbot could not load this household.'));
@@ -233,6 +244,28 @@ export function HouseholdPage() {
   const memberActionLoading = (userId: string, action: 'role' | 'remove' | 'reset') =>
     memberBusy?.id === userId && memberBusy.action === action;
 
+  const saveHouseholdName = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isOwner || householdId === '') return;
+    setRenameError('');
+    setRenameNotice('');
+    setRenameLoading(true);
+    try {
+      const trimmed = displayedHouseholdName.trim();
+      const updated = await renameHousehold(householdId, trimmed);
+      setHousehold(updated);
+      await getSession();
+      const session = currentAuthSession();
+      if (session) replaceAuth(session);
+      setNameDraft(null);
+      setRenameNotice('Household name saved.');
+    } catch (requestError) {
+      setRenameError(hosted(requestError, hostedErrorSentence('invalid_input')));
+    } finally {
+      setRenameLoading(false);
+    }
+  };
+
   const revoke = async (inviteId: string) => {
     setInviteError('');
     setRevokingInviteId(inviteId);
@@ -249,6 +282,28 @@ export function HouseholdPage() {
   return (
     <Stack className="household-page" gap="lg">
       <Title order={2}>{household?.name ?? active?.name ?? 'Household'}</Title>
+      <section aria-labelledby="household-name-heading">
+        <Title id="household-name-heading" order={3}>Household name</Title>
+        {isOwner ? (
+          <form aria-label="Rename household" onSubmit={(event) => { void saveHouseholdName(event); }}>
+            <Group align="flex-end" wrap="wrap" mt="sm">
+              <TextInput
+                label="Household name"
+                aria-label="Household name"
+                value={displayedHouseholdName}
+                onChange={(event) => setNameDraft(event.currentTarget.value)}
+                disabled={renameLoading}
+                style={{ flex: 1, minWidth: '12rem' }}
+              />
+              <Button type="submit" loading={renameLoading}>Save name</Button>
+              {renameNotice !== '' && <Text role="status">{renameNotice}</Text>}
+              {renameError !== '' && <Text role="alert" c="red">{renameError}</Text>}
+            </Group>
+          </form>
+        ) : (
+          <Text mt="sm">{household?.name ?? active?.name ?? 'Household'}</Text>
+        )}
+      </section>
       {settings && <Text>Restock mode: {settings.restockMode.replaceAll('_', ' ')}</Text>}
 
       <section aria-labelledby="members-heading">
