@@ -492,7 +492,7 @@ func (g *Groups) reconcileOpenSuggestions(ctx context.Context, scope tenant.Scop
 		return err
 	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT id, title, existing_group_id
+		SELECT id, kind, title, existing_group_id
 		FROM group_suggestions
 		WHERE household_id = ? AND status = 'open'`, scope.HouseholdID())
 	if err != nil {
@@ -501,13 +501,14 @@ func (g *Groups) reconcileOpenSuggestions(ctx context.Context, scope tenant.Scop
 	defer rows.Close()
 	type openRow struct {
 		id       string
+		kind     string
 		title    string
 		existing sql.NullString
 	}
 	var pending []openRow
 	for rows.Next() {
 		var row openRow
-		if err := rows.Scan(&row.id, &row.title, &row.existing); err != nil {
+		if err := rows.Scan(&row.id, &row.kind, &row.title, &row.existing); err != nil {
 			return fmt.Errorf("could not refresh suggestions: %w", err)
 		}
 		pending = append(pending, row)
@@ -524,16 +525,19 @@ func (g *Groups) reconcileOpenSuggestions(ctx context.Context, scope tenant.Scop
 		if err != nil {
 			return err
 		}
-		if err := reconcileOneOpenSuggestion(ctx, scope, q, row.id, row.title, row.existing.String, ids, groupOf); err != nil {
+		if err := reconcileOneOpenSuggestion(ctx, scope, q, row.kind, row.id, row.title, row.existing.String, ids, groupOf); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func reconcileOneOpenSuggestion(ctx context.Context, scope tenant.Scope, q querier, suggestionID, title, existingGroupID string, productIDs []string, groupOf map[string]string) error {
+func reconcileOneOpenSuggestion(ctx context.Context, scope tenant.Scope, q querier, kind, suggestionID, title, existingGroupID string, productIDs []string, groupOf map[string]string) error {
 	if err := scope.Require(); err != nil {
 		return err
+	}
+	if kind == "from_scan" {
+		return reconcileFromScanSuggestion(ctx, scope, q, suggestionID, existingGroupID)
 	}
 	if len(productIDs) == 0 {
 		return nil
@@ -595,6 +599,29 @@ func reconcileOneOpenSuggestion(ctx context.Context, scope tenant.Scope, q queri
 			UPDATE group_suggestions SET status = 'dismissed'
 			WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID())
 		return err
+	}
+	return nil
+}
+
+func reconcileFromScanSuggestion(ctx context.Context, scope tenant.Scope, q querier, suggestionID, existingGroupID string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if existingGroupID == "" {
+		return nil
+	}
+	ok, err := groupExists(ctx, scope, q, existingGroupID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	_, err = q.ExecContext(ctx, `
+		UPDATE group_suggestions SET existing_group_id = NULL
+		WHERE id = ? AND household_id = ?`, suggestionID, scope.HouseholdID())
+	if err != nil {
+		return fmt.Errorf("could not refresh suggestions: %w", err)
 	}
 	return nil
 }

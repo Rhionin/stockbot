@@ -94,11 +94,45 @@ func TestNoteFromScan_Once(t *testing.T) {
 	if existing != created.ID {
 		t.Fatalf("existing group = %q, want %q", existing, created.ID)
 	}
+	if _, err := groups.AddMembers(ctx, scope, created.ID, []string{"dm"}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := groups.ListSuggestions(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 1 || cards[0].Kind != "from_scan" {
+		t.Fatalf("from_scan card should stay open after list: %+v", cards)
+	}
 	hints, err := groups.Hints(ctx, scope, map[string]string{"dm": "Del Monte Cut Green Beans"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := hints["dm"]; ok {
 		t.Fatalf("a noted product should not be hinted again, got %+v", hints["dm"])
+	}
+}
+
+func TestFromScanSuggestionSurvivesReconcileWhenGroupDeleted(t *testing.T) {
+	groups, catalog, conn := newTestGroups(t)
+	ctx := context.Background()
+	scope := scopeOf(t, conn)
+	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	created, err := groups.Create(ctx, scope, "Cut green beans", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := groups.NoteFromScan(ctx, scope, "dm"); err != nil {
+		t.Fatal(err)
+	}
+	if err := groups.Delete(ctx, scope, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := groups.ListSuggestions(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 1 || cards[0].ExistingGroupID != "" {
+		t.Fatalf("expected open from_scan with cleared group: %+v", cards)
 	}
 }
