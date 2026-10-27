@@ -4,7 +4,7 @@ import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, Text, TextInput, Tooltip,
 } from '@mantine/core';
 import {
-  addGroupMembers, getGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, previewGroupTarget, removeGroupMember, renameGroup, setGroupTarget, setMemberRestock,
+  addGroupMembers, deleteGroup, getGroup, getInventoryList, getProduct, getSupplySettings, listGroups, listProducts, previewGroupTarget, removeGroupMember, renameGroup, setGroupTarget, setMemberRestock,
 } from '../../api/client';
 import type { GroupTarget, ProductDetail, ProductGroup } from '@stockbot/shared/types';
 import { AddToGroup } from './AddToGroup';
@@ -22,6 +22,7 @@ import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter, type SeesawDraft } from './seesaw';
 import { groupStock } from '../../stockState';
 import { inlineFailure } from '@stockbot/shared/contract';
+import { showUndo } from '../restock/undo';
 import '../history/history.css';
 
 const closeButton = { 'aria-label': 'Close' };
@@ -127,6 +128,9 @@ export const GroupDetailPage = () => {
   const [ruleOpen, setRuleOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const load = useCallback(async () => {
     setError('');
@@ -218,6 +222,22 @@ export const GroupDetailPage = () => {
     }
   };
 
+  const confirmDelete = async () => {
+    if (!group) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      await deleteGroup(group.id);
+      setDeleteLoading(false);
+      setDeleting(false);
+      showUndo({ detail: `Deleted ${group.name}. Items stay in inventory.` });
+      navigate('/inventory?filter=groups');
+    } catch (err) {
+      setDeleteError(inlineFailure(err, 'Unable to delete the group.') ?? 'Unable to delete the group.');
+      setDeleteLoading(false);
+    }
+  };
+
   if (loading) return <Loader aria-label="Loading group" />;
 
   const members: MemberPackage[] = memberOrder((group?.members ?? []).map((member) => (
@@ -272,10 +292,59 @@ export const GroupDetailPage = () => {
                 <span className="bin-menu-label">Don't restock…</span>
                 <span className="bin-menu-hint">{restockCopy.previewHint(group.members.length)}</span>
               </Menu.Item>
+              <Menu.Divider />
+              <Menu.Item
+                color="red"
+                onClick={() => {
+                  setDeleting(true);
+                  setDeleteError('');
+                }}
+              >
+                Delete group…
+              </Menu.Item>
             </Menu.Dropdown>
           </Menu>
         )}
       </Group>
+      {group && (
+        <Modal
+          opened={deleting}
+          onClose={() => {
+            if (!deleteLoading) {
+              setDeleting(false);
+              setDeleteError('');
+            }
+          }}
+          title={`Delete ${group.name}?`}
+          closeButtonProps={closeButton}
+        >
+          <Stack gap="sm">
+            {group.members.length > 0 ? (
+              <Text size="sm">
+                Your {group.members.length === 1 ? '1 product stays' : `${group.members.length} products stay`} in inventory with their current stock on hand. They will no longer share a group target or rotation rule.
+              </Text>
+            ) : (
+              <Text size="sm">This empty group will be removed. Your inventory won't change.</Text>
+            )}
+            {deleteError !== '' && <Alert color="red" role="alert" py="xs">{deleteError}</Alert>}
+            <Group justify="flex-end" gap="sm" mt="sm">
+              <Button
+                variant="default"
+                disabled={deleteLoading}
+                onClick={() => {
+                  setDeleting(false);
+                  setDeleteError('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button color="red" loading={deleteLoading} onClick={() => void confirmDelete()}>
+                Delete group
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+      )}
       {error !== '' && !renaming && <Alert color="red" py="xs">{error}</Alert>}
       {group && view && shown && (
         <>
