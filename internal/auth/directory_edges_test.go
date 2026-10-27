@@ -174,8 +174,8 @@ func TestDirectoryEdges(t *testing.T) {
 	expectCode(t, take2(svc.ChangeRole(ctx, ada.ID, house, "missing-user", "member")), CodeNotFound)
 	expectCode(t, svc.RemoveMember(ctx, bea.Session.User.ID, house, ada.ID), CodeForbiddenRole)
 	expectCode(t, svc.RemoveMember(ctx, ada.ID, house, "missing-user"), CodeNotFound)
-	expectCode(t, take2(svc.RenameHousehold(ctx, bea.Session.User.ID, house, "Nope")), CodeForbiddenRole)
-	expectCode(t, take2(svc.RenameHousehold(ctx, ada.ID, house, " ")), CodeValidation)
+	expectCode(t, take2(svc.RenameHousehold(ctx, bea.Session.User.ID, house, "Nope")), CodeForbiddenOwner)
+	expectCode(t, take2(svc.RenameHousehold(ctx, ada.ID, house, " ")), CodeInvalidInput)
 	expectCode(t, take2(svc.DeleteHousehold(ctx, bea.Session.User.ID, house, "Primary")), CodeForbiddenRole)
 	expectCode(t, take2(svc.DeleteHousehold(ctx, bea.Session.User.ID, loft.ID, "Loft")), CodeNotFound)
 	expectCode(t, take2(svc.UpdateRestock(ctx, bea.Session.User.ID, house, "auto")), CodeForbiddenRole)
@@ -229,7 +229,7 @@ func TestDirectoryEdges(t *testing.T) {
 	if err != nil || deleted.DeletedAt == nil {
 		t.Fatalf("delete %#v %v", deleted, err)
 	}
-	expectCode(t, take2(svc.RenameHousehold(ctx, deeID, loft.ID, "Later")), CodeNotFound)
+	expectCode(t, take2(svc.RenameHousehold(ctx, deeID, loft.ID, "Later")), CodeHouseholdNotFound)
 	expectCode(t, take2(svc.RestoreHousehold(ctx, ada.ID, loft.ID)), CodeNotFound)
 	expectCode(t, take2(svc.RestoreHousehold(ctx, deeID, house)), CodeNotFound)
 	if _, err := svc.RestoreHousehold(ctx, deeID, loft.ID); err != nil {

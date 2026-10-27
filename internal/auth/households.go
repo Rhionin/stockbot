@@ -66,17 +66,17 @@ func (s *Service) RenameHousehold(ctx context.Context, userID, householdID, name
 		if err != nil {
 			return HouseholdDetail{}, err
 		}
-		return HouseholdDetail{}, notFound()
+		return HouseholdDetail{}, fail(CodeHouseholdNotFound, SentenceNotFound)
 	}
 	if deleted != "" {
-		return HouseholdDetail{}, notFound()
+		return HouseholdDetail{}, fail(CodeHouseholdNotFound, SentenceNotFound)
 	}
 	if role != "owner" {
-		return HouseholdDetail{}, fail(CodeForbiddenRole, SentenceForbidden)
+		return HouseholdDetail{}, fail(CodeForbiddenOwner, SentenceForbidden)
 	}
-	name, verr := normalizeName(name, "name")
-	if verr != nil {
-		return HouseholdDetail{}, verr
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > 80 || strings.ContainsAny(name, "\r\n") {
+		return HouseholdDetail{}, fail(CodeInvalidInput, SentenceValidation)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE households SET name = ? WHERE id = ?`, name, householdID); err != nil {
 		return HouseholdDetail{}, AsError(err)

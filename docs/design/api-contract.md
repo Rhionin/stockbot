@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 57
+endpoint-count: 58
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -187,6 +187,7 @@ POST /api/invites/{id}/revoke
 POST /api/invites/preview
 POST /api/invites/accept
 POST /api/operator/household-invites
+GET /api/operator/households
 POST /api/devices/pair
 GET /api/devices/pair/{pairingId}
 POST /api/devices/pair/complete
@@ -446,7 +447,9 @@ Rename. Owner only. Decided by PM in [the review comment](https://github.com/Rhi
 | X-Household-Id | Required, equal to `{id}` |
 | Request | `{ "name": string }` |
 | Response | `200` `Household` |
-| Errors | `unauthorized`, `forbidden_role`, `validation`, `not_found`, `busy` |
+| Errors | `unauthorized`, `forbidden_owner`, `invalid_input`, `household_not_found`, `busy` |
+
+A blank or whitespace-only name, or a name longer than 80 characters, is `invalid_input`. A member who is not an owner gets `forbidden_owner`. A caller who is not a member of `{id}` gets `household_not_found` at the service layer; cross-household access at the HTTP layer may still be `not_found` when `X-Household-Id` does not match `{id}`.
 
 ### DELETE /api/households/{id}
 
@@ -669,6 +672,39 @@ Operator only. Creates a `start_household` invite whose stored role is `owner`. 
 | Errors | `unauthorized`, `not_found`, `busy` |
 
 A signed-in caller who is not the operator gets `not_found`. Stage 3 may also email the link through SES. The accept path is `POST /api/invites/accept`.
+
+### GET /api/operator/households
+
+Operator only. Lists every household in the product, including soft-deleted households and households the operator does not belong to. Ordered by primary first, then `createdAt`, then `id`.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Operator. This is not a household role. |
+| X-Household-Id | Omit |
+| Request | None |
+| Response | `200` `{ "households": OperatorHouseholdSummary[] }` |
+| Errors | `unauthorized`, `forbidden_operator`, `busy` |
+
+A signed-in caller who is not the operator gets `403` `forbidden_operator`.
+
+```ts
+interface OperatorHouseholdSummary {
+  id: string;
+  name: string;
+  isPrimary: boolean;
+  restockMode: string;
+  createdAt: string; // RFC3339
+  deletedAt?: string;
+  purgeAfter?: string;
+  members: { userId: string; email: string; name: string; role: 'owner' | 'member'; createdAt: string }[];
+  memberCount: number;
+  productCount: number;
+  itemsOnHand: number;
+  pendingScans: number;
+  lastActivityAt?: string;
+}
+```
 
 ## Devices
 
@@ -1416,6 +1452,10 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
 | `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
+| `forbidden_owner` | 403 | Only an owner can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
+| `forbidden_operator` | 403 | Operator access required. | Operator-only routes such as `GET /api/operator/households`. |
+| `household_not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Same sentence as `not_found`. Used when the household id is unknown to the caller at the service layer. |
+| `invalid_input` | 400 | Check what you entered and try again. | Same sentence as `validation`. Used for rename name rules on `PATCH /api/households/{id}`. |
 | `not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Rewritten by PM. Also the response for cross-household access. |
 | `conflict` | 409 | Someone else just changed this. Refresh and try again. | Rewritten by PM. |
 | `invite_expired` | 409 | This invite has expired or was already used. Ask for a new one. | Rewritten by PM. Reset links use `reset_expired` instead. |

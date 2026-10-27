@@ -11,6 +11,8 @@ const shots = process.env.STAGE1_SCREENSHOT_DIR
 interface Stage {
   kind: 'signed_out' | 'account'
   role: 'owner' | 'member'
+  operator: boolean
+  householdName: string
   olderAppDevices: number
   invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
   deletedAt: string | null
@@ -20,6 +22,8 @@ interface Stage {
 const stage: Stage = {
   kind: 'signed_out',
   role: 'owner',
+  operator: false,
+  householdName: 'Pantry',
   olderAppDevices: 3,
   invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
   deletedAt: null,
@@ -30,15 +34,15 @@ const sessionBody = () => ({
   user: stage.kind === 'account' ? { id: 'user-1', email: 'ada@example.com', name: 'Ada' } : null,
   kind: stage.kind,
   memberships: [
-    { householdId: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt },
+    { householdId: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt },
     { householdId: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
   ],
   households: [
-    { id: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt },
+    { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt },
     { id: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
   ],
   activeHouseholdId: stage.kind === 'signed_out' ? null : 'hh-1',
-  operator: false,
+  operator: stage.operator,
 })
 
 const devices = () => ([
@@ -116,8 +120,46 @@ const install = async (page: Page) => {
       stage.invites = stage.invites.map((invite) => invite.id === 'inv-1' ? { ...invite, status: 'revoked' } : invite)
       return fulfillJson(route, {})
     }
+    if (path === '/api/operator/households' && method === 'GET') {
+      if (!stage.operator) return fulfillJson(route, { error: 'Operator access required.', code: 'forbidden_operator' }, 403)
+      return fulfillJson(route, {
+        households: [
+          {
+            id: 'hh-1',
+            name: stage.householdName,
+            isPrimary: true,
+            restockMode: 'auto',
+            createdAt: '2026-04-01T00:00:00Z',
+            members: [{ userId: 'user-1', email: 'ada@example.com', name: 'Ada', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
+            memberCount: 1,
+            productCount: 4,
+            itemsOnHand: 2,
+            pendingScans: 0,
+            lastActivityAt: '2026-04-02T00:00:00Z',
+          },
+          {
+            id: 'hh-9',
+            name: 'Loft',
+            isPrimary: false,
+            restockMode: 'auto',
+            createdAt: '2026-04-01T00:00:00Z',
+            members: [{ userId: 'user-9', email: 'dee@example.com', name: 'Dee', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
+            memberCount: 1,
+            productCount: 1,
+            itemsOnHand: 1,
+            pendingScans: 1,
+            lastActivityAt: null,
+          },
+        ],
+      })
+    }
+    if (path === '/api/households/hh-1' && method === 'PATCH') {
+      const body = route.request().postDataJSON() as { name?: string }
+      stage.householdName = (body.name ?? stage.householdName).trim()
+      return fulfillJson(route, { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
+    }
     if (path === '/api/households/hh-1' && method === 'GET') {
-      return fulfillJson(route, { id: 'hh-1', name: 'Pantry', role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
+      return fulfillJson(route, { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
     }
     if (path === '/api/households/hh-1' && method === 'DELETE') {
       stage.deletedAt = '2026-04-02T00:00:00Z'
@@ -162,6 +204,8 @@ const install = async (page: Page) => {
 const resetStage = () => {
   stage.kind = 'signed_out'
   stage.role = 'owner'
+  stage.operator = false
+  stage.householdName = 'Pantry'
   stage.olderAppDevices = 3
   stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
   stage.deletedAt = null
@@ -291,3 +335,31 @@ test.describe('stage-1 household screens', () => {
   })
 })
 }
+
+test('owner renames household and operator sees admin households list', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await install(page)
+  await page.goto('/')
+  await page.getByLabel('Email').fill('ada@example.com')
+  await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse-battery')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+
+  await page.getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
+  await page.getByLabel('Household name').fill('Cupboard')
+  await page.getByRole('button', { name: 'Save name' }).click()
+  await expect(page.getByText('Household name saved.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Cupboard' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Other households' }).click()
+  await expect(page.getByTestId('operator-households-section')).toHaveCount(0)
+
+  stage.operator = true
+  await page.reload()
+  await expect(page.getByTestId('operator-households-section')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'All households (Admin)' })).toBeVisible()
+  await expect(page.getByText('Loft')).toBeVisible()
+  await expect(page.getByText('dee@example.com')).toBeVisible()
+})

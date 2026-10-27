@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Alert, Badge, Button, Group, Paper, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import { hostedErrorSentence, type RestockMode } from '@stockbot/shared/contract';
@@ -8,7 +8,9 @@ import {
   createOperatorHouseholdInvite,
   currentAuthSession,
   getSession,
+  listOperatorHouseholds,
   switchHousehold,
+  type OperatorHouseholdView,
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 import { extractInviteCode } from './inviteCode';
@@ -48,6 +50,30 @@ export function HouseholdsPage() {
   const [operatorInviteLoading, setOperatorInviteLoading] = useState(false);
   const [operatorInviteUrl, setOperatorInviteUrl] = useState('');
   const [operatorInviteError, setOperatorInviteError] = useState('');
+
+  const [operatorHouseholds, setOperatorHouseholds] = useState<OperatorHouseholdView[]>([]);
+  const [operatorHouseholdsError, setOperatorHouseholdsError] = useState('');
+  const [operatorHouseholdsLoading, setOperatorHouseholdsLoading] = useState(false);
+
+  const operator = auth?.operator === true;
+
+  const loadOperatorHouseholds = useCallback(async () => {
+    if (!operator) return;
+    setOperatorHouseholdsLoading(true);
+    setOperatorHouseholdsError('');
+    try {
+      const body = await listOperatorHouseholds();
+      setOperatorHouseholds(body.households);
+    } catch (requestError) {
+      setOperatorHouseholdsError(hosted(requestError, 'Could not load households.'));
+    } finally {
+      setOperatorHouseholdsLoading(false);
+    }
+  }, [operator]);
+
+  useEffect(() => {
+    void loadOperatorHouseholds();
+  }, [loadOperatorHouseholds]);
 
   const switchTo = async (householdId: string, householdName: string) => {
     setSwitchError('');
@@ -89,6 +115,7 @@ export function HouseholdsPage() {
       setStartNotice(`${created.name || startName.trim()} was created.`);
       setStartName('');
       setStartCode('');
+      await loadOperatorHouseholds();
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.code === 'not_found') {
         setStartError("That invite code wasn't found. Check the code or ask for a new invite.");
@@ -114,8 +141,21 @@ export function HouseholdsPage() {
     }
   };
 
-  const operator = auth?.operator === true;
   const inviteRequired = !operator;
+
+  const formatActivity = (at: string | undefined) => {
+    if (at === undefined || at === '') return 'No activity yet';
+    return new Date(at).toLocaleString();
+  };
+
+  const householdStatusBadges = (row: OperatorHouseholdView) => {
+    if (row.deletedAt) {
+      const purge = row.purgeAfter ? ` · Purge ${new Date(row.purgeAfter).toLocaleDateString()}` : '';
+      return <Badge color="red" variant="light">Pending deletion{purge}</Badge>;
+    }
+    if (row.isPrimary) return <Badge variant="light">Primary</Badge>;
+    return <Badge color="green" variant="light">Active</Badge>;
+  };
 
   return (
     <Stack className="household-page" gap="lg">
@@ -186,6 +226,48 @@ export function HouseholdsPage() {
           </Stack>
         </form>
       </Paper>
+
+      {operator && (
+        <Paper
+          withBorder
+          p="md"
+          radius="md"
+          className="household-card"
+          component="section"
+          aria-labelledby="operator-households-heading"
+          data-testid="operator-households-section"
+        >
+          <Title id="operator-households-heading" order={3}>All households (Admin)</Title>
+          {operatorHouseholdsError !== '' && <Alert color="red" variant="light" role="alert" mt="sm">{operatorHouseholdsError}</Alert>}
+          {operatorHouseholdsLoading && <Text mt="sm">Loading households…</Text>}
+          <ul className="household-list" style={{ marginTop: '0.75rem' }}>
+            {operatorHouseholds.map((row) => (
+              <li key={row.id}>
+                <Stack gap="xs">
+                  <Group gap="xs" wrap="wrap">
+                    <Text fw={600}>{row.name}</Text>
+                    {householdStatusBadges(row)}
+                    <Text size="sm" c="dimmed">Restock: {row.restockMode.replaceAll('_', ' ')}</Text>
+                    <Text size="sm" c="dimmed">Created {new Date(row.createdAt).toLocaleDateString()}</Text>
+                  </Group>
+                  <Text size="sm">
+                    {row.memberCount} members · {row.productCount} products · {row.itemsOnHand} on hand · {row.pendingScans} pending scans · {formatActivity(row.lastActivityAt)}
+                  </Text>
+                  <ul className="household-list">
+                    {row.members.map((member) => (
+                      <li key={member.userId}>
+                        <span>{member.name}</span>
+                        <span>{member.email}</span>
+                        <span>{member.role === 'owner' ? 'Owner' : 'Member'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </Stack>
+              </li>
+            ))}
+          </ul>
+        </Paper>
+      )}
 
       {operator && (
         <Paper withBorder p="md" radius="md" className="household-card" component="section" aria-labelledby="operator-invite-heading">

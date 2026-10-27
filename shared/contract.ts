@@ -845,6 +845,10 @@ export type HostedErrorCode =
   | 'no_space'
   | 'unauthorized'
   | 'forbidden_role'
+  | 'forbidden_owner'
+  | 'forbidden_operator'
+  | 'household_not_found'
+  | 'invalid_input'
   | 'not_found'
   | 'conflict'
   | 'invite_expired'
@@ -1573,6 +1577,31 @@ export const INVITES_PATH = '/api/invites';
 export const INVITE_PREVIEW_PATH = '/api/invites/preview';
 export const INVITE_ACCEPT_PATH = '/api/invites/accept';
 export const OPERATOR_HOUSEHOLD_INVITES_PATH = '/api/operator/household-invites';
+export const OPERATOR_HOUSEHOLDS_PATH = '/api/operator/households';
+
+export interface OperatorHouseholdMemberView {
+  userId: string;
+  email: string;
+  name: string;
+  role: HouseholdRole;
+  createdAt: string;
+}
+
+export interface OperatorHouseholdView {
+  id: string;
+  name: string;
+  isPrimary: boolean;
+  restockMode: RestockMode | string;
+  createdAt: string;
+  deletedAt?: string;
+  purgeAfter?: string;
+  members: OperatorHouseholdMemberView[];
+  memberCount: number;
+  productCount: number;
+  itemsOnHand: number;
+  pendingScans: number;
+  lastActivityAt?: string;
+}
 export const DEVICES_PATH = '/api/devices';
 export const DEVICES_PAIR_PATH = '/api/devices/pair';
 export const EXPORT_PATH = '/api/export';
@@ -1601,6 +1630,10 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   no_space: NO_SPACE_SENTENCE,
   unauthorized: SESSION_EXPIRED_SENTENCE,
   forbidden_role: 'Only an owner can do that.',
+  forbidden_owner: 'Only an owner can do that.',
+  forbidden_operator: 'Operator access required.',
+  household_not_found: "Stockbot couldn't find that. It may have been removed.",
+  invalid_input: 'Check what you entered and try again.',
   not_found: "Stockbot couldn't find that. It may have been removed.",
   conflict: 'Someone else just changed this. Refresh and try again.',
   invite_expired: 'This invite has expired or was already used. Ask for a new one.',
