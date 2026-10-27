@@ -5,9 +5,8 @@ set -e
 # 85.1 is the clean ./... total after stage-1 sign-in. :8080 stays open
 # until the household password is retired, and the added handler tests
 # cover the cart, scan, and sync branches that the fresh database reaches.
-# A cached go test run, or several packages writing one profile at once, can
-# report a different total. Do not ratchet from that result. -p 1 keeps the
-# merged profile to a single writer.
+# A cached go test run can report a different total. Do not ratchet from that
+# result when the number looks like a cache artifact.
 COVERAGE_THRESHOLD=85.1
 
 # Colors for output
@@ -25,7 +24,7 @@ echo ""
 # stockbot code. Leaving it in ./... drops the baseline whenever node_modules exists.
 mapfile -t PKGS < <(go list ./... | grep -v '/node_modules/')
 COVERPKG=$(IFS=,; echo "${PKGS[*]}")
-go test -p 1 -cover -coverpkg="${COVERPKG}" -coverprofile=coverage.out "${PKGS[@]}"
+go test -cover -coverpkg="${COVERPKG}" -coverprofile=coverage.out "${PKGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Tests failed${NC}"

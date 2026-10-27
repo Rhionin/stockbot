@@ -3,8 +3,6 @@ name: CI
 on:
   pull_request:
     branches: [master]
-  push:
-    branches: [master]
   workflow_call:
     inputs:
       # String, not boolean. On push and pull_request this input is unset, and
@@ -139,8 +137,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
       
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
       - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright browser system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
       
       - name: Build server binary
         run: go build -o ../bin/stockbot-server ../cmd/server
@@ -151,7 +161,7 @@ jobs:
         run: npx playwright test e2e/contrast-a11y.spec.ts e2e/shopping-list.spec.ts --workers=1
 
       - name: Run Playwright e2e tests
-        run: npx playwright test
+        run: npx playwright test $(ls e2e/*.spec.ts | grep -Ev 'e2e/(contrast-a11y|shopping-list)\.spec\.ts')
       
       - name: Upload Playwright report
         if: failure()
@@ -194,9 +204,22 @@ jobs:
         working-directory: frontend
         run: npx vitest --run
 
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
       - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: frontend
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright browser system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: frontend
+        run: npx playwright install-deps chromium
 
       - name: Build server binary
         working-directory: frontend
@@ -243,32 +266,14 @@ jobs:
   docker:
     name: Build and push container image
     runs-on: ubuntu-latest
-    needs: [go, frontend, shell, e2e, denver, watch-worker]
-    # One publisher per master commit. Release reuses this workflow, and the
-    # github context there is still the caller's push, so event_name cannot
-    # tell the two runs apart. The reusable run passes publish_image skip
-    # and skips this job. The push-triggered run is the only one that tags
-    # :latest and :master, and the only one that calls the deploy hook below.
-    #
-    # Master publishes share deploy-master so two merges cannot push :latest
-    # at the same time. queue: max keeps every waiting publish (up to
-    # GitHub's limit of 100). Jobs join this group when their tests finish,
-    # not in push order, so the default single waiting slot would let an
-    # older commit cancel the newest publish that is already waiting.
-    # cancel-in-progress is false: the build that has started finishes and
-    # still pushes its immutable sha tag. Pull requests and the Release
-    # skip use a unique group so they do not queue behind production.
+    # Pull requests verify the multi-arch Dockerfile without waiting for e2e.
+    if: inputs.publish_image != 'skip' && github.event_name == 'pull_request' && github.repository == 'Rhionin/stockbot'
     concurrency:
-      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.publish_image != 'skip' && 'deploy-master' || format('image-{0}', github.run_id) }}
+      group: image-${{ github.run_id }}
       cancel-in-progress: false
-      queue: max
-    if: inputs.publish_image != 'skip' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.repository == 'Rhionin/stockbot'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -283,35 +288,96 @@ jobs:
       - name: Determine image tags
         id: tags
         env:
-          # Branch names are untrusted. Keep the value in the environment so
-          # it cannot break out of the script.
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Always push the immutable commit tag. Moving tags are applied
-          # later, and only when this commit is still the tip of master.
           TAGS="ghcr.io/rhionin/pantry:${{ github.sha }}"
           SIDECAR="ghcr.io/rhionin/pantry-grocy-sync:${{ github.sha }}"
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BRANCH_NAME="${HEAD_REF}"
-            # Remove 'refs/heads/' prefix if present
-            BRANCH_NAME="${BRANCH_NAME#refs/heads/}"
-            # Replace slashes with dashes for valid tag
-            BRANCH_NAME="${BRANCH_NAME//\//-}"
-            TAGS="$TAGS,ghcr.io/rhionin/pantry:$BRANCH_NAME"
-            SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:$BRANCH_NAME"
-          fi
-
+          BRANCH_NAME="${HEAD_REF}"
+          BRANCH_NAME="${BRANCH_NAME#refs/heads/}"
+          BRANCH_NAME="${BRANCH_NAME//\//-}"
+          TAGS="$TAGS,ghcr.io/rhionin/pantry:$BRANCH_NAME"
+          SIDECAR="$SIDECAR,ghcr.io/rhionin/pantry-grocy-sync:$BRANCH_NAME"
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
           echo "sidecar_tags=$SIDECAR" >> "$GITHUB_OUTPUT"
 
       - name: Read commit identity
         id: commit
         run: |
-          # Same commit the image is tagged with (github.sha / the checkout).
-          # Base64 keeps the subject a single build-arg: quotes and spaces
-          # never reach the Dockerfile, where $$ would be the shell PID.
-          # version matches the annotated tag in release.yml: v<UTC date>-<7 char sha>.
+          short=$(git rev-parse --short=7 HEAD)
+          {
+            echo "time=$(git log -1 --format=%cI)"
+            echo "subject_b64=$(git log -1 --format=%s | tr -d '\r\n' | base64 -w 0)"
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "version=v$(date -u +%Y%m%d)-${short}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build container image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          cache-from: type=gha,scope=pantry
+          cache-to: type=gha,mode=max,scope=pantry
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            COMMIT_HASH=${{ github.sha }}
+            COMMIT_TIME=${{ steps.commit.outputs.time }}
+            COMMIT_SUBJECT_B64=${{ steps.commit.outputs.subject_b64 }}
+            BUILD_TIME=${{ steps.commit.outputs.built_at }}
+            VERSION=${{ steps.commit.outputs.version }}
+
+      - name: Build grocy-sync image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.grocy-sync
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          cache-from: type=gha,scope=grocy-sync
+          cache-to: type=gha,mode=max,scope=grocy-sync
+          tags: ${{ steps.tags.outputs.sidecar_tags }}
+
+  docker-publish:
+    name: Publish container image
+    runs-on: ubuntu-latest
+    needs: [go, frontend, shell, e2e, denver, watch-worker]
+    # Release calls this workflow on master after tests pass. Pull requests use
+    # the docker job above so the image build does not wait on e2e.
+    # Inside workflow_call, github.event_name is the caller's trigger (push from
+    # release.yml), not the string workflow_call.
+    if: inputs.publish_image != 'skip' && github.event_name != 'pull_request'
+    concurrency:
+      group: ${{ github.ref == 'refs/heads/master' && 'deploy-master' || format('image-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          TAGS="ghcr.io/rhionin/pantry:${{ github.sha }}"
+          SIDECAR="ghcr.io/rhionin/pantry-grocy-sync:${{ github.sha }}"
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "sidecar_tags=$SIDECAR" >> "$GITHUB_OUTPUT"
+
+      - name: Read commit identity
+        id: commit
+        run: |
           short=$(git rev-parse --short=7 HEAD)
           {
             echo "time=$(git log -1 --format=%cI)"
@@ -349,20 +415,13 @@ jobs:
           cache-to: type=gha,mode=max,scope=grocy-sync
           tags: ${{ steps.tags.outputs.sidecar_tags }}
 
-      # The sha tags are already in the registry. Move :latest and :master
-      # only when this commit is still the tip, so a slower older build
-      # cannot overwrite the tag pantry-update.timer pulls.
       - name: Publish moving tags when this commit is still the tip
         id: moving
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/master'
         run: bash scripts/publish-moving-tags.sh
 
-      # The image is already in the registry. This asks the Pi to pull it now.
-      # The step is a no-op until DEPLOY_HOOK_SECRET exists, so a repo without
-      # that secret still publishes the image and the Pi timer still deploys.
-      # It runs only after the moving tags above were published.
       - name: Ask the Stockbot host to deploy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.moving.outputs.publish == 'true'
+        if: github.ref == 'refs/heads/master' && steps.moving.outputs.publish == 'true'
         env:
           DEPLOY_HOOK_SECRET: ${{ secrets.DEPLOY_HOOK_SECRET }}
         run: |
@@ -381,8 +440,6 @@ jobs:
               -H "X-Pantry-Deploy-Signature: ${sig}" \
               --data-binary "$body"
           }
-          # Primary host is stockbot. The previous name still answers until
-          # the tunnel route and the Pi env have both moved.
           if post_hook "https://stockbot.rhionin.com/api/deploy-hook"; then
             echo "Deploy hook accepted for ${GITHUB_SHA}."
           elif post_hook "https://pantry.rhionin.com/api/deploy-hook"; then

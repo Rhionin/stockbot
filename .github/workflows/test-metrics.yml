@@ -206,21 +206,44 @@ jobs:
           cache: npm
           cache-dependency-path: repo/frontend/package-lock.json
 
+      - name: Restore base coverage cache
+        id: base-coverage-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/test-metrics
+          key: test-metrics-base-v1-${{ needs.pin.outputs.base_sha }}
+
       - name: Collect coverage and write the report
         id: collect
         run: |
-          set +e
           out="${RUNNER_TEMP}/test-metrics"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+          web_final="$out/vitest-coverage/coverage-final.json"
+
+          if [ "${{ steps.base-coverage-cache.outputs.cache-hit }}" = "true" ]; then
+            if [ -s "$out/metrics.json" ]; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "ok=false" >> "$GITHUB_OUTPUT"
+              echo "::error::Cached metrics.json was not restored for base ${{ needs.pin.outputs.base_sha }}"
+              exit 1
+            fi
+            if [ ! -s "$web_final" ]; then
+              echo "::error::Cached web coverage was not restored at ${web_final}"
+              exit 1
+            fi
+            exit 0
+          fi
+
+          set +e
           bash tooling/scripts/collect-test-metrics.sh repo "$out" tooling/scripts/count-tests.py
           status=$?
-          echo "out=$out" >> "$GITHUB_OUTPUT"
           if [ -s "$out/metrics.json" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "::error::metrics.json was not written (collect exited ${status})"
           fi
-          web_final="$out/vitest-coverage/coverage-final.json"
           if [ ! -s "$web_final" ]; then
             echo "::error::Web coverage was not produced at ${web_final} (collect exited ${status}). The metrics job fails instead of publishing an empty web density."
             {

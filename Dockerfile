@@ -22,7 +22,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=frontend /src/frontend/dist/ ./internal/webui/assets/
 RUN mkdir -p /data
@@ -36,7 +36,8 @@ ARG COMMIT_TIME
 ARG COMMIT_SUBJECT_B64
 ARG BUILD_TIME
 ARG VERSION
-RUN case "${COMMIT_HASH}" in *COMMIT_HASH*) echo "COMMIT_HASH was not substituted" >&2; exit 1 ;; esac; \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    case "${COMMIT_HASH}" in *COMMIT_HASH*) echo "COMMIT_HASH was not substituted" >&2; exit 1 ;; esac; \
     case "${COMMIT_TIME}" in *COMMIT_TIME*) echo "COMMIT_TIME was not substituted" >&2; exit 1 ;; esac; \
     case "${BUILD_TIME}" in *BUILD_TIME*) echo "BUILD_TIME was not substituted" >&2; exit 1 ;; esac; \
     case "${VERSION}" in *VERSION*) echo "VERSION was not substituted" >&2; exit 1 ;; esac; \
