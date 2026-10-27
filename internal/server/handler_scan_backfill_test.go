@@ -615,7 +615,7 @@ func TestBatchRetryOfABackfillReportsTheStockOutCounts(t *testing.T) {
 	}
 }
 
-func TestBackfillHistoryListsTheStockInBeforeTheStockOut(t *testing.T) {
+func TestBackfillHistoryListsTheStockOutBeforeTheStockIn(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	finishOpening(env)
 	at := time.Date(2026, 5, 9, 16, 0, 0, 0, time.UTC)
@@ -623,7 +623,7 @@ func TestBackfillHistoryListsTheStockInBeforeTheStockOut(t *testing.T) {
 	seedScanAt(env, "scan-order", "prod-order", scan.StockOut, 1, at)
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-order/commit", `{"backfill":true}`, http.StatusOK)
 
-	// id DESC would list pair-out first. The shared timestamp must not.
+	// Lexicographic id DESC would list pair-in first; direction must win.
 	if _, err := env.DB.Exec(`UPDATE stock_moves SET id = 'pair-in' WHERE scan_entry_id = 'scan-order' AND source = 'backfill'`); err != nil {
 		t.Fatal(err)
 	}
@@ -632,8 +632,8 @@ func TestBackfillHistoryListsTheStockInBeforeTheStockOut(t *testing.T) {
 	}
 
 	view := productHistory(env, handler, "item-order")
-	if len(view.Moves) != 2 || view.Moves[0].ID != "pair-in" || view.Moves[0].Direction != "in" ||
-		view.Moves[1].ID != "pair-out" || view.Moves[1].Direction != "out" || view.Moves[0].At != view.Moves[1].At {
+	if len(view.Moves) != 2 || view.Moves[0].ID != "pair-out" || view.Moves[0].Direction != "out" ||
+		view.Moves[1].ID != "pair-in" || view.Moves[1].Direction != "in" || view.Moves[0].At != view.Moves[1].At {
 		t.Fatalf("item history = %+v", view.Moves)
 	}
 
@@ -644,8 +644,36 @@ func TestBackfillHistoryListsTheStockInBeforeTheStockOut(t *testing.T) {
 	if err := json.Unmarshal(ledger, &household); err != nil {
 		t.Fatal(err)
 	}
-	if len(household.Moves) < 2 || household.Moves[0].ID != "pair-in" || household.Moves[1].ID != "pair-out" {
+	if len(household.Moves) < 2 || household.Moves[0].ID != "pair-out" || household.Moves[1].ID != "pair-in" {
 		t.Fatalf("household history = %+v", household.Moves)
+	}
+}
+
+func TestBackfillItemHistoryListsTheStockOutBeforeTheStockIn(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	finishOpening(env)
+	seedShelfItem(env, "prod-manual-bf", "Manual Backfill", "item-manual-bf")
+	body := exchangeJSON(t, handler, http.MethodPost, "/api/inventory/item-manual-bf/stock-out", `{"backfill":true}`, http.StatusOK)
+	var got struct {
+		Backfill struct {
+			StockInMoveID  string `json:"stockInMoveId"`
+			StockOutMoveID string `json:"stockOutMoveId"`
+		} `json:"backfill"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`UPDATE stock_moves SET id = 'bf-in' WHERE id = ?`, got.Backfill.StockInMoveID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.DB.Exec(`UPDATE stock_moves SET id = 'bf-out' WHERE id = ?`, got.Backfill.StockOutMoveID); err != nil {
+		t.Fatal(err)
+	}
+
+	view := productHistory(env, handler, "item-manual-bf")
+	if len(view.Moves) != 2 || view.Moves[0].ID != "bf-out" || view.Moves[0].Direction != "out" ||
+		view.Moves[1].ID != "bf-in" || view.Moves[1].Direction != "in" {
+		t.Fatalf("item history = %+v", view.Moves)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -82,6 +83,68 @@ func TestBackfillItemMissingItem(t *testing.T) {
 	_, err := queue.BackfillItem(context.Background(), scope, "missing-item", time.Now().UTC())
 	if !errors.Is(err, ErrItemNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestBackfillItemHistoryListsOutBeforeIn(t *testing.T) {
+	queue, db, scope := newTestQueueInternal(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
+	itemID, _ := seedBackfillItem(t, db, scope, "item-order", 0, 0)
+
+	result, err := queue.BackfillItem(ctx, scope, itemID, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE stock_moves SET id = 'bf-in' WHERE id = ?`, result.StockInMoveID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE stock_moves SET id = 'bf-out' WHERE id = ?`, result.StockOutMoveID); err != nil {
+		t.Fatal(err)
+	}
+
+	journal := history.NewJournal(db)
+	view, err := journal.Product(ctx, scope, itemID, at.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Moves) != 2 || view.Moves[0].ID != "bf-out" || view.Moves[0].Direction != "out" ||
+		view.Moves[1].ID != "bf-in" || view.Moves[1].Direction != "in" || view.Moves[1].Source != "backfill" {
+		t.Fatalf("moves = %+v", view.Moves)
+	}
+}
+
+func TestBackfillItemReplenishesAfterUse(t *testing.T) {
+	queue, db, scope := newTestQueueInternal(t)
+	queue.Supply = supply.Open(db)
+	ctx := context.Background()
+	started := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	itemID, productID := seedBackfillItem(t, db, scope, "item-repl", 0, 0)
+
+	if _, err := queue.BackfillItem(ctx, scope, itemID, at); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := queue.Supply.Plan(ctx, scope, at.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, line := range lines {
+		if line.Product == supply.ProductID(productID) {
+			if line.Buy != 1 || line.Source != supply.SourceReplace {
+				t.Fatalf("line = %+v, want buy 1 replace", line)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no replenish line for %s in %+v", productID, lines)
 	}
 }
 
