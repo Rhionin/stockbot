@@ -26,7 +26,8 @@ class StockbotClient {
   virtual HttpCallResult sendScan(const struct RingScanRecord& record, const std::string& boot_id,
                                   uint64_t age_ms, ParsedDeviceScanResponse& out) = 0;
   virtual HttpCallResult flushBatch(const std::vector<struct RingScanRecord>& batch,
-                                    const std::string& boot_id, ParsedDeviceScanResponse& last_out) = 0;
+                                    const std::string& boot_id, uint64_t now_ms,
+                                    ParsedDeviceScanResponse& last_out) = 0;
   virtual HttpCallResult sendHeartbeat(const std::string& hub_version, const std::string& boot_id,
                                        uint32_t uptime_s, size_t queued, int battery_pct, bool charging,
                                        HeartbeatParsed& out) = 0;

@@ -22,6 +22,13 @@ uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
 
 }  // namespace
 
+uint32_t ringScanAgeMs(const RingScanRecord& record, uint64_t now_ms) {
+  if (record.scanned_ms == 0 || now_ms < record.scanned_ms) {
+    return 0;
+  }
+  return static_cast<uint32_t>(now_ms - record.scanned_ms);
+}
+
 RingBuffer::RingBuffer(RingStorage& storage) : storage_(storage) {}
 
 uint32_t RingBuffer::crc32(const RingScanRecord& rec) {
@@ -31,13 +38,32 @@ uint32_t RingBuffer::crc32(const RingScanRecord& rec) {
 }
 
 RingScanRecord RingBuffer::makeRecord(const std::string& id, const std::string& barcode,
-                                      Direction direction) {
+                                      Direction direction, uint32_t scanned_ms) {
   RingScanRecord rec{};
   std::strncpy(rec.client_scan_id, id.c_str(), sizeof(rec.client_scan_id) - 1);
   std::strncpy(rec.barcode, barcode.c_str(), sizeof(rec.barcode) - 1);
   rec.direction = direction == Direction::StockIn ? 1 : 0;
+  rec.scanned_ms = scanned_ms;
   rec.crc32 = crc32(rec);
   return rec;
+}
+
+void RingBuffer::seedIdCounterFromRecords(const std::string& boot_id) {
+  const std::string prefix = "scan-" + boot_id + "-";
+  uint32_t max_seq = 0;
+  for (const auto& rec : records_) {
+    const std::string id(rec.client_scan_id);
+    if (id.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    const char* seq_text = id.c_str() + prefix.size();
+    char* end = nullptr;
+    const unsigned long seq = std::strtoul(seq_text, &end, 16);
+    if (end != seq_text && seq <= 0xffffffffu) {
+      max_seq = std::max(max_seq, static_cast<uint32_t>(seq));
+    }
+  }
+  id_counter_ = max_seq + 1;
 }
 
 bool RingBuffer::persist() {
@@ -50,25 +76,26 @@ bool RingBuffer::recoverFromStorage() {
   if (!storage_.readAll(loaded)) {
     return false;
   }
-  for (const auto& rec : loaded) {
+  for (auto rec : loaded) {
     if (crc32(rec) != rec.crc32) {
       continue;
     }
+    rec.scanned_ms = 0;
     records_.push_back(rec);
   }
   return true;
 }
 
 bool RingBuffer::enqueue(const std::string& barcode, Direction direction, uint64_t now_ms,
-                         std::string& out_client_scan_id) {
-  (void)now_ms;
+                         const std::string& boot_id, std::string& out_client_scan_id) {
   if (isFull()) {
     return false;
   }
-  char buf[48];
-  std::snprintf(buf, sizeof(buf), "scan-%08x-%08x", id_counter_++, static_cast<unsigned>(now_ms & 0xffffffffu));
+  char buf[sizeof(RingScanRecord::client_scan_id)];
+  std::snprintf(buf, sizeof(buf), "scan-%s-%08x", boot_id.c_str(), id_counter_++);
   out_client_scan_id = buf;
-  records_.push_back(makeRecord(out_client_scan_id, barcode, direction));
+  const uint32_t scanned_ms = static_cast<uint32_t>(now_ms);
+  records_.push_back(makeRecord(out_client_scan_id, barcode, direction, scanned_ms));
   return persist();
 }
 

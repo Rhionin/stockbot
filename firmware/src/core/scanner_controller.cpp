@@ -37,6 +37,18 @@ ScanStatusKind parseScanStatusKind(const std::string& scan_status) {
   return ScanStatusKind::None;
 }
 
+bool scanDeliveryStatusShouldAck(const std::string& status) {
+  return status == "created" || status == "accepted" || status == "duplicate" || status == "rejected" ||
+         status == "conflict";
+}
+
+bool httpFailureIsRetryable(int http_status, bool transport_ok) {
+  if (!transport_ok) {
+    return true;
+  }
+  return http_status >= 500 || http_status == 429;
+}
+
 }  // namespace
 
 ScannerController::ScannerController(HalScanner& scanner, HalDisplay& display, HalFeedback& feedback,
@@ -175,6 +187,7 @@ void ScannerController::begin(uint64_t now_ms) {
   power_.begin();
   wifi_.begin();
   ring_.recoverFromStorage();
+  ring_.seedIdCounterFromRecords(boot_id_);
 
   if (nvs_.load(config_)) {
     client_.setServerUrl(config_.server_url);
@@ -273,7 +286,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
   state_.onScanOrActivity(now_ms);
 
   std::string client_scan_id;
-  if (!ring_.enqueue(barcode, state_.active_direction, now_ms, client_scan_id)) {
+  if (!ring_.enqueue(barcode, state_.active_direction, now_ms, boot_id_, client_scan_id)) {
     buffer_full_ = true;
     ui_screen_ = UiScreen::S7_HardError;
     play(AudioCue::TripleErrorBuzz);
@@ -281,25 +294,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     return false;
   }
 
-  const auto batch = ring_.peekBatch(ring_.count());
-  if (batch.empty()) {
-    return true;
-  }
-  const RingScanRecord record = batch.back();
-
-  ParsedDeviceScanResponse parsed;
-  const HttpCallResult http = client_.sendScan(record, boot_id_, now_ms - boot_ms_, parsed);
-  wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
-
-  if (http.http_status == 401 || parsed.unauthorized) {
-    device_revoked_ = true;
-    nvs_.clearDeviceToken();
-    play(AudioCue::TripleErrorBuzz);
-    render(now_ms);
-    return false;
-  }
-
-  if (!http.transport_ok || http.http_status >= 500 || http.http_status == 429) {
+  if (!wifi_online_) {
     last_scan_.barcode = barcode;
     last_scan_.direction = state_.active_direction;
     ui_screen_ = UiScreen::S5_OfflineBuffered;
@@ -309,36 +304,74 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     return true;
   }
 
-  ring_.acknowledge(record.client_scan_id);
+  while (ring_.count() > 0) {
+    const auto batch = ring_.peekBatch(1);
+    const RingScanRecord& record = batch.front();
+    const bool show_ui = std::string(record.barcode) == barcode;
 
-  last_scan_.barcode = barcode;
-  last_scan_.direction = state_.active_direction;
-  last_scan_.known = parsed.known;
-  last_scan_.product_name = parsed.product_name_is_null ? "" : parsed.product_name;
-  last_scan_.status = parseScanStatusKind(parsed.scan_status);
-  last_scan_.queued_count = parsed.queued_count;
-  last_scan_.on_hand = parsed.on_hand;
-  last_scan_.delta = parsed.delta;
-  last_scan_.backfilled = parsed.backfilled;
+    ParsedDeviceScanResponse parsed;
+    const uint32_t age_ms = ringScanAgeMs(record, now_ms);
+    const HttpCallResult http = client_.sendScan(record, boot_id_, age_ms, parsed);
+    wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
-  if (!parsed.known || parsed.scan_status == "flagged") {
-    ui_screen_ = UiScreen::S4_UnknownBarcode;
-    play(AudioCue::QuestionTone);
-  } else {
-    ui_screen_ = UiScreen::S3_ScanResult;
-    if (state_.commit_mode == CommitMode::Immediate && parsed.backfilled) {
-      play(AudioCue::SoftDoublePulse);
-    } else if (parsed.on_hand == 0 && state_.active_direction == Direction::StockOut) {
-      play(parsed.scan_status == "committed" ? AudioCue::DoubleBeep : AudioCue::SoftDoublePulse);
-    } else {
-      play(state_.active_direction == Direction::StockIn ? AudioCue::HighBeep : AudioCue::MediumBeep);
+    if (http.http_status == 401 || parsed.unauthorized) {
+      device_revoked_ = true;
+      nvs_.clearDeviceToken();
+      play(AudioCue::TripleErrorBuzz);
+      render(now_ms);
+      return false;
     }
-    feedback_.flashLedForScan(state_.active_direction == Direction::StockIn);
+
+    if (httpFailureIsRetryable(http.http_status, http.transport_ok)) {
+      last_scan_.barcode = barcode;
+      last_scan_.direction = state_.active_direction;
+      ui_screen_ = UiScreen::S5_OfflineBuffered;
+      transient_until_ms_ = now_ms + kTransientLongMs;
+      play(AudioCue::ScanBeepLowTick);
+      render(now_ms);
+      return true;
+    }
+
+    if (scanDeliveryStatusShouldAck(parsed.status)) {
+      ring_.acknowledge(record.client_scan_id);
+    } else {
+      break;
+    }
+
+    if (!show_ui) {
+      continue;
+    }
+
+    last_scan_.barcode = barcode;
+    last_scan_.direction = state_.active_direction;
+    last_scan_.known = parsed.known;
+    last_scan_.product_name = parsed.product_name_is_null ? "" : parsed.product_name;
+    last_scan_.status = parseScanStatusKind(parsed.scan_status);
+    last_scan_.queued_count = parsed.queued_count;
+    last_scan_.on_hand = parsed.on_hand;
+    last_scan_.delta = parsed.delta;
+    last_scan_.backfilled = parsed.backfilled;
+
+    if (!parsed.known || parsed.scan_status == "flagged") {
+      ui_screen_ = UiScreen::S4_UnknownBarcode;
+      play(AudioCue::QuestionTone);
+    } else {
+      ui_screen_ = UiScreen::S3_ScanResult;
+      DisplayModelInput preview;
+      preview.screen = UiScreen::S3_ScanResult;
+      preview.commit_mode = state_.commit_mode;
+      preview.last_scan = last_scan_;
+      const DisplayBands bands = buildDisplayModel(preview);
+      play(bands.audio);
+      feedback_.flashLedForScan(state_.active_direction == Direction::StockIn);
+    }
+    transient_until_ms_ =
+        now_ms + ((parsed.on_hand == 0 && state_.active_direction == Direction::StockOut) ? kTransientLongMs
+                                                                                          : kTransientScanMs);
+    render(now_ms);
+    return true;
   }
-  transient_until_ms_ =
-      now_ms + ((parsed.on_hand == 0 && state_.active_direction == Direction::StockOut) ? kTransientLongMs
-                                                                                        : kTransientScanMs);
-  render(now_ms);
+
   return true;
 }
 
@@ -472,21 +505,27 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
     return;
   }
   ParsedDeviceScanResponse parsed;
-  const HttpCallResult res = client_.flushBatch(batch, boot_id_, parsed);
+  const HttpCallResult res = client_.flushBatch(batch, boot_id_, now_ms, parsed);
   if (res.http_status == 401 || parsed.unauthorized) {
     device_revoked_ = true;
     play(AudioCue::TripleErrorBuzz);
     render(now_ms);
     return;
   }
-  if (!res.transport_ok) {
+  if (httpFailureIsRetryable(res.http_status, res.transport_ok)) {
     return;
   }
-  if (!res.transport_ok || res.http_status < 200 || res.http_status >= 300) {
+  if (res.http_status < 200 || res.http_status >= 300) {
     return;
   }
-  for (const auto& item : batch) {
-    ring_.acknowledge(item.client_scan_id);
+  std::vector<BatchScanResultItem> items;
+  if (!parseDeviceScanBatchResponseJson(res.http_status, res.body, items)) {
+    return;
+  }
+  for (const auto& item : items) {
+    if (scanDeliveryStatusShouldAck(item.status)) {
+      ring_.acknowledge(item.id);
+    }
   }
   (void)now_ms;
 }

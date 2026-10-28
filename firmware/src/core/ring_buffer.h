@@ -14,11 +14,14 @@ struct RingScanRecord {
   char client_scan_id[36];
   char barcode[16];
   uint8_t direction;
-  uint8_t reserved[7];
+  uint8_t reserved[3];
+  uint32_t scanned_ms;
   uint32_t crc32;
 };
 
 static_assert(sizeof(RingScanRecord) == 64, "RingScanRecord must be 64 bytes");
+
+uint32_t ringScanAgeMs(const RingScanRecord& record, uint64_t now_ms);
 
 class RingStorage {
  public:
@@ -34,8 +37,9 @@ class RingBuffer {
   explicit RingBuffer(RingStorage& storage);
 
   bool recoverFromStorage();
+  void seedIdCounterFromRecords(const std::string& boot_id);
   bool enqueue(const std::string& barcode, Direction direction, uint64_t now_ms,
-               std::string& out_client_scan_id);
+               const std::string& boot_id, std::string& out_client_scan_id);
   std::vector<RingScanRecord> peekBatch(size_t max_count = 20) const;
   bool acknowledge(const std::string& client_scan_id);
   void clearAll();
@@ -49,7 +53,8 @@ class RingBuffer {
   uint32_t id_counter_ = 0;
 
   static uint32_t crc32(const RingScanRecord& rec);
-  static RingScanRecord makeRecord(const std::string& id, const std::string& barcode, Direction direction);
+  static RingScanRecord makeRecord(const std::string& id, const std::string& barcode, Direction direction,
+                                   uint32_t scanned_ms);
   bool persist();
 };
 

@@ -206,24 +206,26 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
 
     if (in.commit_mode == CommitMode::Queue) {
       const int q = scan.queued_count > 0 ? scan.queued_count : 1;
-      if (scan.direction == Direction::StockOut && scan.on_hand == 1 && q == 1) {
-        out.band3 = "Queued -1 · Last one (1 on hand)";
-        out.audio = AudioCue::DoubleBeep;
-      } else if (scan.direction == Direction::StockOut && scan.on_hand == 0 && q == 1) {
-        out.band3 = "Queued -1 · 0 on hand (Confirm in app)";
-        out.audio = AudioCue::SoftDoublePulse;
-      } else if (scan.direction == Direction::StockIn) {
+      if (scan.direction == Direction::StockOut) {
+        if (scan.on_hand == 0) {
+          out.band3 = "Queued -1 · 0 on hand (Confirm in app)";
+          out.audio = AudioCue::SoftDoublePulse;
+        } else if (scan.on_hand == 1 && q == 1) {
+          out.band3 = "Queued -1 · Last one (1 on hand)";
+          out.audio = AudioCue::DoubleBeep;
+        } else {
+          out.band3 = "Queued -" + std::to_string(q) + " · " + std::to_string(scan.on_hand) + " on hand";
+          out.audio = AudioCue::MediumBeep;
+        }
+      } else {
         out.band3 = "Queued +" + std::to_string(q) + " · " + std::to_string(scan.on_hand) + " on hand";
         out.audio = AudioCue::HighBeep;
-      } else {
-        out.band3 = "Queued -" + std::to_string(q) + " · " + std::to_string(scan.on_hand) + " on hand";
-        out.audio = AudioCue::MediumBeep;
       }
     } else {
       if (scan.direction == Direction::StockIn) {
         out.band3 = "+1 · " + std::to_string(scan.on_hand) + " on hand";
         out.audio = AudioCue::HighBeep;
-      } else if (scan.backfilled || (scan.on_hand == 0 && scan.delta != 0)) {
+      } else if (scan.backfilled) {
         out.band3 = "0 on hand · Added & used 1";
         out.audio = AudioCue::SoftDoublePulse;
       } else if (scan.on_hand == 0) {

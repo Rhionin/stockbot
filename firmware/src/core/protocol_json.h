@@ -57,6 +57,11 @@ struct SetupQrParsed {
   std::string code;
 };
 
+struct BatchScanResultItem {
+  std::string id;
+  std::string status;
+};
+
 std::string buildPairCompleteRequestJson(const std::string& code, const std::string& label,
                                          const std::string& hub_version, const std::string& boot_id);
 
@@ -66,9 +71,13 @@ std::string buildSingleScanRequestJson(const RingScanRecord& record, const std::
                                        uint64_t age_ms, bool time_approx);
 
 std::string buildBatchScansRequestJson(const std::vector<RingScanRecord>& records,
-                                       const std::string& boot_id, uint64_t age_ms_base);
+                                       const std::string& boot_id, uint64_t now_ms);
 
-bool parseDeviceScanResponseJson(int http_status, const std::string& body, ParsedDeviceScanResponse& out);
+bool parseDeviceScanResponseJson(int http_status, const std::string& body,
+                                 ParsedDeviceScanResponse& out);
+
+bool parseDeviceScanBatchResponseJson(int http_status, const std::string& body,
+                                      std::vector<BatchScanResultItem>& out);
 
 std::string buildHeartbeatRequestJson(const std::string& hub_version, const std::string& boot_id,
                                       uint32_t uptime_s, size_t queued, int battery_pct, bool charging,

@@ -115,7 +115,8 @@ class HttpsStockbotClient final : public StockbotClient {
 
   HttpCallResult sendScan(const RingScanRecord& record, const std::string& boot_id, uint64_t age_ms,
                           ParsedDeviceScanResponse& out) override {
-    const std::string body = buildSingleScanRequestJson(record, boot_id, age_ms, age_ms > 0);
+    const bool time_approx = record.scanned_ms == 0;
+    const std::string body = buildSingleScanRequestJson(record, boot_id, age_ms, time_approx);
     const HttpCallResult res = performPost(base_url_, "/api/device/scans", body, token_);
     if (res.transport_ok) {
       parseDeviceScanResponseJson(res.http_status, res.body, out);
@@ -124,8 +125,8 @@ class HttpsStockbotClient final : public StockbotClient {
   }
 
   HttpCallResult flushBatch(const std::vector<RingScanRecord>& batch, const std::string& boot_id,
-                            ParsedDeviceScanResponse& last_out) override {
-    const std::string body = buildBatchScansRequestJson(batch, boot_id, 0);
+                            uint64_t now_ms, ParsedDeviceScanResponse& last_out) override {
+    const std::string body = buildBatchScansRequestJson(batch, boot_id, now_ms);
     const HttpCallResult res = performPost(base_url_, "/api/device/scans", body, token_);
     if (res.transport_ok && !batch.empty()) {
       parseDeviceScanResponseJson(res.http_status, res.body, last_out);

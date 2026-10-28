@@ -27,6 +27,9 @@ bool pairingGrammarMatch(const std::string& code) {
     return false;
   }
   auto validChar = [](char ch, bool checkPos) {
+    if (checkPos && (ch == '*' || ch == '~' || ch == '$' || ch == '=' || ch == 'U')) {
+      return true;
+    }
     if (ch >= '0' && ch <= '9') {
       return true;
     }
@@ -34,9 +37,6 @@ bool pairingGrammarMatch(const std::string& code) {
       if (ch == 'I' || ch == 'O' || ch == 'U') {
         return false;
       }
-      return true;
-    }
-    if (checkPos && (ch == '*' || ch == '~' || ch == '$' || ch == '=' || ch == 'U')) {
       return true;
     }
     return false;

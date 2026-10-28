@@ -72,6 +72,8 @@ void test_barcode_filter() {
   EXPECT(classifyBarcode("STOCK_OUT", OperationalState::Paired) == BarcodeKind::ControlStockOut);
 
   EXPECT(isPairingCode("SBP-0123-ABCD-G"));
+  EXPECT(isPairingCode("SBP-0000-0014-U"));
+  EXPECT(!isPairingCode("SBP-0000-0014-G"));
   EXPECT(!isPairingCode("SBP-0123-ABCD-0"));
   EXPECT(classifyBarcode("SBP-0123-ABCD-G", OperationalState::Pairing) == BarcodeKind::PairingCode);
   EXPECT(classifyBarcode("SBP-0123-ABCD-G", OperationalState::Paired) == BarcodeKind::RejectedNon1D);
@@ -88,8 +90,8 @@ void test_duplicate_cooldown() {
 
   DuplicateCooldownState state;
   EXPECT(acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 1000, false));
-  EXPECT(!acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 2500, false));
-  EXPECT(acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 3001, false));
+  EXPECT(!acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 2999, false));
+  EXPECT(acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 3000, false));
   EXPECT(acceptWithDuplicateCooldown(state, "4012", Direction::StockOut, 3100, false));
   EXPECT(acceptWithDuplicateCooldown(state, "4011", Direction::StockIn, 3200, false));
   EXPECT(acceptWithDuplicateCooldown(state, "4011", Direction::StockOut, 3300, true));
@@ -138,10 +140,10 @@ void test_ring_buffer() {
   EXPECT(ring.recoverFromStorage());
   std::string id;
   for (size_t i = 0; i < stockbot::RingBuffer::kCapacity; ++i) {
-    EXPECT(ring.enqueue("4011", stockbot::Direction::StockOut, static_cast<uint64_t>(i), id));
+    EXPECT(ring.enqueue("4011", stockbot::Direction::StockOut, static_cast<uint64_t>(i), "boot-test", id));
   }
   EXPECT(ring.isFull());
-  EXPECT(!ring.enqueue("9999", stockbot::Direction::StockOut, 9999, id));
+  EXPECT(!ring.enqueue("9999", stockbot::Direction::StockOut, 9999, "boot-test", id));
   auto batch = ring.peekBatch(20);
   EXPECT(batch.size() == 20);
   EXPECT(std::string(batch.front().barcode) == "4011");
@@ -151,11 +153,25 @@ void test_ring_buffer() {
   MemoryRingStorage storage2;
   {
     stockbot::RingBuffer r1(storage2);
-    r1.enqueue("123", stockbot::Direction::StockIn, 1, id);
+    r1.enqueue("123", stockbot::Direction::StockIn, 1, "boot-test", id);
   }
   stockbot::RingBuffer r2(storage2);
   EXPECT(r2.recoverFromStorage());
   EXPECT(r2.count() == 1);
+
+  MemoryRingStorage storage3;
+  {
+    stockbot::RingBuffer writer(storage3);
+    writer.enqueue("4011", stockbot::Direction::StockOut, 500, "boot-crc", id);
+  }
+  std::vector<stockbot::RingScanRecord> persisted;
+  storage3.readAll(persisted);
+  EXPECT(!persisted.empty());
+  persisted[0].crc32 ^= 0x00ffffffu;
+  storage3.writeAll(persisted);
+  stockbot::RingBuffer corrupt(storage3);
+  EXPECT(corrupt.recoverFromStorage());
+  EXPECT(corrupt.count() == 0);
 }
 
 void test_display_model() {
@@ -165,6 +181,7 @@ void test_display_model() {
   using stockbot::ScanResultView;
   using stockbot::ScanStatusKind;
   using stockbot::UiScreen;
+  using stockbot::AudioCue;
   using stockbot::buildDisplayModel;
   using stockbot::wrapProductNameTwoLines;
 
@@ -204,17 +221,23 @@ void test_display_model() {
   in.last_scan.direction = Direction::StockOut;
   in.last_scan.on_hand = 3;
   in.last_scan.backfilled = false;
+  in.last_scan.delta = -1;
   q = buildDisplayModel(in);
   EXPECT(q.band3 == "-1 · 3 left");
+  EXPECT(q.audio == AudioCue::MediumBeep);
 
   in.last_scan.on_hand = 0;
   in.last_scan.backfilled = false;
+  in.last_scan.delta = -1;
   q = buildDisplayModel(in);
   EXPECT(q.band3 == "-1 · 0 left (Out of stock)");
+  EXPECT(q.audio == AudioCue::DoubleBeep);
 
   in.last_scan.backfilled = true;
+  in.last_scan.delta = -1;
   q = buildDisplayModel(in);
   EXPECT(q.band3 == "0 on hand · Added & used 1");
+  EXPECT(q.audio == AudioCue::SoftDoublePulse);
   EXPECT(q.band3.find("backfill") == std::string::npos);
 
   in.screen = UiScreen::S4_UnknownBarcode;
@@ -237,9 +260,11 @@ void test_display_model() {
   EXPECT(err.band2_line1 == "Scanner disconnected");
 
   auto wrapped = wrapProductNameTwoLines(
-      "Kirkland Organic Diced Tomatoes Extra Long Product Name Here");
+      "Kirkland Organic Diced Tomatoes Extra Long Product Name Here That Keeps Going");
   EXPECT(!wrapped.first.empty());
-  EXPECT(wrapped.second.find(u8"…") != std::string::npos || !wrapped.second.empty());
+  EXPECT(!wrapped.second.empty());
+  EXPECT(wrapped.second.size() >= 3);
+  EXPECT(wrapped.second.compare(wrapped.second.size() - 3, 3, u8"…") == 0);
 }
 
 class MockScanner : public stockbot::HalScanner {
@@ -351,17 +376,34 @@ class MockClient : public stockbot::StockbotClient {
     return next_pair;
   }
 
-  stockbot::HttpCallResult sendScan(const stockbot::RingScanRecord&, const std::string&, uint64_t,
+  stockbot::HttpCallResult sendScan(const stockbot::RingScanRecord& rec, const std::string&, uint64_t age_ms,
                                     stockbot::ParsedDeviceScanResponse& out) override {
+    last_send_barcode = rec.barcode;
+    last_send_age_ms = age_ms;
+    send_order.push_back(rec.barcode);
     out = scan_body;
     return next_scan;
   }
 
-  stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>&,
-                                      const std::string&, stockbot::ParsedDeviceScanResponse& out) override {
+  std::string last_send_barcode;
+  uint64_t last_send_age_ms = 0;
+  std::vector<std::string> send_order;
+
+  stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>& batch,
+                                      const std::string& boot_id, uint64_t now_ms,
+                                      stockbot::ParsedDeviceScanResponse& out) override {
+    last_flush_batch = batch;
+    last_flush_boot = boot_id;
+    last_flush_now_ms = now_ms;
+    last_flush_body = stockbot::buildBatchScansRequestJson(batch, boot_id, now_ms);
     out = scan_body;
     return next_scan;
   }
+
+  std::vector<stockbot::RingScanRecord> last_flush_batch;
+  std::string last_flush_boot;
+  uint64_t last_flush_now_ms = 0;
+  std::string last_flush_body;
 
   stockbot::HttpCallResult sendHeartbeat(const std::string&, const std::string&, uint32_t, size_t, int, bool,
                                          stockbot::HeartbeatParsed& out) override {
@@ -384,8 +426,20 @@ void test_protocol_json() {
   std::strncpy(rec.client_scan_id, "scan-1", sizeof(rec.client_scan_id));
   std::strncpy(rec.barcode, "4011", sizeof(rec.barcode));
   rec.direction = 0;
-  const std::string scan_req = stockbot::buildSingleScanRequestJson(rec, "boot-1", 100, true);
+  rec.scanned_ms = 1000;
+  const std::string scan_req = stockbot::buildSingleScanRequestJson(rec, "boot-1", 5500, false);
   EXPECT(scan_req.find("\"unitCount\":1") != std::string::npos);
+  EXPECT(scan_req.find("\"ageMs\":5500") != std::string::npos);
+
+  std::vector<stockbot::RingScanRecord> batch{rec};
+  stockbot::RingScanRecord rec2 = rec;
+  std::strncpy(rec2.client_scan_id, "scan-2", sizeof(rec2.client_scan_id));
+  rec2.scanned_ms = 2000;
+  batch.push_back(rec2);
+  const std::string batch_req = stockbot::buildBatchScansRequestJson(batch, "boot-1", 5000);
+  EXPECT(batch_req.find("\"ageMs\":4000") != std::string::npos);
+  EXPECT(batch_req.find("\"ageMs\":3000") != std::string::npos);
+  EXPECT(batch_req.find("\"ageMs\":4000") < batch_req.find("\"ageMs\":3000"));
 
   stockbot::ParsedDeviceScanResponse scan_out;
   const std::string scan_resp =
@@ -393,6 +447,19 @@ void test_protocol_json() {
   EXPECT(stockbot::parseDeviceScanResponseJson(200, scan_resp, scan_out));
   EXPECT(scan_out.status == "created");
   EXPECT(scan_out.on_hand == 6);
+
+  const std::string batch_resp =
+      R"({"results":[{"id":"scan-a","status":"created","onHand":1},{"id":"scan-b","status":"rejected","onHand":0}],"config":{}})";
+  std::vector<stockbot::BatchScanResultItem> batch_items;
+  EXPECT(stockbot::parseDeviceScanBatchResponseJson(200, batch_resp, batch_items));
+  EXPECT(batch_items.size() == 2);
+  EXPECT(batch_items[0].id == "scan-a");
+  EXPECT(batch_items[1].status == "rejected");
+
+  const std::string bounded =
+      R"({"results":[{"id":"inner","status":"created","onHand":2}],"onHand":99})";
+  EXPECT(stockbot::parseDeviceScanResponseJson(200, bounded, scan_out));
+  EXPECT(scan_out.on_hand == 2);
 
   stockbot::HeartbeatParsed hb;
   const std::string hb_resp =
@@ -451,6 +518,8 @@ void test_scanner_controller_flow() {
   client.scan_body.product_name = "Milk";
   client.scan_body.on_hand = 6;
   client.scan_body.parse_ok = true;
+  wifi.connected = true;
+  controller.tick(3500);
   controller.onBarcodeLine("4011", true, 4000);
   EXPECT(display.last.band3.find("Queued -1") != std::string::npos);
 
@@ -459,6 +528,8 @@ void test_scanner_controller_flow() {
                                        ring2);
   nvs.cfg.device_token = "sbd_abc";
   revoked.begin(5000);
+  wifi.connected = true;
+  revoked.tick(5050);
   client.next_scan = {true, 401, ""};
   client.scan_body = {};
   client.scan_body.unauthorized = true;
@@ -557,6 +628,49 @@ void test_trigger_button_wiring() {
   EXPECT(!scanner.continuous);
 }
 
+void test_offline_fifo_flush_order() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  nvs.cfg.commit_mode = stockbot::CommitMode::Immediate;
+  controller.begin(0);
+
+  client.next_scan = {false, 0, ""};
+  controller.onBarcodeLine("011111111111", false, 1000);
+  controller.onBarcodeLine("022222222222", false, 2000);
+  EXPECT(ring.count() == 2);
+
+  const auto pending = ring.peekBatch(2);
+  EXPECT(pending.size() == 2);
+  const std::string id_a(pending[0].client_scan_id);
+  const std::string id_b(pending[1].client_scan_id);
+
+  wifi.connected = true;
+  const std::string batch_body = std::string(R"({"results":[{"id":")") + id_a +
+                               R"(","status":"created"},{"id":")" + id_b + R"(","status":"created"}]})";
+  client.next_scan = {true, 200, batch_body};
+  client.scan_body.status = "created";
+  controller.tick(5000);
+
+  EXPECT(client.last_flush_batch.size() == 2);
+  EXPECT(std::string(client.last_flush_batch[0].barcode) == "011111111111");
+  EXPECT(std::string(client.last_flush_batch[1].barcode) == "022222222222");
+  EXPECT(client.last_flush_body.find("\"ageMs\":4000") != std::string::npos);
+  EXPECT(client.last_flush_body.find("\"ageMs\":3000") != std::string::npos);
+  EXPECT(ring.count() == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -570,6 +684,7 @@ int main() {
   test_scanner_controller_flow();
   test_portal_submission_handoff();
   test_trigger_button_wiring();
+  test_offline_fifo_flush_order();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";

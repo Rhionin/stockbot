@@ -36,21 +36,26 @@ std::string jsonEscape(const std::string& in) {
   return out;
 }
 
-std::optional<std::string> jsonStringAtKey(const std::string& body, const std::string& key) {
+std::optional<std::string> jsonStringAtKey(const std::string& body, const std::string& key,
+                                           size_t search_start = 0,
+                                           size_t search_end = std::string::npos) {
+  if (search_end == std::string::npos) {
+    search_end = body.size();
+  }
   const std::string needle = "\"" + key + "\"";
-  size_t pos = body.find(needle);
-  if (pos == std::string::npos) {
+  size_t pos = body.find(needle, search_start);
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) {
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   ++pos;
-  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) {
+  while (pos < search_end && std::isspace(static_cast<unsigned char>(body[pos]))) {
     ++pos;
   }
-  if (pos >= body.size()) {
+  if (pos >= search_end) {
     return std::nullopt;
   }
   if (body.compare(pos, 4, "null") == 0) {
@@ -61,8 +66,8 @@ std::optional<std::string> jsonStringAtKey(const std::string& body, const std::s
   }
   ++pos;
   std::string out;
-  while (pos < body.size() && body[pos] != '"') {
-    if (body[pos] == '\\' && pos + 1 < body.size()) {
+  while (pos < search_end && body[pos] != '"') {
+    if (body[pos] == '\\' && pos + 1 < search_end) {
       out.push_back(body[pos + 1]);
       pos += 2;
       continue;
@@ -72,22 +77,26 @@ std::optional<std::string> jsonStringAtKey(const std::string& body, const std::s
   return out;
 }
 
-std::optional<int64_t> jsonIntAtKey(const std::string& body, const std::string& key) {
+std::optional<int64_t> jsonIntAtKey(const std::string& body, const std::string& key, size_t search_start = 0,
+                                    size_t search_end = std::string::npos) {
+  if (search_end == std::string::npos) {
+    search_end = body.size();
+  }
   const std::string needle = "\"" + key + "\"";
-  size_t pos = body.find(needle);
-  if (pos == std::string::npos) {
+  size_t pos = body.find(needle, search_start);
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) {
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   ++pos;
-  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) {
+  while (pos < search_end && std::isspace(static_cast<unsigned char>(body[pos]))) {
     ++pos;
   }
   size_t end = pos;
-  while (end < body.size() && (std::isdigit(static_cast<unsigned char>(body[end])) || body[end] == '-')) {
+  while (end < search_end && (std::isdigit(static_cast<unsigned char>(body[end])) || body[end] == '-')) {
     ++end;
   }
   if (end == pos) {
@@ -96,24 +105,28 @@ std::optional<int64_t> jsonIntAtKey(const std::string& body, const std::string& 
   return std::stoll(body.substr(pos, end - pos));
 }
 
-std::optional<bool> jsonBoolAtKey(const std::string& body, const std::string& key) {
+std::optional<bool> jsonBoolAtKey(const std::string& body, const std::string& key, size_t search_start = 0,
+                                  size_t search_end = std::string::npos) {
+  if (search_end == std::string::npos) {
+    search_end = body.size();
+  }
   const std::string needle = "\"" + key + "\"";
-  size_t pos = body.find(needle);
-  if (pos == std::string::npos) {
+  size_t pos = body.find(needle, search_start);
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) {
+  if (pos == std::string::npos || pos >= search_end) {
     return std::nullopt;
   }
   ++pos;
-  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) {
+  while (pos < search_end && std::isspace(static_cast<unsigned char>(body[pos]))) {
     ++pos;
   }
-  if (body.compare(pos, 4, "true") == 0) {
+  if (pos + 4 <= search_end && body.compare(pos, 4, "true") == 0) {
     return true;
   }
-  if (body.compare(pos, 5, "false") == 0) {
+  if (pos + 5 <= search_end && body.compare(pos, 5, "false") == 0) {
     return false;
   }
   return std::nullopt;
@@ -233,53 +246,116 @@ std::string buildSingleScanRequestJson(const RingScanRecord& record, const std::
 }
 
 std::string buildBatchScansRequestJson(const std::vector<RingScanRecord>& records,
-                                       const std::string& boot_id, uint64_t age_ms_base) {
+                                       const std::string& boot_id, uint64_t now_ms) {
   std::ostringstream oss;
   oss << "{\"scans\":[";
   for (size_t i = 0; i < records.size(); ++i) {
     if (i > 0) {
       oss << ',';
     }
-    oss << buildSingleScanRequestJson(records[i], boot_id, age_ms_base + i, false);
+    const uint32_t age_ms = ringScanAgeMs(records[i], now_ms);
+    const bool time_approx = records[i].scanned_ms == 0;
+    oss << buildSingleScanRequestJson(records[i], boot_id, age_ms, time_approx);
   }
   oss << "]}";
   return oss.str();
 }
 
-static void parseEnrichedScanFields(const std::string& body, ParsedDeviceScanResponse& out) {
-  if (auto scan_status = jsonStringAtKey(body, "scanStatus")) {
+void parseEnrichedScanFields(const std::string& body, ParsedDeviceScanResponse& out, size_t obj_start,
+                             size_t obj_end) {
+  if (auto scan_status = jsonStringAtKey(body, "scanStatus", obj_start, obj_end)) {
     out.scan_status = *scan_status;
   }
-  if (auto known = jsonBoolAtKey(body, "known")) {
+  if (auto known = jsonBoolAtKey(body, "known", obj_start, obj_end)) {
     out.known = *known;
   }
-  if (body.find("\"productName\":null") != std::string::npos) {
+  if (body.find("\"productName\":null", obj_start) != std::string::npos &&
+      body.find("\"productName\":null", obj_start) < obj_end) {
     out.product_name_is_null = true;
-  } else if (auto name = jsonStringAtKey(body, "productName")) {
+  } else if (auto name = jsonStringAtKey(body, "productName", obj_start, obj_end)) {
     out.product_name_is_null = false;
     out.product_name = *name;
   }
-  if (auto barcode = jsonStringAtKey(body, "barcode")) {
+  if (auto barcode = jsonStringAtKey(body, "barcode", obj_start, obj_end)) {
     out.barcode = *barcode;
   }
-  if (auto direction = jsonStringAtKey(body, "direction")) {
+  if (auto direction = jsonStringAtKey(body, "direction", obj_start, obj_end)) {
     out.direction = *direction;
   }
-  if (auto queued = jsonIntAtKey(body, "queuedCount")) {
+  if (auto queued = jsonIntAtKey(body, "queuedCount", obj_start, obj_end)) {
     out.queued_count = static_cast<int>(*queued);
   }
-  if (auto delta = jsonIntAtKey(body, "delta")) {
+  if (auto delta = jsonIntAtKey(body, "delta", obj_start, obj_end)) {
     out.delta = static_cast<int>(*delta);
   }
-  if (auto on_hand = jsonIntAtKey(body, "onHand")) {
+  if (auto on_hand = jsonIntAtKey(body, "onHand", obj_start, obj_end)) {
     out.on_hand = static_cast<int>(*on_hand);
   }
-  if (auto backfilled = jsonBoolAtKey(body, "backfilled")) {
+  if (auto backfilled = jsonBoolAtKey(body, "backfilled", obj_start, obj_end)) {
     out.backfilled = *backfilled;
   }
-  if (auto code = jsonStringAtKey(body, "code")) {
+  if (auto code = jsonStringAtKey(body, "code", obj_start, obj_end)) {
     out.code = *code;
   }
+}
+
+std::optional<std::pair<size_t, size_t>> jsonObjectSpanAt(const std::string& body, size_t from) {
+  const size_t obj_start = body.find('{', from);
+  if (obj_start == std::string::npos) {
+    return std::nullopt;
+  }
+  int depth = 0;
+  for (size_t i = obj_start; i < body.size(); ++i) {
+    if (body[i] == '{') {
+      ++depth;
+    } else if (body[i] == '}') {
+      --depth;
+      if (depth == 0) {
+        return std::make_pair(obj_start, i + 1);
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<std::pair<size_t, size_t>> jsonResultObjectSpans(const std::string& body) {
+  std::vector<std::pair<size_t, size_t>> spans;
+  const std::string needle = "\"results\"";
+  const size_t results_pos = body.find(needle);
+  if (results_pos == std::string::npos) {
+    return spans;
+  }
+  const size_t array_start = body.find('[', results_pos);
+  if (array_start == std::string::npos) {
+    return spans;
+  }
+  size_t pos = array_start + 1;
+  while (pos < body.size()) {
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == ',' || body[pos] == '\n' || body[pos] == '\r')) {
+      ++pos;
+    }
+    if (pos >= body.size() || body[pos] == ']') {
+      break;
+    }
+    if (auto span = jsonObjectSpanAt(body, pos)) {
+      spans.push_back(*span);
+      pos = span->second;
+      continue;
+    }
+    break;
+  }
+  return spans;
+}
+
+void parseScanResultObject(const std::string& body, size_t obj_start, size_t obj_end,
+                           ParsedDeviceScanResponse& out) {
+  if (auto id = jsonStringAtKey(body, "id", obj_start, obj_end)) {
+    out.id = *id;
+  }
+  if (auto status = jsonStringAtKey(body, "status", obj_start, obj_end)) {
+    out.status = *status;
+  }
+  parseEnrichedScanFields(body, out, obj_start, obj_end);
 }
 
 bool parseDeviceScanResponseJson(int http_status, const std::string& body,
@@ -293,23 +369,48 @@ bool parseDeviceScanResponseJson(int http_status, const std::string& body,
     return false;
   }
 
-  std::string item = body;
-  if (auto results_pos = body.find("\"results\""); results_pos != std::string::npos) {
-    const size_t obj_start = body.find('{', results_pos);
-    if (obj_start != std::string::npos) {
-      item = body.substr(obj_start);
-    }
+  const auto result_spans = jsonResultObjectSpans(body);
+  if (!result_spans.empty()) {
+    parseScanResultObject(body, result_spans.front().first, result_spans.front().second, out);
+  } else if (auto span = jsonObjectSpanAt(body, 0)) {
+    parseScanResultObject(body, span->first, span->second, out);
   }
 
-  if (auto id = jsonStringAtKey(item, "id")) {
-    out.id = *id;
-  }
-  if (auto status = jsonStringAtKey(item, "status")) {
-    out.status = *status;
-  }
-  parseEnrichedScanFields(item, out);
   out.parse_ok = !out.status.empty() || !out.id.empty();
   return out.parse_ok;
+}
+
+bool parseDeviceScanBatchResponseJson(int http_status, const std::string& body,
+                                      std::vector<BatchScanResultItem>& out) {
+  out.clear();
+  if (http_status == 401) {
+    return true;
+  }
+  if (http_status < 200 || http_status >= 300) {
+    return false;
+  }
+  const auto spans = jsonResultObjectSpans(body);
+  if (spans.empty()) {
+    ParsedDeviceScanResponse single;
+    if (!parseDeviceScanResponseJson(http_status, body, single)) {
+      return false;
+    }
+    if (!single.id.empty() || !single.status.empty()) {
+      out.push_back(BatchScanResultItem{single.id, single.status});
+    }
+    return true;
+  }
+  for (const auto& span : spans) {
+    BatchScanResultItem item;
+    if (auto id = jsonStringAtKey(body, "id", span.first, span.second)) {
+      item.id = *id;
+    }
+    if (auto status = jsonStringAtKey(body, "status", span.first, span.second)) {
+      item.status = *status;
+    }
+    out.push_back(std::move(item));
+  }
+  return true;
 }
 
 std::string buildHeartbeatRequestJson(const std::string& hub_version, const std::string& boot_id,
