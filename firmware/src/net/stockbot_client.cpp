@@ -5,6 +5,8 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
+#include <esp_crt_bundle.h>
+
 #include "protocol_json.h"
 
 namespace stockbot {
@@ -16,6 +18,17 @@ WiFiClientSecure& tlsClient() {
   return client;
 }
 
+bool allowInsecureTls(const std::string& base_url) {
+  if (base_url.rfind("http://", 0) == 0) {
+    return true;
+  }
+  if (base_url.find("127.0.0.1") != std::string::npos || base_url.find("localhost") != std::string::npos ||
+      base_url.find("192.168.") != std::string::npos || base_url.find("10.") != std::string::npos) {
+    return true;
+  }
+  return false;
+}
+
 HttpCallResult performPost(const std::string& base_url, const std::string& path, const std::string& body,
                            const std::string& bearer_token) {
   HttpCallResult result;
@@ -24,7 +37,11 @@ HttpCallResult performPost(const std::string& base_url, const std::string& path,
   WiFiClient plain;
   const bool secure = base_url.rfind("https://", 0) == 0;
   if (secure) {
-    tlsClient().setInsecure();
+    if (allowInsecureTls(base_url)) {
+      tlsClient().setInsecure();
+    } else {
+      tlsClient().setCACertBundle(esp_crt_bundle);
+    }
     stream = &tlsClient();
   } else {
     stream = &plain;

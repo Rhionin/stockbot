@@ -12,6 +12,7 @@
 #include "nvs_config.h"
 #include "scanner_controller.h"
 #include "stockbot_client.h"
+#include "wifi_station.h"
 
 using namespace stockbot;
 
@@ -25,6 +26,7 @@ static HalPower* g_power = nullptr;
 static NvsConfigStore* g_nvs = nullptr;
 static CaptivePortal* g_portal = nullptr;
 static StockbotClient* g_client = nullptr;
+static WifiStation* g_wifi = nullptr;
 static ScannerController* g_controller = nullptr;
 
 static bool g_btn_mode_down = false;
@@ -40,9 +42,10 @@ void setup() {
   g_nvs = createNvsConfigStore();
   g_portal = createCaptivePortal();
   g_client = createStockbotClient();
+  g_wifi = createWifiStation();
 
   static ScannerController controller(*g_scanner, *g_display, *g_feedback, *g_power, *g_nvs, *g_portal,
-                                      *g_client, g_ring);
+                                      *g_client, *g_wifi, g_ring);
   g_controller = &controller;
   g_controller->begin(millis());
 
@@ -73,11 +76,9 @@ void loop() {
   }
 
   const bool trigger_pressed = digitalRead(PIN_BTN_TRIGGER) == LOW;
-  if (trigger_pressed && !g_btn_trigger_down) {
-    g_btn_trigger_down = true;
-  }
-  if (!trigger_pressed && g_btn_trigger_down) {
-    g_btn_trigger_down = false;
+  if (trigger_pressed != g_btn_trigger_down) {
+    g_btn_trigger_down = trigger_pressed;
+    g_controller->onTriggerButtonChanged(trigger_pressed, now);
   }
 
   g_controller->tick(now);

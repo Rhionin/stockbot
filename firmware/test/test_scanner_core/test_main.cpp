@@ -18,6 +18,7 @@
 #include "scanner_controller.h"
 #include "scanner_state.h"
 #include "stockbot_client.h"
+#include "wifi_station.h"
 
 namespace {
 
@@ -245,13 +246,14 @@ class MockScanner : public stockbot::HalScanner {
  public:
   int one_d_calls = 0;
   bool one_d_enabled = false;
+  bool continuous = false;
   void begin() override {}
   void poll(uint64_t, const std::function<void(const stockbot::ScanLine&)>&) override {}
   void enable1DOnly(bool enabled) override {
     ++one_d_calls;
     one_d_enabled = enabled;
   }
-  void setContinuousMode(bool) override {}
+  void setContinuousMode(bool enabled) override { continuous = enabled; }
 };
 
 class MockDisplay : public stockbot::HalDisplay {
@@ -308,6 +310,25 @@ class MockPortal : public stockbot::CaptivePortal {
     out = pending;
     pending.ready = false;
     return true;
+  }
+};
+
+class MockWifi : public stockbot::WifiStation {
+ public:
+  std::string last_ssid;
+  int connect_calls = 0;
+  bool connected = false;
+  void begin() override {}
+  void connect(const std::string& ssid, const std::string&) override {
+    last_ssid = ssid;
+    ++connect_calls;
+    connected = !ssid.empty();
+  }
+  bool isConnected() const override { return connected; }
+  void tick() override {}
+  void disconnectStation() override {
+    connected = false;
+    last_ssid.clear();
   }
 };
 
@@ -403,7 +424,9 @@ void test_scanner_controller_flow() {
   MockNvs nvs;
   MockPortal portal;
   MockClient client;
-  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, ring);
+  MockWifi wifi;
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
 
   controller.begin(1000);
   EXPECT(controller.operationalState() == stockbot::OperationalState::Unprovisioned);
@@ -432,7 +455,8 @@ void test_scanner_controller_flow() {
   EXPECT(display.last.band3.find("Queued -1") != std::string::npos);
 
   stockbot::RingBuffer ring2(storage);
-  stockbot::ScannerController revoked(scanner, display, feedback, power, nvs, portal, client, ring2);
+  stockbot::ScannerController revoked(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                       ring2);
   nvs.cfg.device_token = "sbd_abc";
   revoked.begin(5000);
   client.next_scan = {true, 401, ""};
@@ -443,13 +467,13 @@ void test_scanner_controller_flow() {
   EXPECT(revoked.uiScreen() == stockbot::UiScreen::S7_HardError);
 
   stockbot::RingBuffer ring3(storage);
-  stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, ring3);
+  stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
   mode.begin(6000);
   mode.onModeButtonShortPress(6100);
   EXPECT(mode.activeDirection() == stockbot::Direction::StockIn);
 
   stockbot::RingBuffer ring4(storage);
-  stockbot::ScannerController hb_ctl(scanner, display, feedback, power, nvs, portal, client, ring4);
+  stockbot::ScannerController hb_ctl(scanner, display, feedback, power, nvs, portal, client, wifi, ring4);
   nvs.cfg.wifi_ssid = "Home";
   nvs.cfg.device_token = "sbd_abc";
   hb_ctl.begin(0);
@@ -459,6 +483,78 @@ void test_scanner_controller_flow() {
   client.hb_body.config.config_version = 99;
   hb_ctl.tick(70000);
   EXPECT(nvs.cfg.config_version == 99);
+}
+
+void test_portal_submission_handoff() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+
+  controller.begin(1000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Unprovisioned);
+  EXPECT(portal.running);
+
+  portal.pending.ready = true;
+  portal.pending.wifi_ssid = "PantryWiFi";
+  portal.pending.wifi_pass = "secret";
+  portal.pending.server_url = "https://stockbot.test";
+  controller.tick(2000);
+
+  EXPECT(nvs.cfg.wifi_ssid == "PantryWiFi");
+  EXPECT(wifi.last_ssid == "PantryWiFi");
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+  EXPECT(!portal.running);
+
+  nvs.cfg.wifi_ssid = "PantryWiFi";
+  nvs.cfg.device_token = "sbd_preserve";
+  stockbot::RingBuffer ring2(storage);
+  stockbot::ScannerController update(scanner, display, feedback, power, nvs, portal, client, wifi, ring2);
+  update.begin(3000);
+  EXPECT(update.operationalState() == stockbot::OperationalState::Paired);
+  update.onModeButtonHold(5500, 6000);
+  EXPECT(portal.running);
+  portal.pending.ready = true;
+  portal.pending.wifi_ssid = "NewWiFi";
+  portal.pending.wifi_pass = "newsecret";
+  update.tick(7000);
+  EXPECT(nvs.cfg.device_token == "sbd_preserve");
+  EXPECT(update.operationalState() == stockbot::OperationalState::Paired);
+  EXPECT(nvs.cfg.wifi_ssid == "NewWiFi");
+}
+
+void test_trigger_button_wiring() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  controller.begin(1000);
+
+  controller.onTriggerButtonChanged(true, 2000);
+  EXPECT(controller.manualRetriggerPending());
+  EXPECT(scanner.continuous);
+
+  power.status.vbus_present = false;
+  controller.onTriggerButtonChanged(false, 2100);
+  EXPECT(!scanner.continuous);
 }
 
 }  // namespace
@@ -472,6 +568,8 @@ int main() {
   test_protocol_json();
   test_hid_keycode();
   test_scanner_controller_flow();
+  test_portal_submission_handoff();
+  test_trigger_button_wiring();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";

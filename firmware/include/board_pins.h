@@ -23,6 +23,7 @@
 #if defined(STOCKBOT_ENV_ATOMS3_SYMcode_HID)
 #define USE_U120_I2C_DISPLAY 1
 #define USE_USB_HID_SCANNER 1
+#define USE_USB_HOST_HID 1
 #endif
 #endif
 

@@ -13,6 +13,7 @@
 #include "protocol_json.h"
 #include "stockbot_client.h"
 #include "text_util.h"
+#include "wifi_station.h"
 
 namespace stockbot {
 
@@ -40,7 +41,7 @@ ScanStatusKind parseScanStatusKind(const std::string& scan_status) {
 
 ScannerController::ScannerController(HalScanner& scanner, HalDisplay& display, HalFeedback& feedback,
                                      HalPower& power, NvsConfigStore& nvs, CaptivePortal& portal,
-                                     StockbotClient& client, RingBuffer& ring)
+                                     StockbotClient& client, WifiStation& wifi, RingBuffer& ring)
     : scanner_(scanner),
       display_(display),
       feedback_(feedback),
@@ -48,6 +49,7 @@ ScannerController::ScannerController(HalScanner& scanner, HalDisplay& display, H
       nvs_(nvs),
       portal_(portal),
       client_(client),
+      wifi_(wifi),
       ring_(ring) {}
 
 void ScannerController::applyHubConfig(const DeviceHubConfigParsed& cfg) {
@@ -72,6 +74,51 @@ CommitMode ScannerController::parseCommitMode(const std::string& mode) const {
   return mode == "immediate" ? CommitMode::Immediate : CommitMode::Queue;
 }
 
+void ScannerController::syncWifiOnlineFromStation() {
+  if (wifi_.isConnected()) {
+    wifi_online_ = true;
+  }
+}
+
+void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& submission,
+                                               uint64_t now_ms) {
+  config_.wifi_ssid = submission.wifi_ssid;
+  config_.wifi_pass = submission.wifi_pass;
+  if (!submission.server_url.empty()) {
+    config_.server_url = submission.server_url;
+  }
+  nvs_.save(config_);
+  client_.setServerUrl(config_.server_url);
+
+  portal_.stop();
+  portal_active_ = false;
+  wifi_update_mode_ = false;
+  wifi_.connect(config_.wifi_ssid, config_.wifi_pass);
+
+  if (!submission.pairing_code.empty() && isPairingCode(submission.pairing_code)) {
+    PairCompleteParsed paired;
+    const HttpCallResult res = client_.completePairing(submission.pairing_code, config_.label,
+                                                       "1.0.0-esp32", boot_id_, paired);
+    if (res.http_status == 201 && !paired.device_token.empty()) {
+      config_.device_token = paired.device_token;
+      applyHubConfig(paired.config);
+      nvs_.save(config_);
+      client_.setDeviceToken(config_.device_token);
+      play(AudioCue::AscendingPairSuccess);
+      enterPaired(now_ms);
+      return;
+    }
+    enterPairing(now_ms);
+    return;
+  }
+
+  if (!config_.device_token.empty()) {
+    enterPaired(now_ms);
+    return;
+  }
+  enterPairing(now_ms);
+}
+
 void ScannerController::play(AudioCue cue) {
   if (cue != AudioCue::Silent) {
     feedback_.play(cue);
@@ -83,6 +130,7 @@ void ScannerController::enterUnprovisioned(uint64_t now_ms) {
   ui_screen_ = UiScreen::S0_Unprovisioned;
   one_d_locked_ = false;
   scanner_.enable1DOnly(false);
+  wifi_.disconnectStation();
   if (!portal_active_) {
     portal_.start(ap_suffix_);
     portal_active_ = true;
@@ -125,6 +173,7 @@ void ScannerController::begin(uint64_t now_ms) {
   display_.begin();
   feedback_.begin();
   power_.begin();
+  wifi_.begin();
   ring_.recoverFromStorage();
 
   if (nvs_.load(config_)) {
@@ -136,6 +185,7 @@ void ScannerController::begin(uint64_t now_ms) {
     enterUnprovisioned(now_ms);
     return;
   }
+  wifi_.connect(config_.wifi_ssid, config_.wifi_pass);
   if (config_.device_token.empty()) {
     enterPairing(now_ms);
     return;
@@ -313,6 +363,7 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
       }
       nvs_.save(config_);
       client_.setServerUrl(config_.server_url);
+      wifi_.connect(config_.wifi_ssid, config_.wifi_pass);
       if (!setup.code.empty() && isPairingCode(setup.code)) {
         PairCompleteParsed paired;
         const HttpCallResult res =
@@ -387,11 +438,29 @@ void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
     return;
   }
   if (gesture == ButtonHoldGesture::WifiUpdate) {
+    wifi_update_mode_ = true;
     portal_.start(ap_suffix_);
     portal_active_ = true;
     state_.wakeBacklight(now_ms);
     render(now_ms);
   }
+}
+
+void ScannerController::onTriggerButtonChanged(bool pressed, uint64_t now_ms) {
+  if (pressed) {
+    state_.wakeBacklight(now_ms);
+    manual_retrigger_pending_ = true;
+    trigger_continuous_ = true;
+    scanner_.setContinuousMode(true);
+    render(now_ms);
+    return;
+  }
+  trigger_continuous_ = false;
+  const PowerStatus ps = power_.read();
+  if (!ps.vbus_present) {
+    scanner_.setContinuousMode(false);
+  }
+  (void)now_ms;
 }
 
 void ScannerController::flushOfflineBatch(uint64_t now_ms) {
@@ -455,22 +524,16 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
 }
 
 void ScannerController::tick(uint64_t now_ms) {
-  portal_.loop();
-  CaptivePortalSubmission submission;
-  if (portal_.takeSubmission(submission)) {
-    config_.wifi_ssid = submission.wifi_ssid;
-    config_.wifi_pass = submission.wifi_pass;
-    if (!submission.server_url.empty()) {
-      config_.server_url = submission.server_url;
-    }
-    nvs_.save(config_);
-    client_.setServerUrl(config_.server_url);
-    if (!submission.pairing_code.empty() && isPairingCode(submission.pairing_code)) {
-      onBarcodeLine(submission.pairing_code, true, now_ms);
-    } else if (state_.operational == OperationalState::Unprovisioned) {
-      enterPairing(now_ms);
+  if (portal_active_) {
+    portal_.loop();
+    CaptivePortalSubmission submission;
+    if (portal_.takeSubmission(submission)) {
+      handlePortalSubmission(submission, now_ms);
     }
   }
+
+  wifi_.tick();
+  syncWifiOnlineFromStation();
 
   const PowerStatus ps = power_.read();
   if (ps.vbus_present != last_vbus_) {
@@ -483,7 +546,9 @@ void ScannerController::tick(uint64_t now_ms) {
   }
 
   scanner_.poll(now_ms, [this, now_ms](const ScanLine& line) {
-    onBarcodeLine(line.barcode, false, now_ms);
+    const bool manual = manual_retrigger_pending_;
+    manual_retrigger_pending_ = false;
+    onBarcodeLine(line.barcode, manual, now_ms);
   });
 
   if (auto chime = state_.tickInactivityRevert(now_ms)) {

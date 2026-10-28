@@ -9,6 +9,7 @@
 #include "protocol_json.h"
 #include "ring_buffer.h"
 #include "scanner_state.h"
+#include "captive_portal.h"
 #include "nvs_config.h"
 
 namespace stockbot {
@@ -20,22 +21,27 @@ class HalPower;
 class NvsConfigStore;
 class CaptivePortal;
 class StockbotClient;
+class WifiStation;
 
 class ScannerController {
  public:
   ScannerController(HalScanner& scanner, HalDisplay& display, HalFeedback& feedback, HalPower& power,
-                    NvsConfigStore& nvs, CaptivePortal& portal, StockbotClient& client, RingBuffer& ring);
+                    NvsConfigStore& nvs, CaptivePortal& portal, StockbotClient& client, WifiStation& wifi,
+                    RingBuffer& ring);
 
   void begin(uint64_t now_ms);
   void tick(uint64_t now_ms);
   void onBarcodeLine(const std::string& raw_line, bool manual_retrigger, uint64_t now_ms);
   void onModeButtonShortPress(uint64_t now_ms);
   void onModeButtonHold(uint64_t hold_ms, uint64_t now_ms);
+  void onTriggerButtonChanged(bool pressed, uint64_t now_ms);
 
   OperationalState operationalState() const { return state_.operational; }
   bool oneDLocked() const { return one_d_locked_; }
   UiScreen uiScreen() const { return ui_screen_; }
   Direction activeDirection() const { return state_.active_direction; }
+  bool manualRetriggerPending() const { return manual_retrigger_pending_; }
+  bool triggerContinuousMode() const { return trigger_continuous_; }
 
  private:
   HalScanner& scanner_;
@@ -45,6 +51,7 @@ class ScannerController {
   NvsConfigStore& nvs_;
   CaptivePortal& portal_;
   StockbotClient& client_;
+  WifiStation& wifi_;
   RingBuffer& ring_;
 
   ScannerState state_;
@@ -61,8 +68,14 @@ class ScannerController {
   bool buffer_full_ = false;
   bool one_d_locked_ = false;
   bool portal_active_ = false;
+  bool wifi_update_mode_ = false;
+  bool manual_retrigger_pending_ = false;
+  bool trigger_continuous_ = false;
   std::string ap_suffix_;
   std::string boot_id_;
+
+  void handlePortalSubmission(const CaptivePortalSubmission& submission, uint64_t now_ms);
+  void syncWifiOnlineFromStation();
 
   void applyHubConfig(const DeviceHubConfigParsed& cfg);
   void enterUnprovisioned(uint64_t now_ms);

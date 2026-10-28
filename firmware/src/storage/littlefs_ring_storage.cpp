@@ -44,7 +44,13 @@ bool LittleFsRingStorage::readAll(std::vector<RingScanRecord>& out) {
   }
   out.resize(header.count);
   if (header.count > 0) {
-    f.read(reinterpret_cast<uint8_t*>(out.data()), header.count * sizeof(RingScanRecord));
+    const size_t expected = static_cast<size_t>(header.count) * sizeof(RingScanRecord);
+    const size_t read_bytes =
+        f.read(reinterpret_cast<uint8_t*>(out.data()), expected);
+    if (read_bytes != expected) {
+      f.close();
+      return false;
+    }
   }
   f.close();
   return true;
