@@ -16,6 +16,7 @@ struct NvsConfig {
   uint32_t inactivity_revert_s = 300;
   CommitMode commit_mode = CommitMode::Queue;
   uint32_t config_version = 0;
+  uint32_t boot_count = 0;
 };
 
 class NvsConfigStore {

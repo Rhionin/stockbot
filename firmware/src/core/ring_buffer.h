@@ -37,9 +37,9 @@ class RingBuffer {
   explicit RingBuffer(RingStorage& storage);
 
   bool recoverFromStorage();
-  void seedIdCounterFromRecords(const std::string& boot_id);
-  bool enqueue(const std::string& barcode, Direction direction, uint64_t now_ms,
-               const std::string& boot_id, std::string& out_client_scan_id);
+  void seedIdCounterFromRecords(uint32_t boot_count);
+  bool enqueue(const std::string& barcode, Direction direction, uint64_t now_ms, uint32_t boot_count,
+               std::string& out_client_scan_id);
   std::vector<RingScanRecord> peekBatch(size_t max_count = 20) const;
   bool acknowledge(const std::string& client_scan_id);
   void clearAll();

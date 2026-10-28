@@ -14,6 +14,8 @@
 #include "stockbot_client.h"
 #include "wifi_station.h"
 
+#include <esp_random.h>
+
 using namespace stockbot;
 
 static LittleFsRingStorage g_ring_storage;
@@ -47,7 +49,7 @@ void setup() {
   static ScannerController controller(*g_scanner, *g_display, *g_feedback, *g_power, *g_nvs, *g_portal,
                                       *g_client, *g_wifi, g_ring);
   g_controller = &controller;
-  g_controller->begin(millis());
+  g_controller->begin(millis(), esp_random());
 
   pinMode(PIN_BTN_MODE, INPUT_PULLUP);
   pinMode(PIN_BTN_TRIGGER, INPUT_PULLUP);

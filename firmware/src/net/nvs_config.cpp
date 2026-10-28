@@ -36,6 +36,7 @@ class PreferencesNvsStore final : public NvsConfigStore {
     out.inactivity_revert_s = prefs.getUInt("inact_rev", 300);
     out.commit_mode = loadCommitMode(prefs.getString("commit_mode", "queue"));
     out.config_version = prefs.getUInt("cfg_ver", 0);
+    out.boot_count = prefs.getUInt("boot_cnt", 0);
     prefs.end();
     return true;
   }
@@ -54,6 +55,7 @@ class PreferencesNvsStore final : public NvsConfigStore {
     prefs.putUInt("inact_rev", cfg.inactivity_revert_s);
     prefs.putString("commit_mode", cfg.commit_mode == CommitMode::Immediate ? "immediate" : "queue");
     prefs.putUInt("cfg_ver", cfg.config_version);
+    prefs.putUInt("boot_cnt", cfg.boot_count);
     prefs.end();
     return true;
   }

@@ -140,10 +140,10 @@ void test_ring_buffer() {
   EXPECT(ring.recoverFromStorage());
   std::string id;
   for (size_t i = 0; i < stockbot::RingBuffer::kCapacity; ++i) {
-    EXPECT(ring.enqueue("4011", stockbot::Direction::StockOut, static_cast<uint64_t>(i), "boot-test", id));
+    EXPECT(ring.enqueue("4011", stockbot::Direction::StockOut, static_cast<uint64_t>(i), 1, id));
   }
   EXPECT(ring.isFull());
-  EXPECT(!ring.enqueue("9999", stockbot::Direction::StockOut, 9999, "boot-test", id));
+  EXPECT(!ring.enqueue("9999", stockbot::Direction::StockOut, 9999, 1, id));
   auto batch = ring.peekBatch(20);
   EXPECT(batch.size() == 20);
   EXPECT(std::string(batch.front().barcode) == "4011");
@@ -153,7 +153,7 @@ void test_ring_buffer() {
   MemoryRingStorage storage2;
   {
     stockbot::RingBuffer r1(storage2);
-    r1.enqueue("123", stockbot::Direction::StockIn, 1, "boot-test", id);
+    r1.enqueue("123", stockbot::Direction::StockIn, 1, 1, id);
   }
   stockbot::RingBuffer r2(storage2);
   EXPECT(r2.recoverFromStorage());
@@ -162,7 +162,7 @@ void test_ring_buffer() {
   MemoryRingStorage storage3;
   {
     stockbot::RingBuffer writer(storage3);
-    writer.enqueue("4011", stockbot::Direction::StockOut, 500, "boot-crc", id);
+    writer.enqueue("4011", stockbot::Direction::StockOut, 500, 7, id);
   }
   std::vector<stockbot::RingScanRecord> persisted;
   storage3.readAll(persisted);
@@ -377,16 +377,20 @@ class MockClient : public stockbot::StockbotClient {
   }
 
   stockbot::HttpCallResult sendScan(const stockbot::RingScanRecord& rec, const std::string&, uint64_t age_ms,
-                                    stockbot::ParsedDeviceScanResponse& out) override {
+                                    bool time_approx, stockbot::ParsedDeviceScanResponse& out) override {
     last_send_barcode = rec.barcode;
+    last_send_scan_id = rec.client_scan_id;
     last_send_age_ms = age_ms;
+    last_send_time_approx = time_approx;
     send_order.push_back(rec.barcode);
     out = scan_body;
     return next_scan;
   }
 
   std::string last_send_barcode;
+  std::string last_send_scan_id;
   uint64_t last_send_age_ms = 0;
+  bool last_send_time_approx = false;
   std::vector<std::string> send_order;
 
   stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>& batch,
@@ -671,6 +675,46 @@ void test_offline_fifo_flush_order() {
   EXPECT(ring.count() == 0);
 }
 
+void test_client_scan_id_unique_across_reboot() {
+  MemoryRingStorage storage_a;
+  MemoryRingStorage storage_b;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  wifi.connected = true;
+
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_test";
+
+  stockbot::RingBuffer ring_a(storage_a);
+  stockbot::ScannerController first(scanner, display, feedback, power, nvs, portal, client, wifi, ring_a);
+  first.begin(100);
+  first.tick(150);
+  client.next_scan = {true, 200, R"({"id":"x","status":"created","scanStatus":"committed","known":true})"};
+  client.scan_body.status = "created";
+  client.scan_body.scan_status = "committed";
+  client.scan_body.known = true;
+  client.scan_body.parse_ok = true;
+  first.onBarcodeLine("4011", false, 500);
+  const std::string id_first = client.last_send_scan_id;
+  EXPECT(!id_first.empty());
+  EXPECT(ring_a.count() == 0);
+
+  stockbot::RingBuffer ring_b(storage_b);
+  stockbot::ScannerController second(scanner, display, feedback, power, nvs, portal, client, wifi, ring_b);
+  second.begin(100);
+  second.tick(150);
+  second.onBarcodeLine("4011", false, 500);
+  const std::string id_second = client.last_send_scan_id;
+  EXPECT(!id_second.empty());
+  EXPECT(id_first != id_second);
+}
+
 }  // namespace
 
 int main() {
@@ -685,6 +729,7 @@ int main() {
   test_portal_submission_handoff();
   test_trigger_button_wiring();
   test_offline_fifo_flush_order();
+  test_client_scan_id_unique_across_reboot();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";

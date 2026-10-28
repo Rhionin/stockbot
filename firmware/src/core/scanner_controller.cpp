@@ -174,9 +174,8 @@ void ScannerController::enterPaired(uint64_t now_ms) {
   render(now_ms);
 }
 
-void ScannerController::begin(uint64_t now_ms) {
+void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
   boot_ms_ = now_ms;
-  boot_id_ = "boot-" + std::to_string(now_ms);
   ap_suffix_ = "ABCD";
   device_revoked_ = false;
   buffer_full_ = false;
@@ -186,13 +185,25 @@ void ScannerController::begin(uint64_t now_ms) {
   feedback_.begin();
   power_.begin();
   wifi_.begin();
-  ring_.recoverFromStorage();
-  ring_.seedIdCounterFromRecords(boot_id_);
 
   if (nvs_.load(config_)) {
     client_.setServerUrl(config_.server_url);
     client_.setDeviceToken(config_.device_token);
   }
+
+  config_.boot_count++;
+  nvs_.save(config_);
+
+  if (hw_random_nonce != 0) {
+    char nonce_hex[16];
+    std::snprintf(nonce_hex, sizeof(nonce_hex), "%08x", hw_random_nonce);
+    boot_id_ = "b" + std::to_string(config_.boot_count) + "-" + std::to_string(now_ms) + "-" + nonce_hex;
+  } else {
+    boot_id_ = "b" + std::to_string(config_.boot_count) + "-" + std::to_string(now_ms);
+  }
+
+  ring_.recoverFromStorage();
+  ring_.seedIdCounterFromRecords(config_.boot_count);
 
   if (config_.wifi_ssid.empty()) {
     enterUnprovisioned(now_ms);
@@ -286,7 +297,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
   state_.onScanOrActivity(now_ms);
 
   std::string client_scan_id;
-  if (!ring_.enqueue(barcode, state_.active_direction, now_ms, boot_id_, client_scan_id)) {
+  if (!ring_.enqueue(barcode, state_.active_direction, now_ms, config_.boot_count, client_scan_id)) {
     buffer_full_ = true;
     ui_screen_ = UiScreen::S7_HardError;
     play(AudioCue::TripleErrorBuzz);
@@ -311,7 +322,8 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
 
     ParsedDeviceScanResponse parsed;
     const uint32_t age_ms = ringScanAgeMs(record, now_ms);
-    const HttpCallResult http = client_.sendScan(record, boot_id_, age_ms, parsed);
+    const bool time_approx = record.scanned_ms == 0;
+    const HttpCallResult http = client_.sendScan(record, boot_id_, age_ms, time_approx, parsed);
     wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
     if (http.http_status == 401 || parsed.unauthorized) {

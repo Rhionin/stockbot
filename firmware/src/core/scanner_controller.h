@@ -29,7 +29,7 @@ class ScannerController {
                     NvsConfigStore& nvs, CaptivePortal& portal, StockbotClient& client, WifiStation& wifi,
                     RingBuffer& ring);
 
-  void begin(uint64_t now_ms);
+  void begin(uint64_t now_ms, uint32_t hw_random_nonce = 0);
   void tick(uint64_t now_ms);
   void onBarcodeLine(const std::string& raw_line, bool manual_retrigger, uint64_t now_ms);
   void onModeButtonShortPress(uint64_t now_ms);

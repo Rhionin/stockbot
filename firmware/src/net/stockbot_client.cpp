@@ -114,8 +114,7 @@ class HttpsStockbotClient final : public StockbotClient {
   }
 
   HttpCallResult sendScan(const RingScanRecord& record, const std::string& boot_id, uint64_t age_ms,
-                          ParsedDeviceScanResponse& out) override {
-    const bool time_approx = record.scanned_ms == 0;
+                          bool time_approx, ParsedDeviceScanResponse& out) override {
     const std::string body = buildSingleScanRequestJson(record, boot_id, age_ms, time_approx);
     const HttpCallResult res = performPost(base_url_, "/api/device/scans", body, token_);
     if (res.transport_ok) {

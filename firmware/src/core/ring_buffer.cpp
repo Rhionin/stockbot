@@ -48,18 +48,23 @@ RingScanRecord RingBuffer::makeRecord(const std::string& id, const std::string& 
   return rec;
 }
 
-void RingBuffer::seedIdCounterFromRecords(const std::string& boot_id) {
-  const std::string prefix = "scan-" + boot_id + "-";
+void RingBuffer::seedIdCounterFromRecords(uint32_t boot_count) {
+  const std::string prefix = "s-" + std::to_string(boot_count) + "-";
   uint32_t max_seq = 0;
   for (const auto& rec : records_) {
     const std::string id(rec.client_scan_id);
     if (id.rfind(prefix, 0) != 0) {
       continue;
     }
-    const char* seq_text = id.c_str() + prefix.size();
+    const size_t seq_start = prefix.size();
+    const size_t dash = id.find('-', seq_start);
+    if (dash == std::string::npos) {
+      continue;
+    }
     char* end = nullptr;
-    const unsigned long seq = std::strtoul(seq_text, &end, 16);
-    if (end != seq_text && seq <= 0xffffffffu) {
+    const std::string seq_text = id.substr(seq_start, dash - seq_start);
+    const unsigned long seq = std::strtoul(seq_text.c_str(), &end, 10);
+    if (end != seq_text.c_str() && end != nullptr && *end == '\0' && seq <= 0xffffffffu) {
       max_seq = std::max(max_seq, static_cast<uint32_t>(seq));
     }
   }
@@ -87,14 +92,15 @@ bool RingBuffer::recoverFromStorage() {
 }
 
 bool RingBuffer::enqueue(const std::string& barcode, Direction direction, uint64_t now_ms,
-                         const std::string& boot_id, std::string& out_client_scan_id) {
+                         uint32_t boot_count, std::string& out_client_scan_id) {
   if (isFull()) {
     return false;
   }
-  char buf[sizeof(RingScanRecord::client_scan_id)];
-  std::snprintf(buf, sizeof(buf), "scan-%s-%08x", boot_id.c_str(), id_counter_++);
-  out_client_scan_id = buf;
+  const uint32_t seq = id_counter_++;
   const uint32_t scanned_ms = static_cast<uint32_t>(now_ms);
+  char buf[sizeof(RingScanRecord::client_scan_id)];
+  std::snprintf(buf, sizeof(buf), "s-%u-%u-%u", boot_count, seq, scanned_ms);
+  out_client_scan_id = buf;
   records_.push_back(makeRecord(out_client_scan_id, barcode, direction, scanned_ms));
   return persist();
 }
