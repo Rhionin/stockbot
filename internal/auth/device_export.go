@@ -75,16 +75,9 @@ func (s *Service) ProductOnHand(ctx context.Context, q Queryer, householdID, pro
 	return productOnHand(ctx, q, householdID, productID)
 }
 
-// WriteDeviceIdempotency stores a cancelled idempotency row for queue-mode scans.
-func (s *Service) WriteDeviceIdempotency(ctx context.Context, q Queryer, p Principal, item PreparedScanItem, group int, lcd DeviceLCD) (string, error) {
-	id := newID()
-	err := s.writeDeviceScanRow(ctx, q, p, item.inner, group, id, lcd)
-	return id, err
-}
-
-// PersistDeviceLCD updates cached LCD columns on an existing client_scan_id row.
-func (s *Service) PersistDeviceLCD(ctx context.Context, q Queryer, householdID, deviceID, clientScanID string, lcd DeviceLCD) error {
-	return s.persistDeviceLCD(ctx, q, householdID, deviceID, clientScanID, lcd)
+// RecordDeviceScanReceipt stores idempotent replay data and updates LCD columns on the scan row.
+func (s *Service) RecordDeviceScanReceipt(ctx context.Context, q Queryer, p Principal, item PreparedScanItem, scanEntryID string, lcd DeviceLCD) error {
+	return s.recordDeviceScanReceipt(ctx, q, p, item.inner, scanEntryID, lcd)
 }
 
 // Validation returns a validation error for device ingest.

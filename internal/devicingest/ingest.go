@@ -77,6 +77,7 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 	dir := scanDirection(item.Direction())
 	entry := entryFromMatch(p.DeviceID, item.Barcode(), match, dir, item.At(), item.Unit())
 	entry.DeviceID = p.DeviceID
+	entry.ClientScanID = item.ClientID()
 	merged, err := queue.CreateScanEntry(ctx, scope, entry)
 	if err != nil {
 		return auth.DeviceLCD{}, "", auth.AsError(err)
@@ -100,11 +101,10 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 		Barcode: item.Barcode(), Direction: item.Direction(),
 		QueuedCount: merged.UnitCount, OnHand: onHand,
 	}
-	id, err := svc.WriteDeviceIdempotency(ctx, q, p, item, group, lcd)
-	if err != nil {
+	if err := svc.RecordDeviceScanReceipt(ctx, q, p, item, merged.ID, lcd); err != nil {
 		return auth.DeviceLCD{}, "", err
 	}
-	return lcd, id, nil
+	return lcd, merged.ID, nil
 }
 
 func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *scan.Queue, scope tenant.Scope, p auth.Principal, item auth.PreparedScanItem, group int, match auth.DeviceProductMatch) (auth.DeviceLCD, string, bool, error) {
@@ -158,7 +158,7 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 		Barcode: item.Barcode(), Direction: item.Direction(),
 		QueuedCount: 0, OnHand: onHandAfter, Delta: delta, Backfilled: backfilled,
 	}
-	if err := svc.PersistDeviceLCD(ctx, q, p.HouseholdID, p.DeviceID, item.ClientID(), lcd); err != nil {
+	if err := svc.RecordDeviceScanReceipt(ctx, q, p, item, created.ID, lcd); err != nil {
 		return auth.DeviceLCD{}, "", false, err
 	}
 	return lcd, created.ID, true, nil

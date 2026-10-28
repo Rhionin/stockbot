@@ -65,6 +65,7 @@ func TestMigrationApplies(t *testing.T) {
 		"category_targets",
 		"change_versions",
 		"consumption_events",
+		"device_scan_receipts",
 		"device_tokens",
 		"devices",
 		"fulfillment_ledger",

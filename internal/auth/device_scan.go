@@ -22,13 +22,15 @@ func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Princip
 	var barcode, direction, resultStatus sql.NullString
 	var units int
 	var onHand, queued, delta, backfilled sql.NullInt64
+	var productName sql.NullString
 	err := q.QueryRowContext(ctx, `
 		SELECT barcode, COALESCE(direction, ''), unit_count,
-		       device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled
-		FROM scan_entries
+		       device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled,
+		       product_name
+		FROM device_scan_receipts
 		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
 		p.HouseholdID, p.DeviceID, item.item.ID,
-	).Scan(&barcode, &direction, &units, &resultStatus, &onHand, &queued, &delta, &backfilled)
+	).Scan(&barcode, &direction, &units, &resultStatus, &onHand, &queued, &delta, &backfilled, &productName)
 	if err == sql.ErrNoRows {
 		return ScanResult{}, false, nil
 	}
@@ -51,7 +53,10 @@ func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Princip
 			Delta:       int(delta.Int64),
 			Backfilled:  backfilled.Int64 != 0,
 		}
-		if lookupName, err := s.lookupDisplayName(ctx, p.HouseholdID, item.barcode); err == nil && lookupName != nil {
+		if productName.Valid {
+			name := productName.String
+			lcd.ProductName = &name
+		} else if lookupName, err := s.lookupDisplayName(ctx, p.HouseholdID, item.barcode); err == nil && lookupName != nil {
 			lcd.ProductName = lookupName
 		}
 		lcd.apply(&result)
@@ -69,42 +74,6 @@ func (s *Service) lookupDisplayName(ctx context.Context, householdID, barcode st
 		return nil, err
 	}
 	return displayProductName(lookup), nil
-}
-
-func (s *Service) writeDeviceScanRow(ctx context.Context, q queryer, p Principal, item preparedScan, group int, idempotencyID string, lcd deviceLCD) error {
-	approx := 0
-	if item.approx {
-		approx = 1
-	}
-	var dir any
-	if item.item.Direction == "" {
-		dir = nil
-	} else {
-		dir = item.item.Direction
-	}
-	status := "cancelled"
-	_, err := q.ExecContext(ctx, `
-		INSERT INTO scan_entries (
-			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at,
-			direction, unit_count, status, time_approx, scan_group, boot_id,
-			device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		idempotencyID, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, stamp(item.at),
-		dir, item.unit, status, approx, group, item.item.BootID,
-		lcd.ScanStatus, lcd.OnHand, lcd.QueuedCount, lcd.Delta, boolToInt(lcd.Backfilled),
-	)
-	return AsError(err)
-}
-
-func (s *Service) persistDeviceLCD(ctx context.Context, q queryer, householdID, deviceID, clientScanID string, lcd deviceLCD) error {
-	_, err := q.ExecContext(ctx, `
-		UPDATE scan_entries SET device_result_status = ?, device_on_hand = ?, device_queued_count = ?,
-			device_delta = ?, device_backfilled = ?
-		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
-		lcd.ScanStatus, lcd.OnHand, lcd.QueuedCount, lcd.Delta, boolToInt(lcd.Backfilled),
-		householdID, deviceID, clientScanID,
-	)
-	return AsError(err)
 }
 
 func boolToInt(v bool) int {

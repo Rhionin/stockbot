@@ -1083,9 +1083,9 @@ export interface Device {
   online: boolean;
   /** Last heartbeat queue depth. The hub disconnect confirm uses it as N. */
   queued?: number;
-  defaultDirection: 'stock_in' | 'stock_out';
-  inactivityRevertSeconds: number;
-  commitMode: 'queue' | 'immediate';
+  defaultDirection?: 'stock_in' | 'stock_out';
+  inactivityRevertSeconds?: number;
+  commitMode?: 'queue' | 'immediate';
   batteryPct?: number | null;
   charging?: boolean | null;
 }

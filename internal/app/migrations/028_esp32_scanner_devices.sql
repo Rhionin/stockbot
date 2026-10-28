@@ -1,5 +1,5 @@
--- ESP32 scanner device kind, per-device settings, battery telemetry, and cached
--- device-scan LCD fields on scan_entries for idempotent replay.
+-- ESP32 scanner device kind, per-device settings, battery telemetry, device-scan
+-- LCD fields on scan_entries, and device_scan_receipts for per-client_scan_id replay.
 
 CREATE TABLE devices_new (
     id                  TEXT PRIMARY KEY,
@@ -45,3 +45,23 @@ ALTER TABLE scan_entries ADD COLUMN device_on_hand INTEGER;
 ALTER TABLE scan_entries ADD COLUMN device_queued_count INTEGER;
 ALTER TABLE scan_entries ADD COLUMN device_delta INTEGER;
 ALTER TABLE scan_entries ADD COLUMN device_backfilled INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE device_scan_receipts (
+    household_id          TEXT NOT NULL,
+    device_id             TEXT NOT NULL,
+    client_scan_id        TEXT NOT NULL,
+    scan_entry_id         TEXT NOT NULL,
+    barcode               TEXT NOT NULL,
+    direction             TEXT,
+    unit_count            INTEGER NOT NULL,
+    scanned_at            TEXT NOT NULL,
+    device_result_status  TEXT,
+    device_on_hand        INTEGER,
+    device_queued_count   INTEGER,
+    device_delta          INTEGER,
+    device_backfilled     INTEGER NOT NULL DEFAULT 0,
+    product_name          TEXT,
+    PRIMARY KEY (household_id, device_id, client_scan_id)
+);
+
+CREATE INDEX idx_device_scan_receipts_entry ON device_scan_receipts (scan_entry_id);
