@@ -269,9 +269,17 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByText('Cancelled')).toBeVisible()
     await shot(page, 'members-invites', width)
 
+    await expect(page.getByRole('heading', { name: 'Scanners', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Print wall barcodes' }).click()
+    const wallSheet = page.getByRole('dialog', { name: 'Storage-room barcode sheet' })
+    await expect(wallSheet).toBeVisible()
+    await expect(wallSheet.locator('.storage-barcode-sheet')).toBeVisible()
+    await expect(wallSheet.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await wallSheet.getByRole('button', { name: 'Close' }).click()
+
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Other households' }).click()
-    await expect(page.getByRole('heading', { name: 'Households' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Households', exact: true })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Your households' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Start a household' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Switch or add a household' })).toHaveCount(0)

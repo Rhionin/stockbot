@@ -1728,6 +1728,7 @@ export function pairingKeyboardFallback(code: string): string {
 }
 
 export function deviceKindLabel(kind: string): string {
+  if (kind === 'esp32_scanner') return 'Scanner';
   if (kind === 'pi_hub' || kind === 'box_hub') return 'Hub';
   if (kind === 'phone') return 'Phone';
   if (kind === 'direct') return 'Direct scanner';

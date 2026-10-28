@@ -56,6 +56,14 @@
   border-top: 1px solid #d5e4e1;
 }
 
+.device-row.device-scanner-card {
+  align-items: flex-start;
+}
+
+.device-row.device-scanner-card .presence {
+  margin-top: 6px;
+}
+
 .presence {
   width: 10px;
   height: 10px;
@@ -83,6 +91,89 @@
   height: 84px;
   color: #134e4a;
   background: white;
+}
+
+.code128-quiet-zone {
+  padding: 12px 16px;
+  border: 1px solid #d5e4e1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.code128-quiet-zone .pairing-code128 {
+  height: 96px;
+  color: #0f172a;
+}
+
+.device-scanner-name {
+  overflow-wrap: anywhere;
+}
+
+.device-scanner-main {
+  flex: 1;
+  min-width: min(100%, 16rem);
+}
+
+.device-scanner-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-battery-pill {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.device-scanner-settings .mantine-Radio-root {
+  min-height: 44px;
+  align-items: flex-start;
+}
+
+.device-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.storage-barcode-card {
+  padding: 16px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.storage-barcode-card .code128-quiet-zone {
+  padding: 10px 14px;
+}
+
+.storage-barcode-card .code128-quiet-zone .pairing-code128 {
+  height: 72px;
+}
+
+.storage-barcode-card-out {
+  border: 2px solid #D97706;
+}
+
+.storage-barcode-card-in {
+  border: 2px solid #0D9488;
+}
+
+.storage-barcode-card-setup {
+  border: 1px dashed #64748B;
+}
+
+.storage-barcode-badge {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  margin-bottom: 8px;
+}
+
+.pairing-wifi-setup {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f0fdfa;
+  border: 1px solid #d5e4e1;
 }
 
 .pairing-qr svg {
@@ -121,7 +212,9 @@
   }
 
   .pairing-sheet,
-  .pairing-sheet * {
+  .pairing-sheet *,
+  .storage-barcode-sheet,
+  .storage-barcode-sheet * {
     visibility: visible;
   }
 
@@ -148,7 +241,19 @@
     background: #fff;
   }
 
-  .pairing-sheet .mantine-Group-root {
+  .pairing-sheet .mantine-Group-root,
+  .storage-barcode-sheet ~ .mantine-Group-root {
     display: none !important;
+  }
+
+  .storage-barcode-sheet {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 100000 !important;
+    width: auto;
+    max-width: 720px;
+    padding: 24px;
+    background: #fff;
   }
 }

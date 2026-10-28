@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { code128Bars } from './code128';
 
-export function Code128Mark({ value }: { value: string }) {
+export function Code128Mark({ value, quietZone = false }: { value: string; quietZone?: boolean }) {
   const bars = code128Bars(value);
   const width = Math.max(bars.length, 1);
-  return (
+  const svg = (
     <svg
       className="pairing-code128"
       role="img"
@@ -18,6 +18,8 @@ export function Code128Mark({ value }: { value: string }) {
         : null))}
     </svg>
   );
+  if (!quietZone) return svg;
+  return <div className="code128-quiet-zone">{svg}</div>;
 }
 
 export function QrMark({ value }: { value: string }) {
