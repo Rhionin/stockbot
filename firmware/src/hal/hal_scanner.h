@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <functional>
-#include <optional>
+#include <memory>
 #include <string>
 
 namespace stockbot {
@@ -20,5 +20,12 @@ class HalScanner {
   virtual void enable1DOnly(bool enabled) = 0;
   virtual void setContinuousMode(bool enabled) = 0;
 };
+
+#ifdef ARDUINO
+HalScanner* createPlatformScanner();
+HalScanner* createU173I2cScanner();
+HalScanner* createU173UartScanner();
+HalScanner* createUsbHidScanner();
+#endif
 
 }  // namespace stockbot

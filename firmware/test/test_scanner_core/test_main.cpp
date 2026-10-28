@@ -1,12 +1,23 @@
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <vector>
 
 #include "barcode_filter.h"
+#include "captive_portal.h"
 #include "display_model.h"
+#include "hal_display.h"
+#include "hal_feedback.h"
+#include "hal_power.h"
+#include "hal_scanner.h"
+#include "hid_keycode.h"
+#include "nvs_config.h"
+#include "protocol_json.h"
 #include "ring_buffer.h"
+#include "scanner_controller.h"
 #include "scanner_state.h"
+#include "stockbot_client.h"
 
 namespace {
 
@@ -230,6 +241,226 @@ void test_display_model() {
   EXPECT(wrapped.second.find(u8"…") != std::string::npos || !wrapped.second.empty());
 }
 
+class MockScanner : public stockbot::HalScanner {
+ public:
+  int one_d_calls = 0;
+  bool one_d_enabled = false;
+  void begin() override {}
+  void poll(uint64_t, const std::function<void(const stockbot::ScanLine&)>&) override {}
+  void enable1DOnly(bool enabled) override {
+    ++one_d_calls;
+    one_d_enabled = enabled;
+  }
+  void setContinuousMode(bool) override {}
+};
+
+class MockDisplay : public stockbot::HalDisplay {
+ public:
+  stockbot::DisplayBands last;
+  void begin() override {}
+  void render(const stockbot::DisplayBands& bands) override { last = bands; }
+  void setBacklight(stockbot::BacklightLevel) override {}
+};
+
+class MockFeedback : public stockbot::HalFeedback {
+ public:
+  std::vector<stockbot::AudioCue> cues;
+  void begin() override {}
+  void play(stockbot::AudioCue cue) override { cues.push_back(cue); }
+  void flashLedForScan(bool) override {}
+};
+
+class MockPower : public stockbot::HalPower {
+ public:
+  stockbot::PowerStatus status;
+  void begin() override {}
+  stockbot::PowerStatus read() override { return status; }
+  void setGrovePower(bool) override {}
+  void enterDeepSleepWakeOnButton() override {}
+};
+
+class MockNvs : public stockbot::NvsConfigStore {
+ public:
+  stockbot::NvsConfig cfg;
+  bool load(stockbot::NvsConfig& out) override {
+    out = cfg;
+    return true;
+  }
+  bool save(const stockbot::NvsConfig& in) override {
+    cfg = in;
+    return true;
+  }
+  void clearDeviceToken() override { cfg.device_token.clear(); }
+  void factoryReset() override { cfg = stockbot::NvsConfig{}; }
+};
+
+class MockPortal : public stockbot::CaptivePortal {
+ public:
+  bool running = false;
+  stockbot::CaptivePortalSubmission pending;
+  void start(const std::string&) override { running = true; }
+  void stop() override { running = false; }
+  void loop() override {}
+  bool takeSubmission(stockbot::CaptivePortalSubmission& out) override {
+    if (!pending.ready) {
+      return false;
+    }
+    out = pending;
+    pending.ready = false;
+    return true;
+  }
+};
+
+class MockClient : public stockbot::StockbotClient {
+ public:
+  std::string token;
+  stockbot::HttpCallResult next_pair;
+  stockbot::PairCompleteParsed pair_body;
+  stockbot::HttpCallResult next_scan;
+  stockbot::ParsedDeviceScanResponse scan_body;
+  stockbot::HttpCallResult next_hb;
+  stockbot::HeartbeatParsed hb_body;
+
+  void setServerUrl(const std::string&) override {}
+  void setDeviceToken(const std::string& t) override { token = t; }
+
+  stockbot::HttpCallResult completePairing(const std::string&, const std::string&, const std::string&,
+                                           const std::string&, stockbot::PairCompleteParsed& out) override {
+    out = pair_body;
+    return next_pair;
+  }
+
+  stockbot::HttpCallResult sendScan(const stockbot::RingScanRecord&, const std::string&, uint64_t,
+                                    stockbot::ParsedDeviceScanResponse& out) override {
+    out = scan_body;
+    return next_scan;
+  }
+
+  stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>&,
+                                      const std::string&, stockbot::ParsedDeviceScanResponse& out) override {
+    out = scan_body;
+    return next_scan;
+  }
+
+  stockbot::HttpCallResult sendHeartbeat(const std::string&, const std::string&, uint32_t, size_t, int, bool,
+                                         stockbot::HeartbeatParsed& out) override {
+    out = hb_body;
+    return next_hb;
+  }
+};
+
+void test_protocol_json() {
+  const std::string pair_req = stockbot::buildPairCompleteRequestJson("SBP-0123-ABCD-G", "Pantry", "1.0.0", "boot-1");
+  EXPECT(pair_req.find("esp32_scanner") != std::string::npos);
+  stockbot::PairCompleteParsed parsed;
+  const std::string pair_resp =
+      R"({"deviceId":"dev-1","token":"sbd_testtoken","config":{"label":"Room","defaultDirection":"stock_out","inactivityRevertSeconds":300,"commitMode":"queue","configVersion":2}})";
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_resp, parsed));
+  EXPECT(parsed.device_token == "sbd_testtoken");
+  EXPECT(parsed.config.config_version == 2);
+
+  stockbot::RingScanRecord rec{};
+  std::strncpy(rec.client_scan_id, "scan-1", sizeof(rec.client_scan_id));
+  std::strncpy(rec.barcode, "4011", sizeof(rec.barcode));
+  rec.direction = 0;
+  const std::string scan_req = stockbot::buildSingleScanRequestJson(rec, "boot-1", 100, true);
+  EXPECT(scan_req.find("\"unitCount\":1") != std::string::npos);
+
+  stockbot::ParsedDeviceScanResponse scan_out;
+  const std::string scan_resp =
+      R"({"id":"scan-1","status":"created","scanStatus":"queued","known":true,"productName":"Milk","barcode":"4011","direction":"stock_out","queuedCount":1,"onHand":6,"delta":0,"backfilled":false})";
+  EXPECT(stockbot::parseDeviceScanResponseJson(200, scan_resp, scan_out));
+  EXPECT(scan_out.status == "created");
+  EXPECT(scan_out.on_hand == 6);
+
+  stockbot::HeartbeatParsed hb;
+  const std::string hb_resp =
+      R"({"config":{"defaultDirection":"stock_in","inactivityRevertSeconds":600,"commitMode":"immediate","configVersion":9},"rotateToken":false})";
+  EXPECT(stockbot::parseHeartbeatResponseJson(200, hb_resp, hb));
+  EXPECT(hb.config.default_direction == "stock_in");
+
+  stockbot::SetupQrParsed setup;
+  EXPECT(stockbot::parseSetupQrPayload(R"({"v":1,"ssid":"Home","pass":"pw","url":"https://x","code":"SBP-0123-ABCD-G"})", setup));
+  EXPECT(setup.ssid == "Home");
+}
+
+void test_hid_keycode() {
+  stockbot::HidKeycodeDecoder decoder;
+  uint8_t report[8] = {0, 0, 0x1e, 0x27, 0, 0, 0, 0};  // '1' '0'
+  decoder.consumeReport(report);
+  uint8_t enter[8] = {0, 0, 0x28, 0, 0, 0, 0, 0};
+  auto line = decoder.consumeReport(enter);
+  EXPECT(line.has_value() && *line == "10");
+}
+
+void test_scanner_controller_flow() {
+  MemoryRingStorage storage;
+  stockbot::RingBuffer ring(storage);
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, ring);
+
+  controller.begin(1000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Unprovisioned);
+
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.server_url = "https://stockbot.test";
+  controller.begin(2000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+
+  client.next_pair = {true, 201, ""};
+  client.pair_body.device_token = "sbd_abc";
+  client.pair_body.config.commit_mode = "queue";
+  controller.onBarcodeLine("SBP-0123-ABCD-G", true, 3000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
+  EXPECT(scanner.one_d_enabled);
+
+  client.next_scan = {true, 200, ""};
+  client.scan_body = {};
+  client.scan_body.status = "created";
+  client.scan_body.scan_status = "queued";
+  client.scan_body.known = true;
+  client.scan_body.product_name = "Milk";
+  client.scan_body.on_hand = 6;
+  client.scan_body.parse_ok = true;
+  controller.onBarcodeLine("4011", true, 4000);
+  EXPECT(display.last.band3.find("Queued -1") != std::string::npos);
+
+  stockbot::RingBuffer ring2(storage);
+  stockbot::ScannerController revoked(scanner, display, feedback, power, nvs, portal, client, ring2);
+  nvs.cfg.device_token = "sbd_abc";
+  revoked.begin(5000);
+  client.next_scan = {true, 401, ""};
+  client.scan_body = {};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  revoked.onBarcodeLine("4012", true, 5100);
+  EXPECT(revoked.uiScreen() == stockbot::UiScreen::S7_HardError);
+
+  stockbot::RingBuffer ring3(storage);
+  stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, ring3);
+  mode.begin(6000);
+  mode.onModeButtonShortPress(6100);
+  EXPECT(mode.activeDirection() == stockbot::Direction::StockIn);
+
+  stockbot::RingBuffer ring4(storage);
+  stockbot::ScannerController hb_ctl(scanner, display, feedback, power, nvs, portal, client, ring4);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  hb_ctl.begin(0);
+  client.next_hb = {true, 200, R"({"config":{"defaultDirection":"stock_in","configVersion":99}})"};
+  client.hb_body.parse_ok = true;
+  client.hb_body.config.default_direction = "stock_in";
+  client.hb_body.config.config_version = 99;
+  hb_ctl.tick(70000);
+  EXPECT(nvs.cfg.config_version == 99);
+}
+
 }  // namespace
 
 int main() {
@@ -238,6 +469,9 @@ int main() {
   test_scanner_state();
   test_ring_buffer();
   test_display_model();
+  test_protocol_json();
+  test_hid_keycode();
+  test_scanner_controller_flow();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";

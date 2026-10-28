@@ -38,6 +38,8 @@ class RingBuffer {
                std::string& out_client_scan_id);
   std::vector<RingScanRecord> peekBatch(size_t max_count = 20) const;
   bool acknowledge(const std::string& client_scan_id);
+  void clearAll();
+
   bool isFull() const { return records_.size() >= kCapacity; }
   size_t count() const { return records_.size(); }
 

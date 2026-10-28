@@ -1,33 +1,39 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "protocol_json.h"
 #include "ring_buffer.h"
-#include "scanner_state.h"
 
 namespace stockbot {
 
-struct DeviceScanResponse {
-  std::string status;
-  std::string scan_status;
-  bool known = false;
-  std::string product_name;
-  std::string barcode;
-  Direction direction = Direction::StockOut;
-  int queued_count = 0;
-  int delta = 0;
-  int on_hand = 0;
-  bool backfilled = false;
+struct HttpCallResult {
+  bool transport_ok = false;
+  int http_status = 0;
+  std::string body;
 };
 
 class StockbotClient {
  public:
   virtual ~StockbotClient() = default;
-  virtual bool completePairing(const std::string& code, const std::string& label) = 0;
-  virtual bool sendScan(const RingScanRecord& record, DeviceScanResponse& out) = 0;
-  virtual bool flushBatch(const std::vector<RingScanRecord>& batch) = 0;
-  virtual bool sendHeartbeat(size_t queued, int battery_pct, bool charging) = 0;
+  virtual void setServerUrl(const std::string& url) = 0;
+  virtual void setDeviceToken(const std::string& token) = 0;
+  virtual HttpCallResult completePairing(const std::string& code, const std::string& label,
+                                         const std::string& hub_version, const std::string& boot_id,
+                                         PairCompleteParsed& out) = 0;
+  virtual HttpCallResult sendScan(const struct RingScanRecord& record, const std::string& boot_id,
+                                  uint64_t age_ms, ParsedDeviceScanResponse& out) = 0;
+  virtual HttpCallResult flushBatch(const std::vector<struct RingScanRecord>& batch,
+                                    const std::string& boot_id, ParsedDeviceScanResponse& last_out) = 0;
+  virtual HttpCallResult sendHeartbeat(const std::string& hub_version, const std::string& boot_id,
+                                       uint32_t uptime_s, size_t queued, int battery_pct, bool charging,
+                                       HeartbeatParsed& out) = 0;
 };
+
+#ifdef ARDUINO
+StockbotClient* createStockbotClient();
+#endif
 
 }  // namespace stockbot

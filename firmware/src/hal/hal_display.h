@@ -12,4 +12,8 @@ class HalDisplay {
   virtual void setBacklight(BacklightLevel level) = 0;
 };
 
+#ifdef ARDUINO
+HalDisplay* createPlatformDisplay();
+#endif
+
 }  // namespace stockbot

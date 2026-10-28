@@ -19,4 +19,8 @@ class HalPower {
   virtual void enterDeepSleepWakeOnButton() = 0;
 };
 
+#ifdef ARDUINO
+HalPower* createPlatformPower();
+#endif
+
 }  // namespace stockbot

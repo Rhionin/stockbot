@@ -79,12 +79,20 @@ struct DisplayModelInput {
 
 struct DisplayBands {
   std::string band1;
+  std::string band1_right;
   std::string band1_bg;
+  uint16_t band1_bg_rgb565 = 0xFD20;
+  uint16_t band1_fg_rgb565 = 0x2104;
   std::string band2_line1;
   std::string band2_line2;
   std::string band3;
+  uint16_t band3_fg_rgb565 = 0x7FE0;
   AudioCue audio = AudioCue::Silent;
 };
+
+uint16_t rgb565FromHex(const std::string& hex);
+
+void applyDisplayBandColors(DisplayBands& bands);
 
 DisplayBands buildDisplayModel(const DisplayModelInput& in);
 

@@ -7,18 +7,12 @@ cd "$ROOT"
 OUT="${TMPDIR:-/tmp}/stockbot_firmware_host_test"
 CXX="${CXX:-g++}"
 
-SRC=(
-  src/core/text_util.cpp
-  src/core/barcode_filter.cpp
-  src/core/scanner_state.cpp
-  src/core/ring_buffer.cpp
-  src/core/display_model.cpp
-  test/test_scanner_core/test_main.cpp
-)
+mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
 
 "$CXX" -std=c++17 -Wall -Wextra -Werror \
-  -Isrc/core \
-  "${SRC[@]}" \
+  -Isrc/core -Isrc/net -Isrc/hal \
+  "${CORE_SRC[@]}" \
+  test/test_scanner_core/test_main.cpp \
   -o "$OUT"
 
 "$OUT"
