@@ -34,6 +34,7 @@ import {
   createImportUpload,
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
+import { ScannersSection } from './ScannersSection';
 
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
@@ -409,6 +410,8 @@ export function HouseholdPage() {
           ))}
         </ul>
       </section>
+
+      <ScannersSection householdName={household?.name ?? active?.name ?? 'Household'} isOwner={isOwner} />
 
       {owner && (
         <section aria-labelledby="export-heading">

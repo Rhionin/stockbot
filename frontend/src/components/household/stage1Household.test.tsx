@@ -11,6 +11,7 @@ import {
   UPDATING_SENTENCE,
   applyHttpResponse,
   formatPairingCode,
+  deviceKindLabel,
   serverNoticeText,
   type AuthSession,
   type Device,
@@ -827,6 +828,192 @@ describe('devices, pairing, and live hints', () => {
     const initial = pendingLoads;
     FakeEventSource.instances[0]?.dispatch('hint', { type: 'scans', cursor: '1' });
     await waitFor(() => expect(pendingLoads).toBeGreaterThan(initial));
+  });
+
+  it('labels esp32 scanners for display', () => {
+    expect(deviceKindLabel('esp32_scanner')).toBe('Scanner');
+    expect(deviceKindLabel('pi_hub')).toBe('Hub');
+    expect(deviceKindLabel('direct')).toBe('Direct scanner');
+  });
+
+  it('renders household scanners without breaking unmocked device fetches', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'member' }] }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'member', deletedAt: null, purgeAt: null }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('member'));
+    expect(await screen.findByRole('heading', { name: 'Scanners' })).toBeVisible();
+    const scannersSection = screen.getByRole('heading', { name: 'Scanners' }).closest('section');
+    expect(scannersSection).not.toBeNull();
+    expect(within(scannersSection!).getByText(/No storage-room scanners connected yet/)).toBeVisible();
+    expect(within(scannersSection!).queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows scanner telemetry on the household scanners section', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/members') && init?.method === undefined) {
+        return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
+      }
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null }));
+      }
+      if (url === '/api/devices' && init?.method === undefined) {
+        return Promise.resolve(json({
+          devices: [
+            device({
+              id: 'scan-a',
+              label: 'Pantry pistol',
+              kind: 'esp32_scanner',
+              batteryPct: 84,
+              charging: true,
+              queued: 3,
+              online: false,
+            }),
+            device({ id: 'scan-b', label: 'Low', kind: 'esp32_scanner', batteryPct: 18, charging: false, online: true }),
+            device({ id: 'scan-c', label: 'Critical', kind: 'esp32_scanner', batteryPct: 8, charging: false, online: true }),
+          ],
+        }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    const section = await screen.findByRole('heading', { name: 'Scanners' });
+    expect(section.closest('section')).toHaveAttribute('aria-labelledby', 'scanners-heading');
+    expect(await screen.findByText('84% (Charging)')).toBeVisible();
+    expect(screen.getByText('18% (Low battery)')).toBeVisible();
+    expect(screen.getByText('8% (Charge now)')).toBeVisible();
+    expect(screen.getByText(/3 waiting to send/)).toBeVisible();
+    expect(screen.getByText(/Scanner · Offline/)).toBeVisible();
+  });
+
+  it('patches scanner settings with inline saving and success feedback', async () => {
+    let row = device({
+      id: 'scan-1',
+      label: 'Pantry pistol',
+      kind: 'esp32_scanner',
+      commitMode: 'queue',
+      defaultDirection: 'stock_out',
+      inactivityRevertSeconds: 300,
+    });
+    const patches: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/devices' && init?.method === undefined) return Promise.resolve(json({ devices: [row] }));
+      if (url === '/api/devices/scan-1' && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body));
+        patches.push(body);
+        row = { ...row, ...body };
+        return new Promise((resolve) => {
+          window.setTimeout(() => resolve(json(row)), 40);
+        });
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<DevicesPage />, session('member'));
+    expect(await screen.findByText('Pantry pistol')).toBeVisible();
+    fireEvent.click(screen.getByRole('radio', { name: /Adjust stock immediately/ }));
+    expect(await screen.findByText('Saving…')).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanner settings saved.'));
+    expect(patches[0]).toEqual({ commitMode: 'immediate' });
+
+    fireEvent.click(screen.getByRole('radio', { name: /Stock in \(Scans add to stock\)/ }));
+    await waitFor(() => expect(patches.at(-1)).toEqual({ defaultDirection: 'stock_in' }));
+
+    fireEvent.click(screen.getByRole('radio', { name: '1 minute' }));
+    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 60 }));
+
+    fireEvent.click(screen.getByRole('radio', { name: '3 minutes' }));
+    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 180 }));
+
+    fireEvent.click(screen.getByRole('radio', { name: '10 minutes' }));
+    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 600 }));
+  });
+
+  it('keeps scanner settings on patch failure and shows an inline alert', async () => {
+    const row = device({
+      id: 'scan-1',
+      label: 'Pantry pistol',
+      kind: 'esp32_scanner',
+      commitMode: 'queue',
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/devices' && init?.method === undefined) return Promise.resolve(json({ devices: [row] }));
+      if (url === '/api/devices/scan-1' && init?.method === 'PATCH') {
+        return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<DevicesPage />, session('member'));
+    expect(await screen.findByText('Pantry pistol')).toBeVisible();
+    fireEvent.click(screen.getByRole('radio', { name: /Adjust stock immediately/ }));
+    const card = screen.getByText('Pantry pistol').closest('li');
+    expect(card).not.toBeNull();
+    await waitFor(() => expect(within(card!).getByRole('alert')).toHaveTextContent('Only an owner can do that.'));
+    expect(within(card!).getByRole('radio', { name: /Require review in Scan Queue/ })).toBeChecked();
+  });
+
+  it('shows pairing wifi help and opens the wall barcode sheet', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/devices') return Promise.resolve(json({ devices: [] }));
+      if (url === '/api/devices/pair' && init?.method === 'POST') {
+        return Promise.resolve(json({
+          code: PAIRING,
+          qrPayload: PAIRING,
+          expiresAt: '2099-01-01T00:00:00Z',
+          pairingId: 'pair-1',
+          barcodeValue: PAIRING,
+          qrValue: PAIRING,
+        }));
+      }
+      if (url === '/api/devices/pair/pair-1') {
+        return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    const print = vi.fn();
+    vi.stubGlobal('print', print);
+    renderStage(<DevicesPage />, session('member'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pair a hub' }));
+    const pairingDialog = await screen.findByRole('dialog', { name: 'Pair a hub' });
+    expect(within(pairingDialog).getByText('Setting up a brand-new scanner?')).toBeVisible();
+    expect(within(pairingDialog).getByText(/Stockbot-Scanner-XXXX/)).toBeVisible();
+    expect(within(pairingDialog).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
+    fireEvent.click(within(pairingDialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Print wall barcodes' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Storage-room barcode sheet' });
+    expect(sheet.querySelector('.storage-barcode-sheet')).not.toBeNull();
+    expect(screen.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toBeVisible();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Print sheet' }));
+    expect(print).toHaveBeenCalled();
+  });
+
+  it('lets members pair and print wall barcodes but hides disconnect', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/devices') {
+        return Promise.resolve(json({ devices: [device({ id: 'hub', label: 'Kitchen hub' })] }));
+      }
+      return Promise.reject(new Error(String(input)));
+    }));
+    renderStage(<DevicesPage />, session('member'));
+    expect(await screen.findByRole('button', { name: 'Pair a hub' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Print wall barcodes' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
   });
 });
 

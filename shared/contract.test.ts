@@ -867,6 +867,7 @@ describe('stage-1 household copy', () => {
   it('names hub, phone, and direct scanner kinds', () => {
     expect(deviceKindLabel('pi_hub')).toBe('Hub');
     expect(deviceKindLabel('box_hub')).toBe('Hub');
+    expect(deviceKindLabel('esp32_scanner')).toBe('Scanner');
     expect(deviceKindLabel('phone')).toBe('Phone');
     expect(deviceKindLabel('direct')).toBe('Direct scanner');
   });
