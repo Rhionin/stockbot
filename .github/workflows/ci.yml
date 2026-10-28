@@ -82,6 +82,9 @@ jobs:
       - name: Module path and names that stay pantry
         run: bash scripts/check-stockbot-names.sh
 
+      - name: Firmware host unit tests
+        run: bash firmware/run_host_tests.sh
+
   frontend:
     name: Frontend tests and linting
     runs-on: ubuntu-latest
