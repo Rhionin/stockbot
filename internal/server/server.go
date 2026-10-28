@@ -30,6 +30,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/suggestion"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/devicingest"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/telemetry"
 	"github.com/Rhionin/stockbot/internal/webui"
 )
@@ -718,6 +720,7 @@ func newAPIMux(
 				URL:   "/",
 			})
 		})
+		devicingest.Attach(cfg.stage1svc, scanQueue, lookupService)
 	}
 	registerStage1(apiMux, cfg)
 	// The listener uses the broadcaster this mux already publishes scans on,
@@ -736,4 +739,23 @@ func newAPIMux(
 	apiMux.HandleFunc("POST /api/shopping-list/items/{id}/unknown-resolution", HandleJSON(unknownResolutionHandler.Handle))
 
 	return apiMux, scanQueue, reg
+}
+
+type deviceProductResolver struct {
+	lookup *product.LookupService
+}
+
+func (r deviceProductResolver) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (auth.DeviceProductMatch, error) {
+	res, err := r.lookup.Lookup(ctx, scope, barcode)
+	if err != nil {
+		return auth.DeviceProductMatch{}, err
+	}
+	if !res.IsFound() {
+		return auth.DeviceProductMatch{}, nil
+	}
+	return auth.DeviceProductMatch{
+		Found:     true,
+		ProductID: res.Product.ID,
+		Name:      res.Product.Name,
+	}, nil
 }

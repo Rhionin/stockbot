@@ -57,6 +57,8 @@ type ScanEntry struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	// DeviceID is the scanner that captured this row. An HTTP scan leaves it empty.
 	DeviceID string `json:"-"`
+	// ClientScanID is the hub's idempotency key. HTTP scans leave it empty.
+	ClientScanID string `json:"-"`
 	// OnHand is the household's current shelf count. A link response sets it.
 	// The scan list sets it on a stock-out that already has an item: a shelved
 	// item is 0, and a removed unit is not counted. It is omitted when the
@@ -206,12 +208,13 @@ func (r *Queue) CreateScanEntry(ctx context.Context, scope tenant.Scope, entry S
 	}
 	defer tx.Rollback()
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO scan_entries (id, user_id, household_id, device_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO scan_entries (id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
 		entry.UserID,
 		scope.HouseholdID(),
 		nullableString(ptr(entry.DeviceID)),
+		nullableString(ptr(entry.ClientScanID)),
 		entry.Barcode,
 		entry.ScannedAt,
 		nullableString(directionStr),

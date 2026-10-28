@@ -31,6 +31,8 @@ type Service struct {
 	live          liveKicker
 	operatorPush  OperatorPush
 	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
+	productLookup     DeviceProductResolver
+	deviceScanProcessor DeviceScanProcessor
 }
 
 // NewService uses the pantry database. setupDir is the display-file directory.

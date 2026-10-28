@@ -175,7 +175,7 @@ func TestBatchScanIsIdempotentInOneTransaction(t *testing.T) {
 	first, err := svc.IngestScans(ctx, principal, []ScanInput{
 		{ID: "later", Barcode: "12345670", Direction: "stock_in", HasBarcode: true, HasScannedAt: true, ScannedAt: fixed},
 		{ID: "earlier", Barcode: " 1234567 ", Direction: "stock_out", HasBarcode: true, HasScannedAt: true, ScannedAt: early},
-		{ID: "aged", Barcode: "ABC-NOT-A-GTIN", Direction: "stock_in", HasBarcode: true, AgeMs: &age},
+		{ID: "aged", Barcode: "1234567890123", Direction: "stock_in", HasBarcode: true, AgeMs: &age},
 		{ID: "approx", Barcode: "7654321", HasBarcode: true},
 		{ID: "pair", Barcode: "SBP-0123-ABCD-G", HasBarcode: true},
 		{ID: "bad-time", Barcode: "1111111", HasBarcode: true, ScannedAtInvalid: true},
@@ -245,7 +245,7 @@ func TestBatchScanIsIdempotentInOneTransaction(t *testing.T) {
 	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM operator_alerts WHERE household_id = ? AND kind = 'scans_dropped'`, house).Scan(&alerts); err != nil || alerts != 1 {
 		t.Fatalf("alerts %d %v", alerts, err)
 	}
-	if strings.Join(looked, ",") != "1234567,12345670,7654321,12345670" {
+	if strings.Join(looked, ",") != "1234567,1234567890123,12345670,7654321,12345670" {
 		t.Fatalf("lookups %v", looked)
 	}
 

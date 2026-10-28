@@ -306,7 +306,11 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	if lateScan.Code != http.StatusOK || !strings.Contains(lateScan.Body.String(), `"accepted"`) {
 		t.Fatalf("+5m1s %d %s", lateScan.Code, lateScan.Body.String())
 	}
-	if err := db.QueryRow(`SELECT scanned_at, time_approx FROM scan_entries WHERE household_id = ? AND client_scan_id = 'late'`, c.house).Scan(&stored, &approx); err != nil {
+	if err := db.QueryRow(`
+		SELECT r.scanned_at, se.time_approx
+		FROM device_scan_receipts r
+		JOIN scan_entries se ON se.id = r.scan_entry_id AND se.household_id = r.household_id
+		WHERE r.household_id = ? AND r.client_scan_id = 'late'`, c.house).Scan(&stored, &approx); err != nil {
 		t.Fatal(err)
 	}
 	if stored != received || approx != 1 {
@@ -318,7 +322,11 @@ func TestScanFutureSkewBoundary(t *testing.T) {
 	if batch.Code != http.StatusOK || !strings.Contains(batch.Body.String(), `"created"`) || strings.Contains(batch.Body.String(), `"rejected"`) {
 		t.Fatalf("batch +5m1s %d %s", batch.Code, batch.Body.String())
 	}
-	if err := db.QueryRow(`SELECT scanned_at, time_approx FROM scan_entries WHERE household_id = ? AND client_scan_id = 'batch-late'`, c.house).Scan(&stored, &approx); err != nil {
+	if err := db.QueryRow(`
+		SELECT r.scanned_at, se.time_approx
+		FROM device_scan_receipts r
+		JOIN scan_entries se ON se.id = r.scan_entry_id AND se.household_id = r.household_id
+		WHERE r.household_id = ? AND r.client_scan_id = 'batch-late'`, c.house).Scan(&stored, &approx); err != nil {
 		t.Fatal(err)
 	}
 	if stored != received || approx != 1 {
