@@ -18,13 +18,44 @@ WiFiClientSecure& tlsClient() {
   return client;
 }
 
+std::string extractUrlHost(const std::string& base_url) {
+  std::string rest;
+  if (base_url.rfind("https://", 0) == 0) {
+    rest = base_url.substr(8);
+  } else if (base_url.rfind("http://", 0) == 0) {
+    rest = base_url.substr(7);
+  } else {
+    return base_url;
+  }
+  const size_t end = rest.find_first_of(":/");
+  if (end == std::string::npos) {
+    return rest;
+  }
+  return rest.substr(0, end);
+}
+
+bool isLocalDevHost(const std::string& host) {
+  if (host == "localhost" || host == "127.0.0.1") {
+    return true;
+  }
+  if (host.rfind("192.168.", 0) == 0) {
+    return true;
+  }
+  if (host.rfind("10.", 0) == 0) {
+    return true;
+  }
+  if (host.size() >= 6 && host.compare(host.size() - 6, 6, ".local") == 0) {
+    return true;
+  }
+  return false;
+}
+
 bool allowInsecureTls(const std::string& base_url) {
   if (base_url.rfind("http://", 0) == 0) {
     return true;
   }
-  if (base_url.find("127.0.0.1") != std::string::npos || base_url.find("localhost") != std::string::npos ||
-      base_url.find("192.168.") != std::string::npos || base_url.find("10.") != std::string::npos) {
-    return true;
+  if (base_url.rfind("https://", 0) == 0) {
+    return isLocalDevHost(extractUrlHost(base_url));
   }
   return false;
 }

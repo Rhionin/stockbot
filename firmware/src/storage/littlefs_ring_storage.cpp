@@ -4,6 +4,8 @@
 
 #include <LittleFS.h>
 
+#include "ring_buffer.h"
+
 namespace stockbot {
 
 namespace {
@@ -42,9 +44,14 @@ bool LittleFsRingStorage::readAll(std::vector<RingScanRecord>& out) {
     f.close();
     return false;
   }
-  out.resize(header.count);
-  if (header.count > 0) {
-    const size_t expected = static_cast<size_t>(header.count) * sizeof(RingScanRecord);
+  const uint32_t count = header.count;
+  if (count > RingBuffer::kCapacity) {
+    f.close();
+    return false;
+  }
+  out.resize(count);
+  if (count > 0) {
+    const size_t expected = static_cast<size_t>(count) * sizeof(RingScanRecord);
     const size_t read_bytes =
         f.read(reinterpret_cast<uint8_t*>(out.data()), expected);
     if (read_bytes != expected) {
