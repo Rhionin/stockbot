@@ -45,7 +45,8 @@ func (h *ScanListHandler) Handle(req Request[struct{}, struct{}]) (changeView, e
 	if err != nil {
 		return changeView{}, InternalError(err)
 	}
-	if since != "" && status == "" {
+	// Omitted status is the live queue (pending, flagged, qr), not history or device idempotency rows.
+	if statusParam == "" {
 		queue := entries[:0]
 		for _, entry := range entries {
 			if entry.Status == scan.Pending || entry.Status == scan.Flagged || entry.Status == scan.QR {

@@ -808,7 +808,7 @@ Rename. Any member. The #364 list fields are otherwise unchanged.
 | Auth | Session |
 | Role | Member |
 | X-Household-Id | Required. `{id}` must be a device of that household. |
-| Request | `{ "label": string }` |
+| Request | `{ "label"?: string, "defaultDirection"?: "stock_in" | "stock_out", "inactivityRevertSeconds"?: number (30..3600), "commitMode"?: "queue" | "immediate" }` |
 | Response | `200` `Device` |
 | Errors | `unauthorized`, `validation`, `not_found`, `busy` |
 
@@ -898,7 +898,7 @@ A device may submit 600 scans per minute. Over that limit the response is `429` 
 
 The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
 
-`DeviceHubConfig` is `{ controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, configVersion: number }`.
+`DeviceHubConfig` is `{ label: string, controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, defaultDirection: "stock_in" | "stock_out", inactivityRevertSeconds: number, commitMode: "queue" | "immediate", configVersion: number }`. `idleSeconds` matches `inactivityRevertSeconds` (default 300). Control barcodes accept `STOCK-IN`/`STOCK-OUT` and `STOCK_IN`/`STOCK_OUT`.
 
 ### POST /api/device/heartbeat
 

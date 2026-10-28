@@ -1049,12 +1049,16 @@ export interface PairingLookup {
 export interface CompletePairingRequest {
   code: string;
   label?: string;
-  hub?: { kind: 'pi_hub' | 'box_hub'; version: string; bootId: string };
+  hub?: { kind: 'pi_hub' | 'box_hub' | 'esp32_scanner'; version: string; bootId: string };
 }
 
 export interface DeviceHubConfig {
+  label?: string;
   controlBarcodes: { stockIn: string; stockOut: string };
   idleSeconds: number;
+  defaultDirection?: 'stock_in' | 'stock_out';
+  inactivityRevertSeconds?: number;
+  commitMode?: 'queue' | 'immediate';
   configVersion: number;
 }
 
@@ -1065,7 +1069,7 @@ export interface CompletePairingResponse {
   heartbeatSeconds?: 60;
 }
 
-export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct';
+export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct' | 'esp32_scanner';
 
 export interface Device {
   id: string;
@@ -1079,8 +1083,21 @@ export interface Device {
   online: boolean;
   /** Last heartbeat queue depth. The hub disconnect confirm uses it as N. */
   queued?: number;
+  defaultDirection: 'stock_in' | 'stock_out';
+  inactivityRevertSeconds: number;
+  commitMode: 'queue' | 'immediate';
+  batteryPct?: number | null;
+  charging?: boolean | null;
 }
 
+export interface UpdateDeviceRequest {
+  label?: string;
+  defaultDirection?: 'stock_in' | 'stock_out';
+  inactivityRevertSeconds?: number;
+  commitMode?: 'queue' | 'immediate';
+}
+
+/** @deprecated Use UpdateDeviceRequest */
 export interface RenameDeviceRequest {
   label: string;
 }
@@ -1103,6 +1120,15 @@ export interface DeviceScanResponse {
   /** `accepted` is the single-body form of a batch item's `created`. */
   status: 'accepted' | 'duplicate';
   cursor: string;
+  scanStatus?: 'queued' | 'committed' | 'flagged';
+  known?: boolean;
+  productName?: string | null;
+  barcode?: string;
+  direction?: ScanDirection;
+  queuedCount?: number;
+  delta?: number;
+  onHand?: number;
+  backfilled?: boolean;
 }
 
 /** Stage 1 batch on POST /api/device/scans. A body is a batch when it has `scans`. Both `scans` and `id` is validation. */
@@ -1125,6 +1151,15 @@ export interface DeviceScanBatchResponse {
     status: 'created' | 'duplicate' | 'conflict' | 'rejected';
     /** Present only when status is `rejected`. */
     code?: 'validation';
+    scanStatus?: 'queued' | 'committed' | 'flagged';
+    known?: boolean;
+    productName?: string | null;
+    barcode?: string;
+    direction?: ScanDirection;
+    queuedCount?: number;
+    delta?: number;
+    onHand?: number;
+    backfilled?: boolean;
   }[];
   config: DeviceHubConfig;
 }
@@ -1136,6 +1171,8 @@ export interface DeviceHeartbeatRequest {
   queued: number;
   droppedCount?: number;
   clockSynced: boolean;
+  batteryPct?: number;
+  charging?: boolean;
 }
 
 export interface DeviceHeartbeatResponse {

@@ -75,13 +75,17 @@ func TestScanListReportsOnHand(t *testing.T) {
 	requireOnHand(t, got, "scan-zero", 0)
 	requireOnHand(t, got, "scan-shelved", 0)
 	requireOnHand(t, got, "scan-some", 2)
-	requireOnHand(t, got, "scan-net", 0)
 	requireOnHand(t, got, "scan-still", 0)
 	requireNoOnHand(t, got, "scan-open")
 	requireNoOnHand(t, got, "scan-unresolved")
 	requireNoOnHand(t, got, "scan-in")
-	if got["scan-net"].status != "committed" || got["scan-still"].status != "pending" {
-		t.Fatalf("backfill pair statuses = %s %s", got["scan-net"].status, got["scan-still"].status)
+	if got["scan-still"].status != "pending" {
+		t.Fatalf("backfill follow-up status = %s", got["scan-still"].status)
+	}
+	committed := listedOnHand(t, exchangeJSON(t, handler, http.MethodGet, "/api/scans?status=committed", "", http.StatusOK))
+	requireOnHand(t, committed, "scan-net", 0)
+	if committed["scan-net"].status != "committed" {
+		t.Fatalf("backfill scan status = %s", committed["scan-net"].status)
 	}
 
 	assertCode(t, exchangeJSON(t, handler, http.MethodPost, "/api/scans/scan-zero/commit", "", http.StatusConflict),

@@ -147,19 +147,24 @@ type PairingStatus struct {
 
 // DeviceView is one paired device.
 type DeviceView struct {
-	ID           string  `json:"id"`
-	Label        string  `json:"label"`
-	Name         string  `json:"name,omitempty"`
-	CreatedAt    string  `json:"createdAt"`
-	LastSeenAt   *string `json:"lastSeenAt"`
-	RevokedAt    *string `json:"revokedAt"`
-	Kind         string  `json:"kind"`
-	Online       bool    `json:"online"`
-	Queued       *int    `json:"queued,omitempty"`
-	QueuedScans  *int    `json:"queuedScans,omitempty"`
-	DroppedTotal int     `json:"droppedTotal"`
-	DroppedCount int     `json:"droppedCount"`
-	Version      string  `json:"version,omitempty"`
+	ID                      string  `json:"id"`
+	Label                   string  `json:"label"`
+	Name                    string  `json:"name,omitempty"`
+	CreatedAt               string  `json:"createdAt"`
+	LastSeenAt              *string `json:"lastSeenAt"`
+	RevokedAt               *string `json:"revokedAt"`
+	Kind                    string  `json:"kind"`
+	Online                  bool    `json:"online"`
+	Queued                  *int    `json:"queued,omitempty"`
+	QueuedScans             *int    `json:"queuedScans,omitempty"`
+	DroppedTotal            int     `json:"droppedTotal"`
+	DroppedCount            int     `json:"droppedCount"`
+	Version                 string  `json:"version,omitempty"`
+	DefaultDirection        string  `json:"defaultDirection"`
+	InactivityRevertSeconds int     `json:"inactivityRevertSeconds"`
+	CommitMode              string  `json:"commitMode"`
+	BatteryPct              *int    `json:"batteryPct,omitempty"`
+	Charging                *bool   `json:"charging,omitempty"`
 }
 
 // PairedDevice is the one-time token from pairing complete.
@@ -195,12 +200,21 @@ type ScanInput struct {
 
 // ScanResult is one item outcome.
 type ScanResult struct {
-	ID      string `json:"id"`
-	Status  string `json:"status"`
-	Code    string `json:"code,omitempty"`
-	Cursor  string `json:"cursor,omitempty"`
-	ScanID  string `json:"scanId,omitempty"`
-	Message string `json:"-"`
+	ID           string  `json:"id"`
+	Status       string  `json:"status"`
+	Code         string  `json:"code,omitempty"`
+	Cursor       string  `json:"cursor,omitempty"`
+	ScanID       string  `json:"scanId,omitempty"`
+	Message      string  `json:"-"`
+	ScanStatus   string  `json:"scanStatus,omitempty"`
+	Known        *bool   `json:"known,omitempty"`
+	ProductName  *string `json:"productName,omitempty"`
+	Barcode      string  `json:"barcode,omitempty"`
+	Direction    string  `json:"direction,omitempty"`
+	QueuedCount  *int    `json:"queuedCount,omitempty"`
+	OnHand       *int    `json:"onHand,omitempty"`
+	Delta        *int    `json:"delta,omitempty"`
+	Backfilled   *bool   `json:"backfilled,omitempty"`
 }
 
 // Heartbeat is one hub check-in.
@@ -212,6 +226,8 @@ type Heartbeat struct {
 	Dropped     int
 	ClockSynced bool
 	Rollback    bool
+	BatteryPct  *int
+	Charging    *bool
 }
 
 func (s *Service) StartPairing(ctx context.Context, userID, householdID string) (PairingCode, error) {
@@ -307,7 +323,7 @@ func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hub
 	kind := "pi_hub"
 	hub := false
 	if hubKind != "" {
-		if hubKind != "pi_hub" && hubKind != "box_hub" {
+		if hubKind != "pi_hub" && hubKind != "box_hub" && hubKind != "esp32_scanner" {
 			return PairedDevice{}, validation()
 		}
 		kind = hubKind
@@ -370,7 +386,8 @@ func (s *Service) ListDevices(ctx context.Context, userID, householdID string) (
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, label, kind, created_at, COALESCE(last_seen_at, ''), COALESCE(revoked_at, ''),
-		       COALESCE(hub_version, ''), queued, dropped_total
+		       COALESCE(hub_version, ''), queued, dropped_total,
+		       default_direction, inactivity_revert_s, commit_mode, battery_pct, charging
 		FROM devices WHERE household_id = ? ORDER BY created_at`, householdID)
 	if err != nil {
 		return nil, AsError(err)
@@ -382,8 +399,19 @@ func (s *Service) ListDevices(ctx context.Context, userID, householdID string) (
 		var d DeviceView
 		var seen, revoked, version string
 		var queued, dropped int
-		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.CreatedAt, &seen, &revoked, &version, &queued, &dropped); err != nil {
+		var battery sql.NullInt64
+		var charging sql.NullInt64
+		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.CreatedAt, &seen, &revoked, &version, &queued, &dropped,
+			&d.DefaultDirection, &d.InactivityRevertSeconds, &d.CommitMode, &battery, &charging); err != nil {
 			return nil, AsError(err)
+		}
+		if battery.Valid {
+			v := int(battery.Int64)
+			d.BatteryPct = &v
+		}
+		if charging.Valid {
+			v := charging.Int64 != 0
+			d.Charging = &v
 		}
 		d.Name = d.Label
 		d.Version = version
@@ -641,15 +669,34 @@ func (s *Service) Heartbeat(ctx context.Context, p Principal, beat Heartbeat) (b
 	if beat.Rollback {
 		rollbackBit = 1
 	}
+	batterySQL := any(nil)
+	if beat.BatteryPct != nil {
+		if *beat.BatteryPct < 0 || *beat.BatteryPct > 100 {
+			return false, validation()
+		}
+		batterySQL = *beat.BatteryPct
+	}
+	chargingSQL := any(nil)
+	if beat.Charging != nil {
+		if *beat.Charging {
+			chargingSQL = 1
+		} else {
+			chargingSQL = 0
+		}
+	}
 	if touch.write {
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE devices SET last_seen_at = ?, hub_version = CASE WHEN ? != '' THEN ? ELSE hub_version END,
 				boot_id = CASE WHEN ? != '' THEN ? ELSE boot_id END,
 				uptime_s = ?, queued = ?, clock_synced = ?, rollback = ?,
-				dropped_total = dropped_total + ?
+				dropped_total = dropped_total + ?,
+				battery_pct = CASE WHEN ? IS NULL THEN battery_pct ELSE ? END,
+				charging = CASE WHEN ? IS NULL THEN charging ELSE ? END
 			WHERE id = ? AND household_id = ?`,
 			stamp(now), beat.Version, beat.Version, beat.BootID, beat.BootID, beat.UptimeS, beat.Queued,
-			clockBit, rollbackBit, beat.Dropped, p.DeviceID, p.HouseholdID); err != nil {
+			clockBit, rollbackBit, beat.Dropped,
+			batterySQL, batterySQL, chargingSQL, chargingSQL,
+			p.DeviceID, p.HouseholdID); err != nil {
 			return false, AsError(err)
 		}
 	} else {
@@ -657,10 +704,14 @@ func (s *Service) Heartbeat(ctx context.Context, p Principal, beat Heartbeat) (b
 			UPDATE devices SET hub_version = CASE WHEN ? != '' THEN ? ELSE hub_version END,
 				boot_id = CASE WHEN ? != '' THEN ? ELSE boot_id END,
 				uptime_s = ?, queued = ?, clock_synced = ?, rollback = ?,
-				dropped_total = dropped_total + ?
+				dropped_total = dropped_total + ?,
+				battery_pct = CASE WHEN ? IS NULL THEN battery_pct ELSE ? END,
+				charging = CASE WHEN ? IS NULL THEN charging ELSE ? END
 			WHERE id = ? AND household_id = ?`,
 			beat.Version, beat.Version, beat.BootID, beat.BootID, beat.UptimeS, beat.Queued,
-			clockBit, rollbackBit, beat.Dropped, p.DeviceID, p.HouseholdID); err != nil {
+			clockBit, rollbackBit, beat.Dropped,
+			batterySQL, batterySQL, chargingSQL, chargingSQL,
+			p.DeviceID, p.HouseholdID); err != nil {
 			return false, AsError(err)
 		}
 	}

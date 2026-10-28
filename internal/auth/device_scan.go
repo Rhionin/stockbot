@@ -1,0 +1,166 @@
+package auth
+
+import (
+	"context"
+	"database/sql"
+)
+
+func (s *Service) insertScan(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
+	if dup, ok, err := s.loadDeviceScanReplay(ctx, q, p, item); err != nil {
+		return ScanResult{}, createdScan{}, err
+	} else if ok {
+		return dup, createdScan{}, nil
+	}
+	if s.deviceScanProcessor != nil {
+		out, created, err := s.deviceScanProcessor(ctx, q, s, p, preparedItem(item), group)
+		return out, createdScan{ScanID: created.ScanID, Barcode: created.Barcode, stock: created.Stock}, err
+	}
+	return s.insertScanLegacy(ctx, q, p, item, group)
+}
+
+func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Principal, item preparedScan) (ScanResult, bool, error) {
+	var barcode, direction, resultStatus sql.NullString
+	var units int
+	var onHand, queued, delta, backfilled sql.NullInt64
+	err := q.QueryRowContext(ctx, `
+		SELECT barcode, COALESCE(direction, ''), unit_count,
+		       device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled
+		FROM scan_entries
+		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
+		p.HouseholdID, p.DeviceID, item.item.ID,
+	).Scan(&barcode, &direction, &units, &resultStatus, &onHand, &queued, &delta, &backfilled)
+	if err == sql.ErrNoRows {
+		return ScanResult{}, false, nil
+	}
+	if err != nil {
+		return ScanResult{}, false, AsError(err)
+	}
+	if barcode.String != item.barcode || direction.String != item.item.Direction || units != item.unit {
+		return ScanResult{ID: item.item.ID, Status: "conflict"}, true, nil
+	}
+	result := ScanResult{ID: item.item.ID, Status: "duplicate", Cursor: item.item.ID}
+	if resultStatus.Valid {
+		known := resultStatus.String != "flagged"
+		lcd := deviceLCD{
+			ScanStatus:  resultStatus.String,
+			Known:       known,
+			Barcode:     item.barcode,
+			Direction:   item.item.Direction,
+			QueuedCount: int(queued.Int64),
+			OnHand:      int(onHand.Int64),
+			Delta:       int(delta.Int64),
+			Backfilled:  backfilled.Int64 != 0,
+		}
+		if lookupName, err := s.lookupDisplayName(ctx, p.HouseholdID, item.barcode); err == nil && lookupName != nil {
+			lcd.ProductName = lookupName
+		}
+		lcd.apply(&result)
+	}
+	return result, true, nil
+}
+
+func (s *Service) lookupDisplayName(ctx context.Context, householdID, barcode string) (*string, error) {
+	scope, err := tenantScope(householdID)
+	if err != nil || s.productLookup == nil {
+		return nil, err
+	}
+	lookup, err := s.productLookup.Lookup(ctx, scope, barcode)
+	if err != nil || !lookup.Found {
+		return nil, err
+	}
+	return displayProductName(lookup), nil
+}
+
+func (s *Service) writeDeviceScanRow(ctx context.Context, q queryer, p Principal, item preparedScan, group int, idempotencyID string, lcd deviceLCD) error {
+	approx := 0
+	if item.approx {
+		approx = 1
+	}
+	var dir any
+	if item.item.Direction == "" {
+		dir = nil
+	} else {
+		dir = item.item.Direction
+	}
+	status := "cancelled"
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO scan_entries (
+			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at,
+			direction, unit_count, status, time_approx, scan_group, boot_id,
+			device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		idempotencyID, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, stamp(item.at),
+		dir, item.unit, status, approx, group, item.item.BootID,
+		lcd.ScanStatus, lcd.OnHand, lcd.QueuedCount, lcd.Delta, boolToInt(lcd.Backfilled),
+	)
+	return AsError(err)
+}
+
+func (s *Service) persistDeviceLCD(ctx context.Context, q queryer, householdID, deviceID, clientScanID string, lcd deviceLCD) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE scan_entries SET device_result_status = ?, device_on_hand = ?, device_queued_count = ?,
+			device_delta = ?, device_backfilled = ?
+		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
+		lcd.ScanStatus, lcd.OnHand, lcd.QueuedCount, lcd.Delta, boolToInt(lcd.Backfilled),
+		householdID, deviceID, clientScanID,
+	)
+	return AsError(err)
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func (s *Service) insertScanLegacy(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
+	approx := 0
+	if item.approx {
+		approx = 1
+	}
+	var dir any
+	if item.item.Direction == "" {
+		dir = nil
+	} else {
+		dir = item.item.Direction
+	}
+	id := newID()
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO scan_entries (
+			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at,
+			direction, unit_count, status, time_approx, scan_group, boot_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+		id, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, stamp(item.at),
+		dir, item.unit, approx, group, item.item.BootID)
+	if err == nil {
+		return ScanResult{ID: item.item.ID, Status: "created", Cursor: id, ScanID: id}, createdScan{ScanID: id, Barcode: item.barcode}, nil
+	}
+	var barcode, direction string
+	var units int
+	qerr := q.QueryRowContext(ctx, `
+		SELECT barcode, COALESCE(direction, ''), unit_count FROM scan_entries
+		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
+		p.HouseholdID, p.DeviceID, item.item.ID).Scan(&barcode, &direction, &units)
+	if qerr != nil {
+		return ScanResult{}, createdScan{}, AsError(err)
+	}
+	if barcode == item.barcode && direction == item.item.Direction && units == item.unit {
+		return ScanResult{ID: item.item.ID, Status: "duplicate", Cursor: item.item.ID}, createdScan{}, nil
+	}
+	return ScanResult{ID: item.item.ID, Status: "conflict"}, createdScan{}, nil
+}
+
+type deviceLCD = DeviceLCD
+
+func (lcd DeviceLCD) apply(result *ScanResult) {
+	result.ScanStatus = lcd.ScanStatus
+	result.Known = &lcd.Known
+	result.ProductName = lcd.ProductName
+	result.Barcode = lcd.Barcode
+	result.Direction = lcd.Direction
+	result.QueuedCount = intPtr(lcd.QueuedCount)
+	result.OnHand = intPtr(lcd.OnHand)
+	result.Delta = intPtr(lcd.Delta)
+	result.Backfilled = &lcd.Backfilled
+}

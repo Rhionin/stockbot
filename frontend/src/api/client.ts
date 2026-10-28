@@ -2,7 +2,7 @@
 // Endpoint list and request/response shapes verified against
 // internal/server/server.go and the individual handler files.
 import { reportApiResult } from '../telemetry/client';
-import { ACCOUNT_PATH, applyHttpResponse, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_RESET_PATH, AUTH_SESSION_PATH, CONFIG_PATH, DEVICES_PAIR_PATH, DEVICES_PATH, EXPORT_PATH, HOUSEHOLD_SETTINGS_PATH, HOUSEHOLDS_PATH, IMPORT_PATH, IMPORT_UPLOADS_PATH, INVITE_ACCEPT_PATH, INVITE_PREVIEW_PATH, INVITES_PATH, INVALID_CREDENTIALS_SENTENCE, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, OPERATOR_HOUSEHOLD_INVITES_PATH, OPERATOR_HOUSEHOLDS_PATH, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, SETUP_PATH, stockbotCode, SWITCH_HOUSEHOLD_PATH, TELEMETRY_PATH, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type AcceptInviteRequest, type AcceptInviteResponse, type AuthSession, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type CreateHouseholdRequest, type CreateHouseholdResponse, type DeleteAccountRequest, type DeleteHouseholdRequest, type Device, type DeviceListResponse, type ExportJob, type ExportJobCreated, type Household, type HouseholdDeleted, type HouseholdSettings, type ImportJob, type ImportJobCreated, type ImportUploadCreated, type InviteCreated, type InviteListResponse, type InvitePreview, type LinkSuggestionsResponse, type LiveConfig, type LoginRequest, type Member, type MemberListResponse, type OperatorHouseholdView, type PairingCode, type PairingLookup, type RenameDeviceRequest, type ResetLinkCreated, type ResetPasswordRequest, type ScanListEntry, type SwitchHouseholdRequest, type UndoPreview } from '@stockbot/shared/contract';
+import { ACCOUNT_PATH, applyHttpResponse, AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_RESET_PATH, AUTH_SESSION_PATH, CONFIG_PATH, DEVICES_PAIR_PATH, DEVICES_PATH, EXPORT_PATH, HOUSEHOLD_SETTINGS_PATH, HOUSEHOLDS_PATH, IMPORT_PATH, IMPORT_UPLOADS_PATH, INVITE_ACCEPT_PATH, INVITE_PREVIEW_PATH, INVITES_PATH, INVALID_CREDENTIALS_SENTENCE, linkSuggestionsPath, noticeForDisposition, notifyApiSuccess, OPERATOR_HOUSEHOLD_INVITES_PATH, OPERATOR_HOUSEHOLDS_PATH, raiseOfflineBanner, readItemId, readOnHand, SERVER_ERROR_FALLBACK, SETUP_PATH, stockbotCode, SWITCH_HOUSEHOLD_PATH, TELEMETRY_PATH, undoPreviewPath, UnreachableError, unreachableFrom, unreadableResponse, type AcceptInviteRequest, type AcceptInviteResponse, type AuthSession, type BackfillCommitRequest, type BackfillCommitResponse, type BatchCommitResponse, type CommitScanResponse, type CreateHouseholdRequest, type CreateHouseholdResponse, type DeleteAccountRequest, type DeleteHouseholdRequest, type Device, type DeviceListResponse, type ExportJob, type ExportJobCreated, type Household, type HouseholdDeleted, type HouseholdSettings, type ImportJob, type ImportJobCreated, type ImportUploadCreated, type InviteCreated, type InviteListResponse, type InvitePreview, type LinkSuggestionsResponse, type LiveConfig, type LoginRequest, type Member, type MemberListResponse, type OperatorHouseholdView, type PairingCode, type PairingLookup, type ResetLinkCreated, type ResetPasswordRequest, type ScanListEntry, type SwitchHouseholdRequest, type UndoPreview, type UpdateDeviceRequest } from '@stockbot/shared/contract';
 import {
   asRestock,
   asSuggestions as asCategorySuggestions,
@@ -1086,7 +1086,10 @@ export function listDevices(): Promise<Device[]> {
 }
 
 export function renameDevice(id: string, label: string): Promise<Device> {
-  const body: RenameDeviceRequest = { label };
+  return updateDevice(id, { label });
+}
+
+export function updateDevice(id: string, body: UpdateDeviceRequest): Promise<Device> {
   return apiFetch(`${DEVICES_PATH}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify(body),

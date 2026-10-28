@@ -137,13 +137,13 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	// One schema_migrations row per applied .sql file; the second RunMigrations
 	// must not re-apply any file, so the count equals the number of migration
 	// files (001 through 005, both 006 files, both 007 files, 008 through 020,
-	// both 021 files, 022, 022a through 022f, 023, 024, 025, 026, and 027).
+	// both 021 files, 022, 022a through 022f, 023, 024, 025, 026, 027, and 028).
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 36 {
-		t.Errorf("schema_migrations should have 36 rows after two runs, got %d", count)
+	if count != 37 {
+		t.Errorf("schema_migrations should have 37 rows after two runs, got %d", count)
 	}
 }
 
