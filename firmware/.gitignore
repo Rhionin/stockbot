@@ -1,0 +1,10 @@
+.pio/
+.vscode/
+.pioenvs/
+.piolibdeps/
+*.o
+*.a
+*.elf
+*.bin
+*.map
+compile_commands.json
