@@ -56,6 +56,14 @@
   border-top: 1px solid #d5e4e1;
 }
 
+.device-row.device-scanner-card {
+  align-items: flex-start;
+}
+
+.device-row.device-scanner-card .presence {
+  margin-top: 6px;
+}
+
 .presence {
   width: 10px;
   height: 10px;
@@ -132,6 +140,14 @@
   padding: 16px;
   border-radius: 8px;
   background: #fff;
+}
+
+.storage-barcode-card .code128-quiet-zone {
+  padding: 10px 14px;
+}
+
+.storage-barcode-card .code128-quiet-zone .pairing-code128 {
+  height: 72px;
 }
 
 .storage-barcode-card-out {
