@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -72,7 +73,7 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("GET /api/devices/pair/{id}", gate.servePairingStatus)
 	apiMux.HandleFunc("POST /api/devices/pair/complete", gate.serveCompletePairing)
 	apiMux.HandleFunc("GET /api/devices", gate.serveListDevices)
-	apiMux.HandleFunc("PATCH /api/devices/{id}", gate.serveRenameDevice)
+	apiMux.HandleFunc("PATCH /api/devices/{id}", gate.servePatchDevice)
 	apiMux.HandleFunc("DELETE /api/devices/{id}", gate.serveRevokeDevice)
 	apiMux.HandleFunc("POST /api/device/scans", gate.serveDeviceScans)
 	apiMux.HandleFunc("POST /api/device/heartbeat", gate.serveHeartbeat)
@@ -888,28 +889,27 @@ func (s *stage1) serveCompletePairing(w http.ResponseWriter, r *http.Request) {
 		HeartbeatSeconds int    `json:"heartbeatSeconds,omitempty"`
 	}{DeviceID: paired.DeviceID, Label: paired.Label, Token: paired.Token}
 	if paired.Hub {
-		resp.Config = s.hubConfig()
+		cfg, err := s.svc.HubConfigForDevice(r.Context(), paired.HouseholdID, paired.DeviceID, s.stockIn, s.stockOut)
+		if err != nil {
+			writeStage1(w, err)
+			return
+		}
+		resp.Config = cfg
 		resp.HeartbeatSeconds = 60
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-func (s *stage1) hubConfig() struct {
-	ControlBarcodes struct {
-		StockIn  string `json:"stockIn"`
-		StockOut string `json:"stockOut"`
-	} `json:"controlBarcodes"`
-	IdleSeconds   int `json:"idleSeconds"`
-	ConfigVersion int `json:"configVersion"`
-} {
-	var cfg struct {
-		ControlBarcodes struct {
-			StockIn  string `json:"stockIn"`
-			StockOut string `json:"stockOut"`
-		} `json:"controlBarcodes"`
-		IdleSeconds   int `json:"idleSeconds"`
-		ConfigVersion int `json:"configVersion"`
+func (s *stage1) deviceHubConfig(ctx context.Context, householdID, deviceID string) auth.DeviceHubConfig {
+	cfg, err := s.svc.HubConfigForDevice(ctx, householdID, deviceID, s.stockIn, s.stockOut)
+	if err != nil {
+		return auth.DeviceHubConfig{}
 	}
+	return cfg
+}
+
+func (s *stage1) hubConfigLegacy() auth.DeviceHubConfig {
+	var cfg auth.DeviceHubConfig
 	cfg.ControlBarcodes.StockIn = s.stockIn
 	cfg.ControlBarcodes.StockOut = s.stockOut
 	if cfg.ControlBarcodes.StockIn == "" {
@@ -919,6 +919,9 @@ func (s *stage1) hubConfig() struct {
 		cfg.ControlBarcodes.StockOut = defaultStockOutBarcode
 	}
 	cfg.IdleSeconds = int(scannerIdleTimeout.Seconds())
+	cfg.DefaultDirection = "stock_out"
+	cfg.InactivityRevertSeconds = int(scannerIdleTimeout.Seconds())
+	cfg.CommitMode = "queue"
 	cfg.ConfigVersion = 1
 	return cfg
 }
@@ -963,23 +966,30 @@ func (s *stage1) serveListDevices(w http.ResponseWriter, r *http.Request) {
 	}{Cursor: out.Cursor, Changed: true, Devices: list})
 }
 
-func (s *stage1) serveRenameDevice(w http.ResponseWriter, r *http.Request) {
+func (s *stage1) servePatchDevice(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.account(w, r)
 	if !ok {
 		return
 	}
 	var body struct {
-		Label string `json:"label"`
-		Name  string `json:"name"`
+		Label                   *string `json:"label"`
+		Name                    *string `json:"name"`
+		DefaultDirection        *string `json:"defaultDirection"`
+		InactivityRevertSeconds *int    `json:"inactivityRevertSeconds"`
+		CommitMode              *string `json:"commitMode"`
 	}
 	if !readStage1(w, r, &body) {
 		return
 	}
-	label := body.Label
-	if strings.TrimSpace(label) == "" {
-		label = body.Name
+	if body.Label == nil && body.Name != nil && strings.TrimSpace(*body.Name) != "" {
+		body.Label = body.Name
 	}
-	device, err := s.svc.RenameDevice(r.Context(), p.UserID, p.HouseholdID, r.PathValue("id"), label)
+	device, err := s.svc.UpdateDevice(r.Context(), p.UserID, p.HouseholdID, r.PathValue("id"), auth.UpdateDevicePatch{
+		Label:                   body.Label,
+		DefaultDirection:        body.DefaultDirection,
+		InactivityRevertSeconds: body.InactivityRevertSeconds,
+		CommitMode:              body.CommitMode,
+	})
 	if err != nil {
 		writeStage1(w, err)
 		return
@@ -1066,9 +1076,9 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 			results = []auth.ScanResult{}
 		}
 		writeJSON(w, http.StatusOK, struct {
-			Results []auth.ScanResult `json:"results"`
-			Config  any               `json:"config"`
-		}{Results: results, Config: s.hubConfig()})
+			Results []auth.ScanResult   `json:"results"`
+			Config  auth.DeviceHubConfig `json:"config"`
+		}{Results: results, Config: s.deviceHubConfig(r.Context(), p.HouseholdID, p.DeviceID)})
 		return
 	}
 	var one struct {
@@ -1115,11 +1125,9 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 	if status == "created" {
 		status = "accepted"
 	}
-	writeJSON(w, http.StatusOK, struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-		Cursor string `json:"cursor"`
-	}{ID: results[0].ID, Status: status, Cursor: results[0].Cursor})
+	out := results[0]
+	out.Status = status
+	writeJSON(w, http.StatusOK, out)
 }
 
 func scanInputFrom(id, barcode string, scannedAt json.RawMessage, direction *string, unit int, heartbeat bool, age *int64, bootID string) auth.ScanInput {
@@ -1159,7 +1167,7 @@ func rejectSingleScan(item auth.ScanInput) bool {
 		return true
 	}
 	barcode := scan.TrimASCII(item.Barcode)
-	if barcode == "" || len(barcode) > 64 || !printableScan(barcode) || scan.LooksLikePairingCode(item.Barcode) {
+	if barcode == "" || len(barcode) > 64 || !printableScan(barcode) || scan.LooksLikePairingCode(item.Barcode) || !scan.IsProductBarcode(barcode) {
 		return true
 	}
 	if item.Direction != "" && item.Direction != "stock_in" && item.Direction != "stock_out" {
@@ -1188,6 +1196,8 @@ type heartbeatBody struct {
 	DroppedCount int    `json:"droppedCount"`
 	ClockSynced  bool   `json:"clockSynced"`
 	Rollback     bool   `json:"rollback"`
+	BatteryPct   *int   `json:"batteryPct"`
+	Charging     *bool  `json:"charging"`
 }
 
 func (s *stage1) serveHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -1202,20 +1212,20 @@ func (s *stage1) serveHeartbeat(w http.ResponseWriter, r *http.Request) {
 	rotate, err := s.svc.Heartbeat(r.Context(), p, auth.Heartbeat{
 		Version: body.Version, BootID: body.BootID, UptimeS: body.UptimeS,
 		Queued: body.Queued, Dropped: body.DroppedCount, ClockSynced: body.ClockSynced,
-		Rollback: body.Rollback,
+		Rollback: body.Rollback, BatteryPct: body.BatteryPct, Charging: body.Charging,
 	})
 	if err != nil {
 		writeStage1(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
-		ServerTime       string `json:"serverTime"`
-		Config           any    `json:"config"`
-		HeartbeatSeconds int    `json:"heartbeatSeconds"`
-		RotateToken      bool   `json:"rotateToken"`
+		ServerTime       string               `json:"serverTime"`
+		Config           auth.DeviceHubConfig `json:"config"`
+		HeartbeatSeconds int                  `json:"heartbeatSeconds"`
+		RotateToken      bool                 `json:"rotateToken"`
 	}{
 		ServerTime:       s.svc.Now().UTC().Format("2006-01-02T15:04:05Z"),
-		Config:           s.hubConfig(),
+		Config:           s.deviceHubConfig(r.Context(), p.HouseholdID, p.DeviceID),
 		HeartbeatSeconds: 60,
 		RotateToken:      rotate,
 	})

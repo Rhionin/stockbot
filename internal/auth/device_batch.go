@@ -21,6 +21,7 @@ type preparedScan struct {
 	unit    int
 	barcode string
 	ok      bool
+	match   DeviceProductMatch
 }
 
 // IngestScans writes one batch. A conflict or a rejected item does not roll
@@ -46,6 +47,23 @@ func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInpu
 	for i, item := range items {
 		prepared[i] = prepareScan(item, now)
 	}
+	if s.productLookup != nil {
+		scope, err := tenantScope(p.HouseholdID)
+		if err == nil {
+			for i := range prepared {
+				if !prepared[i].ok {
+					continue
+				}
+				match, err := s.productLookup.Lookup(ctx, scope, prepared[i].barcode)
+				if err != nil {
+					prepared[i].ok = false
+					prepared[i].reject = ScanResult{ID: prepared[i].item.ID, Status: "rejected", Code: CodeValidation}
+					continue
+				}
+				prepared[i].match = match
+			}
+		}
+	}
 	order := make([]int, 0, len(items))
 	for i, item := range prepared {
 		if item.ok {
@@ -62,6 +80,10 @@ func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInpu
 		}
 		groups[idx] = group
 		prev = prepared[idx].at
+	}
+
+	if s.deviceScanProcessor != nil {
+		return s.ingestScansWithProcessor(ctx, p, items, prepared, order, groups, dropped)
 	}
 
 	touch := s.presence.note(p.DeviceID, p.HouseholdID, now)
@@ -114,6 +136,18 @@ func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInpu
 			return nil, AsError(err)
 		}
 	}
+	stockBump := false
+	for _, row := range created {
+		if row.stock {
+			stockBump = true
+			break
+		}
+	}
+	if stockBump {
+		if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeStock); err != nil {
+			return nil, AsError(err)
+		}
+	}
 	if touch.cameOnline {
 		if err := changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeDevices); err != nil {
 			return nil, AsError(err)
@@ -144,6 +178,7 @@ func (s *Service) IngestScans(ctx context.Context, p Principal, items []ScanInpu
 type createdScan struct {
 	ScanID  string
 	Barcode string
+	stock   bool
 }
 
 func prepareScan(item ScanInput, now time.Time) preparedScan {
@@ -160,7 +195,7 @@ func prepareScan(item ScanInput, now time.Time) preparedScan {
 		return preparedScan{reject: ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}}
 	}
 	barcode, ok := deviceBarcode(item.Barcode)
-	if !ok {
+	if !ok || !productDigits(barcode) {
 		return preparedScan{reject: ScanResult{ID: item.ID, Status: "rejected", Code: CodeValidation}}
 	}
 	if item.Direction != "" && item.Direction != "stock_in" && item.Direction != "stock_out" {
@@ -240,6 +275,82 @@ func printableASCII(value string) bool {
 	return true
 }
 
+func (s *Service) ingestScansWithProcessor(ctx context.Context, p Principal, items []ScanInput, prepared []preparedScan, order []int, groups map[int]int, dropped int) ([]ScanResult, error) {
+	now := s.clock()
+	touch := s.presence.note(p.DeviceID, p.HouseholdID, now)
+	if touch.write || dropped > 0 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, AsError(err)
+		}
+		if touch.write {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE devices SET last_seen_at = ? WHERE id = ? AND household_id = ?`,
+				stamp(now), p.DeviceID, p.HouseholdID); err != nil {
+				_ = tx.Rollback()
+				return nil, AsError(err)
+			}
+		}
+		if dropped > 0 {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE devices SET dropped_total = dropped_total + ?
+				WHERE id = ? AND household_id = ?`,
+				dropped, p.DeviceID, p.HouseholdID); err != nil {
+				_ = tx.Rollback()
+				return nil, AsError(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, AsError(err)
+		}
+	}
+	out := make([]ScanResult, len(items))
+	var created []createdScan
+	for _, idx := range order {
+		result, row, err := s.insertScan(ctx, s.db, p, prepared[idx], groups[idx])
+		if err != nil {
+			return nil, err
+		}
+		out[idx] = result
+		if row.ScanID != "" {
+			created = append(created, row)
+		}
+	}
+	for i, item := range prepared {
+		if !item.ok {
+			out[i] = item.reject
+		}
+	}
+	if dropped > 0 {
+		if err := s.noteDropped(ctx, s.db, p.HouseholdID); err != nil {
+			return nil, err
+		}
+	}
+	if touch.cameOnline {
+		if tx, err := s.db.BeginTx(ctx, nil); err == nil {
+			_ = changes.Bump(ctx, tx, p.HouseholdID, changes.ScopeDevices)
+			_ = tx.Commit()
+		}
+		if s.hints != nil {
+			s.hints.PublishHint(p.HouseholdID, "devices")
+		}
+	}
+	if len(created) > 0 && s.hints != nil {
+		s.hints.PublishHint(p.HouseholdID, "scans")
+	}
+	if s.barcodeLookup != nil {
+		for _, row := range created {
+			if productDigits(row.Barcode) {
+				s.barcodeLookup(ctx, p.HouseholdID, row.ScanID, row.Barcode)
+			}
+		}
+	}
+	if dropped > 0 {
+		s.announce(ctx, p.HouseholdID, alertScansDropped)
+	}
+	return out, nil
+}
+
 func sortScanOrder(order []int, prepared []preparedScan) {
 	for i := 1; i < len(order); i++ {
 		j := i
@@ -252,41 +363,4 @@ func sortScanOrder(order []int, prepared []preparedScan) {
 			j--
 		}
 	}
-}
-
-func (s *Service) insertScan(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
-	approx := 0
-	if item.approx {
-		approx = 1
-	}
-	var dir any
-	if item.item.Direction == "" {
-		dir = nil
-	} else {
-		dir = item.item.Direction
-	}
-	id := newID()
-	_, err := q.ExecContext(ctx, `
-		INSERT INTO scan_entries (
-			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at,
-			direction, unit_count, status, time_approx, scan_group, boot_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-		id, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, stamp(item.at),
-		dir, item.unit, approx, group, item.item.BootID)
-	if err == nil {
-		return ScanResult{ID: item.item.ID, Status: "created", Cursor: id, ScanID: id}, createdScan{ScanID: id, Barcode: item.barcode}, nil
-	}
-	var barcode, direction string
-	var units int
-	qerr := q.QueryRowContext(ctx, `
-		SELECT barcode, COALESCE(direction, ''), unit_count FROM scan_entries
-		WHERE household_id = ? AND device_id = ? AND client_scan_id = ?`,
-		p.HouseholdID, p.DeviceID, item.item.ID).Scan(&barcode, &direction, &units)
-	if qerr != nil {
-		return ScanResult{}, createdScan{}, AsError(err)
-	}
-	if barcode == item.barcode && direction == item.item.Direction && units == item.unit {
-		return ScanResult{ID: item.item.ID, Status: "duplicate", Cursor: item.item.ID}, createdScan{}, nil
-	}
-	return ScanResult{ID: item.item.ID, Status: "conflict"}, createdScan{}, nil
 }

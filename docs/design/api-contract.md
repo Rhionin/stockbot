@@ -767,13 +767,13 @@ The device calls this with the code and receives the bearer token. Design §6 na
 | Auth | None. The code is the credential. |
 | Role | None |
 | X-Household-Id | Omit. The code is bound to the household that created it. |
-| Request | `{ "code": string, "label"?: string, "hub"?: { "kind": "pi_hub" \| "box_hub", "version": string, "bootId": string } }` |
+| Request | `{ "code": string, "label"?: string, "hub"?: { "kind": "pi_hub" \| "box_hub" \| "esp32_scanner", "version": string, "bootId": string } }` |
 | Response | `201` `{ "deviceId": string, "token": string, "config"?: DeviceHubConfig, "heartbeatSeconds"?: 60 }` |
 | Errors | `validation`, `not_found`, `rate_limited`. `invite_expired` is not used here |
 
 An unknown, revoked, already used, or expired code is `not_found`. A code that matches the pattern and fails the check character is `not_found` too. Pairing does not reuse `invite_expired`. `label` is an optional display name. `code` and `label` are the #364 fields. `hub` is the stage-1 addition a scan hub sends. Complete is attempt-limited: 10 per 10 minutes per IP, and 5 attempts per code. Too many tries returns `rate_limited`. This route keeps working on the LAN. Hubs pair against `http://pi:8080`. The code is the credential, and the rate limits above still apply.
 
-The response does not include a household id. The token is bound to that household on the server. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`.
+The response does not include a household id. The token is bound to that household on the server. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`. **`esp32_scanner`** is the handheld ESP32 barcode scanner (Ticket 1): pairing accepts the same `hub` object with `kind: "esp32_scanner"`. Default `config` on complete is `defaultDirection: "stock_out"`, `inactivityRevertSeconds: 300`, `commitMode: "queue"`, `controlBarcodes: { stockIn: "STOCK-IN", stockOut: "STOCK-OUT" }` (underscore variants `STOCK_IN` / `STOCK_OUT` are recognized on ingest), and `configVersion` from the device row.
 
 ### GET /api/devices
 
@@ -792,10 +792,18 @@ interface Device {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
-  kind: 'pi_hub' | 'box_hub' | 'direct';
+  kind: 'pi_hub' | 'box_hub' | 'direct' | 'esp32_scanner';
   online: boolean;
+  queued?: number;
+  defaultDirection?: 'stock_in' | 'stock_out';
+  inactivityRevertSeconds?: number;
+  commitMode?: 'queue' | 'immediate';
+  batteryPct?: number | null;
+  charging?: boolean | null;
 }
 ```
+
+`defaultDirection`, `inactivityRevertSeconds`, and `commitMode` reflect the stored scanner settings (`stock_out`, `300`, and `queue` by default). `batteryPct` (0–100) and `charging` come from the latest heartbeat when reported; omit or null when unknown.
 
 `id`, `label`, `createdAt`, `lastSeenAt`, and `revokedAt` are the #364 fields. `kind` and `online` are the stage-1 additions. `lastSeenAt` in this response is the in-memory value. The database row is written only when online status flips, or every 5 minutes. `online` is true when that in-memory time is within 300 seconds of now. The server decides, so web and mobile agree. `direct` is the scanner on this server. It belongs to household 1, and it cannot be paired, renamed, revoked, or moved: those routes return `not_found` for it. The token and the token hash are not in this response.
 
@@ -808,7 +816,7 @@ Rename. Any member. The #364 list fields are otherwise unchanged.
 | Auth | Session |
 | Role | Member |
 | X-Household-Id | Required. `{id}` must be a device of that household. |
-| Request | `{ "label": string }` |
+| Request | `{ "label"?: string, "defaultDirection"?: "stock_in" | "stock_out", "inactivityRevertSeconds"?: number (30..3600), "commitMode"?: "queue" | "immediate" }` |
 | Response | `200` `Device` |
 | Errors | `unauthorized`, `validation`, `not_found`, `busy` |
 
@@ -898,7 +906,15 @@ A device may submit 600 scans per minute. Over that limit the response is `429` 
 
 The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
 
-`DeviceHubConfig` is `{ controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, configVersion: number }`.
+`DeviceHubConfig` is `{ label: string, controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, defaultDirection: "stock_in" | "stock_out", inactivityRevertSeconds: number, commitMode: "queue" | "immediate", configVersion: number }`. `idleSeconds` matches `inactivityRevertSeconds` (default 300). Control barcodes accept `STOCK-IN`/`STOCK-OUT` and `STOCK_IN`/`STOCK_OUT`.
+
+**1D product barcodes only (hardware scans).** After trimming ASCII whitespace, each batch item barcode must be 1–14 ASCII digits (`0`–`9`). QR URLs (`https://…`), JSON payloads, pairing codes (`SBP-…`), empty strings, strings over 64 characters, and non-digit product strings are **`rejected`** with `code: "validation"`. Hardware ingest never creates `status: "qr"` scan rows.
+
+**Enriched LCD fields** on each accepted batch item (and on the single-scan body when not heartbeat-only) include: `scanStatus` (`queued` | `committed` | `flagged`), `known` (boolean), `productName` (string or null), `barcode`, `direction`, `queuedCount`, `onHand`, `delta` (signed stock change; `0` in queue mode), and `backfilled` (boolean). Idempotency is keyed by `(device id, client scan id)` in `device_scan_receipts`; a **`duplicate`** replay returns the cached LCD fields without double-queuing or double-committing. A replay with a different barcode, direction, or `unitCount` is **`conflict`**.
+
+**`commitMode: "queue"`** (default): known products create or merge an open **`pending`** queue row and return `scanStatus: "queued"`, `delta: 0`, and current `onHand`. Unknown barcodes create or merge **`flagged`** rows with `scanStatus: "flagged"`, `known: false`, `productName: null`, `onHand: 0`.
+
+**`commitMode: "immediate"`** (known products only): stock-in commits in one step (`scanStatus: "committed"`, positive `delta`, `queuedCount: 0`). Stock-out with on-hand decrements immediately; stock-out at **zero on-hand** runs atomic **#294 backfill** (`backfilled: true`, `delta` negative, `onHand` 0 after). Unknown barcodes still **`flagged`** in the queue even in immediate mode.
 
 ### POST /api/device/heartbeat
 
@@ -909,11 +925,11 @@ The hub reports liveness. A flush also counts as contact. This does not remove `
 | Auth | Device bearer |
 | Role | Device |
 | X-Household-Id | Omit |
-| Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean }` |
+| Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean, "batteryPct"?: number, "charging"?: boolean }` |
 | Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: { "version": string, "url": string, "sha256": string, "sig": string } }` |
 | Errors | `unauthorized`, `device_revoked`, `validation`, `rate_limited`, `busy` |
 
-`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent.
+`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent. Optional **`batteryPct`** (integer 0–100) and **`charging`** (boolean) update the device row when present; out-of-range `batteryPct` is `validation`. The response **`config`** is the full `DeviceHubConfig` after applying any pending settings (`label`, `controlBarcodes`, `defaultDirection`, `inactivityRevertSeconds`, `commitMode`, `configVersion`).
 
 ### POST /api/device/token/rotate
 
