@@ -87,8 +87,9 @@ class StockbotCaptivePortal final : public CaptivePortal {
       pending_submission_.server_url = server_.arg("url").c_str();
     }
     pending_ = true;
-    server_.send(200, "text/html",
-                 std::string("<html><body>") + kPortalConnectingMessage + "</body></html>").c_str());
+    const std::string connecting_body =
+        std::string("<html><body>") + kPortalConnectingMessage + "</body></html>";
+    server_.send(200, "text/html", connecting_body.c_str());
   }
 };
 
