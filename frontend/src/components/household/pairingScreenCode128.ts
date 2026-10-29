@@ -6,9 +6,6 @@ export const PAIRING_CODE128_MIN_MODULE_DEVICE_PX = 2;
 /** Maximum narrow-module width in CSS pixels on large screens. */
 export const PAIRING_CODE128_MAX_MODULE_CSS_PX = 2;
 
-/** @deprecated Use PAIRING_CODE128_MIN_MODULE_DEVICE_PX */
-export const PAIRING_CODE128_MIN_MODULE_PX = PAIRING_CODE128_MIN_MODULE_DEVICE_PX;
-
 export type PairingCode128Layout = {
   moduleCssPx: number;
   moduleDevicePx: number;
@@ -58,15 +55,17 @@ export function computePairingCode128Layout(
   }
 
   const fitDevice = Math.floor((availableCssWidth * dpr) / totalModules);
-  let moduleDevicePx = Math.max(PAIRING_CODE128_MIN_MODULE_DEVICE_PX, fitDevice);
+  let moduleDevicePx = fitDevice >= PAIRING_CODE128_MIN_MODULE_DEVICE_PX
+    ? fitDevice
+    : 1;
   let moduleCssPx = moduleDevicePx / dpr;
-  if (moduleCssPx * totalModules > availableCssWidth) {
-    moduleDevicePx = Math.max(1, fitDevice);
+  if (moduleCssPx > PAIRING_CODE128_MAX_MODULE_CSS_PX) {
+    moduleDevicePx = Math.max(
+      PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
+      Math.round(PAIRING_CODE128_MAX_MODULE_CSS_PX * dpr),
+    );
     moduleCssPx = moduleDevicePx / dpr;
   }
-  moduleCssPx = Math.min(moduleCssPx, PAIRING_CODE128_MAX_MODULE_CSS_PX);
-  moduleDevicePx = Math.max(PAIRING_CODE128_MIN_MODULE_DEVICE_PX, Math.round(moduleCssPx * dpr));
-  moduleCssPx = moduleDevicePx / dpr;
 
   return {
     moduleCssPx,

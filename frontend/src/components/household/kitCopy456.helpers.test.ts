@@ -10,7 +10,6 @@ import {
   formatPairingExpiryTime,
   pairingDialogTitle,
   pairingKeyboardFallback,
-  pairingPrintBody,
   renameDeviceModalTitle,
   resolveWallBarcodeSettings,
   wallBarcodeStockInCopy,
@@ -18,10 +17,7 @@ import {
 } from './kitCopy456';
 
 describe('kit copy helpers (#456 table B)', () => {
-  it('pairing print and keyboard fallbacks', () => {
-    expect(pairingPrintBody('Test Household', '2026-06-15T14:05:00.000Z', 'en-US', 'UTC')).toBe(
-      'Scan this barcode with your scanner to connect it to Test Household. It works once and expires at 2:05 PM.',
-    );
+  it('pairing keyboard fallbacks', () => {
     expect(pairingKeyboardFallback('SBP-2345-6789-X', 'hub')).toBe(
       'No printer? Plug a USB keyboard into the hub, type this code, and press Enter: SBP-2345-6789-X',
     );

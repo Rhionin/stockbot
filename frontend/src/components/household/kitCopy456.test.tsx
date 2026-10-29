@@ -69,7 +69,16 @@ function renderStage(ui: React.ReactNode, auth: AuthSession) {
 }
 
 function assertNoOperatorInVisibleCopy() {
-  expect(document.body.textContent?.toLowerCase()).not.toMatch(/\boperator\b/);
+  const forbidden = /\boperator\b/i;
+  expect(document.body.textContent).not.toMatch(forbidden);
+  for (const element of document.body.querySelectorAll('*')) {
+    for (const attribute of ['aria-label', 'title', 'placeholder', 'alt', 'value'] as const) {
+      const value = element.getAttribute(attribute);
+      if (value != null && value !== '') {
+        expect(value, `${attribute}="${value}"`).not.toMatch(forbidden);
+      }
+    }
+  }
 }
 
 describe('issue #456 kit copy (table B)', () => {

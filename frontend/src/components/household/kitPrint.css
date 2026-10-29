@@ -87,11 +87,39 @@
   margin: 1px 0;
 }
 
-.setup-kit-print-sheet .kit-print-ruler-wrap {
-  margin: 2px 0;
+.setup-kit-print-sheet .kit-print-footer-instruction {
+  margin-bottom: 3mm;
+  padding-bottom: 1mm;
 }
 
-.kit-print-title {
+.setup-kit-print-sheet .kit-print-ruler-wrap {
+  margin: 1mm 0 2px;
+}
+
+.wall-sheet-symcode-print {
+  display: none;
+  margin-top: 4px;
+  padding: 4px 5px;
+  break-inside: avoid;
+}
+
+.wall-sheet-symcode-print .kit-wall-panel-title {
+  font-size: 12pt;
+  margin: 0 0 2px;
+}
+
+.wall-sheet-symcode-print .kit-wall-panel-copy {
+  font-size: 9pt;
+  line-height: 1.15;
+  margin: 2px 0 0;
+}
+
+.wall-sheet-symcode-print .printable-barcode-caption {
+  font-size: 9pt;
+  margin: 2px 0 0;
+}
+
+.printable-barcode-block {
   font-size: 20pt;
   margin: 0 0 4px;
 }
@@ -340,13 +368,13 @@
   }
 
   .kit-print-root[data-printing='true'] {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
     width: 100% !important;
     padding: 0 !important;
     background: #fff !important;
-    z-index: 2147483647 !important;
+    z-index: auto !important;
     display: block !important;
   }
 
@@ -356,5 +384,33 @@
   .kit-print-footer {
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+
+  .wall-sheet-symcode-print {
+    display: block !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-tip {
+    display: none !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-wrap,
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-meta {
+    display: none !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-panel-copy {
+    font-size: 9pt;
+    line-height: 1.1;
+    margin-top: 2px;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-mode-word {
+    font-size: 18pt;
+    margin-bottom: 0;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer {
+    margin-top: 2px;
   }
 }

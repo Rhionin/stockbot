@@ -24,16 +24,6 @@ export function formatPairingExpiryTime(
   });
 }
 
-export function pairingPrintBody(
-  householdName: string,
-  expiresAt: string | Date,
-  locale = 'en-US',
-  timeZone?: string,
-): string {
-  const time = formatPairingExpiryTime(expiresAt, locale, timeZone);
-  return `Scan this barcode with your scanner to connect it to ${householdName}. It works once and expires at ${time}.`;
-}
-
 export function pairingScannerScreenFallback(): string {
   return "Can't scan it? Open the app on your phone or computer and scan this barcode from the screen.";
 }

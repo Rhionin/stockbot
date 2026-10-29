@@ -38,6 +38,15 @@ export function WallBarcodeSheetModal({
           data-printing={printing ? 'true' : 'false'}
         >
           <WallKitPrintSheet settings={settings} scannerName={scannerName} />
+          {symcodeOpen && printing && (
+            <section className="kit-wall-panel wall-sheet-symcode-print" aria-label="Symcode QR disable">
+              <p className="kit-wall-panel-title">Symcode handheld only: turn off QR codes</p>
+              <PrintableBarcode value="%%SpecCode99" moduleMm={0.5} heightMm={14} />
+              <p className="kit-wall-panel-copy">
+                Scan this once after connecting a Symcode handheld so it ignores QR codes on food packages. The built-in scanner already does this.
+              </p>
+            </section>
+          )}
         </div>
         <div className="pairing-screen-only wall-sheet-screen-extra">
           <button

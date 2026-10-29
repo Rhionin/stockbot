@@ -39,7 +39,6 @@ function kitCopy456Strings(): string[] {
     kitCopy456.setupSheetExpiryHelpCopy(),
     kitCopy456.setupSheetCutLineCopy(),
     kitCopy456.setupSheetExpiryLine(SAMPLE_EXPIRY, 'en-US', 'UTC'),
-    kitCopy456.pairingPrintBody('Pantry', SAMPLE_EXPIRY, 'en-US', 'UTC'),
     kitCopy456.pairingKeyboardFallback('SBP-1', 'hub') ?? '',
     kitCopy456.pairingDialogTitle('scanner'),
     kitCopy456.pairingDialogTitle('devices'),

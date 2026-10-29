@@ -108,6 +108,9 @@
 
 .pairing-code128 {
   display: block;
+  flex: none;
+  flex-shrink: 0;
+  max-width: none;
   height: 96px;
   background: #ffffff;
 }
@@ -127,7 +130,8 @@
   justify-content: center;
   align-items: center;
   width: 100%;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .code128-quiet-zone .pairing-code128 {
@@ -316,10 +320,10 @@
   }
 
   .kit-print-root[data-printing='true'] {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    z-index: 2147483647 !important;
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
+    z-index: auto !important;
     width: 100% !important;
     background: #fff !important;
     display: block !important;

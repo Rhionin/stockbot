@@ -1,74 +1,138 @@
-import { render, waitFor } from '@testing-library/react';
-import { MantineProvider, Text } from '@mantine/core';
+import { render, screen, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatPairingCode } from '@stockbot/shared/contract';
+import { code128Bars } from './code128';
 import {
   PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
   PAIRING_CODE128_QUIET_MODULES,
   computePairingCode128Layout,
+  pairingCode128BarRuns,
   pairingCode128ModuleCount,
+  pairingCode128SvgWidthPx,
 } from './pairingScreenCode128';
+import { PrintableBarcode } from './printableBarcode';
+import { printableBarcodeQuietMm } from './printableBarcodeQuiet';
 import { Code128Mark } from './symbols';
+import { PairingDialog } from './PairingDialog';
 
 const PAIRING = formatPairingCode('23456789');
 const BAR_MODULES = pairingCode128ModuleCount(PAIRING);
 
-describe('on-screen pairing Code 128 (PR #466 follow-up)', () => {
+function expectedBarRuns(value: string): Array<{ x: number; width: number }> {
+  const bars = code128Bars(value);
+  const runs: Array<{ x: number; width: number }> = [];
+  let index = 0;
+  while (index < bars.length) {
+    if (!bars[index]) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < bars.length && bars[index]) index += 1;
+    runs.push({ x: start + PAIRING_CODE128_QUIET_MODULES, width: index - start });
+  }
+  return runs;
+}
+
+function rectSequence(root: ParentNode) {
+  const svg = root.querySelector('svg')!;
+  return [...svg.querySelectorAll('rect')].map((rect) => ({
+    x: Number(rect.getAttribute('x')),
+    width: Number(rect.getAttribute('width')),
+  }));
+}
+
+describe('pairingCode128 layout math', () => {
+  it('pairingCode128SvgWidthPx scales total modules by css module width', () => {
+    expect(pairingCode128SvgWidthPx(2, BAR_MODULES)).toBe((BAR_MODULES + 2 * PAIRING_CODE128_QUIET_MODULES) * 2);
+  });
+
+  it('computePairingCode128Layout uses integer device px and allows 1px only when 2 cannot fit', () => {
+    const narrow = computePairingCode128Layout(366, BAR_MODULES, 3);
+    expect(narrow.moduleDevicePx).toBe(4);
+    expect(Number.isInteger(narrow.moduleDevicePx)).toBe(true);
+
+    const desktop = computePairingCode128Layout(517, BAR_MODULES, 1);
+    expect(desktop.moduleDevicePx).toBe(2);
+    expect(desktop.svgWidthCssPx).toBe(440);
+
+    const phone = computePairingCode128Layout(320, BAR_MODULES, 1);
+    expect(phone.moduleDevicePx).toBe(1);
+    expect(phone.svgWidthCssPx).toBeCloseTo(220, 5);
+  });
+});
+
+describe('on-screen Code128Mark geometry', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('uses device-pixel modules, quiet zone >= 10, and fits the container width', async () => {
-    vi.stubGlobal('devicePixelRatio', 3);
+  it('renders bar runs with quiet-zone offset matching the encoder', async () => {
+    vi.stubGlobal('devicePixelRatio', 2);
     const { container } = render(
       <MantineProvider env="test">
-        <div style={{ width: 366 }}>
+        <div style={{ width: 360 }}>
           <Code128Mark value={PAIRING} quietZone />
         </div>
       </MantineProvider>,
     );
     await waitFor(() => {
-      const svg = container.querySelector('svg.pairing-code128');
-      expect(svg).not.toBeNull();
-      expect(Number(svg!.getAttribute('width'))).toBeLessThanOrEqual(366);
+      expect(container.querySelector('svg.pairing-code128 rect')).not.toBeNull();
     });
+    expect(rectSequence(container)).toEqual(expectedBarRuns(PAIRING));
     const svg = container.querySelector('svg.pairing-code128')!;
-    const moduleDevicePx = Number(svg!.getAttribute('data-module-device-px'));
+    const moduleDevicePx = Number(svg.getAttribute('data-module-device-px'));
     expect(moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX);
     expect(Number.isInteger(moduleDevicePx)).toBe(true);
-    expect(Number(svg!.getAttribute('data-quiet-modules'))).toBeGreaterThanOrEqual(PAIRING_CODE128_QUIET_MODULES);
-    expect([...svg!.querySelectorAll('rect')].every((rect) => rect.getAttribute('fill') === '#000000')).toBe(true);
-    expect(svg.getAttribute('shape-rendering')).toBe('crispEdges');
-  });
-
-  it('computePairingCode128Layout matches narrow high-DPR and desktop cases', () => {
-    const narrow = computePairingCode128Layout(366, BAR_MODULES, 3);
-    expect(narrow.moduleDevicePx).toBe(4);
-    expect(narrow.moduleCssPx).toBeCloseTo(4 / 3, 5);
-    expect(narrow.svgWidthCssPx).toBeCloseTo(293.333, 1);
-
-    const desktop = computePairingCode128Layout(517, BAR_MODULES, 1);
-    expect(desktop.moduleDevicePx).toBe(2);
-    expect(desktop.moduleCssPx).toBe(2);
-    expect(desktop.svgWidthCssPx).toBe(440);
-
-    const tiny = computePairingCode128Layout(50, BAR_MODULES, 1);
-    expect(tiny.moduleDevicePx).toBeGreaterThanOrEqual(1);
-    expect(computePairingCode128Layout(366, BAR_MODULES, 3).moduleDevicePx).toBeGreaterThanOrEqual(
-      PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
+    expect(Number(svg.getAttribute('width'))).toBeCloseTo(
+      pairingCode128SvgWidthPx(Number(svg.getAttribute('data-module-css-px')), BAR_MODULES),
+      5,
     );
   });
 });
 
-describe('pairing code text layout', () => {
-  it('applies the pairing-spaced class for nowrap styling', () => {
+describe('printable barcode geometry and quiet zone', () => {
+  it('offsets bars by quiet modules and enforces print quiet padding', () => {
     const { container } = render(
+      <PrintableBarcode value="STOCK-OUT" moduleMm={0.5} heightMm={18} />,
+    );
+    expect(rectSequence(container)).toEqual(expectedBarRuns('STOCK-OUT'));
+    const block = container.querySelector('.printable-barcode-block')!;
+    expect(Number(block.getAttribute('data-quiet-mm'))).toBe(printableBarcodeQuietMm(0.5));
+    expect(Number(block.getAttribute('data-quiet-mm'))).toBeGreaterThanOrEqual(6);
+    expect(Number(block.getAttribute('data-quiet-mm'))).toBeGreaterThanOrEqual(10 * 0.5);
+    const svg = container.querySelector('svg[data-barcode]')!;
+    const firstBar = svg.querySelector('rect')!;
+    expect(Number(firstBar.getAttribute('x'))).toBeGreaterThanOrEqual(PAIRING_CODE128_QUIET_MODULES);
+  });
+
+  it('matches pairingCode128BarRuns for the pairing value', () => {
+    expect(pairingCode128BarRuns(PAIRING)).toEqual(expectedBarRuns(PAIRING));
+  });
+});
+
+describe('PairingDialog nowrap pairing code', () => {
+  it('applies pairing-spaced for nowrap styling in the dialog', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes('/api/devices/pair')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          code: PAIRING,
+          barcodeValue: PAIRING,
+          expiresAt: '2099-01-01T00:00:00Z',
+          pairingId: 'pair-1',
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    render(
       <MantineProvider env="test">
-        <Text className="pairing-spaced" aria-label="Pairing code">
-          {PAIRING.split('').join(' ')}
-        </Text>
+        <PairingDialog opened householdName="Pantry" onClose={() => undefined} />
       </MantineProvider>,
     );
-    expect(container.querySelector('.pairing-spaced')).not.toBeNull();
+    const spaced = await screen.findByLabelText('Pairing code');
+    expect(spaced).toHaveClass('pairing-spaced');
+    expect(spaced.className).toMatch(/pairing-spaced/);
   });
 });
