@@ -1637,20 +1637,20 @@ systemd_unit_dir() {
   printf '%s\n' "${PANTRY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 }
 
-# install_host_bundle_tree STAGED_ROOT copies bundle files into PANTRY_DIR
-# and refreshes systemd units when they are already installed.
-install_host_bundle_tree() {
-  local staged="$1" rel src dest unit_dir copied_units=0
+host_scripts_last_known_good_dir() {
+  printf '%s\n' "$PANTRY_DIR/host-scripts-last-known-good"
+}
+
+# host_bundle_install_plan lists SRC and DEST pairs to install from STAGED.
+# Systemd unit paths are included when those units are already installed.
+host_bundle_install_plan() {
+  local staged="$1" rel src dest unit_dir
   while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
     [[ -z "${rel:-}" ]] && continue
     src="$staged/$rel"
     [[ -f "$src" ]] || continue
     dest="$PANTRY_DIR/$rel"
-    mkdir -p "$(dirname "$dest")"
-    if ! atomic_install_file "$src" "$dest"; then
-      echo "pantry update: could not install ${rel} from the image host bundle" >&2
-      return 1
-    fi
+    printf '%s\t%s\n' "$src" "$dest"
   done < <(host_bundle_rel_paths)
   unit_dir=$(systemd_unit_dir)
   if [[ -f "$unit_dir/pantry-update.service" || -f "$unit_dir/pantry-update.timer" ]]; then
@@ -1661,59 +1661,222 @@ install_host_bundle_tree() {
     do
       src="$staged/$rel"
       [[ -f "$src" ]] || continue
-      if ! atomic_install_file "$src" "$unit_dir/$(basename "$rel")"; then
-        echo "pantry update: could not refresh $(basename "$rel") under ${unit_dir}" >&2
-        return 1
-      fi
-      copied_units=1
+      printf '%s\t%s\n' "$src" "$unit_dir/$(basename "$rel")"
     done
   fi
   if [[ -f "$unit_dir/pantry-backup.timer" ]]; then
     for rel in systemd/pantry-backup.service systemd/pantry-backup.timer; do
       src="$staged/$rel"
       [[ -f "$src" ]] || continue
-      if ! atomic_install_file "$src" "$unit_dir/$(basename "$rel")"; then
-        echo "pantry update: could not refresh $(basename "$rel") under ${unit_dir}" >&2
-        return 1
-      fi
-      copied_units=1
+      printf '%s\t%s\n' "$src" "$unit_dir/$(basename "$rel")"
     done
   fi
-  if [[ "$copied_units" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
+}
+
+verify_host_bundle_staged() {
+  local staged="$1" rel src missing=0
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    src="$staged/$rel"
+    if [[ ! -f "$src" ]]; then
+      echo "pantry update: host bundle from the image is missing ${rel}" >&2
+      missing=1
+    fi
+  done < <(host_bundle_rel_paths)
+  [[ "$missing" -eq 0 ]]
+}
+
+snapshot_host_scripts_last_known_good() {
+  local lkg rel src dest unit_dir
+  lkg=$(host_scripts_last_known_good_dir)
+  rm -rf "$lkg"
+  mkdir -p "$lkg/systemd"
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    dest="$PANTRY_DIR/$rel"
+    [[ -f "$dest" ]] || continue
+    src="$lkg/$rel"
+    mkdir -p "$(dirname "$src")"
+    cp -a "$dest" "$src"
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  for rel in \
+    pantry-update.service pantry-update.timer pantry-update.path \
+    pantry-backup.service pantry-backup.timer
+  do
+    [[ -f "$unit_dir/$rel" ]] || continue
+    cp -a "$unit_dir/$rel" "$lkg/systemd/$rel"
+  done
+}
+
+restore_host_scripts_from_last_known_good() {
+  local lkg rel src dest unit_dir
+  lkg=$(host_scripts_last_known_good_dir)
+  [[ -d "$lkg" ]] || return 1
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    src="$lkg/$rel"
+    [[ -f "$src" ]] || continue
+    dest="$PANTRY_DIR/$rel"
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$src" "$dest"
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  for rel in \
+    pantry-update.service pantry-update.timer pantry-update.path \
+    pantry-backup.service pantry-backup.timer
+  do
+    src="$lkg/systemd/$rel"
+    [[ -f "$src" ]] || continue
+    cp -a "$src" "$unit_dir/$rel"
+  done
+  if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
   fi
 }
 
+# install_host_bundle_tree_all_or_nothing stages every file, verifies the set,
+# snapshots the previous host scripts, then swaps atomically per file.
+install_host_bundle_tree_all_or_nothing() {
+  local staged="$1" plan tmp src dest pending=() copied_units=0 unit_dir
+  if ! verify_host_bundle_staged "$staged"; then
+    return 1
+  fi
+  plan=$(mktemp) || return 1
+  host_bundle_install_plan "$staged" > "$plan"
+  while IFS=$'\t' read -r src dest || [[ -n "${src:-}" ]]; do
+    [[ -z "${src:-}" ]] && continue
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      continue
+    fi
+    tmp=$(mktemp "${dest}.refresh.XXXXXX") || {
+      rm -f "$plan"
+      return 1
+    }
+    cp "$src" "$tmp" || {
+      rm -f "$tmp" "$plan"
+      return 1
+    }
+    if [[ "$dest" == *.sh ]]; then
+      chmod +x "$tmp" || {
+        rm -f "$tmp" "$plan"
+        return 1
+      }
+    fi
+    pending+=("$tmp|$dest")
+  done < "$plan"
+  rm -f "$plan"
+  snapshot_host_scripts_last_known_good
+  for entry in "${pending[@]}"; do
+    tmp=${entry%%|*}
+    dest=${entry#*|}
+    if ! mv "$tmp" "$dest"; then
+      echo "pantry update: could not install $(basename "$dest") from the image host bundle" >&2
+      restore_host_scripts_from_last_known_good || true
+      return 1
+    fi
+    case "$dest" in
+      *pantry-update.service|*pantry-update.timer|*pantry-update.path|*pantry-backup.service|*pantry-backup.timer)
+        copied_units=1 ;;
+    esac
+  done
+  if [[ "$copied_units" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+  return 0
+}
+
+HOST_BUNDLE_GITHUB_REPO=Rhionin/stockbot
+HOST_BUNDLE_GITHUB_BRANCH=master
+
+host_bundle_github_compare_url() {
+  local revision="$1"
+  printf 'https://api.github.com/repos/%s/compare/%s...%s' \
+    "$HOST_BUNDLE_GITHUB_REPO" "$revision" "$HOST_BUNDLE_GITHUB_BRANCH"
+}
+
+# host_bundle_revision_on_master uses the public GitHub compare API. Returns 0
+# when REVISION is an ancestor of master (status ahead or identical), 1 when
+# it is not, and 2 when GitHub could not be reached.
+host_bundle_revision_on_master() {
+  local revision="$1" url body status
+  [[ -n "$revision" ]] || return 1
+  url=$(host_bundle_github_compare_url "$revision")
+  body=$(curl -fsS "$url" 2>/dev/null) || return 2
+  status=$(printf '%s' "$body" | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  case "$status" in
+    ahead|identical) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+host_bundle_running_digest_matches() {
+  local state="$1" expected running_id ref running_dig
+  expected=$(service_desired_digest "$state" pantry)
+  running_id=$(running_image_id pantry)
+  ref=$(service_ref pantry "$state")
+  running_dig=$(image_repo_digest "$running_id" "$ref")
+  [[ -n "$expected" && -n "$running_dig" && "$expected" == "$running_dig" ]]
+}
+
+# host_bundle_provenance_ok gates host refresh. Returns 0 when the running
+# pantry image matches the deployed digest and its revision is on master.
+host_bundle_provenance_ok() {
+  local state="$1" revision rc
+  if ! host_bundle_running_digest_matches "$state"; then
+    echo "pantry update: host script refresh skipped: running pantry digest does not match the deployed image" >&2
+    return 1
+  fi
+  revision=$(pantry_deploy_revision "$state")
+  host_bundle_revision_on_master "$revision"
+  rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    echo "pantry update: host script refresh skipped: could not reach GitHub to verify image revision" >&2
+    return 2
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "pantry update: host script refresh skipped: image revision is not on origin/master" >&2
+    return 1
+  fi
+  return 0
+}
+
 # refresh_host_scripts_from_image copies the bundle out of the running pantry
-# container after a successful deploy. Returns 0 even when refresh is skipped.
+# container after a successful deploy. Returns non-zero when refresh fails.
 refresh_host_scripts_from_image() {
-  local cid tmp staged
+  local state="$1" cid tmp staged prov_rc
   if [[ "${PANTRY_HOST_REFRESH:-}" == off ]]; then
     return 0
   fi
+  prov_rc=0
+  host_bundle_provenance_ok "$state" || prov_rc=$?
+  if [[ "$prov_rc" -ne 0 ]]; then
+    return "$prov_rc"
+  fi
   cid=$(container_id pantry)
   if [[ -z "$cid" ]]; then
-    echo "<4>pantry update: warning: could not refresh host scripts; pantry container id is missing" >&2
-    return 0
+    echo "pantry update: host script refresh failed: pantry container id is missing" >&2
+    return 1
   fi
   tmp=$(mktemp -d) || {
-    echo "<4>pantry update: warning: could not refresh host scripts; temp directory failed" >&2
-    return 0
+    echo "pantry update: host script refresh failed: temp directory failed" >&2
+    return 1
   }
   staged="$tmp/bundle"
   mkdir -p "$staged"
   if ! docker cp "${cid}:${HOST_BUNDLE_CONTAINER_PATH}/." "$staged"; then
     rm -rf "$tmp"
-    echo "<4>pantry update: warning: could not read host scripts from the pantry container" >&2
-    return 0
+    echo "pantry update: host script refresh failed: could not read host scripts from the pantry container" >&2
+    return 1
   fi
-  if ! install_host_bundle_tree "$staged"; then
+  if ! install_host_bundle_tree_all_or_nothing "$staged"; then
     rm -rf "$tmp"
-    echo "<4>pantry update: warning: host script refresh from the image failed" >&2
-    return 0
+    echo "pantry update: host script refresh failed" >&2
+    return 1
   fi
   rm -rf "$tmp"
   echo "pantry update: refreshed host deploy scripts from the running image"
+  return 0
 }
 
 pantry_deploy_revision() {
@@ -1764,8 +1927,8 @@ pre_deploy_backup() {
   script="$(cd "$(dirname "$0")" && pwd)/pantry-backup.sh"
   revision=$(pantry_deploy_revision "$state")
   echo "pantry update: pre-deploy backup (${mode})"
-  if [[ ! -f "$script" ]]; then
-    echo "pantry update: pre-deploy backup script is missing" >&2
+  if [[ ! -f "$script" || ! -x "$script" ]]; then
+    echo "pantry update: pre-deploy backup script is missing or not executable" >&2
     if [[ "$mode" == required ]]; then
       write_deploy_status blocked pre_deploy_backup_failed "$revision" || true
       echo "PANTRY UPDATE BLOCKED: pre-deploy backup failed; leaving the running pantry container unchanged" >&2
@@ -1790,7 +1953,7 @@ pre_deploy_backup() {
 }
 
 apply_compose() {
-  local state up_ok ref pins desired containers_ok caddy_ok proxy
+  local state up_ok ref pins desired containers_ok caddy_ok proxy revision
   PANTRY_VERIFIED=0
   FAILED_SERVICES=""
   TUNNEL_REACHABLE=0
@@ -1850,6 +2013,9 @@ apply_compose() {
     exit 1
   fi
   if ! pre_deploy_backup "$state"; then
+    if ! restore_local_tags "$state"; then
+      echo "pantry update: could not point the local image tag back at the previous digest." >&2
+    fi
     clear_state
     exit 1
   fi
@@ -1925,8 +2091,11 @@ apply_compose() {
     fi
     rm -f "$PANTRY_DIR/.update-pending"
     revision=$(pantry_deploy_revision "$state")
-    write_deploy_status success deploy_ok "$revision" || true
-    refresh_host_scripts_from_image
+    if refresh_host_scripts_from_image "$state"; then
+      write_deploy_status success deploy_ok "$revision" || true
+    else
+      write_deploy_status success host_refresh_failed "$revision" || true
+    fi
     clear_state
     return 0
   fi

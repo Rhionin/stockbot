@@ -88,7 +88,7 @@ func TestStartServesTheListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authPath := filepath.Join(dir, "auth.caddy")
+	authPath := filepath.Join(dir, "pantry-auth-fixture.txt")
 	if err := os.WriteFile(authPath, []byte("keeper "+string(hash)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

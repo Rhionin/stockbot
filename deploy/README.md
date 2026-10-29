@@ -736,8 +736,17 @@ files. `setup.sh`, `.env`, secrets, and data are never touched. Set
 
 **One-time bootstrap:** Pis that already have an older `pantry-update.sh`
 under `/opt/pantry` (for example one that still sourced `auth-migrate.sh`)
-must run `sudo ./setup.sh` once after this change merges. After that,
-successful deploys keep the host scripts aligned with master.
+must run the following once after this change merges. `setup.sh` may run
+`docker compose pull` and `up -d` when the public profile is enabled.
+
+1. Run `sudo /opt/pantry/systemd/pantry-backup.sh manual` and confirm it exits 0.
+2. Check or fix the `BACKUP_BEFORE_DEPLOY` line in `/opt/pantry/.env` (legacy
+   installs may still have `warn` from an older `.env.example`; `sudo ./setup.sh`
+   migrates the exact legacy `BACKUP_BEFORE_DEPLOY=warn` line to `required`, but
+   cannot distinguish that value from an operator who explicitly chose `warn`).
+3. Then run `sudo ./setup.sh`.
+
+After that, successful deploys keep the host scripts aligned with master.
 
 When `PUBLIC_HOST` is set, the update script also refreshes the public HTTPS proxy; see [Keeping HTTPS across automatic updates](#keeping-https-across-automatic-updates). This means:
 - The udev rule is installed once (via `sudo ./setup.sh rule`) and is not touched by updates

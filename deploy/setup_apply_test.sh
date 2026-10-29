@@ -801,6 +801,21 @@ grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile 
 [[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
 [[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
 
+# Legacy BACKUP_BEFORE_DEPLOY=warn from #410 is migrated to required; operator
+# choices such as off are left alone.
+backup_migrate=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=warn' > "$backup_migrate/.env"
+cp "$ROOT/deploy/.env.example" "$backup_migrate/.env.example"
+PANTRY_DIR="$backup_migrate" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP" >"$backup_migrate/out" 2>&1
+grep -q '^BACKUP_BEFORE_DEPLOY=required$' "$backup_migrate/.env" || fail "legacy BACKUP_BEFORE_DEPLOY=warn was not migrated to required"
+grep -q 'Migrated legacy BACKUP_BEFORE_DEPLOY=warn -> required' "$backup_migrate/out" || fail "legacy BACKUP migration was not logged"
+backup_keep=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=off' > "$backup_keep/.env"
+cp "$ROOT/deploy/.env.example" "$backup_keep/.env.example"
+PANTRY_DIR="$backup_keep" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=off$' "$backup_keep/.env" || fail "operator BACKUP_BEFORE_DEPLOY=off was rewritten"
+rm -rf "$backup_migrate" "$backup_keep"
+
 # Grocy credentials must not change what setup.sh asks docker to do.
 # With GROCY_URL, GROCY_API_KEY, and PANTRY_SYNC_TOKEN filled, setup must
 # issue the exact docker argv it issues without them: no

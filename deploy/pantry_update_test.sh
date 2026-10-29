@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+unset BACKUP_BEFORE_DEPLOY STUB_GITHUB_COMPARE_STATUS
+
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
 
@@ -217,12 +219,26 @@ if [[ "$1" == inspect ]]; then
     exit 0
   fi
   if [[ "$format" == '{{.Image}}' ]]; then
-    printf '%s\n' "${STUB_CONTAINER_IMAGE:-sha256:running-pantry}"
+    name=${target#cid-}
+    name=${name%-new}
+    img=$(tsv_col "$name" run_id || true)
+    if [[ -f "${DOCKER_LOG:-}" ]] && grep -q -F -- 'pending-before-up' "$DOCKER_LOG" \
+        && [[ "${STUB_UP_RC:-0}" -eq 0 ]]; then
+      pulled=$(tsv_col "$name" pull_id || true)
+      [[ -n "$pulled" ]] && img=$pulled
+    fi
+    [[ -n "$img" ]] || img="${STUB_CONTAINER_IMAGE:-sha256:running-pantry}"
+    printf '%s\n' "$img"
     exit 0
   fi
   if [[ "$format" == *State.Running* ]]; then
     name=${target#cid-}
     id=$(tsv_col "$name" run_id || true)
+    if [[ -f "${DOCKER_LOG:-}" ]] && grep -q -F -- 'pending-before-up' "$DOCKER_LOG" \
+        && [[ "${STUB_UP_RC:-0}" -eq 0 ]]; then
+      pulled=$(tsv_col "$name" pull_id || true)
+      [[ -n "$pulled" ]] && id=$pulled
+    fi
     if [[ -n "${STUB_LIVE_IMAGE_TSV:-}" && -f "$STUB_LIVE_IMAGE_TSV" && -f "${DOCKER_LOG:-}" ]] && grep -q -F -- ' up' "$DOCKER_LOG"; then
       live=$(awk -F '\t' -v s="$name" '$1 == s { print $2; exit }' "$STUB_LIVE_IMAGE_TSV")
       if [[ -n "$live" ]]; then
@@ -433,6 +449,14 @@ emit_body() {
     printf '%s' "$body"
   fi
 }
+if [[ "$url" == *api.github.com/repos/Rhionin/stockbot/compare/* ]]; then
+  if [[ "${STUB_GITHUB_COMPARE_STATUS:-}" == unreachable ]]; then
+    exit 22
+  fi
+  gh_status=${STUB_GITHUB_COMPARE_STATUS:-ahead}
+  emit_body "{\"status\":\"${gh_status}\"}" 200
+  exit 0
+fi
 rollback_phase=0
 if [[ -n "${DOCKER_LOG:-}" && -f "$DOCKER_LOG" ]] && grep -q -- '--pull never' "$DOCKER_LOG"; then
   rollback_phase=1
@@ -551,8 +575,12 @@ EOF
 
 prepare_pantry() {
   local pantry="$1"
-  mkdir -p "$pantry"
+  mkdir -p "$pantry/systemd"
   cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/runtime-setup.sh" "$ROOT/deploy/vapid-env.sh" "$pantry/"
+  cp "$ROOT/deploy/systemd/pantry-update.sh" \
+    "$ROOT/deploy/systemd/pantry-backup.sh" \
+    "$pantry/systemd/"
+  chmod +x "$pantry/systemd/pantry-update.sh" "$pantry/systemd/pantry-backup.sh"
   cat > "$pantry/.env" << 'EOF'
 HOST_PORT=8080
 PUBLIC_HOST=
@@ -601,6 +629,13 @@ run_update() {
   fi
   if [[ -n "${STUB_TUNNEL_OLD_BODY+x}" ]]; then
     extra_env+=(STUB_TUNNEL_OLD_BODY="$STUB_TUNNEL_OLD_BODY")
+  fi
+
+  if [[ -n "${STUB_GITHUB_COMPARE_STATUS+x}" ]]; then
+    extra_env+=(STUB_GITHUB_COMPARE_STATUS="$STUB_GITHUB_COMPARE_STATUS")
+  fi
+  if [[ -n "${BACKUP_BEFORE_DEPLOY+x}" ]]; then
+    extra_env+=(BACKUP_BEFORE_DEPLOY="$BACKUP_BEFORE_DEPLOY")
   fi
 
   local -a deadline_cmd=()
@@ -662,11 +697,10 @@ run_update() {
     PANTRY_UPDATE_PROBE_RETRY_SECONDS="${PANTRY_UPDATE_PROBE_RETRY_SECONDS:-0}" \
     PANTRY_UPDATE_MIN_FREE_KIB="${PANTRY_UPDATE_MIN_FREE_KIB:-65536}" \
     PANTRY_BACKUP_LOCK_WAIT="${PANTRY_BACKUP_LOCK_WAIT:-1}" \
-    BACKUP_BEFORE_DEPLOY="${BACKUP_BEFORE_DEPLOY-}" \
     STUB_BACKUP_RC="${STUB_BACKUP_RC:-0}" \
     STUB_HOST_BUNDLE="${STUB_HOST_BUNDLE:-}" \
     PATH="$bin:$PATH" \
-    "${deadline_cmd[@]}" env "${extra_env[@]}" bash "$UPDATE" >"$out" 2>"$err"
+    "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
   set -e
 
@@ -2411,7 +2445,39 @@ status_body=$(cat "$backup_required/last-deploy-status")
 have "$status_body" "result=blocked" "required mode records blocked status"
 have "$status_body" "reason=pre_deploy_backup_failed" "required mode records backup reason"
 have "$status_body" "image_revision=${NEW_COMMIT}" "required mode records the target revision"
+have "$LAST_DOCKER" "tag ghcr.io/rhionin/pantry@sha256:oldpantry ghcr.io/rhionin/pantry:latest" "blocked required backup retags pantry to the previous digest"
 unset STUB_BACKUP_RC STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# required blocks when the backup script is missing.
+backup_missing=$(mktemp -d)
+prepare_pantry "$backup_missing"
+write_images "$backup_missing/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+rm -f "$backup_missing/systemd/pantry-backup.sh"
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_missing"
+[[ "$LAST_RC" -ne 0 ]] || fail "missing backup script should exit non-zero: $LAST_OUT"
+have "$LAST_OUT" "pre-deploy backup script is missing or not executable" "missing backup script is reported"
+have "$LAST_OUT" "PANTRY UPDATE BLOCKED" "missing backup script blocks deploy"
+lack "$LAST_DOCKER" " up -d" "missing backup script does not recreate"
+unset STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# required blocks when the backup script is not executable.
+backup_noexec=$(mktemp -d)
+prepare_pantry "$backup_noexec"
+write_images "$backup_noexec/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+chmod -x "$backup_noexec/systemd/pantry-backup.sh"
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$backup_noexec"
+[[ "$LAST_RC" -ne 0 ]] || fail "non-executable backup script should exit non-zero: $LAST_OUT"
+have "$LAST_OUT" "pre-deploy backup script is missing or not executable" "non-executable backup script is reported"
+lack "$LAST_DOCKER" " up -d" "non-executable backup script does not recreate"
+unset STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # optional is an alias for warn.
 backup_optional=$(mktemp -d)
@@ -2513,6 +2579,69 @@ have "$LAST_OUT" "refreshed host deploy scripts from the running image" "success
 have "$LAST_DOCKER" "cp cid-pantry:/usr/share/stockbot/host-bundle" "host refresh copies the bundle out of the container"
 grep -q 'host-bundle-marker' "$host_refresh/publish-mode.sh" || fail "host refresh did not install the bundled publish-mode.sh"
 find "$host_refresh" -name 'publish-mode.sh.refresh.*' -print -quit | grep -q . && fail "host refresh left a partial publish-mode temp file"
+status_body=$(cat "$host_refresh/last-deploy-status")
+have "$status_body" "result=success" "host refresh records success result"
+have "$status_body" "reason=deploy_ok" "host refresh records deploy_ok after refresh"
+[[ -d "$host_refresh/host-scripts-last-known-good" ]] || fail "host refresh did not snapshot last-known-good host scripts"
+unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# GitHub compare failure skips host refresh but the deploy still succeeds.
+host_prov_fail=$(mktemp -d)
+prepare_pantry "$host_prov_fail"
+stage_host_bundle "$host_prov_fail/host-bundle-stub"
+printf '\n# host-bundle-marker\n' >> "$host_prov_fail/host-bundle-stub/publish-mode.sh"
+STUB_HOST_BUNDLE="$host_prov_fail/host-bundle-stub"
+write_images "$host_prov_fail/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+STUB_GITHUB_COMPARE_STATUS=behind
+run_update "$host_prov_fail"
+[[ "$LAST_RC" -eq 0 ]] || fail "provenance failure should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: image revision is not on origin/master" "compare failure skips refresh"
+grep -q 'host-bundle-marker' "$host_prov_fail/publish-mode.sh" && fail "compare failure still installed bundled host files"
+status_body=$(cat "$host_prov_fail/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "compare failure records host_refresh_failed"
+unset STUB_HOST_BUNDLE STUB_GITHUB_COMPARE_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# Unreachable GitHub skips host refresh without failing deploy.
+host_prov_net=$(mktemp -d)
+prepare_pantry "$host_prov_net"
+stage_host_bundle "$host_prov_net/host-bundle-stub"
+STUB_HOST_BUNDLE="$host_prov_net/host-bundle-stub"
+write_images "$host_prov_net/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+STUB_GITHUB_COMPARE_STATUS=unreachable
+run_update "$host_prov_net"
+[[ "$LAST_RC" -eq 0 ]] || fail "unreachable GitHub should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: could not reach GitHub" "unreachable GitHub skips refresh"
+status_body=$(cat "$host_prov_net/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "unreachable GitHub records host_refresh_failed"
+unset STUB_HOST_BUNDLE STUB_GITHUB_COMPARE_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# An incomplete bundle fails refresh atomically and leaves host files unchanged.
+host_bundle_bad=$(mktemp -d)
+prepare_pantry "$host_bundle_bad"
+stage_host_bundle "$host_bundle_bad/host-bundle-stub"
+rm -f "$host_bundle_bad/host-bundle-stub/runtime-setup.sh"
+marker_line='# keep-me-on-host'
+printf '\n%s\n' "$marker_line" >> "$host_bundle_bad/runtime-setup.sh"
+STUB_HOST_BUNDLE="$host_bundle_bad/host-bundle-stub"
+write_images "$host_bundle_bad/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$host_bundle_bad"
+[[ "$LAST_RC" -eq 0 ]] || fail "bundle verify failure should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh failed" "incomplete bundle fails refresh"
+grep -q "$marker_line" "$host_bundle_bad/runtime-setup.sh" || fail "incomplete bundle changed host runtime-setup.sh"
+status_body=$(cat "$host_bundle_bad/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "incomplete bundle records host_refresh_failed"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # Rollback does not install the new image's host files.
@@ -2555,7 +2684,7 @@ publish_after=$(stat -c '%Y' "$host_idempotent/publish-mode.sh")
 have "$LAST_OUT" "refreshed host deploy scripts from the running image" "unchanged bundle still completes refresh"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
-rm -rf "$backup_warn" "$backup_required" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_no_refresh" "$host_idempotent"
+rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_fail" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

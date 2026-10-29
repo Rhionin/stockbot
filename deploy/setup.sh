@@ -640,6 +640,16 @@ cmd_reconcile_env() {
     log_warn "Migrated obsolete SCANNER_DEVICE=/dev/pantry-scanner -> /dev/input/pantry-scanner"
   fi
 
+  # Migrate the legacy BACKUP_BEFORE_DEPLOY default from #410 (.env.example
+  # shipped warn). setup.sh wrote that value; it is not an operator opt-out.
+  # Only the exact legacy line is rewritten; other values (including off) are
+  # left alone. An operator who explicitly set warn cannot be distinguished
+  # from the old default — see deploy/README.md.
+  if grep -q '^BACKUP_BEFORE_DEPLOY=warn$' "${PANTRY_DIR}/.env"; then
+    sed -i 's|^BACKUP_BEFORE_DEPLOY=warn$|BACKUP_BEFORE_DEPLOY=required|' "${PANTRY_DIR}/.env"
+    log_warn "Migrated legacy BACKUP_BEFORE_DEPLOY=warn -> required"
+  fi
+
   # Append missing keys from .env.example
   local added=0
   while IFS='=' read -r key value; do
