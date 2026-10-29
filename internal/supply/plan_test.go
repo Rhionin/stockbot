@@ -2,6 +2,7 @@ package supply
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,20 +79,7 @@ func TestPlanGroupCountsItemsWhenSizesAreMissing(t *testing.T) {
 	if lines[0].GroupID != "beans" {
 		t.Fatalf("group = %q", lines[0].GroupID)
 	}
-	if lines[0].Note == "" || !contains(lines[0].Note, "Some sizes aren't known, so this counts items.") {
+	if lines[0].Note == "" || !strings.Contains(lines[0].Note, "Some sizes aren't known, so this counts items.") {
 		t.Fatalf("note = %q", lines[0].Note)
 	}
-}
-
-func contains(s, part string) bool {
-	return len(s) >= len(part) && (s == part || len(part) == 0 || (len(s) > 0 && (stringIndex(s, part) >= 0)))
-}
-
-func stringIndex(s, part string) int {
-	for i := 0; i+len(part) <= len(s); i++ {
-		if s[i:i+len(part)] == part {
-			return i
-		}
-	}
-	return -1
 }
