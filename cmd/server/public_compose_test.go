@@ -243,8 +243,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(envText, "\nSENTRY_DSN=\n") || !strings.Contains(envText, "\nSENTRY_ENVIRONMENT=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PROJECT_IDS=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PUBLIC_KEYS=\n") {
 		t.Fatal(".env.example must leave Sentry values empty")
 	}
-	if !strings.Contains(envText, "\nBACKUP_BEFORE_DEPLOY=warn\n") {
-		t.Fatal(".env.example must default BACKUP_BEFORE_DEPLOY to warn")
+	if !strings.Contains(envText, "\nBACKUP_BEFORE_DEPLOY=required\n") {
+		t.Fatal(".env.example must default BACKUP_BEFORE_DEPLOY to required")
 	}
 
 	setup, err := os.ReadFile(filepath.Join("..", "..", "deploy", "setup.sh"))
@@ -300,6 +300,9 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(updaterText, "runtime-setup.sh") || !strings.Contains(updaterText, "ensure_session_secret") {
 		t.Fatal("automatic updates must keep the session secret via runtime-setup.sh")
+	}
+	if !strings.Contains(updaterText, "refresh_host_scripts_from_image") || !strings.Contains(updaterText, "/usr/share/stockbot/host-bundle") {
+		t.Fatal("automatic updates must refresh host scripts from the image bundle")
 	}
 
 	ignore, err := os.ReadFile(filepath.Join("..", "..", ".gitignore"))

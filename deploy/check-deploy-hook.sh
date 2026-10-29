@@ -109,6 +109,10 @@ have deploy/systemd/pantry-update.path 'PathChanged=/opt/pantry/deploy-trigger/r
 have deploy/systemd/pantry-update.path 'Unit=pantry-update.service' "path unit starts the existing update service"
 have deploy/systemd/pantry-update.sh 'flock' "update script serializes overlapping triggers"
 have deploy/systemd/pantry-update.sh 'trigger changed during the pull' "update script pulls again when a trigger lands mid-run"
+have deploy/systemd/pantry-update.sh 'last-deploy-status' "update script records deploy status for operators"
+have deploy/systemd/pantry-update.sh 'refresh_host_scripts_from_image' "update script refreshes host scripts after a successful deploy"
+have Dockerfile '/usr/share/stockbot/host-bundle' "pantry image ships the host deploy bundle"
+have deploy/build-host-bundle.sh 'pantry-update.sh' "host bundle includes the updater script"
 
 # The compose value is a literal ${...} interpolation, not a shell expansion.
 # shellcheck disable=SC2016

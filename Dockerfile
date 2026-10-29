@@ -37,6 +37,7 @@ ARG COMMIT_SUBJECT_B64
 ARG BUILD_TIME
 ARG VERSION
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    bash deploy/build-host-bundle.sh /out/host-bundle && \
     case "${COMMIT_HASH}" in *COMMIT_HASH*) echo "COMMIT_HASH was not substituted" >&2; exit 1 ;; esac; \
     case "${COMMIT_TIME}" in *COMMIT_TIME*) echo "COMMIT_TIME was not substituted" >&2; exit 1 ;; esac; \
     case "${BUILD_TIME}" in *BUILD_TIME*) echo "BUILD_TIME was not substituted" >&2; exit 1 ;; esac; \
@@ -57,6 +58,7 @@ LABEL org.opencontainers.image.revision="${COMMIT_HASH}"
 LABEL com.rhionin.stockbot.commit="${COMMIT_HASH}"
 COPY --from=build /out/stockbot-server /usr/local/bin/stockbot-server
 COPY --from=build /out/stockbot-backup /usr/local/bin/stockbot-backup
+COPY --from=build /out/host-bundle /usr/share/stockbot/host-bundle
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV ADDR=":8080" DB_PATH="/data/pantry.db"
 EXPOSE 8080

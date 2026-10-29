@@ -26,9 +26,11 @@
 #
 # When the pantry image digest is about to change, pantry-backup.sh
 # pre-deploy runs before anything is recreated. BACKUP_BEFORE_DEPLOY is
-# warn (the default: a failed backup is a journal warning and the deploy
-# continues), required (containers stay as they are and this script exits
-# non-zero), or off. The value may be set in the environment or in .env.
+# required (the default: a failed backup leaves containers unchanged and
+# this script exits non-zero), warn or optional (a failed backup is a journal
+# warning and the deploy continues), or off. The value may be set in the
+# environment or in .env. A blocked backup is also recorded in
+# last-deploy-status under PANTRY_DIR.
 # This script already holds the deploy lock, so the backup is started with
 # PANTRY_BACKUP_LOCK_HELD=1 and does not flock that file again.
 #
@@ -128,6 +130,13 @@
 # the pantry directory before the rollback removes that container. The
 # banner names a pantry-pre-*.db path only when those logs say this deploy
 # wrote the snapshot. An "already exists" line is not a new snapshot.
+#
+# After a successful deploy, host scripts under PANTRY_DIR (and installed
+# systemd units when they are already present) are refreshed from a copy
+# shipped inside the pantry image at /usr/share/stockbot/host-bundle. The
+# running pantry-update.sh is not overwritten in place; the new script
+# takes effect on the next timer or path run. Rollback does not install
+# those files. setup.sh, .env, secrets, and data are never touched.
 #
 # Service images come from `docker compose config`. python3 is not required.
 
@@ -1552,8 +1561,160 @@ resume_pending_deploy() {
   exit 1
 }
 
-# backup_before_deploy_mode is warn, required, or off. An empty setting
-# is warn. The environment wins over .env.
+HOST_BUNDLE_CONTAINER_PATH=/usr/share/stockbot/host-bundle
+
+deploy_status_path() {
+  printf '%s\n' "$PANTRY_DIR/last-deploy-status"
+}
+
+# write_deploy_status RESULT REASON [IMAGE_REVISION]
+write_deploy_status() {
+  local result="$1" reason="$2" revision="${3:-}" dest tmp ts
+  dest=$(deploy_status_path)
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  [[ -n "$ts" ]] || ts=unknown
+  tmp=$(mktemp "${dest}.XXXXXX") || {
+    echo "pantry update: could not write ${dest}" >&2
+    return 1
+  }
+  {
+    printf 'result=%s\n' "$result"
+    printf 'reason=%s\n' "$reason"
+    printf 'timestamp=%s\n' "$ts"
+    printf 'image_revision=%s\n' "$revision"
+  } > "$tmp"
+  mv "$tmp" "$dest"
+}
+
+host_bundle_rel_paths() {
+  cat <<'EOF'
+publish-mode.sh
+runtime-setup.sh
+vapid-env.sh
+systemd/pantry-update.sh
+systemd/pantry-backup.sh
+systemd/pantry-update.service
+systemd/pantry-update.timer
+systemd/pantry-update.path
+systemd/pantry-backup.service
+systemd/pantry-backup.timer
+EOF
+}
+
+# atomic_install_file SRC DEST sets execute bit when DEST ends in .sh.
+atomic_install_file() {
+  local src="$1" dest="$2" tmp
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+    return 0
+  fi
+  tmp=$(mktemp "${dest}.refresh.XXXXXX") || return 1
+  cp "$src" "$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [[ "$dest" == *.sh ]]; then
+    chmod +x "$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
+  fi
+  mv "$tmp" "$dest"
+}
+
+systemd_unit_dir() {
+  printf '%s\n' "${PANTRY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+}
+
+# install_host_bundle_tree STAGED_ROOT copies bundle files into PANTRY_DIR
+# and refreshes systemd units when they are already installed.
+install_host_bundle_tree() {
+  local staged="$1" rel src dest unit_dir copied_units=0
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    src="$staged/$rel"
+    [[ -f "$src" ]] || continue
+    dest="$PANTRY_DIR/$rel"
+    mkdir -p "$(dirname "$dest")"
+    if ! atomic_install_file "$src" "$dest"; then
+      echo "pantry update: could not install ${rel} from the image host bundle" >&2
+      return 1
+    fi
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  if [[ -f "$unit_dir/pantry-update.service" || -f "$unit_dir/pantry-update.timer" ]]; then
+    for rel in \
+      systemd/pantry-update.service \
+      systemd/pantry-update.timer \
+      systemd/pantry-update.path
+    do
+      src="$staged/$rel"
+      [[ -f "$src" ]] || continue
+      if ! atomic_install_file "$src" "$unit_dir/$(basename "$rel")"; then
+        echo "pantry update: could not refresh $(basename "$rel") under ${unit_dir}" >&2
+        return 1
+      fi
+      copied_units=1
+    done
+  fi
+  if [[ -f "$unit_dir/pantry-backup.timer" ]]; then
+    for rel in systemd/pantry-backup.service systemd/pantry-backup.timer; do
+      src="$staged/$rel"
+      [[ -f "$src" ]] || continue
+      if ! atomic_install_file "$src" "$unit_dir/$(basename "$rel")"; then
+        echo "pantry update: could not refresh $(basename "$rel") under ${unit_dir}" >&2
+        return 1
+      fi
+      copied_units=1
+    done
+  fi
+  if [[ "$copied_units" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+}
+
+# refresh_host_scripts_from_image copies the bundle out of the running pantry
+# container after a successful deploy. Returns 0 even when refresh is skipped.
+refresh_host_scripts_from_image() {
+  local cid tmp staged
+  if [[ "${PANTRY_HOST_REFRESH:-}" == off ]]; then
+    return 0
+  fi
+  cid=$(container_id pantry)
+  if [[ -z "$cid" ]]; then
+    echo "<4>pantry update: warning: could not refresh host scripts; pantry container id is missing" >&2
+    return 0
+  fi
+  tmp=$(mktemp -d) || {
+    echo "<4>pantry update: warning: could not refresh host scripts; temp directory failed" >&2
+    return 0
+  }
+  staged="$tmp/bundle"
+  mkdir -p "$staged"
+  if ! docker cp "${cid}:${HOST_BUNDLE_CONTAINER_PATH}/." "$staged"; then
+    rm -rf "$tmp"
+    echo "<4>pantry update: warning: could not read host scripts from the pantry container" >&2
+    return 0
+  fi
+  if ! install_host_bundle_tree "$staged"; then
+    rm -rf "$tmp"
+    echo "<4>pantry update: warning: host script refresh from the image failed" >&2
+    return 0
+  fi
+  rm -rf "$tmp"
+  echo "pantry update: refreshed host deploy scripts from the running image"
+}
+
+pantry_deploy_revision() {
+  local state="$1" ref rev=""
+  ref=$(service_ref pantry "$state")
+  if [[ -n "$ref" ]]; then
+    rev=$(image_revision "$ref" || true)
+  fi
+  printf '%s' "$rev"
+}
+
+# backup_before_deploy_mode is required, warn, or off. An empty setting
+# is required. optional is the same as warn. The environment wins over .env.
 backup_before_deploy_mode() {
   local mode="${BACKUP_BEFORE_DEPLOY:-}"
   if [[ -z "$mode" ]]; then
@@ -1561,14 +1722,17 @@ backup_before_deploy_mode() {
   fi
   mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
   if [[ -z "$mode" ]]; then
-    mode=warn
+    mode=required
   fi
+  case "$mode" in
+    optional) mode=warn ;;
+  esac
   case "$mode" in
     warn|required|off)
       printf '%s' "$mode"
       ;;
     *)
-      echo "pantry update: BACKUP_BEFORE_DEPLOY must be warn, required, or off" >&2
+      echo "pantry update: BACKUP_BEFORE_DEPLOY must be required, warn, optional, or off" >&2
       return 1
       ;;
   esac
@@ -1579,21 +1743,23 @@ backup_before_deploy_mode() {
 # is started with that fd closed and PANTRY_BACKUP_LOCK_HELD=1 so it does
 # not flock the same file. Returns 0 when the deploy may continue.
 pre_deploy_backup() {
-  local state="$1" mode script rc
+  local state="$1" mode script rc revision
   mode=$(backup_before_deploy_mode) || return 1
   if [[ "$mode" == off ]]; then
     return 0
   fi
   service_changed "$state" pantry || return 0
   script="$(cd "$(dirname "$0")" && pwd)/pantry-backup.sh"
+  revision=$(pantry_deploy_revision "$state")
   echo "pantry update: pre-deploy backup (${mode})"
   if [[ ! -f "$script" ]]; then
     echo "pantry update: pre-deploy backup script is missing" >&2
     if [[ "$mode" == required ]]; then
-      echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+      write_deploy_status blocked pre_deploy_backup_failed "$revision" || true
+      echo "PANTRY UPDATE BLOCKED: pre-deploy backup failed; leaving the running pantry container unchanged" >&2
       return 1
     fi
-    echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+    echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=${mode}" >&2
     return 0
   fi
   rc=0
@@ -1603,10 +1769,11 @@ pre_deploy_backup() {
     return 0
   fi
   if [[ "$mode" == required ]]; then
-    echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+    write_deploy_status blocked pre_deploy_backup_failed "$revision" || true
+    echo "PANTRY UPDATE BLOCKED: pre-deploy backup failed; leaving the running pantry container unchanged" >&2
     return 1
   fi
-  echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+  echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=${mode}" >&2
   return 0
 }
 
@@ -1744,6 +1911,9 @@ apply_compose() {
       echo "<4>pantry update: warning: docker compose up failed, but every changed service is healthy; not rolling back" >&2
     fi
     rm -f "$PANTRY_DIR/.update-pending"
+    revision=$(pantry_deploy_revision "$state")
+    write_deploy_status success deploy_ok "$revision" || true
+    refresh_host_scripts_from_image
     clear_state
     return 0
   fi
