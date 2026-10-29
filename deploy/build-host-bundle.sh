@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # Stage deploy files that pantry-update.sh installs on the Pi after a
 # successful image deploy. The pantry image build copies this tree to
 # /usr/share/stockbot/host-bundle.

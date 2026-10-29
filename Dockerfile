@@ -25,7 +25,8 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=frontend /src/frontend/dist/ ./internal/webui/assets/
-RUN mkdir -p /data
+RUN mkdir -p /data /out
+RUN sh deploy/build-host-bundle.sh /out/host-bundle
 # Redeclared so this stage inherits the global build-args. Docker exports
 # those args into this shell, which expands ${COMMIT_*}, ${BUILD_TIME}, and
 # ${VERSION}. $$COMMIT_HASH must not be used: $$ is the shell's PID, so the
@@ -37,7 +38,6 @@ ARG COMMIT_SUBJECT_B64
 ARG BUILD_TIME
 ARG VERSION
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    bash deploy/build-host-bundle.sh /out/host-bundle && \
     case "${COMMIT_HASH}" in *COMMIT_HASH*) echo "COMMIT_HASH was not substituted" >&2; exit 1 ;; esac; \
     case "${COMMIT_TIME}" in *COMMIT_TIME*) echo "COMMIT_TIME was not substituted" >&2; exit 1 ;; esac; \
     case "${BUILD_TIME}" in *BUILD_TIME*) echo "BUILD_TIME was not substituted" >&2; exit 1 ;; esac; \
