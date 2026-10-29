@@ -1,25 +1,79 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { code128Bars } from './code128';
+import {
+  PAIRING_CODE128_MIN_MODULE_PX,
+  PAIRING_CODE128_QUIET_MODULES,
+  computePairingCode128ModulePx,
+  pairingCode128BarRuns,
+  pairingCode128ModuleCount,
+  pairingCode128SvgWidthPx,
+} from './pairingScreenCode128';
+
+const BAR_HEIGHT_PX = 96;
 
 export function Code128Mark({ value, quietZone = false }: { value: string; quietZone?: boolean }) {
-  const bars = code128Bars(value);
-  const width = Math.max(bars.length, 1);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [modulePx, setModulePx] = useState(PAIRING_CODE128_MIN_MODULE_PX);
+  const modules = pairingCode128ModuleCount(value);
+  const totalModules = modules + 2 * PAIRING_CODE128_QUIET_MODULES;
+  const runs = pairingCode128BarRuns(value);
+  const svgWidthPx = pairingCode128SvgWidthPx(modulePx, modules);
+
+  const measure = useCallback(() => {
+    const container = scrollRef.current;
+    if (container == null) return;
+    const count = pairingCode128ModuleCount(value);
+    setModulePx(computePairingCode128ModulePx(container.clientWidth, count));
+  }, [value]);
+
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, value]);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (container == null || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [measure, value]);
+
   const svg = (
     <svg
       className="pairing-code128"
       role="img"
       aria-label={`Code 128 ${value}`}
-      viewBox={`0 0 ${width} 48`}
+      width={svgWidthPx}
+      height={BAR_HEIGHT_PX}
+      viewBox={`0 0 ${totalModules} 48`}
       preserveAspectRatio="none"
+      shapeRendering="crispEdges"
+      data-module-px={modulePx}
+      data-quiet-modules={PAIRING_CODE128_QUIET_MODULES}
+      data-modules={modules}
     >
-      {bars.map((on, index) => (on
-        ? <rect key={index} x={index} y="0" width="1" height="48" fill="currentColor" />
-        : null))}
+      {runs.map((run) => (
+        <rect
+          key={`${run.x}-${run.width}`}
+          x={run.x}
+          y="0"
+          width={run.width}
+          height="48"
+          fill="#000000"
+        />
+      ))}
     </svg>
   );
+
   if (!quietZone) return svg;
-  return <div className="code128-quiet-zone">{svg}</div>;
+
+  return (
+    <div className="code128-quiet-zone">
+      <div className="pairing-code128-scroll" ref={scrollRef}>
+        {svg}
+      </div>
+    </div>
+  );
 }
 
 export function QrMark({ value, className }: { value: string; className?: string }) {

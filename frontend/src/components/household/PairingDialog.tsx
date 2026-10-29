@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
 import {
   PAIRING_EXPIRED_SENTENCE,
-  PRINT_ACTUAL_SIZE_INSTRUCTION,
   PRINT_PAIRING_CODE_LABEL,
   defaultWallBarcodeSettings,
   hostedErrorSentence,
@@ -133,7 +132,6 @@ export function PairingDialog({
               wallSettings={wallSettings}
             />
           </div>
-          <Text size="sm" className="pairing-screen-only kit-print-hint">{PRINT_ACTUAL_SIZE_INSTRUCTION}</Text>
           <Group className="pairing-screen-only">
             <Button onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
             <Button variant="default" onClick={onClose}>Close</Button>

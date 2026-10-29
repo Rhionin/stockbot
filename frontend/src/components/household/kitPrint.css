@@ -93,6 +93,14 @@
   align-items: center;
 }
 
+@media screen {
+  .setup-kit-print-root:not([data-printing='true']) .kit-wall-mode-word {
+    font-size: clamp(0.65rem, 2.4vw, 1.2rem);
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+}
+
 .kit-wall-panel-in .kit-wall-mode-word {
   color: #0F766E;
 }
