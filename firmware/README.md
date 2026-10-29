@@ -69,7 +69,7 @@ pio test -e native
 
 ## Provisioning summary
 
-1. SoftAP **`Stockbot-Scanner-XXXX`** captive portal (`192.168.4.1`) saves Wi-Fi + server URL (+ optional `SBP-…` code).
+1. SoftAP **`Scanner-Setup-XXXX`** captive portal (`192.168.4.1`) saves Wi-Fi + server URL (+ optional `SBP-…` code).
 2. Scan **1D** pairing barcode `SBP-XXXX-XXXX-C` → `POST /api/devices/pair/complete` with `hub.kind = "esp32_scanner"`.
 3. On pair / boot when paired, `U173` receives **1D-only** symbology lock; factory reset (10 s button hold) re-enables 2D for setup.
 

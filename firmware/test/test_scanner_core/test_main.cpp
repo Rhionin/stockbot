@@ -19,6 +19,8 @@
 #include "scanner_state.h"
 #include "stockbot_client.h"
 #include "wifi_station.h"
+#include "scanner_setup_network.h"
+#include "setup_portal_copy.h"
 
 namespace {
 
@@ -259,7 +261,51 @@ void test_display_model() {
   auto err = buildDisplayModel(in);
   EXPECT(err.band1 == "SCANNER ALERT");
   EXPECT(err.band2_line1 == "Scanner disconnected");
+  EXPECT(err.band3 == "Needs a new setup sheet");
 
+  in.screen = UiScreen::S0_Unprovisioned;
+  in.pairing_ap_suffix = "ABCD";
+  auto s0 = buildDisplayModel(in);
+  EXPECT(s0.band3 == "Then follow the steps on your phone");
+  EXPECT(s0.band2_line2 == "Scanner-Setup-ABCD");
+  if (s0.band1.find("QR") != std::string::npos || s0.band2_line1.find("QR") != std::string::npos ||
+      s0.band2_line2.find("QR") != std::string::npos || s0.band3.find("QR") != std::string::npos) {
+    expect(false, "S0 strings must not mention QR");
+  }
+
+  in.screen = UiScreen::S1_Pairing;
+  auto s1 = buildDisplayModel(in);
+  EXPECT(s1.band2_line1 == "Scan the pairing");
+  EXPECT(s1.band2_line2 == "barcode to connect");
+
+  in.screen = UiScreen::S_Connected;
+  in.household_name = "Test Household";
+  auto connected = buildDisplayModel(in);
+  EXPECT(connected.band1 == "CONNECTED");
+  EXPECT(connected.band3 == "Ready to scan");
+  EXPECT(connected.band2_line1 == "Test Household");
+
+  in.screen = UiScreen::S2_Idle;
+  in.default_direction = Direction::StockIn;
+  in.active_direction = Direction::StockOut;
+  in.show_revert_countdown = true;
+  in.inactivity_revert_seconds = 180;
+  in.last_activity_ms = 1000;
+  in.now_ms = 1000 + 60000;
+  auto countdown_in = buildDisplayModel(in);
+  EXPECT(countdown_in.band3 == "Back to Stock in in 2:00");
+
+  in.screen = UiScreen::S_PairingExpired;
+  auto expired = buildDisplayModel(in);
+  EXPECT(expired.band1 == "PAIRING CODE EXPIRED");
+  EXPECT(expired.band2_line1 == "Print a new setup sheet");
+
+  in.screen = UiScreen::S_WifiButtonHold;
+  auto hold = buildDisplayModel(in);
+  EXPECT(hold.band2_line1 == "Let go for Wi-Fi setup");
+  EXPECT(hold.band2_line2 == "Keep holding to erase");
+
+  in.screen = UiScreen::S7_HardError;
   in.device_revoked = false;
   in.buffer_full = true;
   auto full = buildDisplayModel(in);
@@ -455,6 +501,10 @@ void test_protocol_json() {
   EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_resp, parsed));
   EXPECT(parsed.device_token == "sbd_testtoken");
   EXPECT(parsed.config.config_version == 2);
+  const std::string pair_with_name =
+      R"({"deviceId":"dev-1","token":"sbd_testtoken","householdName":"Pantry","config":{"label":"Room","defaultDirection":"stock_out","inactivityRevertSeconds":300,"commitMode":"queue","configVersion":2}})";
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_with_name, parsed));
+  EXPECT(parsed.household_name == "Pantry");
 
   stockbot::RingScanRecord rec{};
   std::strncpy(rec.client_scan_id, "scan-1", sizeof(rec.client_scan_id));
@@ -573,7 +623,9 @@ void test_scanner_controller_flow() {
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
   revoked.onBarcodeLine("4012", true, 5100);
-  EXPECT(revoked.uiScreen() == stockbot::UiScreen::S7_HardError);
+  EXPECT(revoked.operationalState() == stockbot::OperationalState::Pairing);
+  EXPECT(revoked.uiScreen() == stockbot::UiScreen::S1_Pairing);
+  EXPECT(ring2.count() == 0);
 
   stockbot::RingBuffer ring3(storage);
   stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
@@ -1026,6 +1078,166 @@ void test_offline_buffer_refused_transient_restarts() {
   fx.expectMemoryFullIdleScreen();
 }
 
+void test_repair_after_disconnect() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  controller.begin(1000);
+  wifi.connected = true;
+  controller.tick(1100);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.onBarcodeLine("4011", false, 2000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+
+  client.next_pair = {true, 201, ""};
+  client.pair_body = {};
+  client.pair_body.device_token = "sbd_new";
+  client.pair_body.household_name = "Test Household";
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 3000);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
+  EXPECT(display.last.band1 == "CONNECTED");
+  EXPECT(display.last.band2_line1 == "Test Household");
+}
+
+void test_ap_suffix_from_mac() {
+  EXPECT(stockbot::apSuffixFromMacAddress("AA:BB:CC:DD:EE:FF") == "EEFF");
+  EXPECT(stockbot::apSuffixFromMacAddress("aa-bb-cc-dd-ee-ff") == "EEFF");
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController a(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  a.begin(0, 0, "AA:BB:CC:DD:11:22");
+  stockbot::RingBuffer ring2(storage);
+  stockbot::ScannerController b(scanner, display, feedback, power, nvs, portal, client, wifi, ring2);
+  b.begin(0, 0, "AA:BB:CC:DD:33:44");
+  EXPECT(a.apSuffixForTest() == "1122");
+  EXPECT(b.apSuffixForTest() == "3344");
+  EXPECT(a.apSuffixForTest() != b.apSuffixForTest());
+}
+
+void test_wifi_button_hold_feedback() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  controller.begin(1000);
+  controller.onModeButtonHoldTick(5500, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiButtonHold);
+  EXPECT(display.last.band2_line1 == "Let go for Wi-Fi setup");
+  controller.onModeButtonHold(5500, 2100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiSetup);
+  EXPECT(display.last.band1 == "WI-FI SETUP");
+  EXPECT(display.last.band2_line2 == "Scanner-Setup-0000");
+}
+
+void test_pairing_code_expired_screen() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  controller.begin(1000);
+  client.next_pair = {true, 404, ""};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingExpired);
+  EXPECT(display.last.band1 == "PAIRING CODE EXPIRED");
+  EXPECT(display.last.band2_line1 == "Print a new setup sheet");
+}
+
+void test_disconnect_clears_persisted_ring() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  controller.begin(0);
+  client.next_scan = {false, 0, ""};
+  controller.onBarcodeLine("4011", false, 1000);
+  EXPECT(ring.count() == 1);
+  std::vector<stockbot::RingScanRecord> persisted;
+  storage.readAll(persisted);
+  EXPECT(!persisted.empty());
+  wifi.connected = true;
+  controller.tick(1500);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.onBarcodeLine("4012", false, 2000);
+  EXPECT(ring.count() == 0);
+  storage.readAll(persisted);
+  EXPECT(persisted.empty());
+}
+
+void test_scanner_setup_network_and_portal_copy() {
+  EXPECT(std::string(stockbot::kScannerSetupApPrefix) == "Scanner-Setup-");
+  EXPECT(stockbot::scannerSetupSsid("ABCD") == "Scanner-Setup-ABCD");
+  EXPECT(std::string(stockbot::kPortalWifiNameLabel) == "Your home Wi-Fi name");
+  EXPECT(std::string(stockbot::kPortalConnectingMessage) == "Connecting to your Wi-Fi…");
+}
+
+void test_display_special_characters_present() {
+  stockbot::DisplayModelInput in;
+  in.screen = stockbot::UiScreen::S1_Pairing;
+  auto s1 = stockbot::buildDisplayModel(in);
+  EXPECT(s1.band3.find(u8"·") != std::string::npos);
+  in.screen = stockbot::UiScreen::S3_ScanResult;
+  in.commit_mode = stockbot::CommitMode::Immediate;
+  in.last_scan.known = true;
+  in.last_scan.direction = stockbot::Direction::StockIn;
+  in.last_scan.on_hand = 1;
+  auto scan = stockbot::buildDisplayModel(in);
+  EXPECT(scan.band3.find(u8"·") != std::string::npos);
+  auto wrapped = stockbot::wrapProductNameTwoLines(std::string(25, 'x'));
+  EXPECT(wrapped.second.find(u8"…") != std::string::npos || !wrapped.second.empty());
+}
+
 void test_ota_install_gate_placeholder_until_firmware_452() {
   // Documents #452 install precondition (ring empty). No production OTA gate in firmware yet.
   const auto policy_ring_empty_required = [](size_t queued) { return queued == 0; };
@@ -1058,6 +1270,13 @@ int main() {
   test_offline_buffer_refusal_rate_limit_boundary();
   test_offline_buffer_refused_transient_timeout();
   test_offline_buffer_refused_transient_restarts();
+  test_repair_after_disconnect();
+  test_ap_suffix_from_mac();
+  test_wifi_button_hold_feedback();
+  test_pairing_code_expired_screen();
+  test_disconnect_clears_persisted_ring();
+  test_scanner_setup_network_and_portal_copy();
+  test_display_special_characters_present();
   test_ota_install_gate_placeholder_until_firmware_452();
 
   if (failures != 0) {

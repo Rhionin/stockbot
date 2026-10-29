@@ -218,6 +218,9 @@ bool parsePairCompleteResponseJson(int http_status, const std::string& body, Pai
   if (auto household = jsonStringAtKey(body, "householdId")) {
     out.household_id = *household;
   }
+  if (auto household_name = jsonStringAtKey(body, "householdName")) {
+    out.household_name = *household_name;
+  }
   if (auto hb = jsonIntAtKey(body, "heartbeatSeconds")) {
     out.heartbeat_seconds = static_cast<uint32_t>(*hb);
   }

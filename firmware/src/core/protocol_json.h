@@ -21,6 +21,7 @@ struct PairCompleteParsed {
   std::string device_id;
   std::string device_token;
   std::string household_id;
+  std::string household_name;
   DeviceHubConfigParsed config;
   uint32_t heartbeat_seconds = 60;
 };

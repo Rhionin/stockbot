@@ -30,11 +30,12 @@ class ScannerController {
                     NvsConfigStore& nvs, CaptivePortal& portal, StockbotClient& client, WifiStation& wifi,
                     RingBuffer& ring);
 
-  void begin(uint64_t now_ms, uint32_t hw_random_nonce = 0);
+  void begin(uint64_t now_ms, uint32_t hw_random_nonce = 0, const std::string& mac_override = "");
   void tick(uint64_t now_ms);
   void onBarcodeLine(const std::string& raw_line, bool manual_retrigger, uint64_t now_ms);
   void onModeButtonShortPress(uint64_t now_ms);
   void onModeButtonHold(uint64_t hold_ms, uint64_t now_ms);
+  void onModeButtonHoldTick(uint64_t hold_ms, uint64_t now_ms);
   void onTriggerButtonChanged(bool pressed, uint64_t now_ms);
 
   OperationalState operationalState() const { return state_.operational; }
@@ -43,6 +44,7 @@ class ScannerController {
   Direction activeDirection() const { return state_.active_direction; }
   bool manualRetriggerPending() const { return manual_retrigger_pending_; }
   bool triggerContinuousMode() const { return trigger_continuous_; }
+  const std::string& apSuffixForTest() const { return ap_suffix_; }
 
  private:
   HalScanner& scanner_;
@@ -70,9 +72,11 @@ class ScannerController {
   bool one_d_locked_ = false;
   bool portal_active_ = false;
   bool wifi_update_mode_ = false;
+  bool wifi_button_hold_active_ = false;
   bool manual_retrigger_pending_ = false;
   bool trigger_continuous_ = false;
   std::string ap_suffix_;
+  std::string connected_household_name_;
   std::string boot_id_;
 
   void handlePortalSubmission(const CaptivePortalSubmission& submission, uint64_t now_ms);
@@ -82,6 +86,10 @@ class ScannerController {
   void enterUnprovisioned(uint64_t now_ms);
   void enterPairing(uint64_t now_ms);
   void enterPaired(uint64_t now_ms);
+  void finishPairingSuccess(const PairCompleteParsed& paired, uint64_t now_ms);
+  void showPairingCodeExpired(uint64_t now_ms);
+  void handleDeviceDisconnected(uint64_t now_ms);
+  void tryPairingBarcode(const std::string& raw_line, uint64_t now_ms);
   void render(uint64_t now_ms);
   void play(AudioCue cue);
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);

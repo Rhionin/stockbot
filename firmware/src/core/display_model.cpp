@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "ring_buffer.h"
+#include "scanner_setup_network.h"
 
 namespace stockbot {
 
@@ -12,6 +13,10 @@ namespace {
 
 std::string directionBandLabel(Direction dir) {
   return dir == Direction::StockIn ? "STOCK IN" : "STOCK OUT";
+}
+
+std::string defaultDirectionPhrase(Direction dir) {
+  return dir == Direction::StockIn ? "Stock in" : "Stock out";
 }
 
 void styleBand1(DisplayBands& out, const char* hex, uint16_t fg_rgb565) {
@@ -96,21 +101,22 @@ std::string truncateDisplayLine(const std::string& text, size_t max_chars) {
 }
 
 std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms,
-                                  uint64_t now_ms) {
+                                  uint64_t now_ms, Direction default_direction) {
+  const std::string mode = defaultDirectionPhrase(default_direction);
   if (last_activity_ms == 0 || now_ms <= last_activity_ms) {
-    return "Reverts to Stock out in " + std::to_string(inactivity_revert_seconds / 60) + ":00";
+    return "Back to " + mode + " in " + std::to_string(inactivity_revert_seconds / 60) + ":00";
   }
   const uint64_t elapsed = now_ms - last_activity_ms;
   const uint64_t total = static_cast<uint64_t>(inactivity_revert_seconds) * 1000ULL;
   if (elapsed >= total) {
-    return "Reverts to Stock out in 0:00";
+    return "Back to " + mode + " in 0:00";
   }
   const uint64_t remaining_ms = total - elapsed;
   const uint64_t rem_sec = remaining_ms / 1000;
   const uint64_t minutes = rem_sec / 60;
   const uint64_t seconds = rem_sec % 60;
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "Reverts to Stock out in %llu:%02llu",
+  std::snprintf(buf, sizeof(buf), "Back to %s in %llu:%02llu", mode.c_str(),
                 static_cast<unsigned long long>(minutes), static_cast<unsigned long long>(seconds));
   return buf;
 }
@@ -123,17 +129,58 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     out.band1 = "READY TO SET UP";
     styleBand1(out, "#334155", 0xFFFF);
     out.band2_line1 = "Join Wi-Fi:";
-    out.band2_line2 = "Stockbot-Scanner-" + in.pairing_ap_suffix;
-    out.band3 = "Or scan Setup QR code";
+    out.band2_line2 = scannerSetupSsid(in.pairing_ap_suffix);
+    out.band3 = "Then follow the steps on your phone";
     out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_WifiSetup || (in.wifi_update_mode && in.screen == UiScreen::S0_Unprovisioned)) {
+    out.band1 = "WI-FI SETUP";
+    styleBand1(out, "#334155", 0xFFFF);
+    out.band2_line1 = "Join Wi-Fi:";
+    out.band2_line2 = scannerSetupSsid(in.pairing_ap_suffix);
+    out.band3 = "Then follow the steps on your phone";
+    out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_WifiButtonHold) {
+    out.band1 = "HOLDING…";
+    styleBand1(out, "#334155", 0xFFFF);
+    out.band2_line1 = "Let go for Wi-Fi setup";
+    out.band2_line2 = "Keep holding to erase";
+    out.band3.clear();
+    out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_Connected) {
+    out.band1 = "CONNECTED";
+    styleBand1(out, "#0D9488", 0xFFFF);
+    const std::string name = in.household_name.empty() ? in.connected_label : in.household_name;
+    const auto wrapped = wrapProductNameTwoLines(name);
+    out.band2_line1 = wrapped.first;
+    out.band2_line2 = wrapped.second;
+    out.band3 = "Ready to scan";
+    out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_PairingExpired) {
+    out.band1 = "PAIRING CODE EXPIRED";
+    styleBand1(out, "#DC2626", 0xFFFF);
+    out.band2_line1 = "Print a new setup sheet";
+    out.band3.clear();
+    out.audio = AudioCue::TripleErrorBuzz;
     return out;
   }
 
   if (in.screen == UiScreen::S1_Pairing) {
     out.band1 = "CONNECT HOUSEHOLD";
     styleBand1(out, "#0D9488", 0xFFFF);
-    out.band2_line1 = "Scan 1D pairing code";
-    out.band2_line2 = "in Stockbot → Scanners";
+    out.band2_line1 = "Scan the pairing";
+    out.band2_line2 = "barcode to connect";
     out.band3 = "Wi-Fi connected · Ready";
     out.audio = AudioCue::Silent;
     return out;
@@ -154,7 +201,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       out.band1 = "SCANNER ALERT";
       styleBand1(out, "#DC2626", 0xFFFF);
       out.band2_line1 = "Scanner disconnected";
-      out.band3 = "Re-pair in Stockbot";
+      out.band3 = "Needs a new setup sheet";
       out.audio = AudioCue::TripleErrorBuzz;
     } else if (in.buffer_full) {
       out.band1 = "MEMORY FULL";
@@ -167,7 +214,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       out.band1 = "SCANNER ALERT";
       styleBand1(out, "#DC2626", 0xFFFF);
       out.band2_line1 = "Scanner disconnected";
-      out.band3 = "Re-pair in Stockbot";
+      out.band3 = "Needs a new setup sheet";
       out.audio = AudioCue::TripleErrorBuzz;
     }
     return out;
@@ -274,7 +321,8 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
              in.active_direction == Direction::StockIn ? 0xFFFF : 0x2104);
   out.band2_line1 = "Ready to scan";
   if (in.show_revert_countdown && in.active_direction != in.default_direction) {
-    out.band3 = formatRevertCountdown(in.inactivity_revert_seconds, in.last_activity_ms, in.now_ms);
+    out.band3 = formatRevertCountdown(in.inactivity_revert_seconds, in.last_activity_ms, in.now_ms,
+                                      in.default_direction);
   } else if (in.commit_mode == CommitMode::Queue) {
     out.band3 = "Queues for review";
   } else {

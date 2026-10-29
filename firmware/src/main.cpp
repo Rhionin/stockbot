@@ -63,6 +63,12 @@ void loop() {
     g_btn_mode_down = true;
     g_btn_mode_down_ms = now;
   }
+  if (mode_pressed && g_btn_mode_down) {
+    const uint64_t held = now - g_btn_mode_down_ms;
+    if (held >= 500) {
+      g_controller->onModeButtonHoldTick(held, now);
+    }
+  }
   if (!mode_pressed && g_btn_mode_down) {
     const uint64_t held = now - g_btn_mode_down_ms;
     if (held < 5000) {
