@@ -23,12 +23,12 @@ func TestDeriveAmount(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		now       time.Time
-		started   time.Time
-		ins       []time.Time
-		outs      []AmountWithdrawal
-		wantOK    bool
+		name       string
+		now        time.Time
+		started    time.Time
+		ins        []time.Time
+		outs       []AmountWithdrawal
+		wantOK     bool
 		wantPerDay float64
 	}{
 		{
@@ -36,6 +36,7 @@ func TestDeriveAmount(t *testing.T) {
 			now:     farNow,
 			started: time.Time{},
 			ins:     []time.Time{firstIn},
+			outs:    twoGapOuts(),
 			wantOK:  false,
 		},
 		{
@@ -54,12 +55,12 @@ func TestDeriveAmount(t *testing.T) {
 			wantOK:  false,
 		},
 		{
-			name:    "exactly 30 days with valid history passes opening gate",
-			now:     started.Add(30 * 24 * time.Hour),
-			started: started,
-			ins:     []time.Time{firstIn},
-			outs:    twoGapOuts(),
-			wantOK:  true,
+			name:       "exactly 30 days with valid history passes opening gate",
+			now:        started.Add(30 * 24 * time.Hour),
+			started:    started,
+			ins:        []time.Time{firstIn},
+			outs:       twoGapOuts(),
+			wantOK:     true,
 			wantPerDay: 1,
 		},
 		{
@@ -79,7 +80,7 @@ func TestDeriveAmount(t *testing.T) {
 				{At: firstIn, Qty: 99},
 				{At: d(2026, 1, 12), Qty: 10},
 			},
-			wantOK:  false,
+			wantOK: false,
 		},
 		{
 			name:    "withdrawal before first stock-in ignored",
@@ -90,7 +91,7 @@ func TestDeriveAmount(t *testing.T) {
 				{At: firstIn.Add(-time.Hour), Qty: 99},
 				{At: d(2026, 1, 12), Qty: 10},
 			},
-			wantOK:  false,
+			wantOK: false,
 		},
 		{
 			name:    "non-positive withdrawal qty ignored",
@@ -102,7 +103,22 @@ func TestDeriveAmount(t *testing.T) {
 				{At: d(2026, 1, 12), Qty: -3},
 				{At: d(2026, 1, 23), Qty: 11},
 			},
-			wantOK:  false,
+			wantOK: false,
+		},
+		{
+			name:    "non-positive withdrawal qty ignored with enough valid gaps",
+			now:     farNow,
+			started: started,
+			ins:     []time.Time{firstIn},
+			outs: []AmountWithdrawal{
+				{At: d(2026, 1, 12), Qty: 0},
+				{At: d(2026, 1, 12), Qty: 10},
+				{At: d(2026, 1, 22), Qty: 0},
+				{At: d(2026, 1, 23), Qty: -3},
+				{At: d(2026, 1, 23), Qty: 11},
+			},
+			wantOK:     true,
+			wantPerDay: 1,
 		},
 		{
 			name:    "same-instant withdrawals merged into one gap",
@@ -139,12 +155,12 @@ func TestDeriveAmount(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:    "span exactly 21 days",
-			now:     farNow,
-			started: started,
-			ins:     []time.Time{firstIn},
-			outs:    twoGapOuts(),
-			wantOK:  true,
+			name:       "span exactly 21 days",
+			now:        farNow,
+			started:    started,
+			ins:        []time.Time{firstIn},
+			outs:       twoGapOuts(),
+			wantOK:     true,
 			wantPerDay: 1,
 		},
 		{
