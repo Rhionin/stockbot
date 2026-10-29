@@ -153,7 +153,8 @@ describe('issue #456 kit copy (table B)', () => {
     expect(within(printRoot as HTMLElement).getByText('Connect your scanner')).toBeInTheDocument();
     expect(printRoot.querySelectorAll('svg[role="img"][aria-label^="Code 128"]')).toHaveLength(3);
     expect(printRoot.textContent).not.toMatch(/%%SpecCode99|Setup B/);
-    expect(within(dialog).getAllByText(PRINT_ACTUAL_SIZE_INSTRUCTION)).toHaveLength(1);
+    expect(within(dialog.querySelector('.pairing-print-actions') as HTMLElement).getAllByText(PRINT_ACTUAL_SIZE_INSTRUCTION)).toHaveLength(1);
+    expect(printRoot.querySelector('.kit-print-footer-instruction')?.textContent).toBe(PRINT_ACTUAL_SIZE_INSTRUCTION);
     assertNoOperatorInVisibleCopy();
   });
 

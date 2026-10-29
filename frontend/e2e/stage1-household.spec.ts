@@ -426,7 +426,7 @@ test('kit printables meet barcode width and single-page pdf on Letter and A4', a
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = await page.pdf({
       format,
-      margin: { top: '12.7mm', right: '12.7mm', bottom: '12.7mm', left: '12.7mm' },
+      preferCSSPageSize: true,
     })
     expect(countPdfPages(Buffer.from(pdf))).toBe(1)
   }

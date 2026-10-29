@@ -13,6 +13,84 @@
   break-inside: avoid;
 }
 
+/* Combined setup & wall sheet: compact vertical rhythm so Letter/A4 @ 12.7mm stay one page. */
+.setup-kit-print-sheet .kit-print-title {
+  font-size: 18pt;
+  margin: 0 0 2px;
+}
+
+.setup-kit-print-sheet .kit-print-subtitle {
+  font-size: 13pt;
+  margin: 0 0 5px;
+}
+
+.setup-kit-print-sheet .kit-print-body {
+  font-size: 11pt;
+  line-height: 1.25;
+  margin: 0 0 4px;
+}
+
+.setup-kit-print-sheet .kit-print-body-sm {
+  font-size: 10pt;
+  line-height: 1.25;
+  margin: 0 0 3px;
+}
+
+.setup-kit-print-sheet .kit-print-expiry-line {
+  font-size: 13pt;
+  margin: 3px 0;
+}
+
+.setup-kit-print-sheet .kit-print-cutline {
+  margin: 6px 0 3px;
+}
+
+.setup-kit-print-sheet .kit-wall-panels-row {
+  gap: 4mm;
+}
+
+.setup-kit-print-sheet .kit-wall-panel {
+  padding: 5px;
+}
+
+.setup-kit-print-sheet .kit-wall-mode-word {
+  font-size: 20pt;
+  margin: 0 0 2px;
+  gap: 4px;
+}
+
+.setup-kit-print-sheet .kit-wall-panel-title {
+  font-size: 13pt;
+  margin: 0 0 3px;
+}
+
+.setup-kit-print-sheet .kit-wall-panel-copy {
+  font-size: 10pt;
+  line-height: 1.2;
+  margin: 3px 0 0;
+}
+
+.setup-kit-print-sheet .printable-barcode-caption {
+  font-size: 10pt;
+  margin: 3px 0 0;
+}
+
+.setup-kit-print-sheet .kit-print-footer {
+  margin-top: 3px;
+}
+
+.setup-kit-print-sheet .kit-print-footer-instruction,
+.setup-kit-print-sheet .kit-print-ruler-caption,
+.setup-kit-print-sheet .kit-print-footer-meta {
+  font-size: 10pt;
+  line-height: 1.15;
+  margin: 1px 0;
+}
+
+.setup-kit-print-sheet .kit-print-ruler-wrap {
+  margin: 2px 0;
+}
+
 .kit-print-title {
   font-size: 20pt;
   margin: 0 0 4px;

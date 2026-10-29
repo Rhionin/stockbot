@@ -5,6 +5,7 @@ import {
   PAIRING_DIALOG_STEP_TWO,
   PAIRING_DIALOG_WIFI_SETUP_STEP_ONE,
   PRINT_PAIRING_CODE_LABEL,
+  PRINT_ACTUAL_SIZE_INSTRUCTION,
   defaultWallBarcodeSettings,
   pairingDialogTitle,
   pairingKeyboardFallback,
@@ -128,10 +129,13 @@ export function PairingDialog({
               wallSettings={wallSettings}
             />
           </div>
-          <Group className="pairing-screen-only">
-            <Button onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
-            <Button variant="default" onClick={onClose}>Close</Button>
-          </Group>
+          <Stack className="pairing-screen-only pairing-print-actions" gap="xs">
+            <Text size="sm" className="pairing-print-size-hint">{PRINT_ACTUAL_SIZE_INSTRUCTION}</Text>
+            <Group>
+              <Button onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
+              <Button variant="default" onClick={onClose}>Close</Button>
+            </Group>
+          </Stack>
         </Stack>
       )}
     </Modal>

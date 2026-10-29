@@ -98,6 +98,14 @@
   margin: 6px 0 10px;
 }
 
+.pairing-print-size-hint,
+.mantine-Text-root.pairing-print-size-hint {
+  color: #64748B;
+  font-size: max(13px, 0.8125rem);
+  line-height: 1.35;
+  max-width: 62ch;
+}
+
 .pairing-code128 {
   display: block;
   height: 96px;
