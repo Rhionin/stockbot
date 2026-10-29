@@ -335,8 +335,18 @@ func (s *Service) ingestScansWithProcessor(ctx context.Context, p Principal, ite
 			s.hints.PublishHint(p.HouseholdID, "devices")
 		}
 	}
+	stockBump := false
+	for _, row := range created {
+		if row.stock {
+			stockBump = true
+			break
+		}
+	}
 	if len(created) > 0 && s.hints != nil {
 		s.hints.PublishHint(p.HouseholdID, "scans")
+	}
+	if stockBump && s.hints != nil {
+		s.hints.PublishHint(p.HouseholdID, "stock")
 	}
 	if s.barcodeLookup != nil {
 		for _, row := range created {

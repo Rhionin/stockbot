@@ -2,6 +2,8 @@ package devicingest
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
@@ -10,6 +12,10 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
+// AfterDeviceStockCommitHook is set by tests to force a failure after stock is committed
+// but before the device scan receipt is finalized, inside the ingest transaction.
+var AfterDeviceStockCommitHook func() error
+
 // Attach wires queue-aware device scan handling onto the auth service.
 func Attach(svc *auth.Service, queue *scan.Queue, lookup *product.LookupService) {
 	if svc == nil || queue == nil || lookup == nil {
@@ -17,6 +23,7 @@ func Attach(svc *auth.Service, queue *scan.Queue, lookup *product.LookupService)
 	}
 	resolver := deviceProductResolver{lookup: lookup}
 	svc.SetDeviceProductLookup(resolver)
+	svc.SetDeviceIngestEventPublisher(queue)
 	svc.SetDeviceScanProcessor(func(ctx context.Context, q auth.Queryer, s *auth.Service, p auth.Principal, item auth.PreparedScanItem, group int) (auth.ScanResult, auth.CreatedScan, error) {
 		return process(ctx, q, s, queue, resolver, p, item, group)
 	})
@@ -78,7 +85,11 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 	entry := entryFromMatch(p.DeviceID, item.Barcode(), match, dir, item.At(), item.Unit())
 	entry.DeviceID = p.DeviceID
 	entry.ClientScanID = item.ClientID()
-	merged, err := queue.CreateScanEntry(ctx, scope, entry)
+	sqlTx, err := ingestTx(q)
+	if err != nil {
+		return auth.DeviceLCD{}, "", err
+	}
+	merged, err := queue.CreateScanEntryTx(ctx, scope, sqlTx, entry)
 	if err != nil {
 		return auth.DeviceLCD{}, "", auth.AsError(err)
 	}
@@ -101,6 +112,11 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 		Barcode: item.Barcode(), Direction: item.Direction(),
 		QueuedCount: merged.UnitCount, OnHand: onHand,
 	}
+	if AfterDeviceStockCommitHook != nil {
+		if err := AfterDeviceStockCommitHook(); err != nil {
+			return auth.DeviceLCD{}, "", auth.AsError(err)
+		}
+	}
 	if err := svc.RecordDeviceScanReceipt(ctx, q, p, item, merged.ID, lcd); err != nil {
 		return auth.DeviceLCD{}, "", err
 	}
@@ -116,7 +132,11 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 	entry := entryFromMatch(p.DeviceID, item.Barcode(), match, dir, item.At(), item.Unit())
 	entry.DeviceID = p.DeviceID
 	entry.ClientScanID = item.ClientID()
-	created, err := queue.CreateScanEntry(ctx, scope, entry)
+	sqlTx, err := ingestTx(q)
+	if err != nil {
+		return auth.DeviceLCD{}, "", false, err
+	}
+	created, err := queue.CreateScanEntryTx(ctx, scope, sqlTx, entry)
 	if err != nil {
 		return auth.DeviceLCD{}, "", false, auth.AsError(err)
 	}
@@ -126,28 +146,37 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 	}
 	delta := 0
 	backfilled := false
+	stockMoved := false
 	switch item.Direction() {
 	case "stock_in":
-		if err := queue.CommitStockIn(ctx, scope, created); err != nil {
+		if err := queue.CommitStockInTx(ctx, scope, sqlTx, created); err != nil {
 			return auth.DeviceLCD{}, "", false, auth.AsError(err)
 		}
 		delta = item.Unit()
+		stockMoved = true
 	case "stock_out":
 		if onHandBefore > 0 {
-			removed, err := queue.CommitStockOut(ctx, scope, created, nil)
+			removed, err := queue.CommitStockOutTx(ctx, scope, sqlTx, created, nil)
 			if err != nil {
 				return auth.DeviceLCD{}, "", false, auth.AsError(err)
 			}
 			delta = -removed
+			stockMoved = removed > 0
 		} else {
-			if _, err := queue.CommitBackfill(ctx, scope, created); err != nil {
+			if _, err := queue.CommitBackfillTx(ctx, scope, sqlTx, created); err != nil {
 				return auth.DeviceLCD{}, "", false, auth.AsError(err)
 			}
 			delta = -item.Unit()
 			backfilled = true
+			stockMoved = true
 		}
 	default:
 		return auth.DeviceLCD{}, "", false, auth.Validation()
+	}
+	if AfterDeviceStockCommitHook != nil {
+		if err := AfterDeviceStockCommitHook(); err != nil {
+			return auth.DeviceLCD{}, "", false, auth.AsError(err)
+		}
 	}
 	onHandAfter, err := svc.ProductOnHand(ctx, q, p.HouseholdID, match.ProductID)
 	if err != nil {
@@ -161,7 +190,15 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 	if err := svc.RecordDeviceScanReceipt(ctx, q, p, item, created.ID, lcd); err != nil {
 		return auth.DeviceLCD{}, "", false, err
 	}
-	return lcd, created.ID, true, nil
+	return lcd, created.ID, stockMoved, nil
+}
+
+func ingestTx(q auth.Queryer) (*sql.Tx, error) {
+	tx, ok := q.(*sql.Tx)
+	if !ok {
+		return nil, errors.New("device ingest requires a transaction")
+	}
+	return tx, nil
 }
 
 func scanDirection(dir string) *scan.ScanDirection {

@@ -78,24 +78,34 @@ func (r *Queue) CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	if scanEntry.Direction == nil || *scanEntry.Direction != StockIn {
-		return fmt.Errorf("scan entry direction must be stock_in, got %v", scanEntry.Direction)
-	}
-
-	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
-		return fmt.Errorf("scan entry must have a product_id")
-	}
-
-	if scanEntry.UnitCount < 1 {
-		return fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
-	}
-
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := r.CommitStockInTx(ctx, scope, tx, scanEntry); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return r.PublishAfterIngest(ctx, scope.HouseholdID(), scanEntry.ID, true)
+}
 
+// CommitStockInTx commits a stock-in scan inside an existing transaction.
+func (r *Queue) CommitStockInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scanEntry *ScanEntry) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if scanEntry.Direction == nil || *scanEntry.Direction != StockIn {
+		return fmt.Errorf("scan entry direction must be stock_in, got %v", scanEntry.Direction)
+	}
+	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
+		return fmt.Errorf("scan entry must have a product_id")
+	}
+	if scanEntry.UnitCount < 1 {
+		return fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
+	}
 	if err := claimScan(ctx, scope, tx, scanEntry.ID); err != nil {
 		return err
 	}
@@ -105,14 +115,10 @@ func (r *Queue) CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry
 	if err := claimPendingScan(ctx, scope, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return err
 	}
-
 	itemID, err := r.findOrCreateItem(ctx, scope, tx, scanEntry.UserID, *scanEntry.ProductID)
 	if err != nil {
 		return fmt.Errorf("find/create item: %w", err)
 	}
-
-	// Opening records the units already on the shelf and stops. The scan
-	// still has to leave the queue, so the entry is committed either way.
 	units, err := stockInUnits(ctx, tx, *scanEntry.ProductID, scanEntry.UnitCount)
 	if err != nil {
 		return err
@@ -121,31 +127,6 @@ func (r *Queue) CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry
 	if _, err := r.recordStockInTx(ctx, scope, tx, itemID, *scanEntry.ProductID, scanEntry.ScannedAt, scanEntry.ExpiresAt, units, "scan", &scanID); err != nil {
 		return err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	if r.Broadcaster != nil {
-		committed, err := r.GetScanEntry(ctx, scope, scanEntry.ID)
-		if err != nil {
-			return err
-		}
-		if committed != nil {
-			r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *committed)
-		}
-
-		if r.Pantry != nil {
-			invItem, err := r.Pantry.GetInventoryItem(ctx, scope, itemID, time.Now(), inventory.DefaultWarningDays)
-			if err != nil {
-				return err
-			}
-			if invItem != nil {
-				r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -716,6 +697,60 @@ func (r *Queue) CommitStockOutLink(ctx context.Context, scope tenant.Scope, scan
 	return r.commitStockOut(ctx, scope, scanEntry, instanceID, linkProductID)
 }
 
+// CommitStockOutTx commits a stock-out scan inside an existing transaction.
+func (r *Queue) CommitStockOutTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scanEntry *ScanEntry, instanceID *string) (int, error) {
+	removed, _, err := r.commitStockOutTx(ctx, scope, tx, scanEntry, instanceID)
+	return removed, err
+}
+
+func (r *Queue) commitStockOutTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scanEntry *ScanEntry, instanceID *string) (int, string, error) {
+	if scanEntry.Direction == nil || *scanEntry.Direction != StockOut {
+		return 0, "", fmt.Errorf("scan entry direction must be stock_out, got %v", scanEntry.Direction)
+	}
+	if scanEntry.ProductID == nil || *scanEntry.ProductID == "" {
+		return 0, "", fmt.Errorf("scan entry must have a product_id")
+	}
+	if err := claimScan(ctx, scope, tx, scanEntry.ID); err != nil {
+		return 0, "", err
+	}
+	if err := openScanCheck(ctx, scope, tx, scanEntry.ID); err != nil {
+		return 0, "", err
+	}
+	targetProductID := *scanEntry.ProductID
+	var itemID string
+	var shelved int
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, shelved FROM items
+		WHERE household_id = ? AND product_id = ?`,
+		scope.HouseholdID(), targetProductID,
+	).Scan(&itemID, &shelved)
+	if err == nil && shelved != 0 {
+		return 0, "", ErrNoneOnHand
+	}
+	if err == sql.ErrNoRows {
+		suggestions, sugErr := r.suggestLinks(ctx, scope, tx, scanEntry)
+		if sugErr != nil {
+			return 0, "", sugErr
+		}
+		return 0, "", &NoItemError{Suggestions: suggestions}
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("find item: %w", err)
+	}
+	if err := claimPendingScan(ctx, scope, tx, scanEntry.ID, time.Now().UTC(), ""); err != nil {
+		return 0, "", err
+	}
+	scanID := scanEntry.ID
+	removed, _, err := r.removeStockOutUnitsTx(ctx, scope, tx, itemID, instanceID, scanEntry.UnitCount, scanEntry.ScannedAt, &scanID)
+	if err != nil {
+		return 0, "", err
+	}
+	if err := recordStockOutCounts(ctx, scope, tx, scanEntry.ID, removed, scanEntry.UnitCount); err != nil {
+		return 0, "", err
+	}
+	return removed, itemID, nil
+}
+
 func (r *Queue) commitStockOut(ctx context.Context, scope tenant.Scope, scanEntry *ScanEntry, instanceID *string, linkProductID string) (int, error) {
 	if scanEntry.Direction == nil || *scanEntry.Direction != StockOut {
 		return 0, fmt.Errorf("scan entry direction must be stock_out, got %v", scanEntry.Direction)
@@ -730,6 +765,21 @@ func (r *Queue) commitStockOut(ctx context.Context, scope tenant.Scope, scanEntr
 		return 0, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	if linkProductID == "" {
+		removed, itemID, err := r.commitStockOutTx(ctx, scope, tx, scanEntry, instanceID)
+		if err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit transaction: %w", err)
+		}
+		if err := r.PublishAfterIngest(ctx, scope.HouseholdID(), scanEntry.ID, removed > 0); err != nil {
+			return 0, err
+		}
+		_ = itemID
+		return removed, nil
+	}
 
 	if err := claimScan(ctx, scope, tx, scanEntry.ID); err != nil {
 		return 0, err
@@ -944,6 +994,26 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 	if err := scope.Require(); err != nil {
 		return BackfillResult{}, err
 	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := r.CommitBackfillTx(ctx, scope, tx, scanEntry)
+	if err != nil {
+		return BackfillResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BackfillResult{}, fmt.Errorf("commit transaction: %w", err)
+	}
+	if err := r.PublishAfterIngest(ctx, scope.HouseholdID(), scanEntry.ID, true); err != nil {
+		return BackfillResult{}, err
+	}
+	return result, nil
+}
+
+// CommitBackfillTx runs a zero-on-hand stock-out backfill inside an existing transaction.
+func (r *Queue) CommitBackfillTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, scanEntry *ScanEntry) (BackfillResult, error) {
 	if scanEntry.Direction == nil {
 		return BackfillResult{}, ErrDirectionUnset
 	}
@@ -956,23 +1026,15 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 	if scanEntry.UnitCount < 1 {
 		return BackfillResult{}, fmt.Errorf("unit count must be at least 1, got %d", scanEntry.UnitCount)
 	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return BackfillResult{}, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
 	if err := claimScan(ctx, scope, tx, scanEntry.ID); err != nil {
 		return BackfillResult{}, err
 	}
 	if err := openScanCheck(ctx, scope, tx, scanEntry.ID); err != nil {
 		return BackfillResult{}, err
 	}
-
 	var itemID string
 	var shelved int
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		SELECT id, shelved FROM items
 		WHERE household_id = ? AND product_id = ?`,
 		scope.HouseholdID(), *scanEntry.ProductID,
@@ -983,10 +1045,7 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 	if err != nil {
 		return BackfillResult{}, fmt.Errorf("find item: %w", err)
 	}
-	// A wipe hides the item. Those leftover rows are not on the shelf, so
-	// backfill brings the item back instead of refusing units_on_hand.
 	wasShelved := shelved != 0
-
 	var onHand int
 	if !wasShelved {
 		if err := tx.QueryRowContext(ctx, `
@@ -998,7 +1057,6 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 	if onHand > 0 {
 		return BackfillResult{}, &UnitsOnHandError{ItemID: itemID, OnHand: onHand}
 	}
-
 	at := scanEntry.ScannedAt
 	units := scanEntry.UnitCount
 	scanID := scanEntry.ID
@@ -1009,25 +1067,16 @@ func (r *Queue) CommitBackfill(ctx context.Context, scope tenant.Scope, scanEntr
 	if err != nil {
 		return BackfillResult{}, err
 	}
-
 	if err := claimPendingScan(ctx, scope, tx, scanEntry.ID, r.now(), ""); err != nil {
 		return BackfillResult{}, err
 	}
 	if err := recordStockOutCounts(ctx, scope, tx, scanEntry.ID, units, scanEntry.UnitCount); err != nil {
 		return BackfillResult{}, err
 	}
-	// History records the move. Stamp this household on those rows. The
-	// column default is household 1, which is the wrong tenant for anyone else.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE stock_moves SET household_id = ? WHERE scan_entry_id = ?`,
 		scope.HouseholdID(), scanEntry.ID); err != nil {
 		return BackfillResult{}, fmt.Errorf("record stock-in: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return BackfillResult{}, fmt.Errorf("commit transaction: %w", err)
-	}
-	if err := r.publishCommitted(ctx, scope, scanEntry.ID, itemID); err != nil {
-		return BackfillResult{}, err
 	}
 	return BackfillResult{
 		ItemID: itemID, Units: units,
