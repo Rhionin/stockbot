@@ -7,6 +7,7 @@ import {
   HOUSEHOLD_DELETE_SENTENCE,
   OFFLINE_SENTENCE,
   PAIRING_EXPIRED_SENTENCE,
+  CONNECT_SCANNER_OR_HUB_LABEL,
   PRINT_PAIRING_CODE_LABEL,
   UPDATING_SENTENCE,
   applyHttpResponse,
@@ -665,7 +666,10 @@ describe('devices, pairing, and live hints', () => {
         devices = devices.filter((row) => row.id !== 'shed');
         return Promise.resolve(json({}));
       }
-      if (url === '/api/devices/pair' && init?.method === 'POST') {
+      if (url.includes('/api/devices/pair/pair-1')) {
+        return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));
+      }
+      if (url.includes('/api/devices/pair')) {
         return Promise.resolve(json({
           code: PAIRING,
           qrPayload: PAIRING,
@@ -675,13 +679,9 @@ describe('devices, pairing, and live hints', () => {
           qrValue: PAIRING,
         }));
       }
-      if (url === '/api/devices/pair/pair-1') {
-        return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));
-      }
       return Promise.reject(new Error(url));
     }));
-    const print = vi.fn();
-    vi.stubGlobal('print', print);
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
     renderStage(<DevicesPage />, session('owner'));
     expect(await screen.findByText('Kitchen hub')).toBeVisible();
     expect(screen.getAllByText(/Hub/).length).toBeGreaterThan(0);
@@ -714,14 +714,17 @@ describe('devices, pairing, and live hints', () => {
     fireEvent.click(within(emptyDialog).getByRole('button', { name: 'Disconnect' }));
     expect(await screen.findByText('Shed hub was disconnected.')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Pair a hub' }));
-    expect(await screen.findByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
-    expect(await screen.findByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible();
-    expect(screen.getByLabelText('Pairing code')).toHaveTextContent(PAIRING.split('').join(' '));
-    expect(screen.getByText(/Scan this code with your scanner to connect your hub to Pantry/)).toBeVisible();
-    expect(screen.getByText(new RegExp(`No printer\\? Plug a USB keyboard into the hub, type this code, and press Enter: ${PAIRING}`))).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: PRINT_PAIRING_CODE_LABEL }));
-    expect(print).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL }));
+    const pairingDialog = await screen.findByRole('dialog', { name: CONNECT_SCANNER_OR_HUB_LABEL });
+    const screenOnly = pairingDialog.querySelector('.pairing-screen-only');
+    expect(screenOnly).not.toBeNull();
+    expect(within(screenOnly as HTMLElement).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
+    expect(within(screenOnly as HTMLElement).getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible();
+    expect(within(screenOnly as HTMLElement).getByLabelText('Pairing code')).toHaveTextContent(PAIRING.split('').join(' '));
+    expect(within(pairingDialog).getByText(/Use within 10 minutes · expires at/)).toBeVisible();
+    expect(within(screenOnly as HTMLElement).getByText(new RegExp(`No printer\\? Plug a USB keyboard into the hub, type this code, and press Enter: ${PAIRING}`))).toBeVisible();
+    fireEvent.click(within(pairingDialog).getByRole('button', { name: PRINT_PAIRING_CODE_LABEL }));
+    await waitFor(() => expect(print).toHaveBeenCalled(), { timeout: 3000 });
     expect(code128Bars(PAIRING).some(Boolean)).toBe(true);
   });
 
@@ -733,7 +736,7 @@ describe('devices, pairing, and live hints', () => {
       return Promise.reject(new Error(String(input)));
     }));
     renderStage(<DevicesPage />, session('member'));
-    expect(await screen.findByRole('button', { name: 'Pair a hub' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Rename' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
   });
@@ -772,7 +775,7 @@ describe('devices, pairing, and live hints', () => {
       return Promise.reject(new Error(url));
     }));
     renderStage(<DevicesPage />, session('owner'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Pair a hub' }));
+    fireEvent.click(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL }));
     expect(await screen.findByText(PAIRING_EXPIRED_SENTENCE)).toBeVisible();
     expect(screen.getByRole('button', { name: 'Get a new one' })).toBeVisible();
   });
@@ -853,7 +856,7 @@ describe('devices, pairing, and live hints', () => {
     expect(await screen.findByRole('heading', { name: 'Scanners' })).toBeVisible();
     const scannersSection = screen.getByRole('heading', { name: 'Scanners' }).closest('section');
     expect(scannersSection).not.toBeNull();
-    expect(within(scannersSection!).getByText(/No storage-room scanners connected yet/)).toBeVisible();
+    expect(within(scannersSection!).getByText('No scanners yet. Connect one to scan items in and out right at the shelf.')).toBeVisible();
     expect(within(scannersSection!).queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -965,10 +968,13 @@ describe('devices, pairing, and live hints', () => {
   });
 
   it('shows pairing wifi help and opens the wall barcode sheet', async () => {
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/devices') return Promise.resolve(json({ devices: [] }));
-      if (url === '/api/devices/pair' && init?.method === 'POST') {
+      if (url.includes('/api/devices/pair/pair-1')) {
+        return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));
+      }
+      if (url.includes('/api/devices/pair')) {
         return Promise.resolve(json({
           code: PAIRING,
           qrPayload: PAIRING,
@@ -978,28 +984,24 @@ describe('devices, pairing, and live hints', () => {
           qrValue: PAIRING,
         }));
       }
-      if (url === '/api/devices/pair/pair-1') {
-        return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));
-      }
       return Promise.reject(new Error(url));
     }));
-    const print = vi.fn();
-    vi.stubGlobal('print', print);
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
     renderStage(<DevicesPage />, session('member'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Pair a hub' }));
-    const pairingDialog = await screen.findByRole('dialog', { name: 'Pair a hub' });
+    fireEvent.click(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL }));
+    const pairingDialog = await screen.findByRole('dialog', { name: CONNECT_SCANNER_OR_HUB_LABEL });
     expect(within(pairingDialog).getByText('Setting up a brand-new scanner?')).toBeVisible();
-    expect(within(pairingDialog).getByText(/Stockbot-Scanner-XXXX/)).toBeVisible();
-    expect(within(pairingDialog).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
+    expect(within(pairingDialog).getByText(/Stockbot-Scanner-/)).toBeVisible();
+    expect(within(pairingDialog.querySelector('.pairing-screen-only') as HTMLElement).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
     fireEvent.click(within(pairingDialog).getByRole('button', { name: 'Close' }));
     fireEvent.click(screen.getByRole('button', { name: 'Print wall barcodes' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Storage-room barcode sheet' });
-    expect(sheet.querySelector('.storage-barcode-sheet')).not.toBeNull();
-    expect(screen.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible();
-    expect(screen.getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible();
-    expect(screen.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toBeVisible();
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Print sheet' }));
-    expect(print).toHaveBeenCalled();
+    const sheet = await screen.findByRole('dialog', { name: 'Wall barcodes' });
+    expect(sheet.querySelector('.kit-print-root')).not.toBeNull();
+    expect(within(sheet).getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible();
+    expect(within(sheet).getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible();
+    expect(screen.queryByRole('img', { name: 'Code 128 %%SpecCode99' })).not.toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Print' }));
+    await waitFor(() => expect(print).toHaveBeenCalled(), { timeout: 3000 });
   });
 
   it('lets members pair and print wall barcodes but hides disconnect', async () => {
@@ -1010,7 +1012,7 @@ describe('devices, pairing, and live hints', () => {
       return Promise.reject(new Error(String(input)));
     }));
     renderStage(<DevicesPage />, session('member'));
-    expect(await screen.findByRole('button', { name: 'Pair a hub' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Print wall barcodes' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Rename' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();

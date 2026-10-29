@@ -1,0 +1,266 @@
+@page {
+  size: auto;
+  margin: 12.7mm;
+}
+
+.kit-print-root {
+  color: #111827;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+}
+
+.kit-print-sheet {
+  max-width: 184.6mm;
+  break-inside: avoid;
+}
+
+.kit-print-title {
+  font-size: 20pt;
+  margin: 0 0 4px;
+}
+
+.kit-print-subtitle {
+  font-size: 14pt;
+  margin: 0 0 12px;
+}
+
+.kit-print-body {
+  font-size: 12pt;
+  margin: 0 0 10px;
+  max-width: 62ch;
+}
+
+.kit-print-body-sm {
+  font-size: 11pt;
+  margin: 0 0 8px;
+  max-width: 62ch;
+}
+
+.kit-print-expiry-line {
+  font-size: 14pt;
+  font-weight: 700;
+  margin: 8px 0;
+}
+
+.kit-print-cutline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 8px;
+  color: #64748B;
+}
+
+.kit-print-cutline-dash {
+  flex: 1;
+  border-top: 1px dashed #64748B;
+}
+
+.kit-wall-panels-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8mm;
+}
+
+.kit-wall-panels-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10mm;
+}
+
+.kit-wall-panel {
+  break-inside: avoid;
+  padding: 10px;
+}
+
+.kit-wall-panel-out {
+  border: 3px solid #F59E0B;
+  background: #F59E0B;
+  color: #111827;
+}
+
+.kit-wall-panel-in {
+  border: 2px solid #0D9488;
+  background: #fff;
+  color: #111827;
+}
+
+.kit-wall-mode-word {
+  font-size: 28pt;
+  font-weight: 700;
+  margin: 0 0 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.kit-wall-panel-in .kit-wall-mode-word {
+  color: #0F766E;
+}
+
+.kit-wall-default-badge {
+  font-size: 12pt;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #111827;
+  color: #fff;
+}
+
+.kit-wall-default-badge-in {
+  background: #0F766E;
+}
+
+.kit-wall-panel-title {
+  font-size: 16pt;
+  margin: 0 0 8px;
+}
+
+.kit-wall-panel-copy {
+  font-size: 11pt;
+  margin: 8px 0 0;
+}
+
+.printable-barcode-block {
+  background: #fff;
+  display: inline-block;
+  max-width: 100%;
+  break-inside: avoid;
+}
+
+.printable-barcode-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.printable-barcode-caption {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12pt;
+  text-align: center;
+  margin: 6px 0 0;
+}
+
+.kit-print-footer {
+  margin-top: 12px;
+  break-inside: avoid;
+}
+
+.kit-print-footer-instruction,
+.kit-print-footer-meta,
+.kit-print-ruler-caption {
+  font-size: 11pt;
+  margin: 4px 0;
+}
+
+.kit-print-ruler {
+  width: 50mm;
+  border-top: 2px solid #000;
+  height: 0;
+  position: relative;
+}
+
+.kit-print-ruler::before,
+.kit-print-ruler::after {
+  content: '';
+  position: absolute;
+  top: -6px;
+  width: 0;
+  height: 6px;
+  border-left: 2px solid #000;
+}
+
+.kit-print-ruler::before {
+  left: 0;
+}
+
+.kit-print-ruler::after {
+  right: 0;
+}
+
+.storage-barcode-badge-lg {
+  font-size: 12pt;
+}
+
+.kit-print-hint {
+  max-width: 62ch;
+}
+
+@media (max-width: 480px) {
+  .kit-wall-panels-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+  }
+
+  * {
+    transform: none !important;
+  }
+
+  body > *:not(:has(.kit-print-root[data-printing='true'])) {
+    display: none !important;
+  }
+
+  .mantine-Modal-overlay {
+    display: none !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .kit-print-root[data-printing='true'],
+  .kit-print-root[data-printing='true'] * {
+    visibility: visible !important;
+  }
+
+  .pairing-screen-only,
+  .wall-sheet-screen-extra,
+  .mantine-Modal-header,
+  .kit-print-hint,
+  .mantine-Group-root {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  .mantine-Modal-root,
+  .mantine-Modal-inner,
+  .mantine-Modal-content,
+  .mantine-Modal-body {
+    position: static !important;
+    transform: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    width: auto !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .kit-print-root[data-printing='true'] {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    padding: 0 !important;
+    background: #fff !important;
+    z-index: 2147483647 !important;
+    display: block !important;
+  }
+
+  .kit-print-sheet,
+  .kit-wall-panel,
+  .printable-barcode-block,
+  .kit-print-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

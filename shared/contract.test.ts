@@ -82,8 +82,21 @@ import {
   hostedErrorSentence,
   HOSTED_ERROR_SENTENCES,
   olderAppDevicesSentence,
+  CONNECT_SCANNER_OR_HUB_LABEL,
+  PRINT_PAIRING_CODE_LABEL,
+  SYMCODE_DISCLOSURE_LABEL,
+  defaultWallBarcodeSettings,
+  deviceUntitledLabel,
+  disconnectDeviceModalTitle,
+  formatInactivityDuration,
+  formatPairingExpiryTime,
+  pairingDialogTitle,
   pairingKeyboardFallback,
   pairingPrintBody,
+  renameDeviceModalTitle,
+  resolveWallBarcodeSettings,
+  wallBarcodeStockInCopy,
+  wallBarcodeStockOutCopy,
   type BackfillCommitResponse,
   type BatchCommitResponse,
   type ScanListEntry,
@@ -839,11 +852,14 @@ describe('stage-1 household copy', () => {
   });
 
   it('uses the printed pairing copy and the hosted error sentences', () => {
-    expect(pairingPrintBody('Pantry')).toBe(
-      'Scan this code with your scanner to connect your hub to Pantry. This code works once and expires in 10 minutes.',
+    expect(pairingPrintBody('Test Household', '2026-06-15T14:05:00.000Z', 'en-US', 'UTC')).toBe(
+      'Scan this barcode with your scanner to connect it to Test Household. It works once and expires at 2:05 PM.',
     );
-    expect(pairingKeyboardFallback('SBP-2345-6789-X')).toBe(
+    expect(pairingKeyboardFallback('SBP-2345-6789-X', 'hub')).toBe(
       'No printer? Plug a USB keyboard into the hub, type this code, and press Enter: SBP-2345-6789-X',
+    );
+    expect(pairingKeyboardFallback('SBP-2345-6789-X', 'scanner')).toBe(
+      "Can't scan it? Scan the same barcode from your phone or computer screen in Stockbot.",
     );
     expect(PAIRING_EXPIRED_SENTENCE).toBe('This code expired. Get a new one.');
     expect(HOUSEHOLD_DELETE_SENTENCE).toBe(
@@ -870,5 +886,34 @@ describe('stage-1 household copy', () => {
     expect(deviceKindLabel('esp32_scanner')).toBe('Scanner');
     expect(deviceKindLabel('phone')).toBe('Phone');
     expect(deviceKindLabel('direct')).toBe('Direct scanner');
+  });
+
+  it('uses kit copy helpers for pairing, devices, and wall barcodes (#456 B2, B4, B7–B10, B14)', () => {
+    expect(PRINT_PAIRING_CODE_LABEL).toBe('Print setup & wall sheet');
+    expect(CONNECT_SCANNER_OR_HUB_LABEL).toBe('Connect a scanner or hub');
+    expect(pairingDialogTitle('scanner')).toBe('Connect a scanner');
+    expect(pairingDialogTitle('devices')).toBe('Connect a scanner or hub');
+    expect(formatPairingExpiryTime('2026-06-15T14:05:00.000Z', 'en-US', 'UTC')).toBe('2:05 PM');
+    expect(deviceUntitledLabel('esp32_scanner')).toBe('Scanner');
+    expect(deviceUntitledLabel('pi_hub')).toBe('Hub');
+    expect(renameDeviceModalTitle('esp32_scanner')).toBe('Rename scanner');
+    expect(renameDeviceModalTitle('pi_hub')).toBe('Rename hub');
+    expect(disconnectDeviceModalTitle('esp32_scanner')).toBe('Disconnect scanner');
+    expect(disconnectDeviceModalTitle('box_hub')).toBe('Disconnect hub');
+    expect(formatInactivityDuration(60)).toBe('1 minute');
+    expect(formatInactivityDuration(180)).toBe('3 minutes');
+    const threeMin = { inactivityRevertSeconds: 180, defaultDirection: 'stock_out' as const };
+    expect(wallBarcodeStockOutCopy(threeMin)).toBe(
+      'Scan before you take things out. This is the normal mode.',
+    );
+    expect(wallBarcodeStockInCopy(threeMin)).toBe(
+      'Scan before you put groceries away. Goes back to Stock out 3 minutes after your last scan.',
+    );
+    expect(resolveWallBarcodeSettings([
+      { kind: 'esp32_scanner', revokedAt: null, inactivityRevertSeconds: 180, defaultDirection: 'stock_out' },
+    ])).toEqual(threeMin);
+    expect(resolveWallBarcodeSettings([])).toEqual(defaultWallBarcodeSettings());
+    expect(SYMCODE_DISCLOSURE_LABEL).toBe('Using a Symcode handheld?');
+    expect(hostedErrorSentence('forbidden_operator')).toBe('Only a Stockbot admin can do this.');
   });
 });

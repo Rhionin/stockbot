@@ -53,7 +53,7 @@ export const SetupPage = () => {
         <Text className="login-lede">
           {recover
             ? 'Enter the recovery code from the server, then choose a new password.'
-            : 'Enter the setup code from the server, then create the operator account.'}
+            : 'Enter the setup code from the server, then create the admin account.'}
         </Text>
         {ready !== '' ? (
           <Stack className="login-ready" gap="sm" align="center">

@@ -3,6 +3,11 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { formatPairingCode } from '../../shared/contract'
 
 const PAIRING = formatPairingCode('23456789')
+
+function countPdfPages(buffer: Buffer): number {
+  const matches = buffer.toString('latin1').match(/\/Type\s*\/Page\b/g)
+  return matches?.length ?? 0
+}
 // GitHub Actions has no writable /cursor/stores/self. STAGE1_SCREENSHOT_DIR
 // overrides the directory when a run should keep the images somewhere else.
 const shots = process.env.STAGE1_SCREENSHOT_DIR
@@ -121,7 +126,7 @@ const install = async (page: Page) => {
       return fulfillJson(route, {})
     }
     if (path === '/api/operator/households' && method === 'GET') {
-      if (!stage.operator) return fulfillJson(route, { error: 'Operator access required.', code: 'forbidden_operator' }, 403)
+      if (!stage.operator) return fulfillJson(route, { error: 'Only a Stockbot admin can do this.', code: 'forbidden_operator' }, 403)
       return fulfillJson(route, {
         households: [
           {
@@ -270,11 +275,27 @@ test.describe('stage-1 household screens', () => {
     await shot(page, 'members-invites', width)
 
     await expect(page.getByRole('heading', { name: 'Scanners', exact: true })).toBeVisible()
+    await shot(page, 'household-scanners', width)
+    await page.getByRole('button', { name: 'Connect a scanner' }).first().click()
+    const householdPairing = page.getByRole('dialog', { name: 'Connect a scanner' })
+    await expect(householdPairing).toBeVisible()
+    await expect(householdPairing.getByText('Print setup & wall sheet')).toBeVisible()
+    await expect(householdPairing.locator('.pairing-screen-only').getByText(/Scan the pairing barcode from Stockbot/)).toBeVisible()
+    await shot(page, 'household-pairing', width, false)
+    await householdPairing.getByRole('button', { name: 'Close' }).click()
+
     await page.getByRole('button', { name: 'Print wall barcodes' }).click()
-    const wallSheet = page.getByRole('dialog', { name: 'Storage-room barcode sheet' })
+    const wallSheet = page.getByRole('dialog', { name: 'Wall barcodes' })
     await expect(wallSheet).toBeVisible()
-    await expect(wallSheet.locator('.storage-barcode-sheet')).toBeVisible()
+    await expect(wallSheet.locator('.kit-print-root')).toBeVisible()
     await expect(wallSheet.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await expect(wallSheet.getByRole('button', { name: 'Using a Symcode handheld?' })).toBeVisible()
+    await expect(wallSheet.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toHaveCount(0)
+    await shot(page, 'wall-sheet-symcode-collapsed', width, false)
+    await wallSheet.locator('.kit-print-root').evaluate((node) => node.setAttribute('data-printing', 'true'))
+    await page.emulateMedia({ media: 'print' })
+    if (shots) await page.locator('.wall-kit-print-root[data-printing="true"]').screenshot({ path: `${shots}/wall-print-${width}.png` })
+    await page.emulateMedia({ media: 'screen' })
     await wallSheet.getByRole('button', { name: 'Close' }).click()
 
     await page.getByRole('button', { name: 'Menu' }).click()
@@ -300,6 +321,7 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByText('Kitchen hub')).toBeVisible()
     await expect(page.getByText(/Offline/)).toBeVisible()
     await shot(page, 'devices', width)
+    await expect(page.getByRole('button', { name: 'Connect a scanner or hub' })).toBeVisible()
     const kitchen = page.getByRole('listitem').filter({ hasText: 'Kitchen hub' })
     await kitchen.getByRole('button', { name: 'Disconnect' }).click()
     const queuedDialog = page.getByRole('dialog', { name: 'Disconnect hub' })
@@ -317,20 +339,25 @@ test.describe('stage-1 household screens', () => {
     await emptyDialog.getByRole('button', { name: 'Disconnect' }).click()
     await expect(page.getByText('Shed hub was disconnected.')).toBeVisible()
 
-    await page.getByRole('button', { name: 'Pair a hub' }).click()
-    await expect(page.getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
-    await expect(page.getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Print pairing code' })).toBeVisible()
+    await page.getByRole('button', { name: 'Connect a scanner or hub' }).click()
+    const hubPairing = page.getByRole('dialog', { name: 'Connect a scanner or hub' })
+    await expect(hubPairing.locator('.pairing-screen-only').getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
+    await expect(hubPairing.locator('.pairing-screen-only').getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Print setup & wall sheet' })).toBeVisible()
     await expect(page.getByText(/No printer\? Plug a USB keyboard/)).toBeVisible()
     await shot(page, 'pairing', width, false)
+    await page.locator('.setup-kit-print-root').evaluate((node) => node.setAttribute('data-printing', 'true'))
     await page.emulateMedia({ media: 'print' })
-    await expect(page.locator('.pairing-sheet')).toBeVisible()
-    if (shots) await page.locator('.pairing-sheet').screenshot({ path: `${shots}/pairing-print-${width}.png` })
+    await expect(page.locator('.kit-print-root[data-printing="true"]')).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toHaveCount(0)
+    if (shots) await page.locator('.setup-kit-print-root').screenshot({ path: `${shots}/pairing-print-${width}.png` })
     await page.emulateMedia({ media: 'screen' })
-    await page.locator('.pairing-sheet').getByRole('button', { name: 'Close' }).click()
+    await page.locator('.pairing-dialog-body').getByRole('button', { name: 'Close' }).click()
 
     stage.pairingExpired = true
-    await page.getByRole('button', { name: 'Pair a hub' }).click()
+    await page.getByRole('button', { name: 'Connect a scanner or hub' }).click()
     await expect(page.getByText('This code expired. Get a new one.')).toBeVisible()
     await shot(page, 'pairing-expired', width, false)
 
@@ -343,6 +370,42 @@ test.describe('stage-1 household screens', () => {
   })
 })
 }
+
+test('kit printables meet barcode width and single-page pdf on Letter and A4', async ({ page }) => {
+  resetStage()
+  stage.householdName = 'Test Household'
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await install(page)
+  await page.goto('/')
+  await page.getByLabel('Email').fill('ada@example.com')
+  await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse-battery')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
+  await page.getByRole('button', { name: 'Connect a scanner' }).first().click()
+  await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
+  await expect(page.locator('.setup-kit-print-root svg[data-barcode]').first()).toBeVisible()
+  await page.locator('.setup-kit-print-root').evaluate((node) => node.setAttribute('data-printing', 'true'))
+  await page.emulateMedia({ media: 'print' })
+  for (const svg of await page.locator('.kit-print-root svg[data-barcode]').all()) {
+    const box = await svg.boundingBox()
+    const modules = Number(await svg.getAttribute('data-modules'))
+    expect(box).not.toBeNull()
+    expect(box!.width / modules).toBeGreaterThanOrEqual(1.417)
+  }
+  await page.evaluate(() => {
+    const active = document.querySelector('.setup-kit-print-root[data-printing="true"]')
+    if (active == null) throw new Error('missing setup print root')
+    document.body.replaceChildren(active)
+  })
+  for (const format of ['Letter', 'A4'] as const) {
+    const pdf = await page.pdf({
+      format,
+      margin: { top: '12.7mm', right: '12.7mm', bottom: '12.7mm', left: '12.7mm' },
+    })
+    expect(countPdfPages(Buffer.from(pdf))).toBe(1)
+  }
+})
 
 test('owner renames household and operator sees admin households list', async ({ page }) => {
   resetStage()

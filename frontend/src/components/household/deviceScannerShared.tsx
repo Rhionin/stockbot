@@ -3,9 +3,12 @@ import { Button, Group, Modal, Radio, Stack, Text, TextInput } from '@mantine/co
 import { notifications } from '@mantine/notifications';
 import {
   deviceKindLabel,
+  deviceUntitledLabel,
+  disconnectDeviceModalTitle,
   disconnectHubConfirm,
   disconnectedHubNotice,
   hostedErrorSentence,
+  renameDeviceModalTitle,
   type Device,
   type UpdateDeviceRequest,
 } from '@stockbot/shared/contract';
@@ -16,8 +19,8 @@ function hosted(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-function hubName(device: Device): string {
-  return device.label?.trim() || 'Hub';
+function displayName(device: Device): string {
+  return device.label?.trim() || deviceUntitledLabel(device.kind);
 }
 
 function seen(device: Device): string {
@@ -61,6 +64,7 @@ export function DeviceScannerList({
   onReload,
 }: DeviceScannerListProps) {
   const [renameId, setRenameId] = useState<string | null>(null);
+  const [renameKind, setRenameKind] = useState<string>('pi_hub');
   const [label, setLabel] = useState('');
   const [disconnecting, setDisconnecting] = useState<Device | null>(null);
   const [savingDeviceId, setSavingDeviceId] = useState<string | null>(null);
@@ -105,7 +109,7 @@ export function DeviceScannerList({
             >
               <span className={device.online ? 'presence presence-online' : 'presence'} aria-hidden="true" />
               <div className="device-scanner-main">
-                <strong className="device-scanner-name">{hubName(device)}</strong>
+                <strong className="device-scanner-name">{displayName(device)}</strong>
                 <div className="device-scanner-meta">
                   <span>{deviceStatusLine(device)}</span>
                   {pill && (
@@ -192,7 +196,11 @@ export function DeviceScannerList({
                       size="compact-sm"
                       variant="default"
                       className="device-touch-target"
-                      onClick={() => { setRenameId(device.id); setLabel(device.label ?? ''); }}
+                      onClick={() => {
+                        setRenameId(device.id);
+                        setRenameKind(device.kind);
+                        setLabel(device.label ?? '');
+                      }}
                     >
                       Rename
                     </Button>
@@ -214,7 +222,7 @@ export function DeviceScannerList({
           );
         })}
       </ul>
-      <Modal opened={renameId !== null} onClose={() => setRenameId(null)} title="Rename device">
+      <Modal opened={renameId !== null} onClose={() => setRenameId(null)} title={renameDeviceModalTitle(renameKind)}>
         <TextInput label="Name" value={label} onChange={(event) => setLabel(event.currentTarget.value)} />
         <Group justify="flex-end" mt="md">
           <Button variant="default" onClick={() => setRenameId(null)}>Cancel</Button>
@@ -231,9 +239,13 @@ export function DeviceScannerList({
           </Button>
         </Group>
       </Modal>
-      <Modal opened={disconnecting !== null} onClose={() => setDisconnecting(null)} title="Disconnect hub">
+      <Modal
+        opened={disconnecting !== null}
+        onClose={() => setDisconnecting(null)}
+        title={disconnecting ? disconnectDeviceModalTitle(disconnecting.kind) : 'Disconnect hub'}
+      >
         {disconnecting && (
-          <Text>{disconnectHubConfirm(hubName(disconnecting), disconnecting.queued ?? 0)}</Text>
+          <Text>{disconnectHubConfirm(displayName(disconnecting), disconnecting.queued ?? 0)}</Text>
         )}
         <Group justify="flex-end" mt="md">
           <Button variant="default" onClick={() => setDisconnecting(null)}>Cancel</Button>
@@ -242,7 +254,7 @@ export function DeviceScannerList({
             color="red"
             onClick={() => {
               if (disconnecting === null) return;
-              const name = hubName(disconnecting);
+              const name = displayName(disconnecting);
               void revokeDevice(disconnecting.id).then(() => {
                 setDisconnecting(null);
                 notifications.show({ message: disconnectedHubNotice(name), color: 'teal' });

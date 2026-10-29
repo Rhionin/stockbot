@@ -22,7 +22,7 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
   return <div className="code128-quiet-zone">{svg}</div>;
 }
 
-export function QrMark({ value }: { value: string }) {
+export function QrMark({ value, className }: { value: string; className?: string }) {
   const [markup, setMarkup] = useState('');
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +39,7 @@ export function QrMark({ value }: { value: string }) {
   }, [value]);
   return (
     <div
-      className="pairing-qr"
+      className={className ? `pairing-qr ${className}` : 'pairing-qr'}
       role="img"
       aria-label={`QR code ${value}`}
       dangerouslySetInnerHTML={{ __html: markup }}

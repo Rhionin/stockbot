@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Stack, Text, Title } from '@mantine/core';
-import {
-  hostedErrorSentence,
-  type Device,
-} from '@stockbot/shared/contract';
+import { CONNECT_SCANNER_OR_HUB_LABEL, hostedErrorSentence, resolveWallBarcodeSettings, type Device } from '@stockbot/shared/contract';
 import { ApiError, listDevices } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 import { DeviceScannerList } from './deviceScannerShared';
@@ -41,7 +38,7 @@ export function DevicesPage() {
       <Group justify="space-between" wrap="wrap">
         <Title order={2}>Devices</Title>
         <Group gap="sm" wrap="wrap">
-          <Button className="device-touch-target" onClick={() => setPairing(true)}>Pair a hub</Button>
+          <Button className="device-touch-target" onClick={() => setPairing(true)}>{CONNECT_SCANNER_OR_HUB_LABEL}</Button>
           <Button className="device-touch-target" variant="default" onClick={() => setWallSheet(true)}>
             Print wall barcodes
           </Button>
@@ -57,13 +54,14 @@ export function DevicesPage() {
       <PairingDialog
         opened={pairing}
         householdName={householdName}
+        pairingContext="devices"
+        wallBarcodeSettings={resolveWallBarcodeSettings(devices)}
         onClose={() => {
           setPairing(false);
           void load();
         }}
-        onPrintWallBarcodes={() => setWallSheet(true)}
       />
-      <WallBarcodeSheetModal opened={wallSheet} onClose={() => setWallSheet(false)} />
+      <WallBarcodeSheetModal opened={wallSheet} onClose={() => setWallSheet(false)} devices={devices} />
     </Stack>
   );
 }

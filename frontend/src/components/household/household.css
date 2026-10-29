@@ -151,11 +151,46 @@
 }
 
 .storage-barcode-card-out {
-  border: 2px solid #D97706;
+  border: 2px solid #F59E0B;
 }
 
 .storage-barcode-card-in {
   border: 2px solid #0D9488;
+}
+
+.storage-barcode-badge-out {
+  color: #F59E0B;
+}
+
+.storage-barcode-badge-in {
+  color: #0D9488;
+}
+
+.storage-barcode-symcode-disclosure {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: #134e4a;
+  border: 1px dashed #64748B;
+  border-radius: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.setup-wall-print-cutline {
+  border-top: 2px dashed #64748B;
+  padding-top: 12px;
+  margin-top: 8px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #64748B;
+  letter-spacing: 0.06em;
+}
+
+.storage-barcode-sheet-embedded {
+  gap: 12px !important;
 }
 
 .storage-barcode-card-setup {
@@ -203,19 +238,39 @@
 }
 
 @media print {
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+  }
+
   * {
     transform: none !important;
   }
 
-  body * {
-    visibility: hidden;
+  body > *:not(:has(.kit-print-root[data-printing='true'])) {
+    display: none !important;
   }
 
-  .pairing-sheet,
-  .pairing-sheet *,
-  .storage-barcode-sheet,
-  .storage-barcode-sheet * {
-    visibility: visible;
+  .mantine-Modal-overlay {
+    display: none !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .kit-print-root[data-printing='true'],
+  .kit-print-root[data-printing='true'] * {
+    visibility: visible !important;
+  }
+
+  .pairing-screen-only,
+  .wall-sheet-screen-extra,
+  .kit-print-hint {
+    display: none !important;
+    visibility: hidden !important;
   }
 
   .mantine-Modal-root,
@@ -228,32 +283,23 @@
     max-height: none !important;
     height: auto !important;
     background: #fff !important;
+    display: block !important;
   }
 
-  .pairing-sheet {
-    position: fixed !important;
-    top: 0 !important;
+  .kit-print-root[data-printing='true'] {
+    position: absolute !important;
     left: 0 !important;
-    z-index: 100000 !important;
-    width: auto;
-    max-width: 720px;
-    padding: 24px;
-    background: #fff;
-  }
-
-  .pairing-sheet .mantine-Group-root,
-  .storage-barcode-sheet ~ .mantine-Group-root {
-    display: none !important;
-  }
-
-  .storage-barcode-sheet {
-    position: fixed !important;
     top: 0 !important;
-    left: 0 !important;
-    z-index: 100000 !important;
-    width: auto;
-    max-width: 720px;
-    padding: 24px;
-    background: #fff;
+    z-index: 2147483647 !important;
+    width: 100% !important;
+    background: #fff !important;
+    display: block !important;
+  }
+
+  .kit-print-sheet,
+  .storage-barcode-card,
+  .printable-barcode-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
