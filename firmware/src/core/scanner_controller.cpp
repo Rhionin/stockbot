@@ -160,6 +160,13 @@ void ScannerController::showPairingCodeExpired(uint64_t now_ms) {
   render(now_ms);
 }
 
+void ScannerController::showPairingCantConnect(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingCantConnect;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms) {
   ring_.clearAll();
   nvs_.clearDeviceToken();
@@ -180,7 +187,11 @@ void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t 
     finishPairingSuccess(paired, now_ms);
     return;
   }
-  showPairingCodeExpired(now_ms);
+  if (pairingCompleteFailureIsExpired(res.transport_ok, res.http_status, res.body)) {
+    showPairingCodeExpired(now_ms);
+    return;
+  }
+  showPairingCantConnect(now_ms);
 }
 
 void ScannerController::play(AudioCue cue) {
@@ -241,6 +252,7 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce, const s
   device_revoked_ = false;
   last_buffer_full_buzz_ms_ = std::nullopt;
   wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
 
   scanner_.begin();
   display_.begin();
@@ -284,10 +296,10 @@ void ScannerController::render(uint64_t now_ms) {
       (ui_screen_ == UiScreen::S3_ScanResult || ui_screen_ == UiScreen::S4_UnknownBarcode ||
        ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder ||
        ui_screen_ == UiScreen::S7_OfflineBufferRefused || ui_screen_ == UiScreen::S_Connected ||
-       ui_screen_ == UiScreen::S_PairingExpired)) {
+       ui_screen_ == UiScreen::S_PairingExpired || ui_screen_ == UiScreen::S_PairingCantConnect)) {
     // keep transient screen
   } else if (wifi_button_hold_active_) {
-    ui_screen_ = UiScreen::S_WifiButtonHold;
+    ui_screen_ = wifi_button_hold_erase_ ? UiScreen::S_WifiButtonHoldErase : UiScreen::S_WifiButtonHold;
   } else if (wifi_update_mode_ && portal_active_) {
     ui_screen_ = UiScreen::S_WifiSetup;
   } else if (device_revoked_ || ring_.isFull()) {
@@ -536,17 +548,27 @@ void ScannerController::onModeButtonShortPress(uint64_t now_ms) {
 }
 
 void ScannerController::onModeButtonHoldTick(uint64_t hold_ms, uint64_t now_ms) {
-  if (hold_ms >= 5000 && hold_ms < 10000) {
+  if (hold_ms >= 10000) {
     wifi_button_hold_active_ = true;
+    wifi_button_hold_erase_ = true;
+    state_.wakeBacklight(now_ms);
+    render(now_ms);
+    return;
+  }
+  if (hold_ms >= 5000) {
+    wifi_button_hold_active_ = true;
+    wifi_button_hold_erase_ = false;
     state_.wakeBacklight(now_ms);
     render(now_ms);
     return;
   }
   wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
 }
 
 void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
   wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
   const ButtonHoldGesture gesture = ScannerState::classifyButtonHold(hold_ms);
   if (gesture == ButtonHoldGesture::FactoryReset) {
     nvs_.factoryReset();

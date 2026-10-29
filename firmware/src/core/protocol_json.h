@@ -88,4 +88,8 @@ bool parseHeartbeatResponseJson(int http_status, const std::string& body, Heartb
 
 bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out);
 
+bool parseApiErrorCode(const std::string& body, std::string& code_out);
+
+bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body);
+
 }  // namespace stockbot

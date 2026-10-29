@@ -73,6 +73,7 @@ class ScannerController {
   bool portal_active_ = false;
   bool wifi_update_mode_ = false;
   bool wifi_button_hold_active_ = false;
+  bool wifi_button_hold_erase_ = false;
   bool manual_retrigger_pending_ = false;
   bool trigger_continuous_ = false;
   std::string ap_suffix_;
@@ -88,6 +89,7 @@ class ScannerController {
   void enterPaired(uint64_t now_ms);
   void finishPairingSuccess(const PairCompleteParsed& paired, uint64_t now_ms);
   void showPairingCodeExpired(uint64_t now_ms);
+  void showPairingCantConnect(uint64_t now_ms);
   void handleDeviceDisconnected(uint64_t now_ms);
   void tryPairingBarcode(const std::string& raw_line, uint64_t now_ms);
   void render(uint64_t now_ms);

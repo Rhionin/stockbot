@@ -210,6 +210,11 @@ void test_display_model() {
   auto q = buildDisplayModel(in);
   EXPECT(q.band3 == "Queued -1 · 6 on hand");
 
+  in.last_scan.on_hand = 0;
+  in.last_scan.queued_count = 1;
+  q = buildDisplayModel(in);
+  EXPECT(q.band3 == "Queued -1 · 0 on hand · Check app");
+
   in.last_scan.direction = Direction::StockIn;
   in.last_scan.on_hand = 4;
   in.last_scan.queued_count = 2;
@@ -261,7 +266,8 @@ void test_display_model() {
   in.device_revoked = true;
   auto err = buildDisplayModel(in);
   EXPECT(err.band1 == "SCANNER ALERT");
-  EXPECT(err.band2_line1 == "Scanner disconnected");
+  EXPECT(err.band2_line1 == "Disconnected");
+  EXPECT(err.band2_line2 == "from household");
   EXPECT(err.band3 == "Needs a new setup sheet");
 
   in.screen = UiScreen::S0_Unprovisioned;
@@ -299,12 +305,22 @@ void test_display_model() {
   in.screen = UiScreen::S_PairingExpired;
   auto expired = buildDisplayModel(in);
   EXPECT(expired.band1 == "PAIRING CODE EXPIRED");
-  EXPECT(expired.band2_line1 == "Print a new setup sheet");
+  EXPECT(expired.band2_line1 == "Print a new");
+  EXPECT(expired.band2_line2 == "setup sheet");
 
   in.screen = UiScreen::S_WifiButtonHold;
   auto hold = buildDisplayModel(in);
-  EXPECT(hold.band2_line1 == "Let go for Wi-Fi setup");
-  EXPECT(hold.band2_line2 == "Keep holding to erase");
+  EXPECT(hold.band1 == "HOLDING");
+  EXPECT(hold.band2_line1 == "Let go now to");
+  EXPECT(hold.band2_line2 == "update Wi-Fi");
+  EXPECT(hold.band3 == "Keep holding to erase everything");
+
+  in.screen = UiScreen::S_WifiButtonHoldErase;
+  auto erase_hold = buildDisplayModel(in);
+  EXPECT(erase_hold.band1 == "LET GO TO ERASE");
+  EXPECT(erase_hold.band2_line1 == "Erases Wi-Fi,");
+  EXPECT(erase_hold.band2_line2 == "pairing & scans");
+  EXPECT(erase_hold.band3 == "Then use a setup sheet");
 
   in.screen = UiScreen::S7_HardError;
   in.device_revoked = false;
@@ -314,7 +330,7 @@ void test_display_model() {
       std::to_string(stockbot::RingBuffer::kCapacity) + " scans waiting";
   EXPECT(full.band1 == "MEMORY FULL");
   EXPECT(full.band2_line1 == capacity_line);
-  EXPECT(full.band2_line2 == "New scans won't save");
+  EXPECT(full.band2_line2 == "Scans won't save");
   EXPECT(full.band3 == "Connect Wi-Fi to send");
   EXPECT(full.audio == AudioCue::Silent);
 
@@ -612,6 +628,10 @@ void test_protocol_json() {
   stockbot::SetupQrParsed setup;
   EXPECT(stockbot::parseSetupQrPayload(R"({"v":1,"ssid":"Home","pass":"pw","url":"https://x","code":"SBP-0123-ABCD-G"})", setup));
   EXPECT(setup.ssid == "Home");
+
+  EXPECT(stockbot::pairingCompleteFailureIsExpired(true, 404, R"({"code":"not_found"})"));
+  EXPECT(!stockbot::pairingCompleteFailureIsExpired(false, 0, ""));
+  EXPECT(!stockbot::pairingCompleteFailureIsExpired(true, 503, R"({"code":"busy"})"));
 }
 
 void test_hid_keycode() {
@@ -909,7 +929,7 @@ struct ControllerFixture {
   void expectMemoryFullIdleScreen() const {
     EXPECT(display.last.band1 == "MEMORY FULL");
     EXPECT(display.last.band2_line1 == capacityWaitingLine());
-    EXPECT(display.last.band2_line2 == "New scans won't save");
+    EXPECT(display.last.band2_line2 == "Scans won't save");
     EXPECT(display.last.band3 == "Connect Wi-Fi to send");
     EXPECT(display.last.audio == stockbot::AudioCue::Silent);
   }
@@ -1207,11 +1227,31 @@ void test_wifi_button_hold_feedback() {
   controller.begin(1000);
   controller.onModeButtonHoldTick(5500, 2000);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiButtonHold);
-  EXPECT(display.last.band2_line1 == "Let go for Wi-Fi setup");
-  controller.onModeButtonHold(5500, 2100);
+  EXPECT(display.last.band1 == "HOLDING");
+  EXPECT(display.last.band2_line1 == "Let go now to");
+  EXPECT(display.last.band2_line2 == "update Wi-Fi");
+  EXPECT(display.last.band3 == "Keep holding to erase everything");
+
+  controller.onModeButtonHoldTick(9999, 2100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiButtonHold);
+
+  controller.onModeButtonHoldTick(10000, 2200);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiButtonHoldErase);
+  EXPECT(display.last.band1 == "LET GO TO ERASE");
+
+  controller.onModeButtonHold(5500, 2300);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_WifiSetup);
   EXPECT(display.last.band1 == "WI-FI SETUP");
   EXPECT(display.last.band2_line2 == "Scanner-Setup-0000");
+
+  stockbot::ScannerController erase_ctl(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  erase_ctl.begin(3000);
+  erase_ctl.onModeButtonHoldTick(10000, 4000);
+  EXPECT(erase_ctl.uiScreen() == stockbot::UiScreen::S_WifiButtonHoldErase);
+  erase_ctl.onModeButtonHold(10000, 4100);
+  EXPECT(erase_ctl.operationalState() == stockbot::OperationalState::Unprovisioned);
 }
 
 void test_pairing_code_expired_screen() {
@@ -1229,11 +1269,42 @@ void test_pairing_code_expired_screen() {
                                          ring);
   nvs.cfg.wifi_ssid = "Home";
   controller.begin(1000);
-  client.next_pair = {true, 404, ""};
+  client.next_pair = {true, 404, R"({"code":"not_found","error":"not found"})"};
   controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingExpired);
   EXPECT(display.last.band1 == "PAIRING CODE EXPIRED");
-  EXPECT(display.last.band2_line1 == "Print a new setup sheet");
+  EXPECT(display.last.band2_line1 == "Print a new");
+  EXPECT(display.last.band2_line2 == "setup sheet");
+}
+
+void test_pairing_cant_connect_screen() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  controller.begin(1000);
+
+  client.next_pair = {false, 0, ""};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCantConnect);
+  EXPECT(display.last.band1 == "CAN'T CONNECT");
+  EXPECT(display.last.band2_line1 == "Couldn't reach");
+  EXPECT(display.last.band2_line2 == "the server");
+  EXPECT(display.last.band3 == "Check Wi-Fi, then scan again");
+
+  controller.begin(3000);
+  client.next_pair = {true, 503, R"({"code":"busy","error":"busy"})"};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 3100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCantConnect);
 }
 
 void test_disconnect_clears_persisted_ring() {
@@ -1273,7 +1344,110 @@ void test_scanner_setup_network_and_portal_copy() {
   EXPECT(std::string(stockbot::kScannerSetupApPrefix) == "Scanner-Setup-");
   EXPECT(stockbot::scannerSetupSsid("ABCD") == "Scanner-Setup-ABCD");
   EXPECT(std::string(stockbot::kPortalWifiNameLabel) == "Your home Wi-Fi name");
-  EXPECT(std::string(stockbot::kPortalConnectingMessage) == "Connecting to your Wi-Fi…");
+  EXPECT(std::string(stockbot::kPortalWifiPasswordLabel) == "Wi-Fi password");
+  EXPECT(std::string(stockbot::kPortalConnectingMessage) == "Connecting to your Wi-Fi...");
+  EXPECT(std::string(stockbot::kPortalSetupHtml).find("<meta charset=\"utf-8\">") != std::string::npos);
+  EXPECT(std::string(stockbot::kPortalSetupHtml).find("Wi-Fi password") != std::string::npos);
+}
+
+void assertDisplayBandLimits(const stockbot::DisplayBands& bands, const char* context) {
+  if (stockbot::displayUtf8CharCount(bands.band2_line1) > stockbot::kBand2CharsPerLine) {
+    std::cerr << "FAIL: band2 line1 overflow (" << context << "): [" << bands.band2_line1 << "]\n";
+    ++failures;
+  }
+  if (stockbot::displayUtf8CharCount(bands.band2_line2) > stockbot::kBand2CharsPerLine) {
+    std::cerr << "FAIL: band2 line2 overflow (" << context << "): [" << bands.band2_line2 << "]\n";
+    ++failures;
+  }
+  if (stockbot::displayUtf8CharCount(bands.band3) > stockbot::kBand3CharsPerLine) {
+    std::cerr << "FAIL: band3 overflow (" << context << "): [" << bands.band3 << "]\n";
+    ++failures;
+  }
+}
+
+void test_display_all_screens_within_band_limits() {
+  using stockbot::CommitMode;
+  using stockbot::Direction;
+  using stockbot::DisplayModelInput;
+  using stockbot::ScanStatusKind;
+  using stockbot::UiScreen;
+  using stockbot::buildDisplayModel;
+
+  const std::string long_household(40, 'H');
+  const std::string long_barcode(30, '9');
+  const std::string long_product(60, 'P');
+
+  auto stress = [&](UiScreen screen) {
+    DisplayModelInput in;
+    in.screen = screen;
+    in.pairing_ap_suffix = "WXYZ";
+    in.household_name = long_household;
+    in.connected_label = long_household;
+    in.offline_queue_count = stockbot::RingBuffer::kCapacity;
+    in.buffer_full = true;
+    in.device_revoked = true;
+    in.vbus_present = true;
+    in.battery_pct = 100;
+    in.charging = true;
+    in.wifi_update_mode = true;
+    in.show_revert_countdown = true;
+    in.inactivity_revert_seconds = 599;
+    in.last_activity_ms = 0;
+    in.now_ms = 1000;
+    in.commit_mode = CommitMode::Queue;
+    in.active_direction = Direction::StockOut;
+    in.default_direction = Direction::StockIn;
+    in.last_scan.known = true;
+    in.last_scan.status = ScanStatusKind::Queued;
+    in.last_scan.product_name = long_product;
+    in.last_scan.barcode = long_barcode;
+    in.last_scan.direction = Direction::StockOut;
+    in.last_scan.on_hand = 0;
+    in.last_scan.queued_count = 1;
+    return in;
+  };
+
+  const UiScreen screens[] = {
+      UiScreen::S0_Unprovisioned,      UiScreen::S1_Pairing,         UiScreen::S2_Idle,
+      UiScreen::S3_ScanResult,         UiScreen::S4_UnknownBarcode, UiScreen::S5_OfflineBuffered,
+      UiScreen::S6_DockReminder,       UiScreen::S7_HardError,       UiScreen::S7_OfflineBufferRefused,
+      UiScreen::S_Connected,           UiScreen::S_PairingExpired,   UiScreen::S_PairingCantConnect,
+      UiScreen::S_WifiButtonHold,      UiScreen::S_WifiButtonHoldErase, UiScreen::S_WifiSetup,
+  };
+  for (UiScreen screen : screens) {
+    auto in = stress(screen);
+    assertDisplayBandLimits(buildDisplayModel(in), "stress screen");
+  }
+
+  {
+    auto in = stress(UiScreen::S7_HardError);
+    in.device_revoked = false;
+    in.buffer_full = true;
+    assertDisplayBandLimits(buildDisplayModel(in), "S7 buffer full");
+    in.buffer_full = false;
+    in.device_revoked = false;
+    assertDisplayBandLimits(buildDisplayModel(in), "S7 disconnected");
+  }
+  {
+    auto in = stress(UiScreen::S6_DockReminder);
+    in.vbus_present = false;
+    in.battery_pct = 100;
+    assertDisplayBandLimits(buildDisplayModel(in), "S6 off dock");
+  }
+}
+
+void test_firmware_strings_no_unicode_ellipsis() {
+  const char* literals[] = {
+      stockbot::kPortalConnectingMessage,
+      stockbot::kPortalWifiPasswordLabel,
+      stockbot::kPortalWifiNameLabel,
+  };
+  for (const char* lit : literals) {
+    EXPECT(std::string(lit).find("\xE2\x80\xA6") == std::string::npos);
+  }
+  stockbot::DisplayModelInput in;
+  in.screen = stockbot::UiScreen::S_WifiButtonHold;
+  EXPECT(stockbot::buildDisplayModel(in).band1 == "HOLDING");
 }
 
 void test_display_special_characters_present() {
@@ -1306,6 +1480,8 @@ int main() {
   test_ring_buffer();
   test_display_model();
   test_display_band2_text();
+  test_display_all_screens_within_band_limits();
+  test_firmware_strings_no_unicode_ellipsis();
   test_protocol_json();
   test_hid_keycode();
   test_scanner_controller_flow();
@@ -1327,6 +1503,7 @@ int main() {
   test_ap_suffix_from_mac();
   test_wifi_button_hold_feedback();
   test_pairing_code_expired_screen();
+  test_pairing_cant_connect_screen();
   test_disconnect_clears_persisted_ring();
   test_scanner_setup_network_and_portal_copy();
   test_display_special_characters_present();

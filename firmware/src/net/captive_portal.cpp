@@ -13,11 +13,7 @@ namespace stockbot {
 
 namespace {
 
-const char kSetupHtml[] = R"HTML(<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scanner Setup</title></head><body><h1>Scanner Setup</h1>
-<form method="POST" action="/save"><label>Your home Wi-Fi name<input name="ssid" required></label><br>
-<label>Wi-Fi Password<input name="pass" type="password"></label><br>
-<button type="submit">Save</button></form></body></html>)HTML";
+constexpr const char kHtmlContentType[] = "text/html; charset=utf-8";
 
 }  // namespace
 
@@ -29,7 +25,7 @@ class StockbotCaptivePortal final : public CaptivePortal {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid.c_str());
     dns_.start(53, "*", WiFi.softAPIP());
-    server_.on("/", HTTP_GET, [this]() { server_.send(200, "text/html", kSetupHtml); });
+    server_.on("/", HTTP_GET, [this]() { server_.send(200, kHtmlContentType, kPortalSetupHtml); });
     server_.on("/save", HTTP_POST, [this]() { handleSave(); });
     server_.onNotFound([this]() {
       server_.sendHeader("Location", "http://192.168.4.1/", true);
@@ -88,8 +84,9 @@ class StockbotCaptivePortal final : public CaptivePortal {
     }
     pending_ = true;
     const std::string connecting_body =
-        std::string("<html><body>") + kPortalConnectingMessage + "</body></html>";
-    server_.send(200, "text/html", connecting_body.c_str());
+        std::string("<html><head><meta charset=\"utf-8\"></head><body>") + kPortalConnectingMessage +
+        "</body></html>";
+    server_.send(200, kHtmlContentType, connecting_body.c_str());
   }
 };
 

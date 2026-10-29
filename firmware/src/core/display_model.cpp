@@ -78,21 +78,6 @@ bool utf8DecodeAt(const std::string& text, size_t index, size_t& next_index, cha
   return false;
 }
 
-size_t utf8DisplayCharCount(const std::string& text) {
-  size_t count = 0;
-  size_t index = 0;
-  while (index < text.size()) {
-    size_t next = index;
-    char32_t cp = 0;
-    if (!utf8DecodeAt(text, index, next, cp)) {
-      break;
-    }
-    index = next;
-    ++count;
-  }
-  return count;
-}
-
 std::string utf8PrefixDisplayChars(const std::string& text, size_t max_chars) {
   if (max_chars == 0) {
     return "";
@@ -139,11 +124,26 @@ std::string utf8SuffixDisplayChars(const std::string& text, size_t max_chars) {
   return text.substr(spans[first].start, spans.back().end - spans[first].start);
 }
 
+size_t displayUtf8CharCountImpl(const std::string& text) {
+  size_t count = 0;
+  size_t index = 0;
+  while (index < text.size()) {
+    size_t next = index;
+    char32_t cp = 0;
+    if (!utf8DecodeAt(text, index, next, cp)) {
+      break;
+    }
+    index = next;
+    ++count;
+  }
+  return count;
+}
+
 std::pair<std::string, std::string> wrapBand2TwoLines(const std::string& name, size_t max_chars_per_line) {
   if (name.empty()) {
     return {"", ""};
   }
-  if (utf8DisplayCharCount(name) < max_chars_per_line + 1) {
+  if (displayUtf8CharCountImpl(name) < max_chars_per_line + 1) {
     return {name, ""};
   }
 
@@ -178,7 +178,7 @@ std::pair<std::string, std::string> wrapBand2TwoLines(const std::string& name, s
   if (rest.empty()) {
     return {line1, ""};
   }
-  if (utf8DisplayCharCount(rest) < max_chars_per_line + 1) {
+  if (displayUtf8CharCountImpl(rest) < max_chars_per_line + 1) {
     return {line1, rest};
   }
   const size_t keep = max_chars_per_line - 3;
@@ -186,6 +186,10 @@ std::pair<std::string, std::string> wrapBand2TwoLines(const std::string& name, s
 }
 
 }  // namespace
+
+size_t displayUtf8CharCount(const std::string& text) {
+  return displayUtf8CharCountImpl(text);
+}
 
 uint16_t rgb565FromHex(const std::string& hex) {
   std::string h = hex;
@@ -218,7 +222,7 @@ void applyDisplayBandColors(DisplayBands& bands) {
 }
 
 std::string formatBand2BarcodeKeepEnd(const std::string& barcode) {
-  if (utf8DisplayCharCount(barcode) < kBand2CharsPerLine + 1) {
+  if (displayUtf8CharCountImpl(barcode) < kBand2CharsPerLine + 1) {
     return barcode;
   }
   return std::string(kEllipsis) + utf8SuffixDisplayChars(barcode, kBand2CharsPerLine - 3);
@@ -275,11 +279,21 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
   }
 
   if (in.screen == UiScreen::S_WifiButtonHold) {
-    out.band1 = "HOLDING…";
+    out.band1 = "HOLDING";
     styleBand1(out, "#334155", 0xFFFF);
-    out.band2_line1 = "Let go for Wi-Fi setup";
-    out.band2_line2 = "Keep holding to erase";
-    out.band3.clear();
+    out.band2_line1 = "Let go now to";
+    out.band2_line2 = "update Wi-Fi";
+    out.band3 = "Keep holding to erase everything";
+    out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_WifiButtonHoldErase) {
+    out.band1 = "LET GO TO ERASE";
+    styleBand1(out, "#DC2626", 0xFFFF);
+    out.band2_line1 = "Erases Wi-Fi,";
+    out.band2_line2 = "pairing & scans";
+    out.band3 = "Then use a setup sheet";
     out.audio = AudioCue::Silent;
     return out;
   }
@@ -299,8 +313,19 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
   if (in.screen == UiScreen::S_PairingExpired) {
     out.band1 = "PAIRING CODE EXPIRED";
     styleBand1(out, "#DC2626", 0xFFFF);
-    out.band2_line1 = "Print a new setup sheet";
+    out.band2_line1 = "Print a new";
+    out.band2_line2 = "setup sheet";
     out.band3.clear();
+    out.audio = AudioCue::TripleErrorBuzz;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_PairingCantConnect) {
+    out.band1 = "CAN'T CONNECT";
+    styleBand1(out, "#DC2626", 0xFFFF);
+    out.band2_line1 = "Couldn't reach";
+    out.band2_line2 = "the server";
+    out.band3 = "Check Wi-Fi, then scan again";
     out.audio = AudioCue::TripleErrorBuzz;
     return out;
   }
@@ -329,20 +354,22 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     if (in.device_revoked) {
       out.band1 = "SCANNER ALERT";
       styleBand1(out, "#DC2626", 0xFFFF);
-      out.band2_line1 = "Scanner disconnected";
+      out.band2_line1 = "Disconnected";
+      out.band2_line2 = "from household";
       out.band3 = "Needs a new setup sheet";
       out.audio = AudioCue::TripleErrorBuzz;
     } else if (in.buffer_full) {
       out.band1 = "MEMORY FULL";
       styleBand1(out, "#DC2626", 0xFFFF);
       out.band2_line1 = std::to_string(RingBuffer::kCapacity) + " scans waiting";
-      out.band2_line2 = "New scans won't save";
+      out.band2_line2 = "Scans won't save";
       out.band3 = "Connect Wi-Fi to send";
       out.audio = AudioCue::Silent;
     } else {
       out.band1 = "SCANNER ALERT";
       styleBand1(out, "#DC2626", 0xFFFF);
-      out.band2_line1 = "Scanner disconnected";
+      out.band2_line1 = "Disconnected";
+      out.band2_line2 = "from household";
       out.band3 = "Needs a new setup sheet";
       out.audio = AudioCue::TripleErrorBuzz;
     }
@@ -354,7 +381,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     styleBand1(out, in.active_direction == Direction::StockIn ? "#0D9488" : "#F59E0B",
                in.active_direction == Direction::StockIn ? 0xFFFF : 0x2104);
     out.band2_line1 = "Saved offline";
-    out.band2_line2 = in.last_scan.barcode;
+    out.band2_line2 = formatBand2BarcodeKeepEnd(in.last_scan.barcode);
     out.band3 = std::to_string(in.offline_queue_count) + " waiting to send";
     out.audio = AudioCue::ScanBeepLowTick;
     return out;
@@ -364,7 +391,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     out.band1 = "NEW BARCODE";
     styleBand1(out, "#D97706", 0xFFFF);
     out.band2_line1 = "Unknown item";
-    out.band2_line2 = in.last_scan.barcode;
+    out.band2_line2 = formatBand2BarcodeKeepEnd(in.last_scan.barcode);
     out.band3 = "In Scan Queue to name";
     out.audio = AudioCue::QuestionTone;
     return out;
@@ -374,11 +401,12 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     out.band1 = in.vbus_present ? "CHARGING" : "OFF DOCK";
     styleBand1(out, in.vbus_present ? "#0D9488" : "#F59E0B", in.vbus_present ? 0xFFFF : 0x2104);
     if (in.vbus_present && in.battery_pct.has_value()) {
-      out.band2_line1 = "Docked · Charging (" + std::to_string(*in.battery_pct) + "%)";
+      out.band2_line1 = "Charging " + std::to_string(*in.battery_pct) + "%";
       out.band3 = "Hands-free ready";
       out.audio = AudioCue::DockTick;
     } else {
-      out.band2_line1 = "Put me back on the dock to charge";
+      out.band2_line1 = "Put me back on";
+      out.band2_line2 = "the dock to charge";
       out.band3 = in.battery_pct.has_value() ? "Battery " + std::to_string(*in.battery_pct) + "%" : "Battery —";
       out.audio = AudioCue::OffDockChirp;
     }
@@ -403,7 +431,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       out.band1 = "NEW BARCODE";
       styleBand1(out, "#D97706", 0xFFFF);
       out.band2_line1 = "Unknown item";
-      out.band2_line2 = scan.barcode;
+      out.band2_line2 = formatBand2BarcodeKeepEnd(scan.barcode);
       out.band3 = "In Scan Queue to name";
       out.audio = AudioCue::QuestionTone;
       return out;
@@ -413,7 +441,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       const int q = scan.queued_count > 0 ? scan.queued_count : 1;
       if (scan.direction == Direction::StockOut) {
         if (scan.on_hand == 0) {
-          out.band3 = "Queued -1 · 0 on hand (Confirm in app)";
+          out.band3 = "Queued -1 · 0 on hand · Check app";
           out.audio = AudioCue::SoftDoublePulse;
         } else if (scan.on_hand == 1 && q == 1) {
           out.band3 = "Queued -1 · Last one (1 on hand)";

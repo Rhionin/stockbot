@@ -183,6 +183,24 @@ std::string directionToString(Direction direction) {
   return direction == Direction::StockIn ? "stock_in" : "stock_out";
 }
 
+bool parseApiErrorCodeImpl(const std::string& body, std::string& code_out) {
+  code_out.clear();
+  if (auto code = jsonStringAtKey(body, "code")) {
+    code_out = *code;
+    return true;
+  }
+  return false;
+}
+
+bool pairingCompleteFailureIsExpiredImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  std::string code;
+  parseApiErrorCodeImpl(body, code);
+  return http_status == 404 && code == "not_found";
+}
+
 }  // namespace
 
 std::string buildPairCompleteRequestJson(const std::string& code, const std::string& label,
@@ -490,6 +508,14 @@ bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out) {
     out.ok = !out.ssid.empty();
   }
   return out.ok;
+}
+
+bool parseApiErrorCode(const std::string& body, std::string& code_out) {
+  return parseApiErrorCodeImpl(body, code_out);
+}
+
+bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body);
 }
 
 }  // namespace stockbot

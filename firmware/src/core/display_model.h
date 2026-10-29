@@ -20,7 +20,9 @@ enum class UiScreen {
   S7_OfflineBufferRefused,
   S_Connected,
   S_PairingExpired,
+  S_PairingCantConnect,
   S_WifiButtonHold,
+  S_WifiButtonHoldErase,
   S_WifiSetup,
 };
 
@@ -98,7 +100,10 @@ struct DisplayBands {
 };
 
 inline constexpr size_t kBand2CharsPerLine = 18;
+inline constexpr size_t kBand3CharsPerLine = 36;
 inline constexpr const char kEllipsis[] = "...";
+
+size_t displayUtf8CharCount(const std::string& text);
 
 uint16_t rgb565FromHex(const std::string& hex);
 
