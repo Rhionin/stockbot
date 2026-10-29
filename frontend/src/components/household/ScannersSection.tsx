@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Group, Stack, Text, Title } from '@mantine/core';
-import { hostedErrorSentence, resolveWallBarcodeSettings, type Device } from '@stockbot/shared/contract';
+import { hostedErrorSentence, type Device } from '@stockbot/shared/contract';
+import { resolveWallBarcodeSettings } from './kitCopy456';
 import { ApiError, listDevices } from '../../api/client';
 import { useLiveHint } from './liveHints';
 import { DeviceScannerList } from './deviceScannerShared';

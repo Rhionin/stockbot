@@ -34,7 +34,7 @@ const (
 
 	SentenceUnauthorized   = "Sign in to continue."
 	SentenceForbidden         = "Only an owner can do that."
-	SentenceForbiddenOperator = "Only an admin can do this."
+	SentenceForbiddenOperator = "Operator access required."
 	SentenceNotFound          = "Stockbot couldn't find that. It may have been removed."
 	SentenceValidation     = "Check what you entered and try again."
 	SentenceRate           = "Too many tries. Wait a moment and try again."

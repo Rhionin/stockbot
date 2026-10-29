@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import type { Device } from '@stockbot/shared/contract';
 import {
   SYMCODE_DISCLOSURE_LABEL,
   defaultWallBarcodeSettings,
   resolveWallBarcodeSettings,
-  type Device,
-} from '@stockbot/shared/contract';
+} from './kitCopy456';
 import { useKitPrintRoot } from './kitPrintUtils';
 import { WallKitPrintSheet } from './wallKitPrintSheet';
 import { PrintableBarcode } from './printableBarcode';

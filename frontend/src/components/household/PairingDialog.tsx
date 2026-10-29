@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
+import { PAIRING_EXPIRED_SENTENCE, hostedErrorSentence, type PairingCode } from '@stockbot/shared/contract';
 import {
-  PAIRING_EXPIRED_SENTENCE,
   PRINT_PAIRING_CODE_LABEL,
   defaultWallBarcodeSettings,
-  hostedErrorSentence,
   pairingDialogTitle,
   pairingKeyboardFallback,
-  type PairingCode,
   type WallBarcodeSettings,
-} from '@stockbot/shared/contract';
+} from './kitCopy456';
 import { ApiError, getPairing, startPairing } from '../../api/client';
 import { useKitPrintRoot } from './kitPrintUtils';
 import { SetupKitPrintSheet } from './setupKitPrintSheet';

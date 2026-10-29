@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Stack, Text, Title } from '@mantine/core';
-import { CONNECT_SCANNER_OR_HUB_LABEL, hostedErrorSentence, resolveWallBarcodeSettings, type Device } from '@stockbot/shared/contract';
+import { hostedErrorSentence, type Device } from '@stockbot/shared/contract';
+import { CONNECT_SCANNER_OR_HUB_LABEL, resolveWallBarcodeSettings } from './kitCopy456';
 import { ApiError, listDevices } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 import { DeviceScannerList } from './deviceScannerShared';

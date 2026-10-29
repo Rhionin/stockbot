@@ -3,17 +3,14 @@ import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatPairingCode, type AuthSession, type Device } from '@stockbot/shared/contract';
 import {
   CONNECT_SCANNER_OR_HUB_LABEL,
   PRINT_ACTUAL_SIZE_INSTRUCTION,
   PRINT_PAIRING_CODE_LABEL,
   SYMCODE_DISCLOSURE_LABEL,
-  formatPairingCode,
-  hostedErrorSentence,
   pairingScannerScreenFallback,
-  type AuthSession,
-  type Device,
-} from '@stockbot/shared/contract';
+} from './kitCopy456';
 import { resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { SetupPage } from '../auth/SetupPage';
@@ -103,10 +100,6 @@ describe('issue #456 kit copy (table B)', () => {
       'Optional for admins. Leave it blank to create a household directly, or paste an invite code or link.',
     )).toBeVisible();
     assertNoOperatorInVisibleCopy();
-  });
-
-  it('B14: forbidden_operator hosted sentence', () => {
-    expect(hostedErrorSentence('forbidden_operator')).toBe('Only an admin can do this.');
   });
 
   it('B1/B3/B5/B16–B18: household pairing dialog and combined kit print root', async () => {

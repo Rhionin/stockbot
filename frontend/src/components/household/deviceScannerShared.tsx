@@ -3,15 +3,17 @@ import { Button, Group, Modal, Radio, Stack, Text, TextInput } from '@mantine/co
 import { notifications } from '@mantine/notifications';
 import {
   deviceKindLabel,
-  deviceUntitledLabel,
-  disconnectDeviceModalTitle,
   disconnectHubConfirm,
   disconnectedHubNotice,
   hostedErrorSentence,
-  renameDeviceModalTitle,
   type Device,
   type UpdateDeviceRequest,
 } from '@stockbot/shared/contract';
+import {
+  deviceUntitledLabel,
+  disconnectDeviceModalTitle,
+  renameDeviceModalTitle,
+} from './kitCopy456';
 import { ApiError, renameDevice, revokeDevice, updateDevice } from '../../api/client';
 
 function hosted(error: unknown, fallback: string): string {

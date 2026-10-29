@@ -1,8 +1,4 @@
-import {
-  formatInactivityDuration,
-  stockDirectionLabel,
-  type WallBarcodeSettings,
-} from '@stockbot/shared/contract';
+import { formatInactivityDuration, stockDirectionLabel, type WallBarcodeSettings } from './kitCopy456';
 import { PrintableBarcode } from './printableBarcode';
 import { KitPrintFooter } from './kitPrintFooter';
 

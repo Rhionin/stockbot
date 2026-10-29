@@ -5,7 +5,7 @@ import {
   setupSheetExpiryLine,
   setupSheetPairingStepCopy,
   type WallBarcodeSettings,
-} from '@stockbot/shared/contract';
+} from './kitCopy456';
 import { KitPrintFooter } from './kitPrintFooter';
 import { PrintableBarcode } from './printableBarcode';
 import { SetupWallCardPanels } from './wallKitPrintSheet';

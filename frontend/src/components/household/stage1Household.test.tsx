@@ -7,8 +7,6 @@ import {
   HOUSEHOLD_DELETE_SENTENCE,
   OFFLINE_SENTENCE,
   PAIRING_EXPIRED_SENTENCE,
-  CONNECT_SCANNER_OR_HUB_LABEL,
-  PRINT_PAIRING_CODE_LABEL,
   UPDATING_SENTENCE,
   applyHttpResponse,
   formatPairingCode,
@@ -17,6 +15,7 @@ import {
   type AuthSession,
   type Device,
 } from '@stockbot/shared/contract';
+import { CONNECT_SCANNER_OR_HUB_LABEL, PRINT_PAIRING_CODE_LABEL } from './kitCopy456';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
