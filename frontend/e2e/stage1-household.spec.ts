@@ -126,7 +126,7 @@ const install = async (page: Page) => {
       return fulfillJson(route, {})
     }
     if (path === '/api/operator/households' && method === 'GET') {
-      if (!stage.operator) return fulfillJson(route, { error: 'Only a Stockbot admin can do this.', code: 'forbidden_operator' }, 403)
+      if (!stage.operator) return fulfillJson(route, { error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403)
       return fulfillJson(route, {
         households: [
           {

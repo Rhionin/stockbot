@@ -914,6 +914,6 @@ describe('stage-1 household copy', () => {
     ])).toEqual(threeMin);
     expect(resolveWallBarcodeSettings([])).toEqual(defaultWallBarcodeSettings());
     expect(SYMCODE_DISCLOSURE_LABEL).toBe('Using a Symcode handheld?');
-    expect(hostedErrorSentence('forbidden_operator')).toBe('Only a Stockbot admin can do this.');
+    expect(hostedErrorSentence('forbidden_operator')).toBe('Only an admin can do this.');
   });
 });

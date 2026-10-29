@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CONNECT_SCANNER_OR_HUB_LABEL,
+  PRINT_ACTUAL_SIZE_INSTRUCTION,
   PRINT_PAIRING_CODE_LABEL,
   SYMCODE_DISCLOSURE_LABEL,
   formatPairingCode,
@@ -105,7 +106,7 @@ describe('issue #456 kit copy (table B)', () => {
   });
 
   it('B14: forbidden_operator hosted sentence', () => {
-    expect(hostedErrorSentence('forbidden_operator')).toBe('Only a Stockbot admin can do this.');
+    expect(hostedErrorSentence('forbidden_operator')).toBe('Only an admin can do this.');
   });
 
   it('B1/B3/B5/B16–B18: household pairing dialog and combined kit print root', async () => {
@@ -156,6 +157,7 @@ describe('issue #456 kit copy (table B)', () => {
     expect(within(printRoot as HTMLElement).getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible();
     expect(within(printRoot as HTMLElement).getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible();
     expect(printRoot.textContent).not.toMatch(/%%SpecCode99|Setup B/);
+    expect(within(dialog).getAllByText(PRINT_ACTUAL_SIZE_INSTRUCTION)).toHaveLength(1);
     assertNoOperatorInVisibleCopy();
   });
 
