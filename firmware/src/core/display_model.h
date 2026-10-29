@@ -17,6 +17,7 @@ enum class UiScreen {
   S5_OfflineBuffered,
   S6_DockReminder,
   S7_HardError,
+  S7_OfflineBufferRefused,
 };
 
 enum class AudioCue {
@@ -97,6 +98,8 @@ void applyDisplayBandColors(DisplayBands& bands);
 DisplayBands buildDisplayModel(const DisplayModelInput& in);
 
 std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name, size_t max_chars_per_line = 20);
+
+std::string truncateDisplayLine(const std::string& text, size_t max_chars = 20);
 
 std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms, uint64_t now_ms);
 
