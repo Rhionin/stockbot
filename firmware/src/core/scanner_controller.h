@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "barcode_filter.h"
@@ -65,7 +66,7 @@ class ScannerController {
   uint64_t last_vbus_ = false;
   bool wifi_online_ = false;
   bool device_revoked_ = false;
-  uint64_t last_buffer_full_feedback_ms_ = 0;
+  std::optional<uint64_t> last_buffer_full_buzz_ms_;
   bool one_d_locked_ = false;
   bool portal_active_ = false;
   bool wifi_update_mode_ = false;

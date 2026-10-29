@@ -833,6 +833,8 @@ void test_offline_buffer_full_refuses_without_eviction() {
   fx.controller.onBarcodeLine("999999999999", false, 9000);
   EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
   fx.expectBufferRefusedScreen("999999999999");
+  // E6: fails if feedbackOfflineBufferRefused stops setting S7_OfflineBufferRefused (render()
+  // from isFull() alone would leave S7_HardError / MEMORY FULL copy, not NOT SAVED).
   EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity);
   EXPECT(fx.ring.isFull());
   const auto after = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
@@ -933,6 +935,38 @@ void test_heartbeat_dropped_count_zero() {
   EXPECT(fx.client.last_heartbeat_body.find("\"queued\":500") != std::string::npos);
 }
 
+void test_offline_buffer_refusal_buzz_immediately_after_boot() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.setOfflineScanTransport();
+  for (size_t i = 0; i < stockbot::RingBuffer::kCapacity; ++i) {
+    fx.controller.onBarcodeLine(fx.barcodeAt(i), false, static_cast<uint64_t>(i));
+  }
+  fx.feedback.cues.clear();
+  fx.controller.onBarcodeLine("999999999999", false, 500);
+  EXPECT(fx.tripleErrorBuzzCount() == 1);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("999999999999");
+}
+
+void test_offline_buffer_control_barcodes_refused_while_full() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.controller.tick(8000);
+  fx.feedback.cues.clear();
+
+  fx.controller.onBarcodeLine("STOCK-IN", false, 9000);
+  EXPECT(fx.tripleErrorBuzzCount() == 1);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("STOCK-IN");
+
+  fx.controller.onBarcodeLine("STOCK-OUT", false, 9100);
+  EXPECT(fx.tripleErrorBuzzCount() == 1);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("STOCK-OUT");
+}
+
 void test_offline_buffer_refusal_feedback_rate_limited() {
   ControllerFixture fx;
   fx.beginPaired(0);
@@ -944,6 +978,21 @@ void test_offline_buffer_refusal_feedback_rate_limited() {
   EXPECT(fx.tripleErrorBuzzCount() == 2);
   EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
   fx.expectBufferRefusedScreen("777777777777");
+}
+
+void test_offline_buffer_refusal_rate_limit_boundary() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.controller.tick(8000);
+  fx.feedback.cues.clear();
+  const uint64_t t0 = 10000;
+  fx.controller.onBarcodeLine("999999999999", false, t0);
+  EXPECT(fx.tripleErrorBuzzCount() == 1);
+  fx.controller.onBarcodeLine("888888888888", false, t0 + 1499);
+  EXPECT(fx.tripleErrorBuzzCount() == 1);
+  fx.controller.onBarcodeLine("777777777777", false, t0 + 1500);
+  EXPECT(fx.tripleErrorBuzzCount() == 2);
 }
 
 void test_offline_buffer_refused_transient_timeout() {
@@ -977,29 +1026,11 @@ void test_offline_buffer_refused_transient_restarts() {
   fx.expectMemoryFullIdleScreen();
 }
 
-void test_ota_install_gate_requires_empty_ring_unchanged() {
-  // #452 install precondition: ring_.count()==0. No OTA worker exists yet; guard the gate predicate.
-  ControllerFixture fx;
-  fx.beginPaired(0);
-  fx.fillRingToCapacity(1000);
-  const auto ota_install_allowed = [](size_t queued) { return queued == 0; };
-  EXPECT(!ota_install_allowed(fx.ring.count()));
-
-  fx.wifi.connected = true;
-  const auto pending = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
-  std::string batch_body = R"({"results":[)";
-  for (size_t i = 0; i < pending.size(); ++i) {
-    if (i > 0) {
-      batch_body += ',';
-    }
-    batch_body += R"({"id":")" + std::string(pending[i].client_scan_id) + R"(","status":"created"})";
-  }
-  batch_body += "]}";
-  fx.client.next_scan = {true, 200, batch_body};
-  fx.client.scan_body.status = "created";
-  fx.controller.tick(30000);
-  EXPECT(fx.ring.count() == 0);
-  EXPECT(ota_install_allowed(fx.ring.count()));
+void test_ota_install_gate_placeholder_until_firmware_452() {
+  // Documents #452 install precondition (ring empty). No production OTA gate in firmware yet.
+  const auto policy_ring_empty_required = [](size_t queued) { return queued == 0; };
+  EXPECT(!policy_ring_empty_required(stockbot::RingBuffer::kCapacity));
+  EXPECT(policy_ring_empty_required(0));
 }
 
 }  // namespace
@@ -1021,10 +1052,13 @@ int main() {
   test_offline_buffer_full_clears_after_flush_ack();
   test_offline_buffer_full_persists_across_reboot_until_flush();
   test_heartbeat_dropped_count_zero();
+  test_offline_buffer_refusal_buzz_immediately_after_boot();
+  test_offline_buffer_control_barcodes_refused_while_full();
   test_offline_buffer_refusal_feedback_rate_limited();
+  test_offline_buffer_refusal_rate_limit_boundary();
   test_offline_buffer_refused_transient_timeout();
   test_offline_buffer_refused_transient_restarts();
-  test_ota_install_gate_requires_empty_ring_unchanged();
+  test_ota_install_gate_placeholder_until_firmware_452();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";

@@ -180,7 +180,7 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
   boot_ms_ = now_ms;
   ap_suffix_ = "ABCD";
   device_revoked_ = false;
-  last_buffer_full_feedback_ms_ = 0;
+  last_buffer_full_buzz_ms_ = std::nullopt;
 
   scanner_.begin();
   display_.begin();
@@ -391,8 +391,9 @@ void ScannerController::feedbackOfflineBufferRefused(const std::string& barcode,
   last_scan_.barcode = barcode;
   ui_screen_ = UiScreen::S7_OfflineBufferRefused;
   transient_until_ms_ = now_ms + kBufferRefusalTransientMs;
-  if (now_ms - last_buffer_full_feedback_ms_ >= kBufferFullFeedbackMinIntervalMs) {
-    last_buffer_full_feedback_ms_ = now_ms;
+  if (!last_buffer_full_buzz_ms_.has_value() ||
+      now_ms - *last_buffer_full_buzz_ms_ >= kBufferFullFeedbackMinIntervalMs) {
+    last_buffer_full_buzz_ms_ = now_ms;
     play(AudioCue::TripleErrorBuzz);
   }
   render(now_ms);
@@ -494,7 +495,7 @@ void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
     nvs_.factoryReset();
     config_ = NvsConfig{};
     device_revoked_ = false;
-    last_buffer_full_feedback_ms_ = 0;
+    last_buffer_full_buzz_ms_ = std::nullopt;
     cooldown_ = DuplicateCooldownState{};
     ring_.clearAll();
     client_.setDeviceToken("");
@@ -558,7 +559,6 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
       ring_.acknowledge(item.id);
     }
   }
-  render(now_ms);
 }
 
 void ScannerController::maybeHeartbeat(uint64_t now_ms) {
