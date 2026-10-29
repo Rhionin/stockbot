@@ -123,6 +123,8 @@ jobs:
 
       - name: Build firmware
         run: pio run -e ${{ matrix.env }}
+
+  frontend:
     name: Frontend tests and linting
     runs-on: ubuntu-latest
     defaults:
