@@ -186,7 +186,8 @@ void test_display_model() {
   using stockbot::AudioCue;
   using stockbot::buildDisplayModel;
   using stockbot::wrapProductNameTwoLines;
-  using stockbot::truncateDisplayLine;
+  using stockbot::formatBand2BarcodeKeepEnd;
+  using stockbot::kBand2CharsPerLine;
 
   DisplayModelInput in;
   in.screen = UiScreen::S2_Idle;
@@ -326,16 +327,69 @@ void test_display_model() {
   EXPECT(refused.band3 == "Connect Wi-Fi to send");
   EXPECT(refused.audio == AudioCue::Silent);
 
-  in.last_scan.barcode = "012345678901234567890";
-  auto refused_trunc = buildDisplayModel(in);
-  EXPECT(refused_trunc.band2_line2 == truncateDisplayLine(in.last_scan.barcode));
+  in.last_scan.barcode = "4000000000011";
+  refused = buildDisplayModel(in);
+  EXPECT(refused.band2_line2 == "4000000000011");
 
-  auto wrapped = wrapProductNameTwoLines(
+  in.last_scan.barcode = "012345678905";
+  refused = buildDisplayModel(in);
+  EXPECT(refused.band2_line2 == "012345678905");
+}
+
+void test_display_band2_text() {
+  using stockbot::DisplayModelInput;
+  using stockbot::UiScreen;
+  using stockbot::buildDisplayModel;
+  using stockbot::formatBand2BarcodeKeepEnd;
+  using stockbot::kBand2CharsPerLine;
+  using stockbot::kEllipsis;
+  using stockbot::wrapProductNameTwoLines;
+
+  EXPECT(kBand2CharsPerLine == 18);
+  EXPECT(std::string(kEllipsis) == "...");
+
+  const std::string bc18 = "012345678901234567";
+  EXPECT(bc18.size() == 18);
+  EXPECT(formatBand2BarcodeKeepEnd(bc18) == bc18);
+
+  const std::string bc19 = "0123456789012345678";
+  EXPECT(bc19.size() == 19);
+  EXPECT(formatBand2BarcodeKeepEnd(bc19) == "...456789012345678");
+
+  DisplayModelInput in;
+  in.screen = UiScreen::S7_OfflineBufferRefused;
+  in.last_scan.barcode = bc18;
+  EXPECT(buildDisplayModel(in).band2_line2 == bc18);
+  in.last_scan.barcode = bc19;
+  EXPECT(buildDisplayModel(in).band2_line2 == "...456789012345678");
+
+  in.screen = UiScreen::S_Connected;
+  in.household_name = "Test Household";
+  auto one_line = buildDisplayModel(in);
+  EXPECT(one_line.band2_line1 == "Test Household");
+  EXPECT(one_line.band2_line2.empty());
+
+  in.household_name = "North Test Household";
+  auto wrapped_house = buildDisplayModel(in);
+  EXPECT(wrapped_house.band2_line1 == "North Test");
+  EXPECT(wrapped_house.band2_line2 == "Household");
+
+  const std::string overflow_name = std::string(18, 'A') + std::string(19, 'B');
+  in.household_name = overflow_name;
+  auto overflow = buildDisplayModel(in);
+  EXPECT(overflow.band2_line1 == std::string(18, 'A'));
+  EXPECT(overflow.band2_line2 == std::string(15, 'B') + "...");
+
+  const std::string multibyte = "Ch\u00e2teau du Supermarch\u00e9 du Nord";
+  in.household_name = multibyte;
+  auto mb = buildDisplayModel(in);
+  EXPECT(mb.band2_line1 == "Ch\u00e2teau du");
+  EXPECT(mb.band2_line2 == "Supermarch\u00e9 du ...");
+
+  auto product_wrap = wrapProductNameTwoLines(
       "Kirkland Organic Diced Tomatoes Extra Long Product Name Here That Keeps Going");
-  EXPECT(!wrapped.first.empty());
-  EXPECT(!wrapped.second.empty());
-  EXPECT(wrapped.second.size() >= 3);
-  EXPECT(wrapped.second.compare(wrapped.second.size() - 3, 3, u8"…") == 0);
+  EXPECT(product_wrap.first == "Kirkland Organic");
+  EXPECT(product_wrap.second == "Diced Tomatoes ...");
 }
 
 class MockScanner : public stockbot::HalScanner {
@@ -1234,8 +1288,6 @@ void test_display_special_characters_present() {
   in.last_scan.on_hand = 1;
   auto scan = stockbot::buildDisplayModel(in);
   EXPECT(scan.band3.find(u8"·") != std::string::npos);
-  auto wrapped = stockbot::wrapProductNameTwoLines(std::string(25, 'x'));
-  EXPECT(wrapped.second.find(u8"…") != std::string::npos || !wrapped.second.empty());
 }
 
 void test_ota_install_gate_placeholder_until_firmware_452() {
@@ -1253,6 +1305,7 @@ int main() {
   test_scanner_state();
   test_ring_buffer();
   test_display_model();
+  test_display_band2_text();
   test_protocol_json();
   test_hid_keycode();
   test_scanner_controller_flow();

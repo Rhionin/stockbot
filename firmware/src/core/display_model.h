@@ -97,15 +97,19 @@ struct DisplayBands {
   AudioCue audio = AudioCue::Silent;
 };
 
+inline constexpr size_t kBand2CharsPerLine = 18;
+inline constexpr const char kEllipsis[] = "...";
+
 uint16_t rgb565FromHex(const std::string& hex);
 
 void applyDisplayBandColors(DisplayBands& bands);
 
 DisplayBands buildDisplayModel(const DisplayModelInput& in);
 
-std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name, size_t max_chars_per_line = 20);
+std::string formatBand2BarcodeKeepEnd(const std::string& barcode);
 
-std::string truncateDisplayLine(const std::string& text, size_t max_chars = 20);
+std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name,
+                                                            size_t max_chars_per_line = kBand2CharsPerLine);
 
 std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms,
                                   uint64_t now_ms, Direction default_direction);

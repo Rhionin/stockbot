@@ -1,8 +1,8 @@
 #include "display_model.h"
 
-#include <algorithm>
 #include <cstdio>
-#include <sstream>
+#include <cstdint>
+#include <vector>
 
 #include "ring_buffer.h"
 #include "scanner_setup_network.h"
@@ -33,6 +33,156 @@ void finalizeBand3Color(DisplayBands& out) {
   } else {
     out.band3_fg_rgb565 = 0xFFE0;
   }
+}
+
+bool utf8DecodeAt(const std::string& text, size_t index, size_t& next_index, char32_t& codepoint) {
+  if (index >= text.size()) {
+    return false;
+  }
+  const unsigned char b0 = static_cast<unsigned char>(text[index]);
+  if (b0 < 0x80) {
+    codepoint = b0;
+    next_index = index + 1;
+    return true;
+  }
+  if ((b0 & 0xE0) == 0xC0 && index + 1 < text.size()) {
+    const unsigned char b1 = static_cast<unsigned char>(text[index + 1]);
+    if ((b1 & 0xC0) != 0x80) {
+      return false;
+    }
+    codepoint = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+    next_index = index + 2;
+    return true;
+  }
+  if ((b0 & 0xF0) == 0xE0 && index + 2 < text.size()) {
+    const unsigned char b1 = static_cast<unsigned char>(text[index + 1]);
+    const unsigned char b2 = static_cast<unsigned char>(text[index + 2]);
+    if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) {
+      return false;
+    }
+    codepoint = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+    next_index = index + 3;
+    return true;
+  }
+  if ((b0 & 0xF8) == 0xF0 && index + 3 < text.size()) {
+    const unsigned char b1 = static_cast<unsigned char>(text[index + 1]);
+    const unsigned char b2 = static_cast<unsigned char>(text[index + 2]);
+    const unsigned char b3 = static_cast<unsigned char>(text[index + 3]);
+    if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) {
+      return false;
+    }
+    codepoint = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+    next_index = index + 4;
+    return true;
+  }
+  return false;
+}
+
+size_t utf8DisplayCharCount(const std::string& text) {
+  size_t count = 0;
+  size_t index = 0;
+  while (index < text.size()) {
+    size_t next = index;
+    char32_t cp = 0;
+    if (!utf8DecodeAt(text, index, next, cp)) {
+      break;
+    }
+    index = next;
+    ++count;
+  }
+  return count;
+}
+
+std::string utf8PrefixDisplayChars(const std::string& text, size_t max_chars) {
+  if (max_chars == 0) {
+    return "";
+  }
+  size_t index = 0;
+  size_t count = 0;
+  while (index < text.size() && count < max_chars) {
+    size_t next = index;
+    char32_t cp = 0;
+    if (!utf8DecodeAt(text, index, next, cp)) {
+      break;
+    }
+    index = next;
+    ++count;
+  }
+  return text.substr(0, index);
+}
+
+std::string utf8SuffixDisplayChars(const std::string& text, size_t max_chars) {
+  if (max_chars == 0 || text.empty()) {
+    return "";
+  }
+  struct Span {
+    size_t start;
+    size_t end;
+  };
+  std::vector<Span> spans;
+  spans.reserve(text.size());
+  size_t index = 0;
+  while (index < text.size()) {
+    const size_t start = index;
+    size_t next = index;
+    char32_t cp = 0;
+    if (!utf8DecodeAt(text, index, next, cp)) {
+      break;
+    }
+    spans.push_back({start, next});
+    index = next;
+  }
+  if (spans.size() <= max_chars) {
+    return text;
+  }
+  const size_t first = spans.size() - max_chars;
+  return text.substr(spans[first].start, spans.back().end - spans[first].start);
+}
+
+std::pair<std::string, std::string> wrapBand2TwoLines(const std::string& name, size_t max_chars_per_line) {
+  if (name.empty()) {
+    return {"", ""};
+  }
+  if (utf8DisplayCharCount(name) < max_chars_per_line + 1) {
+    return {name, ""};
+  }
+
+  size_t break_byte = name.size();
+  size_t display_upto = 0;
+  size_t last_space_byte = std::string::npos;
+  size_t index = 0;
+  while (index < name.size() && display_upto < max_chars_per_line) {
+    const size_t start = index;
+    size_t next = index;
+    char32_t cp = 0;
+    if (!utf8DecodeAt(name, index, next, cp)) {
+      break;
+    }
+    if (cp == U' ') {
+      last_space_byte = start;
+    }
+    index = next;
+    ++display_upto;
+    break_byte = index;
+  }
+
+  if (last_space_byte != std::string::npos && last_space_byte > max_chars_per_line / 2) {
+    break_byte = last_space_byte;
+  }
+
+  std::string line1 = name.substr(0, break_byte);
+  std::string rest = name.substr(break_byte);
+  while (!rest.empty() && rest.front() == ' ') {
+    rest.erase(rest.begin());
+  }
+  if (rest.empty()) {
+    return {line1, ""};
+  }
+  if (utf8DisplayCharCount(rest) < max_chars_per_line + 1) {
+    return {line1, rest};
+  }
+  const size_t keep = max_chars_per_line - 3;
+  return {line1, utf8PrefixDisplayChars(rest, keep) + kEllipsis};
 }
 
 }  // namespace
@@ -67,37 +217,16 @@ void applyDisplayBandColors(DisplayBands& bands) {
   finalizeBand3Color(bands);
 }
 
-std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name,
-                                                            size_t max_chars_per_line) {
-  if (name.empty()) {
-    return {"", ""};
+std::string formatBand2BarcodeKeepEnd(const std::string& barcode) {
+  if (utf8DisplayCharCount(barcode) < kBand2CharsPerLine + 1) {
+    return barcode;
   }
-  if (name.size() <= max_chars_per_line) {
-    return {name, ""};
-  }
-  size_t break_at = max_chars_per_line;
-  if (break_at < name.size()) {
-    const size_t space = name.rfind(' ', break_at);
-    if (space != std::string::npos && space > max_chars_per_line / 2) {
-      break_at = space;
-    }
-  }
-  std::string line1 = name.substr(0, break_at);
-  std::string rest = name.substr(break_at);
-  while (!rest.empty() && rest.front() == ' ') {
-    rest.erase(rest.begin());
-  }
-  if (rest.size() > max_chars_per_line) {
-    rest = rest.substr(0, max_chars_per_line - 1) + "…";
-  }
-  return {line1, rest};
+  return std::string(kEllipsis) + utf8SuffixDisplayChars(barcode, kBand2CharsPerLine - 3);
 }
 
-std::string truncateDisplayLine(const std::string& text, size_t max_chars) {
-  if (text.size() <= max_chars) {
-    return text;
-  }
-  return text.substr(0, max_chars - 1) + "…";
+std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name,
+                                                            size_t max_chars_per_line) {
+  return wrapBand2TwoLines(name, max_chars_per_line);
 }
 
 std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms,
@@ -190,7 +319,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     out.band1 = "NOT SAVED";
     styleBand1(out, "#DC2626", 0xFFFF);
     out.band2_line1 = "Memory is full";
-    out.band2_line2 = truncateDisplayLine(in.last_scan.barcode);
+    out.band2_line2 = formatBand2BarcodeKeepEnd(in.last_scan.barcode);
     out.band3 = "Connect Wi-Fi to send";
     out.audio = AudioCue::Silent;
     return out;
