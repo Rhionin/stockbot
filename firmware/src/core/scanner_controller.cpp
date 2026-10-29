@@ -23,6 +23,8 @@ constexpr uint64_t kHeartbeatIntervalMs = 60000;
 constexpr uint64_t kTransientScanMs = 4000;
 constexpr uint64_t kTransientLongMs = 5000;
 constexpr uint64_t kDockBannerMs = 2000;
+constexpr uint64_t kBufferFullFeedbackMinIntervalMs = 1500;
+constexpr uint64_t kBufferRefusalTransientMs = 4000;
 
 ScanStatusKind parseScanStatusKind(const std::string& scan_status) {
   if (scan_status == "queued") {
@@ -178,7 +180,7 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
   boot_ms_ = now_ms;
   ap_suffix_ = "ABCD";
   device_revoked_ = false;
-  buffer_full_ = false;
+  last_buffer_full_buzz_ms_ = std::nullopt;
 
   scanner_.begin();
   display_.begin();
@@ -220,9 +222,10 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
 void ScannerController::render(uint64_t now_ms) {
   if (now_ms < transient_until_ms_ &&
       (ui_screen_ == UiScreen::S3_ScanResult || ui_screen_ == UiScreen::S4_UnknownBarcode ||
-       ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder)) {
+       ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder ||
+       ui_screen_ == UiScreen::S7_OfflineBufferRefused)) {
     // keep transient screen
-  } else if (device_revoked_ || buffer_full_) {
+  } else if (device_revoked_ || ring_.isFull()) {
     ui_screen_ = UiScreen::S7_HardError;
   } else if (state_.operational == OperationalState::Unprovisioned) {
     ui_screen_ = UiScreen::S0_Unprovisioned;
@@ -244,7 +247,7 @@ void ScannerController::render(uint64_t now_ms) {
   in.now_ms = now_ms;
   in.wifi_online = wifi_online_;
   in.offline_queue_count = ring_.count();
-  in.buffer_full = buffer_full_;
+  in.buffer_full = ring_.isFull();
   in.device_revoked = device_revoked_;
   in.pairing_ap_suffix = ap_suffix_;
   in.connected_label = config_.label;
@@ -298,10 +301,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
 
   std::string client_scan_id;
   if (!ring_.enqueue(barcode, state_.active_direction, now_ms, config_.boot_count, client_scan_id)) {
-    buffer_full_ = true;
-    ui_screen_ = UiScreen::S7_HardError;
-    play(AudioCue::TripleErrorBuzz);
-    render(now_ms);
+    feedbackOfflineBufferRefused(barcode, now_ms);
     return false;
   }
 
@@ -387,9 +387,21 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
   return true;
 }
 
+void ScannerController::feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms) {
+  last_scan_.barcode = barcode;
+  ui_screen_ = UiScreen::S7_OfflineBufferRefused;
+  transient_until_ms_ = now_ms + kBufferRefusalTransientMs;
+  if (!last_buffer_full_buzz_ms_.has_value() ||
+      now_ms - *last_buffer_full_buzz_ms_ >= kBufferFullFeedbackMinIntervalMs) {
+    last_buffer_full_buzz_ms_ = now_ms;
+    play(AudioCue::TripleErrorBuzz);
+  }
+  render(now_ms);
+}
+
 void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_retrigger,
                                       uint64_t now_ms) {
-  if (device_revoked_ || buffer_full_) {
+  if (device_revoked_) {
     return;
   }
   if (state_.isScanSuppressed(now_ms)) {
@@ -397,6 +409,14 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
   }
 
   const BarcodeKind kind = classifyBarcode(raw_line, state_.operational);
+
+  if (ring_.isFull() && state_.operational == OperationalState::Paired) {
+    if (kind == BarcodeKind::Product || kind == BarcodeKind::ControlStockIn ||
+        kind == BarcodeKind::ControlStockOut) {
+      feedbackOfflineBufferRefused(trimAscii(raw_line), now_ms);
+    }
+    return;
+  }
 
   if (state_.operational == OperationalState::Unprovisioned) {
     SetupQrParsed setup;
@@ -475,7 +495,7 @@ void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
     nvs_.factoryReset();
     config_ = NvsConfig{};
     device_revoked_ = false;
-    buffer_full_ = false;
+    last_buffer_full_buzz_ms_ = std::nullopt;
     cooldown_ = DuplicateCooldownState{};
     ring_.clearAll();
     client_.setDeviceToken("");
@@ -539,7 +559,6 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
       ring_.acknowledge(item.id);
     }
   }
-  (void)now_ms;
 }
 
 void ScannerController::maybeHeartbeat(uint64_t now_ms) {

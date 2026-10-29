@@ -80,9 +80,9 @@ class StockbotFeedback final : public HalFeedback {
   void flashLedForScan(bool stock_in) override {
 #if TARGET_ATOMS3LITE
     const uint32_t color = stock_in ? 0x00ff00 : 0xffa500;
-    M5.displays(0).fillScreen(color);
+    M5.Displays(0).fillScreen(color);
     delay(30);
-    M5.displays(0).fillScreen(TFT_BLACK);
+    M5.Displays(0).fillScreen(TFT_BLACK);
 #else
     (void)stock_in;
 #endif

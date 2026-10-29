@@ -85,6 +85,45 @@ jobs:
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
 
+  firmware-pio:
+    name: Firmware PlatformIO (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - sticks3_u173
+          - atoms3lite_u173_bench
+          - atoms3lite_symcode_hid
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: platformio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini', 'firmware/boards/**', 'firmware/data/cert/**') }}
+          restore-keys: |
+            platformio-${{ runner.os }}-${{ matrix.env }}-
+            platformio-${{ runner.os }}-
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run -e ${{ matrix.env }}
+
   frontend:
     name: Frontend tests and linting
     runs-on: ubuntu-latest
