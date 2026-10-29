@@ -24,6 +24,7 @@ constexpr uint64_t kTransientScanMs = 4000;
 constexpr uint64_t kTransientLongMs = 5000;
 constexpr uint64_t kDockBannerMs = 2000;
 constexpr uint64_t kBufferFullFeedbackMinIntervalMs = 1500;
+constexpr uint64_t kBufferRefusalTransientMs = 4000;
 
 ScanStatusKind parseScanStatusKind(const std::string& scan_status) {
   if (scan_status == "queued") {
@@ -221,7 +222,8 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
 void ScannerController::render(uint64_t now_ms) {
   if (now_ms < transient_until_ms_ &&
       (ui_screen_ == UiScreen::S3_ScanResult || ui_screen_ == UiScreen::S4_UnknownBarcode ||
-       ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder)) {
+       ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder ||
+       ui_screen_ == UiScreen::S7_OfflineBufferRefused)) {
     // keep transient screen
   } else if (device_revoked_ || ring_.isFull()) {
     ui_screen_ = UiScreen::S7_HardError;
@@ -299,7 +301,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
 
   std::string client_scan_id;
   if (!ring_.enqueue(barcode, state_.active_direction, now_ms, config_.boot_count, client_scan_id)) {
-    feedbackOfflineBufferRefused(now_ms);
+    feedbackOfflineBufferRefused(barcode, now_ms);
     return false;
   }
 
@@ -385,8 +387,10 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
   return true;
 }
 
-void ScannerController::feedbackOfflineBufferRefused(uint64_t now_ms) {
-  ui_screen_ = UiScreen::S7_HardError;
+void ScannerController::feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms) {
+  last_scan_.barcode = barcode;
+  ui_screen_ = UiScreen::S7_OfflineBufferRefused;
+  transient_until_ms_ = now_ms + kBufferRefusalTransientMs;
   if (now_ms - last_buffer_full_feedback_ms_ >= kBufferFullFeedbackMinIntervalMs) {
     last_buffer_full_feedback_ms_ = now_ms;
     play(AudioCue::TripleErrorBuzz);
@@ -408,7 +412,7 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
   if (ring_.isFull() && state_.operational == OperationalState::Paired) {
     if (kind == BarcodeKind::Product || kind == BarcodeKind::ControlStockIn ||
         kind == BarcodeKind::ControlStockOut) {
-      feedbackOfflineBufferRefused(now_ms);
+      feedbackOfflineBufferRefused(trimAscii(raw_line), now_ms);
     }
     return;
   }

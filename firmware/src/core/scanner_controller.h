@@ -85,7 +85,7 @@ class ScannerController {
   void play(AudioCue cue);
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);
   bool handleProductScan(const std::string& barcode, bool manual_retrigger, uint64_t now_ms);
-  void feedbackOfflineBufferRefused(uint64_t now_ms);
+  void feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms);
   void flushOfflineBatch(uint64_t now_ms);
   void maybeHeartbeat(uint64_t now_ms);
   Direction parseDirectionString(const std::string& dir) const;

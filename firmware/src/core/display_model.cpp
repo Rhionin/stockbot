@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <sstream>
 
+#include "ring_buffer.h"
+
 namespace stockbot {
 
 namespace {
@@ -86,6 +88,13 @@ std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& n
   return {line1, rest};
 }
 
+std::string truncateDisplayLine(const std::string& text, size_t max_chars) {
+  if (text.size() <= max_chars) {
+    return text;
+  }
+  return text.substr(0, max_chars - 1) + "…";
+}
+
 std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms,
                                   uint64_t now_ms) {
   if (last_activity_ms == 0 || now_ms <= last_activity_ms) {
@@ -130,17 +139,37 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     return out;
   }
 
-  if (in.screen == UiScreen::S7_HardError) {
-    out.band1 = "SCANNER ALERT";
+  if (in.screen == UiScreen::S7_OfflineBufferRefused) {
+    out.band1 = "NOT SAVED";
     styleBand1(out, "#DC2626", 0xFFFF);
+    out.band2_line1 = "Memory is full";
+    out.band2_line2 = truncateDisplayLine(in.last_scan.barcode);
+    out.band3 = "Connect Wi-Fi to send";
+    out.audio = AudioCue::Silent;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S7_HardError) {
     if (in.device_revoked) {
+      out.band1 = "SCANNER ALERT";
+      styleBand1(out, "#DC2626", 0xFFFF);
       out.band2_line1 = "Scanner disconnected";
       out.band3 = "Re-pair in Stockbot";
+      out.audio = AudioCue::TripleErrorBuzz;
+    } else if (in.buffer_full) {
+      out.band1 = "MEMORY FULL";
+      styleBand1(out, "#DC2626", 0xFFFF);
+      out.band2_line1 = std::to_string(RingBuffer::kCapacity) + " scans waiting";
+      out.band2_line2 = "New scans won't save";
+      out.band3 = "Connect Wi-Fi to send";
+      out.audio = AudioCue::Silent;
     } else {
-      out.band2_line1 = "Offline memory full (500)";
-      out.band3 = "Connect Wi-Fi to sync";
+      out.band1 = "SCANNER ALERT";
+      styleBand1(out, "#DC2626", 0xFFFF);
+      out.band2_line1 = "Scanner disconnected";
+      out.band3 = "Re-pair in Stockbot";
+      out.audio = AudioCue::TripleErrorBuzz;
     }
-    out.audio = AudioCue::TripleErrorBuzz;
     return out;
   }
 

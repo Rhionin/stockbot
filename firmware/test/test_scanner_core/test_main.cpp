@@ -184,6 +184,7 @@ void test_display_model() {
   using stockbot::AudioCue;
   using stockbot::buildDisplayModel;
   using stockbot::wrapProductNameTwoLines;
+  using stockbot::truncateDisplayLine;
 
   DisplayModelInput in;
   in.screen = UiScreen::S2_Idle;
@@ -258,6 +259,30 @@ void test_display_model() {
   auto err = buildDisplayModel(in);
   EXPECT(err.band1 == "SCANNER ALERT");
   EXPECT(err.band2_line1 == "Scanner disconnected");
+
+  in.device_revoked = false;
+  in.buffer_full = true;
+  auto full = buildDisplayModel(in);
+  const std::string capacity_line =
+      std::to_string(stockbot::RingBuffer::kCapacity) + " scans waiting";
+  EXPECT(full.band1 == "MEMORY FULL");
+  EXPECT(full.band2_line1 == capacity_line);
+  EXPECT(full.band2_line2 == "New scans won't save");
+  EXPECT(full.band3 == "Connect Wi-Fi to send");
+  EXPECT(full.audio == AudioCue::Silent);
+
+  in.screen = UiScreen::S7_OfflineBufferRefused;
+  in.last_scan.barcode = "4011";
+  auto refused = buildDisplayModel(in);
+  EXPECT(refused.band1 == "NOT SAVED");
+  EXPECT(refused.band2_line1 == "Memory is full");
+  EXPECT(refused.band2_line2 == "4011");
+  EXPECT(refused.band3 == "Connect Wi-Fi to send");
+  EXPECT(refused.audio == AudioCue::Silent);
+
+  in.last_scan.barcode = "012345678901234567890";
+  auto refused_trunc = buildDisplayModel(in);
+  EXPECT(refused_trunc.band2_line2 == truncateDisplayLine(in.last_scan.barcode));
 
   auto wrapped = wrapProductNameTwoLines(
       "Kirkland Organic Diced Tomatoes Extra Long Product Name Here That Keeps Going");
@@ -770,6 +795,26 @@ struct ControllerFixture {
     }
     return n;
   }
+
+  std::string capacityWaitingLine() const {
+    return std::to_string(stockbot::RingBuffer::kCapacity) + " scans waiting";
+  }
+
+  void expectMemoryFullIdleScreen() const {
+    EXPECT(display.last.band1 == "MEMORY FULL");
+    EXPECT(display.last.band2_line1 == capacityWaitingLine());
+    EXPECT(display.last.band2_line2 == "New scans won't save");
+    EXPECT(display.last.band3 == "Connect Wi-Fi to send");
+    EXPECT(display.last.audio == stockbot::AudioCue::Silent);
+  }
+
+  void expectBufferRefusedScreen(const std::string& barcode_line) const {
+    EXPECT(display.last.band1 == "NOT SAVED");
+    EXPECT(display.last.band2_line1 == "Memory is full");
+    EXPECT(display.last.band2_line2 == barcode_line);
+    EXPECT(display.last.band3 == "Connect Wi-Fi to send");
+    EXPECT(display.last.audio == stockbot::AudioCue::Silent);
+  }
 };
 
 void test_offline_buffer_full_refuses_without_eviction() {
@@ -780,12 +825,14 @@ void test_offline_buffer_full_refuses_without_eviction() {
   EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity);
   EXPECT(fx.ring.isFull());
   EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_HardError);
-  EXPECT(fx.display.last.band2_line1 == "Offline memory full (500)");
+  fx.expectMemoryFullIdleScreen();
 
   const auto before = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
   EXPECT(before.size() == stockbot::RingBuffer::kCapacity);
   const size_t buzz_before = fx.tripleErrorBuzzCount();
   fx.controller.onBarcodeLine("999999999999", false, 9000);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("999999999999");
   EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity);
   EXPECT(fx.ring.isFull());
   const auto after = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
@@ -895,8 +942,39 @@ void test_offline_buffer_refusal_feedback_rate_limited() {
   fx.controller.onBarcodeLine("888888888888", false, 5200);
   fx.controller.onBarcodeLine("777777777777", false, 7000);
   EXPECT(fx.tripleErrorBuzzCount() == 2);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("777777777777");
+}
+
+void test_offline_buffer_refused_transient_timeout() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.controller.tick(8000);
+  fx.controller.onBarcodeLine("999999999999", false, 10000);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("999999999999");
+  fx.controller.tick(13999);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.controller.tick(14000);
   EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_HardError);
-  EXPECT(fx.display.last.band2_line1 == "Offline memory full (500)");
+  fx.expectMemoryFullIdleScreen();
+}
+
+void test_offline_buffer_refused_transient_restarts() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.controller.tick(8000);
+  fx.controller.onBarcodeLine("999999999999", false, 10000);
+  fx.controller.onBarcodeLine("888888888888", false, 12000);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.expectBufferRefusedScreen("888888888888");
+  fx.controller.tick(15999);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_OfflineBufferRefused);
+  fx.controller.tick(16000);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_HardError);
+  fx.expectMemoryFullIdleScreen();
 }
 
 void test_ota_install_gate_requires_empty_ring_unchanged() {
@@ -944,6 +1022,8 @@ int main() {
   test_offline_buffer_full_persists_across_reboot_until_flush();
   test_heartbeat_dropped_count_zero();
   test_offline_buffer_refusal_feedback_rate_limited();
+  test_offline_buffer_refused_transient_timeout();
+  test_offline_buffer_refused_transient_restarts();
   test_ota_install_gate_requires_empty_ring_unchanged();
 
   if (failures != 0) {
