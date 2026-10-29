@@ -1738,34 +1738,28 @@ restore_host_scripts_from_last_known_good() {
 # install_host_bundle_tree_all_or_nothing stages every file, verifies the set,
 # snapshots the previous host scripts, then swaps atomically per file.
 install_host_bundle_tree_all_or_nothing() {
-  local staged="$1" plan tmp src dest pending=() copied_units=0 unit_dir
+  local staged="$1" tmp src dest pending=() copied_units=0 unit_dir
   if ! verify_host_bundle_staged "$staged"; then
     return 1
   fi
-  plan=$(mktemp) || return 1
-  host_bundle_install_plan "$staged" > "$plan"
   while IFS=$'\t' read -r src dest || [[ -n "${src:-}" ]]; do
     [[ -z "${src:-}" ]] && continue
     if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
       continue
     fi
-    tmp=$(mktemp "${dest}.refresh.XXXXXX") || {
-      rm -f "$plan"
-      return 1
-    }
+    tmp=$(mktemp "${dest}.refresh.XXXXXX") || return 1
     cp "$src" "$tmp" || {
-      rm -f "$tmp" "$plan"
+      rm -f "$tmp"
       return 1
     }
     if [[ "$dest" == *.sh ]]; then
       chmod +x "$tmp" || {
-        rm -f "$tmp" "$plan"
+        rm -f "$tmp"
         return 1
       }
     fi
     pending+=("$tmp|$dest")
-  done < "$plan"
-  rm -f "$plan"
+  done < <(host_bundle_install_plan "$staged")
   snapshot_host_scripts_last_known_good
   for entry in "${pending[@]}"; do
     tmp=${entry%%|*}
