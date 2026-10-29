@@ -1621,7 +1621,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
 | `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
 | `forbidden_owner` | 403 | Only an owner can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
-| `forbidden_operator` | 403 | Only a Stockbot admin can do this. | Operator-only routes such as `GET /api/operator/households`. |
+| `forbidden_operator` | 403 | Only an admin can do this. | Operator-only routes such as `GET /api/operator/households`. |
 | `household_not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Same sentence as `not_found`. Used when the household id is unknown to the caller at the service layer. |
 | `invalid_input` | 400 | Check what you entered and try again. | Same sentence as `validation`. Used for rename name rules on `PATCH /api/households/{id}`. |
 | `not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Rewritten by PM. Also the response for cross-household access. |

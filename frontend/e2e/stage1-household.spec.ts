@@ -281,6 +281,22 @@ test.describe('stage-1 household screens', () => {
     await expect(householdPairing).toBeVisible()
     await expect(householdPairing.getByText('Print setup & wall sheet')).toBeVisible()
     await expect(householdPairing.locator('.pairing-screen-only').getByText(/Scan the pairing barcode from Stockbot/)).toBeVisible()
+    if (width === 390) {
+      const pairingCode = householdPairing.locator('.pairing-spaced')
+      await expect(pairingCode).toHaveCSS('white-space', 'nowrap')
+      await expect(pairingCode.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).resolves.toBe(true)
+      const barcodeFrame = householdPairing.locator('.pairing-code128-frame')
+      await expect(barcodeFrame.evaluate((host) => {
+        const svg = host.querySelector('svg')
+        if (svg == null) return false
+        if (host.scrollWidth > host.clientWidth + 1) return false
+        const hostRect = host.getBoundingClientRect()
+        const svgRect = svg.getBoundingClientRect()
+        const hostCenter = hostRect.left + hostRect.width / 2
+        const svgCenter = svgRect.left + svgRect.width / 2
+        return Math.abs(hostCenter - svgCenter) < 2
+      })).resolves.toBe(true)
+    }
     await shot(page, 'household-pairing', width, false)
     await householdPairing.getByRole('button', { name: 'Close' }).click()
 
@@ -289,6 +305,7 @@ test.describe('stage-1 household screens', () => {
     await expect(wallSheet).toBeVisible()
     await expect(wallSheet.locator('.kit-print-root')).toBeVisible()
     await expect(wallSheet.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await expect(wallSheet.getByText('Print at Actual size (100%), not Fit to page.')).toHaveCount(1)
     await expect(wallSheet.getByRole('button', { name: 'Using a Symcode handheld?' })).toBeVisible()
     await expect(wallSheet.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toHaveCount(0)
     await shot(page, 'wall-sheet-symcode-collapsed', width, false)

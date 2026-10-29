@@ -1,52 +1,67 @@
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { MantineProvider, Text } from '@mantine/core';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatPairingCode } from '@stockbot/shared/contract';
 import {
-  PAIRING_CODE128_MIN_MODULE_PX,
+  PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
   PAIRING_CODE128_QUIET_MODULES,
-  computePairingCode128ModulePx,
+  computePairingCode128Layout,
+  pairingCode128ModuleCount,
 } from './pairingScreenCode128';
 import { Code128Mark } from './symbols';
-import householdCss from './household.css?raw';
 
 const PAIRING = formatPairingCode('23456789');
-
-beforeAll(() => {
-  const style = document.createElement('style');
-  style.textContent = householdCss;
-  document.head.appendChild(style);
-});
+const BAR_MODULES = pairingCode128ModuleCount(PAIRING);
 
 describe('on-screen pairing Code 128 (PR #466 follow-up)', () => {
-  it('uses integer module width >= 2px and quiet zone >= 10 modules', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses device-pixel modules, quiet zone >= 10, and fits the container width', async () => {
+    vi.stubGlobal('devicePixelRatio', 3);
     const { container } = render(
       <MantineProvider env="test">
-        <div style={{ width: 390 }}>
+        <div style={{ width: 366 }}>
           <Code128Mark value={PAIRING} quietZone />
         </div>
       </MantineProvider>,
     );
-    const svg = container.querySelector('svg.pairing-code128');
-    expect(svg).not.toBeNull();
-    const modulePx = Number(svg!.getAttribute('data-module-px'));
-    expect(Number.isInteger(modulePx)).toBe(true);
-    expect(modulePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_PX);
+    await waitFor(() => {
+      const svg = container.querySelector('svg.pairing-code128');
+      expect(svg).not.toBeNull();
+      expect(Number(svg!.getAttribute('width'))).toBeLessThanOrEqual(366);
+    });
+    const svg = container.querySelector('svg.pairing-code128')!;
+    const moduleDevicePx = Number(svg!.getAttribute('data-module-device-px'));
+    expect(moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX);
+    expect(Number.isInteger(moduleDevicePx)).toBe(true);
     expect(Number(svg!.getAttribute('data-quiet-modules'))).toBeGreaterThanOrEqual(PAIRING_CODE128_QUIET_MODULES);
     expect([...svg!.querySelectorAll('rect')].every((rect) => rect.getAttribute('fill') === '#000000')).toBe(true);
-    expect(svg!.getAttribute('shape-rendering')).toBe('crispEdges');
+    expect(svg.getAttribute('shape-rendering')).toBe('crispEdges');
   });
 
-  it('computePairingCode128ModulePx never returns below minimum', () => {
-    expect(computePairingCode128ModulePx(100, 200)).toBe(PAIRING_CODE128_MIN_MODULE_PX);
-    const wide = computePairingCode128ModulePx(800, 200);
-    expect(wide).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_PX);
-    expect(Number.isInteger(wide)).toBe(true);
+  it('computePairingCode128Layout matches narrow high-DPR and desktop cases', () => {
+    const narrow = computePairingCode128Layout(366, BAR_MODULES, 3);
+    expect(narrow.moduleDevicePx).toBe(4);
+    expect(narrow.moduleCssPx).toBeCloseTo(4 / 3, 5);
+    expect(narrow.svgWidthCssPx).toBeCloseTo(293.333, 1);
+
+    const desktop = computePairingCode128Layout(517, BAR_MODULES, 1);
+    expect(desktop.moduleDevicePx).toBe(2);
+    expect(desktop.moduleCssPx).toBe(2);
+    expect(desktop.svgWidthCssPx).toBe(440);
+
+    const tiny = computePairingCode128Layout(50, BAR_MODULES, 1);
+    expect(tiny.moduleDevicePx).toBeGreaterThanOrEqual(1);
+    expect(computePairingCode128Layout(366, BAR_MODULES, 3).moduleDevicePx).toBeGreaterThanOrEqual(
+      PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
+    );
   });
 });
 
 describe('pairing code text layout', () => {
-  it('keeps letter-spaced pairing code on one line', () => {
+  it('applies the pairing-spaced class for nowrap styling', () => {
     const { container } = render(
       <MantineProvider env="test">
         <Text className="pairing-spaced" aria-label="Pairing code">
@@ -54,7 +69,6 @@ describe('pairing code text layout', () => {
         </Text>
       </MantineProvider>,
     );
-    const code = container.querySelector('.pairing-spaced')!;
-    expect(window.getComputedStyle(code).whiteSpace).toBe('nowrap');
+    expect(container.querySelector('.pairing-spaced')).not.toBeNull();
   });
 });

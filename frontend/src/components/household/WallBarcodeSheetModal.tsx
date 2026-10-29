@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import {
-  PRINT_ACTUAL_SIZE_INSTRUCTION,
   SYMCODE_DISCLOSURE_LABEL,
   defaultWallBarcodeSettings,
   resolveWallBarcodeSettings,
@@ -61,7 +60,6 @@ export function WallBarcodeSheetModal({
             </Stack>
           )}
         </div>
-        <Text size="sm" className="kit-print-hint">{PRINT_ACTUAL_SIZE_INSTRUCTION}</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>Close</Button>
           <Button onClick={print}>Print</Button>

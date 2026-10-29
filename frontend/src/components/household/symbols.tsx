@@ -1,29 +1,41 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import {
-  PAIRING_CODE128_MIN_MODULE_PX,
   PAIRING_CODE128_QUIET_MODULES,
-  computePairingCode128ModulePx,
+  computePairingCode128Layout,
   pairingCode128BarRuns,
   pairingCode128ModuleCount,
-  pairingCode128SvgWidthPx,
+  type PairingCode128Layout,
 } from './pairingScreenCode128';
 
 const BAR_HEIGHT_PX = 96;
+const EMPTY_LAYOUT: PairingCode128Layout = {
+  moduleCssPx: 2,
+  moduleDevicePx: 2,
+  svgWidthCssPx: 0,
+  totalModules: 0,
+};
 
 export function Code128Mark({ value, quietZone = false }: { value: string; quietZone?: boolean }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [modulePx, setModulePx] = useState(PAIRING_CODE128_MIN_MODULE_PX);
-  const modules = pairingCode128ModuleCount(value);
-  const totalModules = modules + 2 * PAIRING_CODE128_QUIET_MODULES;
+  const measureRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState(EMPTY_LAYOUT);
+  const barModules = pairingCode128ModuleCount(value);
   const runs = pairingCode128BarRuns(value);
-  const svgWidthPx = pairingCode128SvgWidthPx(modulePx, modules);
+  const totalModules = layout.totalModules || barModules + 2 * PAIRING_CODE128_QUIET_MODULES;
 
   const measure = useCallback(() => {
-    const container = scrollRef.current;
+    const container = measureRef.current;
     if (container == null) return;
-    const count = pairingCode128ModuleCount(value);
-    setModulePx(computePairingCode128ModulePx(container.clientWidth, count));
+    let width = container.clientWidth;
+    if (width === 0 && container.parentElement != null) {
+      width = container.parentElement.clientWidth;
+    }
+    const modules = pairingCode128ModuleCount(value);
+    setLayout(computePairingCode128Layout(
+      width,
+      modules,
+      window.devicePixelRatio || 1,
+    ));
   }, [value]);
 
   useLayoutEffect(() => {
@@ -31,7 +43,7 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
   }, [measure, value]);
 
   useEffect(() => {
-    const container = scrollRef.current;
+    const container = measureRef.current;
     if (container == null || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(() => measure());
     observer.observe(container);
@@ -43,14 +55,15 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
       className="pairing-code128"
       role="img"
       aria-label={`Code 128 ${value}`}
-      width={svgWidthPx}
+      width={layout.svgWidthCssPx}
       height={BAR_HEIGHT_PX}
       viewBox={`0 0 ${totalModules} 48`}
       preserveAspectRatio="none"
       shapeRendering="crispEdges"
-      data-module-px={modulePx}
+      data-module-css-px={layout.moduleCssPx}
+      data-module-device-px={layout.moduleDevicePx}
       data-quiet-modules={PAIRING_CODE128_QUIET_MODULES}
-      data-modules={modules}
+      data-modules={barModules}
     >
       {runs.map((run) => (
         <rect
@@ -69,7 +82,7 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
 
   return (
     <div className="code128-quiet-zone">
-      <div className="pairing-code128-scroll" ref={scrollRef}>
+      <div className="pairing-code128-frame" ref={measureRef}>
         {svg}
       </div>
     </div>

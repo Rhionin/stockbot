@@ -204,6 +204,7 @@ describe('issue #456 kit copy (table B)', () => {
     expect(screen.getByRole('button', { name: 'Print' })).toBeVisible();
     const printRoot = screen.getByRole('dialog').querySelector('.kit-print-root')!;
     expect(within(printRoot as HTMLElement).getByText(/Goes back to Stock out 3 minutes/)).toBeVisible();
+    expect(within(screen.getByRole('dialog')).getAllByText(PRINT_ACTUAL_SIZE_INSTRUCTION)).toHaveLength(1);
     assertNoOperatorInVisibleCopy();
   });
 
