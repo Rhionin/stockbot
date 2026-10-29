@@ -10,6 +10,7 @@ import {
   PRINT_PAIRING_CODE_LABEL,
   SYMCODE_DISCLOSURE_LABEL,
   pairingScannerScreenFallback,
+  setupSheetExpiryLine,
 } from './kitCopy456';
 import { resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
@@ -132,23 +133,25 @@ describe('issue #456 kit copy (table B)', () => {
     renderStage(<HouseholdPage />, session('owner'));
     const scannersHeading = await screen.findByRole('heading', { name: 'Scanners' });
     const scannersSection = scannersHeading.closest('section')!;
-    fireEvent.click(within(scannersSection).getAllByRole('button', { name: 'Connect a scanner' })[0]);
+    fireEvent.click(within(scannersSection).getByRole('button', { name: 'Connect a scanner' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect a scanner' });
     await waitFor(() => {
       const screenOnly = dialog.querySelector('.pairing-screen-only');
       expect(screenOnly).not.toBeNull();
-      expect(within(screenOnly as HTMLElement).getByText(/Scan the pairing barcode from Stockbot/)).toBeVisible();
+      expect(within(screenOnly as HTMLElement).getByText(/Scan the pairing barcode to connect/)).toBeVisible();
     });
     const screenOnly = dialog.querySelector('.pairing-screen-only') as HTMLElement;
+    expect(within(screenOnly).getByText(setupSheetExpiryLine('2099-06-15T14:05:00.000Z'))).toBeVisible();
+    expect(within(screenOnly).getAllByRole('img', { name: new RegExp(`^Code 128 ${PAIRING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })).toHaveLength(1);
+    expect(within(screenOnly).queryByRole('img', { name: /^QR code / })).not.toBeInTheDocument();
     expect(within(screenOnly).getByText(pairingScannerScreenFallback())).toBeVisible();
     expect(within(dialog).queryByText(/USB keyboard/)).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: PRINT_PAIRING_CODE_LABEL })).toBeVisible();
-    const printRoot = dialog.querySelector('.kit-print-root')!;
+    const printRoot = dialog.querySelector('.setup-kit-print-root')!;
     expect(printRoot).not.toBeNull();
-    expect(within(printRoot as HTMLElement).getByText('Connect your scanner')).toBeVisible();
-    expect(within(printRoot as HTMLElement).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
-    expect(within(printRoot as HTMLElement).getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible();
-    expect(within(printRoot as HTMLElement).getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible();
+    expect(printRoot).toHaveAttribute('hidden');
+    expect(within(printRoot as HTMLElement).getByText('Connect your scanner')).toBeInTheDocument();
+    expect(printRoot.querySelectorAll('svg[role="img"][aria-label^="Code 128"]')).toHaveLength(3);
     expect(printRoot.textContent).not.toMatch(/%%SpecCode99|Setup B/);
     expect(within(dialog).getAllByText(PRINT_ACTUAL_SIZE_INSTRUCTION)).toHaveLength(1);
     assertNoOperatorInVisibleCopy();
@@ -227,9 +230,28 @@ describe('issue #456 kit copy (table B)', () => {
     }));
     renderStage(<HouseholdPage />, session('owner'));
     expect(await screen.findByText('No scanners yet. Connect one to scan items in and out right at the shelf.')).toBeVisible();
-    const emptyConnect = screen.getAllByRole('button', { name: 'Connect a scanner' });
-    expect(emptyConnect.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByRole('button', { name: 'Connect a scanner' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Print wall barcodes' })).not.toBeInTheDocument();
     assertNoOperatorInVisibleCopy();
+  });
+
+  it('scanners section shows top actions when at least one scanner is connected', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
+      if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
+      if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
+      if (url === '/api/households/hh-1') {
+        return Promise.resolve(json({ id: 'hh-1', name: 'Test Household', role: 'owner', deletedAt: null, purgeAt: null }));
+      }
+      if (url.includes('/api/devices')) return Promise.resolve(json({ devices: [scannerDevice({ label: 'Shelf' })] }));
+      return Promise.reject(new Error(url));
+    }));
+    renderStage(<HouseholdPage />, session('owner'));
+    const scannersSection = (await screen.findByRole('heading', { name: 'Scanners' })).closest('section')!;
+    expect(within(scannersSection).getByRole('button', { name: 'Connect a scanner' })).toBeVisible();
+    expect(within(scannersSection).getByRole('button', { name: 'Print wall barcodes' })).toBeVisible();
+    expect(within(scannersSection).queryByText(/No scanners yet\./)).not.toBeInTheDocument();
   });
 
   it('household scanners section avoids operator in visible copy', async () => {
@@ -261,12 +283,12 @@ describe('issue #456 kit copy (table B)', () => {
     expect(await screen.findByRole('heading', { name: 'Scanners' })).toBeVisible();
     assertNoOperatorInVisibleCopy();
     const scannersSection = screen.getByRole('heading', { name: 'Scanners' }).closest('section')!;
-    fireEvent.click(within(scannersSection).getAllByRole('button', { name: 'Connect a scanner' })[0]);
+    fireEvent.click(within(scannersSection).getByRole('button', { name: 'Connect a scanner' }));
     const pairingDialog = await screen.findByRole('dialog', { name: 'Connect a scanner' });
     await waitFor(() => {
       const screenOnly = pairingDialog.querySelector('.pairing-screen-only');
       expect(screenOnly).not.toBeNull();
-      expect(within(screenOnly as HTMLElement).getByText(/Scan the pairing barcode from Stockbot/)).toBeVisible();
+      expect(within(screenOnly as HTMLElement).getByText(/Scan the pairing barcode to connect/)).toBeVisible();
     });
     assertNoOperatorInVisibleCopy();
     fireEvent.click(within(pairingDialog).getByRole('button', { name: 'Close' }));

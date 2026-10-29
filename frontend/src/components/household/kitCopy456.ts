@@ -35,11 +35,17 @@ export function pairingPrintBody(
 }
 
 export function pairingScannerScreenFallback(): string {
-  return "Can't scan it? Scan the same barcode from your phone or computer screen in Stockbot.";
+  return "Can't scan it? Open the app on your phone or computer and scan this barcode from the screen.";
 }
 
+export const PAIRING_DIALOG_STEP_TWO =
+  'When the scanner screen says "Scan the pairing barcode to connect", scan the barcode below.';
+
+export const PAIRING_DIALOG_WIFI_SETUP_STEP_ONE =
+  'Plug in the scanner. If its screen says READY TO SET UP, join the Wi-Fi network it shows (Scanner-Setup-…) on your phone, then enter your home Wi-Fi name and password.';
+
 export function setupSheetPairingStepCopy(): string {
-  return 'When your scanner says "Scan the pairing barcode from Stockbot", hold it 10–30 cm (4–12 in) from this barcode and pull the trigger.';
+  return 'When your scanner says "Scan the pairing barcode to connect", hold it 10–30 cm (4–12 in) from this barcode and pull the trigger.';
 }
 
 export function setupSheetExpiryLine(expiresAt: string | Date, locale = 'en-US', timeZone?: string): string {
@@ -48,7 +54,7 @@ export function setupSheetExpiryLine(expiresAt: string | Date, locale = 'en-US',
 }
 
 export function setupSheetExpiryHelpCopy(): string {
-  return 'It works once. If it expires, get a new one in Stockbot and print this page again.';
+  return 'It works once. If it expires, get a new one in the app and print this page again.';
 }
 
 export function setupSheetCutLineCopy(): string {

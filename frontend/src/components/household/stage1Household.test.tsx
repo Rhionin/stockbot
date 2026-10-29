@@ -718,9 +718,9 @@ describe('devices, pairing, and live hints', () => {
     const screenOnly = pairingDialog.querySelector('.pairing-screen-only');
     expect(screenOnly).not.toBeNull();
     expect(within(screenOnly as HTMLElement).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
-    expect(within(screenOnly as HTMLElement).getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible();
+    expect(within(screenOnly as HTMLElement).queryByRole('img', { name: /^QR code / })).not.toBeInTheDocument();
     expect(within(screenOnly as HTMLElement).getByLabelText('Pairing code')).toHaveTextContent(PAIRING.split('').join(' '));
-    expect(within(pairingDialog).getByText(/Use within 10 minutes · expires at/)).toBeVisible();
+    expect(within(screenOnly as HTMLElement).getByText(/Use within 10 minutes · expires at/)).toBeVisible();
     expect(within(screenOnly as HTMLElement).getByText(new RegExp(`No printer\\? Plug a USB keyboard into the hub, type this code, and press Enter: ${PAIRING}`))).toBeVisible();
     fireEvent.click(within(pairingDialog).getByRole('button', { name: PRINT_PAIRING_CODE_LABEL }));
     await waitFor(() => expect(print).toHaveBeenCalled(), { timeout: 3000 });
@@ -990,8 +990,10 @@ describe('devices, pairing, and live hints', () => {
     fireEvent.click(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL }));
     const pairingDialog = await screen.findByRole('dialog', { name: CONNECT_SCANNER_OR_HUB_LABEL });
     expect(within(pairingDialog).getByText('Setting up a brand-new scanner?')).toBeVisible();
-    expect(within(pairingDialog).getByText(/Stockbot-Scanner-/)).toBeVisible();
-    expect(within(pairingDialog.querySelector('.pairing-screen-only') as HTMLElement).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
+    expect(within(pairingDialog).getByText(/Scanner-Setup-/)).toBeVisible();
+    const screenOnly = pairingDialog.querySelector('.pairing-screen-only') as HTMLElement;
+    expect(within(screenOnly).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
+    expect(within(screenOnly).queryByRole('img', { name: /^QR code / })).not.toBeInTheDocument();
     fireEvent.click(within(pairingDialog).getByRole('button', { name: 'Close' }));
     fireEvent.click(screen.getByRole('button', { name: 'Print wall barcodes' }));
     const sheet = await screen.findByRole('dialog', { name: 'Wall barcodes' });

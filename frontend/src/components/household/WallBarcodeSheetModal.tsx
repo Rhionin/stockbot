@@ -55,7 +55,7 @@ export function WallBarcodeSheetModal({
               </Text>
               <PrintableBarcode value="%%SpecCode99" moduleMm={0.6} heightMm={18} />
               <Text size="sm">
-                Scan this once after connecting a Symcode handheld so it ignores QR codes on food packages. Stockbot&apos;s own scanner already does this.
+                Scan this once after connecting a Symcode handheld so it ignores QR codes on food packages. The built-in scanner already does this.
               </Text>
             </Stack>
           )}

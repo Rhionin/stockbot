@@ -2,19 +2,19 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
 import { PAIRING_EXPIRED_SENTENCE, hostedErrorSentence, type PairingCode } from '@stockbot/shared/contract';
 import {
+  PAIRING_DIALOG_STEP_TWO,
+  PAIRING_DIALOG_WIFI_SETUP_STEP_ONE,
   PRINT_PAIRING_CODE_LABEL,
   defaultWallBarcodeSettings,
   pairingDialogTitle,
   pairingKeyboardFallback,
+  setupSheetExpiryLine,
   type WallBarcodeSettings,
 } from './kitCopy456';
 import { ApiError, getPairing, startPairing } from '../../api/client';
 import { useKitPrintRoot } from './kitPrintUtils';
 import { SetupKitPrintSheet } from './setupKitPrintSheet';
-import { Code128Mark, QrMark } from './symbols';
-
-const PAIRING_STEP_TWO =
-  'When the scanner screen says "Scan the pairing barcode from Stockbot", scan the barcode below.';
+import { Code128Mark } from './symbols';
 
 export function PairingDialog({
   opened,
@@ -84,7 +84,6 @@ export function PairingDialog({
   }, [opened, code, expired, onClose]);
 
   const barcodeValue = code?.barcodeValue ?? code?.code ?? '';
-  const qrValue = code?.qrValue ?? code?.qrPayload ?? '';
   const spaced = barcodeValue.split('').join(' ');
 
   return (
@@ -108,20 +107,19 @@ export function PairingDialog({
         <Stack className="pairing-dialog-body" gap="md">
           <div className="pairing-screen-only">
             <Text className="pairing-spaced" aria-label="Pairing code">{spaced}</Text>
+            <Text className="pairing-expiry-line">{setupSheetExpiryLine(code.expiresAt)}</Text>
             <Stack gap="xs" className="pairing-wifi-setup">
               <Title order={5}>Setting up a brand-new scanner?</Title>
-              <Text size="sm">
-                1. Plug in the scanner. If its screen says READY TO SET UP, join the Wi-Fi network it shows (Stockbot-Scanner-…) on your phone, then enter your home Wi-Fi name and password.
-              </Text>
-              <Text size="sm">2. {PAIRING_STEP_TWO}</Text>
+              <Text size="sm">1. {PAIRING_DIALOG_WIFI_SETUP_STEP_ONE}</Text>
+              <Text size="sm">2. {PAIRING_DIALOG_STEP_TWO}</Text>
             </Stack>
             <Code128Mark value={barcodeValue} quietZone />
-            <QrMark value={qrValue} />
             {keyboardLine && <Text className="pairing-keyboard">{keyboardLine}</Text>}
           </div>
           <div
             className="kit-print-root setup-kit-print-root"
             data-printing={printing ? 'true' : 'false'}
+            hidden={!printing}
           >
             <SetupKitPrintSheet
               householdName={householdName}

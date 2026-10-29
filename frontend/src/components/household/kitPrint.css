@@ -94,6 +94,10 @@
 }
 
 @media screen {
+  .setup-kit-print-root[hidden] {
+    display: none !important;
+  }
+
   .setup-kit-print-root:not([data-printing='true']) .kit-wall-panel {
     min-width: 0;
   }

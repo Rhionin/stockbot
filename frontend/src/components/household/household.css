@@ -90,6 +90,14 @@
   font-weight: 650;
 }
 
+.pairing-expiry-line,
+.mantine-Text-root.pairing-expiry-line {
+  color: #0F766E;
+  font-size: max(14px, 0.875rem);
+  font-weight: 700;
+  margin: 6px 0 10px;
+}
+
 .pairing-code128 {
   display: block;
   height: 96px;
