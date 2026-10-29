@@ -47,7 +47,7 @@ These facts are from master at `bd8d4a9`. The full list, with file and line cita
 5. **No Secure Boot, no flash encryption, and no eFuse burns.** Anti-rollback stays off. USB flashing must always be able to recover a device, and the bootloader is never changed over the air.
 6. **Downgrades are allowed and audited.** A downgrade happens only when an operator yanks a release or pins a device. Each one writes an `audit_log` row. Downgrades are needed for a Rust to C++ fallback.
 7. **The image is valid only after an authenticated heartbeat.** A new image becomes valid after its first `200` from `POST /api/device/heartbeat` with its stored device token. If that has not happened 10 minutes after boot, it marks itself invalid and reboots into the previous slot.
-8. **Install only when it is safe.** The device must be paired, the offline ring empty, and the device idle for 120 s. A StickS3 must also be docked or at 50% battery or more. A scan cancels a download in progress.
+8. **Install only when it is safe.** The device must be paired, the offline ring empty (no unsent scans), and the device idle for 120 s. While the ring is full and refusing new scans, OTA does not run. A StickS3 must also be docked or at 50% battery or more. A scan cancels a download in progress.
 9. **Migration `029_firmware_ota.sql` is additive only.** It is PROPOSED here and needs CJ's approval at T2 PR time. This ADR does not add it.
 
 ## Options considered
@@ -93,4 +93,4 @@ The contract, manifest, signature, version reporting, rollback signals, partitio
   - `otaState`, `otaError`, `otaReleaseId`, and `rollback` are reported the same way.
   - The image is marked valid after its first authenticated `200` heartbeat. The check-in deadline is 10 minutes.
 - **Image:** a standard ESP-IDF app image, served raw.
-- **Scan ring:** an install requires an empty ring, so Rust does not need to read the `SBR1` file format.
+- **Scan ring:** up to 500 unsent scans in `/scans.ring` (`SBR1`). When full, the scanner refuses new scans until reconnect and flush free space; it never drops the oldest (PM 2026-10-29; firmware tracked in [#460](https://github.com/Rhionin/stockbot/issues/460)). OTA never installs while the ring has unsent scans, so Rust does not need to read the file format for an update.

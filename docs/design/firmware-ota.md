@@ -38,6 +38,10 @@ sequenceDiagram
 - Binaries ship inside the server image and are imported into the `pantry-data` volume at startup (ADR-001 ruling 4). Devices never contact GitHub.
 - The server checks the signature again on import. It never offers an image it cannot verify, an unknown `keyId`, or an unknown target.
 
+### Offline scan ring
+
+The scanner keeps up to 500 unsent scans in `/scans.ring` on `littlefs`. When the ring is full, it refuses new scans and shows that its memory is full until it reconnects and a successful flush frees space. It never drops the oldest scans (PM ruling 2026-10-29). Current C++ firmware may still drop; the correct behavior is tracked in [#460](https://github.com/Rhionin/stockbot/issues/460). OTA never installs while any scan remains in the ring (see §6).
+
 ## 2. Targets
 
 | `fwTarget` | PlatformIO env | Board | Power | Notes |
@@ -170,7 +174,7 @@ stateDiagram-v2
 The device starts a download only when all of these are true:
 
 1. It is paired and has a token.
-2. The scan ring is empty after a flush.
+2. The scan ring is empty after a flush (no unsent scans). While the ring holds any scan, including when it is full and refusing new scans, OTA does not start.
 3. For the last 120 s there was no scan, button press, or direction change, and the device is not in pairing, the captive portal, or a factory-reset hold.
 4. On a StickS3, it is on the dock (VBUS present) or the battery is at 50% or more. AtomS3 targets are wall powered and always pass.
 5. Wi-Fi RSSI is -80 dBm or better.
@@ -244,7 +248,7 @@ The reported `otaState` maps to these states: `Idle` is `idle`, `Waiting` is `wa
 | After the switch, before mark valid | The new image is `PENDING_VERIFY`. A reset before mark valid makes the bootloader roll back. The old image reports `rolled_back` with `boot_failed`. |
 | After mark valid | A normal reboot into the new image. |
 
-- OTA writes only `ota_0`, `ota_1`, and `otadata`. It never erases `nvs` (token, Wi-Fi, settings) or `littlefs` (`/scans.ring`). An install also requires an empty ring, so no scans are at risk.
+- OTA writes only `ota_0`, `ota_1`, and `otadata`. It never erases `nvs` (token, Wi-Fi, settings) or `littlefs` (`/scans.ring`). An install also requires an empty ring (no unsent scans), so no scans are at risk. A full ring that refuses new scans still blocks OTA until flush clears it.
 - USB recovery always works. ROM download mode stays available because no eFuses are burned. Flash with the published `bootloader.bin` and `partitions.bin`.
 
 ## 9. C++ to Rust handoff
@@ -257,7 +261,7 @@ The C++ firmware must install the first Rust image over the air, and the Rust fi
 | Bootloader | The IDF 4.4.x bootloader from Arduino-ESP32 2.0.17, with rollback on and anti-rollback, Secure Boot, and signed apps off. Flash mode DIO. The ESP-IDF bootloader supports apps built with newer IDF versions, but an IDF 5.x Rust app on this exact bootloader must be proven on the bench in #445 Phase 0. `espflash` must be given the published `--bootloader` and `--partition-table` files, never its defaults. |
 | C++ fallback | A Rust to C++ downgrade is allowed through a pin (§7). The C++ image uses IDF 4.4.x, matching the bootloader. |
 | NVS | Namespace `stockbot`. `str` keys: `wifi_ssid`, `wifi_pass`, `server_url`, `device_token`, `label`, `default_dir` (`stock_in` or `stock_out`), `commit_mode` (`queue` or `immediate`), `ota_rel`, `ota_err`, `ota_supp`. `u32` keys: `inact_rev`, `cfg_ver`. Arduino `Preferences::putString`/`putUInt` and `esp-idf-svc` `EspNvs::get_str`/`get_u32` use the same types. Do not depend on the private `nvs.net80211` Wi-Fi namespace. |
-| Scan ring | An install needs an empty ring, so Rust does not have to read `/scans.ring` (`SBR1`). If Rust reuses that file, it must read the format, or delete the file when the magic differs. |
+| Scan ring | Up to 500 unsent scans in `/scans.ring` (`SBR1`). When full, refuse new scans until reconnect and flush; never drop the oldest ([#460](https://github.com/Rhionin/stockbot/issues/460)). OTA never installs while the ring is non-empty, so Rust does not have to read the file for an update. If Rust reuses the file for offline scans, it must read the format, or delete the file when the magic differs. |
 | Signing | §4: the same canonical manifest v1, the same key, the same `firmware/keys/` table, and the same golden vectors. |
 | Version and target | Semver in `version`, and the §2 target ids for the same hardware. |
 | Reporting | The `otaState` and `otaError` values, `otaReleaseId`, `rollback`, the mark-valid rule, and the 10-minute deadline (§7). |

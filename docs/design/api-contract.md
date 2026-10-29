@@ -879,7 +879,7 @@ Idempotency is the same for both forms. The same device and the same `id`, with 
 
 Heartbeat: every accepted scan updates that device's `lastSeenAt`. `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`. The heartbeat flag is only on the single body.
 
-The offline ring of 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`.
+The offline ring of up to 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`. On `pi_hub` and `box_hub`, the hub keeps at most 500 unsent scans and drops the oldest when full. On `esp32_scanner`, when the ring is full the device refuses new scans and shows that its memory is full until it reconnects and a flush frees space; it never drops the oldest scans.
 
 A committed scan publishes one `scans` hint after the final commit, on this device's household channel only.
 
@@ -911,7 +911,7 @@ These fail the whole request and write nothing: a body over 64 KB (`413` `payloa
 
 A device may submit 600 scans per minute. Over that limit the response is `429` `rate_limited` with `Retry-After`, and nothing in the request is written.
 
-The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
+The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. On `pi_hub` and `box_hub`, `droppedCount` above 0 is the number of buffered scans the hub dropped on that flush; those hubs keep at most 500 unsent scans and drop the oldest when full. An `esp32_scanner` never drops scans from the ring and always sends `droppedCount: 0`. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
 
 `DeviceHubConfig` is `{ label: string, controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, defaultDirection: "stock_in" | "stock_out", inactivityRevertSeconds: number, commitMode: "queue" | "immediate", configVersion: number }`. `idleSeconds` matches `inactivityRevertSeconds` (default 300). Control barcodes accept `STOCK-IN`/`STOCK-OUT` and `STOCK_IN`/`STOCK_OUT`.
 
@@ -936,7 +936,7 @@ The hub reports liveness. A flush also counts as contact. This does not remove `
 | Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: FirmwareUpdate }` |
 | Errors | `unauthorized`, `device_revoked`, `validation`, `rate_limited`, `busy` |
 
-`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent. Optional **`batteryPct`** (integer 0–100) and **`charging`** (boolean) update the device row when present; out-of-range `batteryPct` is `validation`. The response **`config`** is the full `DeviceHubConfig` after applying any pending settings (`label`, `controlBarcodes`, `defaultDirection`, `inactivityRevertSeconds`, `commitMode`, `configVersion`). The firmware fields (`rollback`, `fwTarget`, `otaState`, `otaReleaseId`, `otaError`, `otaProgressPct`) and the `update` object are defined in [Firmware updates](#firmware-updates).
+`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the device has not sent yet (0–500 on `esp32_scanner`). On `pi_hub` and `box_hub`, optional `droppedCount` on heartbeat reports scans dropped from the offline buffer since the previous heartbeat. An `esp32_scanner` always sends `droppedCount: 0`. Optional **`batteryPct`** (integer 0–100) and **`charging`** (boolean) update the device row when present; out-of-range `batteryPct` is `validation`. The response **`config`** is the full `DeviceHubConfig` after applying any pending settings (`label`, `controlBarcodes`, `defaultDirection`, `inactivityRevertSeconds`, `commitMode`, `configVersion`). The firmware fields (`rollback`, `fwTarget`, `otaState`, `otaReleaseId`, `otaError`, `otaProgressPct`) and the `update` object are defined in [Firmware updates](#firmware-updates).
 
 ### POST /api/device/token/rotate
 
