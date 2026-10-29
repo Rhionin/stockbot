@@ -65,7 +65,7 @@ class ScannerController {
   uint64_t last_vbus_ = false;
   bool wifi_online_ = false;
   bool device_revoked_ = false;
-  bool buffer_full_ = false;
+  uint64_t last_buffer_full_feedback_ms_ = 0;
   bool one_d_locked_ = false;
   bool portal_active_ = false;
   bool wifi_update_mode_ = false;
@@ -85,6 +85,7 @@ class ScannerController {
   void play(AudioCue cue);
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);
   bool handleProductScan(const std::string& barcode, bool manual_retrigger, uint64_t now_ms);
+  void feedbackOfflineBufferRefused(uint64_t now_ms);
   void flushOfflineBatch(uint64_t now_ms);
   void maybeHeartbeat(uint64_t now_ms);
   Direction parseDirectionString(const std::string& dir) const;

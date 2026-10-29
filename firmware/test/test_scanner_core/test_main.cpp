@@ -408,9 +408,14 @@ class MockClient : public stockbot::StockbotClient {
   std::string last_flush_boot;
   uint64_t last_flush_now_ms = 0;
   std::string last_flush_body;
+  std::string last_heartbeat_body;
 
-  stockbot::HttpCallResult sendHeartbeat(const std::string&, const std::string&, uint32_t, size_t, int, bool,
+  stockbot::HttpCallResult sendHeartbeat(const std::string& hub_version, const std::string& boot_id,
+                                         uint32_t uptime_s, size_t queued, int battery_pct, bool charging,
                                          stockbot::HeartbeatParsed& out) override {
+    last_heartbeat_body =
+        stockbot::buildHeartbeatRequestJson(hub_version, boot_id, uptime_s, queued, battery_pct, charging,
+                                            true);
     out = hb_body;
     return next_hb;
   }
@@ -470,6 +475,10 @@ void test_protocol_json() {
       R"({"config":{"defaultDirection":"stock_in","inactivityRevertSeconds":600,"commitMode":"immediate","configVersion":9},"rotateToken":false})";
   EXPECT(stockbot::parseHeartbeatResponseJson(200, hb_resp, hb));
   EXPECT(hb.config.default_direction == "stock_in");
+
+  const std::string hb_req = stockbot::buildHeartbeatRequestJson("1.0.0-esp32", "boot-1", 60, 3, 80, true, true);
+  EXPECT(hb_req.find("\"droppedCount\":0") != std::string::npos);
+  EXPECT(hb_req.find("\"queued\":3") != std::string::npos);
 
   stockbot::SetupQrParsed setup;
   EXPECT(stockbot::parseSetupQrPayload(R"({"v":1,"ssid":"Home","pass":"pw","url":"https://x","code":"SBP-0123-ABCD-G"})", setup));
@@ -715,6 +724,206 @@ void test_client_scan_id_unique_across_reboot() {
   EXPECT(id_first != id_second);
 }
 
+struct ControllerFixture {
+  MemoryRingStorage storage;
+  stockbot::RingBuffer ring{storage};
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::ScannerController controller{scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring};
+
+  void beginPaired(uint64_t now_ms = 0) {
+    nvs.cfg.wifi_ssid = "Home";
+    nvs.cfg.device_token = "sbd_offline";
+    nvs.cfg.commit_mode = stockbot::CommitMode::Immediate;
+    controller.begin(now_ms);
+    controller.tick(now_ms + 10);
+  }
+
+  void setOfflineScanTransport() { client.next_scan = {false, 0, ""}; }
+
+  std::string barcodeAt(size_t index) const {
+    char bc[16];
+    std::snprintf(bc, sizeof(bc), "%012zu", index + 1);
+    return bc;
+  }
+
+  void fillRingToCapacity(uint64_t start_ms) {
+    setOfflineScanTransport();
+    for (size_t i = 0; i < stockbot::RingBuffer::kCapacity; ++i) {
+      controller.onBarcodeLine(barcodeAt(i), false, start_ms + static_cast<uint64_t>(i));
+    }
+  }
+
+  size_t tripleErrorBuzzCount() const {
+    size_t n = 0;
+    for (const auto cue : feedback.cues) {
+      if (cue == stockbot::AudioCue::TripleErrorBuzz) {
+        ++n;
+      }
+    }
+    return n;
+  }
+};
+
+void test_offline_buffer_full_refuses_without_eviction() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.controller.tick(8000);
+  EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity);
+  EXPECT(fx.ring.isFull());
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_HardError);
+  EXPECT(fx.display.last.band2_line1 == "Offline memory full (500)");
+
+  const auto before = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
+  EXPECT(before.size() == stockbot::RingBuffer::kCapacity);
+  const size_t buzz_before = fx.tripleErrorBuzzCount();
+  fx.controller.onBarcodeLine("999999999999", false, 9000);
+  EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity);
+  EXPECT(fx.ring.isFull());
+  const auto after = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
+  EXPECT(after.size() == before.size());
+  for (size_t i = 0; i < before.size(); ++i) {
+    EXPECT(std::string(after[i].barcode) == std::string(before[i].barcode));
+    EXPECT(std::string(after[i].client_scan_id) == std::string(before[i].client_scan_id));
+  }
+  EXPECT(fx.tripleErrorBuzzCount() > buzz_before);
+}
+
+void test_offline_buffer_full_clears_after_flush_ack() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  EXPECT(fx.ring.isFull());
+
+  fx.wifi.connected = true;
+  const auto pending = fx.ring.peekBatch(50);
+  EXPECT(pending.size() == 50);
+  std::string batch_body = R"({"results":[)";
+  for (size_t i = 0; i < pending.size(); ++i) {
+    if (i > 0) {
+      batch_body += ',';
+    }
+    batch_body += R"({"id":")" + std::string(pending[i].client_scan_id) + R"(","status":"created"})";
+  }
+  batch_body += "]}";
+  fx.client.next_scan = {true, 200, batch_body};
+  fx.client.scan_body.status = "created";
+  fx.controller.tick(20000);
+
+  EXPECT(!fx.ring.isFull());
+  EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity - 50);
+  EXPECT(fx.controller.uiScreen() != stockbot::UiScreen::S7_HardError);
+
+  fx.client.next_scan = {false, 0, ""};
+  fx.controller.onBarcodeLine("4011", false, 21000);
+  EXPECT(fx.ring.count() == stockbot::RingBuffer::kCapacity - 49);
+}
+
+void test_offline_buffer_full_persists_across_reboot_until_flush() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_persist";
+
+  stockbot::RingBuffer ring_a(storage);
+  stockbot::ScannerController first(scanner, display, feedback, power, nvs, portal, client, wifi, ring_a);
+  first.begin(0);
+  client.next_scan = {false, 0, ""};
+  for (size_t i = 0; i < stockbot::RingBuffer::kCapacity; ++i) {
+    char bc[16];
+    std::snprintf(bc, sizeof(bc), "%012zu", i + 1);
+    first.onBarcodeLine(bc, false, 1000 + static_cast<uint64_t>(i));
+  }
+  EXPECT(ring_a.isFull());
+
+  stockbot::RingBuffer ring_b(storage);
+  stockbot::ScannerController second(scanner, display, feedback, power, nvs, portal, client, wifi, ring_b);
+  second.begin(50000);
+  second.tick(50010);
+  EXPECT(ring_b.isFull());
+  EXPECT(second.uiScreen() == stockbot::UiScreen::S7_HardError);
+
+  wifi.connected = true;
+  const auto pending = ring_b.peekBatch(20);
+  std::string batch_body = R"({"results":[)";
+  for (size_t i = 0; i < pending.size(); ++i) {
+    if (i > 0) {
+      batch_body += ',';
+    }
+    batch_body += R"({"id":")" + std::string(pending[i].client_scan_id) + R"(","status":"created"})";
+  }
+  batch_body += "]}";
+  client.next_scan = {true, 200, batch_body};
+  client.scan_body.status = "created";
+  second.tick(60000);
+  EXPECT(!ring_b.isFull());
+}
+
+void test_heartbeat_dropped_count_zero() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.client.next_hb = {true, 200, R"({"config":{"configVersion":1}})"};
+  fx.client.hb_body.parse_ok = true;
+  fx.controller.tick(70000);
+  EXPECT(fx.client.last_heartbeat_body.find("\"droppedCount\":0") != std::string::npos);
+  EXPECT(fx.client.last_heartbeat_body.find("\"queued\":500") != std::string::npos);
+}
+
+void test_offline_buffer_refusal_feedback_rate_limited() {
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  fx.feedback.cues.clear();
+  fx.controller.onBarcodeLine("999999999999", false, 5000);
+  fx.controller.onBarcodeLine("888888888888", false, 5200);
+  fx.controller.onBarcodeLine("777777777777", false, 7000);
+  EXPECT(fx.tripleErrorBuzzCount() == 2);
+  EXPECT(fx.controller.uiScreen() == stockbot::UiScreen::S7_HardError);
+  EXPECT(fx.display.last.band2_line1 == "Offline memory full (500)");
+}
+
+void test_ota_install_gate_requires_empty_ring_unchanged() {
+  // #452 install precondition: ring_.count()==0. No OTA worker exists yet; guard the gate predicate.
+  ControllerFixture fx;
+  fx.beginPaired(0);
+  fx.fillRingToCapacity(1000);
+  const auto ota_install_allowed = [](size_t queued) { return queued == 0; };
+  EXPECT(!ota_install_allowed(fx.ring.count()));
+
+  fx.wifi.connected = true;
+  const auto pending = fx.ring.peekBatch(stockbot::RingBuffer::kCapacity);
+  std::string batch_body = R"({"results":[)";
+  for (size_t i = 0; i < pending.size(); ++i) {
+    if (i > 0) {
+      batch_body += ',';
+    }
+    batch_body += R"({"id":")" + std::string(pending[i].client_scan_id) + R"(","status":"created"})";
+  }
+  batch_body += "]}";
+  fx.client.next_scan = {true, 200, batch_body};
+  fx.client.scan_body.status = "created";
+  fx.controller.tick(30000);
+  EXPECT(fx.ring.count() == 0);
+  EXPECT(ota_install_allowed(fx.ring.count()));
+}
+
 }  // namespace
 
 int main() {
@@ -730,6 +939,12 @@ int main() {
   test_trigger_button_wiring();
   test_offline_fifo_flush_order();
   test_client_scan_id_unique_across_reboot();
+  test_offline_buffer_full_refuses_without_eviction();
+  test_offline_buffer_full_clears_after_flush_ack();
+  test_offline_buffer_full_persists_across_reboot_until_flush();
+  test_heartbeat_dropped_count_zero();
+  test_offline_buffer_refusal_feedback_rate_limited();
+  test_ota_install_gate_requires_empty_ring_unchanged();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";
