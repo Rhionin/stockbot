@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # Pull and recreate the Stockbot stack.
 #
-# When PUBLIC_HOST is set and auth.caddy exists, the public HTTPS proxy
-# (compose profile "public") is part of the same update. A plain
-# `docker compose up` omits profiled services, which would leave certificate
-# renewal and proxy config out of automatic updates. A LAN-only install
-# leaves PUBLIC_HOST empty, so Caddy is never started. Without auth.caddy,
-# starting the profile would publish the hostname with no password file.
-# The hash is copied into auth/household before containers are recreated,
-# and an existing PANTRY_SESSION_SECRET is kept.
+# When PUBLIC_HOST is set, the public HTTPS proxy (compose profile "public")
+# or tunnel profile is part of the same update. A plain `docker compose up`
+# omits profiled services, which would leave certificate renewal and proxy
+# config out of automatic updates. A LAN-only install leaves PUBLIC_HOST empty,
+# so Caddy is never started.
 #
 # A non-empty CLOUDFLARE_TUNNEL_TOKEN selects the tunnel profile instead.
 # That profile does not publish ports 80 or 443. The certificate profile
@@ -181,19 +178,34 @@ elif [[ "$mode_rc" -ne 0 ]]; then
   exit 1
 fi
 
+# public_proxy_in_update is true when this run will manage the HTTPS proxy
+# (certificate or tunnel profile). LAN-only installs skip the session secret.
+public_proxy_in_update() {
+  if [[ "$mode" == tunnel ]]; then
+    [[ -f "$PANTRY_DIR/docker-compose.tunnel.yml" && -f "$PANTRY_DIR/Caddyfile.tunnel" ]] \
+      && [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
+    return
+  fi
+  if [[ "$mode" == acme ]]; then
+    [[ -f "$PANTRY_DIR/Caddyfile" ]] && [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
+    return
+  fi
+  return 1
+}
+
 if [[ "$mode" == tunnel ]]; then
-  if [[ ! -f "$PANTRY_DIR/auth.caddy" ]]; then
-    echo "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
+  if [[ ! -f "$PANTRY_DIR/docker-compose.tunnel.yml" || ! -f "$PANTRY_DIR/Caddyfile.tunnel" ]]; then
+    echo "CLOUDFLARE_TUNNEL_TOKEN is set but tunnel compose files are missing from ${PANTRY_DIR}; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
+  elif [[ -z "$(publish_env_value PUBLIC_HOST)" ]]; then
+    echo "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty; leaving the tunnel stopped. Set PUBLIC_HOST in ${PANTRY_DIR}/.env and run: sudo ./setup.sh publish --tunnel" >&2
   else
     compose+=(-f "$PANTRY_DIR/docker-compose.tunnel.yml" --profile tunnel)
   fi
 elif [[ "$mode" == acme ]]; then
-  # Only this install's password file. A host that already has
-  # /opt/pantry/auth.caddy must not count when PANTRY_DIR is a fixture.
-  if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
+  if [[ -n "$(publish_env_value PUBLIC_HOST)" && -f "$PANTRY_DIR/Caddyfile" ]]; then
     compose+=(--profile public)
-  else
-    echo "PUBLIC_HOST is set but ${PANTRY_DIR}/auth.caddy is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
+  elif [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
+    echo "PUBLIC_HOST is set but ${PANTRY_DIR}/Caddyfile is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
   fi
 fi
 while IFS= read -r arg; do
@@ -232,7 +244,7 @@ if ! ensure_app_base_url; then
   echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
   exit 1
 fi
-if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
+if public_proxy_in_update; then
   if ! ensure_session_secret; then
     echo "Could not save the session secret; leaving containers unchanged." >&2
     exit 1
@@ -1121,7 +1133,7 @@ proxy_probe_recovered() {
   local state="$1" host
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 1
-  publish_auth_present || return 1
+  public_host_set || return 1
   [[ -n "$state" ]] || return 1
   probe_public_proxy "$state" || true
   [[ "$PROXY_PROBE_PASSED" -eq 1 ]]
@@ -1304,8 +1316,8 @@ note_stopped_services() {
   done < "$state/refs.tsv"
 }
 
-publish_auth_present() {
-  [[ -f "$PANTRY_DIR/auth.caddy" ]]
+public_host_set() {
+  [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
 }
 
 # proxy_compose_service is the compose service that publishes the hostname.
@@ -1363,7 +1375,7 @@ remember_tunnel_reachability() {
   local state="$1" body commit rev id
   TUNNEL_REACHABLE=0
   [[ "$mode" == tunnel ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   [[ -n "$(publish_env_value PUBLIC_HOST)" ]] || return 0
   echo "pantry update: checking whether caddy-tunnel was reachable before recreate"
   tunnel_probe_curl "$state/tunnel-pre.body"
@@ -1387,7 +1399,7 @@ remember_tunnel_reachability() {
 remember_acme_reachability() {
   local host rc=0
   [[ "$mode" == acme ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 0
   echo "pantry update: checking whether Caddy was reachable before recreate"
@@ -1441,7 +1453,7 @@ probe_caddy() {
   local state="$1" host
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   if [[ "$mode" == tunnel ]]; then
     probe_tunnel_listener "$state"
     return
@@ -1847,13 +1859,14 @@ apply_compose() {
   fi
 
   # After a successful pull, drop a container left from the other mode so
-  # the proxy name can be recreated on this path. A tunnel token with no
-  # password file leaves whatever is already running alone.
-  if [[ "$mode" != tunnel || -f "$PANTRY_DIR/auth.caddy" ]]; then
+  # the proxy name can be recreated on this path.
+  if [[ "$mode" == tunnel ]]; then
+    if [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
+      drop_other_publish_containers "$mode"
+      drop_stale_cloudflared
+    fi
+  else
     drop_other_publish_containers "$mode"
-  fi
-  if [[ "$mode" == tunnel && -f "$PANTRY_DIR/auth.caddy" ]]; then
-    drop_stale_cloudflared
   fi
   record_container_baseline "$state"
   remember_tunnel_reachability "$state"

@@ -4,44 +4,6 @@
 
 set -euo pipefail
 
-# The suite runs where /opt/pantry/auth.caddy exists, the way the Pi does.
-# A mount namespace keeps that decoy off the host. 437999f reads the literal
-# path, so marker_no_auth clears the marker and this run fails. A runner that
-# cannot make a user namespace still executes the literal-path guard below.
-if [[ "${PANTRY_UPDATE_DECOY:-}" != 1 && "${PANTRY_UPDATE_DECOY:-}" != skipped ]]; then
-  decoy_log=$(mktemp)
-  set +e
-  # $1 is the script path for the inner bash, not this shell.
-  # shellcheck disable=SC2016
-  unshare --user --map-root-user --mount bash -c '
-    set -euo pipefail
-    mount -t tmpfs tmpfs /opt
-    mkdir -p /opt/pantry
-    printf "%s\n" "basic_auth bcrypt Pantry {" "}" > /opt/pantry/auth.caddy
-    export PANTRY_UPDATE_DECOY=1
-    exec bash "$1"
-  ' bash "$0" >"$decoy_log" 2>&1
-  decoy_rc=$?
-  set -e
-  if [[ "$decoy_rc" -eq 0 ]]; then
-    cat "$decoy_log"
-    rm -f "$decoy_log"
-    exit 0
-  fi
-  if grep -q 'pantry_update_test: decoy auth.caddy is mounted' "$decoy_log"; then
-    cat "$decoy_log" >&2
-    rm -f "$decoy_log"
-    exit "$decoy_rc"
-  fi
-  echo "pantry_update_test: could not mount a decoy /opt/pantry ($(tr '\n' ' ' < "$decoy_log")); the literal-path guard still runs" >&2
-  rm -f "$decoy_log"
-  export PANTRY_UPDATE_DECOY=skipped
-fi
-
-if [[ "${PANTRY_UPDATE_DECOY:-}" == 1 ]]; then
-  echo "pantry_update_test: decoy auth.caddy is mounted"
-fi
-
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
 
@@ -53,8 +15,7 @@ fail() {
 }
 
 # File probes follow PANTRY_DIR. A literal /opt/pantry/ or /run/ path is a
-# file the fixture cannot move, which is how marker_no_auth passed here and
-# failed on the Pi. The production default (PANTRY_DIR=${PANTRY_DIR:-/opt/pantry})
+# file the fixture cannot move. The production default (PANTRY_DIR=${PANTRY_DIR:-/opt/pantry})
 # and publish-mode.sh's refusal to docker rm when PANTRY_DIR is not that
 # directory stay literal on purpose: they do not open a path under it.
 assert_no_literal_probe_paths() {
@@ -834,8 +795,11 @@ up_line=$(line_of "$LAST_SEQUENCE" " up -d")
 curl_line=$(line_of "$LAST_SEQUENCE" "curl ")
 [[ -n "$record_line" && -n "$pull_line" && "$record_line" -lt "$pull_line" ]] || fail "healthy run inspected the running image after pull (record=$record_line pull=$pull_line)"
 [[ -n "$up_line" && -n "$curl_line" && "$up_line" -lt "$curl_line" ]] || fail "healthy run polled health before up -d"
-backup_line=$(line_of "$LAST_SEQUENCE" "--reason pre-deploy")
-[[ -n "$backup_line" && "$backup_line" -lt "$up_line" ]] || fail "healthy run did not back up before recreate (backup=$backup_line up=$up_line)"
+backup_line=$(line_of "$LAST_DOCKER" "--reason pre-deploy")
+if [[ -z "$backup_line" ]]; then
+  backup_line=$(line_of "$LAST_SEQUENCE" "--reason pre-deploy")
+fi
+[[ -n "$backup_line" && -n "$up_line" && "$backup_line" -lt "$up_line" ]] || fail "healthy run did not back up before recreate (backup=$backup_line up=$up_line)"
 have "$LAST_OUT" "pantry update: pre-deploy backup (required)" "a pantry image change takes a required backup by default"
 have "$LAST_OUT" "backup: deploy lock already held" "the updater tells the backup it already holds the lock"
 have "$LAST_OUT" "pantry update: pre-deploy backup finished" "a successful pre-deploy backup finishes"
@@ -1152,7 +1116,6 @@ unset STUB_CONTAINER_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_UPDATE_HEALT
 # The public proxy is checked through Caddy after the LAN health check.
 proxied=$(mktemp -d)
 prepare_pantry "$proxied"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '}' > "$proxied/auth.caddy"
 cat > "$proxied/.env" << 'EOF'
 HOST_PORT=8080
 PUBLIC_HOST=stockbot.example
@@ -1496,7 +1459,6 @@ unset STUB_BUMP_SERVICE STUB_BUMP_ON_CALL STUB_BUMP_RESTARTS STUB_HEALTH_BODY ST
 # A failed Caddy probe rolls the deploy back.
 caddy_fail=$(mktemp -d)
 prepare_pantry "$caddy_fail"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '}' > "$caddy_fail/auth.caddy"
 cat > "$caddy_fail/.env" << 'EOF'
 HOST_PORT=8080
 PUBLIC_HOST=stockbot.example
@@ -1524,7 +1486,6 @@ unset STUB_HEALTH_BODY STUB_BUILD_BODY STUB_CADDY_RC
 # listener that answers and fails.
 public_env() {
   local pantry="$1" token="${2:-}"
-  printf '%s\n' 'basic_auth bcrypt Pantry {' '}' > "$pantry/auth.caddy"
   cat > "$pantry/.env" << EOF
 HOST_PORT=8080
 PUBLIC_HOST=stockbot.example
@@ -2263,23 +2224,24 @@ lack "$LAST_OUT" "wanted commit <missing>" "a healthy tunnel is checked against 
 [[ ! -e "$tunnel_mark/.update-sidecar-warn" ]] || fail "a healthy tunnel left a marker: $(cat "$tunnel_mark/.update-sidecar-warn")"
 unset STUB_TUNNEL_RC STUB_TUNNEL_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
 
-# No password file: the recheck cannot probe, and that skip is not a pass.
+# PUBLIC_HOST without auth.caddy: sidecar marker recheck still probes Caddy.
 marker_no_auth=$(mktemp -d)
 prepare_pantry "$marker_no_auth"
 public_env "$marker_no_auth"
-rm -f "$marker_no_auth/auth.caddy"
+[[ ! -e "$marker_no_auth/auth.caddy" ]] || fail "fixture must not ship auth.caddy"
 cat > "$marker_no_auth/images.tsv" << EOF
 pantry	ghcr.io/rhionin/pantry:latest	sha256:runpantry	ghcr.io/rhionin/pantry@sha256:oldpantry	sha256:runpantry	ghcr.io/rhionin/pantry@sha256:oldpantry	${NEW_COMMIT}	${OLD_COMMIT}
 caddy	caddy:2.11.7-alpine	sha256:runcaddy	caddy@sha256:oldcaddy	sha256:runcaddy	caddy@sha256:oldcaddy		
 EOF
 printf '%s\n' caddy > "$marker_no_auth/.update-sidecar-warn"
+STUB_CADDY_RC=22
 run_update "$marker_no_auth"
-[[ "$LAST_RC" -eq 0 ]] || fail "marker without auth exited $LAST_RC: $LAST_OUT"
-have "$LAST_OUT" "images unchanged" "a marker without auth is still rechecked"
-have "$LAST_OUT" "<4>pantry update: warning: caddy probe failed and its image did not change; not rolling back" "a skipped recheck keeps warning"
-lack "$LAST_OUT" "caddy probe passed" "a skipped recheck is not a passing probe"
-lack "$LAST_OUT" "caddy is running again" "a skipped recheck does not clear a running proxy"
-[[ "$(grep -c -x caddy "$marker_no_auth/.update-sidecar-warn")" -eq 1 ]] || fail "a skipped recheck dropped the proxy marker: $(cat "$marker_no_auth/.update-sidecar-warn" 2>/dev/null)"
+[[ "$LAST_RC" -eq 0 ]] || fail "marker without auth.caddy exited $LAST_RC: $LAST_OUT"
+have "$LAST_OUT" "images unchanged" "a marker is rechecked without auth.caddy"
+have "$LAST_CURL" "https://stockbot.example/api/build" "PUBLIC_HOST enables the caddy probe without auth.caddy"
+have "$LAST_OUT" "<4>pantry update: warning: caddy probe failed and its image did not change; not rolling back" "failed probe keeps warning without auth.caddy"
+[[ "$(grep -c -x caddy "$marker_no_auth/.update-sidecar-warn")" -eq 1 ]] || fail "failed probe dropped the marker: $(cat "$marker_no_auth/.update-sidecar-warn" 2>/dev/null)"
+unset STUB_CADDY_RC
 
 # A trigger that lands during the pull is pulled again instead of dropped.
 repull=$(mktemp -d)

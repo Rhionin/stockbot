@@ -131,21 +131,6 @@ env_value_keep_spaces() {
   printf '%s' "$line"
 }
 
-# write_auth_caddy stores the bcrypt hash Caddy checks on the public site.
-# The plaintext password never goes in this file. A literal bcrypt hash is
-# required: doubling the dollar signs makes the password stop matching.
-write_auth_caddy() {
-  local user="$1" hash="$2" tmp
-  if [[ -d ${PANTRY_DIR}/auth.caddy ]]; then
-    fatal "${PANTRY_DIR}/auth.caddy is a directory. Docker creates one when the file is missing. Remove it and re-run 'sudo ./setup.sh'"
-  fi
-  tmp=$(mktemp "${PANTRY_DIR}/auth.caddy.XXXXXX")
-  # Realm is a directive argument. Inside the block, a line is a username and hash.
-  printf 'basic_auth bcrypt Pantry {\n\t%s %s\n}\n' "$user" "$hash" > "$tmp"
-  chmod 600 "$tmp" || fatal "Could not protect the password hash file"
-  mv "$tmp" "${PANTRY_DIR}/auth.caddy" || fatal "Could not write the password hash file"
-}
-
 # copy_deploy_files refreshes ${PANTRY_DIR} from this script's directory.
 # .env is never copied, so a re-run cannot clobber operator settings.
 # Copying a file onto itself (running the already-installed script) is skipped.
@@ -182,46 +167,6 @@ systemd_unit_dir() {
   printf '%s\n' "$PANTRY_SYSTEMD_UNIT_DIR"
 }
 
-# write_auth_from_env hashes BASIC_AUTH_PASSWORD into auth.caddy.
-# Returns 1 when the password is empty so the caller can keep a LAN-only install.
-# A password that is present but unusable is a fatal error: the operator set one
-# and it cannot protect the public site.
-write_auth_from_env() {
-  local auth_user auth_password auth_hash
-  auth_user=$(env_value BASIC_AUTH_USER)
-  auth_password=$(env_value_keep_spaces BASIC_AUTH_PASSWORD)
-  if [[ -z "$auth_user" ]]; then
-    auth_user=pantry
-  fi
-  if [[ -z "$auth_password" ]]; then
-    return 1
-  fi
-  if [[ ! "$auth_user" =~ ^[A-Za-z][A-Za-z0-9._-]{0,63}$ ]]; then
-    fatal "BASIC_AUTH_USER must be letters, digits, dots, underscores, or hyphens (got: $auth_user)"
-  fi
-  if [[ ${#auth_password} -lt 12 || ${#auth_password} -gt 72 ]]; then
-    fatal "BASIC_AUTH_PASSWORD must be 12 to 72 characters"
-  fi
-
-  # Hash on stdin so the password is not a docker argument. Caddy requires
-  # the trailing newline as a separator and does not treat it as part of the password.
-  log_info "Hashing the shared password"
-  if ! auth_hash=$(printf '%s\n' "$auth_password" | docker run --rm -i caddy:2.11.4-alpine caddy hash-password); then
-    fatal "Could not hash the shared password. Docker must be able to run caddy:2.11.4-alpine."
-  fi
-  auth_hash=${auth_hash//$'\r'/}
-  auth_hash=${auth_hash//$'\n'/}
-  if [[ ! "$auth_hash" =~ ^\$2[aby]\$ ]]; then
-    fatal "Caddy did not return a bcrypt password hash. The public proxy was not started."
-  fi
-  unset auth_password
-  write_auth_caddy "$auth_user" "$auth_hash"
-  unset auth_hash
-  chmod 600 "$PANTRY_DIR/.env" "$PANTRY_DIR/auth.caddy" || fatal "Could not restrict .env and auth.caddy"
-  log_success "Wrote $PANTRY_DIR/auth.caddy and restricted .env to the owner"
-  return 0
-}
-
 # valid_hostname is 0 when $1 is a DNS name with no scheme, port, or path.
 valid_hostname() {
   local host="$1"
@@ -229,20 +174,19 @@ valid_hostname() {
 }
 
 # prepare_public_profile is 0 when compose should include the public profile.
-# An existing auth.caddy is never rewritten and the operator is never prompted,
-# so a re-run cannot wipe BASIC_AUTH_PASSWORD or force it to be typed again.
-# A hash is written only when auth.caddy is absent and the password is already in .env.
+# PUBLIC_HOST, Caddyfile, and (for certificate mode) ACME_EMAIL must be valid.
+# A leftover auth.caddy file on the host is ignored and never deleted.
 prepare_public_profile() {
   local public_host acme_email
   public_host=$(env_value PUBLIC_HOST)
   if [[ -z "$public_host" ]]; then
     if [[ "${publish_mode:-}" == tunnel ]]; then
-      log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty. The tunnel was not started. Set PUBLIC_HOST=stockbot.rhionin.com in ${PANTRY_DIR}/.env."
+      log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty. The tunnel was not started. Set PUBLIC_HOST in ${PANTRY_DIR}/.env."
     fi
     return 1
   fi
   if ! valid_hostname "$public_host"; then
-    log_warn "PUBLIC_HOST must be a hostname such as stockbot.rhionin.com, without a scheme or path (got: $public_host). The public proxy was left unchanged."
+    log_warn "PUBLIC_HOST must be a hostname without a scheme or path (got: $public_host). The public proxy was left unchanged."
     return 1
   fi
   if [[ -d "$PANTRY_DIR/Caddyfile" ]]; then
@@ -251,23 +195,7 @@ prepare_public_profile() {
   if [[ ! -f "$PANTRY_DIR/Caddyfile" ]]; then
     fatal "Caddyfile is missing from $PANTRY_DIR"
   fi
-  if [[ -d "$PANTRY_DIR/auth.caddy" ]]; then
-    fatal "$PANTRY_DIR/auth.caddy is a directory. Docker creates one when the file is missing. Remove it and re-run 'sudo ./setup.sh'"
-  fi
 
-  if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
-    chmod 600 "$PANTRY_DIR/auth.caddy" || fatal "Could not protect $PANTRY_DIR/auth.caddy"
-    log_success "Keeping existing $PANTRY_DIR/auth.caddy"
-  elif ! write_auth_from_env; then
-    if [[ "${publish_mode:-}" == tunnel ]]; then
-      log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but $PANTRY_DIR/auth.caddy is missing and BASIC_AUTH_PASSWORD is empty. The tunnel was not started. LAN access is unchanged."
-    else
-      log_warn "PUBLIC_HOST is set but $PANTRY_DIR/auth.caddy is missing and BASIC_AUTH_PASSWORD is empty. The public proxy was not started. LAN access is unchanged."
-    fi
-    return 1
-  fi
-
-  # Tunnel mode has no certificate request. The email is only for Let's Encrypt.
   if [[ "${publish_mode:-acme}" == acme ]]; then
     acme_email=$(env_value ACME_EMAIL)
     if [[ -z "$acme_email" ]] || [[ ! "$acme_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
@@ -528,7 +456,7 @@ cmd_apply() {
     use_public=true
   fi
 
-  if [[ -f "${PANTRY_DIR}/auth.caddy" ]]; then
+  if [[ "$use_public" == true ]]; then
     if ! ensure_session_secret; then
       fatal "Could not save the session secret. The running site was left unchanged."
     fi
@@ -561,9 +489,6 @@ cmd_apply() {
   if [[ "$use_public" == true && "$publish_mode" == tunnel ]]; then
     drop_stale_cloudflared
   fi
-  # Pull before recreating so the image that checks the password is what
-  # starts when Caddy stops showing its own prompt. A failed pull leaves
-  # the running containers alone.
   if [[ "$use_public" == true ]]; then
     log_info "Pulling the Stockbot image before reloading the public site"
     if ! "${compose[@]}" pull pantry; then
@@ -999,8 +924,8 @@ cmd_status() {
   proxy_container=$(publish_container caddy)
   cloud_container=$(publish_container cloudflared)
   if [[ "$publish_mode" == tunnel ]]; then
-    if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
-      log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing, so the tunnel will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh publish --tunnel"
+    if [[ -z "$public_host" ]]; then
+      log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty, so the tunnel will not start. Set PUBLIC_HOST and run: sudo ./setup.sh publish --tunnel"
     elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true \
       && docker inspect -f '{{.State.Running}}' "$cloud_container" 2>/dev/null | grep -qx true; then
       log_success "Cloudflare Tunnel is running for https://$public_host. Service URL: ${PANTRY_TUNNEL_ORIGIN}. Ports 80 and 443 are not published."
@@ -1008,9 +933,7 @@ cmd_status() {
       log_warn "CLOUDFLARE_TUNNEL_TOKEN is set but the tunnel is not running. Start it with: sudo ./setup.sh publish --tunnel"
     fi
   elif [[ -n "$public_host" ]]; then
-    if [[ ! -f ${PANTRY_DIR}/auth.caddy ]]; then
-      log_warn "PUBLIC_HOST=$public_host but ${PANTRY_DIR}/auth.caddy is missing, so the proxy will not start. Set BASIC_AUTH_PASSWORD and run: sudo ./setup.sh"
-    elif docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
+    if docker inspect -f '{{.State.Running}}' "$proxy_container" 2>/dev/null | grep -qx true; then
       log_success "Public proxy is running for https://$public_host"
     else
       log_warn "PUBLIC_HOST=$public_host but the proxy container is not running. Start it with: sudo ./setup.sh"
@@ -1167,9 +1090,9 @@ After git pull, from deploy/:
   sudo ./setup.sh
 
 That syncs this folder to /opt/pantry, starts the containers (including the
-public HTTPS proxy when PUBLIC_HOST is set and auth.caddy already exists),
-restarts Caddy so the current Caddyfile is loaded, and removes leftover LAN
-firewall and mDNS units. It is safe to re-run. When CLOUDFLARE_TUNNEL_TOKEN
+public HTTPS proxy when PUBLIC_HOST and ACME_EMAIL are set, or Cloudflare
+Tunnel when CLOUDFLARE_TUNNEL_TOKEN is set), restarts Caddy so the current
+Caddyfile is loaded, and removes leftover LAN firewall and mDNS units. It is safe to re-run. When CLOUDFLARE_TUNNEL_TOKEN
 is set, the same command publishes through Cloudflare Tunnel instead of
 ports 80 and 443.
 
@@ -1180,10 +1103,8 @@ COMMANDS:
                    The timer fires every minute, and a signed hook starts the
                    same update immediately. Leave both off while iterating.
   install          Alias of apply.
-  publish          Alias of apply. Does not rewrite /opt/pantry/auth.caddy when
-                   that file already exists, and does not prompt for a password.
-                   Pass --tunnel to publish through Cloudflare Tunnel. A token
-                   already in .env selects tunnel without the flag.
+  publish          Alias of apply. Pass --tunnel to publish through Cloudflare
+                   Tunnel. A token already in .env selects tunnel without the flag.
   firewall         Alias of apply.
   unpublish        Stop the HTTPS proxy. Stockbot keeps running on loopback.
   firewall-off     Remove leftover LAN firewall and mDNS units. Setup does
@@ -1203,13 +1124,7 @@ EXAMPLES:
   # Check status after setup or troubleshooting
   sudo ./setup.sh status
 
-  # Change the shared password: set BASIC_AUTH_PASSWORD, delete auth.caddy, re-run
-  sudo rm /opt/pantry/auth.caddy
-  sudo ./setup.sh
-
-  # Publish https://stockbot.rhionin.com through Cloudflare Tunnel.
-  # Put CLOUDFLARE_TUNNEL_TOKEN in /opt/pantry/.env first. The service URL
-  # saved on the tunnel hostname is http://caddy:80
+  # Publish through Cloudflare Tunnel (set CLOUDFLARE_TUNNEL_TOKEN first)
   sudo ./setup.sh publish --tunnel
 
   # Iterate on configuration
@@ -1227,8 +1142,7 @@ NOTES:
     The Wi-Fi address does not serve the app.
   - On home Wi-Fi, https://PUBLIC_HOST hangs when the router does not
     hairpin NAT and the site is still on the certificate path. Use
-    Cloudflare Tunnel. Cellular data still uses the public name and the
-    shared password.
+    Cloudflare Tunnel. Cellular data still uses the public name.
   - `sudo ./setup.sh publish --tunnel` avoids that hang. Caddy listens only
     for cloudflared, at http://caddy:80, and ports 80 and 443 stay closed.
     Empty CLOUDFLARE_TUNNEL_TOKEN to return to the certificate path. An empty

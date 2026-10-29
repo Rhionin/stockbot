@@ -114,7 +114,7 @@ and the database backup still succeeds. A missing path or a symlink fails
 that run.
 
 On the Pi, the nightly wrapper archives these regular files when they
-exist: `/opt/pantry/auth.caddy`, and `.env` backups named `.env.bak`,
+exist: a legacy `/opt/pantry/auth.caddy` if one is still on disk, and `.env` backups named `.env.bak`,
 `.env.bak.*`, `.env.backup`, or `.env.backup.*`. The live
 `/opt/pantry/.env` is not in that list. To add paths, including the live
 `.env` if you want it, set `PANTRY_BACKUP_SECRETS_PATHS` to a
@@ -125,7 +125,7 @@ else is added. The wrapper copies the chosen files onto a tmpfs as mode
 copy when the script exits. `.env.example` and the R2 settings file are
 not included. A symlink, or a configured path that is not a regular
 file, sends a healthchecks failure ping and exits before the backup
-container starts. A missing `auth.caddy` does not. The archive uses the
+container starts. A missing legacy `auth.caddy` is normal and does not fail the run. The archive uses the
 same age public key and the same 14-day retention, under `secrets/`.
 
 ## Pre-migration copies

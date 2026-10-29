@@ -98,7 +98,7 @@ services:
   # Opt-in HTTPS in front of pantry. Omitted from a normal `docker compose up`
   # so a LAN install does not publish 80/443 or request a certificate.
   # Enable with: docker compose --profile public up -d
-  # `sudo ./setup.sh` does this when PUBLIC_HOST is set and auth.caddy exists.
+  # `sudo ./setup.sh` does this when PUBLIC_HOST and ACME_EMAIL are set.
   caddy:
     profiles: ["public"]
     image: caddy:2.11.7-alpine
