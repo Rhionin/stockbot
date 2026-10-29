@@ -814,7 +814,22 @@ printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=off' > "$backup_keep/.env"
 cp "$ROOT/deploy/.env.example" "$backup_keep/.env.example"
 PANTRY_DIR="$backup_keep" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
 grep -q '^BACKUP_BEFORE_DEPLOY=off$' "$backup_keep/.env" || fail "operator BACKUP_BEFORE_DEPLOY=off was rewritten"
-rm -rf "$backup_migrate" "$backup_keep"
+backup_ws=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=warn  ' > "$backup_ws/.env"
+cp "$ROOT/deploy/.env.example" "$backup_ws/.env.example"
+PANTRY_DIR="$backup_ws" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=required$' "$backup_ws/.env" || fail "legacy warn with trailing whitespace was not migrated"
+backup_crlf=$(mktemp -d)
+printf 'HOST_PORT=8080\r\nBACKUP_BEFORE_DEPLOY=warn\r\n' > "$backup_crlf/.env"
+cp "$ROOT/deploy/.env.example" "$backup_crlf/.env.example"
+PANTRY_DIR="$backup_crlf" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+tr -d '\r' < "$backup_crlf/.env" | grep -q '^BACKUP_BEFORE_DEPLOY=required$' || fail "legacy warn with CRLF was not migrated"
+backup_optional=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=optional' > "$backup_optional/.env"
+cp "$ROOT/deploy/.env.example" "$backup_optional/.env.example"
+PANTRY_DIR="$backup_optional" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=optional$' "$backup_optional/.env" || fail "operator BACKUP_BEFORE_DEPLOY=optional was rewritten"
+rm -rf "$backup_migrate" "$backup_keep" "$backup_ws" "$backup_crlf" "$backup_optional"
 
 # Grocy credentials must not change what setup.sh asks docker to do.
 # With GROCY_URL, GROCY_API_KEY, and PANTRY_SYNC_TOKEN filled, setup must

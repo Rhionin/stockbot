@@ -304,6 +304,10 @@ if [[ "$1" == image && "$2" == inspect ]]; then
     tagged_dig=$(tag_field "$target" dig || true)
   fi
   if [[ "$format" == *RepoDigests* ]]; then
+    if [[ -n "${STUB_EMPTY_REPO_DIGEST_FOR:-}" && "$target" == *"$STUB_EMPTY_REPO_DIGEST_FOR"* ]]; then
+      printf '\n'
+      exit 0
+    fi
     if [[ -n "$tagged_dig" ]]; then
       printf '%s\n' "$tagged_dig"
       exit 0
@@ -453,8 +457,34 @@ if [[ "$url" == *api.github.com/repos/Rhionin/stockbot/compare/* ]]; then
   if [[ "${STUB_GITHUB_COMPARE_STATUS:-}" == unreachable ]]; then
     exit 22
   fi
+  compare_tail=${url#*compare/}
+  compare_base=${compare_tail%%...*}
+  compare_head=${compare_tail#*...}
+  compare_head=${compare_head%%/*}
+  compare_head=${compare_head%%\?*}
+  if [[ "$compare_head" != master ]]; then
+    emit_body '{"status":"diverged","files":[{"filename":"x","status":"modified"}]}' 200
+    exit 0
+  fi
+  if [[ "$compare_base" == master ]]; then
+    emit_body '{"status":"diverged","files":[{"filename":"x","status":"modified"}]}' 200
+    exit 0
+  fi
   gh_status=${STUB_GITHUB_COMPARE_STATUS:-ahead}
-  emit_body "{\"status\":\"${gh_status}\"}" 200
+  case "$gh_status" in
+    identical)
+      emit_body '{"status":"identical","ahead_by":0,"behind_by":0,"files":[]}' 200
+      ;;
+    behind)
+      emit_body '{"status":"behind","ahead_by":0,"behind_by":3,"files":[{"filename":"README.md","status":"modified"}]}' 200
+      ;;
+    diverged)
+      emit_body '{"status":"diverged","ahead_by":1,"behind_by":2,"files":[{"filename":"README.md","status":"added"}]}' 200
+      ;;
+    *)
+      emit_body "{\"status\":\"ahead\",\"ahead_by\":9,\"behind_by\":0,\"files\":[{\"filename\":\"deploy/setup.sh\",\"status\":\"modified\"},{\"filename\":\"firmware/x\",\"status\":\"added\"}]}" 200
+      ;;
+  esac
   exit 0
 fi
 rollback_phase=0
@@ -570,7 +600,19 @@ fi
 exit 0
 EOF
 
-  chmod +x "$bin/docker" "$bin/curl" "$bin/chown"
+  cat > "$bin/mv" << 'EOF'
+#!/usr/bin/env bash
+if [[ -n "${PANTRY_TEST_MV_FAIL_DEST:-}" ]]; then
+  dest=${!#}
+  if [[ "$dest" == *"$PANTRY_TEST_MV_FAIL_DEST"* ]] || [[ "$(basename "$dest")" == "$PANTRY_TEST_MV_FAIL_DEST" ]]; then
+    echo "stub mv: refusing to install ${dest}" >&2
+    exit 1
+  fi
+fi
+exec /bin/mv "$@"
+EOF
+
+  chmod +x "$bin/docker" "$bin/curl" "$bin/chown" "$bin/mv"
 }
 
 prepare_pantry() {
@@ -699,6 +741,8 @@ run_update() {
     PANTRY_BACKUP_LOCK_WAIT="${PANTRY_BACKUP_LOCK_WAIT:-1}" \
     STUB_BACKUP_RC="${STUB_BACKUP_RC:-0}" \
     STUB_HOST_BUNDLE="${STUB_HOST_BUNDLE:-}" \
+    STUB_EMPTY_REPO_DIGEST_FOR="${STUB_EMPTY_REPO_DIGEST_FOR:-}" \
+    PANTRY_TEST_MV_FAIL_DEST="${PANTRY_TEST_MV_FAIL_DEST:-}" \
     PATH="$bin:$PATH" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
@@ -2583,7 +2627,43 @@ status_body=$(cat "$host_refresh/last-deploy-status")
 have "$status_body" "result=success" "host refresh records success result"
 have "$status_body" "reason=deploy_ok" "host refresh records deploy_ok after refresh"
 [[ -d "$host_refresh/host-scripts-last-known-good" ]] || fail "host refresh did not snapshot last-known-good host scripts"
+[[ -d "$host_refresh/host-scripts-last-known-good/systemd-units" ]] || fail "host refresh did not snapshot systemd unit copies separately"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# Realistic GitHub compare bodies list file statuses; top-level ahead still refreshes.
+host_prov_realistic=$(mktemp -d)
+prepare_pantry "$host_prov_realistic"
+stage_host_bundle "$host_prov_realistic/host-bundle-stub"
+printf '\n# realistic-compare-marker\n' >> "$host_prov_realistic/host-bundle-stub/publish-mode.sh"
+STUB_HOST_BUNDLE="$host_prov_realistic/host-bundle-stub"
+write_images "$host_prov_realistic/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+unset STUB_GITHUB_COMPARE_STATUS
+run_update "$host_prov_realistic"
+[[ "$LAST_RC" -eq 0 ]] || fail "realistic ahead compare exited $LAST_RC: $LAST_OUT"
+grep -q 'realistic-compare-marker' "$host_prov_realistic/publish-mode.sh" || fail "realistic ahead compare did not refresh host scripts"
+unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# diverged compare rejects refresh.
+host_prov_diverged=$(mktemp -d)
+prepare_pantry "$host_prov_diverged"
+stage_host_bundle "$host_prov_diverged/host-bundle-stub"
+printf '\n# diverged-marker\n' >> "$host_prov_diverged/host-bundle-stub/publish-mode.sh"
+STUB_HOST_BUNDLE="$host_prov_diverged/host-bundle-stub"
+write_images "$host_prov_diverged/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_GITHUB_COMPARE_STATUS=diverged
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$host_prov_diverged"
+[[ "$LAST_RC" -eq 0 ]] || fail "diverged compare should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: image revision is not on origin/master" "diverged compare skips refresh"
+grep -q 'diverged-marker' "$host_prov_diverged/publish-mode.sh" && fail "diverged compare installed host bundle files"
+unset STUB_HOST_BUNDLE STUB_GITHUB_COMPARE_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # GitHub compare failure skips host refresh but the deploy still succeeds.
 host_prov_fail=$(mktemp -d)
@@ -2604,6 +2684,67 @@ grep -q 'host-bundle-marker' "$host_prov_fail/publish-mode.sh" && fail "compare 
 status_body=$(cat "$host_prov_fail/last-deploy-status")
 have "$status_body" "reason=host_refresh_failed" "compare failure records host_refresh_failed"
 unset STUB_HOST_BUNDLE STUB_GITHUB_COMPARE_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# Running pantry digest mismatch skips refresh.
+host_prov_digest=$(mktemp -d)
+prepare_pantry "$host_prov_digest"
+stage_host_bundle "$host_prov_digest/host-bundle-stub"
+STUB_HOST_BUNDLE="$host_prov_digest/host-bundle-stub"
+write_images "$host_prov_digest/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+printf '%s\n' $'pantry\tsha256:runpantry' > "$host_prov_digest/live.tsv"
+STUB_LIVE_IMAGE_TSV="$host_prov_digest/live.tsv"
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$host_prov_digest"
+[[ "$LAST_RC" -eq 0 ]] || fail "digest mismatch should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: running pantry digest does not match the deployed image" "digest mismatch skips refresh"
+status_body=$(cat "$host_prov_digest/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "digest mismatch records host_refresh_failed"
+unset STUB_HOST_BUNDLE STUB_LIVE_IMAGE_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# Empty running repo digest skips refresh.
+host_prov_empty_dig=$(mktemp -d)
+prepare_pantry "$host_prov_empty_dig"
+stage_host_bundle "$host_prov_empty_dig/host-bundle-stub"
+STUB_HOST_BUNDLE="$host_prov_empty_dig/host-bundle-stub"
+write_images "$host_prov_empty_dig/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_EMPTY_REPO_DIGEST_FOR=sha256:newpantry
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$host_prov_empty_dig"
+[[ "$LAST_RC" -eq 0 ]] || fail "empty running digest should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: running pantry digest does not match the deployed image" "empty running digest skips refresh"
+unset STUB_HOST_BUNDLE STUB_EMPTY_REPO_DIGEST_FOR STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# A mid-install mv failure restores last-known-good host scripts (N6).
+host_lkg_mv=$(mktemp -d)
+prepare_pantry "$host_lkg_mv"
+stage_host_bundle "$host_lkg_mv/host-bundle-stub"
+old_line='# lkg-keep-this-publish-line'
+new_line='# lkg-new-publish-line'
+printf '\n%s\n' "$old_line" >> "$host_lkg_mv/publish-mode.sh"
+printf '\n%s\n' "$new_line" >> "$host_lkg_mv/host-bundle-stub/publish-mode.sh"
+printf '\n# lkg-new-runtime-line\n' >> "$host_lkg_mv/host-bundle-stub/runtime-setup.sh"
+STUB_HOST_BUNDLE="$host_lkg_mv/host-bundle-stub"
+write_images "$host_lkg_mv/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+PANTRY_TEST_MV_FAIL_DEST=runtime-setup.sh
+run_update "$host_lkg_mv"
+[[ "$LAST_RC" -eq 0 ]] || fail "mv failure should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh failed" "mv failure fails refresh"
+grep -q "$old_line" "$host_lkg_mv/publish-mode.sh" || fail "mv failure did not restore publish-mode.sh from last-known-good"
+grep -q 'lkg-new-runtime-line' "$host_lkg_mv/runtime-setup.sh" && fail "mv failure left a partially installed runtime-setup.sh"
+find "$host_lkg_mv" -name '*.refresh.*' -print -quit | grep -q . && fail "mv failure left refresh temp files under PANTRY_DIR"
+status_body=$(cat "$host_lkg_mv/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "mv failure records host_refresh_failed"
+unset STUB_HOST_BUNDLE PANTRY_TEST_MV_FAIL_DEST STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # Unreachable GitHub skips host refresh without failing deploy.
 host_prov_net=$(mktemp -d)
@@ -2684,7 +2825,7 @@ publish_after=$(stat -c '%Y' "$host_idempotent/publish-mode.sh")
 have "$LAST_OUT" "refreshed host deploy scripts from the running image" "unchanged bundle still completes refresh"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
-rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_fail" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
+rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

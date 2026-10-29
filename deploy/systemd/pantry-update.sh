@@ -1690,14 +1690,17 @@ snapshot_host_scripts_last_known_good() {
   local lkg rel src dest unit_dir
   lkg=$(host_scripts_last_known_good_dir)
   rm -rf "$lkg"
-  mkdir -p "$lkg/systemd"
+  mkdir -p "$lkg/systemd" "$lkg/systemd-units"
   while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
     [[ -z "${rel:-}" ]] && continue
     dest="$PANTRY_DIR/$rel"
     [[ -f "$dest" ]] || continue
     src="$lkg/$rel"
     mkdir -p "$(dirname "$src")"
-    cp -a "$dest" "$src"
+    if ! cp -a "$dest" "$src"; then
+      echo "pantry update: could not snapshot ${rel} before host script refresh" >&2
+      return 1
+    fi
   done < <(host_bundle_rel_paths)
   unit_dir=$(systemd_unit_dir)
   for rel in \
@@ -1705,7 +1708,26 @@ snapshot_host_scripts_last_known_good() {
     pantry-backup.service pantry-backup.timer
   do
     [[ -f "$unit_dir/$rel" ]] || continue
-    cp -a "$unit_dir/$rel" "$lkg/systemd/$rel"
+    if ! cp -a "$unit_dir/$rel" "$lkg/systemd-units/$rel"; then
+      echo "pantry update: could not snapshot ${rel} under ${unit_dir} before host script refresh" >&2
+      return 1
+    fi
+  done
+}
+
+host_bundle_cleanup_refresh_temps() {
+  local entry tmp dest unit_dir
+  for entry in "${HOST_BUNDLE_INSTALL_PENDING[@]:-}"; do
+    [[ -z "${entry:-}" ]] && continue
+    tmp=${entry%%|*}
+    rm -f "$tmp"
+  done
+  find "$PANTRY_DIR" -name '*.refresh.*' 2>/dev/null | while IFS= read -r f; do
+    [[ -n "$f" ]] && rm -f "$f"
+  done
+  unit_dir=$(systemd_unit_dir)
+  find "$unit_dir" -maxdepth 1 -name '*.refresh.*' 2>/dev/null | while IFS= read -r f; do
+    [[ -n "$f" ]] && rm -f "$f"
   done
 }
 
@@ -1715,20 +1737,27 @@ restore_host_scripts_from_last_known_good() {
   [[ -d "$lkg" ]] || return 1
   while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
     [[ -z "${rel:-}" ]] && continue
-    src="$lkg/$rel"
-    [[ -f "$src" ]] || continue
     dest="$PANTRY_DIR/$rel"
-    mkdir -p "$(dirname "$dest")"
-    cp -a "$src" "$dest"
+    src="$lkg/$rel"
+    if [[ -f "$src" ]]; then
+      mkdir -p "$(dirname "$dest")"
+      cp -a "$src" "$dest" || return 1
+    elif [[ -f "$dest" && -z "${HOST_BUNDLE_HAD_DEST[$dest]:-}" ]]; then
+      rm -f "$dest"
+    fi
   done < <(host_bundle_rel_paths)
   unit_dir=$(systemd_unit_dir)
   for rel in \
     pantry-update.service pantry-update.timer pantry-update.path \
     pantry-backup.service pantry-backup.timer
   do
-    src="$lkg/systemd/$rel"
-    [[ -f "$src" ]] || continue
-    cp -a "$src" "$unit_dir/$rel"
+    dest="$unit_dir/$rel"
+    src="$lkg/systemd-units/$rel"
+    if [[ -f "$src" ]]; then
+      cp -a "$src" "$dest" || return 1
+    elif [[ -f "$dest" && -z "${HOST_BUNDLE_HAD_DEST[$dest]:-}" ]]; then
+      rm -f "$dest"
+    fi
   done
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
@@ -1738,35 +1767,46 @@ restore_host_scripts_from_last_known_good() {
 # install_host_bundle_tree_all_or_nothing stages every file, verifies the set,
 # snapshots the previous host scripts, then swaps atomically per file.
 install_host_bundle_tree_all_or_nothing() {
-  local staged="$1" tmp src dest pending=() copied_units=0 unit_dir
+  local staged="$1" tmp src dest copied_units=0 unit_dir entry
+  HOST_BUNDLE_INSTALL_PENDING=()
+  declare -gA HOST_BUNDLE_HAD_DEST=()
   if ! verify_host_bundle_staged "$staged"; then
     return 1
   fi
   while IFS=$'\t' read -r src dest || [[ -n "${src:-}" ]]; do
     [[ -z "${src:-}" ]] && continue
+    if [[ -f "$dest" ]]; then
+      HOST_BUNDLE_HAD_DEST[$dest]=1
+    fi
     if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
       continue
     fi
     tmp=$(mktemp "${dest}.refresh.XXXXXX") || return 1
-    cp "$src" "$tmp" || {
+    if ! cp "$src" "$tmp"; then
       rm -f "$tmp"
+      host_bundle_cleanup_refresh_temps
       return 1
-    }
-    if [[ "$dest" == *.sh ]]; then
-      chmod +x "$tmp" || {
-        rm -f "$tmp"
-        return 1
-      }
     fi
-    pending+=("$tmp|$dest")
+    if [[ "$dest" == *.sh ]]; then
+      if ! chmod +x "$tmp"; then
+        rm -f "$tmp"
+        host_bundle_cleanup_refresh_temps
+        return 1
+      fi
+    fi
+    HOST_BUNDLE_INSTALL_PENDING+=("$tmp|$dest")
   done < <(host_bundle_install_plan "$staged")
-  snapshot_host_scripts_last_known_good
-  for entry in "${pending[@]}"; do
+  if ! snapshot_host_scripts_last_known_good; then
+    host_bundle_cleanup_refresh_temps
+    return 1
+  fi
+  for entry in "${HOST_BUNDLE_INSTALL_PENDING[@]}"; do
     tmp=${entry%%|*}
     dest=${entry#*|}
-    if ! mv "$tmp" "$dest"; then
+    if ! command mv "$tmp" "$dest"; then
       echo "pantry update: could not install $(basename "$dest") from the image host bundle" >&2
       restore_host_scripts_from_last_known_good || true
+      host_bundle_cleanup_refresh_temps
       return 1
     fi
     case "$dest" in
@@ -1789,6 +1829,21 @@ host_bundle_github_compare_url() {
     "$HOST_BUNDLE_GITHUB_REPO" "$revision" "$HOST_BUNDLE_GITHUB_BRANCH"
 }
 
+# github_compare_top_status prints the top-level status field from a GitHub
+# compare API body. A naive grep matches files[].status last; strip the files
+# array first when jq is unavailable.
+github_compare_top_status() {
+  local body="$1" status head_part
+  if command -v jq >/dev/null 2>&1; then
+    status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null) || status=
+    printf '%s' "$status"
+    return 0
+  fi
+  head_part=$(printf '%s' "$body" | sed 's/"files"[[:space:]]*:\[.*//')
+  status=$(printf '%s' "$head_part" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  printf '%s' "$status"
+}
+
 # host_bundle_revision_on_master uses the public GitHub compare API. Returns 0
 # when REVISION is an ancestor of master (status ahead or identical), 1 when
 # it is not, and 2 when GitHub could not be reached.
@@ -1796,8 +1851,8 @@ host_bundle_revision_on_master() {
   local revision="$1" url body status
   [[ -n "$revision" ]] || return 1
   url=$(host_bundle_github_compare_url "$revision")
-  body=$(curl -fsS "$url" 2>/dev/null) || return 2
-  status=$(printf '%s' "$body" | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  body=$(curl -fsS --max-time 15 "$url" 2>/dev/null) || return 2
+  status=$(github_compare_top_status "$body")
   case "$status" in
     ahead|identical) return 0 ;;
     *) return 1 ;;

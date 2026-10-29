@@ -642,11 +642,12 @@ cmd_reconcile_env() {
 
   # Migrate the legacy BACKUP_BEFORE_DEPLOY default from #410 (.env.example
   # shipped warn). setup.sh wrote that value; it is not an operator opt-out.
-  # Only the exact legacy line is rewritten; other values (including off) are
-  # left alone. An operator who explicitly set warn cannot be distinguished
-  # from the old default — see deploy/README.md.
-  if grep -q '^BACKUP_BEFORE_DEPLOY=warn$' "${PANTRY_DIR}/.env"; then
-    sed -i 's|^BACKUP_BEFORE_DEPLOY=warn$|BACKUP_BEFORE_DEPLOY=required|' "${PANTRY_DIR}/.env"
+  # Only that exact legacy value is rewritten (optional trailing whitespace or
+  # CRLF); other values (including off and optional) are left alone. An
+  # operator who explicitly set warn cannot be distinguished from the old
+  # default — see deploy/README.md.
+  if tr -d '\r' < "${PANTRY_DIR}/.env" | grep -qE '^BACKUP_BEFORE_DEPLOY=warn[[:space:]]*$'; then
+    sed -i -E 's/^BACKUP_BEFORE_DEPLOY=warn[[:space:]]*\r?$/BACKUP_BEFORE_DEPLOY=required/' "${PANTRY_DIR}/.env"
     log_warn "Migrated legacy BACKUP_BEFORE_DEPLOY=warn -> required"
   fi
 
