@@ -280,10 +280,6 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	productID := "prod-bump"
 	dir := scan.StockIn
 	at := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	before, err := changes.Current(ctx, db, scope.HouseholdID(), changes.ScopeScans)
-	if err != nil {
-		t.Fatal(err)
-	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -291,6 +287,10 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
 		UserID: "device-1", Barcode: "4000000000505", ScannedAt: at, Direction: &dir, UnitCount: 1, ProductID: &productID,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeMerge, err := changes.Current(ctx, tx, scope.HouseholdID(), changes.ScopeScans)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
@@ -301,11 +301,11 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, before)
+	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, beforeMerge)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Changed || out.Cursor == before {
-		t.Fatalf("merge path did not bump scans cursor: before %q after %+v", before, out)
+	if !out.Changed || out.Cursor == beforeMerge {
+		t.Fatalf("merge path did not bump scans cursor: before merge %q after %+v", beforeMerge, out)
 	}
 }
