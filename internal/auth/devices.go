@@ -377,6 +377,19 @@ func (s *Service) CompletePairing(ctx context.Context, code, label, hubKind, hub
 	return PairedDevice{DeviceID: deviceID, HouseholdID: row.HouseholdID, Label: label, Token: token, Hub: hub}, nil
 }
 
+// HouseholdName returns the display name for a household id.
+func (s *Service) HouseholdName(ctx context.Context, householdID string) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM households WHERE id = ?`, householdID).Scan(&name)
+	if err == sql.ErrNoRows {
+		return "", notFound()
+	}
+	if err != nil {
+		return "", AsError(err)
+	}
+	return name, nil
+}
+
 func (s *Service) ListDevices(ctx context.Context, userID, householdID string) ([]DeviceView, error) {
 	if _, _, ok, err := s.membershipRole(ctx, s.db, userID, householdID); err != nil || !ok {
 		if err != nil {

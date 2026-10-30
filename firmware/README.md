@@ -4,6 +4,8 @@ Unified PlatformIO project for **Setup A** (`M5StickS3` + `U173`), **day-1 bench
 
 Portable scanner logic lives in `src/core/` (no Arduino dependencies) and is covered by host unit tests.
 
+The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where `XXXX` is the last four hex digits of the device MAC. That suffix is not guaranteed unique across devices.
+
 ## Hardware assembly
 
 ### Setup A — `sticks3_u173` (M5StickS3 K150 + U173)
@@ -69,7 +71,7 @@ pio test -e native
 
 ## Provisioning summary
 
-1. SoftAP **`Stockbot-Scanner-XXXX`** captive portal (`192.168.4.1`) saves Wi-Fi + server URL (+ optional `SBP-…` code).
+1. SoftAP **`Scanner-Setup-XXXX`** captive portal (`192.168.4.1`) saves Wi-Fi + server URL (+ optional `SBP-…` code).
 2. Scan **1D** pairing barcode `SBP-XXXX-XXXX-C` → `POST /api/devices/pair/complete` with `hub.kind = "esp32_scanner"`.
 3. On pair / boot when paired, `U173` receives **1D-only** symbology lock; factory reset (10 s button hold) re-enables 2D for setup.
 

@@ -774,12 +774,12 @@ The device calls this with the code and receives the bearer token. Design §6 na
 | Role | None |
 | X-Household-Id | Omit. The code is bound to the household that created it. |
 | Request | `{ "code": string, "label"?: string, "hub"?: { "kind": "pi_hub" \| "box_hub" \| "esp32_scanner", "version": string, "bootId": string } }` |
-| Response | `201` `{ "deviceId": string, "token": string, "config"?: DeviceHubConfig, "heartbeatSeconds"?: 60 }` |
+| Response | `201` `{ "deviceId": string, "token": string, "householdName"?: string, "config"?: DeviceHubConfig, "heartbeatSeconds"?: 60 }` |
 | Errors | `validation`, `not_found`, `rate_limited`. `invite_expired` is not used here |
 
 An unknown, revoked, already used, or expired code is `not_found`. A code that matches the pattern and fails the check character is `not_found` too. Pairing does not reuse `invite_expired`. `label` is an optional display name. `code` and `label` are the #364 fields. `hub` is the stage-1 addition a scan hub sends. Complete is attempt-limited: 10 per 10 minutes per IP, and 5 attempts per code. Too many tries returns `rate_limited`. This route keeps working on the LAN. Hubs pair against `http://pi:8080`. The code is the credential, and the rate limits above still apply.
 
-The response does not include a household id. The token is bound to that household on the server. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`. **`esp32_scanner`** is the handheld ESP32 barcode scanner (Ticket 1): pairing accepts the same `hub` object with `kind: "esp32_scanner"`. Default `config` on complete is `defaultDirection: "stock_out"`, `inactivityRevertSeconds: 300`, `commitMode: "queue"`, `controlBarcodes: { stockIn: "STOCK-IN", stockOut: "STOCK-OUT" }` (underscore variants `STOCK_IN` / `STOCK_OUT` are recognized on ingest), and `configVersion` from the device row.
+The response does not include a household id. The token is bound to that household on the server. `householdName` is the paired household's display name for scanner UI. `token` is shown once. The prefix is `sbd_` plus 32 random bytes in base32. Only the SHA-256 is stored. Logs show an 8-character prefix. `config` and `heartbeatSeconds` are present when `hub` was sent. `box_hub` is reserved for later hardware. Stage 1 hubs send `pi_hub`. **`esp32_scanner`** is the handheld ESP32 barcode scanner (Ticket 1): pairing accepts the same `hub` object with `kind: "esp32_scanner"`. Default `config` on complete is `defaultDirection: "stock_out"`, `inactivityRevertSeconds: 300`, `commitMode: "queue"`, `controlBarcodes: { stockIn: "STOCK-IN", stockOut: "STOCK-OUT" }` (underscore variants `STOCK_IN` / `STOCK_OUT` are recognized on ingest), and `configVersion` from the device row.
 
 ### GET /api/devices
 
@@ -1621,7 +1621,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
 | `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
 | `forbidden_owner` | 403 | Only an owner can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
-| `forbidden_operator` | 403 | Operator access required. | Operator-only routes such as `GET /api/operator/households`. |
+| `forbidden_operator` | 403 | Only an admin can do this. | Operator-only routes such as `GET /api/operator/households`. |
 | `household_not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Same sentence as `not_found`. Used when the household id is unknown to the caller at the service layer. |
 | `invalid_input` | 400 | Check what you entered and try again. | Same sentence as `validation`. Used for rename name rules on `PATCH /api/households/{id}`. |
 | `not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Rewritten by PM. Also the response for cross-household access. |

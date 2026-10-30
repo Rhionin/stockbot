@@ -18,6 +18,14 @@ enum class UiScreen {
   S6_DockReminder,
   S7_HardError,
   S7_OfflineBufferRefused,
+  S_Connected,
+  S_PairingExpired,
+  S_PairingTooManyTries,
+  S_PairingCodeNotAccepted,
+  S_PairingCantConnect,
+  S_WifiButtonHold,
+  S_WifiButtonHoldErase,
+  S_WifiSetup,
 };
 
 enum class AudioCue {
@@ -74,8 +82,10 @@ struct DisplayModelInput {
   bool device_revoked = false;
   std::string pairing_ap_suffix;
   std::string connected_label;
+  std::string household_name;
   ScanResultView last_scan;
   bool show_revert_countdown = false;
+  bool wifi_update_mode = false;
 };
 
 struct DisplayBands {
@@ -91,16 +101,24 @@ struct DisplayBands {
   AudioCue audio = AudioCue::Silent;
 };
 
+inline constexpr size_t kBand2CharsPerLine = 18;
+inline constexpr size_t kBand3CharsPerLine = 36;
+inline constexpr const char kEllipsis[] = "...";
+
+size_t displayUtf8CharCount(const std::string& text);
+
 uint16_t rgb565FromHex(const std::string& hex);
 
 void applyDisplayBandColors(DisplayBands& bands);
 
 DisplayBands buildDisplayModel(const DisplayModelInput& in);
 
-std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name, size_t max_chars_per_line = 20);
+std::string formatBand2BarcodeKeepEnd(const std::string& barcode);
 
-std::string truncateDisplayLine(const std::string& text, size_t max_chars = 20);
+std::pair<std::string, std::string> wrapProductNameTwoLines(const std::string& name,
+                                                            size_t max_chars_per_line = kBand2CharsPerLine);
 
-std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms, uint64_t now_ms);
+std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t last_activity_ms,
+                                  uint64_t now_ms, Direction default_direction);
 
 }  // namespace stockbot

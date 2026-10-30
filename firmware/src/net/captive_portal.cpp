@@ -6,17 +6,14 @@
 #include <WebServer.h>
 #include <WiFi.h>
 
+#include "scanner_setup_network.h"
+#include "setup_portal_copy.h"
+
 namespace stockbot {
 
 namespace {
 
-const char kSetupHtml[] = R"HTML(<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stockbot Scanner Setup</title></head><body><h1>Stockbot Scanner</h1>
-<form method="POST" action="/save"><label>Wi-Fi SSID<input name="ssid" required></label><br>
-<label>Wi-Fi Password<input name="pass" type="password"></label><br>
-<label>Stockbot URL<input name="url" value="https://stockbot.rhionin.com"></label><br>
-<label>Pairing code (optional)<input name="code" placeholder="SBP-...."></label><br>
-<button type="submit">Save</button></form></body></html>)HTML";
+constexpr const char kHtmlContentType[] = "text/html; charset=utf-8";
 
 }  // namespace
 
@@ -24,11 +21,11 @@ class StockbotCaptivePortal final : public CaptivePortal {
  public:
   void start(const std::string& ap_suffix) override {
     suffix_ = ap_suffix;
-    const std::string ssid = "Stockbot-Scanner-" + suffix_;
+    const std::string ssid = scannerSetupSsid(suffix_);
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid.c_str());
     dns_.start(53, "*", WiFi.softAPIP());
-    server_.on("/", HTTP_GET, [this]() { server_.send(200, "text/html", kSetupHtml); });
+    server_.on("/", HTTP_GET, [this]() { server_.send(200, kHtmlContentType, kPortalSetupHtml); });
     server_.on("/save", HTTP_POST, [this]() { handleSave(); });
     server_.onNotFound([this]() {
       server_.sendHeader("Location", "http://192.168.4.1/", true);
@@ -85,11 +82,11 @@ class StockbotCaptivePortal final : public CaptivePortal {
     if (server_.hasArg("url")) {
       pending_submission_.server_url = server_.arg("url").c_str();
     }
-    if (server_.hasArg("code")) {
-      pending_submission_.pairing_code = server_.arg("code").c_str();
-    }
     pending_ = true;
-    server_.send(200, "text/html", "<html><body>Saved. Rebooting Wi-Fi…</body></html>");
+    const std::string connecting_body =
+        std::string("<html><head><meta charset=\"utf-8\"></head><body>") + kPortalConnectingMessage +
+        "</body></html>";
+    server_.send(200, kHtmlContentType, connecting_body.c_str());
   }
 };
 

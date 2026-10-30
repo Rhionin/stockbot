@@ -1071,6 +1071,9 @@ export interface CompletePairingResponse {
 
 export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct' | 'esp32_scanner';
 
+/** Captive-portal SSID prefix for ESP32 scanner setup APs. Must match firmware `kScannerSetupApPrefix`. */
+export const SCANNER_SETUP_SSID_PREFIX = 'Scanner-Setup-';
+
 export interface Device {
   id: string;
   label: string | null;
@@ -1668,7 +1671,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   unauthorized: SESSION_EXPIRED_SENTENCE,
   forbidden_role: 'Only an owner can do that.',
   forbidden_owner: 'Only an owner can do that.',
-  forbidden_operator: 'Operator access required.',
+  forbidden_operator: 'Only an admin can do this.',
   household_not_found: "Stockbot couldn't find that. It may have been removed.",
   invalid_input: 'Check what you entered and try again.',
   not_found: "Stockbot couldn't find that. It may have been removed.",

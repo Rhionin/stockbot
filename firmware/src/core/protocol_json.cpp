@@ -183,6 +183,49 @@ std::string directionToString(Direction direction) {
   return direction == Direction::StockIn ? "stock_in" : "stock_out";
 }
 
+bool parseApiErrorCodeImpl(const std::string& body, std::string& code_out) {
+  code_out.clear();
+  if (auto code = jsonStringAtKey(body, "code")) {
+    code_out = *code;
+    return true;
+  }
+  return false;
+}
+
+bool pairingCompleteFailureIsExpiredImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  std::string code;
+  parseApiErrorCodeImpl(body, code);
+  return http_status == 404 && code == "not_found";
+}
+
+bool pairingCompleteFailureIsRateLimitedImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  if (http_status == 429) {
+    return true;
+  }
+  std::string code;
+  parseApiErrorCodeImpl(body, code);
+  return code == "rate_limited";
+}
+
+bool pairingCompleteFailureIsClientRejectedImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  if (pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body)) {
+    return false;
+  }
+  if (pairingCompleteFailureIsRateLimitedImpl(transport_ok, http_status, body)) {
+    return false;
+  }
+  return http_status >= 400 && http_status < 500;
+}
+
 }  // namespace
 
 std::string buildPairCompleteRequestJson(const std::string& code, const std::string& label,
@@ -217,6 +260,9 @@ bool parsePairCompleteResponseJson(int http_status, const std::string& body, Pai
   }
   if (auto household = jsonStringAtKey(body, "householdId")) {
     out.household_id = *household;
+  }
+  if (auto household_name = jsonStringAtKey(body, "householdName")) {
+    out.household_name = *household_name;
   }
   if (auto hb = jsonIntAtKey(body, "heartbeatSeconds")) {
     out.heartbeat_seconds = static_cast<uint32_t>(*hb);
@@ -487,6 +533,22 @@ bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out) {
     out.ok = !out.ssid.empty();
   }
   return out.ok;
+}
+
+bool parseApiErrorCode(const std::string& body, std::string& code_out) {
+  return parseApiErrorCodeImpl(body, code_out);
+}
+
+bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body);
+}
+
+bool pairingCompleteFailureIsRateLimited(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsRateLimitedImpl(transport_ok, http_status, body);
+}
+
+bool pairingCompleteFailureIsClientRejected(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsClientRejectedImpl(transport_ok, http_status, body);
 }
 
 }  // namespace stockbot

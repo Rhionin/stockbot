@@ -32,7 +32,7 @@ const existingSentences: Record<string, string> = {
   unauthorized: 'Sign in to continue.',
   forbidden_role: 'Only an owner can do that.',
   forbidden_owner: 'Only an owner can do that.',
-  forbidden_operator: 'Operator access required.',
+  forbidden_operator: 'Only an admin can do this.',
   household_not_found: "Stockbot couldn't find that. It may have been removed.",
   invalid_input: 'Check what you entered and try again.',
   not_found: "Stockbot couldn't find that. It may have been removed.",
