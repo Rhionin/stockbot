@@ -1071,6 +1071,9 @@ export interface CompletePairingResponse {
 
 export type DeviceKind = 'pi_hub' | 'box_hub' | 'direct' | 'esp32_scanner';
 
+/** Captive-portal SSID prefix for ESP32 scanner setup APs. Must match firmware `kScannerSetupApPrefix`. */
+export const SCANNER_SETUP_SSID_PREFIX = 'Scanner-Setup-';
+
 export interface Device {
   id: string;
   label: string | null;

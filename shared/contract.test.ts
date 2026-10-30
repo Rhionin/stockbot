@@ -84,6 +84,7 @@ import {
   olderAppDevicesSentence,
   pairingKeyboardFallback,
   pairingPrintBody,
+  SCANNER_SETUP_SSID_PREFIX,
   type BackfillCommitResponse,
   type BatchCommitResponse,
   type ScanListEntry,
@@ -870,5 +871,14 @@ describe('stage-1 household copy', () => {
     expect(deviceKindLabel('esp32_scanner')).toBe('Scanner');
     expect(deviceKindLabel('phone')).toBe('Phone');
     expect(deviceKindLabel('direct')).toBe('Direct scanner');
+  });
+
+  it('keeps scanner setup SSID prefix aligned with firmware', () => {
+    const header = readFileSync(
+      join(__dirname, '../firmware/src/core/scanner_setup_network.h'),
+      'utf8',
+    );
+    const match = header.match(/kScannerSetupApPrefix\[\]\s*=\s*"([^"]+)"/);
+    expect(match?.[1]).toBe(SCANNER_SETUP_SSID_PREFIX);
   });
 });
