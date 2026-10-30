@@ -133,7 +133,7 @@ func (s *Service) insertScanLegacy(ctx context.Context, q queryer, p Principal, 
 			id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at,
 			direction, unit_count, status, time_approx, scan_group, boot_id
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-		id, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, stamp(item.at),
+		id, p.DeviceID, p.HouseholdID, p.DeviceID, item.item.ID, item.barcode, item.at,
 		dir, item.unit, approx, group, item.item.BootID)
 	if err == nil {
 		return ScanResult{ID: item.item.ID, Status: "created", Cursor: id, ScanID: id}, createdScan{ScanID: id, Barcode: item.barcode}, nil

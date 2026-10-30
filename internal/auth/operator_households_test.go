@@ -252,6 +252,132 @@ func TestPresenceOverridesStaleDBLastSeenForOperatorAndListDevices(t *testing.T)
 	_ = primary
 }
 
+func TestOperatorScannerCountsExcludeRevokedDevicesPairedAndRevoked(t *testing.T) {
+	ctx, svc, userID, primary := bootDeviceAPI(t)
+	target := newID()
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return now })
+	if _, err := svc.db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Revoke target', 'auto', ?, 'abcdef0123456789abcdef0123456789f1', 0)`, target, stamp(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.db.Exec(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
+		target, userID, stamp(now)); err != nil {
+		t.Fatal(err)
+	}
+
+	activeOnlinePrincipal, activeOnline := pairESP32(t, ctx, svc, userID, target)
+	if _, err := svc.Heartbeat(ctx, activeOnlinePrincipal, Heartbeat{
+		Version: "1.0", BootID: "boot-a", UptimeS: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, activeOffline := pairESP32(t, ctx, svc, userID, target)
+	stale := stamp(now.Add(-onlineWindow))
+	if _, err := svc.db.Exec(`UPDATE devices SET last_seen_at = ? WHERE id = ?`, stale, activeOffline); err != nil {
+		t.Fatal(err)
+	}
+
+	revokedOnlinePrincipal, revokedOnline := pairESP32(t, ctx, svc, userID, target)
+	if _, err := svc.Heartbeat(ctx, revokedOnlinePrincipal, Heartbeat{
+		Version: "1.0", BootID: "boot-r1", UptimeS: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RevokeDevice(ctx, userID, target, revokedOnline); err != nil {
+		t.Fatal(err)
+	}
+
+	_, revokedOffline := pairESP32(t, ctx, svc, userID, target)
+	if _, err := svc.db.Exec(`UPDATE devices SET last_seen_at = ? WHERE id = ?`, stale, revokedOffline); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RevokeDevice(ctx, userID, target, revokedOffline); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := svc.ListAllHouseholdsForOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row OperatorHouseholdSummary
+	for _, h := range list {
+		if h.ID == target {
+			row = h
+			break
+		}
+	}
+	if row.ID == "" {
+		t.Fatal("target household missing from operator list")
+	}
+	if row.ScannersOnline != 1 || row.ScannersOffline != 1 {
+		t.Fatalf("target scanners online=%d offline=%d want 1/1 (revoked pair excluded)", row.ScannersOnline, row.ScannersOffline)
+	}
+	_ = primary
+	_ = activeOnline
+	_ = activeOffline
+	_ = revokedOnline
+	_ = revokedOffline
+}
+
+func TestOperatorScansThisWeekLegacyDeviceIngestRespectsCutoff(t *testing.T) {
+	for _, locName := range []string{"UTC", "America/Denver"} {
+		loc, err := time.LoadLocation(locName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run(locName, func(t *testing.T) {
+			ctx, svc, userID, primary := bootDeviceAPI(t)
+			house := newID()
+			now := time.Date(2026, 10, 22, 9, 0, 0, 0, loc)
+			svc.SetClock(func() time.Time { return now })
+			if _, err := svc.db.Exec(`
+				INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+				VALUES (?, 'Legacy ingest', 'auto', ?, 'abcdef0123456789abcdef0123456789f2', 0)`, house, stamp(now)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.db.Exec(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
+				house, userID, stamp(now)); err != nil {
+				t.Fatal(err)
+			}
+			principal, _ := pairESP32(t, ctx, svc, userID, house)
+			cutoff := now.Add(-7 * 24 * time.Hour)
+			ingestLegacyAt := func(clientID string, at time.Time) {
+				t.Helper()
+				results, err := svc.IngestScans(ctx, principal, []ScanInput{{
+					ID: clientID, Barcode: "4000000000200", Direction: "stock_out", UnitCount: 1,
+					HasBarcode: true, HasScannedAt: true, ScannedAt: at,
+				}}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(results) != 1 || results[0].Status != "created" {
+					t.Fatalf("ingest %#v", results)
+				}
+			}
+			ingestLegacyAt("legacy-at-cutoff", cutoff)
+			ingestLegacyAt("legacy-before-cutoff", cutoff.Add(-time.Second))
+			list, err := svc.ListAllHouseholdsForOperator(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var scans int
+			for _, row := range list {
+				if row.ID == house {
+					scans = row.ScansThisWeek
+					break
+				}
+			}
+			if scans != 1 {
+				t.Fatalf("legacy path scansThisWeek=%d want 1 (time.Time scanned_at at cutoff only)", scans)
+			}
+			_ = primary
+		})
+	}
+}
+
 func TestListAllHouseholdsForOperatorResponseHasNoMemberPII(t *testing.T) {
 	ctx, svc, _, primary := bootDeviceAPI(t)
 	start := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
