@@ -221,7 +221,10 @@ test('shows contract admin-only copy when operator households access is denied',
   await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse-battery')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.getByRole('button', { name: 'Menu' }).click()
+  const denied = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/operator/households' && r.status() === 403)
   await page.getByRole('menuitem', { name: 'Other households' }).click()
+  // Pin the fixture body to the contract sentence too; the UI maps by code, so the body is otherwise unobserved.
+  expect(await (await denied).json()).toEqual({ error: 'Only an admin can do this.', code: 'forbidden_operator' })
   const section = page.getByTestId('operator-households-section')
   await expect(section).toBeVisible()
   await expect(section.getByRole('alert')).toHaveText('Only an admin can do this.')
