@@ -39,6 +39,11 @@
   max-width: 42rem;
 }
 
+.admin-household-name {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
 .household-list,
 .device-list {
   list-style: none;

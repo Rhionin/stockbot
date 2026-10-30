@@ -15,6 +15,7 @@ import {
 import { useHouseholdSession } from '../auth/householdSession';
 import { extractInviteCode } from './inviteCode';
 import { announceHouseholdSwitch } from './liveHints';
+import { formatOperatorHouseholdStatsLine } from './operatorHouseholdCopy';
 
 const RESTOCK: { value: RestockMode; label: string }[] = [
   { value: 'auto', label: 'Restock new items automatically' },
@@ -240,28 +241,22 @@ export function HouseholdsPage() {
           <Title id="operator-households-heading" order={3}>All households (Admin)</Title>
           {operatorHouseholdsError !== '' && <Alert color="red" variant="light" role="alert" mt="sm">{operatorHouseholdsError}</Alert>}
           {operatorHouseholdsLoading && <Text mt="sm">Loading households…</Text>}
+          {!operatorHouseholdsLoading && operatorHouseholdsError === '' && operatorHouseholds.length === 0 && (
+            <Text mt="sm" c="dimmed">No households on this server yet.</Text>
+          )}
           <ul className="household-list" style={{ marginTop: '0.75rem' }}>
             {operatorHouseholds.map((row) => (
               <li key={row.id}>
                 <Stack gap="xs">
                   <Group gap="xs" wrap="wrap">
-                    <Text fw={600}>{row.name}</Text>
+                    <Text fw={600} className="admin-household-name">{row.name}</Text>
                     {householdStatusBadges(row)}
                     <Text size="sm" c="dimmed">Restock: {row.restockMode.replaceAll('_', ' ')}</Text>
                     <Text size="sm" c="dimmed">Created {new Date(row.createdAt).toLocaleDateString()}</Text>
                   </Group>
-                  <Text size="sm">
-                    {row.memberCount} members · {row.productCount} products · {row.itemsOnHand} on hand · {row.pendingScans} pending scans · {formatActivity(row.lastActivityAt)}
+                  <Text size="sm" data-testid="operator-household-stats">
+                    {formatOperatorHouseholdStatsLine(row)} · {formatActivity(row.lastActivityAt)}
                   </Text>
-                  <ul className="household-list">
-                    {row.members.map((member) => (
-                      <li key={member.userId}>
-                        <span>{member.name}</span>
-                        <span>{member.email}</span>
-                        <span>{member.role === 'owner' ? 'Owner' : 'Member'}</span>
-                      </li>
-                    ))}
-                  </ul>
                 </Stack>
               </li>
             ))}
