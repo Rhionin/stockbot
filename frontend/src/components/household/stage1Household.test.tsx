@@ -310,7 +310,6 @@ describe('household management', () => {
             isPrimary: false,
             restockMode: 'auto',
             createdAt: '2026-04-01T00:00:00Z',
-            members: [],
             memberCount: 1,
             productCount: 2,
             itemsOnHand: 3,

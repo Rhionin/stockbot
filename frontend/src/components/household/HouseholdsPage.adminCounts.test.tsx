@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AuthSession } from '@stockbot/shared/contract';
+import type { AuthSession, OperatorHouseholdView } from '@stockbot/shared/contract';
 import { resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { HouseholdsPage } from './HouseholdsPage';
@@ -33,13 +33,12 @@ function renderAdminPage(auth: AuthSession) {
   );
 }
 
-const testHouseholdRow = {
+const testHouseholdRow: OperatorHouseholdView = {
   id: 'hh-test',
   name: 'Test Household',
   isPrimary: true,
   restockMode: 'auto',
   createdAt: '2026-04-01T00:00:00Z',
-  members: [{ userId: 'hidden-1', email: 'secret@example.com', name: 'Secret Person', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
   memberCount: 1,
   productCount: 2,
   itemsOnHand: 3,
@@ -49,6 +48,13 @@ const testHouseholdRow = {
   scansThisWeek: 1,
   lastActivityAt: '2026-04-02T12:00:00Z',
 };
+
+/** Simulates an old or buggy server still sending a deprecated members array. */
+function operatorHouseholdsWithLegacyMembers(households: OperatorHouseholdView[], legacyMembers: unknown[]): unknown {
+  return {
+    households: households.map((row) => ({ ...row, members: legacyMembers }) as unknown),
+  };
+}
 
 describe('HouseholdsPage admin server list', () => {
   beforeEach(() => {
@@ -60,7 +66,13 @@ describe('HouseholdsPage admin server list', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/operator/households') {
-        return Promise.resolve(json({ households: [testHouseholdRow] }));
+        return Promise.resolve(json(operatorHouseholdsWithLegacyMembers([testHouseholdRow], [{
+          userId: 'hidden-1',
+          email: 'secret@example.com',
+          name: 'Secret Person',
+          role: 'owner',
+          createdAt: '2026-04-01T00:00:00Z',
+        }])));
       }
       return Promise.reject(new Error(url));
     }));
@@ -111,16 +123,19 @@ describe('HouseholdsPage admin server list', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/operator/households') {
-        return Promise.resolve(json({
-          households: [{
-            ...testHouseholdRow,
-            name: longName,
-            scannersOnline: 0,
-            scannersOffline: 0,
-            scansThisWeek: 0,
-            members: [{ userId: 'x', email: 'leak@example.com', name: 'Leak', role: 'member', createdAt: '2026-04-01T00:00:00Z' }],
-          }],
-        }));
+        return Promise.resolve(json(operatorHouseholdsWithLegacyMembers([{
+          ...testHouseholdRow,
+          name: longName,
+          scannersOnline: 0,
+          scannersOffline: 0,
+          scansThisWeek: 0,
+        }], [{
+          userId: 'x',
+          email: 'leak@example.com',
+          name: 'Leak',
+          role: 'member',
+          createdAt: '2026-04-01T00:00:00Z',
+        }])));
       }
       return Promise.reject(new Error(url));
     }));
@@ -129,5 +144,7 @@ describe('HouseholdsPage admin server list', () => {
     expect(title).toHaveClass('admin-household-name');
     expect(screen.getByText(/0 scanners online/)).toBeVisible();
     expect(screen.queryByText('leak@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByText('Leak')).not.toBeInTheDocument();
+    expect(screen.queryByText('Member')).not.toBeInTheDocument();
   });
 });
