@@ -1,4 +1,4 @@
-import type { Device } from '@stockbot/shared/contract';
+import { SCANNER_SETUP_SSID_PREFIX, type Device } from '@stockbot/shared/contract';
 
 export const DEFAULT_INACTIVITY_REVERT_SECONDS = 300;
 export const DEFAULT_DIRECTION: 'stock_in' | 'stock_out' = 'stock_out';
@@ -34,7 +34,7 @@ export const PAIRING_DIALOG_STEP_TWO =
   'When the scanner screen says "Scan the pairing barcode to connect", scan the barcode below.';
 
 export const PAIRING_DIALOG_WIFI_SETUP_STEP_ONE =
-  'Plug in the scanner. If its screen says READY TO SET UP, join the Wi-Fi network it shows (Scanner-Setup-…) on your phone, then enter your home Wi-Fi name and password.';
+  `Plug in the scanner. If its screen says READY TO SET UP, join the Wi-Fi network it shows (${SCANNER_SETUP_SSID_PREFIX}…) on your phone, then enter your home Wi-Fi name and password.`;
 
 export function setupSheetPairingStepCopy(): string {
   return 'When your scanner says "Scan the pairing barcode to connect", hold it 10–30 cm (4–12 in) from this barcode and pull the trigger.';

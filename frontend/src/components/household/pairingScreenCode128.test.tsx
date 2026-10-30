@@ -15,7 +15,6 @@ import {
 import { PrintableBarcode } from './printableBarcode';
 import { printableBarcodeQuietMm } from './printableBarcodeQuiet';
 import { Code128Mark } from './symbols';
-import './household.css';
 import { PairingDialog } from './PairingDialog';
 import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from './kitCopy456';
 import { readFileSync } from 'node:fs';
