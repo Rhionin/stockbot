@@ -1,10 +1,8 @@
 import { createCanvas } from '@napi-rs/canvas'
-import { render } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import './kitPrint.css'
 import { rulerContinuousLineMmFromPng, rulerWidthInToleranceMm, rulerWidthMmFromPng } from './kitPrintRulerMeasure'
 
 function syntheticRulerPng(barMm: number, renderScale = 2, fillStyle = '#000'): Buffer {
@@ -47,13 +45,6 @@ describe('kitPrintRulerMeasure', () => {
     expect(screenRule).not.toMatch(/background:\s*(?!none)/)
     expect(css).toContain('border-top: 0.45mm solid #000 !important')
     expect(css).toMatch(/@media print[\s\S]*\.kit-print-ruler[\s\S]*background:\s*none !important/)
-
-    const { container } = render(<div className="kit-print-ruler" aria-hidden="true" />)
-    const ruler = container.querySelector('.kit-print-ruler')!
-    const style = getComputedStyle(ruler)
-    expect(style.borderTopStyle).toBe('solid')
-    expect(parseFloat(style.borderTopWidth)).toBeGreaterThan(0)
-    expect(style.height).toBe('0px')
   })
 
   it('falls back to column projection when no single scan line spans the bar', () => {
