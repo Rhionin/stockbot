@@ -40,7 +40,7 @@ export function PairingDialog({
     ? pairingKeyboardFallback(code.barcodeValue, 'hub')
     : null;
   const { printing, print } = useKitPrintRoot();
-  const narrowPhone = useMediaQuery('(max-width: 399px)');
+  const narrowPhone = useMediaQuery('(max-width: 399px)', undefined, { getInitialValueInEffect: false });
 
   const issue = useCallback(async () => {
     setIssuing(true);
@@ -98,6 +98,7 @@ export function PairingDialog({
       size="lg"
       fullScreen={narrowPhone}
       classNames={{ body: 'pairing-dialog-modal-body' }}
+      closeButtonProps={{ size: 'xl', className: 'pairing-dialog-close' }}
     >
       {issuing && !code && (
         <Text role="status">Getting a pairing barcode…</Text>
@@ -141,9 +142,9 @@ export function PairingDialog({
           </div>
           <Stack className="pairing-screen-only pairing-print-actions" gap="xs">
             <Text size="sm" className="pairing-print-size-hint">{PRINT_ACTUAL_SIZE_INSTRUCTION}</Text>
-            <Group>
-              <Button onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
-              <Button variant="default" onClick={onClose}>Close</Button>
+            <Group className="pairing-dialog-actions">
+              <Button className="pairing-touch-target" onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
+              <Button className="pairing-touch-target" variant="default" onClick={onClose}>Close</Button>
             </Group>
           </Stack>
         </Stack>

@@ -150,6 +150,19 @@
   }
 }
 
+.mantine-Modal-root:has(.pairing-dialog-modal-body) .pairing-dialog-close {
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+  height: 44px;
+}
+
+.pairing-dialog-actions .pairing-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+  padding-block: 11px;
+}
+
 .code128-quiet-zone .pairing-code128 {
   height: 96px;
 }

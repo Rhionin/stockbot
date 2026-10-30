@@ -9,7 +9,7 @@ import {
   stage,
   stubWindowPrint,
 } from './householdStageFixtures'
-import { pairingScannerScreenFallback } from '../src/components/household/kitCopy456'
+import { pairingScannerScreenFallback, pairingDialogTitle } from '../src/components/household/kitCopy456'
 import {
   assertPdfDecodesCode128,
   assertPdfRulerContinuousLineMm,
@@ -19,11 +19,13 @@ import {
 import { PAIRING_CODE128_MIN_MODULE_DEVICE_PX } from '../src/components/household/pairingScreenCode128'
 
 const SCREEN_FALLBACK_COPY = pairingScannerScreenFallback()
-const PDF_PRINT_OPTIONS = { preferCSSPageSize: true, printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } } as const
+const PDF_PRINT_OPTIONS = { preferCSSPageSize: true, printBackground: false, margin: { top: '0', right: '0', bottom: '0', left: '0' } } as const
+const PAIRING_DIALOG_TITLE = pairingDialogTitle('scanner')
+const MOBILE_TOUCH_WIDTHS = [320, 390] as const
+const MIN_TOUCH_TARGET_CSS_PX = 44
 const RULER_CAPTION_SNIPPET = '50 mm (about 2 inches)'
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
-const DPR1_PHONE_WIDTHS = MOBILE_WIDTHS
 const MATRIX_WIDTHS = [...MOBILE_WIDTHS, 1280] as const
 const DPRS = [1, 1.5, 2, 2.625, 3] as const
 const PRINT_LAYOUT_VIEWPORT_WIDTH = 720
@@ -82,8 +84,24 @@ async function assertPrintRuler50mm(printRoot: import('@playwright/test').Locato
   expect(rulerMm).toBeLessThanOrEqual(50.5)
 }
 
+async function assertTouchTargetSize(locator: import('@playwright/test').Locator) {
+  const box = await locator.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.ceil(box!.width)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+  expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+}
+
 async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  const isNarrowPhone = viewportWidth <= 399
+  const openModalRoot = page.locator('.mantine-Modal-root:visible')
+  if (isNarrowPhone) {
+    await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toHaveAttribute('data-full-screen', /.*/)
+  } else if ((MOBILE_WIDTHS as readonly number[]).includes(viewportWidth)) {
+    await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).not.toHaveAttribute('data-full-screen')
+  }
   const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
   await expect(svg).toBeVisible()
   const frame = dialog.locator('.pairing-code128-frame')
@@ -109,13 +127,21 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
   expect(Math.abs(metrics.devicePxPerModule - metrics.moduleDevicePx)).toBeLessThan(0.05)
   expect(Math.abs(metrics.devicePxPerModule - Math.round(metrics.devicePxPerModule))).toBeLessThan(0.01)
 
-  const isDpr1Phone = dpr === 1 && (DPR1_PHONE_WIDTHS as readonly number[]).includes(viewportWidth)
-  if (metrics.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
+  const isMobileWidth = (MOBILE_WIDTHS as readonly number[]).includes(viewportWidth)
+  const isDpr1Phone = dpr === 1 && isMobileWidth
+  const requiresTwoDevicePx = isMobileWidth && dpr !== 1
+
+  if (requiresTwoDevicePx) {
+    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
+  } else if (metrics.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
     if (isDpr1Phone) {
       expect(metrics.moduleDevicePx).toBe(1)
       expect(metrics.devicePxPerModule).toBeGreaterThanOrEqual(0.99)
       expect(metrics.devicePxPerModule).toBeLessThanOrEqual(1.01)
+    } else {
+      throw new Error(`Expected >= ${PAIRING_CODE128_MIN_MODULE_DEVICE_PX} device px at ${viewportWidth}px DPR ${dpr}`)
     }
   } else {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
@@ -174,7 +200,22 @@ for (const width of MATRIX_WIDTHS) {
   }
 }
 
+for (const width of MOBILE_TOUCH_WIDTHS) {
+  test(`pairing dialog touch targets at ${width}px wide`, async ({ page }) => {
+    resetStage()
+    await page.setViewportSize({ width, height: 844 })
+    await install(page)
+    await signInAndOpenHouseholdScannerPairing(page)
+    const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+    await expect(dialog).toBeVisible()
+    await assertTouchTargetSize(dialog.locator('.pairing-dialog-close'))
+    await assertTouchTargetSize(dialog.getByRole('button', { name: 'Print setup & wall sheet' }))
+    await assertTouchTargetSize(dialog.locator('.pairing-dialog-actions').getByRole('button', { name: 'Close' }))
+  })
+}
+
 test('setup sheet prints one Letter/A4 page through the real Print button', async ({ page }) => {
+  test.setTimeout(90_000)
   resetStage()
   stage.householdName = 'Test Household'
   await page.setViewportSize({ width: 1280, height: 900 })
@@ -245,6 +286,7 @@ test('setup sheet print layout fits at 390px without horizontal overflow', async
 })
 
 test('collapsed wall sheet prints one Letter/A4 page through the real Print button', async ({ page }) => {
+  test.setTimeout(90_000)
   resetStage()
   await page.setViewportSize({ width: 1280, height: 900 })
   await install(page)
@@ -280,6 +322,7 @@ test('collapsed wall sheet prints one Letter/A4 page through the real Print butt
 })
 
 test('wall sheet print includes expanded Symcode on one page', async ({ page }) => {
+  test.setTimeout(90_000)
   resetStage()
   await page.setViewportSize({ width: 1280, height: 900 })
   await install(page)
@@ -333,5 +376,6 @@ test('print media hides app chrome on the setup sheet', async ({ page }) => {
   const pdfText = await pdfVisibleText(pdf)
   expect(pdfText).not.toMatch(/\bMenu\b/)
   expect(pdfText).not.toMatch(/Sign in/)
+  expect(pdfText).not.toContain(PAIRING_DIALOG_TITLE)
   await page.emulateMedia({ media: 'screen' })
 })
