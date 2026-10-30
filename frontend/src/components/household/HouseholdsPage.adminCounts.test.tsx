@@ -2,18 +2,13 @@ import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import type { AuthSession, OperatorHouseholdView } from '@stockbot/shared/contract';
 import { resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { HouseholdPage } from './HouseholdPage';
 import { HouseholdsPage } from './HouseholdsPage';
-import {
-  formatOperatorHouseholdCreated,
-  formatOperatorHouseholdLastActivity,
-  formatOperatorHouseholdScannersLine,
-} from './operatorHouseholdCopy';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -92,12 +87,15 @@ function operatorHouseholdsWithLegacyMembers(households: OperatorHouseholdView[]
   };
 }
 
-const adminListNow = new Date(2026, 9, 30, 12, 0, 0);
-
 describe('HouseholdsPage admin server list', () => {
   beforeEach(() => {
     resetStage1Client();
     vi.restoreAllMocks();
+    vi.stubEnv('TZ', 'UTC');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('renders grouped count stats with singular pluralization and no member PII', async () => {
@@ -119,18 +117,14 @@ describe('HouseholdsPage admin server list', () => {
     expect(section).toBeVisible();
     expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
     const stats = screen.getByTestId('operator-household-stats');
-    expect(stats).toHaveTextContent('1 member · 2 products · 3 items on hand');
-    expect(stats).toHaveTextContent('Scanners: 1 online · 0 offline');
-    expect(stats).toHaveTextContent('1 scan this week · 0 pending scans');
-    expect(stats).toHaveTextContent(formatOperatorHouseholdLastActivity(testHouseholdRow.lastActivityAt, adminListNow));
-    expect(section).toHaveTextContent('New items restock automatically');
-    expect(section).toHaveTextContent(formatOperatorHouseholdCreated(testHouseholdRow.createdAt, adminListNow));
     const statLines = stats.querySelectorAll('.admin-household-stat-line');
     expect(statLines).toHaveLength(4);
-    expect(statLines[0]).toHaveTextContent('1 member · 2 products · 3 items on hand');
-    expect(statLines[1]).toHaveTextContent(formatOperatorHouseholdScannersLine(testHouseholdRow));
-    expect(statLines[2]).toHaveTextContent('1 scan this week · 0 pending scans');
-    expect(statLines[3]).toHaveTextContent(formatOperatorHouseholdLastActivity(testHouseholdRow.lastActivityAt, adminListNow));
+    expect(statLines[0]).toHaveTextContent(/^1 member · 2 products · 3 items on hand$/);
+    expect(statLines[1]).toHaveTextContent(/^Scanners: 1 online · 0 offline$/);
+    expect(statLines[2]).toHaveTextContent(/^1 scan this week · 0 pending scans$/);
+    expect(statLines[3]).toHaveTextContent(/^Last activity Apr 2, 12:00 PM$/);
+    expect(within(section).getByText('New items restock automatically', { exact: true })).toBeVisible();
+    expect(within(section).getByText('Created Apr 1', { exact: true })).toBeVisible();
     expectNoMemberPii(section, ['secret@example.com', 'Secret Person']);
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
@@ -364,7 +358,7 @@ describe('households admin touch target scoping', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not apply admin 44px rules on /household', async () => {
+  it('does not mark the manage household page with households-admin-page', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/members')) {
@@ -387,6 +381,5 @@ describe('households admin touch target scoping', () => {
     expect(document.querySelector('.households-admin-page')).not.toBeInTheDocument();
     const [remove] = await screen.findAllByRole('button', { name: 'Remove' });
     expect(remove.closest('.households-admin-page')).toBeNull();
-    expect(remove.getBoundingClientRect().height).toBeLessThan(44);
   });
 });

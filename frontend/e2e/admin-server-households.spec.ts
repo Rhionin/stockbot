@@ -215,3 +215,20 @@ test('admin households select a restock radio when tapping the label padding', a
   await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 10)
   await expect(page.getByRole('radio', { name: 'Ask before restocking new items' })).toBeChecked()
 })
+
+test('manage household keeps compact member controls at 390x844', async ({ page }) => {
+  resetStage()
+  stage.kind = 'account'
+  stage.role = 'owner'
+  stage.operator = false
+  stage.householdName = 'Test Household'
+  await page.setViewportSize({ width: 390, height: 844 })
+  await install(page)
+  await page.goto('/household')
+  await expect(page.locator('.households-admin-page')).toHaveCount(0)
+  const remove = page.getByRole('button', { name: 'Remove' }).first()
+  await expect(remove).toBeVisible()
+  const box = await remove.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.ceil(box!.height)).toBeLessThan(44)
+})
