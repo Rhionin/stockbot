@@ -1,0 +1,110 @@
+{
+  "url": "https://api.github.com/repos/Rhionin/stockbot/compare/abc123...master",
+  "html_url": "https://github.com/Rhionin/stockbot/compare/abc123...master",
+  "permalink_url": "https://github.com/Rhionin/stockbot/compare/Rhionin:abc123...Rhionin:master",
+  "diff_url": "https://github.com/Rhionin/stockbot/compare/abc123...master.diff",
+  "patch_url": "https://github.com/Rhionin/stockbot/compare/abc123...master.patch",
+  "base_commit": {
+    "sha": "base00000000000000000000000000000000000000",
+    "node_id": "C_kgDOExampleBase",
+    "commit": {
+      "author": {
+        "name": "Example",
+        "email": "example@users.noreply.github.com",
+        "date": "2026-01-01T00:00:00Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-01-01T00:00:00Z"
+      },
+      "message": "base on master",
+      "tree": {
+        "sha": "treebase00000000000000000000000000000000",
+        "url": "https://api.github.com/repos/Rhionin/stockbot/git/trees/treebase00000000000000000000000000000000"
+      },
+      "url": "https://api.github.com/repos/Rhionin/stockbot/git/commits/base00000000000000000000000000000000000000",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/Rhionin/stockbot/commits/base00000000000000000000000000000000000000",
+    "html_url": "https://github.com/Rhionin/stockbot/commit/base00000000000000000000000000000000000000",
+    "comments_url": "https://api.github.com/repos/Rhionin/stockbot/commits/base00000000000000000000000000000000000000/comments",
+    "author": null,
+    "committer": null,
+    "parents": []
+  },
+  "merge_base_commit": {
+    "sha": "merge00000000000000000000000000000000000000",
+    "node_id": "C_kgDOExampleMerge",
+    "commit": {
+      "author": {
+        "name": "Example",
+        "email": "example@users.noreply.github.com",
+        "date": "2026-01-01T00:00:00Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-01-01T00:00:00Z"
+      },
+      "message": "merge base",
+      "tree": {
+        "sha": "treemerge00000000000000000000000000000000",
+        "url": "https://api.github.com/repos/Rhionin/stockbot/git/trees/treemerge00000000000000000000000000000000"
+      },
+      "url": "https://api.github.com/repos/Rhionin/stockbot/git/commits/merge00000000000000000000000000000000000000",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/Rhionin/stockbot/commits/merge00000000000000000000000000000000000000",
+    "html_url": "https://github.com/Rhionin/stockbot/commit/merge00000000000000000000000000000000000000",
+    "comments_url": "https://api.github.com/repos/Rhionin/stockbot/commits/merge00000000000000000000000000000000000000/comments",
+    "author": null,
+    "committer": null,
+    "parents": []
+  },
+  "status": "ahead",
+  "ahead_by": 9,
+  "behind_by": 0,
+  "total_commits": 9,
+  "commits": [],
+  "files": [
+    {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "filename": "deploy/setup.sh",
+      "status": "modified",
+      "additions": 3,
+      "deletions": 1,
+      "changes": 4,
+      "blob_url": "https://github.com/Rhionin/stockbot/blob/abc123/deploy/setup.sh",
+      "raw_url": "https://raw.githubusercontent.com/Rhionin/stockbot/abc123/deploy/setup.sh",
+      "contents_url": "https://api.github.com/repos/Rhionin/stockbot/contents/deploy/setup.sh?ref=abc123",
+      "patch": "@@ -1,3 +1,5 @@\n # setup\n+line\n"
+    },
+    {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "filename": "firmware/x",
+      "status": "added",
+      "additions": 10,
+      "deletions": 0,
+      "changes": 10,
+      "blob_url": "https://github.com/Rhionin/stockbot/blob/abc123/firmware/x",
+      "raw_url": "https://raw.githubusercontent.com/Rhionin/stockbot/abc123/firmware/x",
+      "contents_url": "https://api.github.com/repos/Rhionin/stockbot/contents/firmware/x?ref=abc123",
+      "patch": "@@ -0,0 +1,10 @@\n+firmware\n"
+    }
+  ]
+}

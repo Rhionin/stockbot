@@ -214,7 +214,7 @@ export function HouseholdsPage() {
             <TextInput
               label="Invite code"
               description={operator
-                ? 'Optional for operators — leave blank to create a household directly, or paste an invite code or link.'
+                ? 'Optional for admins. Leave it blank to create a household directly, or paste an invite code or link.'
                 : 'Paste an invite code or invite link.'}
               value={startCode}
               onChange={(event) => setStartCode(event.currentTarget.value)}

@@ -1,0 +1,486 @@
+@page {
+  size: auto;
+  margin: 12.7mm;
+}
+
+.kit-print-root {
+  color: #111827;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+}
+
+.kit-print-sheet {
+  max-width: 184.6mm;
+  break-inside: avoid;
+}
+
+/* Combined setup & wall sheet: compact vertical rhythm so Letter/A4 @ 12.7mm stay one page. */
+.setup-kit-print-sheet .kit-print-title {
+  font-size: 18pt;
+  margin: 0 0 2px;
+}
+
+.setup-kit-print-sheet .kit-print-subtitle {
+  font-size: 13pt;
+  margin: 0 0 5px;
+}
+
+.setup-kit-print-sheet .kit-print-body {
+  font-size: 11pt;
+  line-height: 1.25;
+  margin: 0 0 4px;
+}
+
+.setup-kit-print-sheet .kit-print-body-sm {
+  font-size: 10pt;
+  line-height: 1.25;
+  margin: 0 0 3px;
+}
+
+.setup-kit-print-sheet .kit-print-expiry-line {
+  font-size: 13pt;
+  margin: 3px 0;
+}
+
+.setup-kit-print-sheet .kit-print-cutline {
+  margin: 6px 0 3px;
+}
+
+.setup-kit-print-sheet .kit-wall-panels-row {
+  gap: 4mm;
+}
+
+.setup-kit-print-sheet .kit-wall-panel {
+  padding: 5px 4mm;
+}
+
+.setup-kit-print-sheet .kit-wall-mode-word {
+  font-size: 20pt;
+  margin: 0 0 2px;
+  gap: 4px;
+}
+
+.setup-kit-print-sheet .kit-wall-panel-title {
+  font-size: 13pt;
+  margin: 0 0 3px;
+}
+
+.setup-kit-print-sheet .kit-wall-panel-copy {
+  font-size: 10pt;
+  line-height: 1.2;
+  margin: 3px 0 0;
+}
+
+.setup-kit-print-sheet .printable-barcode-caption {
+  font-size: 10pt;
+  margin: 3px 0 0;
+}
+
+.setup-kit-print-sheet .kit-print-footer {
+  margin-top: 3px;
+}
+
+.setup-kit-print-sheet .kit-print-footer-instruction,
+.setup-kit-print-sheet .kit-print-ruler-caption,
+.setup-kit-print-sheet .kit-print-footer-meta {
+  font-size: 10pt;
+  line-height: 1.15;
+  margin: 1px 0;
+}
+
+.setup-kit-print-sheet .kit-print-footer-instruction {
+  margin-bottom: 3mm;
+  padding-bottom: 1mm;
+}
+
+.setup-kit-print-sheet .kit-print-ruler-wrap {
+  margin: 1mm 0 2px;
+}
+
+.wall-sheet-symcode-print {
+  display: none;
+  margin-top: 4px;
+  padding: 4px 5px;
+  break-inside: avoid;
+}
+
+.wall-sheet-symcode-print .kit-wall-panel-title {
+  font-size: 12pt;
+  margin: 0 0 2px;
+}
+
+.wall-sheet-symcode-print .kit-wall-panel-copy {
+  font-size: 9pt;
+  line-height: 1.15;
+  margin: 2px 0 0;
+}
+
+.wall-sheet-symcode-print .printable-barcode-caption {
+  font-size: 9pt;
+  margin: 2px 0 0;
+}
+
+.kit-print-title {
+  font-size: 20pt;
+  margin: 0 0 4px;
+}
+
+.kit-print-subtitle {
+  font-size: 14pt;
+  margin: 0 0 12px;
+}
+
+.kit-print-body {
+  font-size: 12pt;
+  margin: 0 0 10px;
+  max-width: 62ch;
+}
+
+.kit-print-body-sm {
+  font-size: 11pt;
+  margin: 0 0 8px;
+  max-width: 62ch;
+}
+
+.kit-print-expiry-line {
+  font-size: 14pt;
+  font-weight: 700;
+  margin: 8px 0;
+}
+
+.kit-print-cutline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 8px;
+  color: #64748B;
+}
+
+.kit-print-cutline-dash {
+  flex: 1;
+  border-top: 1px dashed #64748B;
+}
+
+.kit-wall-panels-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8mm;
+}
+
+.kit-wall-panels-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10mm;
+}
+
+.kit-wall-panel {
+  break-inside: avoid;
+  padding: 10px;
+}
+
+.kit-wall-panel-out {
+  border: 3px solid #F59E0B;
+  background: #F59E0B;
+  color: #111827;
+}
+
+.kit-wall-panel-in {
+  border: 2px solid #0D9488;
+  background: #fff;
+  color: #111827;
+}
+
+.kit-wall-mode-word {
+  font-size: 28pt;
+  font-weight: 700;
+  margin: 0 0 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+@media screen {
+  .setup-kit-print-root[hidden] {
+    display: none !important;
+  }
+
+  .setup-kit-print-root:not([data-printing='true']) .kit-wall-panel {
+    min-width: 0;
+  }
+
+  .setup-kit-print-root:not([data-printing='true']) .kit-wall-mode-word {
+    font-size: clamp(14px, 2.4vw, 1.2rem);
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+}
+
+.kit-wall-panel-in .kit-wall-mode-word {
+  color: #0F766E;
+}
+
+.kit-wall-default-badge {
+  font-size: 12pt;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #111827;
+  color: #fff;
+}
+
+.kit-wall-default-badge-in {
+  background: #0F766E;
+}
+
+.kit-wall-panel-title {
+  font-size: 16pt;
+  margin: 0 0 8px;
+}
+
+.kit-wall-panel-copy {
+  font-size: 11pt;
+  margin: 8px 0 0;
+}
+
+.printable-barcode-block {
+  background: #fff;
+  display: inline-block;
+  max-width: 100%;
+  break-inside: avoid;
+}
+
+.printable-barcode-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.printable-barcode-caption {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12pt;
+  text-align: center;
+  margin: 6px 0 0;
+}
+
+.kit-print-footer {
+  margin-top: 12px;
+  break-inside: avoid;
+}
+
+.kit-print-footer-instruction,
+.kit-print-footer-meta,
+.kit-print-ruler-caption {
+  font-size: 11pt;
+  margin: 4px 0;
+}
+
+.kit-print-ruler-wrap {
+  position: relative;
+}
+
+.kit-print-ruler {
+  width: 50mm;
+  border-top: 2px solid #000;
+  height: 0;
+  position: relative;
+  box-sizing: border-box;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.kit-print-ruler::before,
+.kit-print-ruler::after {
+  content: '';
+  position: absolute;
+  top: -6px;
+  width: 0;
+  height: 6px;
+  border-left: 2px solid #000;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.kit-print-ruler::before {
+  left: 0;
+}
+
+.kit-print-ruler::after {
+  right: 0;
+}
+
+.storage-barcode-badge-lg {
+  font-size: 12pt;
+}
+
+.kit-print-hint {
+  max-width: 62ch;
+}
+
+@media (max-width: 480px) {
+  .kit-wall-panels-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+  }
+
+  * {
+    transform: none !important;
+  }
+
+  body > *:not(:has(.kit-print-root[data-printing='true'])) {
+    display: none !important;
+  }
+
+  .mantine-Modal-overlay {
+    display: none !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .kit-print-root[data-printing='true'],
+  .kit-print-root[data-printing='true'] * {
+    visibility: visible !important;
+  }
+
+  .kit-print-footer,
+  .kit-print-ruler,
+  .kit-print-ruler-wrap {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .kit-print-ruler {
+    width: 50mm !important;
+    max-width: none !important;
+    border-top: 0.45mm solid #000 !important;
+    height: 0 !important;
+    background: none !important;
+  }
+
+  .kit-print-ruler::before,
+  .kit-print-ruler::after {
+    top: -1.5mm;
+    height: 1.5mm;
+    border-left-width: 0.45mm;
+  }
+
+  .pairing-screen-only,
+  .wall-sheet-screen-extra,
+  .mantine-Modal-header,
+  .kit-print-hint,
+  .mantine-Group-root {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  .mantine-Modal-root,
+  .mantine-Modal-inner,
+  .mantine-Modal-content,
+  .mantine-Modal-body {
+    position: static !important;
+    transform: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    width: auto !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .kit-print-root[data-printing='true'] {
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    padding: 0 !important;
+    background: #fff !important;
+    z-index: auto !important;
+    display: block !important;
+  }
+
+  .kit-print-sheet,
+  .kit-wall-panel,
+  .printable-barcode-block,
+  .kit-print-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .wall-sheet-symcode-print {
+    display: block !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-tip {
+    display: none !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-meta {
+    display: none !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px 8px;
+    margin-top: 2px;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-instruction {
+    margin: 0;
+    flex: 0 1 auto;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-wrap {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler {
+    flex: 0 0 50mm;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-caption {
+    display: block !important;
+    margin: 0;
+    font-size: 9pt;
+    line-height: 1.1;
+    flex: 1 1 8rem;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-panel-copy {
+    font-size: 9pt;
+    line-height: 1.1;
+    margin-top: 2px;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-mode-word {
+    font-size: 18pt;
+    margin-bottom: 0;
+  }
+
+  .setup-kit-print-root .kit-wall-panel .printable-barcode-svg,
+  .wall-kit-print-root .printable-barcode-svg {
+    max-width: none;
+  }
+
+  .setup-kit-print-root .kit-wall-panel .printable-barcode-block {
+    padding-left: 1mm !important;
+    padding-right: 1mm !important;
+  }
+}

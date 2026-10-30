@@ -231,11 +231,11 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(envText, "\nLEGACY_PUBLIC_HOST=\n") {
 		t.Fatal(".env.example must leave LEGACY_PUBLIC_HOST empty so a new install does not redirect")
 	}
-	if !strings.Contains(envText, "\nBASIC_AUTH_USER=pantry\n") || !strings.Contains(envText, "\nBASIC_AUTH_PASSWORD=\n") {
-		t.Fatal(".env.example must set the public username and leave the shared password empty")
-	}
 	if !strings.Contains(envText, "\nPANTRY_SESSION_SECRET=\n") {
 		t.Fatal(".env.example must leave PANTRY_SESSION_SECRET empty so setup can fill it once")
+	}
+	if strings.Contains(envText, "BASIC_AUTH_PASSWORD") || strings.Contains(envText, "BASIC_AUTH_USER") {
+		t.Fatal(".env.example must not document the retired shared household password")
 	}
 	if !strings.Contains(envText, "\nVAPID_PUBLIC_KEY=\n") || !strings.Contains(envText, "\nVAPID_PRIVATE_KEY=\n") || !strings.Contains(envText, "\nVAPID_SUBJECT=\n") {
 		t.Fatal(".env.example must leave VAPID keys empty so setup can fill them once")
@@ -243,8 +243,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	if !strings.Contains(envText, "\nSENTRY_DSN=\n") || !strings.Contains(envText, "\nSENTRY_ENVIRONMENT=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PROJECT_IDS=\n") || !strings.Contains(envText, "\nSENTRY_TUNNEL_PUBLIC_KEYS=\n") {
 		t.Fatal(".env.example must leave Sentry values empty")
 	}
-	if !strings.Contains(envText, "\nBACKUP_BEFORE_DEPLOY=warn\n") {
-		t.Fatal(".env.example must default BACKUP_BEFORE_DEPLOY to warn")
+	if !strings.Contains(envText, "\nBACKUP_BEFORE_DEPLOY=required\n") {
+		t.Fatal(".env.example must default BACKUP_BEFORE_DEPLOY to required")
 	}
 
 	setup, err := os.ReadFile(filepath.Join("..", "..", "deploy", "setup.sh"))
@@ -258,11 +258,6 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 		"cmd_unpublish",
 		"cmd_firewall",
 		"--profile public",
-		"write_auth_caddy",
-		"BASIC_AUTH_PASSWORD",
-		"caddy hash-password",
-		"basic_auth bcrypt Pantry",
-		"Keeping existing",
 		"runtime-setup.sh",
 		"ensure_session_secret",
 		"pull pantry",
@@ -276,8 +271,8 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 			t.Fatalf("setup.sh missing %q", want)
 		}
 	}
-	if strings.Contains(setupText, "read -p") || strings.Contains(setupText, "read -s") {
-		t.Fatal("setup.sh must not prompt for BASIC_AUTH_PASSWORD; an existing auth.caddy is kept")
+	if strings.Contains(setupText, "write_auth_caddy") || strings.Contains(setupText, "hash-password") {
+		t.Fatal("setup.sh must not generate auth.caddy or hash a shared password")
 	}
 
 	if strings.Contains(envText, "PANTRY_LAN_FIREWALL") || strings.Contains(envText, "PANTRY_LAN_IPV4") || strings.Contains(envText, "PANTRY_SPLIT_DNS") || strings.Contains(envText, "LAN_PEOPLE") || strings.Contains(envText, "PUBLIC_LISTEN_ADDR") || strings.Contains(envText, "LAN_LISTEN_ADDR") {
@@ -290,16 +285,16 @@ func TestPublicProxyIsOptIn(t *testing.T) {
 	}
 	updaterText := string(updater)
 	if !strings.Contains(updaterText, "--profile public") || !strings.Contains(updaterText, "PUBLIC_HOST") {
-		t.Fatal("automatic updates must include the public profile only when PUBLIC_HOST is set")
+		t.Fatal("automatic updates must include the public profile when PUBLIC_HOST is set")
 	}
-	if !strings.Contains(updaterText, `-f "$PANTRY_DIR/auth.caddy"`) {
-		t.Fatal("automatic updates must not start the public proxy without this install's password hash file")
-	}
-	if strings.Contains(updaterText, "-f /opt/pantry/auth.caddy") {
-		t.Fatal("automatic updates must read the password file from PANTRY_DIR, not a hard-coded /opt/pantry path")
+	if strings.Contains(updaterText, "auth.caddy") {
+		t.Fatal("automatic updates must not depend on auth.caddy")
 	}
 	if !strings.Contains(updaterText, "runtime-setup.sh") || !strings.Contains(updaterText, "ensure_session_secret") {
 		t.Fatal("automatic updates must keep the session secret via runtime-setup.sh")
+	}
+	if !strings.Contains(updaterText, "refresh_host_scripts_from_image") || !strings.Contains(updaterText, "/usr/share/stockbot/host-bundle") {
+		t.Fatal("automatic updates must refresh host scripts from the image bundle")
 	}
 
 	ignore, err := os.ReadFile(filepath.Join("..", "..", ".gitignore"))

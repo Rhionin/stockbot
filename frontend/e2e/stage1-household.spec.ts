@@ -1,216 +1,10 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { existsSync, mkdirSync } from 'node:fs'
-import { formatPairingCode } from '../../shared/contract'
-
-const PAIRING = formatPairingCode('23456789')
+import { install, PAIRING, resetStage, stage } from './householdStageFixtures'
 // GitHub Actions has no writable /cursor/stores/self. STAGE1_SCREENSHOT_DIR
 // overrides the directory when a run should keep the images somewhere else.
 const shots = process.env.STAGE1_SCREENSHOT_DIR
   || (existsSync('/cursor/stores/self') ? '/cursor/stores/self/383' : '')
-
-interface Stage {
-  kind: 'signed_out' | 'account'
-  role: 'owner' | 'member'
-  operator: boolean
-  householdName: string
-  olderAppDevices: number
-  invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
-  deletedAt: string | null
-  pairingExpired: boolean
-}
-
-const stage: Stage = {
-  kind: 'signed_out',
-  role: 'owner',
-  operator: false,
-  householdName: 'Pantry',
-  olderAppDevices: 3,
-  invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
-  deletedAt: null,
-  pairingExpired: false,
-}
-
-const sessionBody = () => ({
-  user: stage.kind === 'account' ? { id: 'user-1', email: 'ada@example.com', name: 'Ada' } : null,
-  kind: stage.kind,
-  memberships: [
-    { householdId: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt },
-    { householdId: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
-  ],
-  households: [
-    { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt },
-    { id: 'hh-2', name: 'Cabin', role: 'member', deletedAt: null },
-  ],
-  activeHouseholdId: stage.kind === 'signed_out' ? null : 'hh-1',
-  operator: stage.operator,
-})
-
-const devices = () => ([
-  { id: 'hub', label: 'Kitchen hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'pi_hub', online: true, queued: 3 },
-  { id: 'shed', label: 'Shed hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-03-01T00:00:00Z', revokedAt: null, kind: 'box_hub', online: false, queued: 0 },
-  { id: 'direct', label: 'Counter', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'direct', online: true },
-])
-
-const fulfillJson = (route: Route, body: unknown, status = 200) => route.fulfill({
-  status,
-  contentType: 'application/json',
-  body: JSON.stringify(body),
-})
-
-const install = async (page: Page) => {
-  await page.route('**/*', async (route) => {
-    const url = new URL(route.request().url())
-    const path = url.pathname
-    const method = route.request().method()
-    if (path === '/setup' && method !== 'POST') return route.continue()
-    if (!path.startsWith('/api') && path !== '/setup') return route.continue()
-    if (path === '/api/auth/session' && method === 'GET') return fulfillJson(route, sessionBody())
-    if (path === '/api/auth/session/household' && method === 'POST') {
-      const body = route.request().postDataJSON() as { householdId: string }
-      return fulfillJson(route, { ...sessionBody(), activeHouseholdId: body.householdId })
-    }
-    if (path === '/api/auth/login' && method === 'POST') {
-      stage.kind = 'account'
-      stage.role = 'owner'
-      return fulfillJson(route, sessionBody())
-    }
-    if (path === '/api/config') {
-      return fulfillJson(route, {
-        live: 'sse',
-        minClientVersion: { expo: '1.0.0' },
-        entry: 'public',
-      })
-    }
-    if (path === '/api/providers' || path === '/api/group-suggestions' || path === '/api/scans' || path === '/api/inventory') {
-      return fulfillJson(route, [])
-    }
-    if (path === '/api/build') return fulfillJson(route, {})
-    if (path === '/api/scanner/config') {
-      return fulfillJson(route, { stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in' })
-    }
-    if (path === '/api/events') {
-      return route.fulfill({
-        status: 200,
-        contentType: 'text/event-stream',
-        body: 'event: hint\ndata: {"type":"devices"}\n\n',
-      })
-    }
-    if (path === '/api/household/settings' && method === 'GET') {
-      return fulfillJson(route, { restockMode: 'auto' })
-    }
-    if (path === '/api/telemetry') return fulfillJson(route, { olderAppDevices: stage.olderAppDevices })
-    if (path === '/api/households/hh-1/members') return fulfillJson(route, { members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] })
-    if (path === '/api/invites' && method === 'GET') {
-      return fulfillJson(route, {
-        invites: stage.invites.map((invite) => ({
-          id: invite.id,
-          email: null,
-          role: invite.role,
-          createdBy: 'user-1',
-          expiresAt: '2026-06-01T00:00:00Z',
-          status: invite.status,
-        })),
-      })
-    }
-    if (path === '/api/invites' && method === 'POST') {
-      stage.invites.push({ id: 'inv-2', status: 'open', role: 'member' })
-      return fulfillJson(route, { id: 'inv-2', code: 'new-code', url: 'https://app.example/invite/new-code', email: null, role: 'member', expiresAt: '2026-06-01T00:00:00Z' })
-    }
-    if (path.endsWith('/revoke')) {
-      stage.invites = stage.invites.map((invite) => invite.id === 'inv-1' ? { ...invite, status: 'revoked' } : invite)
-      return fulfillJson(route, {})
-    }
-    if (path === '/api/operator/households' && method === 'GET') {
-      if (!stage.operator) return fulfillJson(route, { error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403)
-      return fulfillJson(route, {
-        households: [
-          {
-            id: 'hh-1',
-            name: stage.householdName,
-            isPrimary: true,
-            restockMode: 'auto',
-            createdAt: '2026-04-01T00:00:00Z',
-            members: [{ userId: 'user-1', email: 'ada@example.com', name: 'Ada', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
-            memberCount: 1,
-            productCount: 4,
-            itemsOnHand: 2,
-            pendingScans: 0,
-            lastActivityAt: '2026-04-02T00:00:00Z',
-          },
-          {
-            id: 'hh-9',
-            name: 'Loft',
-            isPrimary: false,
-            restockMode: 'auto',
-            createdAt: '2026-04-01T00:00:00Z',
-            members: [{ userId: 'user-9', email: 'dee@example.com', name: 'Dee', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
-            memberCount: 1,
-            productCount: 1,
-            itemsOnHand: 1,
-            pendingScans: 1,
-            lastActivityAt: null,
-          },
-        ],
-      })
-    }
-    if (path === '/api/households/hh-1' && method === 'PATCH') {
-      const body = route.request().postDataJSON() as { name?: string }
-      stage.householdName = (body.name ?? stage.householdName).trim()
-      return fulfillJson(route, { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
-    }
-    if (path === '/api/households/hh-1' && method === 'GET') {
-      return fulfillJson(route, { id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: stage.deletedAt, purgeAt: null })
-    }
-    if (path === '/api/households/hh-1' && method === 'DELETE') {
-      stage.deletedAt = '2026-04-02T00:00:00Z'
-      return fulfillJson(route, {
-        id: 'hh-1',
-        name: 'Pantry',
-        role: 'owner',
-        deletedAt: stage.deletedAt,
-        purgeAt: '2026-05-02T00:00:00Z',
-        message: 'Your household will be permanently deleted after 30 days. Backup copies are cleared within two weeks after that.',
-      })
-    }
-    if (path === '/api/households/hh-1/restore') {
-      stage.deletedAt = null
-      return fulfillJson(route, { id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null, purgeAt: null })
-    }
-    if (path === '/api/export' && method === 'POST') return fulfillJson(route, { jobId: 'job-1', status: 'ready' })
-    if (path === '/api/export/job-1') {
-      return fulfillJson(route, { jobId: 'job-1', status: 'ready', jsonUrl: '/files/pantry.json', csvUrl: '/files/pantry.csv', expiresAt: null })
-    }
-    if (path === '/api/me' && method === 'DELETE') return fulfillJson(route, { error: 'blocked', code: 'last_owner' }, 409)
-    if (path === '/api/devices' && method === 'GET') return fulfillJson(route, { devices: devices() })
-    if (path === '/api/devices/pair' && method === 'POST') {
-      return fulfillJson(route, {
-        code: PAIRING,
-        qrPayload: PAIRING,
-        expiresAt: stage.pairingExpired ? '2000-01-01T00:00:00Z' : '2099-01-01T00:00:00Z',
-        pairingId: 'pair-1',
-        barcodeValue: PAIRING,
-        qrValue: PAIRING,
-      })
-    }
-    if (path === '/api/devices/pair/pair-1') {
-      return fulfillJson(route, { pairingId: 'pair-1', status: stage.pairingExpired ? 'expired' : 'pending', expiresAt: '2099-01-01T00:00:00Z' })
-    }
-    if (path === '/api/devices/shed' && method === 'DELETE') return fulfillJson(route, {})
-    if (path === '/api/devices/hub' && method === 'PATCH') return fulfillJson(route, devices()[0])
-    return fulfillJson(route, {})
-  })
-}
-
-const resetStage = () => {
-  stage.kind = 'signed_out'
-  stage.role = 'owner'
-  stage.operator = false
-  stage.householdName = 'Pantry'
-  stage.olderAppDevices = 3
-  stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
-  stage.deletedAt = null
-  stage.pairingExpired = false
-}
 
 const settleDialog = async (page: Page) => {
   await page.waitForFunction(() => {
@@ -270,12 +64,33 @@ test.describe('stage-1 household screens', () => {
     await shot(page, 'members-invites', width)
 
     await expect(page.getByRole('heading', { name: 'Scanners', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: 'Print wall barcodes' }).click()
-    const wallSheet = page.getByRole('dialog', { name: 'Storage-room barcode sheet' })
-    await expect(wallSheet).toBeVisible()
-    await expect(wallSheet.locator('.storage-barcode-sheet')).toBeVisible()
-    await expect(wallSheet.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
-    await wallSheet.getByRole('button', { name: 'Close' }).click()
+    await shot(page, 'household-scanners', width)
+    await page.getByRole('button', { name: 'Connect a scanner' }).first().click()
+    const householdPairing = page.getByRole('dialog', { name: 'Connect a scanner' })
+    await expect(householdPairing).toBeVisible()
+    await expect(householdPairing.getByText('Print setup & wall sheet')).toBeVisible()
+    await expect(householdPairing.locator('.pairing-screen-only').getByText(/Scan the pairing barcode to connect/)).toBeVisible()
+    if (width === 390) {
+      const pairingCode = householdPairing.locator('.pairing-spaced')
+      await expect(pairingCode).toHaveCSS('white-space', 'nowrap')
+      await expect(pairingCode.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).resolves.toBe(true)
+      const barcodeFrame = householdPairing.locator('.pairing-code128-frame')
+      await expect(barcodeFrame.evaluate((host) => {
+        const svg = host.querySelector('svg')
+        if (svg == null) return false
+        if (host.scrollWidth > host.clientWidth + 1) return false
+        const hostRect = host.getBoundingClientRect()
+        const svgRect = svg.getBoundingClientRect()
+        const hostCenter = hostRect.left + hostRect.width / 2
+        const svgCenter = svgRect.left + svgRect.width / 2
+        return Math.abs(hostCenter - svgCenter) < 2
+      })).resolves.toBe(true)
+    }
+    await shot(page, 'household-pairing', width, false)
+    await householdPairing.getByRole('button', { name: 'Close' }).click()
+    const scannersSection = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Scanners', exact: true }) })
+    await expect(scannersSection.getByRole('button', { name: 'Print wall barcodes' })).toHaveCount(1)
+    await expect(scannersSection.getByRole('button', { name: 'Connect a scanner' })).toHaveCount(1)
 
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Other households' }).click()
@@ -300,6 +115,21 @@ test.describe('stage-1 household screens', () => {
     await expect(page.getByText('Kitchen hub')).toBeVisible()
     await expect(page.getByText(/Offline/)).toBeVisible()
     await shot(page, 'devices', width)
+    await expect(page.getByRole('button', { name: 'Connect a scanner or hub' })).toBeVisible()
+    await page.getByRole('button', { name: 'Print wall barcodes' }).click()
+    const wallSheet = page.getByRole('dialog', { name: 'Wall barcodes' })
+    await expect(wallSheet).toBeVisible()
+    await expect(wallSheet.locator('.kit-print-root')).toBeVisible()
+    await expect(wallSheet.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await expect(wallSheet.getByText('Print at Actual size (100%), not Fit to page.')).toHaveCount(1)
+    await expect(wallSheet.getByRole('button', { name: 'Using a Symcode handheld?' })).toBeVisible()
+    await expect(wallSheet.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toHaveCount(0)
+    await shot(page, 'wall-sheet-symcode-collapsed', width, false)
+    await wallSheet.locator('.kit-print-root').evaluate((node) => node.setAttribute('data-printing', 'true'))
+    await page.emulateMedia({ media: 'print' })
+    if (shots) await page.locator('.wall-kit-print-root[data-printing="true"]').screenshot({ path: `${shots}/wall-print-${width}.png` })
+    await page.emulateMedia({ media: 'screen' })
+    await wallSheet.getByRole('button', { name: 'Close' }).click()
     const kitchen = page.getByRole('listitem').filter({ hasText: 'Kitchen hub' })
     await kitchen.getByRole('button', { name: 'Disconnect' }).click()
     const queuedDialog = page.getByRole('dialog', { name: 'Disconnect hub' })
@@ -317,20 +147,28 @@ test.describe('stage-1 household screens', () => {
     await emptyDialog.getByRole('button', { name: 'Disconnect' }).click()
     await expect(page.getByText('Shed hub was disconnected.')).toBeVisible()
 
-    await page.getByRole('button', { name: 'Pair a hub' }).click()
-    await expect(page.getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
-    await expect(page.getByRole('img', { name: `QR code ${PAIRING}` })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Print pairing code' })).toBeVisible()
+    await page.getByRole('button', { name: 'Connect a scanner or hub' }).click()
+    const hubPairing = page.getByRole('dialog', { name: 'Connect a scanner or hub' })
+    await expect(hubPairing.locator('.pairing-screen-only').getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible()
+    await expect(hubPairing.locator('.pairing-screen-only').getByRole('img', { name: `QR code ${PAIRING}` })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Print setup & wall sheet' })).toBeVisible()
     await expect(page.getByText(/No printer\? Plug a USB keyboard/)).toBeVisible()
     await shot(page, 'pairing', width, false)
+    await page.locator('.setup-kit-print-root').evaluate((node) => {
+      node.removeAttribute('hidden')
+      node.setAttribute('data-printing', 'true')
+    })
     await page.emulateMedia({ media: 'print' })
-    await expect(page.locator('.pairing-sheet')).toBeVisible()
-    if (shots) await page.locator('.pairing-sheet').screenshot({ path: `${shots}/pairing-print-${width}.png` })
+    await expect(page.locator('.kit-print-root[data-printing="true"]')).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 STOCK-OUT' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 STOCK-IN' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Code 128 %%SpecCode99' })).toHaveCount(0)
+    if (shots) await page.locator('.setup-kit-print-root').screenshot({ path: `${shots}/pairing-print-${width}.png` })
     await page.emulateMedia({ media: 'screen' })
-    await page.locator('.pairing-sheet').getByRole('button', { name: 'Close' }).click()
+    await page.locator('.pairing-dialog-body').getByRole('button', { name: 'Close' }).click()
 
     stage.pairingExpired = true
-    await page.getByRole('button', { name: 'Pair a hub' }).click()
+    await page.getByRole('button', { name: 'Connect a scanner or hub' }).click()
     await expect(page.getByText('This code expired. Get a new one.')).toBeVisible()
     await shot(page, 'pairing-expired', width, false)
 

@@ -167,6 +167,39 @@ func TestBackfillItemSkipsConsumptionDuringOpening(t *testing.T) {
 	}
 }
 
+func TestCommitBackfillTxZeroOnHand(t *testing.T) {
+	queue, db, scope := newTestQueueInternal(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	itemID, productID := seedBackfillItem(t, db, scope, "scan-bf", 0, 0)
+	_ = itemID
+	dir := StockOut
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := queue.CreateScanEntryTx(ctx, scope, tx, ScanEntry{
+		UserID: scope.HouseholdID(), Barcode: "4000000000999", ScannedAt: at, Direction: &dir, UnitCount: 1, ProductID: &productID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := queue.CommitBackfillTx(ctx, scope, tx, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Units != 1 || result.StockInMoveID == "" || result.StockOutMoveID == "" {
+		t.Fatalf("result %+v", result)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var onHand int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM item_instances WHERE item_id = ? AND removed_at IS NULL`, itemID).Scan(&onHand); err != nil || onHand != 0 {
+		t.Fatalf("on hand %d err %v", onHand, err)
+	}
+}
+
 func seedBackfillItem(t *testing.T, db *sql.DB, scope tenant.Scope, itemID string, shelved int, instances int) (string, string) {
 	t.Helper()
 	productID := "prod-" + itemID

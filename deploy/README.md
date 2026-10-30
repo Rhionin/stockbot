@@ -33,7 +33,7 @@ New to this? Follow these steps in order on your Raspberry Pi and you'll have St
    sudo ./setup.sh
    ```
 
-   This installs Docker if needed, copies the deployment files into `/opt/pantry`, creates your configuration, installs the scanner udev rule, starts Stockbot, and waits until it reports healthy. It is safe to re-run: it never overwrites configuration values you already set. When `PUBLIC_HOST` is already set and `/opt/pantry/auth.caddy` exists, it also keeps the public HTTPS proxy on the current compose file and Caddyfile, and it removes leftover LAN firewall and mDNS units. `install`, `publish`, and `firewall` are the same command. Stockbot listens once, with sign-in required. Compose publishes that port on `127.0.0.1` only.
+   This installs Docker if needed, copies the deployment files into `/opt/pantry`, creates your configuration, installs the scanner udev rule, starts Stockbot, and waits until it reports healthy. It is safe to re-run: it never overwrites configuration values you already set. When `PUBLIC_HOST` is set and certificate or tunnel settings are complete, it also keeps the public HTTPS proxy on the current compose file and Caddyfile, and it removes leftover LAN firewall and mDNS units. `install`, `publish`, and `firewall` are the same command. Stockbot listens once, with sign-in required. Compose publishes that port on `127.0.0.1` only.
 
 4. **Check it works.** The installer already polled `/health` for you, but you can confirm any time. This should print `{"status":"ok"}`:
 
@@ -49,7 +49,7 @@ New to this? Follow these steps in order on your Raspberry Pi and you'll have St
    sudo ./setup.sh status
    ```
 
-6. **Optional: open it to the public internet.** The steps above stay on your home network. To serve the same UI at a hostname you own, such as `https://stockbot.rhionin.com`, follow [Public Internet access](#public-internet-access). The Gryphon router does not hairpin, so that name hangs on home Wi-Fi when it is reached through a port forward. [Cloudflare Tunnel](#cloudflare-tunnel) is the path that works on home Wi-Fi and on cellular without forwarding ports. The public site shows a login page for the one shared password. The timing snapshot at `/api/telemetry` and the running build at `/api/build` are public on that hostname.
+6. **Optional: open it to the public internet.** The steps above stay on your home network. To serve the same UI at a hostname you own, such as `https://stockbot.rhionin.com`, follow [Public Internet access](#public-internet-access). The Gryphon router does not hairpin, so that name hangs on home Wi-Fi when it is reached through a port forward. [Cloudflare Tunnel](#cloudflare-tunnel) is the path that works on home Wi-Fi and on cellular without forwarding ports. The public site shows the in-app login page. The timing snapshot at `/api/telemetry` and the running build at `/api/build` are public on that hostname.
 
 ## Updating
 
@@ -59,7 +59,7 @@ After `git pull` on the Pi, from `deploy/`:
 sudo ./setup.sh
 ```
 
-That one command is the whole update. It copies `deploy/` to `/opt/pantry`, pulls the Stockbot image when the public site is on, starts the containers from the compose file you just pulled (including the public HTTPS proxy when `PUBLIC_HOST` is set and `/opt/pantry/auth.caddy` is already there), restarts Caddy so the current `Caddyfile` is what is serving, and removes leftover LAN firewall and mDNS units. Port 8080 stays on `127.0.0.1`. When `CLOUDFLARE_TUNNEL_TOKEN` is set, the same command keeps the tunnel profile instead of ports 80 and 443. The public hostname shows the in-app login page. These paths stay reachable with no login: `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`. Run it again any time. Existing `.env` values stay, an existing `auth.caddy` is not regenerated, and the session secret in `.env` is not replaced, so phones that are already signed in stay signed in. A site that is already on the public internet stays there. LAN `http://<pi-ip>:8080` stays up and still does not ask for a password. On the certificate path, the public name still hangs on home Wi-Fi until the router hairpins or you use the LAN address; see [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). Tunnel mode does not have that hang.
+That one command is the whole update. It copies `deploy/` to `/opt/pantry`, pulls the Stockbot image when the public site is on, starts the containers from the compose file you just pulled (including the public HTTPS proxy when `PUBLIC_HOST` is set and `ACME_EMAIL` or `CLOUDFLARE_TUNNEL_TOKEN` completes the profile), restarts Caddy so the current `Caddyfile` is what is serving, and removes leftover LAN firewall and mDNS units. Port 8080 stays on `127.0.0.1`. When `CLOUDFLARE_TUNNEL_TOKEN` is set, the same command keeps the tunnel profile instead of ports 80 and 443. The public hostname shows the in-app login page. These paths stay reachable with no login: `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`. Run it again any time. Existing `.env` values stay, and the session secret in `.env` is not replaced, so phones that are already signed in stay signed in. A site that is already on the public internet stays there. LAN `http://<pi-ip>:8080` stays up and still does not ask for a password. On the certificate path, the public name still hangs on home Wi-Fi until the router hairpins or you use the LAN address; see [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). Tunnel mode does not have that hang.
 
 `sudo ./setup.sh firewall-off` removes leftover LAN firewall and mDNS units. Setup does not install them again. Port 8080 stays on `127.0.0.1`.
 
@@ -250,11 +250,9 @@ On the Pi, edit `/opt/pantry/.env` (create the LAN install first with `sudo ./se
 ```bash
 PUBLIC_HOST=stockbot.rhionin.com
 ACME_EMAIL=you@example.com
-BASIC_AUTH_USER=pantry
-BASIC_AUTH_PASSWORD=replace-with-a-long-passphrase
 ```
 
-`PUBLIC_HOST` is the hostname only. `ACME_EMAIL` is where Let's Encrypt sends expiry notices. Replace `BASIC_AUTH_PASSWORD` with a passphrase of 12 to 72 characters, and do not wrap it in quotes. The first `sudo ./setup.sh` after that hashes it into `/opt/pantry/auth.caddy` (mode `0600`) and restricts `.env` to its owner. The password itself stays in `.env`. It is not written into the image or the repository. A later run keeps the existing `auth.caddy` and does not ask for the password again. Setup copies that hash to `/opt/pantry/auth/household` for the login page and, the first time, adds `PANTRY_SESSION_SECRET` to `.env`. Later runs keep both. The `auth` directory is mode `0700` and the hash file is mode `0600`, both owned by uid 65532, the distroless `nonroot` user in the image. A root-owned file cannot be read by the container, and the public site then refuses to sign in. You do not pick a new password for the login page.
+`PUBLIC_HOST` is the hostname only. `ACME_EMAIL` is where Let's Encrypt sends expiry notices. The first `sudo ./setup.sh` after that restricts `.env` to its owner and, when `PUBLIC_HOST` is set, adds `PANTRY_SESSION_SECRET` to `.env` if it is still empty. Later runs keep that secret. Setup does not read or write `auth.caddy`; a leftover file from an older install is ignored and never deleted.
 
 ```bash
 sudo ./setup.sh
@@ -266,15 +264,9 @@ Certificates are stored in the Docker volume `caddy-data`. Do not delete that vo
 
 ### 5. Prove it is public
 
-From a phone on cellular data, not the home Wi-Fi:
+From a phone on cellular data, not the home Wi-Fi, open `https://stockbot.rhionin.com` in the browser. Sign in on the login page, then confirm the pantry UI loads. The session cookie is HttpOnly and SameSite=Lax, Secure on the public site, and lasts 180 days, so the phone stays signed in. Log out is in the header menu. The scan queue and inventory pages keep a live connection to `/api/events`; new scans should show up without a refresh.
 
-```bash
-curl -fsS -u 'pantry:replace-with-a-long-passphrase' https://stockbot.rhionin.com/health
-```
-
-Without the password, that command returns `401` JSON and does not open a browser password prompt. With the `Authorization: Basic` header, expect `{"status":"ok",...}`. Then open `https://stockbot.rhionin.com` in the phone's browser. The login page asks for the same username and password. After that, the pantry UI loads. The session cookie is HttpOnly and SameSite=Lax, Secure on the public site, and lasts 180 days, so the phone stays signed in. Log out is in the header menu. The scan queue and inventory pages keep a live connection to `/api/events`; new scans should show up without a refresh.
-
-The timing snapshot does not use the password. From the same phone:
+The timing snapshot does not require sign-in. From the same phone:
 
 ```bash
 curl -fsS https://stockbot.rhionin.com/api/telemetry
@@ -288,9 +280,7 @@ curl -fsS -D - -o /dev/null https://stockbot.rhionin.com/terms
 curl -fsS -D - -o /dev/null https://stockbot.rhionin.com/privacy
 ```
 
-Expect `200` with `image/png` for the mark and `text/html` for the two pages. `GET /api/build` is also public. `GET /api/providers/kroger/callback` stays behind the login. The browser sends the SameSite=Lax session cookie on the redirect from Kroger. `/favicon.ico`, `/health`, and every path that is not listed as public still require the password. If the password file is missing, the public hostname refuses API calls with `401` and still serves the login page, which cannot sign in. The `sudo ./setup.sh` above is what puts that Caddyfile in front of the site. An image update does not reload it.
-
-To change the password, edit `BASIC_AUTH_PASSWORD`, remove `/opt/pantry/auth.caddy`, and run `sudo ./setup.sh` again. Leaving `auth.caddy` in place keeps the current hash, so a routine setup does not regenerate it or ask you to type the password again. The login page and any script that sends `Authorization: Basic` both check that hash. Phones stay signed in until the session secret changes or someone uses Log out.
+Expect `200` with `image/png` for the mark and `text/html` for the two pages. `GET /api/build` is also public. `GET /api/providers/kroger/callback` stays behind sign-in. The browser sends the SameSite=Lax session cookie on the redirect from Kroger. `/favicon.ico`, `/health`, and every path that is not listed as public still require a signed-in session. The `sudo ./setup.sh` above is what puts that Caddyfile in front of the site. An image update does not reload it.
 
 `sudo ./setup.sh unpublish` stops only the proxy. The LAN site keeps running. Clear `PUBLIC_HOST` as well if an automatic-update timer is enabled, or the next `sudo ./setup.sh` will start the proxy again.
 
@@ -363,7 +353,7 @@ sudo docker compose --profile public logs --tail=80 caddy
 | Browser warning, certificate name mismatch | `PUBLIC_HOST` and the Squarespace host are not the same name. They must match exactly. |
 | `https://` works at home but not on cellular | The phone is still using the LAN address, or the forward is wrong. Test on cellular. |
 | `https://` hangs on home Wi-Fi and loads on cellular | The router is not hairpinning. Stockbot is reachable at `http://<pi-ip>:8080` and, when Avahi is installed, `https://stockbot.rhionin.com`. See [Home Wi-Fi hangs on the public name](#home-wi-fi-hangs-on-the-public-name). |
-| Browser shows the login page, or curl gets `401` JSON | The shared password is missing or does not match the hash in `auth.caddy`. A request with no password is supposed to be rejected, except `GET /api/telemetry`, `POST /api/telemetry/client`, `GET /api/build`, `GET /brand/logo.png`, `GET /terms`, `GET /privacy`, `POST /api/deploy-hook`, and `POST /api/sentry-tunnel`, which are public. A browser page load shows the login page. An API call with no cookie and no `Authorization: Basic` header returns `401` JSON. Edit `BASIC_AUTH_PASSWORD`, remove `/opt/pantry/auth.caddy`, and run `sudo ./setup.sh`. Do not delete `auth/household` by itself; setup copies it from `auth.caddy`. |
+| Browser shows the login page, or curl gets `401` JSON | Sign-in is required on the public hostname except for the public paths listed above. Use the in-app login page or an existing session cookie. An API call with no cookie returns `401` JSON. If everyone is locked out, use an account recovery path documented in the app, or restore from backup. |
 | UI loads, but the scan queue never updates live | `/api/events` is being buffered. `deploy/Caddyfile` must keep `flush_interval -1` on that path. Run `sudo ./setup.sh` after pulling a fresh `Caddyfile`. |
 
 ### Cloudflare Tunnel
@@ -440,23 +430,21 @@ On the Pi, edit `/opt/pantry/.env`:
 PUBLIC_HOST=stockbot.rhionin.com
 PUBLISH_MODE=tunnel
 CLOUDFLARE_TUNNEL_TOKEN=paste-the-token-here
-BASIC_AUTH_USER=pantry
-BASIC_AUTH_PASSWORD=replace-with-a-long-passphrase
 ```
 
-`ACME_EMAIL` can stay. Tunnel mode does not request a certificate. Keep `BASIC_AUTH_PASSWORD` as it already is if `/opt/pantry/auth.caddy` exists. Setup will not regenerate that file. Leave the Dynu client installed. With the token set, Stockbot no longer depends on it, and emptying the token later does not restart or stop that client.
+`ACME_EMAIL` can stay. Tunnel mode does not request a certificate. Leave the Dynu client installed. With the token set, Stockbot no longer depends on it, and emptying the token later does not restart or stop that client.
 
 ```bash
 sudo ./setup.sh publish --tunnel
 ```
 
-That is the command that switches modes. A later `sudo ./setup.sh` stays on the tunnel as long as the token is set, which is also what the automatic-update timer does. The command copies the tunnel compose file, starts `cloudflared` with `tunnel run`, and starts Caddy on an internal HTTP port only. Nothing on the Pi listens on 80 or 443. The shared password is unchanged. The login page replaces the browser prompt, and the public paths stay public.
+That is the command that switches modes. A later `sudo ./setup.sh` stays on the tunnel as long as the token is set, which is also what the automatic-update timer does. The command copies the tunnel compose file, starts `cloudflared` with `tunnel run`, and starts Caddy on an internal HTTP port only. Nothing on the Pi listens on 80 or 443. The in-app login page applies on the public hostname, and the public paths stay public.
 
 If `PANTRY_SPLIT_DNS` was on, this run removes it. A LAN answer for `stockbot.rhionin.com` would send phones to the Pi, and Caddy is no longer on port 443 there. Leave `PANTRY_SPLIT_DNS=off`.
 
 #### 7. Test on home Wi-Fi and on cellular
 
-From a phone on home Wi-Fi, open `https://stockbot.rhionin.com`, sign in on the login page with the household password, and confirm the pantry loads. Repeat on cellular data, with Wi-Fi off. Both should load. Neither should hang. A phone that already signed in stays signed in.
+From a phone on home Wi-Fi, open `https://stockbot.rhionin.com`, sign in on the login page, and confirm the pantry loads. Repeat on cellular data, with Wi-Fi off. Both should load. Neither should hang. A phone that already signed in stays signed in.
 
 ```bash
 curl -fsS -u 'pantry:replace-with-a-long-passphrase' https://stockbot.rhionin.com/health
@@ -533,7 +521,7 @@ Prefer a tunnel or Tailscale when you do not need a public listener. If you keep
 
 ### Keeping HTTPS across automatic updates
 
-`pantry-update.sh` includes the `public` profile only when `PUBLIC_HOST` is set and `auth.caddy` exists, so a timer pull renews the proxy instead of forgetting it. When `CLOUDFLARE_TUNNEL_TOKEN` is set, the timer uses the `tunnel` profile instead and does not publish ports 80 or 443. `sudo ./setup.sh` copies the updated unit into `/etc/systemd/system/` if that unit is already installed. If you enabled the timer before this change and have not run setup yet:
+`pantry-update.sh` includes the `public` profile when `PUBLIC_HOST` is set and `ACME_EMAIL` completes certificate mode, or the `tunnel` profile when `CLOUDFLARE_TUNNEL_TOKEN` is set, so a timer pull renews the proxy instead of forgetting it. When the tunnel token is set, the timer does not publish ports 80 or 443. `sudo ./setup.sh` copies the updated unit into `/etc/systemd/system/` if that unit is already installed. If you enabled the timer before this change and have not run setup yet:
 
 ```bash
 sudo cp /opt/pantry/systemd/pantry-update.service /etc/systemd/system/
@@ -578,9 +566,7 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `PUBLISH_MODE` | empty | `tunnel` selects Cloudflare Tunnel and requires `CLOUDFLARE_TUNNEL_TOKEN`. Empty or `acme` is the certificate path, unless that token is set — a non-empty token selects tunnel on its own |
 | `CLOUDFLARE_TUNNEL_TOKEN` | empty | Token for the existing tunnel pantry-pi. Empty keeps Let's Encrypt, the Gryphon forwards, and the Dynu update client. Secret. The hostname's service URL is `http://caddy:80` |
 | `ACME_EMAIL` | empty | Email Let's Encrypt uses for certificate expiry notices. Required when `PUBLIC_HOST` is set and the token is empty. Not used in tunnel mode. Not a Stockbot login |
-| `BASIC_AUTH_USER` | `pantry` | Username the login page asks for on the public site. Also accepted in an `Authorization: Basic` header |
-| `BASIC_AUTH_PASSWORD` | empty | Shared password for the public site, 12 to 72 characters. Required the first time the public proxy starts, unless `auth.caddy` already exists. The hash is written to `auth.caddy` and copied to `auth/household`; this value stays in `.env`. Setup does not replace an existing `auth.caddy` |
-| `PANTRY_SESSION_SECRET` | empty | Signs the login cookie. Setup and the update timer fill it in once when `auth.caddy` exists, and do not rotate it. Leave it alone so phones stay signed in |
+| `PANTRY_SESSION_SECRET` | empty | Signs the login cookie. Setup and the update timer fill it in once when `PUBLIC_HOST` is set, and do not rotate it. Leave it alone so phones stay signed in |
 | `VAPID_PUBLIC_KEY` | generated | Public half of the Web Push identity for scan alerts while Stockbot is closed. `sudo ./setup.sh` fills it once. Not a secret |
 | `VAPID_PRIVATE_KEY` | generated | Private half of that identity. A secret. Setup fills it once and does not rotate a pair that is already set |
 | `VAPID_SUBJECT` | generated | Contact on each push, `mailto:` or `https://`. Setup uses `mailto:pantry@PUBLIC_HOST`, or `mailto:pantry@localhost` when the install is LAN-only |
@@ -616,7 +602,7 @@ cd /opt/pantry
 sudo docker compose up -d
 ```
 
-Setting `PUBLIC_HOST` does not publish the site by itself. Run `sudo ./setup.sh` so the `public` profile starts when `ACME_EMAIL` is set and `auth.caddy` exists (or `BASIC_AUTH_PASSWORD` is set and `auth.caddy` does not). A plain `docker compose up` leaves that profile off. With `CLOUDFLARE_TUNNEL_TOKEN` set, `sudo ./setup.sh` starts the `tunnel` profile instead. `ACME_EMAIL` is not required then.
+Setting `PUBLIC_HOST` does not publish the site by itself. Run `sudo ./setup.sh` so the `public` profile starts when `ACME_EMAIL` is set (certificate mode), or the `tunnel` profile when `CLOUDFLARE_TUNNEL_TOKEN` is set. A plain `docker compose up` leaves those profiles off.
 
 ## Headless Scanner Input
 
@@ -737,7 +723,32 @@ The image is **distroless**, so `docker exec pantry sh` does not work. Use `sudo
 
 ### Automatic Updates and the scanner
 
-`pantry-update.service` only updates the container image, never the deployment files. When `PUBLIC_HOST` is set, the update script also refreshes the public HTTPS proxy; see [Keeping HTTPS across automatic updates](#keeping-https-across-automatic-updates). This means:
+After a successful image deploy, `pantry-update.sh` refreshes host deploy
+scripts from a copy shipped inside the pantry image (`publish-mode.sh`,
+`runtime-setup.sh`, `vapid-env.sh`, `systemd/pantry-update.sh`,
+`systemd/pantry-backup.sh`, and the update/backup systemd units). Files
+are installed atomically under `/opt/pantry` (and into `/etc/systemd/system`
+when those units are already installed). The running `pantry-update.sh`
+is not replaced in place; the refreshed script takes effect on the next
+timer or deploy-hook run. Rollback does not install the new image's host
+files. `setup.sh`, `.env`, secrets, and data are never touched. Set
+`PANTRY_HOST_REFRESH=off` to skip the refresh.
+
+**One-time bootstrap:** Pis that already have an older `pantry-update.sh`
+under `/opt/pantry` (for example one that still sourced `auth-migrate.sh`)
+must run the following once after this change merges. `setup.sh` may run
+`docker compose pull` and `up -d` when the public profile is enabled.
+
+1. Run `sudo /opt/pantry/systemd/pantry-backup.sh manual` and confirm it exits 0.
+2. Check or fix the `BACKUP_BEFORE_DEPLOY` line in `/opt/pantry/.env` (legacy
+   installs may still have `warn` from an older `.env.example`; `sudo ./setup.sh`
+   migrates the exact legacy `BACKUP_BEFORE_DEPLOY=warn` line to `required`, but
+   cannot distinguish that value from an operator who explicitly chose `warn`).
+3. Then run `sudo ./setup.sh`.
+
+After that, successful deploys keep the host scripts aligned with master.
+
+When `PUBLIC_HOST` is set, the update script also refreshes the public HTTPS proxy; see [Keeping HTTPS across automatic updates](#keeping-https-across-automatic-updates). This means:
 - The udev rule is installed once (via `sudo ./setup.sh rule`) and is not touched by updates
 - Docker Compose and `.env` files are never automatically modified
 
@@ -831,7 +842,7 @@ For automatic updates, you can install systemd units that periodically check for
    # Should output: /usr/bin/docker
    ```
 
-2. Install the systemd units. The service runs `/opt/pantry/systemd/pantry-update.sh`, which `sudo ./setup.sh` copies into place and marks executable. When `PUBLIC_HOST` is set and `auth.caddy` exists, that script keeps the HTTPS proxy in the update. The path unit starts that same service when a deploy hook arrives. Or pass `--with-updates` to `sudo ./setup.sh`.
+2. Install the systemd units. The service runs `/opt/pantry/systemd/pantry-update.sh`, which `sudo ./setup.sh` copies into place and marks executable. When `PUBLIC_HOST` is set, that script keeps the HTTPS proxy in the update. The path unit starts that same service when a deploy hook arrives. Or pass `--with-updates` to `sudo ./setup.sh`.
    ```bash
    sudo cp /opt/pantry/systemd/pantry-update.service /etc/systemd/system/
    sudo cp /opt/pantry/systemd/pantry-update.timer /etc/systemd/system/
@@ -918,7 +929,7 @@ sudo systemctl daemon-reload
 
 ### Rollback After Automatic Update
 
-`pantry-update.sh` records the image digest of each running service before `docker compose pull`. If the pull does not change those image ids, it stops, unless `/opt/pantry/.update-pending` is still there from a run that died after recreating containers. When the pull changes the pantry image, and `BACKUP_BEFORE_DEPLOY` is not `off`, the script runs `pantry-backup.sh pre-deploy` before recreating containers. The default is `warn`: a failed backup is logged and the deploy continues. `required` leaves the running containers in place and exits non-zero. `off` skips the backup. Set it in `.env` or in the environment. A minute when the pantry digest did not change does not take a backup. The update already holds the deploy lock, and the backup is told so with `PANTRY_BACKUP_LOCK_HELD=1`. In that case the next run checks health against the revision label of the digest named in that file, then checks containers whose image changed, and rolls back if either check fails. An unchanged container that is down is a warning, not a rollback. A newer image pulled in the meantime is not the commit that check expects. If that pending digest is no longer on the machine, the resume check is skipped with a warning and nothing is rolled back. Service images are read from `docker compose config`. python3 is not required.
+`pantry-update.sh` records the image digest of each running service before `docker compose pull`. If the pull does not change those image ids, it stops, unless `/opt/pantry/.update-pending` is still there from a run that died after recreating containers. When the pull changes the pantry image, and `BACKUP_BEFORE_DEPLOY` is not `off`, the script runs `pantry-backup.sh pre-deploy` before recreating containers. The default is `required`: a failed backup leaves the running containers unchanged, writes `/opt/pantry/last-deploy-status`, and exits non-zero without recording a rejected digest (a later retry can deploy the same image after backup is fixed). `warn` and `optional` log a failed backup and continue. `off` skips the backup. Set the mode in `.env` or in the environment. A minute when the pantry digest did not change does not take a backup. The update already holds the deploy lock, and the backup is told so with `PANTRY_BACKUP_LOCK_HELD=1`. In that case the next run checks health against the revision label of the digest named in that file, then checks containers whose image changed, and rolls back if either check fails. An unchanged container that is down is a warning, not a rollback. A newer image pulled in the meantime is not the commit that check expects. If that pending digest is no longer on the machine, the resume check is skipped with a warning and nothing is rolled back. Service images are read from `docker compose config`. python3 is not required. After health and commit checks pass, the script refreshes host deploy scripts from the image bundle; see [Automatic Updates and the scanner](#automatic-updates-and-the-scanner).
 
 If an image changed, the script reads `org.opencontainers.image.revision` before recreating anything. An image without that label is not started. It then recreates the stack and polls `http://127.0.0.1:$HOST_PORT/health` and `http://127.0.0.1:$HOST_PORT/api/build` until `commit` equals that label (90 seconds, or `PANTRY_UPDATE_HEALTH_TIMEOUT`). The deadline uses `/proc/uptime`, so an NTP step after boot does not cut the wait short. While `/health` reports `migrating` (the server is listening, migrations are still running), the wait continues up to 10 minutes (`PANTRY_UPDATE_MIGRATION_TIMEOUT`). The public hostname is not used for the LAN check: `/health` there asks for the household password. When the public proxy is part of the update, the script also requests `https://$PUBLIC_HOST/api/build` through Caddy. In tunnel mode it requests `http://$PUBLIC_HOST/api/build` with `--resolve $PUBLIC_HOST:80:10.77.77.3`, which sends the hostname Caddyfile.tunnel actually serves to caddy-tunnel's listener on the `cf-tunnel` network, with a 5 second limit. That check is also made on the old stack before recreate. The probe is skipped only when the old stack was unreachable too, meaning curl exited 6, 7, 28, or 52. The exit code after recreate is the one that decides. A refusal or a hang after a reachable old stack fails the deploy and names that curl exit code. Curl 56 on the old stack is not unreachable: a healthy new listener still passes. The response commit has to match the new pantry image. Cloudflare still reaches Caddy as `http://caddy:80` inside the network. It gives up early if the pantry container has exited, is restarting, or its restart count rises. A failed `docker compose up` does not then wait out the health timeout, and that exit code is not itself a rollback. If every service whose image changed is healthy, the new images stay and the log warns. Before recreate, the script records each container's status, restart count, container id, and `State.StartedAt`. Afterwards only a service whose image changed can fail the deploy. An unchanged grocy-sync or cloudflared that is down or restarting, even one that was healthy before this recreate, logs a journal warning (`<4>`) and does not roll the release back or reject a digest. A down one is listed in `/opt/pantry/.update-sidecar-warn`. The next run checks that list even when the images did not change, warns again while the container is down, and removes the line once it is running. An unchanged proxy is different, because the probe reaches pantry through it. The script checks that proxy on the old stack first. In tunnel mode the old stack counts as passed only when the response is 2xx and its commit is the pantry revision that was already running. A failed probe is tried once more after `PANTRY_UPDATE_PROBE_RETRY_SECONDS` (default 3, never more than 15). Pantry is rejected only when that retry still fails, pantry's image changed, and the same proxy container is still running: same container id, same RestartCount, and the same `State.StartedAt`. A new container id, a higher restart count, or a later StartedAt is the proxy's failure (Compose before 2.35 can restart Caddy without changing the id or the restart count), so the script warns and does not reject pantry. The proxy stays in `.update-sidecar-warn` until a later probe passes, including while the container is still running. That later check, including a minute when no image changed, is the same probe a deploy makes. In tunnel mode the commit has to match the pantry image already recorded for this run, so a healthy listener clears the line. If the proxy was already failing, it only warns. Changed services are checked again after `PANTRY_UPDATE_SETTLE_SECONDS` (default 12, never more than 15). A restart in that window fails the deploy for a changed image. An unchanged container that restarts on its own, such as cloudflared, does not.
 

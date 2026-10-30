@@ -10,6 +10,7 @@ import { HouseholdPage } from './components/household/HouseholdPage';
 import { HouseholdsPage } from './components/household/HouseholdsPage';
 import { HouseholdSwitcher } from './components/household/HouseholdSwitcher';
 import './components/household/household.css';
+import './components/household/kitPrint.css';
 import { ScanAlertHost } from './components/queue/ScanAlertHost';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import { InventoryPage } from './components/inventory/InventoryPage';

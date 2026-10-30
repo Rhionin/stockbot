@@ -214,6 +214,32 @@ func TestIngestImmediateInvalidDirection(t *testing.T) {
 	}
 }
 
+func TestIngestImmediateStockOutMultipleUnits(t *testing.T) {
+	ctx, svc, p, house, catalog, _ := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-multi", "Bulk", "4000000000155")
+	user, _ := svc.Authenticate(ctx, "pat@example.test", "horse battery")
+	if _, err := svc.UpdateDevice(ctx, user.ID, house, p.DeviceID, auth.UpdateDevicePatch{CommitMode: strPtr("immediate")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "in-a", Barcode: "4000000000155", Direction: "stock_in", UnitCount: 2, HasBarcode: true,
+	}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	out, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "out-a", Barcode: "4000000000155", Direction: "stock_out", UnitCount: 2, HasBarcode: true,
+	}}, 0)
+	if err != nil || len(out) != 1 || out[0].Delta == nil || *out[0].Delta != -2 || out[0].OnHand == nil || *out[0].OnHand != 0 {
+		t.Fatalf("out %#v err %v", out, err)
+	}
+}
+
+func TestIngestRequiresTxRejectsNonTransaction(t *testing.T) {
+	if err := devicingest.IngestRequiresTx(nil); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestAttachIgnoresNil(t *testing.T) {
 	devicingest.Attach(nil, nil, nil)
 	svc := auth.NewService(nil, t.TempDir())

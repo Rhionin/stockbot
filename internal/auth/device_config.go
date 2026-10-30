@@ -15,8 +15,8 @@ const (
 
 // DeviceHubConfig is the scanner-facing configuration blob.
 type DeviceHubConfig struct {
-	Label                   string `json:"label"`
-	ControlBarcodes         struct {
+	Label           string `json:"label"`
+	ControlBarcodes struct {
 		StockIn  string `json:"stockIn"`
 		StockOut string `json:"stockOut"`
 	} `json:"controlBarcodes"`
@@ -223,12 +223,25 @@ func tenantScope(householdID string) (tenant.Scope, error) {
 // DeviceScanProcessor continues ingest after idempotency checks when the scan queue is wired.
 type DeviceScanProcessor func(ctx context.Context, q Queryer, s *Service, p Principal, item PreparedScanItem, group int) (ScanResult, CreatedScan, error)
 
+// DeviceIngestEventPublisher emits live scan/stock events after a device ingest transaction commits.
+type DeviceIngestEventPublisher interface {
+	PublishAfterIngest(ctx context.Context, householdID, scanEntryID string, stockMoved bool) error
+}
+
 // SetDeviceScanProcessor registers queue-aware device scan handling from the HTTP server.
 func (s *Service) SetDeviceScanProcessor(fn DeviceScanProcessor) {
 	if s == nil {
 		return
 	}
 	s.deviceScanProcessor = fn
+}
+
+// SetDeviceIngestEventPublisher registers post-commit live events for device ingest.
+func (s *Service) SetDeviceIngestEventPublisher(pub DeviceIngestEventPublisher) {
+	if s == nil {
+		return
+	}
+	s.deviceIngestEvents = pub
 }
 
 // SetDeviceProductLookup resolves barcodes for cached replay product names.

@@ -347,8 +347,6 @@ have "$tunnel_cfg" $'- tunnel\n      - run' "cloudflared runs tunnel run"
 
 adapt_dir=$(mktemp -d)
 cp deploy/Caddyfile deploy/Caddyfile.tunnel "$adapt_dir/"
-# shellcheck disable=SC2016 # bcrypt hashes start with $2
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry $2a$14$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz012' '}' > "$adapt_dir/auth.caddy"
 
 acme_json=$(caddy_adapt "$adapt_dir/Caddyfile" "$adapt_dir")
 tunnel_json=$(caddy_adapt "$adapt_dir/Caddyfile.tunnel" "$adapt_dir")

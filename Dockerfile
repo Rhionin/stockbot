@@ -25,7 +25,8 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=frontend /src/frontend/dist/ ./internal/webui/assets/
-RUN mkdir -p /data
+RUN mkdir -p /data /out
+RUN sh deploy/build-host-bundle.sh /out/host-bundle
 # Redeclared so this stage inherits the global build-args. Docker exports
 # those args into this shell, which expands ${COMMIT_*}, ${BUILD_TIME}, and
 # ${VERSION}. $$COMMIT_HASH must not be used: $$ is the shell's PID, so the
@@ -57,6 +58,7 @@ LABEL org.opencontainers.image.revision="${COMMIT_HASH}"
 LABEL com.rhionin.stockbot.commit="${COMMIT_HASH}"
 COPY --from=build /out/stockbot-server /usr/local/bin/stockbot-server
 COPY --from=build /out/stockbot-backup /usr/local/bin/stockbot-backup
+COPY --from=build /out/host-bundle /usr/share/stockbot/host-bundle
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV ADDR=":8080" DB_PATH="/data/pantry.db"
 EXPOSE 8080

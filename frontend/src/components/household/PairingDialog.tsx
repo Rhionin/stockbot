@@ -1,40 +1,71 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
+import { PAIRING_EXPIRED_SENTENCE, hostedErrorSentence, type PairingCode } from '@stockbot/shared/contract';
 import {
-  PAIRING_EXPIRED_SENTENCE,
+  PAIRING_DIALOG_STEP_TWO,
+  PAIRING_DIALOG_WIFI_SETUP_STEP_ONE,
   PRINT_PAIRING_CODE_LABEL,
+  PRINT_ACTUAL_SIZE_INSTRUCTION,
+  defaultWallBarcodeSettings,
+  pairingDialogTitle,
   pairingKeyboardFallback,
-  pairingPrintBody,
-  type PairingCode,
-} from '@stockbot/shared/contract';
-import { getPairing, startPairing } from '../../api/client';
-import { Code128Mark, QrMark } from './symbols';
+  setupSheetExpiryLine,
+  type WallBarcodeSettings,
+} from './kitCopy456';
+import { ApiError, getPairing, startPairing } from '../../api/client';
+import { useKitPrintRoot } from './kitPrintUtils';
+import { SetupKitPrintSheet } from './setupKitPrintSheet';
+import { Code128Mark } from './symbols';
 
 export function PairingDialog({
   opened,
   householdName,
   onClose,
-  onPrintWallBarcodes,
+  pairingContext = 'scanner',
+  wallBarcodeSettings,
 }: {
   opened: boolean;
   householdName: string;
   onClose: () => void;
-  onPrintWallBarcodes?: () => void;
+  pairingContext?: 'scanner' | 'devices';
+  wallBarcodeSettings?: WallBarcodeSettings;
 }) {
   const [code, setCode] = useState<PairingCode | null>(null);
   const [expired, setExpired] = useState(false);
+  const [issueError, setIssueError] = useState('');
+  const [issuing, setIssuing] = useState(false);
+  const wallSettings = wallBarcodeSettings ?? defaultWallBarcodeSettings();
+  const hubKeyboardLine = code && pairingContext === 'devices'
+    ? pairingKeyboardFallback(code.barcodeValue, 'hub')
+    : null;
+  const { printing, print } = useKitPrintRoot();
+  const narrowPhone = useMediaQuery('(max-width: 399px)', undefined, { getInitialValueInEffect: false });
 
   const issue = useCallback(async () => {
-    const next = await startPairing();
-    setCode(next);
-    setExpired(new Date(next.expiresAt).getTime() <= Date.now());
+    setIssuing(true);
+    setIssueError('');
+    try {
+      const next = await startPairing();
+      setCode(next);
+      setExpired(new Date(next.expiresAt).getTime() <= Date.now());
+    } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.code !== '') {
+        setIssueError(hostedErrorSentence(requestError.code));
+      } else {
+        setIssueError("Can't reach the server. Check your connection and try again.");
+      }
+      setCode(null);
+    } finally {
+      setIssuing(false);
+    }
   }, []);
 
   useEffect(() => {
     if (!opened) return undefined;
     let cancelled = false;
     void Promise.resolve().then(() => {
-      if (!cancelled) void issue().catch(() => undefined);
+      if (!cancelled) void issue();
     });
     return () => {
       cancelled = true;
@@ -56,10 +87,28 @@ export function PairingDialog({
     return () => window.clearInterval(timer);
   }, [opened, code, expired, onClose]);
 
-  const spaced = code?.barcodeValue.split('').join(' ') ?? '';
+  const barcodeValue = code?.barcodeValue ?? code?.code ?? '';
+  const spaced = barcodeValue.split('').join(' ');
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Pair a hub" size="lg">
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={pairingDialogTitle(pairingContext)}
+      size="lg"
+      fullScreen={narrowPhone}
+      classNames={{ body: 'pairing-dialog-modal-body' }}
+      closeButtonProps={{ size: 'xl', className: 'pairing-dialog-close' }}
+    >
+      {issuing && !code && (
+        <Text role="status">Getting a pairing barcode…</Text>
+      )}
+      {issueError !== '' && (
+        <Stack gap="sm">
+          <Text role="alert">{issueError}</Text>
+          <Button onClick={() => { void issue(); }}>Try again</Button>
+        </Stack>
+      )}
       {expired && (
         <Stack>
           <Text role="alert">{PAIRING_EXPIRED_SENTENCE}</Text>
@@ -67,28 +116,37 @@ export function PairingDialog({
         </Stack>
       )}
       {code && !expired && (
-        <Stack className="pairing-sheet" gap="md">
-          <Text className="pairing-spaced" aria-label="Pairing code">{spaced}</Text>
-          <Stack gap="xs" className="pairing-wifi-setup">
-            <Title order={5}>Setting up a brand-new scanner?</Title>
-            <Text size="sm">
-              1. Turn on the scanner. If its screen says &quot;Ready to set up&quot;, connect your phone to the Wi-Fi network &quot;Stockbot-Scanner-XXXX&quot; to enter your home Wi-Fi password.
-            </Text>
-            <Text size="sm">
-              2. Once the scanner screen says &quot;Scan pairing barcode&quot;, scan the 1D barcode below.
-            </Text>
+        <Stack className="pairing-dialog-body" gap="md">
+          <div className="pairing-screen-only">
+            <Text className="pairing-spaced" aria-label="Pairing code">{spaced}</Text>
+            <Text className="pairing-expiry-line">{setupSheetExpiryLine(code.expiresAt)}</Text>
+            <Stack gap="xs" className="pairing-wifi-setup">
+              <Title order={5}>Setting up a brand-new scanner?</Title>
+              <Text size="sm">1. {PAIRING_DIALOG_WIFI_SETUP_STEP_ONE}</Text>
+              <Text size="sm">2. {PAIRING_DIALOG_STEP_TWO}</Text>
+            </Stack>
+            <Code128Mark value={barcodeValue} quietZone />
+            {hubKeyboardLine && <Text className="pairing-keyboard">{hubKeyboardLine}</Text>}
+          </div>
+          <div
+            className="kit-print-root setup-kit-print-root"
+            data-printing={printing ? 'true' : 'false'}
+            hidden={!printing}
+          >
+            <SetupKitPrintSheet
+              householdName={householdName}
+              barcodeValue={barcodeValue}
+              expiresAt={code.expiresAt}
+              wallSettings={wallSettings}
+            />
+          </div>
+          <Stack className="pairing-screen-only pairing-print-actions" gap="xs">
+            <Text size="sm" className="pairing-print-size-hint">{PRINT_ACTUAL_SIZE_INSTRUCTION}</Text>
+            <Group className="pairing-dialog-actions">
+              <Button className="pairing-touch-target" onClick={print} disabled={issuing}>{PRINT_PAIRING_CODE_LABEL}</Button>
+              <Button className="pairing-touch-target" variant="default" onClick={onClose}>Close</Button>
+            </Group>
           </Stack>
-          <Code128Mark value={code.barcodeValue} quietZone />
-          <QrMark value={code.qrValue} />
-          <Text className="pairing-print-copy">{pairingPrintBody(householdName)}</Text>
-          <Text className="pairing-keyboard">{pairingKeyboardFallback(code.barcodeValue)}</Text>
-          <Group>
-            <Button onClick={() => window.print()}>{PRINT_PAIRING_CODE_LABEL}</Button>
-            {onPrintWallBarcodes && (
-              <Button variant="default" onClick={onPrintWallBarcodes}>Print wall barcodes</Button>
-            )}
-            <Button variant="default" onClick={onClose}>Close</Button>
-          </Group>
         </Stack>
       )}
     </Modal>

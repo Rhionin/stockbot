@@ -18,6 +18,15 @@ const CODE_B = [
 const START_B = 104;
 const STOP = 106;
 
+/** Exposed for golden tests against the Code 128 specification table. */
+export function code128SetBPattern(symbolIndex: number): string {
+  const pattern = CODE_B[symbolIndex];
+  if (pattern === undefined) {
+    throw new Error(`Unknown Code 128 set B symbol index ${symbolIndex}`);
+  }
+  return pattern;
+}
+
 export function code128Bars(value: string): boolean[] {
   const values = [START_B];
   for (const ch of value) {

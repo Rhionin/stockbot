@@ -1,0 +1,27 @@
+{
+  "url": "https://api.github.com/repos/Rhionin/stockbot/compare/master...abc123",
+  "html_url": "https://github.com/Rhionin/stockbot/compare/master...abc123",
+  "permalink_url": "https://github.com/Rhionin/stockbot/compare/Rhionin:master...Rhionin:abc123",
+  "diff_url": "https://github.com/Rhionin/stockbot/compare/master...abc123.diff",
+  "patch_url": "https://github.com/Rhionin/stockbot/compare/master...abc123.patch",
+  "base_commit": {
+    "sha": "base00000000000000000000000000000000000000"
+  },
+  "merge_base_commit": {
+    "sha": "merge00000000000000000000000000000000000000"
+  },
+  "status": "behind",
+  "ahead_by": 0,
+  "behind_by": 3,
+  "total_commits": 3,
+  "commits": [],
+  "files": [
+    {
+      "filename": "README.md",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 0,
+      "changes": 1
+    }
+  ]
+}
