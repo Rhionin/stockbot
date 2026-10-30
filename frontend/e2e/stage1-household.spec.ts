@@ -89,7 +89,7 @@ test.describe('stage-1 household screens', () => {
     await shot(page, 'household-pairing', width, false)
     await householdPairing.getByRole('button', { name: 'Close' }).click()
     const scannersSection = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Scanners', exact: true }) })
-    await expect(scannersSection.getByRole('button', { name: 'Print wall barcodes' })).toHaveCount(0)
+    await expect(scannersSection.getByRole('button', { name: 'Print wall barcodes' })).toHaveCount(1)
     await expect(scannersSection.getByRole('button', { name: 'Connect a scanner' })).toHaveCount(1)
 
     await page.getByRole('button', { name: 'Menu' }).click()
