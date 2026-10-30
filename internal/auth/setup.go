@@ -100,7 +100,7 @@ func (s *Service) AdminIssue(ctx context.Context, recover bool) error {
 			return err
 		}
 		if !op {
-			return errors.New("there is no operator account to recover")
+			return errors.New("There is no admin account to recover.") //nolint:staticcheck // ST1005: keep user-facing sentence
 		}
 	}
 	mode := "setup"

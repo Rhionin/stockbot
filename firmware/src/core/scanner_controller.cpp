@@ -13,7 +13,12 @@
 #include "protocol_json.h"
 #include "stockbot_client.h"
 #include "text_util.h"
+#include "scanner_setup_network.h"
 #include "wifi_station.h"
+
+#ifdef ARDUINO
+#include <WiFi.h>
+#endif
 
 namespace stockbot {
 
@@ -114,12 +119,7 @@ void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& su
     const HttpCallResult res = client_.completePairing(submission.pairing_code, config_.label,
                                                        "1.0.0-esp32", boot_id_, paired);
     if (res.http_status == 201 && !paired.device_token.empty()) {
-      config_.device_token = paired.device_token;
-      applyHubConfig(paired.config);
-      nvs_.save(config_);
-      client_.setDeviceToken(config_.device_token);
-      play(AudioCue::AscendingPairSuccess);
-      enterPaired(now_ms);
+      finishPairingSuccess(paired, now_ms);
       return;
     }
     enterPairing(now_ms);
@@ -131,6 +131,94 @@ void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& su
     return;
   }
   enterPairing(now_ms);
+}
+
+void ScannerController::finishPairingSuccess(const PairCompleteParsed& paired, uint64_t now_ms) {
+  if (!ring_.clearAll()) {
+    showPairingCantConnect(now_ms);
+    return;
+  }
+  config_.device_token = paired.device_token;
+  applyHubConfig(paired.config);
+  connected_household_name_ = paired.household_name;
+  nvs_.save(config_);
+  client_.setDeviceToken(config_.device_token);
+  device_revoked_ = false;
+  state_.operational = OperationalState::Paired;
+  scanner_.enable1DOnly(true);
+  one_d_locked_ = true;
+  state_.active_direction = config_.default_direction;
+  state_.default_direction = config_.default_direction;
+  state_.onScanOrActivity(now_ms);
+  ui_screen_ = UiScreen::S_Connected;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::AscendingPairSuccess);
+  render(now_ms);
+}
+
+void ScannerController::showPairingCodeExpired(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingExpired;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
+void ScannerController::showPairingTooManyTries(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingTooManyTries;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::ScanBeepLowTick);
+  render(now_ms);
+}
+
+void ScannerController::showPairingCodeNotAccepted(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingCodeNotAccepted;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
+void ScannerController::showPairingCantConnect(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingCantConnect;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
+void ScannerController::handleDeviceDisconnected(uint64_t now_ms) {
+  (void)ring_.clearAll();
+  nvs_.clearDeviceToken();
+  config_.device_token.clear();
+  client_.setDeviceToken("");
+  device_revoked_ = true;
+  connected_household_name_.clear();
+  ui_screen_ = UiScreen::S7_HardError;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
+void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {
+  PairCompleteParsed paired;
+  std::string norm;
+  normalizeScan(raw_line, norm);
+  const HttpCallResult res =
+      client_.completePairing(norm, config_.label, "1.0.0-esp32", boot_id_, paired);
+  if (res.http_status == 201 && !paired.device_token.empty()) {
+    finishPairingSuccess(paired, now_ms);
+    return;
+  }
+  if (pairingCompleteFailureIsExpired(res.transport_ok, res.http_status, res.body)) {
+    showPairingCodeExpired(now_ms);
+    return;
+  }
+  if (pairingCompleteFailureIsRateLimited(res.transport_ok, res.http_status, res.body)) {
+    showPairingTooManyTries(now_ms);
+    return;
+  }
+  if (pairingCompleteFailureIsClientRejected(res.transport_ok, res.http_status, res.body)) {
+    showPairingCodeNotAccepted(now_ms);
+    return;
+  }
+  showPairingCantConnect(now_ms);
 }
 
 void ScannerController::play(AudioCue cue) {
@@ -176,11 +264,22 @@ void ScannerController::enterPaired(uint64_t now_ms) {
   render(now_ms);
 }
 
-void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce) {
+void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce, const std::string& mac_override) {
   boot_ms_ = now_ms;
-  ap_suffix_ = "ABCD";
+#ifdef ARDUINO
+  if (!mac_override.empty()) {
+    ap_suffix_ = apSuffixFromMacAddress(mac_override);
+  } else {
+    const String mac = WiFi.macAddress();
+    ap_suffix_ = apSuffixFromMacAddress(std::string(mac.c_str()));
+  }
+#else
+  ap_suffix_ = apSuffixFromMacAddress(mac_override.empty() ? "00:00:00:00:00:00" : mac_override);
+#endif
   device_revoked_ = false;
   last_buffer_full_buzz_ms_ = std::nullopt;
+  wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
 
   scanner_.begin();
   display_.begin();
@@ -223,8 +322,15 @@ void ScannerController::render(uint64_t now_ms) {
   if (now_ms < transient_until_ms_ &&
       (ui_screen_ == UiScreen::S3_ScanResult || ui_screen_ == UiScreen::S4_UnknownBarcode ||
        ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder ||
-       ui_screen_ == UiScreen::S7_OfflineBufferRefused)) {
+       ui_screen_ == UiScreen::S7_OfflineBufferRefused || ui_screen_ == UiScreen::S_Connected ||
+       ui_screen_ == UiScreen::S_PairingExpired || ui_screen_ == UiScreen::S_PairingTooManyTries ||
+       ui_screen_ == UiScreen::S_PairingCodeNotAccepted ||
+       ui_screen_ == UiScreen::S_PairingCantConnect)) {
     // keep transient screen
+  } else if (wifi_button_hold_active_) {
+    ui_screen_ = wifi_button_hold_erase_ ? UiScreen::S_WifiButtonHoldErase : UiScreen::S_WifiButtonHold;
+  } else if (wifi_update_mode_ && portal_active_) {
+    ui_screen_ = UiScreen::S_WifiSetup;
   } else if (device_revoked_ || ring_.isFull()) {
     ui_screen_ = UiScreen::S7_HardError;
   } else if (state_.operational == OperationalState::Unprovisioned) {
@@ -251,6 +357,8 @@ void ScannerController::render(uint64_t now_ms) {
   in.device_revoked = device_revoked_;
   in.pairing_ap_suffix = ap_suffix_;
   in.connected_label = config_.label;
+  in.household_name = connected_household_name_;
+  in.wifi_update_mode = wifi_update_mode_;
   in.last_scan = last_scan_;
   in.show_revert_countdown = state_.active_direction != state_.default_direction;
 
@@ -265,9 +373,6 @@ void ScannerController::render(uint64_t now_ms) {
     std::string right = wifi_online_ ? "Wi-Fi" : "OFFLINE";
     if (ps.battery_pct.has_value()) {
       right += " " + std::to_string(*ps.battery_pct) + "%";
-      if (ps.charging) {
-        right += "⚡";
-      }
     }
     bands.band1_right = right;
   } else if (ps.battery_pct.has_value()) {
@@ -327,10 +432,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
     if (http.http_status == 401 || parsed.unauthorized) {
-      device_revoked_ = true;
-      nvs_.clearDeviceToken();
-      play(AudioCue::TripleErrorBuzz);
-      render(now_ms);
+      handleDeviceDisconnected(now_ms);
       return false;
     }
 
@@ -401,14 +503,25 @@ void ScannerController::feedbackOfflineBufferRefused(const std::string& barcode,
 
 void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_retrigger,
                                       uint64_t now_ms) {
-  if (device_revoked_) {
-    return;
-  }
   if (state_.isScanSuppressed(now_ms)) {
     return;
   }
 
+  if (device_revoked_) {
+    std::string norm;
+    normalizeScan(raw_line, norm);
+    if (isPairingCode(norm)) {
+      tryPairingBarcode(raw_line, now_ms);
+    }
+    return;
+  }
+
   const BarcodeKind kind = classifyBarcode(raw_line, state_.operational);
+
+  if (state_.operational == OperationalState::Pairing && kind == BarcodeKind::PairingCode) {
+    tryPairingBarcode(raw_line, now_ms);
+    return;
+  }
 
   if (ring_.isFull() && state_.operational == OperationalState::Paired) {
     if (kind == BarcodeKind::Product || kind == BarcodeKind::ControlStockIn ||
@@ -434,12 +547,7 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
         const HttpCallResult res =
             client_.completePairing(setup.code, config_.label, "1.0.0-esp32", boot_id_, paired);
         if (res.http_status == 201 && !paired.device_token.empty()) {
-          config_.device_token = paired.device_token;
-          applyHubConfig(paired.config);
-          nvs_.save(config_);
-          client_.setDeviceToken(config_.device_token);
-          play(AudioCue::AscendingPairSuccess);
-          enterPaired(now_ms);
+          finishPairingSuccess(paired, now_ms);
           return;
         }
       }
@@ -449,21 +557,6 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
   }
 
   if (state_.operational == OperationalState::Pairing) {
-    if (kind == BarcodeKind::PairingCode) {
-      PairCompleteParsed paired;
-      std::string norm;
-      normalizeScan(raw_line, norm);
-      const HttpCallResult res =
-          client_.completePairing(norm, config_.label, "1.0.0-esp32", boot_id_, paired);
-      if (res.http_status == 201 && !paired.device_token.empty()) {
-        config_.device_token = paired.device_token;
-        applyHubConfig(paired.config);
-        nvs_.save(config_);
-        client_.setDeviceToken(config_.device_token);
-        play(AudioCue::AscendingPairSuccess);
-        enterPaired(now_ms);
-      }
-    }
     return;
   }
 
@@ -473,6 +566,79 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
   }
   if (kind == BarcodeKind::Product) {
     handleProductScan(trimAscii(raw_line), manual_retrigger, now_ms);
+  }
+}
+
+void ScannerController::applyModeButtonHoldPhase(ModeButtonHoldPhase phase, uint64_t now_ms) {
+  wifi_button_hold_active_ = true;
+  wifi_button_hold_erase_ = phase == ModeButtonHoldPhase::EraseWarning;
+  state_.wakeBacklight(now_ms);
+  render(now_ms);
+}
+
+void ScannerController::clearModeButtonHoldUi() {
+  wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
+  mode_button_shown_phase_ = std::nullopt;
+}
+
+void ScannerController::executeFactoryResetFromHold(uint64_t now_ms) {
+  if (!ring_.clearAll()) {
+    return;
+  }
+  nvs_.factoryReset();
+  config_ = NvsConfig{};
+  device_revoked_ = false;
+  last_buffer_full_buzz_ms_ = std::nullopt;
+  cooldown_ = DuplicateCooldownState{};
+  client_.setDeviceToken("");
+  enterUnprovisioned(now_ms);
+}
+
+void ScannerController::executeWifiSetupFromHold(uint64_t now_ms) {
+  wifi_update_mode_ = true;
+  portal_.start(ap_suffix_);
+  portal_active_ = true;
+  ui_screen_ = UiScreen::S_WifiSetup;
+  state_.wakeBacklight(now_ms);
+  render(now_ms);
+}
+
+void ScannerController::onModeButtonDown(uint64_t now_ms) {
+  mode_button_tracker_.onPress(now_ms);
+  mode_button_shown_phase_ = std::nullopt;
+}
+
+void ScannerController::onModeButtonHoldPoll(uint64_t now_ms) {
+  if (!mode_button_tracker_.isDown()) {
+    return;
+  }
+  if (mode_button_tracker_.heldMs(now_ms) < 500) {
+    return;
+  }
+  if (const auto phase = mode_button_tracker_.onHoldProgress(now_ms)) {
+    if (!mode_button_shown_phase_.has_value() || *mode_button_shown_phase_ != *phase) {
+      mode_button_shown_phase_ = *phase;
+      applyModeButtonHoldPhase(*phase, now_ms);
+    }
+  }
+}
+
+void ScannerController::onModeButtonUp(uint64_t now_ms) {
+  const ModeButtonReleaseAction action = mode_button_tracker_.onRelease(now_ms);
+  clearModeButtonHoldUi();
+  switch (action) {
+    case ModeButtonReleaseAction::ShortPress:
+      onModeButtonShortPress(now_ms);
+      break;
+    case ModeButtonReleaseAction::WifiSetup:
+      executeWifiSetupFromHold(now_ms);
+      break;
+    case ModeButtonReleaseAction::FactoryReset:
+      executeFactoryResetFromHold(now_ms);
+      break;
+    case ModeButtonReleaseAction::None:
+      break;
   }
 }
 
@@ -489,25 +655,35 @@ void ScannerController::onModeButtonShortPress(uint64_t now_ms) {
   }
 }
 
+void ScannerController::onModeButtonHoldTick(uint64_t hold_ms, uint64_t now_ms) {
+  ModeButtonHoldPhase phase = ModeButtonHoldPhase::None;
+  if (hold_ms >= 10000) {
+    phase = ModeButtonHoldPhase::EraseWarning;
+  } else if (hold_ms >= 5000) {
+    phase = ModeButtonHoldPhase::WifiSetupHold;
+  }
+  if (phase == ModeButtonHoldPhase::None) {
+    if (mode_button_shown_phase_.has_value()) {
+      clearModeButtonHoldUi();
+      render(now_ms);
+    }
+    return;
+  }
+  if (!mode_button_shown_phase_.has_value() || *mode_button_shown_phase_ != phase) {
+    mode_button_shown_phase_ = phase;
+    applyModeButtonHoldPhase(phase, now_ms);
+  }
+}
+
 void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
+  clearModeButtonHoldUi();
   const ButtonHoldGesture gesture = ScannerState::classifyButtonHold(hold_ms);
   if (gesture == ButtonHoldGesture::FactoryReset) {
-    nvs_.factoryReset();
-    config_ = NvsConfig{};
-    device_revoked_ = false;
-    last_buffer_full_buzz_ms_ = std::nullopt;
-    cooldown_ = DuplicateCooldownState{};
-    ring_.clearAll();
-    client_.setDeviceToken("");
-    enterUnprovisioned(now_ms);
+    executeFactoryResetFromHold(now_ms);
     return;
   }
   if (gesture == ButtonHoldGesture::WifiUpdate) {
-    wifi_update_mode_ = true;
-    portal_.start(ap_suffix_);
-    portal_active_ = true;
-    state_.wakeBacklight(now_ms);
-    render(now_ms);
+    executeWifiSetupFromHold(now_ms);
   }
 }
 
@@ -539,9 +715,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   ParsedDeviceScanResponse parsed;
   const HttpCallResult res = client_.flushBatch(batch, boot_id_, now_ms, parsed);
   if (res.http_status == 401 || parsed.unauthorized) {
-    device_revoked_ = true;
-    play(AudioCue::TripleErrorBuzz);
-    render(now_ms);
+    handleDeviceDisconnected(now_ms);
     return;
   }
   if (httpFailureIsRetryable(res.http_status, res.transport_ok)) {
@@ -577,9 +751,7 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
                                                    ring_.count(), battery, ps.charging, hb);
   wifi_online_ = res.transport_ok;
   if (res.http_status == 401) {
-    device_revoked_ = true;
-    play(AudioCue::TripleErrorBuzz);
-    render(now_ms);
+    handleDeviceDisconnected(now_ms);
     return;
   }
   if (hb.parse_ok && hb.config.config_version > config_.config_version) {

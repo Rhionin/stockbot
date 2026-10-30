@@ -63,12 +63,14 @@ class M5GfxDisplay final : public HalDisplay {
 
     canvas.fillRect(0, 28, 240, 76, 0x1082);  // #0F172A
     canvas.setTextColor(0xFFDE, 0x1082);
+    canvas.setTextSize(2);
     canvas.setCursor(10, 38);
     canvas.print(bands.band2_line1.c_str());
     if (!bands.band2_line2.empty()) {
-      canvas.setCursor(10, 66);
+      canvas.setCursor(10, 54);
       canvas.print(bands.band2_line2.c_str());
     }
+    canvas.setTextSize(1);
 
     canvas.fillRect(0, 104, 240, 1, 0x3166);
     canvas.fillRect(0, 105, 240, 30, 0x3166);  // #1E293B approx

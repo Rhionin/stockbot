@@ -21,6 +21,7 @@ struct PairCompleteParsed {
   std::string device_id;
   std::string device_token;
   std::string household_id;
+  std::string household_name;
   DeviceHubConfigParsed config;
   uint32_t heartbeat_seconds = 60;
 };
@@ -86,5 +87,11 @@ std::string buildHeartbeatRequestJson(const std::string& hub_version, const std:
 bool parseHeartbeatResponseJson(int http_status, const std::string& body, HeartbeatParsed& out);
 
 bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out);
+
+bool parseApiErrorCode(const std::string& body, std::string& code_out);
+
+bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body);
+bool pairingCompleteFailureIsRateLimited(bool transport_ok, int http_status, const std::string& body);
+bool pairingCompleteFailureIsClientRejected(bool transport_ok, int http_status, const std::string& body);
 
 }  // namespace stockbot

@@ -885,9 +885,13 @@ func (s *stage1) serveCompletePairing(w http.ResponseWriter, r *http.Request) {
 		DeviceID         string `json:"deviceId"`
 		Label            string `json:"label,omitempty"`
 		Token            string `json:"token"`
+		HouseholdName    string `json:"householdName,omitempty"`
 		Config           any    `json:"config,omitempty"`
 		HeartbeatSeconds int    `json:"heartbeatSeconds,omitempty"`
 	}{DeviceID: paired.DeviceID, Label: paired.Label, Token: paired.Token}
+	if name, err := s.svc.HouseholdName(r.Context(), paired.HouseholdID); err == nil {
+		resp.HouseholdName = name
+	}
 	if paired.Hub {
 		cfg, err := s.svc.HubConfigForDevice(r.Context(), paired.HouseholdID, paired.DeviceID, s.stockIn, s.stockOut)
 		if err != nil {
