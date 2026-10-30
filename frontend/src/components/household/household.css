@@ -39,6 +39,29 @@
   max-width: 42rem;
 }
 
+.admin-household-name {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.admin-household-stats {
+  font-size: var(--mantine-font-size-sm);
+}
+
+.admin-household-stat-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.admin-household-stat-part {
+  white-space: nowrap;
+}
+
+.admin-household-retry {
+  min-height: 44px;
+}
+
 .household-list,
 .device-list {
   list-style: none;

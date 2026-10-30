@@ -245,8 +245,12 @@ describe('HouseholdGate', () => {
         </HouseholdGate>
       </MantineProvider>,
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Load products' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(SESSION_EXPIRED_SENTENCE);
+    await screen.findByRole('button', { name: 'Load products' });
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Load products' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(SESSION_EXPIRED_SENTENCE);
+    });
     expect(screen.queryByRole('button', { name: 'Load products' })).not.toBeInTheDocument();
   });
 

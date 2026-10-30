@@ -103,6 +103,15 @@ func TestOperatorHouseholdsAndRenameHousehold(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("operator list %d %s", rec.Code, rec.Body.String())
 	}
+	rawBody := rec.Body.String()
+	for _, needle := range []string{"dee@pantry.test", "Dee", loftUserID, "bea@pantry.test"} {
+		if strings.Contains(rawBody, needle) {
+			t.Fatalf("operator households leaked PII %q in %s", needle, rawBody)
+		}
+	}
+	if strings.Contains(rawBody, `"members"`) {
+		t.Fatalf("operator households must not include members key: %s", rawBody)
+	}
 	var payload struct {
 		Households []auth.OperatorHouseholdSummary
 	}
@@ -119,7 +128,7 @@ func TestOperatorHouseholdsAndRenameHousehold(t *testing.T) {
 	if row := byID[primary]; row.Name == "" || !row.IsPrimary || row.ProductCount != 1 || row.ItemsOnHand != 1 || row.PendingScans != 1 || row.LastActivityAt == "" {
 		t.Fatalf("primary metrics %#v", row)
 	}
-	if row := byID[loftHouse]; row.MemberCount != 1 || row.ProductCount != 1 || len(row.Members) != 1 || row.Members[0].Email != "dee@pantry.test" {
+	if row := byID[loftHouse]; row.MemberCount != 1 || row.ProductCount != 1 {
 		t.Fatalf("loft %#v", row)
 	}
 	if row := byID[deletedHouse]; row.DeletedAt == "" || row.PurgeAfter == "" {

@@ -1619,14 +1619,6 @@ export const INVITE_ACCEPT_PATH = '/api/invites/accept';
 export const OPERATOR_HOUSEHOLD_INVITES_PATH = '/api/operator/household-invites';
 export const OPERATOR_HOUSEHOLDS_PATH = '/api/operator/households';
 
-export interface OperatorHouseholdMemberView {
-  userId: string;
-  email: string;
-  name: string;
-  role: HouseholdRole;
-  createdAt: string;
-}
-
 export interface OperatorHouseholdView {
   id: string;
   name: string;
@@ -1635,11 +1627,20 @@ export interface OperatorHouseholdView {
   createdAt: string;
   deletedAt?: string;
   purgeAfter?: string;
-  members: OperatorHouseholdMemberView[];
   memberCount: number;
   productCount: number;
   itemsOnHand: number;
   pendingScans: number;
+  /** Non-revoked devices currently online (same presence window as GET /api/devices). */
+  scannersOnline: number;
+  /** Non-revoked devices not currently online. */
+  scannersOffline: number;
+  /**
+   * Scan units received in the rolling seven days before the server clock. Each unit
+   * is counted once: unit_count on scan_entries in the window, plus device receipts
+   * with no linked scan_entries row.
+   */
+  scansThisWeek: number;
   lastActivityAt?: string;
 }
 export const DEVICES_PATH = '/api/devices';

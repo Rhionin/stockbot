@@ -306,15 +306,17 @@ describe('household management', () => {
         return Promise.resolve(json({
           households: [{
             id: 'hh-9',
-            name: 'Loft',
+            name: 'Test Household',
             isPrimary: false,
             restockMode: 'auto',
             createdAt: '2026-04-01T00:00:00Z',
-            members: [{ userId: 'user-9', email: 'dee@example.com', name: 'Dee', role: 'owner', createdAt: '2026-04-01T00:00:00Z' }],
             memberCount: 1,
             productCount: 2,
             itemsOnHand: 3,
             pendingScans: 1,
+            scannersOnline: 1,
+            scannersOffline: 0,
+            scansThisWeek: 1,
             lastActivityAt: '2026-04-02T00:00:00Z',
           }],
         }));
@@ -323,8 +325,10 @@ describe('household management', () => {
     }));
     const { unmount: unmountOperator } = renderStage(<HouseholdsPage />, { ...session('owner'), operator: true });
     expect(await screen.findByTestId('operator-households-section')).toBeVisible();
-    expect(screen.getByText('Loft')).toBeVisible();
-    expect(screen.getByText('dee@example.com')).toBeVisible();
+    expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
+    expect(screen.getByText(/Scanners: 1 online/)).toBeVisible();
+    expect(screen.getByText(/1 scan this week/)).toBeVisible();
+    expect(screen.queryByText('dee@example.com')).not.toBeInTheDocument();
     expect(operatorList).toHaveBeenCalled();
     unmountOperator();
 
