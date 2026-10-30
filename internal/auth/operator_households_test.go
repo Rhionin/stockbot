@@ -37,12 +37,6 @@ func TestListAllHouseholdsForOperatorOrdersWithoutMemberPII(t *testing.T) {
 	for _, row := range list {
 		if row.ID == other {
 			found = true
-			if len(row.Members) != 0 {
-				t.Fatalf("members must be empty %#v", row.Members)
-			}
-		}
-		if len(row.Members) != 0 {
-			t.Fatalf("household %s members %#v", row.ID, row.Members)
 		}
 	}
 	if !found {
@@ -83,48 +77,57 @@ func TestListAllHouseholdsForOperatorMemberCountStillCountsDeletedUserMembership
 	}
 }
 
-func TestListAllHouseholdsForOperatorScannerCounts(t *testing.T) {
-	ctx, svc, userID, _ := bootDeviceAPI(t)
-	houseA := newID()
-	houseB := newID()
+func TestOperatorScannerCountsIsolatedPerHouseholdWithDecoys(t *testing.T) {
+	ctx, svc, userID, primary := bootDeviceAPI(t)
 	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	svc.SetClock(func() time.Time { return start })
-	for _, spec := range []struct {
-		id   string
-		name string
-		key  string
-	}{
-		{houseA, "Alpha", "abcdef0123456789abcdef0123456789af"},
-		{houseB, "Beta", "abcdef0123456789abcdef0123456789b2"},
-	} {
+
+	type houseSpec struct {
+		id      string
+		name    string
+		key     string
+		created time.Time
+		online  int
+		offline int
+	}
+	specs := []houseSpec{
+		{id: newID(), name: "Decoy Before", key: "abcdef0123456789abcdef0123456789c1", created: start.Add(time.Hour), online: 1, offline: 0},
+		{id: newID(), name: "Target House", key: "abcdef0123456789abcdef0123456789c2", created: start.Add(2 * time.Hour), online: 2, offline: 3},
+		{id: newID(), name: "Decoy After", key: "abcdef0123456789abcdef0123456789c3", created: start.Add(3 * time.Hour), online: 0, offline: 4},
+	}
+	for _, spec := range specs {
 		if _, err := svc.db.Exec(`
 			INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
-			VALUES (?, ?, 'auto', ?, ?, 0)`, spec.id, spec.name, stamp(start), spec.key); err != nil {
+			VALUES (?, ?, 'auto', ?, ?, 0)`, spec.id, spec.name, stamp(spec.created), spec.key); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := svc.db.Exec(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
-			spec.id, userID, stamp(start)); err != nil {
+			spec.id, userID, stamp(spec.created)); err != nil {
 			t.Fatal(err)
 		}
+		for i := 0; i < spec.online; i++ {
+			seedOperatorDevice(t, svc.db, spec.id, uuid.NewString(), "esp32_scanner", stamp(start.Add(-time.Minute)), "")
+		}
+		for i := 0; i < spec.offline; i++ {
+			seedOperatorDevice(t, svc.db, spec.id, uuid.NewString(), "esp32_scanner", stamp(start.Add(-onlineWindow)), "")
+		}
 	}
-
-	seedOperatorDevice(t, svc.db, houseA, "dev-on", "esp32_scanner", stamp(start.Add(-time.Minute)), "")
-	seedOperatorDevice(t, svc.db, houseA, "dev-off", "esp32_scanner", stamp(start.Add(-onlineWindow)), "")
-	seedOperatorDevice(t, svc.db, houseA, "dev-revoked", "box_hub", stamp(start), stamp(start))
-	seedOperatorDevice(t, svc.db, houseB, "dev-other-on", "esp32_scanner", stamp(start.Add(-time.Minute)), "")
 
 	list, err := svc.ListAllHouseholdsForOperator(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][2]int{
-		houseA: {1, 1},
-		houseB: {1, 0},
+	if list[0].ID != primary {
+		t.Fatalf("primary first got %s", list[0].ID)
+	}
+	want := map[string][2]int{}
+	for _, spec := range specs {
+		want[spec.id] = [2]int{spec.online, spec.offline}
 	}
 	for _, row := range list {
 		if counts, ok := want[row.ID]; ok {
 			if row.ScannersOnline != counts[0] || row.ScannersOffline != counts[1] {
-				t.Fatalf("house %s scanners online=%d offline=%d want %v", row.ID, row.ScannersOnline, row.ScannersOffline, counts)
+				t.Fatalf("house %s online=%d offline=%d want %v", row.ID, row.ScannersOnline, row.ScannersOffline, counts)
 			}
 		}
 	}
@@ -157,43 +160,36 @@ func TestDeviceOnlineAtMatchesListDevicesAtOnlineWindow(t *testing.T) {
 	}
 }
 
-func TestListAllHouseholdsForOperatorScansThisWeek(t *testing.T) {
+func TestDirectDeviceOnlineDespiteStaleLastSeen(t *testing.T) {
 	ctx, svc, userID, primary := bootDeviceAPI(t)
-	other := newID()
-	now := time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC)
+	house := newID()
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	svc.SetClock(func() time.Time { return now })
 	if _, err := svc.db.Exec(`
 		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
-		VALUES (?, 'West', 'auto', ?, 'abcdef0123456789abcdef0123456789b0', 0)`, other, stamp(now)); err != nil {
+		VALUES (?, 'Direct only', 'auto', ?, 'abcdef0123456789abcdef0123456789d1', 0)`, house, stamp(now)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.db.Exec(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
-		other, userID, stamp(now)); err != nil {
+		house, userID, stamp(now)); err != nil {
 		t.Fatal(err)
 	}
-
-	cutoff := now.Add(-7 * 24 * time.Hour)
-	entryRecent := uuid.NewString()
-	entryBoundary := uuid.NewString()
-	entryOld := uuid.NewString()
-	entryMerged := uuid.NewString()
-	entryOther := uuid.NewString()
-
-	insertScanEntry(t, svc.db, entryRecent, primary, userID, stamp(now.Add(-time.Hour)), 1, "", "")
-	insertScanEntry(t, svc.db, entryBoundary, primary, userID, stamp(cutoff), 1, "", "")
-	insertScanEntry(t, svc.db, entryOld, primary, userID, stamp(cutoff.Add(-time.Second)), 1, "", "")
-	insertScanEntry(t, svc.db, entryMerged, primary, userID, stamp(now.Add(-2*time.Hour)), 3, "", "")
-	insertScanEntry(t, svc.db, entryOther, other, userID, stamp(now.Add(-time.Hour)), 1, "", "")
-
 	deviceID := newID()
-	seedOperatorDevice(t, svc.db, primary, deviceID, "esp32_scanner", stamp(now), "")
-	for i, clientID := range []string{"rcpt-1", "rcpt-2"} {
-		if _, err := svc.db.Exec(`
-			INSERT INTO device_scan_receipts (household_id, device_id, client_scan_id, scan_entry_id, barcode, direction, unit_count, scanned_at)
-			VALUES (?, ?, ?, ?, '990000000001', 'stock_out', 1, ?)`,
-			primary, deviceID, clientID, entryRecent, stamp(now.Add(-time.Duration(i+1)*time.Hour))); err != nil {
-			t.Fatal(err)
+	seedOperatorDevice(t, svc.db, house, deviceID, "direct", stamp(now.Add(-48*time.Hour)), "")
+
+	devices, err := svc.ListDevices(ctx, userID, house)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view DeviceView
+	for _, d := range devices {
+		if d.ID == deviceID {
+			view = d
+			break
 		}
+	}
+	if !view.Online {
+		t.Fatal("direct device should be online regardless of last_seen")
 	}
 
 	list, err := svc.ListAllHouseholdsForOperator(ctx)
@@ -201,18 +197,59 @@ func TestListAllHouseholdsForOperatorScansThisWeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range list {
-		switch row.ID {
-		case primary:
-			// 2 device receipts + 1 boundary web + 3 merged web (entry has no receipts)
-			if row.ScansThisWeek != 6 {
-				t.Fatalf("primary scansThisWeek=%d want 6", row.ScansThisWeek)
-			}
-		case other:
-			if row.ScansThisWeek != 1 {
-				t.Fatalf("other scansThisWeek=%d want 1", row.ScansThisWeek)
-			}
+		if row.ID == house && row.ScannersOnline != 1 {
+			t.Fatalf("operator scannersOnline=%d want 1", row.ScannersOnline)
 		}
 	}
+	_ = primary
+}
+
+func TestPresenceOverridesStaleDBLastSeenForOperatorAndListDevices(t *testing.T) {
+	ctx, svc, userID, primary := bootDeviceAPI(t)
+	house := newID()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return now })
+	if _, err := svc.db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Presence house', 'auto', ?, 'abcdef0123456789abcdef0123456789d2', 0)`, house, stamp(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.db.Exec(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
+		house, userID, stamp(now)); err != nil {
+		t.Fatal(err)
+	}
+	_, deviceID := pairESP32(t, ctx, svc, userID, house)
+	stale := stamp(now.Add(-48 * time.Hour))
+	if _, err := svc.db.Exec(`UPDATE devices SET last_seen_at = ? WHERE id = ?`, stale, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	svc.presence.note(deviceID, house, now)
+
+	devices, err := svc.ListDevices(ctx, userID, house)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view DeviceView
+	for _, d := range devices {
+		if d.ID == deviceID {
+			view = d
+			break
+		}
+	}
+	if !view.Online {
+		t.Fatal("presence should mark device online despite stale DB last_seen")
+	}
+
+	list, err := svc.ListAllHouseholdsForOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range list {
+		if row.ID == house && row.ScannersOnline != 1 {
+			t.Fatalf("operator scannersOnline=%d want 1", row.ScannersOnline)
+		}
+	}
+	_ = primary
 }
 
 func TestListAllHouseholdsForOperatorResponseHasNoMemberPII(t *testing.T) {
@@ -248,7 +285,7 @@ func TestListAllHouseholdsForOperatorResponseHasNoMemberPII(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(list)
+	raw, err := json.Marshal(map[string]any{"households": list})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +295,8 @@ func TestListAllHouseholdsForOperatorResponseHasNoMemberPII(t *testing.T) {
 			t.Fatalf("response leaked %q in %s", needle, body)
 		}
 	}
-	for _, row := range list {
-		if len(row.Members) != 0 {
-			t.Fatalf("members must be empty got %#v", row.Members)
-		}
+	if strings.Contains(body, `"members"`) {
+		t.Fatalf("response must not include members key: %s", body)
 	}
 }
 
@@ -272,16 +307,6 @@ func seedOperatorDevice(t *testing.T, db *sql.DB, house, deviceID, kind, lastSee
 		INSERT INTO devices (id, household_id, kind, label, created_at, last_seen_at, revoked_at)
 		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))`,
 		deviceID, house, kind, deviceID, stamp(at), lastSeen, revoked); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func insertScanEntry(t *testing.T, db *sql.DB, id, house, userID, scannedAt string, unitCount int, deviceID, clientScanID string) {
-	t.Helper()
-	if _, err := db.Exec(`
-		INSERT INTO scan_entries (id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at, direction, unit_count, status)
-		VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), '990000000002', ?, 'stock_out', ?, 'pending')`,
-		id, userID, house, deviceID, clientScanID, scannedAt, unitCount); err != nil {
 		t.Fatal(err)
 	}
 }

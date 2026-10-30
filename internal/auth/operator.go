@@ -16,17 +16,17 @@ type OperatorHouseholdSummary struct {
 	CreatedAt       string `json:"createdAt"`
 	DeletedAt       string `json:"deletedAt,omitempty"`
 	PurgeAfter      string `json:"purgeAfter,omitempty"`
-	Members         []any  `json:"members"`
 	MemberCount     int    `json:"memberCount"`
 	ProductCount    int    `json:"productCount"`
 	ItemsOnHand     int    `json:"itemsOnHand"`
 	PendingScans    int    `json:"pendingScans"`
 	ScannersOnline  int    `json:"scannersOnline"`
 	ScannersOffline int    `json:"scannersOffline"`
-	// ScansThisWeek counts physical scans received in the rolling seven-day window
-	// ending at the service clock. Device scans come from device_scan_receipts; web
-	// and API scans use unit_count on scan_entries that have no device receipts.
-	ScansThisWeek    int    `json:"scansThisWeek"`
+	// ScansThisWeek counts scan units received in the rolling seven-day window ending
+	// at the service clock. Each unit is counted once: SUM(unit_count) on scan_entries
+	// in the window, plus device_scan_receipts that have no linked scan_entries row
+	// (for example a failed ingest before a card is written).
+	ScansThisWeek  int    `json:"scansThisWeek"`
 	LastActivityAt   string `json:"lastActivityAt,omitempty"`
 }
 
@@ -75,7 +75,6 @@ func (s *Service) ListAllHouseholdsForOperator(ctx context.Context) ([]OperatorH
 		row.DeletedAt = strings.TrimSpace(deleted)
 		row.PurgeAfter = strings.TrimSpace(purge)
 		row.LastActivityAt = strings.TrimSpace(lastActivity)
-		row.Members = []any{}
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -130,52 +129,54 @@ func (s *Service) attachOperatorDeviceCounts(ctx context.Context, households []O
 
 func (s *Service) attachOperatorScansThisWeek(ctx context.Context, households []OperatorHouseholdSummary) error {
 	now := s.clock()
-	cutoff := stamp(now.Add(-7 * 24 * time.Hour))
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	receiptCutoff := stamp(cutoff)
 	counts := map[string]int{}
 
-	receiptRows, err := s.db.QueryContext(ctx, `
-		SELECT household_id, COUNT(*)
-		FROM device_scan_receipts
+	entryRows, err := s.db.QueryContext(ctx, `
+		SELECT household_id, COALESCE(SUM(unit_count), 0)
+		FROM scan_entries
 		WHERE scanned_at >= ?
 		GROUP BY household_id`, cutoff)
 	if err != nil {
 		return AsError(err)
 	}
-	defer receiptRows.Close()
-	for receiptRows.Next() {
+	defer entryRows.Close()
+	for entryRows.Next() {
 		var houseID string
 		var n int
-		if err := receiptRows.Scan(&houseID, &n); err != nil {
+		if err := entryRows.Scan(&houseID, &n); err != nil {
 			return AsError(err)
 		}
 		counts[houseID] += n
 	}
-	if err := receiptRows.Err(); err != nil {
+	if err := entryRows.Err(); err != nil {
 		return AsError(err)
 	}
 
-	webRows, err := s.db.QueryContext(ctx, `
-		SELECT e.household_id, COALESCE(SUM(e.unit_count), 0)
-		FROM scan_entries e
-		WHERE e.scanned_at >= ?
-		  AND NOT EXISTS (
-		    SELECT 1 FROM device_scan_receipts r
-		    WHERE r.household_id = e.household_id AND r.scan_entry_id = e.id
-		  )
-		GROUP BY e.household_id`, cutoff)
+	orphanRows, err := s.db.QueryContext(ctx, `
+		SELECT r.household_id, COALESCE(SUM(r.unit_count), 0)
+		FROM device_scan_receipts r
+		WHERE r.scanned_at >= ?
+		  AND (TRIM(COALESCE(r.scan_entry_id, '')) = ''
+		    OR NOT EXISTS (
+		      SELECT 1 FROM scan_entries e
+		      WHERE e.household_id = r.household_id AND e.id = r.scan_entry_id
+		    ))
+		GROUP BY r.household_id`, receiptCutoff)
 	if err != nil {
 		return AsError(err)
 	}
-	defer webRows.Close()
-	for webRows.Next() {
+	defer orphanRows.Close()
+	for orphanRows.Next() {
 		var houseID string
 		var n int
-		if err := webRows.Scan(&houseID, &n); err != nil {
+		if err := orphanRows.Scan(&houseID, &n); err != nil {
 			return AsError(err)
 		}
 		counts[houseID] += n
 	}
-	if err := webRows.Err(); err != nil {
+	if err := orphanRows.Err(); err != nil {
 		return AsError(err)
 	}
 
