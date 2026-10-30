@@ -230,5 +230,6 @@ describe('pairing dialog typography and padding (#456 follow-up)', () => {
     expect(HOUSEHOLD_CSS).toMatch(/\.pairing-barcode-too-small-hint[\s\S]*font-size:\s*14px/);
     expect(HOUSEHOLD_CSS).toMatch(/@media \(max-width: 399px\)[\s\S]*padding-left:\s*8px/);
     expect(HOUSEHOLD_CSS).toMatch(/@media \(min-width: 360px\) and \(max-width: 399px\)[\s\S]*padding-left:\s*16px/);
+    expect(HOUSEHOLD_CSS).toMatch(/@media \(max-width: 319px\)[\s\S]*\.pairing-spaced[\s\S]*white-space:\s*normal/);
   });
 });

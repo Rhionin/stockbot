@@ -276,6 +276,30 @@ test('on-screen pairing barcode hides the symbol when the frame is too narrow', 
   await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
 })
 
+const SPACED_PAIRING = PAIRING.split('').join(' ')
+
+test('at 230px viewport shows full pairing code text without barcode when symbol does not fit', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 230, height: 700 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  const quietZone = dialog.locator('.pairing-screen-only .code128-quiet-zone')
+  await expect(quietZone).toHaveAttribute('data-barcode-hidden', 'true')
+  await expect(dialog.locator('.pairing-screen-only svg.pairing-code128')).toHaveCount(0)
+  await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+  const pairingCode = dialog.locator('.pairing-spaced')
+  await expect(pairingCode).toHaveText(SPACED_PAIRING)
+  await expect(pairingCode.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+  await expect(pairingCode.evaluate((el) => {
+    const dialogEl = el.closest('[role="dialog"]')
+    if (dialogEl == null) return false
+    const codeRect = el.getBoundingClientRect()
+    const dialogRect = dialogEl.getBoundingClientRect()
+    return codeRect.left >= dialogRect.left - 1 && codeRect.right <= dialogRect.right + 1
+  })).resolves.toBe(true)
+})
+
 for (const dpr of [1] as const) {
   test(`320px pairing barcode frame stays wide and unclipped at DPR ${dpr}`, async ({ browser }) => {
     resetStage()

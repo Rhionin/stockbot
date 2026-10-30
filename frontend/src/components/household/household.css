@@ -163,6 +163,17 @@
   }
 }
 
+/* Below 320px (the no-barcode case) the 18px code would be clipped; keep every character visible. */
+@media (max-width: 319px) {
+  .pairing-spaced,
+  .mantine-Text-root.pairing-spaced {
+    font-size: 16px;
+    letter-spacing: 0;
+    white-space: normal;
+    overflow: visible;
+  }
+}
+
 .mantine-Modal-root:has(.pairing-dialog-modal-body) .pairing-dialog-close {
   min-width: 44px;
   min-height: 44px;
