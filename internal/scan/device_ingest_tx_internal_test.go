@@ -33,6 +33,52 @@ func TestGetScanEntryTxMissingReturnsNil(t *testing.T) {
 	}
 }
 
+func TestFindMergeableScanEntryTxNullDirectionMatchesNil(t *testing.T) {
+	queue, db, scope := newTestQueueInternal(t)
+	ctx := context.Background()
+	at := time.Now().UTC()
+	insertRawScanEntry(t, db, ScanEntry{
+		ID: "scan-nil-dir", UserID: scope.HouseholdID(), Barcode: "4000000000666",
+		ScannedAt: at, UnitCount: 1, Status: Pending,
+	})
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	got, err := queue.findMergeableScanEntryTx(ctx, scope, tx, scope.HouseholdID(), "4000000000666", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != "scan-nil-dir" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestFindMergeableScanEntryTxStockOutDoesNotMatchStockIn(t *testing.T) {
+	queue, db, scope := newTestQueueInternal(t)
+	ctx := context.Background()
+	at := time.Now().UTC()
+	in := StockIn
+	out := StockOut
+	insertRawScanEntry(t, db, ScanEntry{
+		ID: "scan-in", UserID: scope.HouseholdID(), Barcode: "4000000000777",
+		ScannedAt: at, Direction: &in, UnitCount: 1, Status: Pending,
+	})
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	got, err := queue.findMergeableScanEntryTx(ctx, scope, tx, scope.HouseholdID(), "4000000000777", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("want nil, got %+v", got)
+	}
+}
+
 func TestCreateScanEntryTxMergeDefaultsZeroUnitCount(t *testing.T) {
 	queue, db, scope := newTestQueueInternal(t)
 	ctx := context.Background()

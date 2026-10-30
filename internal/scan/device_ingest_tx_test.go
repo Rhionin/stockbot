@@ -2,16 +2,40 @@ package scan_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func seedQueueItemWithStock(t *testing.T, ctx context.Context, db *sql.DB, scope tenant.Scope, catalog *product.Catalog, productID, itemID, barcode string, onHand int) {
+	t.Helper()
+	if err := catalog.CreateProduct(ctx, product.Product{ID: productID, Name: "Shelf", Category: "Pantry", UnitOfMeasure: "each"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpsertBarcodeMapping(ctx, barcode, productID, "global", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO items (id, user_id, product_id, household_id, shelved) VALUES (?, ?, ?, ?, 0)`,
+		itemID, scope.HouseholdID(), productID, scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	for i := 0; i < onHand; i++ {
+		if _, err := db.ExecContext(ctx, `INSERT INTO item_instances (id, item_id, household_id, stock_in_at) VALUES (?, ?, ?, ?)`,
+			fmt.Sprintf("%s-inst-%d", itemID, i), itemID, scope.HouseholdID(), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestCreateScanEntryTxMergesPendingCard(t *testing.T) {
 	queue, db, scope := newTestQueue(t)
@@ -112,22 +136,27 @@ func TestPublishAfterIngestPublishesScanAndInventory(t *testing.T) {
 func TestPublishAfterIngestSkipsInventoryWithoutStockMove(t *testing.T) {
 	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
+	catalog := product.NewCatalog(db)
+	pantry := inventory.NewPantry(db)
+	queue.Pantry = pantry
 	b := events.NewBroadcaster()
 	queue.Broadcaster = b
 	msgs, unsub := b.SubscribeHousehold(scope.HouseholdID(), "", "")
 	defer unsub()
-	catalog := product.NewCatalog(db)
-	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-scan-only", Name: "ScanOnly", Category: "Pantry", UnitOfMeasure: "each"}); err != nil {
-		t.Fatal(err)
-	}
-	productID := "prod-scan-only"
+
+	const productID = "prod-inv-guard"
+	const itemID = "item-inv-guard"
+	const barcode = "4000000000303"
+	seedQueueItemWithStock(t, ctx, db, scope, catalog, productID, itemID, barcode, 1)
+
+	productIDRef := productID
 	dir := scan.StockIn
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	entry, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
-		UserID: "device-1", Barcode: "4000000000303", ScannedAt: time.Now().UTC(), Direction: &dir, UnitCount: 1, ProductID: &productID,
+		UserID: scope.HouseholdID(), Barcode: barcode, ScannedAt: time.Now().UTC(), Direction: &dir, UnitCount: 1, ProductID: &productIDRef,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,12 +164,23 @@ func TestPublishAfterIngestSkipsInventoryWithoutStockMove(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := queue.PublishAfterIngest(ctx, scope.HouseholdID(), entry.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	msg := <-msgs
-	if msg.EventType != "scan" {
-		t.Fatalf("event %q", msg.EventType)
+	var scanSeen bool
+	deadline := time.After(2 * time.Second)
+	for !scanSeen {
+		select {
+		case msg := <-msgs:
+			if msg.EventType == "scan" {
+				scanSeen = true
+			} else if msg.EventType == "inventory" {
+				t.Fatalf("unexpected inventory with stockMoved=false")
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for scan event")
+		}
 	}
 	for {
 		select {
@@ -149,7 +189,23 @@ func TestPublishAfterIngestSkipsInventoryWithoutStockMove(t *testing.T) {
 				t.Fatalf("unexpected inventory event %#v", extra)
 			}
 		case <-time.After(50 * time.Millisecond):
-			return
+			goto withStock
+		}
+	}
+withStock:
+	if err := queue.PublishAfterIngest(ctx, scope.HouseholdID(), entry.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	var invSeen bool
+	deadline = time.After(2 * time.Second)
+	for !invSeen {
+		select {
+		case msg := <-msgs:
+			if msg.EventType == "inventory" {
+				invSeen = true
+			}
+		case <-deadline:
+			t.Fatalf("stockMoved=true: inventory event missing")
 		}
 	}
 }
@@ -177,4 +233,44 @@ func TestCreateScanEntryTxRequiresScope(t *testing.T) {
 		t.Fatal("expected scope error")
 	}
 	_ = scope
+}
+
+func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	ctx := context.Background()
+	catalog := product.NewCatalog(db)
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-bump", Name: "Bump", Category: "Pantry", UnitOfMeasure: "each"}); err != nil {
+		t.Fatal(err)
+	}
+	productID := "prod-bump"
+	dir := scan.StockIn
+	at := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	before, err := changes.Current(ctx, db, scope.HouseholdID(), changes.ScopeScans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000505", ScannedAt: at, Direction: &dir, UnitCount: 1, ProductID: &productID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000505", ScannedAt: at.Add(time.Minute), Direction: &dir, UnitCount: 1, ProductID: &productID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Changed || out.Cursor == before {
+		t.Fatalf("merge path did not bump scans cursor: before %q after %+v", before, out)
+	}
 }

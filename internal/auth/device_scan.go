@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 )
 
 func (s *Service) insertScan(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
@@ -39,7 +40,12 @@ func (s *Service) insertScanWithProcessor(ctx context.Context, p Principal, item
 	}
 	if s.deviceIngestEvents != nil && created.ScanID != "" {
 		if err := s.deviceIngestEvents.PublishAfterIngest(ctx, p.HouseholdID, created.ScanID, created.Stock); err != nil {
-			return ScanResult{}, createdScan{}, AsError(err)
+			slog.Error("device ingest live publish failed",
+				"err", err,
+				"household_id", p.HouseholdID,
+				"device_id", p.DeviceID,
+				"scan_entry_id", created.ScanID,
+			)
 		}
 	}
 	return out, createdScan{ScanID: created.ScanID, Barcode: created.Barcode, stock: created.Stock}, nil

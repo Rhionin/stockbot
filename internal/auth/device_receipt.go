@@ -31,12 +31,6 @@ func (s *Service) recordDeviceScanReceipt(ctx context.Context, q queryer, p Prin
 	if lcd.ProductName != nil && *lcd.ProductName != "" {
 		productName = sql.NullString{String: *lcd.ProductName, Valid: true}
 	}
-	var dir any
-	if item.item.Direction == "" {
-		dir = nil
-	} else {
-		dir = item.item.Direction
-	}
 	res, err := q.ExecContext(ctx, `
 		UPDATE device_scan_receipts SET
 			scan_entry_id = ?, device_result_status = ?, device_on_hand = ?, device_queued_count = ?,
@@ -50,18 +44,7 @@ func (s *Service) recordDeviceScanReceipt(ctx context.Context, q queryer, p Prin
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		_, err = q.ExecContext(ctx, `
-			INSERT INTO device_scan_receipts (
-				household_id, device_id, client_scan_id, scan_entry_id, barcode, direction, unit_count,
-				scanned_at, device_result_status, device_on_hand, device_queued_count, device_delta,
-				device_backfilled, product_name
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			p.HouseholdID, p.DeviceID, item.item.ID, scanEntryID, item.barcode, dir, item.unit,
-			stamp(item.at), lcd.ScanStatus, lcd.OnHand, lcd.QueuedCount, lcd.Delta, boolToInt(lcd.Backfilled), productName,
-		)
-		if err != nil {
-			return AsError(err)
-		}
+		return validation()
 	}
 	_, err = q.ExecContext(ctx, `
 		UPDATE scan_entries SET device_id = ?, device_result_status = ?, device_on_hand = ?,
