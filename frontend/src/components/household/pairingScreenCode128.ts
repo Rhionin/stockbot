@@ -5,6 +5,19 @@ export const PAIRING_CODE128_QUIET_MODULES = 10;
 export const PAIRING_CODE128_MIN_MODULE_DEVICE_PX = 2;
 /** Maximum narrow-module width in CSS pixels on large screens. */
 export const PAIRING_CODE128_MAX_MODULE_CSS_PX = 2;
+/** On-screen frame widths that correspond to phone viewports 320–412px (after dialog padding). */
+export const PAIRING_CODE128_ONE_PX_FRAME_MIN_CSS = 280;
+export const PAIRING_CODE128_ONE_PX_FRAME_MAX_CSS = 420;
+
+export function pairingCode128AllowsOneDevicePxModule(
+  availableCssWidth: number,
+  devicePixelRatio: number,
+): boolean {
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  return dpr === 1
+    && availableCssWidth >= PAIRING_CODE128_ONE_PX_FRAME_MIN_CSS
+    && availableCssWidth <= PAIRING_CODE128_ONE_PX_FRAME_MAX_CSS;
+}
 
 export type PairingCode128Layout = {
   moduleCssPx: number;
@@ -65,6 +78,12 @@ export function computePairingCode128Layout(
     while (moduleDevicePx > 1 && (totalModules * moduleDevicePx) / dpr > availableCssWidth + 0.05) {
       moduleDevicePx -= 1;
     }
+    moduleCssPx = moduleDevicePx / dpr;
+  }
+
+  if (!pairingCode128AllowsOneDevicePxModule(availableCssWidth, dpr)
+    && moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
+    moduleDevicePx = PAIRING_CODE128_MIN_MODULE_DEVICE_PX;
     moduleCssPx = moduleDevicePx / dpr;
   }
 

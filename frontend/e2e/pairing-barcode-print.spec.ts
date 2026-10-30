@@ -213,6 +213,69 @@ for (const width of MOBILE_TOUCH_WIDTHS) {
   })
 }
 
+const MIN_PAIRING_FRAME_CSS_PX = 294
+
+for (const dpr of [1, 1.5] as const) {
+  test(`320px pairing barcode frame stays wide and unclipped at DPR ${dpr}`, async ({ browser }) => {
+    resetStage()
+    const context = await browser.newContext({
+      viewport: { width: 320, height: 700 },
+      deviceScaleFactor: dpr,
+    })
+    const page = await context.newPage()
+    await install(page)
+    await signInAndOpenHouseholdScannerPairing(page)
+    const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+    await expect(dialog).toBeVisible()
+    const frame = dialog.locator('.pairing-code128-frame');
+    const svg = dialog.locator('.pairing-screen-only svg.pairing-code128');
+    await expect(svg).toBeVisible()
+
+    const layout = await frame.evaluate((host) => {
+      const svgEl = host.querySelector('svg')
+      if (svgEl == null) return null
+      const hostRect = host.getBoundingClientRect()
+      const svgRect = svgEl.getBoundingClientRect()
+      const quiet = Number(svgEl.getAttribute('data-quiet-modules'))
+      const barModules = Number(svgEl.getAttribute('data-modules'))
+      const totalModules = barModules + 2 * quiet
+      const moduleCssPx = svgRect.width / totalModules
+      const rects = [...svgEl.querySelectorAll('rect')]
+      const firstX = Math.min(...rects.map((rect) => Number(rect.getAttribute('x'))))
+      const lastEnd = Math.max(...rects.map((rect) => Number(rect.getAttribute('x')) + Number(rect.getAttribute('width'))))
+      return {
+        frameWidth: hostRect.width,
+        svgWidth: svgRect.width,
+        scrollOverflow: host.scrollWidth > host.clientWidth + 1,
+        leftQuietModules: firstX,
+        rightQuietModules: totalModules - lastEnd,
+        moduleDevicePx: Number(svgEl.getAttribute('data-module-device-px')),
+        moduleCssPx,
+      }
+    })
+    expect(layout).not.toBeNull()
+    expect(layout!.frameWidth).toBeGreaterThanOrEqual(MIN_PAIRING_FRAME_CSS_PX)
+    expect(layout!.scrollOverflow).toBe(false)
+    expect(layout!.leftQuietModules).toBeGreaterThanOrEqual(10)
+    expect(layout!.rightQuietModules).toBeGreaterThanOrEqual(10)
+    expect(layout!.moduleDevicePx).toBeGreaterThanOrEqual(dpr === 1 ? 1 : PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+    if (dpr === 1) {
+      expect(layout!.moduleDevicePx).toBe(1)
+      await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+      await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCSS('font-size', '14px')
+    } else {
+      expect(layout!.moduleDevicePx).toBeGreaterThanOrEqual(2)
+      await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
+    }
+
+    if (dpr === 1) {
+      await expect(dialog.locator('.pairing-dialog-modal-body')).toHaveCSS('padding-left', '8px');
+    }
+    await assertRenderedQuietModules(svg);
+    await context.close()
+  })
+}
+
 test('setup sheet prints one Letter/A4 page through the real Print button', async ({ page }) => {
   test.setTimeout(90_000)
   resetStage()

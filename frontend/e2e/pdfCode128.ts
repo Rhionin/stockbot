@@ -130,7 +130,7 @@ export async function assertPdfDecodesCode128(pdf: Buffer, expected: string | st
   const needles = Array.isArray(expected) ? expected : [expected]
   const decoded = await decodeCode128ValuesFromPdf(pdf)
   for (const needle of needles) {
-    const match = decoded.some((value) => value === needle || value.includes(needle))
+    const match = decoded.some((value) => value === needle)
     if (!match) {
       throw new Error(`PDF barcode decode missing ${needle}; got ${decoded.join(', ')}`)
     }
@@ -171,14 +171,4 @@ export async function pdfVisibleText(pdf: Buffer): Promise<string> {
 export async function pdfContainsVisibleText(pdf: Buffer, needle: string): Promise<boolean> {
   const text = await pdfVisibleText(pdf)
   return text.includes(needle)
-}
-
-/** Smoke-test helper for local mutant verification. */
-export function readCssMutantFlag(): boolean {
-  try {
-    const css = readFileSync(new URL('../src/components/household/kitPrint.css', import.meta.url), 'utf8')
-    return /\.wall-sheet-symcode-print\s*\{[^}]*display:\s*none/.test(css)
-  } catch {
-    return false
-  }
 }

@@ -30,4 +30,11 @@ describe('setupSheetExpiryLine weekday suffix', () => {
       'Use within 10 minutes · expires at 7:00 AM (Tue)',
     );
   });
+
+  it('adds weekday when expiry crosses Denver midnight near 05:30Z (23:30 MDT)', () => {
+    vi.setSystemTime(new Date('2026-06-16T05:00:00.000Z'));
+    expect(setupSheetExpiryLine('2026-06-16T06:30:00.000Z', 'en-US', 'America/Denver')).toBe(
+      'Use within 10 minutes · expires at 12:30 AM (Tue)',
+    );
+  });
 });

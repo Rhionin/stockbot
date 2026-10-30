@@ -7,6 +7,7 @@ import {
   PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
   PAIRING_CODE128_QUIET_MODULES,
   computePairingCode128Layout,
+  pairingCode128AllowsOneDevicePxModule,
   pairingCode128BarRuns,
   pairingCode128ModuleCount,
   pairingCode128SvgWidthPx,
@@ -14,8 +15,17 @@ import {
 import { PrintableBarcode } from './printableBarcode';
 import { printableBarcodeQuietMm } from './printableBarcodeQuiet';
 import { Code128Mark } from './symbols';
+import './household.css';
 import { PairingDialog } from './PairingDialog';
 import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from './kitCopy456';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HOUSEHOLD_CSS = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'household.css'),
+  'utf8',
+);
 
 const PAIRING = formatPairingCode('23456789');
 const BAR_MODULES = pairingCode128ModuleCount(PAIRING);
@@ -61,10 +71,14 @@ describe('pairingCode128 layout math', () => {
     const phone = computePairingCode128Layout(320, BAR_MODULES, 1);
     expect(phone.moduleDevicePx).toBe(1);
     expect(phone.svgWidthCssPx).toBeCloseTo(220, 5);
+    expect(pairingCode128AllowsOneDevicePxModule(320, 1)).toBe(true);
+    expect(pairingCode128AllowsOneDevicePxModule(320, 1.5)).toBe(false);
 
     const fractionalDpr = computePairingCode128Layout(292, BAR_MODULES, 1.5);
-    expect(fractionalDpr.moduleDevicePx).toBe(1);
-    expect(fractionalDpr.svgWidthCssPx).toBeLessThanOrEqual(292 + 0.05);
+    expect(fractionalDpr.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX);
+    expect(fractionalDpr.svgWidthCssPx).toBeGreaterThanOrEqual(
+      (BAR_MODULES + 2 * PAIRING_CODE128_QUIET_MODULES) * (2 / 1.5) - 0.05,
+    );
 
     const phoneFractional = computePairingCode128Layout(304, BAR_MODULES, 1.5);
     expect(phoneFractional.moduleDevicePx).toBeGreaterThanOrEqual(2);
@@ -164,8 +178,8 @@ describe('printable barcode geometry and quiet zone', () => {
   });
 });
 
-describe('PairingDialog nowrap pairing code', () => {
-  it('applies pairing-spaced for nowrap styling in the dialog', async () => {
+describe('pairing dialog typography and padding (#456 follow-up)', () => {
+  it('applies nowrap pairing-spaced styling in the dialog', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url.includes('/api/devices/pair')) {
@@ -186,5 +200,13 @@ describe('PairingDialog nowrap pairing code', () => {
     const spaced = await screen.findByLabelText('Pairing code');
     expect(spaced).toHaveClass('pairing-spaced');
     expect(spaced.className).toMatch(/pairing-spaced/);
+  });
+
+  it('locks pairing typography and dialog padding in household.css', () => {
+    expect(HOUSEHOLD_CSS).toMatch(/\.pairing-spaced[\s\S]*white-space:\s*nowrap/);
+    expect(HOUSEHOLD_CSS).toMatch(/@media \(max-width: 399px\)[\s\S]*\.pairing-spaced[\s\S]*font-size:\s*18px/);
+    expect(HOUSEHOLD_CSS).toMatch(/\.pairing-barcode-too-small-hint[\s\S]*font-size:\s*14px/);
+    expect(HOUSEHOLD_CSS).toMatch(/@media \(max-width: 399px\)[\s\S]*padding-left:\s*8px/);
+    expect(HOUSEHOLD_CSS).toMatch(/@media \(min-width: 360px\) and \(max-width: 399px\)[\s\S]*padding-left:\s*16px/);
   });
 });
