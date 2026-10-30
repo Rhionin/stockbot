@@ -7,6 +7,7 @@ import {
   CONFIG_PATH,
   EVENTS_PATH,
   EXPO_CLIENT_PREFIX,
+  HOSTED_ERROR_SENTENCES,
   LIVE_HINT_EVENT,
   UPGRADE_REQUIRED_SENTENCE,
   expoClientHeader,
@@ -119,6 +120,7 @@ describe('hosted API contract', () => {
     expect(doc).not.toContain('proposed, PM to confirm');
     for (const row of registry(doc)) {
       expect(existingSentences[row.code]).toBe(row.sentence);
+      expect(HOSTED_ERROR_SENTENCES[row.code as HostedErrorCode]).toBe(row.sentence);
     }
     expect(doc).toContain('generic-sentence: Something went wrong. Try again.');
     expect(doc).toContain('stock target');

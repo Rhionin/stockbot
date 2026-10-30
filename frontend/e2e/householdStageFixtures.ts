@@ -1,5 +1,5 @@
 import { type Page, type Route } from '@playwright/test'
-import { formatPairingCode } from '../../shared/contract'
+import { formatPairingCode, hostedErrorSentence } from '../../shared/contract'
 import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from '../src/components/household/kitCopy456'
 
 export const PAIRING = formatPairingCode('23456789')
@@ -32,6 +32,7 @@ export interface Stage {
   kind: 'signed_out' | 'account'
   role: 'owner' | 'member'
   operator: boolean
+  operatorHouseholdsDenied: boolean
   householdName: string
   olderAppDevices: number
   invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
@@ -43,6 +44,7 @@ export const stage: Stage = {
   kind: 'signed_out',
   role: 'owner',
   operator: false,
+  operatorHouseholdsDenied: false,
   householdName: 'Pantry',
   olderAppDevices: 3,
   invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
@@ -92,6 +94,7 @@ export const resetStage = () => {
   stage.kind = 'signed_out'
   stage.role = 'owner'
   stage.operator = false
+  stage.operatorHouseholdsDenied = false
   stage.householdName = 'Pantry'
   stage.olderAppDevices = 3
   stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
@@ -163,7 +166,12 @@ export const install = async (page: Page) => {
       return fulfillJson(route, {})
     }
     if (path === '/api/operator/households' && method === 'GET') {
-      if (!stage.operator) return fulfillJson(route, { error: 'Operator access required.', code: 'forbidden_operator' }, 403)
+      if (!stage.operator || stage.operatorHouseholdsDenied) {
+        return fulfillJson(route, {
+          error: hostedErrorSentence('forbidden_operator'),
+          code: 'forbidden_operator',
+        }, 403)
+      }
       return fulfillJson(route, {
         households: [
           {

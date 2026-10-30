@@ -77,10 +77,15 @@ describe('code128 set B patterns', () => {
 
   it('fails golden checks when two table entries are swapped', () => {
     const bars = code128Bars('A');
-    const swappedChar = expandPattern('211331');
-    expect(bars.slice(11, 11 + swappedChar.length)).not.toEqual(swappedChar);
-    expect(code128SetBPattern(51)).not.toBe(CODE128_SPEC_PATTERNS[52]);
-    expect(code128SetBPattern(0)).not.toBe(CODE128_SPEC_PATTERNS[1]);
-    expect(code128SetBPattern(16)).not.toBe(CODE128_SPEC_PATTERNS[17]);
+    const startRuns = patternRunLengths(expandPattern(code128SetBPattern(104)));
+    const startWidth = startRuns.reduce((sum, width) => sum + width, 0);
+    const charIndex = 33;
+    const swappedIndex = 52;
+    const charRuns = patternRunLengths(expandPattern(CODE128_SPEC_PATTERNS[charIndex]));
+    const charWidth = charRuns.reduce((sum, width) => sum + width, 0);
+    const swappedBars = expandPattern(CODE128_SPEC_PATTERNS[swappedIndex]);
+    expect(bars.slice(startWidth, startWidth + charWidth)).not.toEqual(swappedBars.slice(0, charWidth));
+    expect(CODE128_SPEC_PATTERNS[charIndex]).not.toBe(CODE128_SPEC_PATTERNS[swappedIndex]);
+    expect(code128SetBPattern(charIndex)).toBe(CODE128_SPEC_PATTERNS[charIndex]);
   });
 });

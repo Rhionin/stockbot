@@ -91,7 +91,7 @@ async function assertTouchTargetSize(locator: import('@playwright/test').Locator
   expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
 }
 
-async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
+async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
   const isNarrowPhone = viewportWidth <= 399
   if (isNarrowPhone) {
@@ -101,6 +101,16 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
     await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).not.toHaveAttribute('data-full-screen')
   }
+
+  const quietZone = dialog.locator('.pairing-screen-only .code128-quiet-zone')
+  const hidden = await quietZone.getAttribute('data-barcode-hidden')
+  if (hidden === 'true') {
+    await expect(dialog.locator('.pairing-screen-only svg.pairing-code128')).toHaveCount(0)
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+    await expect(dialog.locator('.pairing-spaced')).toBeVisible()
+    return
+  }
+
   const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
   await expect(svg).toBeVisible()
   const frame = dialog.locator('.pairing-code128-frame')
@@ -123,32 +133,14 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
   })
   expect(metrics.quiet).toBe(10)
   expect(Number.isInteger(metrics.moduleDevicePx)).toBe(true)
+  expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(1)
   expect(Math.abs(metrics.devicePxPerModule - metrics.moduleDevicePx)).toBeLessThan(0.05)
   expect(Math.abs(metrics.devicePxPerModule - Math.round(metrics.devicePxPerModule))).toBeLessThan(0.01)
 
-  const isMobileWidth = (MOBILE_WIDTHS as readonly number[]).includes(viewportWidth)
-  const isDpr1Phone = dpr === 1 && isMobileWidth
-  const requiresTwoDevicePx = isMobileWidth && dpr !== 1
-
-  if (requiresTwoDevicePx) {
-    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
-    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
-  } else if (metrics.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
+  if (metrics.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
-    if (isDpr1Phone) {
-      expect(metrics.moduleDevicePx).toBe(1)
-      expect(metrics.devicePxPerModule).toBeGreaterThanOrEqual(0.99)
-      expect(metrics.devicePxPerModule).toBeLessThanOrEqual(1.01)
-    } else {
-      throw new Error(`Expected >= ${PAIRING_CODE128_MIN_MODULE_DEVICE_PX} device px at ${viewportWidth}px DPR ${dpr}`)
-    }
   } else {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
-    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
-  }
-
-  if (viewportWidth >= 1280 && dpr === 1) {
-    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
   }
 
   await assertRenderedQuietModules(svg)
@@ -168,6 +160,39 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
   expect(frameScroll.scrollLeft).toBe(0)
 
   await expect(page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1)).resolves.toBe(true)
+}
+
+async function assertPairingBarcodeModulePx(
+  dialog: import('@playwright/test').Locator,
+  expectedModuleDevicePx: number,
+  expectHint: boolean,
+) {
+  const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
+  await expect(svg).toBeVisible()
+  await expect(svg).toHaveAttribute('data-module-device-px', String(expectedModuleDevicePx))
+  await expect(svg).toHaveAttribute('data-quiet-modules', '10')
+  if (expectHint) {
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+  } else {
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
+  }
+  const frame = dialog.locator('.pairing-code128-frame')
+  await expect(frame.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+  await assertRenderedQuietModules(svg)
+}
+
+async function assertPairingBarcodeModuleAbove(
+  dialog: import('@playwright/test').Locator,
+  minModuleDevicePx: number,
+) {
+  const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
+  await expect(svg).toBeVisible()
+  const moduleDevicePx = Number(await svg.getAttribute('data-module-device-px'))
+  expect(moduleDevicePx).toBeGreaterThan(minModuleDevicePx)
+  await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
+  const frame = dialog.locator('.pairing-code128-frame')
+  await expect(frame.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+  await assertRenderedQuietModules(svg)
 }
 
 async function signInOpenWallSheet(page: import('@playwright/test').Page) {
@@ -193,7 +218,7 @@ for (const width of MATRIX_WIDTHS) {
       await install(page)
       await signInAndOpenHouseholdScannerPairing(page)
       await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
-      await assertOnScreenPairingBarcode(page, width, dpr)
+      await assertOnScreenPairingBarcode(page, width)
       await context.close()
     })
   }
@@ -210,6 +235,161 @@ for (const width of MOBILE_TOUCH_WIDTHS) {
     await assertTouchTargetSize(dialog.locator('.pairing-dialog-close'))
     await assertTouchTargetSize(dialog.getByRole('button', { name: 'Print setup & wall sheet' }))
     await assertTouchTargetSize(dialog.locator('.pairing-dialog-actions').getByRole('button', { name: 'Close' }))
+  })
+}
+
+const MIN_PAIRING_FRAME_CSS_PX = 294
+
+test('on-screen pairing barcode at 320px DPR 1.25 uses 1 device px with hint and no clipping', async ({ browser }) => {
+  resetStage()
+  const context = await browser.newContext({
+    viewport: { width: 320, height: 700 },
+    deviceScaleFactor: 1.25,
+  })
+  const page = await context.newPage()
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModulePx(dialog, 1, true)
+  await context.close()
+})
+
+test('on-screen pairing barcode at 520px DPR 1 uses 1 device px with hint and no clipping', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 520, height: 800 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModulePx(dialog, 1, true)
+})
+
+test('on-screen pairing barcode at 1280px DPR 1 uses 2 device px without hint', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModulePx(dialog, 2, false)
+})
+
+test('on-screen pairing barcode at 390px DPR 3 uses more than 2 device px without hint', async ({ browser }) => {
+  resetStage()
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  })
+  const page = await context.newPage()
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+  await context.close()
+})
+
+test('on-screen pairing barcode at 360px DPR 3 uses more than 2 device px without hint', async ({ browser }) => {
+  resetStage()
+  const context = await browser.newContext({
+    viewport: { width: 360, height: 700 },
+    deviceScaleFactor: 3,
+  })
+  const page = await context.newPage()
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+  await context.close()
+})
+
+test('on-screen pairing barcode hides the symbol when the frame is too narrow', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  const quietZone = dialog.locator('.pairing-screen-only .code128-quiet-zone')
+  await quietZone.evaluate((el) => {
+    el.style.width = '180px'
+    el.style.maxWidth = '180px'
+  })
+  await expect(quietZone).toHaveAttribute('data-barcode-hidden', 'true', { timeout: 5000 })
+  await expect(dialog.locator('.pairing-screen-only svg.pairing-code128')).toHaveCount(0)
+  await expect(dialog.locator('.pairing-spaced')).toBeVisible()
+  await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+})
+
+const SPACED_PAIRING = PAIRING.split('').join(' ')
+
+test('at 230px viewport shows full pairing code text without barcode when symbol does not fit', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 230, height: 700 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  const quietZone = dialog.locator('.pairing-screen-only .code128-quiet-zone')
+  await expect(quietZone).toHaveAttribute('data-barcode-hidden', 'true')
+  await expect(dialog.locator('.pairing-screen-only svg.pairing-code128')).toHaveCount(0)
+  await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+  const pairingCode = dialog.locator('.pairing-spaced')
+  await expect(pairingCode).toHaveText(SPACED_PAIRING)
+  await expect(pairingCode.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+  await expect(pairingCode.evaluate((el) => {
+    const dialogEl = el.closest('[role="dialog"]')
+    if (dialogEl == null) return false
+    const codeRect = el.getBoundingClientRect()
+    const dialogRect = dialogEl.getBoundingClientRect()
+    return codeRect.left >= dialogRect.left - 1 && codeRect.right <= dialogRect.right + 1
+  })).resolves.toBe(true)
+})
+
+for (const dpr of [1] as const) {
+  test(`320px pairing barcode frame stays wide and unclipped at DPR ${dpr}`, async ({ browser }) => {
+    resetStage()
+    const context = await browser.newContext({
+      viewport: { width: 320, height: 700 },
+      deviceScaleFactor: dpr,
+    })
+    const page = await context.newPage()
+    await install(page)
+    await signInAndOpenHouseholdScannerPairing(page)
+    const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+    await expect(dialog).toBeVisible()
+    const frame = dialog.locator('.pairing-code128-frame');
+    const svg = dialog.locator('.pairing-screen-only svg.pairing-code128');
+    await expect(svg).toBeVisible()
+
+    const layout = await frame.evaluate((host) => {
+      const svgEl = host.querySelector('svg')
+      if (svgEl == null) return null
+      const hostRect = host.getBoundingClientRect()
+      const svgRect = svgEl.getBoundingClientRect()
+      const quiet = Number(svgEl.getAttribute('data-quiet-modules'))
+      const barModules = Number(svgEl.getAttribute('data-modules'))
+      const totalModules = barModules + 2 * quiet
+      const moduleCssPx = svgRect.width / totalModules
+      const rects = [...svgEl.querySelectorAll('rect')]
+      const firstX = Math.min(...rects.map((rect) => Number(rect.getAttribute('x'))))
+      const lastEnd = Math.max(...rects.map((rect) => Number(rect.getAttribute('x')) + Number(rect.getAttribute('width'))))
+      return {
+        frameWidth: hostRect.width,
+        svgWidth: svgRect.width,
+        scrollOverflow: host.scrollWidth > host.clientWidth + 1,
+        leftQuietModules: firstX,
+        rightQuietModules: totalModules - lastEnd,
+        moduleDevicePx: Number(svgEl.getAttribute('data-module-device-px')),
+        moduleCssPx,
+      }
+    })
+    expect(layout).not.toBeNull()
+    expect(layout!.frameWidth).toBeGreaterThanOrEqual(MIN_PAIRING_FRAME_CSS_PX)
+    expect(layout!.scrollOverflow).toBe(false)
+    expect(layout!.leftQuietModules).toBeGreaterThanOrEqual(10)
+    expect(layout!.rightQuietModules).toBeGreaterThanOrEqual(10)
+    expect(layout!.moduleDevicePx).toBe(1)
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCSS('font-size', '14px')
+    await expect(dialog.locator('.pairing-dialog-modal-body')).toHaveCSS('padding-left', '8px')
+    await assertRenderedQuietModules(svg)
+    await context.close()
   })
 }
 

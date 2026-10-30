@@ -211,3 +211,24 @@ test('owner renames household and operator sees admin households list', async ({
   await expect(page.getByText(/0 scans this week/)).toBeVisible()
   await expect(page.getByText('dee@example.com')).toHaveCount(0)
 })
+
+test('shows contract admin-only copy when operator households access is denied', async ({ page }) => {
+  resetStage()
+  stage.operator = true
+  stage.operatorHouseholdsDenied = true
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await install(page)
+  await page.goto('/')
+  await page.getByLabel('Email').fill('ada@example.com')
+  await page.getByRole('textbox', { name: 'Password' }).fill('correct-horse-battery')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Menu' }).click()
+  const denied = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/operator/households' && r.status() === 403)
+  await page.getByRole('menuitem', { name: 'Other households' }).click()
+  // Pin the fixture body to the contract sentence too; the UI maps by code, so the body is otherwise unobserved.
+  expect(await (await denied).json()).toEqual({ error: 'Only an admin can do this.', code: 'forbidden_operator' })
+  const section = page.getByTestId('operator-households-section')
+  await expect(section).toBeVisible()
+  await expect(section.getByRole('alert')).toHaveText('Only an admin can do this.')
+  await expect(section).not.toContainText(/operator/i)
+})

@@ -2,20 +2,21 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import QRCode from 'qrcode';
 import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from './kitCopy456';
 import {
-  PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
   PAIRING_CODE128_QUIET_MODULES,
   computePairingCode128Layout,
   pairingCode128BarRuns,
   pairingCode128ModuleCount,
+  pairingCode128ShowsTooSmallHint,
   type PairingCode128Layout,
 } from './pairingScreenCode128';
 
 const BAR_HEIGHT_PX = 96;
 const EMPTY_LAYOUT: PairingCode128Layout = {
-  moduleCssPx: 2,
-  moduleDevicePx: 2,
+  moduleCssPx: 0,
+  moduleDevicePx: 0,
   svgWidthCssPx: 0,
   totalModules: 0,
+  showBarcode: false,
 };
 
 export function Code128Mark({ value, quietZone = false }: { value: string; quietZone?: boolean }) {
@@ -24,14 +25,25 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
   const barModules = pairingCode128ModuleCount(value);
   const runs = pairingCode128BarRuns(value);
   const totalModules = layout.totalModules || barModules + 2 * PAIRING_CODE128_QUIET_MODULES;
+  const showHint = pairingCode128ShowsTooSmallHint(layout);
 
   const measure = useCallback(() => {
     const container = measureRef.current;
     if (container == null) return;
     let width = container.clientWidth;
+    if (width === 0) {
+      width = container.getBoundingClientRect().width;
+    }
     if (width === 0 && container.parentElement != null) {
       width = container.parentElement.clientWidth;
+      if (width === 0) {
+        width = container.parentElement.getBoundingClientRect().width;
+      }
     }
+    if (width === 0 && typeof window !== 'undefined') {
+      width = window.innerWidth;
+    }
+    if (width === 0) return;
     const modules = pairingCode128ModuleCount(value);
     setLayout(computePairingCode128Layout(
       width,
@@ -52,7 +64,7 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
     return () => observer.disconnect();
   }, [measure, value]);
 
-  const svg = (
+  const svg = layout.showBarcode ? (
     <svg
       className="pairing-code128"
       role="img"
@@ -78,16 +90,19 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
         />
       ))}
     </svg>
-  );
+  ) : null;
 
   if (!quietZone) return svg;
 
   return (
-    <div className="code128-quiet-zone">
+    <div
+      className="code128-quiet-zone"
+      data-barcode-hidden={layout.showBarcode ? 'false' : 'true'}
+    >
       <div className="pairing-code128-frame" ref={measureRef}>
         {svg}
       </div>
-      {layout.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX && (
+      {showHint && (
         <p className="pairing-barcode-too-small-hint">{PAIRING_ON_SCREEN_TOO_SMALL_HINT}</p>
       )}
     </div>
