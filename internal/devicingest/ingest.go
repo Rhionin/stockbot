@@ -132,7 +132,7 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 	if err != nil {
 		return auth.DeviceLCD{}, "", false, err
 	}
-	created, err := queue.CreateScanEntryTx(ctx, scope, sqlTx, entry)
+	created, err := queue.InsertScanEntryTx(ctx, scope, sqlTx, entry)
 	if err != nil {
 		return auth.DeviceLCD{}, "", false, auth.AsError(err)
 	}

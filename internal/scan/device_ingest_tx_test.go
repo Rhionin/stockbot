@@ -72,6 +72,41 @@ func TestCreateScanEntryTxMergesPendingCard(t *testing.T) {
 	}
 }
 
+func TestInsertScanEntryTxInsertsWithoutMerging(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	ctx := context.Background()
+	catalog := product.NewCatalog(db)
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-no-merge", Name: "No Merge", Category: "Pantry", UnitOfMeasure: "each"}); err != nil {
+		t.Fatal(err)
+	}
+	productID := "prod-no-merge"
+	dir := scan.StockIn
+	at := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000606", ScannedAt: at, Direction: &dir, UnitCount: 3, ProductID: &productID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := queue.InsertScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000606", ScannedAt: at.Add(time.Minute), Direction: &dir, UnitCount: 1, ProductID: &productID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || second.UnitCount != 1 || first.UnitCount != 3 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
 func TestPublishAfterIngestPublishesScanAndInventory(t *testing.T) {
 	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
