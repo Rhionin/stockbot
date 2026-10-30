@@ -214,8 +214,6 @@ write_env "$lan" \
   "HOST_PORT=9090" \
   "PUBLIC_HOST=" \
   "ACME_EMAIL=" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "SCANNER_DEVICE=/dev/input/pantry-scanner"
 run_setup "$lan"
 [[ "$LAST_RC" -eq 0 ]] || fail "LAN setup exited $LAST_RC: $LAST_OUT"
@@ -265,120 +263,52 @@ lan_group=$(stat -c '%G' "$lan/.env")
 have "$LAST_CHOWN" "65532:${lan_group} $lan/setup" "LAN setup chowns the setup directory to uid 65532 and the operator group"
 grep -q '^APP_BASE_URL=$' "$lan/.env" || fail "LAN setup must leave APP_BASE_URL empty"
 
-# Existing auth.caddy is kept even when BASIC_AUTH_PASSWORD is empty or different.
-# The public profile stays on. The password line in .env is not rewritten.
+# Public HTTPS starts without auth.caddy when PUBLIC_HOST and ACME_EMAIL are set.
 pub=$(mktemp -d)
 write_env "$pub" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$pub/auth.caddy"
-cp "$pub/auth.caddy" "$pub/auth.caddy.before"
-cp "$pub/.env" "$pub/.env.before"
 run_setup "$pub"
-[[ "$LAST_RC" -eq 0 ]] || fail "existing auth setup exited $LAST_RC: $LAST_OUT"
-cmp "$pub/auth.caddy" "$pub/auth.caddy.before" || fail "auth.caddy was regenerated"
-grep -q '^BASIC_AUTH_PASSWORD=$' "$pub/.env" || fail "empty BASIC_AUTH_PASSWORD was rewritten"
-have "$LAST_DOCKER" "--profile public" "public profile"
-lack "$LAST_DOCKER" "docker-compose.tunnel.yml" "certificate mode must not select the tunnel file"
-have "$LAST_DOCKER" "restart $(basename "$pub")-caddy" "Caddyfile restart"
-lack "$LAST_DOCKER" "hash-password" "must not hash when auth.caddy exists"
-lack "$LAST_DOCKER" "stop caddy" "must not disable public HTTPS"
-have "$LAST_OUT" "Keeping existing" "kept auth.caddy"
-lack "$LAST_CURL" "X-Pantry-Entry" "public setup probes sign-in without an entry header"
-have "$LAST_CURL" "http://127.0.0.1:8080/api/auth/session" "public setup probes the listener on loopback"
-lack "$LAST_CURL" ":8081/api/auth/session" "public setup does not probe a second listener"
+[[ "$LAST_RC" -eq 0 ]] || fail "public setup without auth.caddy exited $LAST_RC: $LAST_OUT"
+have "$LAST_DOCKER" "--profile public" "public profile without auth.caddy"
+lack "$LAST_DOCKER" "hash-password" "must not hash a shared password"
+[[ ! -e "$pub/auth.caddy" ]] || fail "setup created auth.caddy"
 grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "public setup did not set APP_BASE_URL from PUBLIC_HOST"
-pub_setup_mode=$(stat -c '%a' "$pub/setup")
-[[ "$pub_setup_mode" == "2750" ]] || fail "public setup dir mode is $pub_setup_mode, want 2750"
-have "$LAST_CHOWN" "65532:$(stat -c '%G' "$pub/.env") $pub/setup" "public setup chowns the setup directory"
-pub_env_mode=$(stat -c '%a' "$pub/.env")
-[[ "$pub_env_mode" == "600" ]] || fail "public .env mode is $pub_env_mode, want 600"
 pub_secret=$(grep '^PANTRY_SESSION_SECRET=' "$pub/.env" | cut -d= -f2-)
 [[ ${#pub_secret} -eq 64 ]] || fail "session secret was not saved (len ${#pub_secret})"
-have "$LAST_DOCKER" "pull pantry" "public setup pulls the image before dropping basic auth"
-lack "$LAST_IPTABLES" "--dport" "public setup does not firewall a LAN port"
-have "$LAST_OUT" "Home Wi-Fi cannot open https://pantry.example.com" "hairpin warning names the public host"
-have "$LAST_SYSTEMCTL" "disable --now pantry-lan-only.service pantry-mdns.service" "public setup removes leftover LAN units"
-lack "$LAST_OUT" "shared password" "public summary must not mention the retired household password"
-lack "$LAST_DOCKER" "stop caddy" "hairpin warning must not stop the public proxy"
+have "$LAST_DOCKER" "pull pantry" "public setup pulls before reload"
 
-# A second run stays idempotent.
-run_setup "$pub"
-[[ "$LAST_RC" -eq 0 ]] || fail "second setup exited $LAST_RC: $LAST_OUT"
-cmp "$pub/auth.caddy" "$pub/auth.caddy.before" || fail "second run regenerated auth.caddy"
-pub_secret_again=$(grep '^PANTRY_SESSION_SECRET=' "$pub/.env" | cut -d= -f2-)
-[[ "$pub_secret_again" == "$pub_secret" ]] || fail "second run rotated the session secret"
-grep -q '^APP_BASE_URL=https://pantry.example.com$' "$pub/.env" || fail "second run replaced APP_BASE_URL"
-lack "$LAST_DOCKER" "hash-password" "second run hashed a password"
-
-# A different password in .env does not replace an existing hash.
-write_env "$pub" \
+# A leftover auth.caddy file is ignored and never deleted.
+legacy=$(mktemp -d)
+write_env "$legacy" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=correct horse battery staple" \
   "HOST_PORT=8080"
-run_setup "$pub"
-[[ "$LAST_RC" -eq 0 ]] || fail "password-present re-run exited $LAST_RC: $LAST_OUT"
-cmp "$pub/auth.caddy" "$pub/auth.caddy.before" || fail "existing auth.caddy changed when BASIC_AUTH_PASSWORD was set"
-grep -q '^BASIC_AUTH_PASSWORD=correct horse battery staple$' "$pub/.env" || fail "BASIC_AUTH_PASSWORD was wiped"
-lack "$LAST_DOCKER" "hash-password" "hashed despite existing auth.caddy"
+printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$legacy/auth.caddy"
+cp "$legacy/auth.caddy" "$legacy/auth.caddy.before"
+run_setup "$legacy"
+[[ "$LAST_RC" -eq 0 ]] || fail "legacy auth.caddy setup exited $LAST_RC: $LAST_OUT"
+cmp "$legacy/auth.caddy" "$legacy/auth.caddy.before" || fail "setup modified leftover auth.caddy"
+have "$LAST_DOCKER" "--profile public" "public profile with leftover auth.caddy"
 
-# First public setup writes auth.caddy from the password already in .env.
-first=$(mktemp -d)
-write_env "$first" \
-  "PUBLIC_HOST=pantry.example.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=correct-horse-battery" \
-  "HOST_PORT=8080"
-run_setup "$first"
-[[ "$LAST_RC" -eq 0 ]] || fail "first public setup exited $LAST_RC: $LAST_OUT"
-[[ -f "$first/auth.caddy" ]] || fail "auth.caddy was not created"
-grep -q 'basic_auth bcrypt Pantry' "$first/auth.caddy" || fail "auth.caddy missing basic_auth block"
-grep -q 'abcdefghijklmnopqrstuu' "$first/auth.caddy" || fail "auth.caddy missing the hashed password"
-grep -q '^BASIC_AUTH_PASSWORD=correct-horse-battery$' "$first/.env" || fail "password was not kept in .env"
-[[ $(grep '^PANTRY_SESSION_SECRET=' "$first/.env" | cut -d= -f2- | wc -c) -eq 65 ]] || fail "first public setup did not save a session secret"
-have "$LAST_DOCKER" "hash-password" "first public setup should hash"
-have "$LAST_DOCKER" "--profile public" "first public profile"
-
-# A too-short password fails without inventing auth.caddy or clearing .env.
-bad=$(mktemp -d)
-write_env "$bad" \
-  "PUBLIC_HOST=pantry.example.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=short" \
-  "HOST_PORT=8080"
-run_setup "$bad"
-[[ "$LAST_RC" -ne 0 ]] || fail "short password should fail"
-[[ ! -e "$bad/auth.caddy" ]] || fail "short password created auth.caddy"
-grep -q '^BASIC_AUTH_PASSWORD=short$' "$bad/.env" || fail "short password was wiped"
-
-# No password and no auth.caddy: LAN still converges, public proxy stays off.
+# Missing ACME_EMAIL keeps the public proxy off even when PUBLIC_HOST is set.
 incomplete=$(mktemp -d)
 write_env "$incomplete" \
   "PUBLIC_HOST=pantry.example.com" \
-  "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
+  "ACME_EMAIL=" \
   "HOST_PORT=8080"
 run_setup "$incomplete"
 [[ "$LAST_RC" -eq 0 ]] || fail "incomplete public setup exited $LAST_RC: $LAST_OUT"
-lack "$LAST_DOCKER" "--profile public" "incomplete public config must not start the proxy"
-[[ ! -e "$incomplete/auth.caddy" ]] || fail "empty password created auth.caddy"
-have "$LAST_OUT" "BASIC_AUTH_PASSWORD is empty" "incomplete public warning"
+lack "$LAST_DOCKER" "--profile public" "missing ACME_EMAIL must not start the proxy"
+have "$LAST_OUT" "ACME_EMAIL" "incomplete public warning names ACME_EMAIL"
 
 # A leftover LAN firewall setting does not install a port filter.
 opt=$(mktemp -d)
 write_env "$opt" \
   "PUBLIC_HOST=" \
   "HOST_PORT=8080" \
-  "PANTRY_LAN_FIREWALL=off" \
-  "BASIC_AUTH_PASSWORD="
+  "PANTRY_LAN_FIREWALL=off"
 run_setup "$opt"
 [[ "$LAST_RC" -eq 0 ]] || fail "opt-out setup exited $LAST_RC: $LAST_OUT"
 lack "$LAST_OUT" "Non-LAN clients are blocked" "setup must not install the firewall"
@@ -403,11 +333,8 @@ mdns=$(mktemp -d)
 write_env "$mdns" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PANTRY_LAN_IPV4=192.168.1.203"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$mdns/auth.caddy"
 PANTRY_SKIP_MDNS=0 run_setup "$mdns"
 [[ "$LAST_RC" -eq 0 ]] || fail "mdns setup exited $LAST_RC: $LAST_OUT"
 lack "$LAST_OUT" "pantry.local" "setup does not publish a LAN name"
@@ -415,34 +342,26 @@ lack "$LAST_SYSTEMCTL" "enable pantry-mdns.service" "mDNS unit is not enabled"
 have "$LAST_SYSTEMCTL" "disable --now pantry-lan-only.service pantry-mdns.service" "mDNS unit is removed"
 have "$LAST_DOCKER" "--profile public" "public proxy stays on"
 lack "$LAST_DOCKER" "stop caddy" "setup must not stop Caddy"
-grep -q 'basic_auth bcrypt Pantry' "$mdns/auth.caddy" || fail "setup rewrote auth.caddy"
 
 split=$(mktemp -d)
 write_env "$split" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PANTRY_LAN_IPV4=192.168.1.203" \
   "PANTRY_SPLIT_DNS=on"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$split/auth.caddy"
 run_setup "$split"
 [[ "$LAST_RC" -eq 0 ]] || fail "split-dns setup exited $LAST_RC: $LAST_OUT"
 [[ -z "$LAST_DNSMASQ" ]] || fail "setup wrote a dnsmasq answer"
 have "$LAST_DOCKER" "--profile public" "split-horizon setting keeps the public proxy"
-grep -q 'ORIGINAL-HASH' "$split/auth.caddy" || fail "split-horizon setting rewrote auth.caddy"
 
 badip=$(mktemp -d)
 write_env "$badip" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PANTRY_LAN_IPV4=8.8.8.8" \
   "PANTRY_SPLIT_DNS=on"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$badip/auth.caddy"
 run_setup "$badip"
 [[ "$LAST_RC" -eq 0 ]] || fail "old LAN settings must not fail setup, exited $LAST_RC: $LAST_OUT"
 have "$LAST_DOCKER" "--profile public" "old LAN settings still start the public proxy"
@@ -455,13 +374,9 @@ tun=$(mktemp -d)
 write_env "$tun" \
   "PUBLIC_HOST=stockbot.rhionin.com" \
   "ACME_EMAIL=" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PUBLISH_MODE=" \
   "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$tun/auth.caddy"
-cp "$tun/auth.caddy" "$tun/auth.caddy.before"
 run_setup "$tun"
 [[ "$LAST_RC" -eq 0 ]] || fail "tunnel setup exited $LAST_RC: $LAST_OUT"
 have "$LAST_DOCKER" "docker-compose.tunnel.yml" "tunnel compose file"
@@ -473,24 +388,19 @@ have "$LAST_OUT" "Nothing on this Pi is listening on ports 80 or 443" "tunnel cl
 lack "$LAST_OUT" "Home Wi-Fi cannot open" "tunnel must not warn about hairpin"
 lack "$LAST_OUT" "test-tunnel-token" "token must not be logged"
 lack "$LAST_DOCKER" "test-tunnel-token" "token must not be a docker argument"
-cmp "$tun/auth.caddy" "$tun/auth.caddy.before" || fail "tunnel setup regenerated auth.caddy"
-lack "$LAST_DOCKER" "hash-password" "tunnel must not hash when auth.caddy exists"
+lack "$LAST_DOCKER" "hash-password" "tunnel must not hash a shared password"
 # publish --tunnel is the same switch once the token is already in .env.
 run_setup "$tun" publish --tunnel
 [[ "$LAST_RC" -eq 0 ]] || fail "publish --tunnel exited $LAST_RC: $LAST_OUT"
 have "$LAST_DOCKER" "--profile tunnel" "publish --tunnel"
-cmp "$tun/auth.caddy" "$tun/auth.caddy.before" || fail "publish --tunnel regenerated auth.caddy"
 
 # PUBLISH_MODE=acme does not override a token that is still set.
 write_env "$tun" \
   "PUBLIC_HOST=stockbot.rhionin.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PUBLISH_MODE=acme" \
   "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$tun/auth.caddy"
 run_setup "$tun"
 [[ "$LAST_RC" -eq 0 ]] || fail "token overrides acme mode, exited $LAST_RC: $LAST_OUT"
 have "$LAST_DOCKER" "--profile tunnel" "token wins over PUBLISH_MODE=acme"
@@ -501,44 +411,34 @@ notoken=$(mktemp -d)
 write_env "$notoken" \
   "PUBLIC_HOST=pantry.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PUBLISH_MODE=tunnel" \
   "CLOUDFLARE_TUNNEL_TOKEN="
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$notoken/auth.caddy"
 run_setup "$notoken" publish --tunnel
 [[ "$LAST_RC" -ne 0 ]] || fail "tunnel without a token should fail"
 lack "$LAST_DOCKER" "up -d" "missing token must not start containers"
 have "$LAST_OUT" "CLOUDFLARE_TUNNEL_TOKEN" "missing token names the variable"
 lack "$LAST_DOCKER" "--profile public" "missing token must not start the certificate proxy"
 
-# Token set, password not ready: LAN still comes up, tunnel stays off.
+# Tunnel starts without auth.caddy when the token and PUBLIC_HOST are set.
 unready=$(mktemp -d)
 write_env "$unready" \
   "PUBLIC_HOST=stockbot.rhionin.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
 run_setup "$unready"
-[[ "$LAST_RC" -eq 0 ]] || fail "unready tunnel exited $LAST_RC: $LAST_OUT"
-lack "$LAST_DOCKER" "--profile tunnel" "unready tunnel must not start cloudflared"
-lack "$LAST_DOCKER" "--profile public" "unready tunnel must not start the certificate proxy"
-have "$LAST_OUT" "The tunnel was not started" "unready tunnel explains why"
-[[ ! -e "$unready/auth.caddy" ]] || fail "empty password created auth.caddy"
+[[ "$LAST_RC" -eq 0 ]] || fail "tunnel without auth.caddy exited $LAST_RC: $LAST_OUT"
+have "$LAST_DOCKER" "--profile tunnel" "tunnel starts without auth.caddy"
+[[ ! -e "$unready/auth.caddy" ]] || fail "setup created auth.caddy for tunnel"
 
 # Split-horizon DNS would point the public name at the Pi. Tunnel mode removes it.
 tunsplit=$(mktemp -d)
 write_env "$tunsplit" \
   "PUBLIC_HOST=stockbot.rhionin.com" \
-  "BASIC_AUTH_USER=pantry" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080" \
   "PANTRY_LAN_IPV4=192.168.1.203" \
   "PANTRY_SPLIT_DNS=on" \
   "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
-printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$tunsplit/auth.caddy"
 run_setup "$tunsplit"
 [[ "$LAST_RC" -eq 0 ]] || fail "tunnel split-dns exited $LAST_RC: $LAST_OUT"
 lack "$LAST_OUT" "PANTRY_SPLIT_DNS is on" "tunnel does not configure split-horizon"
@@ -592,7 +492,6 @@ write_env "$custom" \
   "DEPLOY_HOOK_SECRET=not-generated" \
   "HOST_PORT=8080" \
   "PUBLIC_HOST=pantry.example.com" \
-  "BASIC_AUTH_PASSWORD=" \
   "VAPID_PUBLIC_KEY=operator-public" \
   "VAPID_PRIVATE_KEY=operator-private" \
   "VAPID_SUBJECT="
@@ -607,8 +506,7 @@ grep -q '^VAPID_SUBJECT=mailto:pantry@pantry.example.com$' "$custom/.env" || fai
 updates=$(mktemp -d)
 write_env "$updates" \
   "HOST_PORT=8080" \
-  "PUBLIC_HOST=" \
-  "BASIC_AUTH_PASSWORD="
+  "PUBLIC_HOST="
 run_setup "$updates" --with-updates
 [[ "$LAST_RC" -eq 0 ]] || fail "--with-updates exited $LAST_RC: $LAST_OUT"
 have "$LAST_SYSTEMCTL" "enable --now pantry-update.timer" "timer enabled"
@@ -644,7 +542,6 @@ write_env "$kept_origin" \
   "PUBLIC_HOST=pantry.example.com" \
   "APP_BASE_URL=https://operator.example" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080"
 chmod 600 "$kept_origin/.env"
 run_setup "$kept_origin"
@@ -656,7 +553,6 @@ bad_host=$(mktemp -d)
 write_env "$bad_host" \
   "PUBLIC_HOST=https://stockbot.example.com" \
   "ACME_EMAIL=you@example.com" \
-  "BASIC_AUTH_PASSWORD=" \
   "HOST_PORT=8080"
 run_setup "$bad_host"
 [[ "$LAST_RC" -eq 0 ]] || fail "invalid PUBLIC_HOST setup exited $LAST_RC: $LAST_OUT"
@@ -806,8 +702,7 @@ SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_VENDOR_ID}=="04e8", ENV{ID_MODEL_ID
 EOF
 write_env "$rule_fix" \
   "HOST_PORT=8080" \
-  "PUBLIC_HOST=" \
-  "BASIC_AUTH_PASSWORD="
+  "PUBLIC_HOST="
 PANTRY_INPUT_DEVICES="$bt_devices" PANTRY_UDEV_RULE_FILE="$bt_rule" \
   run_setup "$rule_fix"
 [[ "$LAST_RC" -eq 0 ]] || fail "setup with bluetooth scanner exited $LAST_RC: $LAST_OUT"
@@ -877,7 +772,7 @@ have "$LAST_OUT" "$none_rule" "failure names the rule path"
 # set and must not change the file mode. This calls the helper directly so
 # the rest of setup, which restricts .env to its owner, is not involved.
 sentry_dir=$(mktemp -d)
-printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=keep-this' > "$sentry_dir/.env"
+printf '%s\n' 'HOST_PORT=8080' 'SENTRY_DSN=keep-this' > "$sentry_dir/.env"
 chmod 640 "$sentry_dir/.env"
 sentry_mode=$(stat -c '%a' "$sentry_dir/.env")
 PANTRY_DIR="$sentry_dir" bash -c 'set -euo pipefail; source "$1"; added=0; append_empty_env_keys SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_TUNNEL_PROJECT_IDS SENTRY_TUNNEL_PUBLIC_KEYS' bash "$SETUP"
@@ -900,11 +795,41 @@ PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; added=0; appen
 [[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "append_empty_env_keys changed the exported .env mode"
 grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "append_empty_env_keys rewrote export SENTRY_DSN"
 [[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "append_empty_env_keys duplicated export SENTRY_DSN"
-printf '%s\n' 'BASIC_AUTH_USER=pantry' 'SENTRY_DSN=' 'SENTRY_ENVIRONMENT=' > "$export_dir/.env.example"
+printf '%s\n' 'HOST_PORT=8080' 'SENTRY_DSN=' 'SENTRY_ENVIRONMENT=' > "$export_dir/.env.example"
 PANTRY_DIR="$export_dir" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
 grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile rewrote export SENTRY_DSN"
 [[ $(grep -cE '^(export[[:space:]]+)?SENTRY_DSN=' "$export_dir/.env") -eq 1 ]] || fail "reconcile duplicated export SENTRY_DSN"
 [[ $(stat -c '%a' "$export_dir/.env") == "$export_mode" ]] || fail "reconcile changed the .env mode"
+
+# Legacy BACKUP_BEFORE_DEPLOY=warn from #410 is migrated to required; operator
+# choices such as off are left alone.
+backup_migrate=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=warn' > "$backup_migrate/.env"
+cp "$ROOT/deploy/.env.example" "$backup_migrate/.env.example"
+PANTRY_DIR="$backup_migrate" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP" >"$backup_migrate/out" 2>&1
+grep -q '^BACKUP_BEFORE_DEPLOY=required$' "$backup_migrate/.env" || fail "legacy BACKUP_BEFORE_DEPLOY=warn was not migrated to required"
+grep -q 'Migrated legacy BACKUP_BEFORE_DEPLOY=warn -> required' "$backup_migrate/out" || fail "legacy BACKUP migration was not logged"
+backup_keep=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=off' > "$backup_keep/.env"
+cp "$ROOT/deploy/.env.example" "$backup_keep/.env.example"
+PANTRY_DIR="$backup_keep" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=off$' "$backup_keep/.env" || fail "operator BACKUP_BEFORE_DEPLOY=off was rewritten"
+backup_ws=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=warn  ' > "$backup_ws/.env"
+cp "$ROOT/deploy/.env.example" "$backup_ws/.env.example"
+PANTRY_DIR="$backup_ws" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=required$' "$backup_ws/.env" || fail "legacy warn with trailing whitespace was not migrated"
+backup_crlf=$(mktemp -d)
+printf 'HOST_PORT=8080\r\nBACKUP_BEFORE_DEPLOY=warn\r\n' > "$backup_crlf/.env"
+cp "$ROOT/deploy/.env.example" "$backup_crlf/.env.example"
+PANTRY_DIR="$backup_crlf" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+tr -d '\r' < "$backup_crlf/.env" | grep -q '^BACKUP_BEFORE_DEPLOY=required$' || fail "legacy warn with CRLF was not migrated"
+backup_optional=$(mktemp -d)
+printf '%s\n' 'HOST_PORT=8080' 'BACKUP_BEFORE_DEPLOY=optional' > "$backup_optional/.env"
+cp "$ROOT/deploy/.env.example" "$backup_optional/.env.example"
+PANTRY_DIR="$backup_optional" bash -c 'set -euo pipefail; source "$1"; cmd_reconcile_env' bash "$SETUP"
+grep -q '^BACKUP_BEFORE_DEPLOY=optional$' "$backup_optional/.env" || fail "operator BACKUP_BEFORE_DEPLOY=optional was rewritten"
+rm -rf "$backup_migrate" "$backup_keep" "$backup_ws" "$backup_crlf" "$backup_optional"
 
 # Grocy credentials must not change what setup.sh asks docker to do.
 # With GROCY_URL, GROCY_API_KEY, and PANTRY_SYNC_TOKEN filled, setup must
@@ -913,12 +838,11 @@ grep -q '^export SENTRY_DSN=keep-export$' "$export_dir/.env" || fail "reconcile 
 grocy_mode_env() {
   local dir="$1" mode="$2"
   if [[ "$mode" == tunnel ]]; then
-    write_env "$dir" "PUBLIC_HOST=stockbot.example" "ACME_EMAIL=" "BASIC_AUTH_USER=pantry" \
-      "BASIC_AUTH_PASSWORD=" "HOST_PORT=8080" "PUBLISH_MODE=" "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
-    printf '%s\n' 'basic_auth bcrypt Pantry {' '	pantry ORIGINAL-HASH' '}' > "$dir/auth.caddy"
+    write_env "$dir" "PUBLIC_HOST=stockbot.example" "ACME_EMAIL=" \
+      "HOST_PORT=8080" "PUBLISH_MODE=" "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token"
   else
     write_env "$dir" "PANTRY_IMAGE_TAG=latest" "HOST_PORT=9090" "PUBLIC_HOST=" "ACME_EMAIL=" \
-      "BASIC_AUTH_USER=pantry" "BASIC_AUTH_PASSWORD=" "SCANNER_DEVICE=/dev/input/pantry-scanner"
+      "SCANNER_DEVICE=/dev/input/pantry-scanner"
   fi
 }
 for grocy_mode in lan tunnel; do
@@ -946,5 +870,5 @@ for grocy_mode in lan tunnel; do
   rm -rf "$grocy_off" "$grocy_on"
 done
 
-rm -rf "$lan" "$pub" "$first" "$bad" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$setup_dir" "$own_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir"
+rm -rf "$lan" "$pub" "$legacy" "$incomplete" "$opt" "$mdns" "$split" "$badip" "$mdns_bin" "$tun" "$notoken" "$unready" "$tunsplit" "$mode_dir" "$custom" "$updates" "$setup_dir" "$own_bin" "$rule_fix" "$usb_dir" "$name_dir" "$none_dir" "$sentry_dir" "$export_dir" "$kept_origin" "$bad_host" "$sg_dir"
 echo "setup_apply_test ok"

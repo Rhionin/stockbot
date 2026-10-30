@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # Pull and recreate the Stockbot stack.
 #
-# When PUBLIC_HOST is set and auth.caddy exists, the public HTTPS proxy
-# (compose profile "public") is part of the same update. A plain
-# `docker compose up` omits profiled services, which would leave certificate
-# renewal and proxy config out of automatic updates. A LAN-only install
-# leaves PUBLIC_HOST empty, so Caddy is never started. Without auth.caddy,
-# starting the profile would publish the hostname with no password file.
-# The hash is copied into auth/household before containers are recreated,
-# and an existing PANTRY_SESSION_SECRET is kept.
+# When PUBLIC_HOST is set, the public HTTPS proxy (compose profile "public")
+# or tunnel profile is part of the same update. A plain `docker compose up`
+# omits profiled services, which would leave certificate renewal and proxy
+# config out of automatic updates. A LAN-only install leaves PUBLIC_HOST empty,
+# so Caddy is never started.
 #
 # A non-empty CLOUDFLARE_TUNNEL_TOKEN selects the tunnel profile instead.
 # That profile does not publish ports 80 or 443. The certificate profile
@@ -26,9 +23,11 @@
 #
 # When the pantry image digest is about to change, pantry-backup.sh
 # pre-deploy runs before anything is recreated. BACKUP_BEFORE_DEPLOY is
-# warn (the default: a failed backup is a journal warning and the deploy
-# continues), required (containers stay as they are and this script exits
-# non-zero), or off. The value may be set in the environment or in .env.
+# required (the default: a failed backup leaves containers unchanged and
+# this script exits non-zero), warn or optional (a failed backup is a journal
+# warning and the deploy continues), or off. The value may be set in the
+# environment or in .env. A blocked backup is also recorded in
+# last-deploy-status under PANTRY_DIR.
 # This script already holds the deploy lock, so the backup is started with
 # PANTRY_BACKUP_LOCK_HELD=1 and does not flock that file again.
 #
@@ -129,6 +128,13 @@
 # banner names a pantry-pre-*.db path only when those logs say this deploy
 # wrote the snapshot. An "already exists" line is not a new snapshot.
 #
+# After a successful deploy, host scripts under PANTRY_DIR (and installed
+# systemd units when they are already present) are refreshed from a copy
+# shipped inside the pantry image at /usr/share/stockbot/host-bundle. The
+# running pantry-update.sh is not overwritten in place; the new script
+# takes effect on the next timer or path run. Rollback does not install
+# those files. setup.sh, .env, secrets, and data are never touched.
+#
 # Service images come from `docker compose config`. python3 is not required.
 
 set -euo pipefail
@@ -172,19 +178,34 @@ elif [[ "$mode_rc" -ne 0 ]]; then
   exit 1
 fi
 
+# public_proxy_in_update is true when this run will manage the HTTPS proxy
+# (certificate or tunnel profile). LAN-only installs skip the session secret.
+public_proxy_in_update() {
+  if [[ "$mode" == tunnel ]]; then
+    [[ -f "$PANTRY_DIR/docker-compose.tunnel.yml" && -f "$PANTRY_DIR/Caddyfile.tunnel" ]] \
+      && [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
+    return
+  fi
+  if [[ "$mode" == acme ]]; then
+    [[ -f "$PANTRY_DIR/Caddyfile" ]] && [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
+    return
+  fi
+  return 1
+}
+
 if [[ "$mode" == tunnel ]]; then
-  if [[ ! -f "$PANTRY_DIR/auth.caddy" ]]; then
-    echo "CLOUDFLARE_TUNNEL_TOKEN is set but ${PANTRY_DIR}/auth.caddy is missing; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
+  if [[ ! -f "$PANTRY_DIR/docker-compose.tunnel.yml" || ! -f "$PANTRY_DIR/Caddyfile.tunnel" ]]; then
+    echo "CLOUDFLARE_TUNNEL_TOKEN is set but tunnel compose files are missing from ${PANTRY_DIR}; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
+  elif [[ -z "$(publish_env_value PUBLIC_HOST)" ]]; then
+    echo "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty; leaving the tunnel stopped. Set PUBLIC_HOST in ${PANTRY_DIR}/.env and run: sudo ./setup.sh publish --tunnel" >&2
   else
     compose+=(-f "$PANTRY_DIR/docker-compose.tunnel.yml" --profile tunnel)
   fi
 elif [[ "$mode" == acme ]]; then
-  # Only this install's password file. A host that already has
-  # /opt/pantry/auth.caddy must not count when PANTRY_DIR is a fixture.
-  if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
+  if [[ -n "$(publish_env_value PUBLIC_HOST)" && -f "$PANTRY_DIR/Caddyfile" ]]; then
     compose+=(--profile public)
-  else
-    echo "PUBLIC_HOST is set but ${PANTRY_DIR}/auth.caddy is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
+  elif [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
+    echo "PUBLIC_HOST is set but ${PANTRY_DIR}/Caddyfile is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
   fi
 fi
 while IFS= read -r arg; do
@@ -223,7 +244,7 @@ if ! ensure_app_base_url; then
   echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
   exit 1
 fi
-if [[ -f "$PANTRY_DIR/auth.caddy" ]]; then
+if public_proxy_in_update; then
   if ! ensure_session_secret; then
     echo "Could not save the session secret; leaving containers unchanged." >&2
     exit 1
@@ -1112,7 +1133,7 @@ proxy_probe_recovered() {
   local state="$1" host
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 1
-  publish_auth_present || return 1
+  public_host_set || return 1
   [[ -n "$state" ]] || return 1
   probe_public_proxy "$state" || true
   [[ "$PROXY_PROBE_PASSED" -eq 1 ]]
@@ -1295,8 +1316,8 @@ note_stopped_services() {
   done < "$state/refs.tsv"
 }
 
-publish_auth_present() {
-  [[ -f "$PANTRY_DIR/auth.caddy" ]]
+public_host_set() {
+  [[ -n "$(publish_env_value PUBLIC_HOST)" ]]
 }
 
 # proxy_compose_service is the compose service that publishes the hostname.
@@ -1354,7 +1375,7 @@ remember_tunnel_reachability() {
   local state="$1" body commit rev id
   TUNNEL_REACHABLE=0
   [[ "$mode" == tunnel ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   [[ -n "$(publish_env_value PUBLIC_HOST)" ]] || return 0
   echo "pantry update: checking whether caddy-tunnel was reachable before recreate"
   tunnel_probe_curl "$state/tunnel-pre.body"
@@ -1378,7 +1399,7 @@ remember_tunnel_reachability() {
 remember_acme_reachability() {
   local host rc=0
   [[ "$mode" == acme ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 0
   echo "pantry update: checking whether Caddy was reachable before recreate"
@@ -1432,7 +1453,7 @@ probe_caddy() {
   local state="$1" host
   host=$(publish_env_value PUBLIC_HOST)
   [[ -n "$host" ]] || return 0
-  publish_auth_present || return 0
+  public_host_set || return 0
   if [[ "$mode" == tunnel ]]; then
     probe_tunnel_listener "$state"
     return
@@ -1552,8 +1573,377 @@ resume_pending_deploy() {
   exit 1
 }
 
-# backup_before_deploy_mode is warn, required, or off. An empty setting
-# is warn. The environment wins over .env.
+HOST_BUNDLE_CONTAINER_PATH=/usr/share/stockbot/host-bundle
+
+deploy_status_path() {
+  printf '%s\n' "$PANTRY_DIR/last-deploy-status"
+}
+
+# write_deploy_status RESULT REASON [IMAGE_REVISION]
+write_deploy_status() {
+  local result="$1" reason="$2" revision="${3:-}" dest tmp ts
+  dest=$(deploy_status_path)
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  [[ -n "$ts" ]] || ts=unknown
+  tmp=$(mktemp "${dest}.XXXXXX") || {
+    echo "pantry update: could not write ${dest}" >&2
+    return 1
+  }
+  {
+    printf 'result=%s\n' "$result"
+    printf 'reason=%s\n' "$reason"
+    printf 'timestamp=%s\n' "$ts"
+    printf 'image_revision=%s\n' "$revision"
+  } > "$tmp"
+  mv "$tmp" "$dest"
+}
+
+host_bundle_rel_paths() {
+  cat <<'EOF'
+publish-mode.sh
+runtime-setup.sh
+vapid-env.sh
+systemd/pantry-update.sh
+systemd/pantry-backup.sh
+systemd/pantry-update.service
+systemd/pantry-update.timer
+systemd/pantry-update.path
+systemd/pantry-backup.service
+systemd/pantry-backup.timer
+EOF
+}
+
+# atomic_install_file SRC DEST sets execute bit when DEST ends in .sh.
+atomic_install_file() {
+  local src="$1" dest="$2" tmp
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+    return 0
+  fi
+  tmp=$(mktemp "${dest}.refresh.XXXXXX") || return 1
+  cp "$src" "$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [[ "$dest" == *.sh ]]; then
+    chmod +x "$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
+  fi
+  mv "$tmp" "$dest"
+}
+
+systemd_unit_dir() {
+  printf '%s\n' "${PANTRY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+}
+
+host_scripts_last_known_good_dir() {
+  printf '%s\n' "$PANTRY_DIR/host-scripts-last-known-good"
+}
+
+# host_bundle_install_plan lists SRC and DEST pairs to install from STAGED.
+# Systemd unit paths are included when those units are already installed.
+host_bundle_install_plan() {
+  local staged="$1" rel src dest unit_dir
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    src="$staged/$rel"
+    [[ -f "$src" ]] || continue
+    dest="$PANTRY_DIR/$rel"
+    printf '%s\t%s\n' "$src" "$dest"
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  if [[ -f "$unit_dir/pantry-update.service" || -f "$unit_dir/pantry-update.timer" ]]; then
+    for rel in \
+      systemd/pantry-update.service \
+      systemd/pantry-update.timer \
+      systemd/pantry-update.path
+    do
+      src="$staged/$rel"
+      [[ -f "$src" ]] || continue
+      printf '%s\t%s\n' "$src" "$unit_dir/$(basename "$rel")"
+    done
+  fi
+  if [[ -f "$unit_dir/pantry-backup.timer" ]]; then
+    for rel in systemd/pantry-backup.service systemd/pantry-backup.timer; do
+      src="$staged/$rel"
+      [[ -f "$src" ]] || continue
+      printf '%s\t%s\n' "$src" "$unit_dir/$(basename "$rel")"
+    done
+  fi
+}
+
+verify_host_bundle_staged() {
+  local staged="$1" rel src missing=0
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    src="$staged/$rel"
+    if [[ ! -f "$src" ]]; then
+      echo "pantry update: host bundle from the image is missing ${rel}" >&2
+      missing=1
+    fi
+  done < <(host_bundle_rel_paths)
+  [[ "$missing" -eq 0 ]]
+}
+
+snapshot_host_scripts_last_known_good() {
+  local lkg rel src dest unit_dir
+  lkg=$(host_scripts_last_known_good_dir)
+  rm -rf "$lkg"
+  mkdir -p "$lkg/systemd" "$lkg/systemd-units"
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    dest="$PANTRY_DIR/$rel"
+    [[ -f "$dest" ]] || continue
+    src="$lkg/$rel"
+    mkdir -p "$(dirname "$src")"
+    if ! cp -a "$dest" "$src"; then
+      echo "pantry update: could not snapshot ${rel} before host script refresh" >&2
+      return 1
+    fi
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  for rel in \
+    pantry-update.service pantry-update.timer pantry-update.path \
+    pantry-backup.service pantry-backup.timer
+  do
+    [[ -f "$unit_dir/$rel" ]] || continue
+    if ! cp -a "$unit_dir/$rel" "$lkg/systemd-units/$rel"; then
+      echo "pantry update: could not snapshot ${rel} under ${unit_dir} before host script refresh" >&2
+      return 1
+    fi
+  done
+}
+
+host_bundle_cleanup_refresh_temps() {
+  local entry tmp dest unit_dir
+  for entry in "${HOST_BUNDLE_INSTALL_PENDING[@]:-}"; do
+    [[ -z "${entry:-}" ]] && continue
+    tmp=${entry%%|*}
+    rm -f "$tmp"
+  done
+  find "$PANTRY_DIR" -name '*.refresh.*' 2>/dev/null | while IFS= read -r f; do
+    [[ -n "$f" ]] && rm -f "$f"
+  done
+  unit_dir=$(systemd_unit_dir)
+  find "$unit_dir" -maxdepth 1 -name '*.refresh.*' 2>/dev/null | while IFS= read -r f; do
+    [[ -n "$f" ]] && rm -f "$f"
+  done
+}
+
+restore_host_scripts_from_last_known_good() {
+  local lkg rel src dest unit_dir
+  lkg=$(host_scripts_last_known_good_dir)
+  [[ -d "$lkg" ]] || return 1
+  while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+    [[ -z "${rel:-}" ]] && continue
+    dest="$PANTRY_DIR/$rel"
+    src="$lkg/$rel"
+    if [[ -f "$src" ]]; then
+      mkdir -p "$(dirname "$dest")"
+      cp -a "$src" "$dest" || return 1
+    elif [[ -f "$dest" && -z "${HOST_BUNDLE_HAD_DEST[$dest]:-}" ]]; then
+      rm -f "$dest"
+    fi
+  done < <(host_bundle_rel_paths)
+  unit_dir=$(systemd_unit_dir)
+  for rel in \
+    pantry-update.service pantry-update.timer pantry-update.path \
+    pantry-backup.service pantry-backup.timer
+  do
+    dest="$unit_dir/$rel"
+    src="$lkg/systemd-units/$rel"
+    if [[ -f "$src" ]]; then
+      cp -a "$src" "$dest" || return 1
+    elif [[ -f "$dest" && -z "${HOST_BUNDLE_HAD_DEST[$dest]:-}" ]]; then
+      rm -f "$dest"
+    fi
+  done
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+}
+
+# install_host_bundle_tree_all_or_nothing stages every file, verifies the set,
+# snapshots the previous host scripts, then swaps atomically per file.
+install_host_bundle_tree_all_or_nothing() {
+  local staged="$1" tmp src dest copied_units=0 unit_dir entry
+  HOST_BUNDLE_INSTALL_PENDING=()
+  declare -gA HOST_BUNDLE_HAD_DEST=()
+  if ! verify_host_bundle_staged "$staged"; then
+    return 1
+  fi
+  while IFS=$'\t' read -r src dest || [[ -n "${src:-}" ]]; do
+    [[ -z "${src:-}" ]] && continue
+    if [[ -f "$dest" ]]; then
+      HOST_BUNDLE_HAD_DEST[$dest]=1
+    fi
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      continue
+    fi
+    tmp=$(mktemp "${dest}.refresh.XXXXXX") || return 1
+    if ! cp "$src" "$tmp"; then
+      rm -f "$tmp"
+      host_bundle_cleanup_refresh_temps
+      return 1
+    fi
+    if [[ "$dest" == *.sh ]]; then
+      if ! chmod +x "$tmp"; then
+        rm -f "$tmp"
+        host_bundle_cleanup_refresh_temps
+        return 1
+      fi
+    fi
+    HOST_BUNDLE_INSTALL_PENDING+=("$tmp|$dest")
+  done < <(host_bundle_install_plan "$staged")
+  if ! snapshot_host_scripts_last_known_good; then
+    host_bundle_cleanup_refresh_temps
+    return 1
+  fi
+  for entry in "${HOST_BUNDLE_INSTALL_PENDING[@]}"; do
+    tmp=${entry%%|*}
+    dest=${entry#*|}
+    if ! command mv "$tmp" "$dest"; then
+      echo "pantry update: could not install $(basename "$dest") from the image host bundle" >&2
+      restore_host_scripts_from_last_known_good || true
+      host_bundle_cleanup_refresh_temps
+      return 1
+    fi
+    case "$dest" in
+      *pantry-update.service|*pantry-update.timer|*pantry-update.path|*pantry-backup.service|*pantry-backup.timer)
+        copied_units=1 ;;
+    esac
+  done
+  if [[ "$copied_units" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+  return 0
+}
+
+HOST_BUNDLE_GITHUB_REPO=Rhionin/stockbot
+HOST_BUNDLE_GITHUB_BRANCH=master
+
+host_bundle_github_compare_url() {
+  local revision="$1"
+  printf 'https://api.github.com/repos/%s/compare/%s...%s' \
+    "$HOST_BUNDLE_GITHUB_REPO" "$revision" "$HOST_BUNDLE_GITHUB_BRANCH"
+}
+
+# github_compare_top_status prints the top-level status field from a GitHub
+# compare API body. Without jq, flatten newlines and take the first "status"
+# key (top-level precedes files[] in GitHub's JSON).
+github_compare_top_status() {
+  local body="$1" status flattened match
+  if command -v jq >/dev/null 2>&1; then
+    status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null) || status=
+    printf '%s' "$status"
+    return 0
+  fi
+  flattened=$(printf '%s' "$body" | tr -d '\n\r')
+  match=$(printf '%s' "$flattened" | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z_]*"' | head -n1)
+  if [[ -n "$match" ]]; then
+    status=$(printf '%s' "$match" | sed 's/"status"[[:space:]]*:[[:space:]]*"\([a-z_]*\)"/\1/')
+  else
+    status=
+  fi
+  printf '%s' "$status"
+}
+
+# host_bundle_revision_on_master uses the public GitHub compare API. Returns 0
+# when REVISION is an ancestor of master (status ahead or identical), 1 when
+# it is not, and 2 when GitHub could not be reached.
+host_bundle_revision_on_master() {
+  local revision="$1" url body status
+  [[ -n "$revision" ]] || return 1
+  url=$(host_bundle_github_compare_url "$revision")
+  body=$(curl -fsS --max-time 15 "$url" 2>/dev/null) || return 2
+  status=$(github_compare_top_status "$body")
+  case "$status" in
+    ahead|identical) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+host_bundle_running_digest_matches() {
+  local state="$1" expected running_id ref running_dig
+  expected=$(service_desired_digest "$state" pantry)
+  running_id=$(running_image_id pantry)
+  ref=$(service_ref pantry "$state")
+  running_dig=$(image_repo_digest "$running_id" "$ref")
+  [[ -n "$expected" && -n "$running_dig" && "$expected" == "$running_dig" ]]
+}
+
+# host_bundle_provenance_ok gates host refresh. Returns 0 when the running
+# pantry image matches the deployed digest and its revision is on master.
+host_bundle_provenance_ok() {
+  local state="$1" revision rc
+  if ! host_bundle_running_digest_matches "$state"; then
+    echo "pantry update: host script refresh skipped: running pantry digest does not match the deployed image" >&2
+    return 1
+  fi
+  revision=$(pantry_deploy_revision "$state")
+  host_bundle_revision_on_master "$revision"
+  rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    echo "pantry update: host script refresh skipped: could not reach GitHub to verify image revision" >&2
+    return 2
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "pantry update: host script refresh skipped: image revision is not on origin/master" >&2
+    return 1
+  fi
+  return 0
+}
+
+# refresh_host_scripts_from_image copies the bundle out of the running pantry
+# container after a successful deploy. Returns non-zero when refresh fails.
+refresh_host_scripts_from_image() {
+  local state="$1" cid tmp staged prov_rc
+  if [[ "${PANTRY_HOST_REFRESH:-}" == off ]]; then
+    return 0
+  fi
+  prov_rc=0
+  host_bundle_provenance_ok "$state" || prov_rc=$?
+  if [[ "$prov_rc" -ne 0 ]]; then
+    return "$prov_rc"
+  fi
+  cid=$(container_id pantry)
+  if [[ -z "$cid" ]]; then
+    echo "pantry update: host script refresh failed: pantry container id is missing" >&2
+    return 1
+  fi
+  tmp=$(mktemp -d) || {
+    echo "pantry update: host script refresh failed: temp directory failed" >&2
+    return 1
+  }
+  staged="$tmp/bundle"
+  mkdir -p "$staged"
+  if ! docker cp "${cid}:${HOST_BUNDLE_CONTAINER_PATH}/." "$staged"; then
+    rm -rf "$tmp"
+    echo "pantry update: host script refresh failed: could not read host scripts from the pantry container" >&2
+    return 1
+  fi
+  if ! install_host_bundle_tree_all_or_nothing "$staged"; then
+    rm -rf "$tmp"
+    echo "pantry update: host script refresh failed" >&2
+    return 1
+  fi
+  rm -rf "$tmp"
+  echo "pantry update: refreshed host deploy scripts from the running image"
+  return 0
+}
+
+pantry_deploy_revision() {
+  local state="$1" ref rev=""
+  ref=$(service_ref pantry "$state")
+  if [[ -n "$ref" ]]; then
+    rev=$(image_revision "$ref" || true)
+  fi
+  printf '%s' "$rev"
+}
+
+# backup_before_deploy_mode is required, warn, or off. An empty setting
+# is required. optional is the same as warn. The environment wins over .env.
 backup_before_deploy_mode() {
   local mode="${BACKUP_BEFORE_DEPLOY:-}"
   if [[ -z "$mode" ]]; then
@@ -1561,14 +1951,17 @@ backup_before_deploy_mode() {
   fi
   mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
   if [[ -z "$mode" ]]; then
-    mode=warn
+    mode=required
   fi
+  case "$mode" in
+    optional) mode=warn ;;
+  esac
   case "$mode" in
     warn|required|off)
       printf '%s' "$mode"
       ;;
     *)
-      echo "pantry update: BACKUP_BEFORE_DEPLOY must be warn, required, or off" >&2
+      echo "pantry update: BACKUP_BEFORE_DEPLOY must be required, warn, optional, or off" >&2
       return 1
       ;;
   esac
@@ -1579,21 +1972,23 @@ backup_before_deploy_mode() {
 # is started with that fd closed and PANTRY_BACKUP_LOCK_HELD=1 so it does
 # not flock the same file. Returns 0 when the deploy may continue.
 pre_deploy_backup() {
-  local state="$1" mode script rc
+  local state="$1" mode script rc revision
   mode=$(backup_before_deploy_mode) || return 1
   if [[ "$mode" == off ]]; then
     return 0
   fi
   service_changed "$state" pantry || return 0
   script="$(cd "$(dirname "$0")" && pwd)/pantry-backup.sh"
+  revision=$(pantry_deploy_revision "$state")
   echo "pantry update: pre-deploy backup (${mode})"
-  if [[ ! -f "$script" ]]; then
-    echo "pantry update: pre-deploy backup script is missing" >&2
+  if [[ ! -f "$script" || ! -x "$script" ]]; then
+    echo "pantry update: pre-deploy backup script is missing or not executable" >&2
     if [[ "$mode" == required ]]; then
-      echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+      write_deploy_status blocked pre_deploy_backup_failed "$revision" || true
+      echo "PANTRY UPDATE BLOCKED: pre-deploy backup failed; leaving the running pantry container unchanged" >&2
       return 1
     fi
-    echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+    echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=${mode}" >&2
     return 0
   fi
   rc=0
@@ -1603,15 +1998,16 @@ pre_deploy_backup() {
     return 0
   fi
   if [[ "$mode" == required ]]; then
-    echo "pantry update: pre-deploy backup failed; not recreating pantry" >&2
+    write_deploy_status blocked pre_deploy_backup_failed "$revision" || true
+    echo "PANTRY UPDATE BLOCKED: pre-deploy backup failed; leaving the running pantry container unchanged" >&2
     return 1
   fi
-  echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=warn" >&2
+  echo "<4>pantry update: warning: pre-deploy backup failed; continuing because BACKUP_BEFORE_DEPLOY=${mode}" >&2
   return 0
 }
 
 apply_compose() {
-  local state up_ok ref pins desired containers_ok caddy_ok proxy
+  local state up_ok ref pins desired containers_ok caddy_ok proxy revision
   PANTRY_VERIFIED=0
   FAILED_SERVICES=""
   TUNNEL_REACHABLE=0
@@ -1671,6 +2067,9 @@ apply_compose() {
     exit 1
   fi
   if ! pre_deploy_backup "$state"; then
+    if ! restore_local_tags "$state"; then
+      echo "pantry update: could not point the local image tag back at the previous digest." >&2
+    fi
     clear_state
     exit 1
   fi
@@ -1680,13 +2079,14 @@ apply_compose() {
   fi
 
   # After a successful pull, drop a container left from the other mode so
-  # the proxy name can be recreated on this path. A tunnel token with no
-  # password file leaves whatever is already running alone.
-  if [[ "$mode" != tunnel || -f "$PANTRY_DIR/auth.caddy" ]]; then
+  # the proxy name can be recreated on this path.
+  if [[ "$mode" == tunnel ]]; then
+    if [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
+      drop_other_publish_containers "$mode"
+      drop_stale_cloudflared
+    fi
+  else
     drop_other_publish_containers "$mode"
-  fi
-  if [[ "$mode" == tunnel && -f "$PANTRY_DIR/auth.caddy" ]]; then
-    drop_stale_cloudflared
   fi
   record_container_baseline "$state"
   remember_tunnel_reachability "$state"
@@ -1744,6 +2144,12 @@ apply_compose() {
       echo "<4>pantry update: warning: docker compose up failed, but every changed service is healthy; not rolling back" >&2
     fi
     rm -f "$PANTRY_DIR/.update-pending"
+    revision=$(pantry_deploy_revision "$state")
+    if refresh_host_scripts_from_image "$state"; then
+      write_deploy_status success deploy_ok "$revision" || true
+    else
+      write_deploy_status success host_refresh_failed "$revision" || true
+    fi
     clear_state
     return 0
   fi
