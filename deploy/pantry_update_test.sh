@@ -304,9 +304,13 @@ if [[ "$1" == image && "$2" == inspect ]]; then
     tagged_dig=$(tag_field "$target" dig || true)
   fi
   if [[ "$format" == *RepoDigests* ]]; then
-    if [[ -n "${STUB_EMPTY_REPO_DIGEST_FOR:-}" && "$target" == *"$STUB_EMPTY_REPO_DIGEST_FOR"* ]]; then
-      printf '\n'
-      exit 0
+    if [[ -n "${STUB_EMPTY_REPO_DIGEST_FOR:-}" ]]; then
+      IFS=',' read -ra empty_digest_targets <<< "$STUB_EMPTY_REPO_DIGEST_FOR"
+      for empty_digest_target in "${empty_digest_targets[@]}"; do
+        [[ -n "$empty_digest_target" && "$target" == *"$empty_digest_target"* ]] || continue
+        printf '\n'
+        exit 0
+      done
     fi
     if [[ -n "$tagged_dig" ]]; then
       printf '%s\n' "$tagged_dig"
@@ -823,6 +827,18 @@ lack() {
   fi
 }
 
+assert_github_compare_curl_max_time() {
+  local log="$1" label="$2" line
+  line=$(grep -F 'api.github.com/repos/Rhionin/stockbot/compare/' <<<"$log" | head -n1)
+  [[ -n "$line" ]] || fail "$label (missing GitHub compare curl line)"
+  have "$line" --max-time "$label"
+}
+
+assert_deploy_status_success() {
+  local status_body="$1" label="$2"
+  have "$status_body" result=success "$label records success result (L1)"
+}
+
 # The match is the first of tens of thousands of lines, which is when the old
 # pipe helper lost the writer. Fifty tries is enough for that helper to fail
 # on every run. pipefail is already on for this file.
@@ -870,8 +886,9 @@ done
 malformed_body=$'{\n  "files": [\n    {\n      "filename": "README.md",\n      "status": "modified"\n    }\n  ]\n}'
 [[ -z "$(github_compare_top_status "$malformed_body")" ]] \
   || fail "compare unit: jq missing top-level status should be empty"
-[[ "$(compare_top_status_with_path "$no_jq_path" "$malformed_body")" == modified ]] \
-  || fail "compare unit: no-jq malformed body uses first status key"
+malformed_no_jq=$(compare_top_status_with_path "$no_jq_path" "$malformed_body")
+[[ "$malformed_no_jq" != ahead && "$malformed_no_jq" != identical ]] \
+  || fail "compare unit: no-jq malformed body must not look ahead or identical"
 [[ -z "$(github_compare_top_status '')" ]] || fail "compare unit: empty body"
 [[ -z "$(compare_top_status_with_path "$no_jq_path" '')" ]] || fail "compare unit: no-jq empty body"
 
@@ -2718,7 +2735,7 @@ have "$status_body" "result=success" "host refresh records success result"
 have "$status_body" "reason=deploy_ok" "host refresh records deploy_ok after refresh"
 [[ -d "$host_refresh/host-scripts-last-known-good" ]] || fail "host refresh did not snapshot last-known-good host scripts"
 [[ -d "$host_refresh/host-scripts-last-known-good/systemd-units" ]] || fail "host refresh did not snapshot systemd unit copies separately"
-have "$LAST_CURL" "--max-time" "GitHub compare curl uses --max-time"
+assert_github_compare_curl_max_time "$LAST_CURL" "GitHub compare curl uses --max-time"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 run_provenance_compare_case() {
@@ -2751,7 +2768,7 @@ run_provenance_compare_case() {
   if [[ "$expect_refresh" == 1 ]]; then
     grep -q "$marker" "$dir/publish-mode.sh" \
       || fail "provenance $label/$gh_status should refresh (no-jq=${no_jq})"
-    have "$LAST_CURL" "--max-time" "provenance $label/$gh_status compare uses --max-time"
+    assert_github_compare_curl_max_time "$LAST_CURL" "provenance $label/$gh_status compare uses --max-time"
   else
     have "$LAST_OUT" "host script refresh skipped: image revision is not on origin/master" \
       "provenance $label/$gh_status skips refresh"
@@ -2853,7 +2870,7 @@ status_body=$(cat "$host_prov_digest/last-deploy-status")
 have "$status_body" "reason=host_refresh_failed" "digest mismatch records host_refresh_failed"
 unset STUB_HOST_BUNDLE STUB_LIVE_IMAGE_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
 
-# Empty running repo digest skips refresh.
+# Empty running and deployed repo digests fail the provenance gate closed (G4).
 host_prov_empty_dig=$(mktemp -d)
 prepare_pantry "$host_prov_empty_dig"
 stage_host_bundle "$host_prov_empty_dig/host-bundle-stub"
@@ -2861,12 +2878,15 @@ STUB_HOST_BUNDLE="$host_prov_empty_dig/host-bundle-stub"
 write_images "$host_prov_empty_dig/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-STUB_EMPTY_REPO_DIGEST_FOR=sha256:newpantry
+STUB_EMPTY_REPO_DIGEST_FOR=sha256:newpantry,sha256:runpantry
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 run_update "$host_prov_empty_dig"
-[[ "$LAST_RC" -eq 0 ]] || fail "empty running digest should not fail deploy: $LAST_OUT"
-have "$LAST_OUT" "host script refresh skipped: running pantry digest does not match the deployed image" "empty running digest skips refresh"
+[[ "$LAST_RC" -eq 0 ]] || fail "empty digests should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh skipped: running pantry digest does not match the deployed image" "empty digests skip refresh"
+status_body=$(cat "$host_prov_empty_dig/last-deploy-status")
+assert_deploy_status_success "$status_body" "empty digests"
+have "$status_body" "reason=host_refresh_failed" "empty digests record host_refresh_failed"
 unset STUB_HOST_BUNDLE STUB_EMPTY_REPO_DIGEST_FOR STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # A mid-install mv failure restores last-known-good host scripts (N6).
@@ -2919,7 +2939,7 @@ status_body=$(cat "$host_lkg_snapshot/last-deploy-status")
 have "$status_body" "reason=host_refresh_failed" "snapshot cp failure records host_refresh_failed"
 unset STUB_HOST_BUNDLE PANTRY_TEST_SNAPSHOT_CP_FAIL_REL STUB_HEALTH_BODY STUB_BUILD_BODY
 
-# Restore drops host files that were new before refresh (R1).
+# Restore drops host files that were new before refresh (R1/R2).
 host_lkg_new=$(mktemp -d)
 prepare_pantry "$host_lkg_new"
 stage_host_bundle "$host_lkg_new/host-bundle-stub"
@@ -2933,12 +2953,19 @@ write_images "$host_lkg_new/images.tsv" \
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 PANTRY_SYSTEMD_UNIT_DIR="$unit_dir"
-PANTRY_TEST_MV_FAIL_DEST='pantry-update.timer'
+PANTRY_TEST_MV_FAIL_DEST="${unit_dir}/pantry-update.path"
 run_update "$host_lkg_new"
 [[ "$LAST_RC" -eq 0 ]] || fail "mv failure after new unit should not fail deploy: $LAST_OUT"
-[[ ! -f "$unit_dir/pantry-update.timer" ]] || fail "restore did not remove newly installed pantry-update.timer"
+have "$LAST_OUT" "host script refresh failed" "mv failure after new unit fails refresh"
+[[ ! -f "$unit_dir/pantry-update.timer" ]] \
+  || fail "restore did not remove newly installed unit-dir pantry-update.timer (R1)"
+[[ ! -f "$host_lkg_new/systemd/pantry-update.timer" ]] \
+  || fail "restore did not remove newly installed pantry-dir pantry-update.timer (R2)"
 find "$host_lkg_new" "$unit_dir" -name '*.refresh.*' -print -quit | grep -q . \
   && fail "mv failure after new unit left refresh temp files"
+status_body=$(cat "$host_lkg_new/last-deploy-status")
+assert_deploy_status_success "$status_body" "mv failure after new unit"
+have "$status_body" "reason=host_refresh_failed" "mv failure after new unit records host_refresh_failed"
 unset STUB_HOST_BUNDLE PANTRY_TEST_MV_FAIL_DEST PANTRY_SYSTEMD_UNIT_DIR STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # Unreachable GitHub skips host refresh without failing deploy.
@@ -3018,6 +3045,9 @@ run_update "$host_idempotent"
 publish_after=$(stat -c '%Y' "$host_idempotent/publish-mode.sh")
 [[ "$publish_before" -eq "$publish_after" ]] || fail "unchanged bundle rewrote publish-mode.sh"
 have "$LAST_OUT" "refreshed host deploy scripts from the running image" "unchanged bundle still completes refresh"
+status_body=$(cat "$host_idempotent/last-deploy-status")
+assert_deploy_status_success "$status_body" "idempotent host refresh"
+have "$status_body" "reason=deploy_ok" "idempotent host refresh records deploy_ok (L1)"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_lkg_snapshot" "$host_lkg_new" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"

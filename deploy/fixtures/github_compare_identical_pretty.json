@@ -1,4 +1,15 @@
 {
+  "url": "https://api.github.com/repos/Rhionin/stockbot/compare/abc123...master",
+  "html_url": "https://github.com/Rhionin/stockbot/compare/abc123...master",
+  "permalink_url": "https://github.com/Rhionin/stockbot/compare/Rhionin:abc123...Rhionin:master",
+  "diff_url": "https://github.com/Rhionin/stockbot/compare/abc123...master.diff",
+  "patch_url": "https://github.com/Rhionin/stockbot/compare/abc123...master.patch",
+  "base_commit": {
+    "sha": "base00000000000000000000000000000000000000"
+  },
+  "merge_base_commit": {
+    "sha": "merge00000000000000000000000000000000000000"
+  },
   "status": "identical",
   "ahead_by": 0,
   "behind_by": 0,
