@@ -1,0 +1,16 @@
+{
+  "status": "diverged",
+  "ahead_by": 1,
+  "behind_by": 2,
+  "total_commits": 3,
+  "commits": [],
+  "files": [
+    {
+      "filename": "README.md",
+      "status": "added",
+      "additions": 5,
+      "deletions": 0,
+      "changes": 5
+    }
+  ]
+}

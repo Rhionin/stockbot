@@ -471,6 +471,16 @@ if [[ "$url" == *api.github.com/repos/Rhionin/stockbot/compare/* ]]; then
     exit 0
   fi
   gh_status=${STUB_GITHUB_COMPARE_STATUS:-ahead}
+  if [[ "${PANTRY_TEST_GITHUB_COMPARE_PRETTY:-}" == 1 && -n "${STUB_FIXTURE_ROOT:-}" ]]; then
+    case "$gh_status" in
+      ahead|identical|behind|diverged)
+        if [[ -f "${STUB_FIXTURE_ROOT}/github_compare_${gh_status}_pretty.json" ]]; then
+          emit_body "$(cat "${STUB_FIXTURE_ROOT}/github_compare_${gh_status}_pretty.json")" 200
+          exit 0
+        fi
+        ;;
+    esac
+  fi
   case "$gh_status" in
     identical)
       emit_body '{"status":"identical","ahead_by":0,"behind_by":0,"files":[]}' 200
@@ -480,6 +490,12 @@ if [[ "$url" == *api.github.com/repos/Rhionin/stockbot/compare/* ]]; then
       ;;
     diverged)
       emit_body '{"status":"diverged","ahead_by":1,"behind_by":2,"files":[{"filename":"README.md","status":"added"}]}' 200
+      ;;
+    malformed)
+      emit_body $'{\n  "files": [\n    {\n      "filename": "README.md",\n      "status": "modified"\n    }\n  ]\n}' 200
+      ;;
+    empty)
+      emit_body '' 200
       ;;
     *)
       emit_body "{\"status\":\"ahead\",\"ahead_by\":9,\"behind_by\":0,\"files\":[{\"filename\":\"deploy/setup.sh\",\"status\":\"modified\"},{\"filename\":\"firmware/x\",\"status\":\"added\"}]}" 200
@@ -612,7 +628,32 @@ fi
 exec /bin/mv "$@"
 EOF
 
-  chmod +x "$bin/docker" "$bin/curl" "$bin/chown" "$bin/mv"
+  cat > "$bin/cp" << 'EOF'
+#!/usr/bin/env bash
+if [[ -n "${PANTRY_TEST_SNAPSHOT_CP_FAIL_REL:-}" ]]; then
+  dest=${!#}
+  if [[ "$dest" == *host-scripts-last-known-good* && "$dest" == *"$PANTRY_TEST_SNAPSHOT_CP_FAIL_REL"* ]]; then
+    echo "stub cp: refusing snapshot for ${PANTRY_TEST_SNAPSHOT_CP_FAIL_REL}" >&2
+    exit 1
+  fi
+fi
+exec /bin/cp "$@"
+EOF
+
+  chmod +x "$bin/docker" "$bin/curl" "$bin/chown" "$bin/mv" "$bin/cp"
+  if [[ -n "${PANTRY_TEST_PATH_WITHOUT_JQ:-}" ]]; then
+    local cmd p d
+    for d in /usr/bin /bin; do
+      [[ -d "$d" ]] || continue
+      for p in "$d"/*; do
+        [[ -x "$p" ]] || continue
+        cmd=$(basename "$p")
+        [[ "$cmd" == jq ]] && continue
+        [[ -e "$bin/$cmd" ]] && continue
+        ln -sf "$p" "$bin/$cmd"
+      done
+    done
+  fi
 }
 
 prepare_pantry() {
@@ -685,6 +726,11 @@ run_update() {
     deadline_cmd=(timeout "$PANTRY_TEST_DEADLINE")
   fi
 
+  local path_setting="$bin:$PATH"
+  if [[ -n "${PANTRY_TEST_PATH_WITHOUT_JQ:-}" ]]; then
+    path_setting="$bin"
+  fi
+
   set +e
   DOCKER_LOG="$work/docker.log" \
     CURL_LOG="$work/curl.log" \
@@ -743,7 +789,12 @@ run_update() {
     STUB_HOST_BUNDLE="${STUB_HOST_BUNDLE:-}" \
     STUB_EMPTY_REPO_DIGEST_FOR="${STUB_EMPTY_REPO_DIGEST_FOR:-}" \
     PANTRY_TEST_MV_FAIL_DEST="${PANTRY_TEST_MV_FAIL_DEST:-}" \
-    PATH="$bin:$PATH" \
+    PANTRY_TEST_PATH_WITHOUT_JQ="${PANTRY_TEST_PATH_WITHOUT_JQ:-}" \
+    PANTRY_TEST_GITHUB_COMPARE_PRETTY="${PANTRY_TEST_GITHUB_COMPARE_PRETTY:-}" \
+    PANTRY_TEST_SNAPSHOT_CP_FAIL_REL="${PANTRY_TEST_SNAPSHOT_CP_FAIL_REL:-}" \
+    STUB_FIXTURE_ROOT="$ROOT/deploy/fixtures" \
+    PANTRY_SYSTEMD_UNIT_DIR="${PANTRY_SYSTEMD_UNIT_DIR:-}" \
+    PATH="$path_setting" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
   set -e
@@ -786,6 +837,45 @@ assert_have_lack_large_input() {
   done
 }
 assert_have_lack_large_input
+
+# --- github_compare_top_status (jq and no-jq fallback) ---
+eval "$(sed -n '/^github_compare_top_status() {/,/^}$/p' "$UPDATE")"
+
+unit_test_bin=$(mktemp -d)
+for cmd in grep sed tr head bash; do
+  ln -sf "$(command -v "$cmd")" "$unit_test_bin/$cmd"
+done
+no_jq_path=$unit_test_bin
+
+compare_top_status_with_path() {
+  local path="$1" body="$2"
+  PATH="$path" /bin/bash -c "$(declare -f github_compare_top_status); github_compare_top_status $(printf '%q' "$body")"
+}
+
+FIXTURE_DIR="$ROOT/deploy/fixtures"
+pretty_ahead=$(cat "$FIXTURE_DIR/github_compare_ahead_pretty.json")
+[[ "$(github_compare_top_status "$pretty_ahead")" == ahead ]] || fail "compare unit: jq pretty ahead"
+[[ "$(compare_top_status_with_path "$no_jq_path" "$pretty_ahead")" == ahead ]] \
+  || fail "compare unit: no-jq pretty ahead (old fallback would yield modified)"
+
+for gh_case in identical:identical behind:behind diverged:diverged; do
+  name=${gh_case%%:*}
+  want=${gh_case#*:}
+  body=$(cat "$FIXTURE_DIR/github_compare_${name}_pretty.json")
+  [[ "$(github_compare_top_status "$body")" == "$want" ]] || fail "compare unit: jq $name"
+  [[ "$(compare_top_status_with_path "$no_jq_path" "$body")" == "$want" ]] \
+    || fail "compare unit: no-jq $name"
+done
+
+malformed_body=$'{\n  "files": [\n    {\n      "filename": "README.md",\n      "status": "modified"\n    }\n  ]\n}'
+[[ -z "$(github_compare_top_status "$malformed_body")" ]] \
+  || fail "compare unit: jq missing top-level status should be empty"
+[[ "$(compare_top_status_with_path "$no_jq_path" "$malformed_body")" == modified ]] \
+  || fail "compare unit: no-jq malformed body uses first status key"
+[[ -z "$(github_compare_top_status '')" ]] || fail "compare unit: empty body"
+[[ -z "$(compare_top_status_with_path "$no_jq_path" '')" ]] || fail "compare unit: no-jq empty body"
+
+rm -rf "$unit_test_bin"
 
 line_of() {
   local haystack="$1" needle="$2"
@@ -2628,7 +2718,63 @@ have "$status_body" "result=success" "host refresh records success result"
 have "$status_body" "reason=deploy_ok" "host refresh records deploy_ok after refresh"
 [[ -d "$host_refresh/host-scripts-last-known-good" ]] || fail "host refresh did not snapshot last-known-good host scripts"
 [[ -d "$host_refresh/host-scripts-last-known-good/systemd-units" ]] || fail "host refresh did not snapshot systemd unit copies separately"
+have "$LAST_CURL" "--max-time" "GitHub compare curl uses --max-time"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
+
+run_provenance_compare_case() {
+  local label="$1" gh_status="$2" expect_refresh="$3" no_jq="$4"
+  local dir marker
+  dir=$(mktemp -d)
+  prepare_pantry "$dir"
+  stage_host_bundle "$dir/host-bundle-stub"
+  marker="# prov-${label}-${gh_status}-marker"
+  printf '\n%s\n' "$marker" >> "$dir/host-bundle-stub/publish-mode.sh"
+  STUB_HOST_BUNDLE="$dir/host-bundle-stub"
+  write_images "$dir/images.tsv" \
+    sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+    sha256:runcaddy caddy@sha256:oldcaddy
+  STUB_HEALTH_BODY='{"status":"ok"}'
+  STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+  PANTRY_TEST_GITHUB_COMPARE_PRETTY=1
+  if [[ "$no_jq" == 1 ]]; then
+    PANTRY_TEST_PATH_WITHOUT_JQ=1
+  else
+    unset PANTRY_TEST_PATH_WITHOUT_JQ
+  fi
+  if [[ "$gh_status" == ahead || "$gh_status" == identical ]]; then
+    unset STUB_GITHUB_COMPARE_STATUS
+  else
+    STUB_GITHUB_COMPARE_STATUS=$gh_status
+  fi
+  run_update "$dir"
+  [[ "$LAST_RC" -eq 0 ]] || fail "provenance $label/$gh_status exited $LAST_RC: $LAST_OUT"
+  if [[ "$expect_refresh" == 1 ]]; then
+    grep -q "$marker" "$dir/publish-mode.sh" \
+      || fail "provenance $label/$gh_status should refresh (no-jq=${no_jq})"
+    have "$LAST_CURL" "--max-time" "provenance $label/$gh_status compare uses --max-time"
+  else
+    have "$LAST_OUT" "host script refresh skipped: image revision is not on origin/master" \
+      "provenance $label/$gh_status skips refresh"
+    grep -q "$marker" "$dir/publish-mode.sh" \
+      && fail "provenance $label/$gh_status should not install bundle ($label)"
+    status_body=$(cat "$dir/last-deploy-status")
+    have "$status_body" "reason=host_refresh_failed" "provenance $label/$gh_status records host_refresh_failed"
+  fi
+  rm -rf "$dir"
+  unset STUB_HOST_BUNDLE STUB_GITHUB_COMPARE_STATUS STUB_HEALTH_BODY STUB_BUILD_BODY \
+    PANTRY_TEST_GITHUB_COMPARE_PRETTY PANTRY_TEST_PATH_WITHOUT_JQ
+}
+
+for jq_mode in jq no_jq; do
+  no_jq_flag=0
+  [[ "$jq_mode" == no_jq ]] && no_jq_flag=1
+  run_provenance_compare_case "$jq_mode" ahead 1 "$no_jq_flag"
+  run_provenance_compare_case "$jq_mode" identical 1 "$no_jq_flag"
+  run_provenance_compare_case "$jq_mode" behind 0 "$no_jq_flag"
+  run_provenance_compare_case "$jq_mode" diverged 0 "$no_jq_flag"
+  run_provenance_compare_case "$jq_mode" malformed 0 "$no_jq_flag"
+  run_provenance_compare_case "$jq_mode" empty 0 "$no_jq_flag"
+done
 
 # Realistic GitHub compare bodies list file statuses; top-level ahead still refreshes.
 host_prov_realistic=$(mktemp -d)
@@ -2641,11 +2787,14 @@ write_images "$host_prov_realistic/images.tsv" \
   sha256:runcaddy caddy@sha256:oldcaddy
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+PANTRY_TEST_GITHUB_COMPARE_PRETTY=1
+PANTRY_TEST_PATH_WITHOUT_JQ=1
 unset STUB_GITHUB_COMPARE_STATUS
 run_update "$host_prov_realistic"
-[[ "$LAST_RC" -eq 0 ]] || fail "realistic ahead compare exited $LAST_RC: $LAST_OUT"
-grep -q 'realistic-compare-marker' "$host_prov_realistic/publish-mode.sh" || fail "realistic ahead compare did not refresh host scripts"
-unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
+[[ "$LAST_RC" -eq 0 ]] || fail "realistic ahead compare (no jq) exited $LAST_RC: $LAST_OUT"
+grep -q 'realistic-compare-marker' "$host_prov_realistic/publish-mode.sh" \
+  || fail "realistic pretty ahead compare without jq did not refresh host scripts"
+unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_TEST_GITHUB_COMPARE_PRETTY PANTRY_TEST_PATH_WITHOUT_JQ
 
 # diverged compare rejects refresh.
 host_prov_diverged=$(mktemp -d)
@@ -2746,6 +2895,52 @@ status_body=$(cat "$host_lkg_mv/last-deploy-status")
 have "$status_body" "reason=host_refresh_failed" "mv failure records host_refresh_failed"
 unset STUB_HOST_BUNDLE PANTRY_TEST_MV_FAIL_DEST STUB_HEALTH_BODY STUB_BUILD_BODY
 
+# Snapshot cp failure aborts refresh with no partial host state (S1).
+host_lkg_snapshot=$(mktemp -d)
+prepare_pantry "$host_lkg_snapshot"
+stage_host_bundle "$host_lkg_snapshot/host-bundle-stub"
+keep_line='# snapshot-keep-publish-line'
+printf '\n%s\n' "$keep_line" >> "$host_lkg_snapshot/publish-mode.sh"
+printf '\n# snapshot-bundle-line\n' >> "$host_lkg_snapshot/host-bundle-stub/publish-mode.sh"
+STUB_HOST_BUNDLE="$host_lkg_snapshot/host-bundle-stub"
+write_images "$host_lkg_snapshot/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+PANTRY_TEST_SNAPSHOT_CP_FAIL_REL=publish-mode.sh
+run_update "$host_lkg_snapshot"
+[[ "$LAST_RC" -eq 0 ]] || fail "snapshot cp failure should not fail deploy: $LAST_OUT"
+have "$LAST_OUT" "host script refresh failed" "snapshot cp failure fails refresh"
+grep -q "$keep_line" "$host_lkg_snapshot/publish-mode.sh" || fail "snapshot cp failure changed publish-mode.sh"
+grep -q 'snapshot-bundle-line' "$host_lkg_snapshot/publish-mode.sh" && fail "snapshot cp failure partially installed publish-mode.sh"
+find "$host_lkg_snapshot" -name '*.refresh.*' -print -quit | grep -q . && fail "snapshot cp failure left refresh temp files"
+status_body=$(cat "$host_lkg_snapshot/last-deploy-status")
+have "$status_body" "reason=host_refresh_failed" "snapshot cp failure records host_refresh_failed"
+unset STUB_HOST_BUNDLE PANTRY_TEST_SNAPSHOT_CP_FAIL_REL STUB_HEALTH_BODY STUB_BUILD_BODY
+
+# Restore drops host files that were new before refresh (R1).
+host_lkg_new=$(mktemp -d)
+prepare_pantry "$host_lkg_new"
+stage_host_bundle "$host_lkg_new/host-bundle-stub"
+unit_dir="$host_lkg_new/fake-systemd"
+mkdir -p "$unit_dir"
+cp "$host_lkg_new/host-bundle-stub/systemd/pantry-update.service" "$unit_dir/"
+STUB_HOST_BUNDLE="$host_lkg_new/host-bundle-stub"
+write_images "$host_lkg_new/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+PANTRY_SYSTEMD_UNIT_DIR="$unit_dir"
+PANTRY_TEST_MV_FAIL_DEST=pantry-update.timer
+run_update "$host_lkg_new"
+[[ "$LAST_RC" -eq 0 ]] || fail "mv failure after new unit should not fail deploy: $LAST_OUT"
+[[ ! -f "$unit_dir/pantry-update.timer" ]] || fail "restore did not remove newly installed pantry-update.timer"
+find "$host_lkg_new" "$unit_dir" -name '*.refresh.*' -print -quit | grep -q . \
+  && fail "mv failure after new unit left refresh temp files"
+unset STUB_HOST_BUNDLE PANTRY_TEST_MV_FAIL_DEST PANTRY_SYSTEMD_UNIT_DIR STUB_HEALTH_BODY STUB_BUILD_BODY
+
 # Unreachable GitHub skips host refresh without failing deploy.
 host_prov_net=$(mktemp -d)
 prepare_pantry "$host_prov_net"
@@ -2825,7 +3020,7 @@ publish_after=$(stat -c '%Y' "$host_idempotent/publish-mode.sh")
 have "$LAST_OUT" "refreshed host deploy scripts from the running image" "unchanged bundle still completes refresh"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
-rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
+rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_lkg_snapshot" "$host_lkg_new" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

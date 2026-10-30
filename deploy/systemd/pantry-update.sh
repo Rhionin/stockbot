@@ -1830,17 +1830,22 @@ host_bundle_github_compare_url() {
 }
 
 # github_compare_top_status prints the top-level status field from a GitHub
-# compare API body. A naive grep matches files[].status last; strip the files
-# array first when jq is unavailable.
+# compare API body. Without jq, flatten newlines and take the first "status"
+# key (top-level precedes files[] in GitHub's JSON).
 github_compare_top_status() {
-  local body="$1" status head_part
+  local body="$1" status flattened match
   if command -v jq >/dev/null 2>&1; then
     status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null) || status=
     printf '%s' "$status"
     return 0
   fi
-  head_part=$(printf '%s' "$body" | sed 's/"files"[[:space:]]*:\[.*//')
-  status=$(printf '%s' "$head_part" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  flattened=$(printf '%s' "$body" | tr -d '\n\r')
+  match=$(printf '%s' "$flattened" | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z_]*"' | head -n1)
+  if [[ -n "$match" ]]; then
+    status=$(printf '%s' "$match" | sed 's/"status"[[:space:]]*:[[:space:]]*"\([a-z_]*\)"/\1/')
+  else
+    status=
+  fi
   printf '%s' "$status"
 }
 

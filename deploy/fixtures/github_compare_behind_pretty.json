@@ -1,0 +1,16 @@
+{
+  "status": "behind",
+  "ahead_by": 0,
+  "behind_by": 3,
+  "total_commits": 3,
+  "commits": [],
+  "files": [
+    {
+      "filename": "README.md",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 0,
+      "changes": 1
+    }
+  ]
+}
