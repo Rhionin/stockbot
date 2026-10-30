@@ -48,18 +48,25 @@
   font-size: var(--mantine-font-size-sm);
 }
 
-.admin-household-stat-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-
 .admin-household-stat-part {
   white-space: nowrap;
 }
 
 .admin-household-retry {
   min-height: 44px;
+}
+
+.household-page .mantine-Button-root {
+  min-height: 44px;
+}
+
+.household-page .mantine-TextInput-input {
+  min-height: 44px;
+}
+
+.household-page .mantine-Radio-root {
+  min-height: 44px;
+  align-items: flex-start;
 }
 
 .household-list,

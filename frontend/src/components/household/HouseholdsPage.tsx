@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Alert, Badge, Button, Group, Paper, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import { hostedErrorSentence, type RestockMode } from '@stockbot/shared/contract';
@@ -16,12 +16,11 @@ import { useHouseholdSession } from '../auth/householdSession';
 import { extractInviteCode } from './inviteCode';
 import { announceHouseholdSwitch } from './liveHints';
 import { OperatorHouseholdStatBlock } from './OperatorHouseholdStatBlock';
-
-const RESTOCK: { value: RestockMode; label: string }[] = [
-  { value: 'auto', label: 'Restock new items automatically' },
-  { value: 'ask_restock', label: 'Ask me before restocking a new item' },
-  { value: 'ask_hold', label: 'Ask me, and hold the item until I answer' },
-];
+import {
+  formatOperatorHouseholdCreated,
+  formatOperatorHouseholdRestockLabel,
+  HOUSEHOLD_RESTOCK_CHOICES,
+} from './operatorHouseholdCopy';
 
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
@@ -60,27 +59,35 @@ export function HouseholdsPage() {
 
   const operator = auth?.operator === true;
 
+  const operatorHouseholdsRequest = useRef(0);
   const loadOperatorHouseholds = useCallback(async (options?: { retry?: boolean }) => {
     if (!operator) return;
+    const request = ++operatorHouseholdsRequest.current;
+    const stale = () => request !== operatorHouseholdsRequest.current;
     if (options?.retry) {
+      // Keep the alert and Try again mounted so the button can show its loading state.
       setOperatorHouseholdsRetryLoading(true);
     } else {
       setOperatorHouseholdsLoading(true);
+      setOperatorHouseholdsError('');
+      setOperatorHouseholdsServerError(false);
     }
-    setOperatorHouseholdsError('');
-    setOperatorHouseholdsServerError(false);
     try {
       const body = await listOperatorHouseholds();
+      if (stale()) return;
       setOperatorHouseholds(body.households);
+      setOperatorHouseholdsError('');
+      setOperatorHouseholdsServerError(false);
     } catch (requestError) {
+      if (stale()) return;
+      setOperatorHouseholds([]);
       setOperatorHouseholdsError(hosted(requestError, 'Could not load households.'));
       setOperatorHouseholdsServerError(
         requestError instanceof ApiError && requestError.code === 'internal',
       );
     } finally {
-      if (options?.retry) {
+      if (!stale()) {
         setOperatorHouseholdsRetryLoading(false);
-      } else {
         setOperatorHouseholdsLoading(false);
       }
     }
@@ -218,7 +225,7 @@ export function HouseholdsPage() {
             />
             <Radio.Group label="When a new item shows up" value={restockMode} onChange={(value) => setRestockMode(value as RestockMode)}>
               <Stack gap="xs" mt="xs">
-                {RESTOCK.map((choice) => <Radio key={choice.value} value={choice.value} label={choice.label} />)}
+                {HOUSEHOLD_RESTOCK_CHOICES.map((choice) => <Radio key={choice.value} value={choice.value} label={choice.label} />)}
               </Stack>
             </Radio.Group>
             <TextInput
@@ -276,8 +283,8 @@ export function HouseholdsPage() {
                   <Group gap="xs" wrap="wrap">
                     <Text fw={600} className="admin-household-name">{row.name}</Text>
                     {householdStatusBadges(row)}
-                    <Text size="sm" c="dimmed">Restock: {row.restockMode.replaceAll('_', ' ')}</Text>
-                    <Text size="sm" c="dimmed">Created {new Date(row.createdAt).toLocaleDateString()}</Text>
+                    <Text size="sm" c="dimmed">{formatOperatorHouseholdRestockLabel(row.restockMode)}</Text>
+                    <Text size="sm" c="dimmed">{formatOperatorHouseholdCreated(row.createdAt)}</Text>
                   </Group>
                   <OperatorHouseholdStatBlock row={row} />
                 </Stack>

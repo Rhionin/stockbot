@@ -1,5 +1,42 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { install, resetStage, stage } from './householdStageFixtures'
+
+const MIN_TOUCH_TARGET_CSS_PX = 44
+
+/** Inline text links in copy may stay smaller under WCAG 2.2 target-size exceptions. */
+const HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST = [] as const
+
+async function assertTouchTargetSize(locator: Locator) {
+  const box = await locator.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.ceil(box!.width)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+  expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+}
+
+async function assertHouseholdsPageTouchTargets(page: Page) {
+  const root = page.locator('.household-page')
+  for (const locator of [
+    root.getByRole('button'),
+    root.getByRole('textbox'),
+    root.locator('.mantine-Radio-root'),
+  ]) {
+    const count = await locator.count()
+    for (let index = 0; index < count; index += 1) {
+      const target = locator.nth(index)
+      if (!(await target.isVisible())) continue
+      const testId = await target.getAttribute('data-testid')
+      if (testId && HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST.includes(testId as typeof HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST[number])) continue
+      await assertTouchTargetSize(target)
+    }
+  }
+  const links = root.getByRole('link')
+  const linkCount = await links.count()
+  for (let index = 0; index < linkCount; index += 1) {
+    const link = links.nth(index)
+    if (!(await link.isVisible())) continue
+    await assertTouchTargetSize(link)
+  }
+}
 
 // Untyped legacy-server payload: an old or buggy server may still send members.
 // The admin list must never render any of it.
@@ -48,6 +85,9 @@ for (const { width, height } of [{ width: 390, height: 844 }, { width: 1280, hei
     await expect(stats).toContainText('Scanners: 2 online · 1 offline')
     await expect(stats).toContainText('5 scans this week · 0 pending scans')
     await expect(stats).toContainText('Last activity')
+    for (const part of await stats.locator('.admin-household-stat-part').all()) {
+      await expect(part).toHaveCSS('white-space', 'nowrap')
+    }
     await expectNoMemberPii(page)
     await expect(page.getByText(/\boperator\b/i)).toHaveCount(0)
   })
@@ -89,9 +129,10 @@ test('admin households show the load error inline, without the empty copy', asyn
 test('admin households recover from a server error when Try again succeeds', async ({ page }) => {
   await openAdmin(page, 390, 844)
   let calls = 0
+  let fail = true
   await page.route('**/api/operator/households', async (route) => {
     calls += 1
-    if (calls === 1) {
+    if (fail) {
       await route.fulfill({
         status: 500,
         contentType: 'application/json',
@@ -122,9 +163,55 @@ test('admin households recover from a server error when Try again succeeds', asy
   const section = page.getByTestId('operator-households-section')
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   const callsBeforeRetry = calls
+  fail = false
   await section.getByRole('button', { name: 'Try again' }).click()
   await expect(section.getByText('Test Household', { exact: true }).first()).toBeVisible()
   await expect(section.getByTestId('operator-household-stats')).toContainText('Scanners: 0 online · 0 offline')
   expect(calls).toBe(callsBeforeRetry + 1)
   expect(callsBeforeRetry).toBeGreaterThanOrEqual(1)
+})
+
+test('admin households meet 44x44 touch targets at 390x844', async ({ page }) => {
+  await openAdmin(page, 390, 844)
+  await routeHouseholds(page, [{
+    ...baseRow, id: 'hh-1', name: 'Test Household', isPrimary: true, memberCount: 1, productCount: 1, itemsOnHand: 1,
+    scannersOnline: 0, scannersOffline: 0, scansThisWeek: 0,
+  }])
+  await page.goto('/households')
+  await assertHouseholdsPageTouchTargets(page)
+})
+
+test('admin households Try again is at least 44px tall while retrying', async ({ page }) => {
+  await openAdmin(page, 390, 844)
+  let fail = true
+  let releaseRetry: () => void = () => undefined
+  const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve })
+  await page.route('**/api/operator/households', async (route) => {
+    if (fail) {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'boom', code: 'internal' }),
+      })
+      return
+    }
+    await retryGate
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ households: [] }),
+    })
+  })
+  await page.goto('/households')
+  const section = page.getByTestId('operator-households-section')
+  await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
+  fail = false
+  const tryAgain = section.getByRole('button', { name: 'Try again' })
+  const clickPromise = tryAgain.click()
+  await expect(tryAgain).toHaveAttribute('data-loading', 'true')
+  const box = await tryAgain.boundingBox()
+  expect(box).not.toBeNull()
+  expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+  releaseRetry()
+  await clickPromise
 })

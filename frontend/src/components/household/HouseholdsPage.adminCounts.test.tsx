@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
@@ -66,6 +67,10 @@ function operatorHouseholdsWithLegacyMembers(households: OperatorHouseholdView[]
   };
 }
 
+const denver = process.env.TZ === 'America/Denver';
+const expectedLastActivity = denver ? 'Last activity Apr 2, 6:00 AM' : 'Last activity Apr 2, 12:00 PM';
+const expectedCreated = denver ? 'Created Mar 31' : 'Created Apr 1';
+
 describe('HouseholdsPage admin server list', () => {
   beforeEach(() => {
     resetStage1Client();
@@ -94,7 +99,9 @@ describe('HouseholdsPage admin server list', () => {
     expect(stats).toHaveTextContent('1 member · 2 products · 3 items on hand');
     expect(stats).toHaveTextContent('Scanners: 1 online · 0 offline');
     expect(stats).toHaveTextContent('1 scan this week · 0 pending scans');
-    expect(stats.textContent).toMatch(/Last activity /);
+    expect(stats).toHaveTextContent(expectedLastActivity);
+    expect(section).toHaveTextContent('New items restock automatically');
+    expect(section).toHaveTextContent(expectedCreated);
     expectNoMemberPii(section, ['secret@example.com', 'Secret Person']);
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
@@ -128,10 +135,50 @@ describe('HouseholdsPage admin server list', () => {
     }));
     renderAdminPage(session(true));
     const section = await screen.findByTestId('operator-households-section');
-    expect(within(section).getByRole('alert')).toHaveTextContent(/^Only an admin can do this\.$/);
+    expect(await within(section).findByRole('alert')).toHaveTextContent(/^Only an admin can do this\.$/);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
     expect(within(section).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
+  });
+
+  it('keeps the alert and shows Try again loading while the retry is in flight', async () => {
+    let calls = 0;
+    let resolveRetry: (value: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(json({ error: 'boom', code: 'internal' }, 500));
+        return new Promise<Response>((resolve) => { resolveRetry = resolve; });
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderAdminPage(session(true));
+    const section = await screen.findByTestId('operator-households-section');
+    await within(section).findByRole('alert');
+    fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(calls).toBe(2));
+    const retry = within(section).getByRole('button', { name: 'Try again' });
+    await waitFor(() => expect(retry).toHaveAttribute('data-loading', 'true'));
+    expect(retry).toBeDisabled();
+    expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
+    expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
+    resolveRetry(json({ households: [testHouseholdRow] }));
+    await waitFor(() => expect(within(section).queryByRole('alert')).not.toBeInTheDocument());
+    expect(within(section).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  it('keeps each stat separator on the end of the previous part', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') return Promise.resolve(json({ households: [testHouseholdRow] }));
+      return Promise.reject(new Error(url));
+    }));
+    renderAdminPage(session(true));
+    const stats = await screen.findByTestId('operator-household-stats');
+    const parts = Array.from(stats.querySelectorAll('.admin-household-stat-part')).map((el) => el.textContent ?? '');
+    expect(parts.filter((part) => part.startsWith('·') || part.startsWith(' '))).toEqual([]);
+    expect(parts.some((part) => part.endsWith('\u00a0·'))).toBe(true);
   });
 
   it('retries after a server error with Try again', async () => {
@@ -149,12 +196,76 @@ describe('HouseholdsPage admin server list', () => {
     }));
     renderAdminPage(session(true));
     const section = await screen.findByTestId('operator-households-section');
-    expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
+    expect(await within(section).findByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     const retry = within(section).getByRole('button', { name: 'Try again' });
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible());
     expect(calls).toBe(2);
     expect(within(section).queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('clears stale households when a reload fails', async () => {
+    let shouldFail = false;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        if (shouldFail) {
+          return Promise.resolve(json({ error: 'boom', code: 'internal' }, 500));
+        }
+        return Promise.resolve(json({ households: [testHouseholdRow] }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    const auth = session(true);
+    const sessionValue = { required: true as const, logout: vi.fn(), auth, replaceAuth: vi.fn() };
+    const view = (reloadKey: string) => (
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <HouseholdSessionContext.Provider value={sessionValue}>
+            <HouseholdsPage key={reloadKey} />
+          </HouseholdSessionContext.Provider>
+        </MemoryRouter>
+      </MantineProvider>
+    );
+    const { rerender } = render(view('initial'));
+    await screen.findByTestId('operator-households-section');
+    await screen.findByText('Test Household', { selector: '.admin-household-name' });
+    shouldFail = true;
+    rerender(view('reload-fail'));
+    const sectionAfterReload = await screen.findByTestId('operator-households-section');
+    await waitFor(() => expect(within(sectionAfterReload).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK));
+    expect(within(sectionAfterReload).queryByText('Test Household', { selector: '.admin-household-name' })).not.toBeInTheDocument();
+  });
+
+  it('clears stale households when a later in-flight load fails under StrictMode', async () => {
+    let calls = 0;
+    let resolveSlow: (value: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url !== '/api/operator/households') return Promise.reject(new Error(url));
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<Response>((resolve) => { resolveSlow = resolve; });
+      }
+      return Promise.resolve(json({ error: 'boom', code: 'internal' }, 500));
+    }));
+    render(
+      <StrictMode>
+        <MantineProvider env="test">
+          <MemoryRouter>
+            <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth: session(true), replaceAuth: vi.fn() }}>
+              <HouseholdsPage />
+            </HouseholdSessionContext.Provider>
+          </MemoryRouter>
+        </MantineProvider>
+      </StrictMode>,
+    );
+    const section = await screen.findByTestId('operator-households-section');
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK));
+    expect(within(section).queryByText('Test Household', { selector: '.admin-household-name' })).not.toBeInTheDocument();
+    resolveSlow(json({ households: [testHouseholdRow] }));
+    await waitFor(() => expect(within(section).queryByText('Test Household', { selector: '.admin-household-name' })).not.toBeInTheDocument());
   });
 
   it('wraps a very long household name without leaking member rows', async () => {
