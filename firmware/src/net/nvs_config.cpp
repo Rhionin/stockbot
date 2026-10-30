@@ -77,7 +77,7 @@ class PreferencesNvsStore final : public NvsConfigStore {
   }
 };
 
-PreferencesNvsStore* createNvsConfigStore() {
+NvsConfigStore* createNvsConfigStore() {
   static PreferencesNvsStore store;
   return &store;
 }

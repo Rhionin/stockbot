@@ -422,6 +422,7 @@ std::string buildHeartbeatRequestJson(const std::string& hub_version, const std:
       << "\"bootId\":\"" << jsonEscape(boot_id) << "\","
       << "\"uptimeS\":" << uptime_s << ","
       << "\"queued\":" << queued << ","
+      << "\"droppedCount\":0,"
       << "\"clockSynced\":" << (clock_synced ? "true" : "false");
   if (battery_pct >= 0) {
     oss << ",\"batteryPct\":" << battery_pct << ",\"charging\":" << (charging ? "true" : "false");

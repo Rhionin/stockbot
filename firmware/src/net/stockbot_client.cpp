@@ -5,13 +5,13 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
-#include <esp_crt_bundle.h>
-
 #include "protocol_json.h"
 
 namespace stockbot {
 
 namespace {
+
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
 
 WiFiClientSecure& tlsClient() {
   static WiFiClientSecure client;
@@ -71,7 +71,7 @@ HttpCallResult performPost(const std::string& base_url, const std::string& path,
     if (allowInsecureTls(base_url)) {
       tlsClient().setInsecure();
     } else {
-      tlsClient().setCACertBundle(esp_crt_bundle);
+      tlsClient().setCACertBundle(rootca_crt_bundle_start);
     }
     stream = &tlsClient();
   } else {

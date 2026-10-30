@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 58
+endpoint-count: 63
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -197,6 +197,11 @@ DELETE /api/devices/{id}
 POST /api/device/scans
 POST /api/device/heartbeat
 POST /api/device/token/rotate
+GET /api/device/firmware/{releaseId}
+GET /api/operator/firmware
+POST /api/operator/firmware/{id}/promote
+POST /api/operator/firmware/{id}/yank
+POST /api/operator/firmware/{id}/retry
 POST /api/scans
 GET /api/scans
 PATCH /api/scans/{id}
@@ -369,13 +374,14 @@ Proposed. These two routes are the household restock mode from #296. They supers
 | Role | Member |
 | X-Household-Id | Required |
 | GET response | `200` `HouseholdSettings` |
-| PATCH request | `{ "restockMode": "auto" \| "ask_restock" \| "ask_hold" }` |
+| PATCH request | `{ "restockMode"?: "auto" \| "ask_restock" \| "ask_hold", "fwAutoUpdate"?: boolean }` |
 | PATCH response | `200` `HouseholdSettings` |
-| Errors | `unauthorized`, `validation`, `not_found`, `busy` |
+| Errors | `unauthorized`, `validation`, `not_found`, `forbidden_role`, `busy` |
 
 ```ts
 interface HouseholdSettings {
   restockMode: 'auto' | 'ask_restock' | 'ask_hold';
+  fwAutoUpdate: boolean; // default true; owner only to change
   householdPasswordEnabled: boolean;
   householdPasswordRestoreUntil?: string; // RFC3339, only while a retired password can be restored
 }
@@ -385,7 +391,7 @@ interface HouseholdSettings {
 
 password-switch: The household password switch returns only `householdPasswordEnabled` and, while the password can still be restored, `householdPasswordRestoreUntil`. It never returns the password or its hash. Only an owner can change the switch. A member gets `forbidden_role`. True means the shared password is on. False with `householdPasswordRestoreUntil` means it is retired and can still be restored. False without that timestamp means it is retired, or this household has no shared password.
 
-PATCH accepts `restockMode` only. A body that includes `householdPasswordEnabled`, `householdPasswordRestoreUntil`, the password, or a hash is `validation`. Changing the switch is the retire and restore routes. Login's `{ "householdPassword": string }` is the sign-in secret for that request. It is not this field, and no response returns it.
+PATCH accepts `restockMode` and `fwAutoUpdate` only. Only an owner can change `fwAutoUpdate`, and a member who sends it gets `forbidden_role` (see [Household firmware setting](#household-firmware-setting)). A body that includes `householdPasswordEnabled`, `householdPasswordRestoreUntil`, the password, or a hash is `validation`. Changing the switch is the retire and restore routes. Login's `{ "householdPassword": string }` is the sign-in secret for that request. It is not this field, and no response returns it.
 
 ### POST /api/household/household-password/retire
 
@@ -800,6 +806,7 @@ interface Device {
   commitMode?: 'queue' | 'immediate';
   batteryPct?: number | null;
   charging?: boolean | null;
+  // esp32_scanner only: the DeviceFirmware fields in Firmware updates
 }
 ```
 
@@ -816,11 +823,11 @@ Rename. Any member. The #364 list fields are otherwise unchanged.
 | Auth | Session |
 | Role | Member |
 | X-Household-Id | Required. `{id}` must be a device of that household. |
-| Request | `{ "label"?: string, "defaultDirection"?: "stock_in" | "stock_out", "inactivityRevertSeconds"?: number (30..3600), "commitMode"?: "queue" | "immediate" }` |
+| Request | `{ "label"?: string, "defaultDirection"?: "stock_in" | "stock_out", "inactivityRevertSeconds"?: number (30..3600), "commitMode"?: "queue" | "immediate", "fwChannel"?: "stable" | "beta", "fwPinnedReleaseId"?: string | null }` |
 | Response | `200` `Device` |
-| Errors | `unauthorized`, `validation`, `not_found`, `busy` |
+| Errors | `unauthorized`, `validation`, `not_found`, `forbidden_operator`, `busy` |
 
-`label` is trimmed, 1–80 characters. The direct scanner is `not_found`.
+`label` is trimmed, 1–80 characters. The direct scanner is `not_found`. `fwChannel` and `fwPinnedReleaseId` are operator only. See [Firmware fields on devices](#firmware-fields-on-devices).
 
 ### DELETE /api/devices/{id}
 
@@ -872,7 +879,7 @@ Idempotency is the same for both forms. The same device and the same `id`, with 
 
 Heartbeat: every accepted scan updates that device's `lastSeenAt`. `heartbeat: true` with no barcode updates `lastSeenAt` and does not enqueue a scan. A body with neither `barcode` nor `heartbeat: true` is `validation`. The heartbeat flag is only on the single body.
 
-The offline ring of 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`.
+The offline ring of up to 500 scans is device firmware. It is not a request field. Each stored scan is posted with its own `id`. On `pi_hub` and `box_hub`, the hub keeps at most 500 unsent scans and drops the oldest when full. On `esp32_scanner`, when the ring is full the device refuses new scans and shows that its memory is full until it reconnects and a flush frees space; it never drops the oldest scans.
 
 A committed scan publishes one `scans` hint after the final commit, on this device's household channel only.
 
@@ -904,7 +911,7 @@ These fail the whole request and write nothing: a body over 64 KB (`413` `payloa
 
 A device may submit 600 scans per minute. Over that limit the response is `429` `rate_limited` with `Retry-After`, and nothing in the request is written.
 
-The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. `droppedCount` above 0 is the number of buffered scans the hub dropped. The hub keeps at most 500 unsent scans and drops the oldest. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
+The batch is one transaction. A per-item `conflict` or `rejected` does not fail the other items and does not change the HTTP status from 200. `duplicate` is the same device and id with the same barcode, direction, and `unitCount`. `created` is a new scan, and it is the batch form of single-body `accepted`. On `pi_hub` and `box_hub`, `droppedCount` above 0 is the number of buffered scans the hub dropped on that flush; those hubs keep at most 500 unsent scans and drop the oldest when full. An `esp32_scanner` never drops scans from the ring and always sends `droppedCount: 0`. An unrecognized device token is `unauthorized`. A revoked token is `device_revoked`.
 
 `DeviceHubConfig` is `{ label: string, controlBarcodes: { stockIn: string, stockOut: string }, idleSeconds: number, defaultDirection: "stock_in" | "stock_out", inactivityRevertSeconds: number, commitMode: "queue" | "immediate", configVersion: number }`. `idleSeconds` matches `inactivityRevertSeconds` (default 300). Control barcodes accept `STOCK-IN`/`STOCK-OUT` and `STOCK_IN`/`STOCK_OUT`.
 
@@ -925,11 +932,11 @@ The hub reports liveness. A flush also counts as contact. This does not remove `
 | Auth | Device bearer |
 | Role | Device |
 | X-Household-Id | Omit |
-| Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean, "batteryPct"?: number, "charging"?: boolean }` |
-| Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: { "version": string, "url": string, "sha256": string, "sig": string } }` |
+| Request | `{ "version": string, "bootId": string, "uptimeS": number, "queued": number, "droppedCount"?: number, "clockSynced": boolean, "batteryPct"?: number, "charging"?: boolean, "rollback"?: boolean, "fwTarget"?: string, "otaState"?: string, "otaReleaseId"?: string, "otaError"?: string, "otaProgressPct"?: number }` |
+| Response | `200` `{ "serverTime": string, "config": DeviceHubConfig, "heartbeatSeconds": 60, "rotateToken": boolean, "update"?: FirmwareUpdate }` |
 | Errors | `unauthorized`, `device_revoked`, `validation`, `rate_limited`, `busy` |
 
-`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the hub has not sent. Optional **`batteryPct`** (integer 0–100) and **`charging`** (boolean) update the device row when present; out-of-range `batteryPct` is `validation`. The response **`config`** is the full `DeviceHubConfig` after applying any pending settings (`label`, `controlBarcodes`, `defaultDirection`, `inactivityRevertSeconds`, `commitMode`, `configVersion`).
+`heartbeatSeconds` is 60. `online` flips when contact is newer or older than 300 seconds. A change publishes a `devices` hint. `queued` is how many scans the device has not sent yet (0–500 on `esp32_scanner`). On `pi_hub` and `box_hub`, optional `droppedCount` on heartbeat reports scans dropped from the offline buffer since the previous heartbeat. An `esp32_scanner` always sends `droppedCount: 0`. Optional **`batteryPct`** (integer 0–100) and **`charging`** (boolean) update the device row when present; out-of-range `batteryPct` is `validation`. The response **`config`** is the full `DeviceHubConfig` after applying any pending settings (`label`, `controlBarcodes`, `defaultDirection`, `inactivityRevertSeconds`, `commitMode`, `configVersion`). The firmware fields (`rollback`, `fwTarget`, `otaState`, `otaReleaseId`, `otaError`, `otaProgressPct`) and the `update` object are defined in [Firmware updates](#firmware-updates).
 
 ### POST /api/device/token/rotate
 
@@ -955,6 +962,151 @@ Any `401`, whether `unauthorized` or `device_revoked`, means stop, wipe the toke
 A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
 
 Any other `4xx` is not retried.
+
+## Firmware updates
+
+Decided by CJ on 2026-10-29 (#452). The design is [firmware-ota.md](firmware-ota.md), and the decision record is [ADR-001](adr-001-firmware-ota.md). This section applies to `kind: "esp32_scanner"` devices only. Pi hub updates are unchanged. Every field here is language independent, and the C++ and Rust scanner firmware implement it the same way.
+
+### Heartbeat firmware fields
+
+These fields extend `POST /api/device/heartbeat`. All of them are optional, so older firmware keeps working.
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `version` | string | Existing field. The running firmware, semver 2.0.0 with no leading `v`. It is stored in the existing `hub_version` column and shown as `fwVersion`. |
+| `rollback` | boolean | Existing field. It is `true` on the first heartbeat after the bootloader or the app rolled back to the previous image. |
+| `fwTarget` | string | The compiled-in target id: `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_bench`, or `atoms3lite_symcode_hid`. The server offers no update until a device has reported one. |
+| `otaState` | string | `idle`, `waiting`, `downloading`, `verifying`, `pending_verify`, `succeeded`, `failed`, or `rolled_back`. `succeeded`, `failed`, and `rolled_back` are each sent on one heartbeat, then the state goes back to `idle`. |
+| `otaReleaseId` | string | The release that `otaState` refers to. Omitted while `idle`. |
+| `otaError` | string | Sent only with `failed` or `rolled_back`. See the values below. |
+| `otaProgressPct` | number | An integer from 0 to 100, sent only while `downloading`. |
+
+`otaError` is one of `wrong_target`, `unknown_key`, `bad_signature`, `too_large`, `download_failed`, `http_status`, `bad_size`, `bad_sha256`, `flash_write_failed`, `image_invalid`, `checkin_timeout`, or `boot_failed`. These are device report values, not API error codes. The server stores any other value as `other` and still answers `200`, so newer firmware can add values. An unknown `otaState` or `fwTarget` is stored as sent, and the server offers no update for an unknown target. An out-of-range `otaProgressPct` is ignored.
+
+The heartbeat response key `update` keeps its reserved name. Its full shape is:
+
+```ts
+interface FirmwareUpdate {
+  releaseId: string; // fwr_<ulid>
+  version: string;   // semver
+  target: string;    // equals the device's fwTarget
+  size: number;      // bytes of firmware.bin
+  sha256: string;    // 64 lowercase hex
+  keyId: string;     // fw-YYYY-N
+  sig: string;       // base64 Ed25519 over the canonical manifest
+  url: string;       // "/api/device/firmware/{releaseId}", relative to the device's server URL
+}
+```
+
+- `update` is present only when the server's resolution picks a release whose version differs from the reported `version`. The rules are in [firmware-ota.md §5](firmware-ota.md#resolution).
+- The device rebuilds the canonical manifest `stockbot-fw-manifest-v1` from these fields and verifies `sig` before it downloads anything. The byte form is in [firmware-ota.md §4](firmware-ota.md#canonical-signed-bytes). An `update` that fails that check is reported as `failed` with the matching `otaError`, and it is never installed.
+- An `update` never changes `config` or `configVersion`.
+
+mark-valid-rule: A new firmware image is valid only after it gets an HTTP 200 from POST /api/device/heartbeat, authenticated with its stored device token and reporting the new version with otaState pending_verify; with no such 200 within 10 minutes of boot, it rolls back.
+
+### GET /api/device/firmware/{releaseId}
+
+This downloads one firmware image. The `url` in `update` points here.
+
+| | |
+|---|---|
+| Auth | Device bearer |
+| Role | Device |
+| X-Household-Id | Omit |
+| Request | No body. An optional `Range: bytes=<start>-` resumes a download. |
+| Response | `200` or `206` `application/octet-stream`, the raw `firmware.bin`, with `Content-Length`, `ETag: "<sha256>"`, and `Accept-Ranges: bytes` |
+| Errors | `unauthorized`, `device_revoked`, `not_found`, `rate_limited` |
+
+- The image is served only when the release's target equals the device's last reported `fwTarget`, the release is not yanked, and the release is one the server offered this device. Any other release id is `404` `not_found`.
+- The server sends `416` with no body for a range it cannot satisfy. The device then starts again from byte 0.
+- A device can start 10 downloads per hour. The 11th gets `429` `rate_limited` with `Retry-After`. A ranged resume counts as a download.
+- Firmware releases are global, not household data. The bearer is still required, and a token from one household can download only releases for its own device's target.
+- The device handles errors as described in [Device error handling](#device-error-handling). Any `401` still wipes the token. A `404` ends this attempt with `otaError` `http_status`.
+
+### Firmware fields on devices
+
+`GET /api/devices` adds these fields to `Device` for `esp32_scanner` devices. Other kinds omit them.
+
+```ts
+interface DeviceFirmware {
+  fwVersion: string | null;          // last reported version
+  fwTarget: string | null;           // last reported fwTarget
+  fwChannel: 'stable' | 'beta';      // default 'stable'
+  fwPinnedReleaseId: string | null;
+  otaState: string | null;           // last reported otaState
+  otaError: string | null;           // last failed or rolled_back reason, kept until the next succeeded
+  otaUpdatedAt: string | null;       // RFC3339, when the server stored the last otaState change
+  fwUpdateAvailable: string | null;  // the version the next heartbeat would offer, or null
+}
+```
+
+`PATCH /api/devices/{id}` also accepts `"fwChannel"?: "stable" | "beta"` and `"fwPinnedReleaseId"?: string | null`.
+
+- Only an operator can change these two fields. A household member or owner who sends either one gets `403` `forbidden_operator`, and nothing in the request is applied.
+- A pin must name a release that is not yanked and whose target equals the device's `fwTarget`. Otherwise the response is `validation` with `field` `fwPinnedReleaseId`. `null` clears the pin.
+- A pin to a version lower than the running one is a downgrade. It is allowed and audited.
+- These changes publish a `devices` hint. They do not change `configVersion`.
+- Every change writes an `audit_log` row.
+
+### Household firmware setting
+
+`HouseholdSettings` adds `fwAutoUpdate: boolean`, and `PATCH /api/household/settings` accepts `{ "fwAutoUpdate": boolean }` alongside `restockMode`.
+
+- It is stored as the `household_settings` key `fw_auto_update` with the value `"1"` or `"0"`. A missing row means `true`.
+- Only an owner can change it. A member gets `forbidden_role`.
+- When it is `false`, no `update` is offered to that household's scanners, except for a pinned device.
+
+### Operator firmware routes
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Operator. Others get `403` `forbidden_operator`. |
+| X-Household-Id | Omit |
+| Errors | `unauthorized`, `forbidden_operator`, `not_found`, `validation`, `busy` |
+
+`GET /api/operator/firmware` returns `200` `{ "releases": FirmwareRelease[] }`, newest version first:
+
+```ts
+interface FirmwareRelease {
+  id: string;            // fwr_<ulid>
+  target: string;
+  version: string;
+  size: number;
+  sha256: string;
+  keyId: string;
+  channel: 'beta' | 'stable';
+  createdAt: string;     // RFC3339
+  promotedAt: string | null;
+  yankedAt: string | null;
+  canary: 'none' | 'pending' | 'healthy' | 'failed';
+  devices: { total: number; succeeded: number; failed: number; rolledBack: number };
+}
+```
+
+- `canary` is `healthy` once a beta-channel device that is not revoked has reported `succeeded` for a release of this version. It is `failed` when a beta device reported `failed` or `rolled_back` for this version and none succeeded, `pending` while a beta device is offered it, and `none` when no beta device has this target.
+- `POST /api/operator/firmware/{id}/promote` takes an empty body.
+  - It moves every release with the same version as `{id}` to `stable`, and returns `200` `{ "version": string, "promoted": string[], "uncoveredTargets": string[] }`.
+  - `promoted` lists release ids. `uncoveredTargets` lists targets in this version with no healthy beta device.
+  - Until the version is healthy, the response is `validation` with `field` `canary`.
+  - Promoting an already stable version returns `200` and changes nothing.
+- `POST /api/operator/firmware/{id}/yank` takes an empty body.
+  - It sets `yankedAt` on every release with that version and returns `200` `{ "version": string, "yanked": string[] }`.
+  - A yanked release is never offered or downloaded. Devices on it are offered the highest remaining release on their channel, which may be lower. Each such downgrade offer is audited.
+  - Yanking an already yanked version returns `200` and changes nothing.
+- `POST /api/operator/firmware/{id}/retry` takes `{ "deviceId": string }`.
+  - It clears the rollback suppression for that device and release, so the release can be offered again. It returns `200` `Device`.
+  - An unknown device, or a device that did not roll back from `{id}`, is `not_found`.
+- Promote, yank, and retry each write an `audit_log` row.
+
+### Firmware schema (PROPOSED)
+
+The schema is PROPOSED. CJ approves migration `029_firmware_ota.sql` at T2 PR time, and this contract does not add it. It is additive only:
+
+- a new `firmware_releases` table;
+- new `devices` columns `fw_target`, `fw_channel`, `fw_pinned_release_id`, `ota_state`, `ota_release_id`, `ota_last_error`, `ota_updated_at`, and `ota_retry_release_id`.
+
+The full SQL is in [firmware-ota.md §12](firmware-ota.md#12-schema-proposed-migration-029_firmware_otasql).
 
 ## Scans and changes-since
 
@@ -1601,6 +1753,8 @@ Review of this contract at `6de8179`, from the client:
 27. **Invite URL host.** Decided by CJ, via Network Engineer, on 2026-10-22. This replaces the open domain note in design §13. The hosted app and invite URLs use `APP_BASE_URL`. Production is `https://app.stockbot.rhionin.com`. Invite links are `<APP_BASE_URL>/invite/<code>`. SES sends from `stockbot.rhionin.com`, with MAIL FROM at `mail.stockbot.rhionin.com`. The host is stage config, not a hardcoded string, because dev will get its own host later. The client does not send a host. Stage 1 does not send mail. Those SES domains stay the stage-3 sender.
 31. **Pi auth.** Decided by CJ on 2026-10-23. Everyone uses a personal email and password. The shared household password is only for household 1's changeover, then it is retired. Sessions are this server's opaque tokens: cookie `__Host-stockbot_session` or bearer `sbs_`. See [Stage 1 auth](#stage-1-auth).
 1. **Session cookie name.** Decided by CJ on 2026-10-23. `__Host-stockbot_session`, or bearer `sbs_` for Expo. See [Auth and roles](#auth-and-roles).
+- **Firmware rollout, bench first (#452 Q1, option b).** Decided by CJ on 2026-10-29, relayed by Stockbot Manager. Every scanner firmware release goes to the `beta` channel and installs automatically on CJ's bench scanner. CJ promotes it to `stable` with one click once it reports healthy. Household scanners follow `stable`. See [Operator firmware routes](#operator-firmware-routes).
+- **Firmware signing key (#452 Q2, option a).** Decided by CJ on 2026-10-29, relayed by Stockbot Manager. The Ed25519 signing seed is the GitHub Actions secret `FW_SIGNING_KEY_ED25519` in environment `firmware-release`, which only `master` can deploy to. CI signs automatically, and an offline backup of the seed is kept. See [ADR-001](adr-001-firmware-ota.md).
 
 ## Open questions
 
