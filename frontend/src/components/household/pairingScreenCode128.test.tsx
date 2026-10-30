@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatPairingCode } from '@stockbot/shared/contract';
@@ -15,6 +15,7 @@ import { PrintableBarcode } from './printableBarcode';
 import { printableBarcodeQuietMm } from './printableBarcodeQuiet';
 import { Code128Mark } from './symbols';
 import { PairingDialog } from './PairingDialog';
+import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from './kitCopy456';
 
 const PAIRING = formatPairingCode('23456789');
 const BAR_MODULES = pairingCode128ModuleCount(PAIRING);
@@ -89,6 +90,48 @@ describe('on-screen Code128Mark geometry', () => {
       pairingCode128SvgWidthPx(Number(svg.getAttribute('data-module-css-px')), BAR_MODULES),
       5,
     );
+    expect(container.querySelector('.pairing-barcode-too-small-hint')).toBeNull();
+  });
+
+  it('shows the print hint only when the module width is 1 device px', async () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const clientWidthSpy = vi.spyOn(HTMLDivElement.prototype, 'clientWidth', 'get').mockImplementation(function clientWidth(this: HTMLDivElement) {
+      if (this.classList.contains('pairing-code128-frame')) return 320;
+      if (this.classList.contains('code128-quiet-zone')) return 320;
+      return 320;
+    });
+    const { container: narrow } = render(
+      <MantineProvider env="test">
+        <div style={{ width: 320 }}>
+          <Code128Mark value={PAIRING} quietZone />
+        </div>
+      </MantineProvider>,
+    );
+    await waitFor(() => {
+      expect(narrow.querySelector('svg.pairing-code128')?.getAttribute('data-module-device-px')).toBe('1');
+    });
+    expect(within(narrow).getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeInTheDocument();
+    clientWidthSpy.mockRestore();
+
+    vi.stubGlobal('devicePixelRatio', 2);
+    const wideClientWidthSpy = vi.spyOn(HTMLDivElement.prototype, 'clientWidth', 'get').mockImplementation(function clientWidth(this: HTMLDivElement) {
+      if (this.classList.contains('pairing-code128-frame')) return 360;
+      if (this.classList.contains('code128-quiet-zone')) return 360;
+      return 360;
+    });
+    const { container: wide } = render(
+      <MantineProvider env="test">
+        <div style={{ width: 360 }}>
+          <Code128Mark value={PAIRING} quietZone />
+        </div>
+      </MantineProvider>,
+    );
+    await waitFor(() => {
+      const modulePx = wide.querySelector('svg.pairing-code128')?.getAttribute('data-module-device-px');
+      expect(modulePx).not.toBe('1');
+    });
+    expect(within(wide).queryByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeNull();
+    wideClientWidthSpy.mockRestore();
   });
 });
 

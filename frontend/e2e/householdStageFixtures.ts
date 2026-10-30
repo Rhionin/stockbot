@@ -1,7 +1,9 @@
 import { type Page, type Route } from '@playwright/test'
 import { formatPairingCode } from '../../shared/contract'
+import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from '../src/components/household/kitCopy456'
 
 export const PAIRING = formatPairingCode('23456789')
+export { PAIRING_ON_SCREEN_TOO_SMALL_HINT }
 
 export function countPdfPages(buffer: Buffer): number {
   const matches = buffer.toString('latin1').match(/\/Type\s*\/Page\b/g)
@@ -67,6 +69,17 @@ const devices = () => ([
   { id: 'hub', label: 'Kitchen hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'pi_hub', online: true, queued: 3 },
   { id: 'shed', label: 'Shed hub', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-03-01T00:00:00Z', revokedAt: null, kind: 'box_hub', online: false, queued: 0 },
   { id: 'direct', label: 'Counter', createdAt: '2026-04-01T00:00:00Z', lastSeenAt: '2026-04-02T15:00:00Z', revokedAt: null, kind: 'direct', online: true },
+  {
+    id: 'scan-storage',
+    label: 'Storage room',
+    createdAt: '2026-04-01T00:00:00Z',
+    lastSeenAt: '2026-04-02T15:00:00Z',
+    revokedAt: null,
+    kind: 'esp32_scanner',
+    online: true,
+    inactivityRevertSeconds: 300,
+    defaultDirection: 'stock_out',
+  },
 ])
 
 const fulfillJson = (route: Route, body: unknown, status = 200) => route.fulfill({

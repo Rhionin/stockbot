@@ -5,6 +5,8 @@ export const DEFAULT_DIRECTION: 'stock_in' | 'stock_out' = 'stock_out';
 
 export const PRINT_ACTUAL_SIZE_INSTRUCTION = 'Print at Actual size (100%), not Fit to page.';
 export const PRINT_PAIRING_CODE_LABEL = 'Print setup & wall sheet';
+export const PAIRING_ON_SCREEN_TOO_SMALL_HINT =
+  'Too small to scan? Print the setup sheet instead.';
 export const CONNECT_SCANNER_OR_HUB_LABEL = 'Connect a scanner or hub';
 
 export function formatPairingExpiryTime(

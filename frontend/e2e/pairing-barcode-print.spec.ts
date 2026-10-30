@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import {
   PAIRING,
+  PAIRING_ON_SCREEN_TOO_SMALL_HINT,
   countPdfPages,
   install,
   pdfContainsText,
@@ -11,45 +12,91 @@ import {
 } from './householdStageFixtures'
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
+const MATRIX_WIDTHS = [...MOBILE_WIDTHS, 1280] as const
 const DPRS = [1, 2, 3] as const
 
-async function assertIntegerDevicePxPerModule(page: import('@playwright/test').Page) {
+const CSS_PX_PER_MM = 96 / 25.4
+
+function assertPrintBarcodeMetrics(box: { width: number; height: number }, totalModules: number) {
+  const moduleMm = (box.width / totalModules) / CSS_PX_PER_MM
+  const heightMm = box.height / CSS_PX_PER_MM
+  expect(moduleMm).toBeGreaterThanOrEqual(0.49)
+  expect(moduleMm).toBeLessThanOrEqual(0.51)
+  expect(heightMm).toBeGreaterThanOrEqual(17.99)
+  expect(heightMm).toBeLessThanOrEqual(22.01)
+}
+
+async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
   const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
   await expect(svg).toBeVisible()
+  const frame = dialog.locator('.pairing-code128-frame')
   const metrics = await svg.evaluate((el) => {
     const quiet = Number(el.getAttribute('data-quiet-modules'))
     const barModules = Number(el.getAttribute('data-modules'))
     const totalModules = barModules + 2 * quiet
     const rect = el.getBoundingClientRect()
-    const dpr = window.devicePixelRatio || 1
-    const devicePxPerModule = (rect.width * dpr) / totalModules
-    return { devicePxPerModule, dpr, totalModules, width: rect.width }
+    const dprValue = window.devicePixelRatio || 1
+    const devicePxPerModule = (rect.width * dprValue) / totalModules
+    const moduleDevicePx = Number(el.getAttribute('data-module-device-px'))
+    return {
+      devicePxPerModule,
+      moduleDevicePx,
+      dpr: dprValue,
+      totalModules,
+      quiet,
+      width: rect.width,
+    }
   })
+  expect(metrics.quiet).toBe(10)
+  expect(Number.isInteger(metrics.moduleDevicePx)).toBe(true)
+  expect(Math.abs(metrics.devicePxPerModule - metrics.moduleDevicePx)).toBeLessThan(0.05)
   expect(Math.abs(metrics.devicePxPerModule - Math.round(metrics.devicePxPerModule))).toBeLessThan(0.01)
-  if (metrics.dpr >= 2) {
-    expect(metrics.devicePxPerModule).toBeGreaterThanOrEqual(2)
+
+  const isDpr1Phone = dpr === 1 && viewportWidth <= 412
+  if (metrics.moduleDevicePx === 1) {
+    expect(isDpr1Phone).toBe(true)
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
+  } else {
+    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(2)
+    await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
   }
+
+  if (viewportWidth >= 1280 && dpr === 1) {
+    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(2)
+  }
+
   await expect(svg.evaluate((el) => {
     const attrWidth = Number(el.getAttribute('width'))
     const rendered = el.getBoundingClientRect().width
     return Math.abs(rendered - attrWidth) < 1.5
   })).resolves.toBe(true)
+
+  const frameScroll = await frame.evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    scrollLeft: el.scrollLeft,
+  }))
+  expect(frameScroll.scrollWidth).toBeLessThanOrEqual(frameScroll.clientWidth + 1)
+  expect(frameScroll.scrollLeft).toBe(0)
+
   await expect(page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1)).resolves.toBe(true)
 }
 
-for (const width of MOBILE_WIDTHS) {
+for (const width of MATRIX_WIDTHS) {
   for (const dpr of DPRS) {
-    test(`on-screen pairing Code128 module px at ${width}px DPR ${dpr}`, async ({ page }) => {
+    test(`on-screen pairing Code128 module px at ${width}px DPR ${dpr}`, async ({ browser }) => {
       resetStage()
-      await page.setViewportSize({ width, height: 700 })
+      const context = await browser.newContext({
+        viewport: { width, height: 700 },
+        deviceScaleFactor: dpr,
+      })
+      const page = await context.newPage()
       await install(page)
-      await page.addInitScript((ratio) => {
-        Object.defineProperty(window, 'devicePixelRatio', { get: () => ratio, configurable: true })
-      }, dpr)
       await signInAndOpenHouseholdScannerPairing(page)
       await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
-      await assertIntegerDevicePxPerModule(page)
+      await assertOnScreenPairingBarcode(page, width, dpr)
+      await context.close()
     })
   }
 }
@@ -78,12 +125,13 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
   expect(sheetText).toMatch(/STOCK-OUT/)
   expect(sheetText).toMatch(/STOCK-IN/)
   expect(sheetText).toMatch(new RegExp(PAIRING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  expect(sheetText).toMatch(/Print at Actual size/)
   for (const svg of await page.locator('.setup-kit-print-root svg[data-barcode]').all()) {
     const box = await svg.boundingBox()
     const barModules = Number(await svg.getAttribute('data-modules'))
     const totalModules = Number(await svg.getAttribute('data-total-modules') ?? barModules)
     expect(box).not.toBeNull()
-    expect(box!.width / totalModules).toBeGreaterThanOrEqual(1.417)
+    assertPrintBarcodeMetrics(box!, totalModules)
   }
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
@@ -119,6 +167,10 @@ test('wall sheet print includes expanded Symcode on one page', async ({ page }) 
   await page.emulateMedia({ media: 'print' })
   const wallText = await wallPrintRoot.evaluate((el) => el.textContent ?? '')
   expect(wallText).toMatch(/SpecCode99|%%SpecCode99/)
+  expect(wallText).toMatch(/Storage room/)
+  expect(wallText).toMatch(/Print at Actual size/)
+  await expect(wallPrintRoot.locator('.kit-print-footer-instruction')).toContainText('Print at Actual size')
+  await expect(wallPrintRoot.locator('.kit-print-ruler')).toBeHidden()
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
     expect(countPdfPages(pdf)).toBe(1)
