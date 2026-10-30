@@ -337,6 +337,14 @@ if [[ "$1" == image && "$2" == inspect ]]; then
     exit 0
   fi
   if [[ "$format" == *'.Id'* ]]; then
+    if [[ -n "${STUB_EMPTY_IMAGE_ID_FOR:-}" ]]; then
+      IFS=',' read -ra empty_id_targets <<< "$STUB_EMPTY_IMAGE_ID_FOR"
+      for empty_id_target in "${empty_id_targets[@]}"; do
+        [[ -n "$empty_id_target" && "$target" == *"$empty_id_target"* ]] || continue
+        printf '\n'
+        exit 0
+      done
+    fi
     if [[ -n "$tagged_id" ]]; then
       printf '%s\n' "$tagged_id"
       exit 0
@@ -792,6 +800,7 @@ run_update() {
     STUB_BACKUP_RC="${STUB_BACKUP_RC:-0}" \
     STUB_HOST_BUNDLE="${STUB_HOST_BUNDLE:-}" \
     STUB_EMPTY_REPO_DIGEST_FOR="${STUB_EMPTY_REPO_DIGEST_FOR:-}" \
+    STUB_EMPTY_IMAGE_ID_FOR="${STUB_EMPTY_IMAGE_ID_FOR:-}" \
     PANTRY_TEST_MV_FAIL_DEST="${PANTRY_TEST_MV_FAIL_DEST:-}" \
     PANTRY_TEST_PATH_WITHOUT_JQ="${PANTRY_TEST_PATH_WITHOUT_JQ:-}" \
     PANTRY_TEST_GITHUB_COMPARE_PRETTY="${PANTRY_TEST_GITHUB_COMPARE_PRETTY:-}" \
@@ -836,7 +845,7 @@ assert_github_compare_curl_max_time() {
 
 assert_deploy_status_success() {
   local status_body="$1" label="$2"
-  have "$status_body" result=success "$label records success result (L1)"
+  have "$status_body" result=success "$label records success result"
 }
 
 # The match is the first of tens of thousands of lines, which is when the old
@@ -2870,7 +2879,7 @@ status_body=$(cat "$host_prov_digest/last-deploy-status")
 have "$status_body" "reason=host_refresh_failed" "digest mismatch records host_refresh_failed"
 unset STUB_HOST_BUNDLE STUB_LIVE_IMAGE_TSV STUB_HEALTH_BODY STUB_BUILD_BODY
 
-# Empty running and deployed repo digests fail the provenance gate closed (G4).
+# Empty running and deployed digests fail the provenance gate closed (G4).
 host_prov_empty_dig=$(mktemp -d)
 prepare_pantry "$host_prov_empty_dig"
 stage_host_bundle "$host_prov_empty_dig/host-bundle-stub"
@@ -2878,7 +2887,8 @@ STUB_HOST_BUNDLE="$host_prov_empty_dig/host-bundle-stub"
 write_images "$host_prov_empty_dig/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-STUB_EMPTY_REPO_DIGEST_FOR=sha256:newpantry,sha256:runpantry
+STUB_EMPTY_REPO_DIGEST_FOR=ghcr.io/rhionin/pantry,sha256:newpantry,sha256:runpantry
+STUB_EMPTY_IMAGE_ID_FOR=ghcr.io/rhionin/pantry:latest,sha256:runpantry,sha256:newpantry
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 run_update "$host_prov_empty_dig"
@@ -2887,7 +2897,7 @@ have "$LAST_OUT" "host script refresh skipped: running pantry digest does not ma
 status_body=$(cat "$host_prov_empty_dig/last-deploy-status")
 assert_deploy_status_success "$status_body" "empty digests"
 have "$status_body" "reason=host_refresh_failed" "empty digests record host_refresh_failed"
-unset STUB_HOST_BUNDLE STUB_EMPTY_REPO_DIGEST_FOR STUB_HEALTH_BODY STUB_BUILD_BODY
+unset STUB_HOST_BUNDLE STUB_EMPTY_REPO_DIGEST_FOR STUB_EMPTY_IMAGE_ID_FOR STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # A mid-install mv failure restores last-known-good host scripts (N6).
 host_lkg_mv=$(mktemp -d)
@@ -2944,8 +2954,13 @@ host_lkg_new=$(mktemp -d)
 prepare_pantry "$host_lkg_new"
 stage_host_bundle "$host_lkg_new/host-bundle-stub"
 unit_dir="$host_lkg_new/fake-systemd"
-mkdir -p "$unit_dir"
+mkdir -p "$unit_dir" "$host_lkg_new/systemd"
 cp "$host_lkg_new/host-bundle-stub/systemd/pantry-update.service" "$unit_dir/"
+l1_unit_marker='# l1-restore-from-systemd-units-marker'
+l1_wrong_marker='# l1-wrong-pantry-systemd-marker'
+printf '\n%s\n' "$l1_unit_marker" >> "$unit_dir/pantry-update.service"
+cp "$host_lkg_new/host-bundle-stub/systemd/pantry-update.service" "$host_lkg_new/systemd/"
+printf '\n%s\n' "$l1_wrong_marker" >> "$host_lkg_new/systemd/pantry-update.service"
 STUB_HOST_BUNDLE="$host_lkg_new/host-bundle-stub"
 write_images "$host_lkg_new/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
@@ -2961,6 +2976,14 @@ have "$LAST_OUT" "host script refresh failed" "mv failure after new unit fails r
   || fail "restore did not remove newly installed unit-dir pantry-update.timer (R1)"
 [[ ! -f "$host_lkg_new/systemd/pantry-update.timer" ]] \
   || fail "restore did not remove newly installed pantry-dir pantry-update.timer (R2)"
+grep -q "$l1_wrong_marker" "$unit_dir/pantry-update.service" \
+  && fail "unit restore copied from host-scripts-last-known-good/systemd instead of systemd-units (L1)"
+grep -q "$l1_unit_marker" "$unit_dir/pantry-update.service" \
+  || fail "unit restore did not copy from host-scripts-last-known-good/systemd-units (L1)"
+lkg_unit="$host_lkg_new/host-scripts-last-known-good/systemd-units/pantry-update.service"
+[[ -f "$lkg_unit" ]] || fail "snapshot did not record systemd-units/pantry-update.service (L1)"
+grep -q "$l1_unit_marker" "$lkg_unit" \
+  || fail "systemd-units snapshot does not hold the pre-refresh unit copy (L1)"
 find "$host_lkg_new" "$unit_dir" -name '*.refresh.*' -print -quit | grep -q . \
   && fail "mv failure after new unit left refresh temp files"
 status_body=$(cat "$host_lkg_new/last-deploy-status")
@@ -3047,7 +3070,7 @@ publish_after=$(stat -c '%Y' "$host_idempotent/publish-mode.sh")
 have "$LAST_OUT" "refreshed host deploy scripts from the running image" "unchanged bundle still completes refresh"
 status_body=$(cat "$host_idempotent/last-deploy-status")
 assert_deploy_status_success "$status_body" "idempotent host refresh"
-have "$status_body" "reason=deploy_ok" "idempotent host refresh records deploy_ok (L1)"
+have "$status_body" "reason=deploy_ok" "idempotent host refresh records deploy_ok"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_lkg_snapshot" "$host_lkg_new" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
