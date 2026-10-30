@@ -75,11 +75,10 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
 	c := &stage1Caller{t: t, h: handler}
 
-	const otherName = "NeverShown Cupboard"
-	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
-		VALUES ('hh-never-shown', ?, 'auto', datetime('now'), 'cccccccccccccccccccccccccccccccc', 0)`, otherName); err != nil {
-		t.Fatal(err)
-	}
+	const beforeName = "AAA Wrong Before"
+	const afterName = "ZZZ Wrong After"
+	const beforeID = "00-g1-decoy-before"
+	const afterID = "zz-g1-decoy-after"
 
 	code, err := auth.ReadSetupCode(setupDir)
 	if err != nil {
@@ -100,9 +99,35 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	c.cookie = cookieFrom(t, login, site.SessionCookie().Name)
 	c.house = *session.ActiveHouseholdID
 
+	if beforeID >= c.house || afterID <= c.house {
+		t.Fatalf("decoy ids must bracket active id %q", c.house)
+	}
+	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, ?, 'auto', datetime('now'), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0)`, beforeID, beforeName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, ?, 'auto', datetime('now'), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', 0)`, afterID, afterName); err != nil {
+		t.Fatal(err)
+	}
+
 	var activeName string
 	if err := db.QueryRow(`SELECT name FROM households WHERE id = ?`, c.house).Scan(&activeName); err != nil {
 		t.Fatal(err)
+	}
+	var firstID string
+	if err := db.QueryRow(`SELECT id FROM households ORDER BY id LIMIT 1`).Scan(&firstID); err != nil {
+		t.Fatal(err)
+	}
+	if firstID == c.house {
+		t.Fatalf("active household %q must not be the first households row (mutant G1)", c.house)
+	}
+	var onlyRowCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM households`).Scan(&onlyRowCount); err != nil {
+		t.Fatal(err)
+	}
+	if onlyRowCount < 3 {
+		t.Fatalf("need multiple households for tenant boundary, got %d", onlyRowCount)
 	}
 
 	pair := c.authed(http.MethodPost, "/api/devices/pair", map[string]any{})
@@ -118,8 +143,8 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 		t.Fatalf("pair complete %d %s", complete.Code, complete.Body.String())
 	}
 	body := complete.Body.String()
-	if strings.Contains(body, otherName) {
-		t.Fatalf("householdName must not leak other household %q: %s", otherName, body)
+	if strings.Contains(body, beforeName) || strings.Contains(body, afterName) {
+		t.Fatalf("householdName must not leak decoy households: %s", body)
 	}
 	if !strings.Contains(body, `"householdName":"`+activeName+`"`) {
 		t.Fatalf("expected active household name %q in %s", activeName, body)

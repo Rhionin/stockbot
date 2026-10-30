@@ -123,8 +123,13 @@ bool RingBuffer::acknowledge(const std::string& client_scan_id) {
 }
 
 bool RingBuffer::clearAll() {
+  const std::vector<RingScanRecord> backup = records_;
   records_.clear();
-  return persist();
+  if (!persist()) {
+    records_ = backup;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace stockbot

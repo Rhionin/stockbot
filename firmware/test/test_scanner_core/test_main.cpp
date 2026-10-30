@@ -52,6 +52,21 @@ class MemoryRingStorage : public stockbot::RingStorage {
   std::vector<stockbot::RingScanRecord> records_;
 };
 
+class FailClearRingStorage : public stockbot::RingStorage {
+ public:
+  MemoryRingStorage inner;
+  bool fail_empty_write = false;
+
+  bool readAll(std::vector<stockbot::RingScanRecord>& out) override { return inner.readAll(out); }
+
+  bool writeAll(const std::vector<stockbot::RingScanRecord>& records) override {
+    if (fail_empty_write && records.empty()) {
+      return false;
+    }
+    return inner.writeAll(records);
+  }
+};
+
 void test_barcode_filter() {
   using stockbot::BarcodeKind;
   using stockbot::OperationalState;
@@ -433,8 +448,12 @@ class MockScanner : public stockbot::HalScanner {
 class MockDisplay : public stockbot::HalDisplay {
  public:
   stockbot::DisplayBands last;
+  int render_calls = 0;
   void begin() override {}
-  void render(const stockbot::DisplayBands& bands) override { last = bands; }
+  void render(const stockbot::DisplayBands& bands) override {
+    last = bands;
+    ++render_calls;
+  }
   void setBacklight(stockbot::BacklightLevel) override {}
 };
 
@@ -458,6 +477,7 @@ class MockPower : public stockbot::HalPower {
 class MockNvs : public stockbot::NvsConfigStore {
  public:
   stockbot::NvsConfig cfg;
+  int factory_reset_calls = 0;
   bool load(stockbot::NvsConfig& out) override {
     out = cfg;
     return true;
@@ -467,7 +487,10 @@ class MockNvs : public stockbot::NvsConfigStore {
     return true;
   }
   void clearDeviceToken() override { cfg.device_token.clear(); }
-  void factoryReset() override { cfg = stockbot::NvsConfig{}; }
+  void factoryReset() override {
+    ++factory_reset_calls;
+    cfg = stockbot::NvsConfig{};
+  }
 };
 
 class MockPortal : public stockbot::CaptivePortal {
@@ -1290,11 +1313,14 @@ void test_pairing_code_expired_screen() {
   nvs.cfg.wifi_ssid = "Home";
   controller.begin(1000);
   client.next_pair = {true, 404, R"({"code":"not_found","error":"not found"})"};
+  feedback.cues.clear();
   controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingExpired);
   EXPECT(display.last.band1 == "PAIRING CODE EXPIRED");
   EXPECT(display.last.band2_line1 == "Print a new");
   EXPECT(display.last.band2_line2 == "setup sheet");
+  EXPECT(!feedback.cues.empty());
+  EXPECT(feedback.cues.back() == stockbot::AudioCue::TripleErrorBuzz);
 }
 
 void test_pairing_cant_connect_screen() {
@@ -1482,31 +1508,6 @@ void test_finish_pairing_clears_ring_before_token() {
   EXPECT(nvs.cfg.device_token == "sbd_new");
 }
 
-void test_factory_reset_clears_ring() {
-  MemoryRingStorage storage;
-  MockScanner scanner;
-  MockDisplay display;
-  MockFeedback feedback;
-  MockPower power;
-  MockNvs nvs;
-  MockPortal portal;
-  MockClient client;
-  MockWifi wifi;
-  stockbot::RingBuffer ring(storage);
-  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
-                                         ring);
-  nvs.cfg.wifi_ssid = "Home";
-  nvs.cfg.device_token = "sbd_x";
-  controller.begin(1000);
-  std::string id;
-  ring.enqueue("4011", stockbot::Direction::StockOut, 1100, 1, id);
-  controller.onModeButtonHold(10000, 2000);
-  EXPECT(ring.count() == 0);
-  std::vector<stockbot::RingScanRecord> persisted;
-  storage.readAll(persisted);
-  EXPECT(persisted.empty());
-}
-
 void test_wifi_button_hold_tick_at_5000_boundary() {
   MemoryRingStorage storage;
   MockScanner scanner;
@@ -1530,10 +1531,216 @@ void test_wifi_button_hold_tick_at_5000_boundary() {
 }
 
 void test_protocol_json_pairing_failures() {
-  EXPECT(stockbot::pairingCompleteFailureIsRateLimited(true, 429, R"({"code":"rate_limited"})"));
-  EXPECT(stockbot::pairingCompleteFailureIsClientRejected(true, 410, R"({"code":"reset_expired"})"));
+  EXPECT(stockbot::pairingCompleteFailureIsExpired(true, 404, R"({"code":"not_found"})"));
+  EXPECT(!stockbot::pairingCompleteFailureIsExpired(true, 403, R"({"code":"not_found"})"));
   EXPECT(!stockbot::pairingCompleteFailureIsExpired(true, 404, R"({"code":"busy"})"));
+
+  EXPECT(stockbot::pairingCompleteFailureIsRateLimited(true, 429, R"({"code":"busy"})"));
+  EXPECT(stockbot::pairingCompleteFailureIsRateLimited(true, 403, R"({"code":"rate_limited"})"));
+  EXPECT(!stockbot::pairingCompleteFailureIsRateLimited(true, 403, R"({"code":"busy"})"));
+
+  EXPECT(stockbot::pairingCompleteFailureIsClientRejected(true, 410, R"({"code":"reset_expired"})"));
   EXPECT(stockbot::pairingCompleteFailureIsClientRejected(true, 404, R"({"code":"busy"})"));
+  EXPECT(!stockbot::pairingCompleteFailureIsClientRejected(true, 429, R"({"code":"rate_limited"})"));
+}
+
+void test_pairing_failure_display_copy_and_colors() {
+  using stockbot::DisplayModelInput;
+  using stockbot::UiScreen;
+  using stockbot::buildDisplayModel;
+  using stockbot::rgb565FromHex;
+
+  DisplayModelInput many;
+  many.screen = UiScreen::S_PairingTooManyTries;
+  const auto too_many = buildDisplayModel(many);
+  EXPECT(too_many.band1 == "TOO MANY TRIES");
+  EXPECT(too_many.band2_line1 == "Wait a minute,");
+  EXPECT(too_many.band2_line2 == "then scan again");
+  EXPECT(too_many.band3 == "Then scan the setup sheet again");
+  EXPECT(too_many.band1_bg_rgb565 == rgb565FromHex("#F59E0B"));
+  EXPECT(too_many.band1_fg_rgb565 == rgb565FromHex("#111827"));
+
+  DisplayModelInput rejected;
+  rejected.screen = UiScreen::S_PairingCodeNotAccepted;
+  const auto not_accepted = buildDisplayModel(rejected);
+  EXPECT(not_accepted.band1 == "CODE NOT ACCEPTED");
+  EXPECT(not_accepted.band2_line1 == "This setup sheet");
+  EXPECT(not_accepted.band2_line2 == "didn't work");
+  EXPECT(not_accepted.band3 == "Print a new setup sheet");
+  EXPECT(not_accepted.band1_bg_rgb565 == rgb565FromHex("#DC2626"));
+}
+
+void test_pairing_rate_limited_status_and_body_variants() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  controller.begin(1000);
+
+  client.next_pair = {true, 429, R"({"code":"busy"})"};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingTooManyTries);
+
+  controller.begin(3000);
+  client.next_pair = {true, 403, R"({"code":"rate_limited"})"};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 3100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingTooManyTries);
+}
+
+void test_pairing_transient_screens_return_to_pairing() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  controller.begin(1000);
+
+  client.next_pair = {true, 429, R"({"code":"rate_limited"})"};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingTooManyTries);
+  controller.tick(5999);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingTooManyTries);
+  controller.tick(6000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S1_Pairing);
+
+  controller.begin(7000);
+  client.next_pair = {true, 400, R"({"code":"validation"})"};
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 7100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCodeNotAccepted);
+  controller.tick(11099);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCodeNotAccepted);
+  controller.tick(11100);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S1_Pairing);
+}
+
+void test_finish_pairing_fails_closed_when_ring_clear_fails() {
+  FailClearRingStorage storage;
+  storage.fail_empty_write = true;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  controller.begin(1000);
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 1100, 1, id);
+  client.next_pair = {true, 201, ""};
+  client.pair_body.device_token = "sbd_new";
+  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 2000);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCantConnect);
+  EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(ring.count() == 1);
+}
+
+void test_disconnect_clears_config_device_token() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  controller.tick(1500);
+  client.next_scan = {true, 401, R"({"code":"device_revoked"})"};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.onBarcodeLine("4011", false, 2000);
+  EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(client.token.empty());
+}
+
+void test_factory_reset_wipes_nvs_wifi_token_and_ring() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "HomeNet";
+  nvs.cfg.wifi_pass = "secret";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(1000);
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 1100, 1, id);
+  nvs.factory_reset_calls = 0;
+  controller.onModeButtonHold(10000, 2000);
+  EXPECT(nvs.factory_reset_calls == 1);
+  EXPECT(nvs.cfg.wifi_ssid.empty());
+  EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(ring.count() == 0);
+  EXPECT(client.token.empty());
+  std::vector<stockbot::RingScanRecord> persisted;
+  storage.readAll(persisted);
+  EXPECT(persisted.empty());
+}
+
+void test_mode_button_hold_poll_renders_once_per_phase() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  controller.begin(1000);
+  display.render_calls = 0;
+  controller.onModeButtonDown(2000);
+  controller.onModeButtonHoldPoll(7600);
+  const int after_wifi_phase = display.render_calls;
+  EXPECT(after_wifi_phase >= 1);
+  controller.onModeButtonHoldPoll(7700);
+  controller.onModeButtonHoldPoll(7800);
+  EXPECT(display.render_calls == after_wifi_phase);
+  controller.onModeButtonHoldPoll(12600);
+  EXPECT(display.render_calls > after_wifi_phase);
 }
 
 void test_scanner_setup_network_and_portal_copy() {
@@ -1681,6 +1888,21 @@ void test_button_hold_tracker() {
   tracker.onPress(0);
   tracker.onHoldProgress(5500);
   EXPECT(tracker.onRelease(5500) == ModeButtonReleaseAction::WifiSetup);
+
+  tracker.onPress(0);
+  EXPECT(!tracker.onHoldProgress(4999).has_value());
+  auto at5000 = tracker.onHoldProgress(5000);
+  EXPECT(at5000.has_value() && *at5000 == ModeButtonHoldPhase::WifiSetupHold);
+  EXPECT(!tracker.onHoldProgress(5001).has_value());
+
+  tracker.onPress(0);
+  auto at9999 = tracker.onHoldProgress(9999);
+  EXPECT(at9999.has_value() && *at9999 == ModeButtonHoldPhase::WifiSetupHold);
+  EXPECT(tracker.onHoldProgress(9999) == std::nullopt);
+
+  tracker.onPress(0);
+  auto at10000 = tracker.onHoldProgress(10000);
+  EXPECT(at10000.has_value() && *at10000 == ModeButtonHoldPhase::EraseWarning);
 }
 
 void test_wifi_button_hold_no_erase_while_held() {
@@ -1781,14 +2003,63 @@ void test_display_strings_printable_ascii() {
     in.inactivity_revert_seconds = 120;
     in.last_activity_ms = 0;
     in.now_ms = 30000;
-    in.device_revoked = screen == UiScreen::S7_HardError;
-    in.buffer_full = screen == UiScreen::S7_HardError;
+    in.device_revoked = false;
+    in.buffer_full = false;
     std::vector<std::string> strings;
     collectDisplayStrings(buildDisplayModel(in), strings);
     for (const std::string& s : strings) {
       EXPECT(isPrintableAscii(s));
     }
   }
+
+  for (bool revoked : {true, false}) {
+    DisplayModelInput s7;
+    s7.screen = UiScreen::S7_HardError;
+    s7.device_revoked = revoked;
+    s7.buffer_full = !revoked;
+    std::vector<std::string> strings;
+    collectDisplayStrings(buildDisplayModel(s7), strings);
+    for (const std::string& s : strings) {
+      EXPECT(isPrintableAscii(s));
+    }
+  }
+
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController docked(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  power.status.vbus_present = true;
+  power.status.battery_pct = 87;
+  wifi.connected = true;
+  docked.begin(1000);
+  docked.tick(1001);
+  EXPECT(isPrintableAscii(display.last.band1_right));
+
+  stockbot::RingBuffer ring2(storage);
+  stockbot::ScannerController offline_dock(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                           ring2);
+  wifi.connected = false;
+  power.status.vbus_present = true;
+  power.status.battery_pct = 42;
+  offline_dock.begin(2000);
+  EXPECT(isPrintableAscii(display.last.band1_right));
+
+  stockbot::RingBuffer ring3(storage);
+  stockbot::ScannerController off_dock(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
+  power.status.vbus_present = false;
+  power.status.battery_pct = 55;
+  off_dock.begin(3000);
+  off_dock.onModeButtonShortPress(3100);
+  EXPECT(isPrintableAscii(display.last.band1_right));
 
   const char* copy_literals[] = {
       stockbot::kPortalConnectingMessage,
@@ -1824,6 +2095,23 @@ void test_docked_band1_right_no_charging_suffix() {
   controller.tick(1001);
   EXPECT(display.last.band1_right == "Wi-Fi 87%");
   EXPECT(display.last.band1_right.find("chg") == std::string::npos);
+
+  stockbot::RingBuffer ring2(storage);
+  stockbot::ScannerController offline(scanner, display, feedback, power, nvs, portal, client, wifi, ring2);
+  wifi.connected = false;
+  power.status.vbus_present = true;
+  power.status.battery_pct = 42;
+  offline.begin(2000);
+  EXPECT(display.last.band1_right == "OFFLINE 42%");
+
+  stockbot::RingBuffer ring3(storage);
+  stockbot::ScannerController handheld(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
+  nvs.cfg.wifi_ssid = "Home";
+  power.status.vbus_present = false;
+  power.status.battery_pct = 55;
+  handheld.begin(3000);
+  handheld.onModeButtonShortPress(3100);
+  EXPECT(display.last.band1_right == "55%");
 }
 
 void test_ota_install_gate_placeholder_until_firmware_452() {
@@ -1846,6 +2134,7 @@ int main() {
   test_firmware_strings_no_unicode_ellipsis();
   test_protocol_json();
   test_protocol_json_pairing_failures();
+  test_pairing_failure_display_copy_and_colors();
   test_hid_keycode();
   test_scanner_controller_flow();
   test_portal_submission_handoff();
@@ -1865,6 +2154,7 @@ int main() {
   test_repair_after_disconnect();
   test_ap_suffix_from_mac();
   test_button_hold_tracker();
+  test_mode_button_hold_poll_renders_once_per_phase();
   test_wifi_button_hold_no_erase_while_held();
   test_wifi_button_hold_release_at_9999_no_factory_reset();
   test_wifi_button_hold_tick_at_5000_boundary();
@@ -1872,10 +2162,14 @@ int main() {
   test_pairing_code_expired_screen();
   test_pairing_cant_connect_screen();
   test_pairing_rate_limited_and_rejected_screens();
+  test_pairing_rate_limited_status_and_body_variants();
+  test_pairing_transient_screens_return_to_pairing();
   test_pairing_error_transient_returns_to_pairing();
   test_device_revoked_flush_and_heartbeat_401();
   test_finish_pairing_clears_ring_before_token();
-  test_factory_reset_clears_ring();
+  test_finish_pairing_fails_closed_when_ring_clear_fails();
+  test_disconnect_clears_config_device_token();
+  test_factory_reset_wipes_nvs_wifi_token_and_ring();
   test_disconnect_clears_persisted_ring();
   test_scanner_setup_network_and_portal_copy();
   test_display_strings_printable_ascii();
