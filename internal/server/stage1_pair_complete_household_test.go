@@ -68,8 +68,10 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "pair-tenant.db"))
 
 	const beforeName = "AAA Wrong Before"
+	const afterName = "ZZZ Wrong After"
 	const activeName = "Pat's Pantry"
 	const beforeID = "00-g1-decoy-before"
+	const afterID = "zz-g1-decoy-after"
 	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
 		VALUES (?, ?, 'auto', datetime('now'), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0)`, beforeID, beforeName); err != nil {
 		t.Fatal(err)
@@ -132,6 +134,14 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	}
 	c.house = pantry.ID
 
+	if afterID <= c.house {
+		t.Fatalf("after decoy id must sort after active id %q", c.house)
+	}
+	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, ?, 'auto', datetime('now'), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', 0)`, afterID, afterName); err != nil {
+		t.Fatal(err)
+	}
+
 	var lowestRowid int64
 	var lowestName string
 	if err := db.QueryRow(`SELECT rowid, name FROM households ORDER BY rowid LIMIT 1`).Scan(&lowestRowid, &lowestName); err != nil {
@@ -140,23 +150,49 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	if lowestName != beforeName {
 		t.Fatalf("lowest rowid household name must be decoy %q for G1 rowid trap, got %q (rowid %d)", beforeName, lowestName, lowestRowid)
 	}
+	var highestRowid int64
+	var highestName string
+	if err := db.QueryRow(`SELECT rowid, name FROM households ORDER BY rowid DESC LIMIT 1`).Scan(&highestRowid, &highestName); err != nil {
+		t.Fatal(err)
+	}
+	if highestName != afterName {
+		t.Fatalf("highest rowid household name must be after decoy %q, got %q (rowid %d)", afterName, highestName, highestRowid)
+	}
 	var activeRowid int64
 	if err := db.QueryRow(`SELECT rowid FROM households WHERE id = ?`, c.house).Scan(&activeRowid); err != nil {
 		t.Fatal(err)
 	}
-	if activeRowid == lowestRowid {
-		t.Fatalf("active household must not be lowest rowid (mutant G1), active rowid %d", activeRowid)
+	if activeRowid == lowestRowid || activeRowid == highestRowid {
+		t.Fatalf("active household rowid %d must be strictly between %d and %d (mutant G1)", activeRowid, lowestRowid, highestRowid)
 	}
-	if lowestName == activeName {
-		t.Fatal("lowest rowid name must differ from active household name")
+	if lowestName == activeName || highestName == activeName {
+		t.Fatal("edge rowid names must differ from active household name")
+	}
+
+	var lowestID string
+	if err := db.QueryRow(`SELECT id FROM households ORDER BY id LIMIT 1`).Scan(&lowestID); err != nil {
+		t.Fatal(err)
+	}
+	var highestID string
+	if err := db.QueryRow(`SELECT id FROM households ORDER BY id DESC LIMIT 1`).Scan(&highestID); err != nil {
+		t.Fatal(err)
+	}
+	if lowestID == c.house || highestID == c.house {
+		t.Fatalf("active household %q must not be first or last by id (mutant G1); edges %q .. %q", c.house, lowestID, highestID)
+	}
+	if lowestID != beforeID {
+		t.Fatalf("lowest id must be pre-setup decoy %q, got %q", beforeID, lowestID)
+	}
+	if highestID != afterID {
+		t.Fatalf("highest id must be after decoy %q, got %q", afterID, highestID)
 	}
 
 	var onlyRowCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM households`).Scan(&onlyRowCount); err != nil {
 		t.Fatal(err)
 	}
-	if onlyRowCount < 3 {
-		t.Fatalf("need multiple households for tenant boundary, got %d", onlyRowCount)
+	if onlyRowCount < 4 {
+		t.Fatalf("need at least four households for tenant boundary, got %d", onlyRowCount)
 	}
 
 	pair := c.authed(http.MethodPost, "/api/devices/pair", map[string]any{})
@@ -172,8 +208,8 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 		t.Fatalf("pair complete %d %s", complete.Code, complete.Body.String())
 	}
 	body := complete.Body.String()
-	if strings.Contains(body, beforeName) {
-		t.Fatalf("householdName must not leak lowest-rowid decoy name: %s", body)
+	if strings.Contains(body, beforeName) || strings.Contains(body, afterName) {
+		t.Fatalf("householdName must not leak edge decoy names: %s", body)
 	}
 	if !strings.Contains(body, `"householdName":"`+activeName+`"`) {
 		t.Fatalf("expected active household name %q in %s", activeName, body)
