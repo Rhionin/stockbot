@@ -96,23 +96,11 @@ func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Princip
 	if productName.Valid {
 		name := productName.String
 		lcd.ProductName = &name
-	} else if lookupName, err := s.lookupDisplayName(ctx, p.HouseholdID, item.barcode); err == nil && lookupName != nil {
-		lcd.ProductName = lookupName
+	} else if name := displayProductName(item.match); name != nil {
+		lcd.ProductName = name
 	}
 	lcd.apply(&result)
 	return result, true, nil
-}
-
-func (s *Service) lookupDisplayName(ctx context.Context, householdID, barcode string) (*string, error) {
-	scope, err := tenantScope(householdID)
-	if err != nil || s.productLookup == nil {
-		return nil, err
-	}
-	lookup, err := s.productLookup.Lookup(ctx, scope, barcode)
-	if err != nil || !lookup.Found {
-		return nil, err
-	}
-	return displayProductName(lookup), nil
 }
 
 func boolToInt(v bool) int {
