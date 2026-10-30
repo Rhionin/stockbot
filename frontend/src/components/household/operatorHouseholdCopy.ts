@@ -51,7 +51,7 @@ export function formatOperatorHouseholdScansLine(input: OperatorHouseholdStatsIn
   ].join(' · ');
 }
 
-function formatOperatorHouseholdShortDate(date: Date, now: Date, withTime: boolean): string {
+export function formatOperatorHouseholdShortDate(date: Date, now: Date, withTime: boolean): string {
   const sameYear = date.getFullYear() === now.getFullYear();
   return date.toLocaleString(undefined, {
     month: 'short',

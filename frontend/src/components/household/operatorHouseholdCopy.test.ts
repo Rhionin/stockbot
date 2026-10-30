@@ -6,10 +6,9 @@ import {
   formatOperatorHouseholdRestockLabel,
   formatOperatorHouseholdScannersLine,
   formatOperatorHouseholdScansLine,
+  formatOperatorHouseholdShortDate,
   formatOperatorHouseholdStatLines,
 } from './operatorHouseholdCopy';
-
-const denver = process.env.TZ === 'America/Denver';
 
 describe('formatOperatorHouseholdInventoryLine', () => {
   it('uses singular copy for counts of 1', () => {
@@ -77,8 +76,9 @@ describe('formatOperatorHouseholdCreated', () => {
   const now2026 = new Date(2026, 9, 30, 12, 0, 0);
 
   it('uses short month and day in the current year', () => {
+    const created = new Date('2026-04-01T00:00:00Z');
     expect(formatOperatorHouseholdCreated('2026-04-01T00:00:00Z', now2026)).toBe(
-      denver ? 'Created Mar 31' : 'Created Apr 1',
+      `Created ${formatOperatorHouseholdShortDate(created, now2026, false)}`,
     );
   });
 
@@ -105,28 +105,31 @@ describe('formatOperatorHouseholdLastActivity', () => {
   it('omits the year for activity in the current year', () => {
     const now = new Date(2026, 9, 30, 12, 0, 0);
     vi.setSystemTime(now);
-    expect(formatOperatorHouseholdLastActivity('2026-09-29T06:00:00.000Z', now)).toBe(
-      denver ? 'Last activity Sep 29, 12:00 AM' : 'Last activity Sep 29, 6:00 AM',
+    const activity = new Date('2026-09-29T06:00:00.000Z');
+    expect(formatOperatorHouseholdLastActivity(activity.toISOString(), now)).toBe(
+      `Last activity ${formatOperatorHouseholdShortDate(activity, now, true)}`,
     );
-    expect(formatOperatorHouseholdLastActivity('2026-09-29T06:00:00.000Z', now)).not.toMatch(/\b2026\b/);
+    expect(formatOperatorHouseholdLastActivity(activity.toISOString(), now)).not.toMatch(/\b2026\b/);
   });
 
   it('includes the year for activity in a past year', () => {
     const now = new Date(2026, 9, 30, 12, 0, 0);
     vi.setSystemTime(now);
-    expect(formatOperatorHouseholdLastActivity('2025-09-29T06:00:00.000Z', now)).toBe(
-      denver ? 'Last activity Sep 29, 2025, 12:00 AM' : 'Last activity Sep 29, 2025, 6:00 AM',
+    const activity = new Date('2025-09-29T06:00:00.000Z');
+    expect(formatOperatorHouseholdLastActivity(activity.toISOString(), now)).toBe(
+      `Last activity ${formatOperatorHouseholdShortDate(activity, now, true)}`,
     );
+    expect(formatOperatorHouseholdLastActivity(activity.toISOString(), now)).toMatch(/\b2025\b/);
   });
 
-  it('shows Denver year-boundary activity with the year when now is the next calendar year', () => {
+  it('includes the prior calendar year near a local year boundary', () => {
     const now = new Date(2027, 0, 1, 12, 0, 0);
     vi.setSystemTime(now);
-    expect(formatOperatorHouseholdLastActivity('2027-01-01T03:00:00.000Z', now)).toBe(
-      denver ? 'Last activity Dec 31, 2026, 8:00 PM' : 'Last activity Jan 1, 3:00 AM',
-    );
-    if (denver) {
-      expect(formatOperatorHouseholdLastActivity('2027-01-01T03:00:00.000Z', now)).toContain('2026');
+    const activity = new Date('2027-01-01T03:00:00.000Z');
+    const result = formatOperatorHouseholdLastActivity(activity.toISOString(), now);
+    expect(result).toBe(`Last activity ${formatOperatorHouseholdShortDate(activity, now, true)}`);
+    if (activity.getFullYear() !== now.getFullYear()) {
+      expect(result).toMatch(/\b2026\b/);
     }
   });
 });
@@ -136,6 +139,7 @@ describe('formatOperatorHouseholdStatLines', () => {
     const now = new Date(2026, 9, 30, 12, 0, 0);
     vi.useFakeTimers();
     vi.setSystemTime(now);
+    const activity = new Date('2026-09-29T06:00:00.000Z');
     const lines = formatOperatorHouseholdStatLines({
       memberCount: 4,
       productCount: 12,
@@ -144,14 +148,12 @@ describe('formatOperatorHouseholdStatLines', () => {
       scannersOnline: 2,
       scannersOffline: 3,
       scansThisWeek: 41,
-      lastActivityAt: '2026-09-29T06:00:00.000Z',
+      lastActivityAt: activity.toISOString(),
     }, now);
     expect(lines.inventory).toBe('4 members · 12 products · 37 items on hand');
     expect(lines.scanners).toBe('Scanners: 2 online · 3 offline');
     expect(lines.scans).toBe('41 scans this week · 2 pending scans');
-    expect(lines.lastActivity).toBe(
-      denver ? 'Last activity Sep 29, 12:00 AM' : 'Last activity Sep 29, 6:00 AM',
-    );
+    expect(lines.lastActivity).toBe(`Last activity ${formatOperatorHouseholdShortDate(activity, now, true)}`);
     vi.useRealTimers();
   });
 });

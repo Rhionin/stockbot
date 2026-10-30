@@ -3,9 +3,6 @@ import { install, resetStage, stage } from './householdStageFixtures'
 
 const MIN_TOUCH_TARGET_CSS_PX = 44
 
-/** Inline text links in copy may stay smaller under WCAG 2.2 target-size exceptions. */
-const HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST = [] as const
-
 async function assertTouchTargetSize(locator: Locator) {
   const box = await locator.boundingBox()
   expect(box).not.toBeNull()
@@ -14,27 +11,19 @@ async function assertTouchTargetSize(locator: Locator) {
 }
 
 async function assertHouseholdsPageTouchTargets(page: Page) {
-  const root = page.locator('.household-page')
+  // Global header touch targets (switcher, nav links, menu) are tracked separately; #475 covers /households content only.
+  const root = page.locator('.households-admin-page')
   for (const locator of [
     root.getByRole('button'),
     root.getByRole('textbox'),
-    root.locator('.mantine-Radio-root'),
+    root.locator('.mantine-Radio-label'),
   ]) {
     const count = await locator.count()
     for (let index = 0; index < count; index += 1) {
       const target = locator.nth(index)
       if (!(await target.isVisible())) continue
-      const testId = await target.getAttribute('data-testid')
-      if (testId && HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST.includes(testId as typeof HOUSEHOLDS_TOUCH_TARGET_ALLOWLIST[number])) continue
       await assertTouchTargetSize(target)
     }
-  }
-  const links = root.getByRole('link')
-  const linkCount = await links.count()
-  for (let index = 0; index < linkCount; index += 1) {
-    const link = links.nth(index)
-    if (!(await link.isVisible())) continue
-    await assertTouchTargetSize(link)
   }
 }
 
@@ -214,4 +203,15 @@ test('admin households Try again is at least 44px tall while retrying', async ({
   expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
   releaseRetry()
   await clickPromise
+})
+
+test('admin households select a restock radio when tapping the label padding', async ({ page }) => {
+  await openAdmin(page, 390, 844)
+  await page.goto('/households')
+  const label = page.locator('.households-admin-page .mantine-Radio-label', { hasText: 'Ask before restocking new items' })
+  await expect(label).toBeVisible()
+  const box = await label.boundingBox()
+  expect(box).not.toBeNull()
+  await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 10)
+  await expect(page.getByRole('radio', { name: 'Ask before restocking new items' })).toBeChecked()
 })

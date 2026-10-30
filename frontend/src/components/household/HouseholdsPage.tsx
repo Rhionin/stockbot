@@ -175,7 +175,7 @@ export function HouseholdsPage() {
   };
 
   return (
-    <Stack className="household-page" gap="lg">
+    <Stack className="household-page households-admin-page" gap="lg">
       <Title order={2}>Households</Title>
 
       <Paper withBorder p="md" radius="md" className="household-card" component="section" aria-labelledby="your-households-heading">

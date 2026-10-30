@@ -9,12 +9,7 @@ import {
   type RestockMode,
 } from '@stockbot/shared/contract';
 import { ApiError, acceptInvite, currentAuthSession, getSession, previewInvite } from '../../api/client';
-
-const RESTOCK: { value: RestockMode; label: string }[] = [
-  { value: 'auto', label: 'Restock new items automatically' },
-  { value: 'ask_restock', label: 'Ask me before restocking a new item' },
-  { value: 'ask_hold', label: 'Ask me, and hold the item until I answer' },
-];
+import { HOUSEHOLD_RESTOCK_CHOICES } from '../household/operatorHouseholdCopy';
 
 export const InviteAcceptPage = ({
   code: codeProp,
@@ -110,7 +105,7 @@ export const InviteAcceptPage = ({
                   <TextInput label="Household name" value={householdName} onChange={(event) => setHouseholdName(event.currentTarget.value)} required disabled={pending} />
                   <Radio.Group label="When a new item shows up" value={restockMode} onChange={(value) => setRestockMode(value as RestockMode)}>
                     <Stack gap="xs" mt="xs">
-                      {RESTOCK.map((choice) => (
+                      {HOUSEHOLD_RESTOCK_CHOICES.map((choice) => (
                         <Radio key={choice.value} value={choice.value} label={choice.label} />
                       ))}
                     </Stack>

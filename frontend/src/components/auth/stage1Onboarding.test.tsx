@@ -97,12 +97,12 @@ describe('setup, invites, and import', () => {
       </MantineProvider>,
     );
     expect(await screen.findByRole('heading', { name: 'Start a household' })).toBeVisible();
-    expect(screen.getByLabelText('Ask me before restocking a new item')).toBeInTheDocument();
+    expect(screen.getByLabelText('Ask before restocking new items')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Ada' } });
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'long-password' } });
     fireEvent.change(screen.getByLabelText(/^Household name/), { target: { value: 'Pantry' } });
-    fireEvent.click(screen.getByLabelText('Ask me before restocking a new item'));
+    fireEvent.click(screen.getByLabelText('Ask before restocking new items'));
     fireEvent.click(screen.getByRole('button', { name: 'Create household' }));
     expect(await screen.findByRole('heading', { name: 'Home' })).toBeVisible();
     expect(bodies[0]).toMatchObject({
