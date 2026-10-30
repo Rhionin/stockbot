@@ -42,7 +42,19 @@ func (r *Queue) CreateScanEntryTx(ctx context.Context, scope tenant.Scope, tx *s
 		}
 		return r.getScanEntryTx(ctx, scope, tx, existing.ID)
 	}
+	return r.insertScanEntryTx(ctx, scope, tx, entry)
+}
 
+// InsertScanEntryTx inserts a new scan entry without merging into pending or flagged cards.
+func (r *Queue) InsertScanEntryTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, entry ScanEntry) (*ScanEntry, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	entry.UserID = scopeUserID(scope, entry.UserID)
+	return r.insertScanEntryTx(ctx, scope, tx, entry)
+}
+
+func (r *Queue) insertScanEntryTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, entry ScanEntry) (*ScanEntry, error) {
 	if entry.ID == "" {
 		entry.ID = uuid.NewString()
 	}
@@ -55,7 +67,7 @@ func (r *Queue) CreateScanEntryTx(ctx context.Context, scope tenant.Scope, tx *s
 		directionStr = ptr(string(*entry.Direction))
 	}
 
-	_, err = tx.ExecContext(ctx,
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO scan_entries (id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at, direction, unit_count, expires_at, status, product_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
@@ -72,10 +84,10 @@ func (r *Queue) CreateScanEntryTx(ctx context.Context, scope tenant.Scope, tx *s
 		nullableString(entry.ProductID),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("CreateScanEntryTx: %w", err)
+		return nil, fmt.Errorf("insertScanEntryTx: %w", err)
 	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeScans); err != nil {
-		return nil, fmt.Errorf("CreateScanEntryTx: %w", err)
+		return nil, fmt.Errorf("insertScanEntryTx: %w", err)
 	}
 	return r.getScanEntryTx(ctx, scope, tx, entry.ID)
 }
