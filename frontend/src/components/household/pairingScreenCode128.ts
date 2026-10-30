@@ -1,10 +1,8 @@
 import { code128Bars } from './code128';
 
 export const PAIRING_CODE128_QUIET_MODULES = 10;
-/** Target module width in device pixels when the frame has room. */
-export const PAIRING_CODE128_TARGET_MODULE_DEVICE_PX = 2;
-/** @deprecated Use PAIRING_CODE128_TARGET_MODULE_DEVICE_PX; hint threshold matches this value. */
-export const PAIRING_CODE128_MIN_MODULE_DEVICE_PX = PAIRING_CODE128_TARGET_MODULE_DEVICE_PX;
+/** On-screen hint threshold: show the print hint when module width is below this (device px). */
+export const PAIRING_CODE128_MIN_MODULE_DEVICE_PX = 2;
 
 export type PairingCode128Layout = {
   moduleCssPx: number;
@@ -55,9 +53,9 @@ function largestFittingModuleDevicePx(
 }
 
 /**
- * Sizes the on-screen pairing barcode: largest whole device-pixel module width that fits,
- * capped at {@link PAIRING_CODE128_TARGET_MODULE_DEVICE_PX}. Omits the barcode when even 1 device
- * px plus quiet zones would not fit.
+ * Sizes the on-screen pairing barcode: largest whole device-pixel module width that fits the frame
+ * with full quiet zones on each side (no upper cap). Omits the barcode when even 1 device px would
+ * not fit.
  */
 export function computePairingCode128Layout(
   availableCssWidth: number,
@@ -78,8 +76,7 @@ export function computePairingCode128Layout(
     return noBarcode;
   }
 
-  const largest = largestFittingModuleDevicePx(availableCssWidth, totalModules, dpr);
-  const moduleDevicePx = Math.min(PAIRING_CODE128_TARGET_MODULE_DEVICE_PX, largest);
+  const moduleDevicePx = largestFittingModuleDevicePx(availableCssWidth, totalModules, dpr);
   const moduleCssPx = moduleDevicePx / dpr;
 
   return {
@@ -92,7 +89,7 @@ export function computePairingCode128Layout(
 }
 
 export function pairingCode128ShowsTooSmallHint(layout: Pick<PairingCode128Layout, 'moduleDevicePx' | 'showBarcode'>): boolean {
-  return !layout.showBarcode || layout.moduleDevicePx < PAIRING_CODE128_TARGET_MODULE_DEVICE_PX;
+  return !layout.showBarcode || layout.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX;
 }
 
 export function pairingCode128SvgWidthPx(moduleCssPx: number, barModules: number): number {

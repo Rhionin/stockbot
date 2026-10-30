@@ -108,7 +108,7 @@
 
 .pairing-barcode-too-small-hint {
   color: #64748B;
-  font-size: 14px;
+  font-size: max(14px, 0.875rem);
   line-height: 1.35;
   margin: 8px 0 0;
   text-align: center;
@@ -146,7 +146,7 @@
 @media (max-width: 399px) {
   .pairing-spaced,
   .mantine-Text-root.pairing-spaced {
-    font-size: 18px;
+    font-size: max(18px, 1.125rem);
     letter-spacing: 0.06em;
   }
 
@@ -167,7 +167,7 @@
 @media (max-width: 319px) {
   .pairing-spaced,
   .mantine-Text-root.pairing-spaced {
-    font-size: 16px;
+    font-size: max(16px, 1rem);
     letter-spacing: 0;
     white-space: normal;
     overflow: visible;

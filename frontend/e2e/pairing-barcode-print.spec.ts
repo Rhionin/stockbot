@@ -134,7 +134,6 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
   expect(metrics.quiet).toBe(10)
   expect(Number.isInteger(metrics.moduleDevicePx)).toBe(true)
   expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(1)
-  expect(metrics.moduleDevicePx).toBeLessThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
   expect(Math.abs(metrics.devicePxPerModule - metrics.moduleDevicePx)).toBeLessThan(0.05)
   expect(Math.abs(metrics.devicePxPerModule - Math.round(metrics.devicePxPerModule))).toBeLessThan(0.01)
 
@@ -177,6 +176,20 @@ async function assertPairingBarcodeModulePx(
   } else {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
   }
+  const frame = dialog.locator('.pairing-code128-frame')
+  await expect(frame.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+  await assertRenderedQuietModules(svg)
+}
+
+async function assertPairingBarcodeModuleAbove(
+  dialog: import('@playwright/test').Locator,
+  minModuleDevicePx: number,
+) {
+  const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
+  await expect(svg).toBeVisible()
+  const moduleDevicePx = Number(await svg.getAttribute('data-module-device-px'))
+  expect(moduleDevicePx).toBeGreaterThan(minModuleDevicePx)
+  await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
   const frame = dialog.locator('.pairing-code128-frame')
   await expect(frame.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
   await assertRenderedQuietModules(svg)
@@ -250,13 +263,41 @@ test('on-screen pairing barcode at 520px DPR 1 uses 1 device px with hint and no
   await assertPairingBarcodeModulePx(dialog, 1, true)
 })
 
-test('on-screen pairing barcode at 1280px DPR 1 uses 2 device px without hint', async ({ page }) => {
+test('on-screen pairing barcode at 1280px DPR 1 uses more than 2 device px without hint', async ({ page }) => {
   resetStage()
   await page.setViewportSize({ width: 1280, height: 900 })
   await install(page)
   await signInAndOpenHouseholdScannerPairing(page)
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
-  await assertPairingBarcodeModulePx(dialog, 2, false)
+  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+})
+
+test('on-screen pairing barcode at 390px DPR 3 uses more than 2 device px without hint', async ({ browser }) => {
+  resetStage()
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  })
+  const page = await context.newPage()
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+  await context.close()
+})
+
+test('on-screen pairing barcode at 360px DPR 3 uses more than 2 device px without hint', async ({ browser }) => {
+  resetStage()
+  const context = await browser.newContext({
+    viewport: { width: 360, height: 700 },
+    deviceScaleFactor: 3,
+  })
+  const page = await context.newPage()
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+  await context.close()
 })
 
 test('on-screen pairing barcode hides the symbol when the frame is too narrow', async ({ page }) => {
