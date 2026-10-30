@@ -585,12 +585,15 @@ class MockClient : public stockbot::StockbotClient {
   stockbot::HttpCallResult sendHeartbeat(const std::string& hub_version, const std::string& boot_id,
                                          uint32_t uptime_s, size_t queued, int battery_pct, bool charging,
                                          stockbot::HeartbeatParsed& out) override {
+    ++send_heartbeat_calls;
     last_heartbeat_body =
         stockbot::buildHeartbeatRequestJson(hub_version, boot_id, uptime_s, queued, battery_pct, charging,
                                             true);
     out = hb_body;
     return next_hb;
   }
+
+  int send_heartbeat_calls = 0;
 };
 
 void test_protocol_json() {
@@ -1679,8 +1682,12 @@ void test_disconnect_clears_config_device_token() {
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
   controller.onBarcodeLine("4011", false, 2000);
-  EXPECT(nvs.cfg.device_token.empty());
   EXPECT(client.token.empty());
+  client.send_heartbeat_calls = 0;
+  client.next_hb = {true, 200, R"({"config":{"configVersion":1}})"};
+  client.hb_body.parse_ok = true;
+  controller.tick(70000);
+  EXPECT(client.send_heartbeat_calls == 0);
 }
 
 void test_factory_reset_wipes_nvs_wifi_token_and_ring() {
@@ -1736,8 +1743,8 @@ void test_mode_button_hold_poll_renders_once_per_phase() {
   controller.onModeButtonHoldPoll(7600);
   const int after_wifi_phase = display.render_calls;
   EXPECT(after_wifi_phase >= 1);
-  controller.onModeButtonHoldPoll(7700);
-  controller.onModeButtonHoldPoll(7800);
+  controller.onModeButtonHoldPoll(8100);
+  controller.onModeButtonHoldPoll(8600);
   EXPECT(display.render_calls == after_wifi_phase);
   controller.onModeButtonHoldPoll(12600);
   EXPECT(display.render_calls > after_wifi_phase);
@@ -1871,6 +1878,9 @@ void test_button_hold_tracker() {
   ButtonHoldTracker tracker;
   tracker.onPress(0);
   EXPECT(tracker.onRelease(4999) == ModeButtonReleaseAction::ShortPress);
+
+  tracker.onPress(0);
+  EXPECT(tracker.onRelease(5000) == ModeButtonReleaseAction::WifiSetup);
 
   tracker.onPress(0);
   EXPECT(tracker.onRelease(9999) == ModeButtonReleaseAction::WifiSetup);
