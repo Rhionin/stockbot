@@ -85,20 +85,15 @@ func openSource(path string, busy time.Duration) (*sql.DB, error) {
 	if ms < 1 {
 		ms = 1
 	}
-	db, err := app.OpenSQLite(sqliteFileDSN(path, fmt.Sprintf("_pragma=busy_timeout(%d)", ms)))
+	// Deferred txlock: VACUUM INTO takes the write lock itself. Immediate
+	// would reserve the database while PRAGMAs run and fight the pantry
+	// writer, especially in rollback-journal mode.
+	q := fmt.Sprintf("_txlock=deferred&_pragma=busy_timeout(%d)&_pragma=temp_store(MEMORY)", ms)
+	db, err := app.OpenSQLite(sqliteFileDSN(path, q))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(fmt.Sprintf(`PRAGMA busy_timeout = %d`, ms)); err != nil {
-		db.Close()
-		return nil, err
-	}
-	// Keep SQLite temp files off the read-only container root.
-	if _, err := db.Exec(`PRAGMA temp_store = MEMORY`); err != nil {
-		db.Close()
-		return nil, err
-	}
 	return db, nil
 }
 

@@ -108,7 +108,7 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	snap := plan.Dir + "/snap.db"
 	if err := Snapshot(r.DBPath, snap, SnapshotOptions{
 		BusyTimeout: r.busyTimeout(),
-		Retries:     r.BusyRetries,
+		Retries:     r.busyRetries(),
 		RetryWait:   r.retryWait(),
 		Sleep:       r.sleep,
 	}); err != nil {
@@ -499,6 +499,13 @@ func (r *Runner) busyTimeout() time.Duration {
 		return r.BusyTimeout
 	}
 	return 10 * time.Second
+}
+
+func (r *Runner) busyRetries() int {
+	if r.BusyRetries > 0 {
+		return r.BusyRetries
+	}
+	return 3
 }
 
 func (r *Runner) retryWait() time.Duration {

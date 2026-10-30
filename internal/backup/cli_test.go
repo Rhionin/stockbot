@@ -194,7 +194,7 @@ func TestFetchNewestAndConfigOverrides(t *testing.T) {
 		t.Fatal(list)
 	}
 	(&Runner{}).sleep(0)
-	if (&Runner{}).busyTimeout() != 10*time.Second || (&Runner{}).retryWait() != 30*time.Second {
+	if (&Runner{}).busyTimeout() != 10*time.Second || (&Runner{}).busyRetries() != 3 || (&Runner{}).retryWait() != 30*time.Second {
 		t.Fatal("defaults")
 	}
 	if (&Runner{}).version() == "" || (&Runner{}).uploadAttempts() != 3 || (&Runner{}).uploadWait() != time.Second {
