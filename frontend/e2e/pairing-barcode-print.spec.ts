@@ -91,8 +91,7 @@ async function assertTouchTargetSize(locator: import('@playwright/test').Locator
   expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
 }
 
-async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
-  void dpr
+async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
   const isNarrowPhone = viewportWidth <= 399
   if (isNarrowPhone) {
@@ -206,7 +205,7 @@ for (const width of MATRIX_WIDTHS) {
       await install(page)
       await signInAndOpenHouseholdScannerPairing(page)
       await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
-      await assertOnScreenPairingBarcode(page, width, dpr)
+      await assertOnScreenPairingBarcode(page, width)
       await context.close()
     })
   }
