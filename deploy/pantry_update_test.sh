@@ -2933,7 +2933,7 @@ write_images "$host_lkg_new/images.tsv" \
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 PANTRY_SYSTEMD_UNIT_DIR="$unit_dir"
-PANTRY_TEST_MV_FAIL_DEST=pantry-update.timer
+PANTRY_TEST_MV_FAIL_DEST='pantry-update.timer'
 run_update "$host_lkg_new"
 [[ "$LAST_RC" -eq 0 ]] || fail "mv failure after new unit should not fail deploy: $LAST_OUT"
 [[ ! -f "$unit_dir/pantry-update.timer" ]] || fail "restore did not remove newly installed pantry-update.timer"
