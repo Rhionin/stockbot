@@ -15,7 +15,7 @@ import {
 import { useHouseholdSession } from '../auth/householdSession';
 import { extractInviteCode } from './inviteCode';
 import { announceHouseholdSwitch } from './liveHints';
-import { formatOperatorHouseholdStatsLine } from './operatorHouseholdCopy';
+import { OperatorHouseholdStatBlock } from './OperatorHouseholdStatBlock';
 
 const RESTOCK: { value: RestockMode; label: string }[] = [
   { value: 'auto', label: 'Restock new items automatically' },
@@ -55,25 +55,39 @@ export function HouseholdsPage() {
   const [operatorHouseholds, setOperatorHouseholds] = useState<OperatorHouseholdView[]>([]);
   const [operatorHouseholdsError, setOperatorHouseholdsError] = useState('');
   const [operatorHouseholdsLoading, setOperatorHouseholdsLoading] = useState(false);
+  const [operatorHouseholdsServerError, setOperatorHouseholdsServerError] = useState(false);
+  const [operatorHouseholdsRetryLoading, setOperatorHouseholdsRetryLoading] = useState(false);
 
   const operator = auth?.operator === true;
 
-  const loadOperatorHouseholds = useCallback(async () => {
+  const loadOperatorHouseholds = useCallback(async (options?: { retry?: boolean }) => {
     if (!operator) return;
-    setOperatorHouseholdsLoading(true);
+    if (options?.retry) {
+      setOperatorHouseholdsRetryLoading(true);
+    } else {
+      setOperatorHouseholdsLoading(true);
+    }
     setOperatorHouseholdsError('');
+    setOperatorHouseholdsServerError(false);
     try {
       const body = await listOperatorHouseholds();
       setOperatorHouseholds(body.households);
     } catch (requestError) {
       setOperatorHouseholdsError(hosted(requestError, 'Could not load households.'));
+      setOperatorHouseholdsServerError(
+        requestError instanceof ApiError && requestError.code === 'internal',
+      );
     } finally {
-      setOperatorHouseholdsLoading(false);
+      if (options?.retry) {
+        setOperatorHouseholdsRetryLoading(false);
+      } else {
+        setOperatorHouseholdsLoading(false);
+      }
     }
   }, [operator]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadOperatorHouseholds);
+    void Promise.resolve().then(() => loadOperatorHouseholds());
   }, [loadOperatorHouseholds]);
 
   const switchTo = async (householdId: string, householdName: string) => {
@@ -143,11 +157,6 @@ export function HouseholdsPage() {
   };
 
   const inviteRequired = !operator;
-
-  const formatActivity = (at: string | undefined) => {
-    if (at === undefined || at === '') return 'No activity yet';
-    return new Date(at).toLocaleString();
-  };
 
   const householdStatusBadges = (row: OperatorHouseholdView) => {
     if (row.deletedAt) {
@@ -239,7 +248,23 @@ export function HouseholdsPage() {
           data-testid="operator-households-section"
         >
           <Title id="operator-households-heading" order={3}>All households (Admin)</Title>
-          {operatorHouseholdsError !== '' && <Alert color="red" variant="light" role="alert" mt="sm">{operatorHouseholdsError}</Alert>}
+          {operatorHouseholdsError !== '' && (
+            <>
+              <Alert color="red" variant="light" role="alert" mt="sm">{operatorHouseholdsError}</Alert>
+              {operatorHouseholdsServerError && (
+                <Button
+                  type="button"
+                  variant="default"
+                  mt="sm"
+                  className="admin-household-retry"
+                  loading={operatorHouseholdsRetryLoading}
+                  onClick={() => { void loadOperatorHouseholds({ retry: true }); }}
+                >
+                  Try again
+                </Button>
+              )}
+            </>
+          )}
           {operatorHouseholdsLoading && <Text mt="sm">Loading households…</Text>}
           {!operatorHouseholdsLoading && operatorHouseholdsError === '' && operatorHouseholds.length === 0 && (
             <Text mt="sm" c="dimmed">No households on this server yet.</Text>
@@ -254,9 +279,7 @@ export function HouseholdsPage() {
                     <Text size="sm" c="dimmed">Restock: {row.restockMode.replaceAll('_', ' ')}</Text>
                     <Text size="sm" c="dimmed">Created {new Date(row.createdAt).toLocaleDateString()}</Text>
                   </Group>
-                  <Text size="sm" data-testid="operator-household-stats">
-                    {formatOperatorHouseholdStatsLine(row)} · {formatActivity(row.lastActivityAt)}
-                  </Text>
+                  <OperatorHouseholdStatBlock row={row} />
                 </Stack>
               </li>
             ))}

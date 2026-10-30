@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import type { AuthSession, OperatorHouseholdView } from '@stockbot/shared/contract';
 import { resetStage1Client } from '../../api/client';
 import { HouseholdSessionContext } from '../auth/householdSession';
@@ -71,7 +72,7 @@ describe('HouseholdsPage admin server list', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders count stats with singular pluralization and no member PII', async () => {
+  it('renders grouped count stats with singular pluralization and no member PII', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/operator/households') {
@@ -90,7 +91,10 @@ describe('HouseholdsPage admin server list', () => {
     expect(section).toBeVisible();
     expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
     const stats = screen.getByTestId('operator-household-stats');
-    expect(stats.textContent).toMatch(/^1 member · 2 products · 3 items on hand · 1 scanner online · 0 scanners offline · 1 scan this week · 0 pending scans · /);
+    expect(stats).toHaveTextContent('1 member · 2 products · 3 items on hand');
+    expect(stats).toHaveTextContent('Scanners: 1 online · 0 offline');
+    expect(stats).toHaveTextContent('1 scan this week · 0 pending scans');
+    expect(stats.textContent).toMatch(/Last activity /);
     expectNoMemberPii(section, ['secret@example.com', 'Secret Person']);
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
@@ -126,7 +130,31 @@ describe('HouseholdsPage admin server list', () => {
     const section = await screen.findByTestId('operator-households-section');
     expect(within(section).getByRole('alert')).toHaveTextContent(/^Only an admin can do this\.$/);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
+    expect(within(section).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
+  });
+
+  it('retries after a server error with Try again', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve(json({ error: 'boom', code: 'internal' }, 500));
+        }
+        return Promise.resolve(json({ households: [testHouseholdRow] }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderAdminPage(session(true));
+    const section = await screen.findByTestId('operator-households-section');
+    expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
+    const retry = within(section).getByRole('button', { name: 'Try again' });
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible());
+    expect(calls).toBe(2);
+    expect(within(section).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('wraps a very long household name without leaking member rows', async () => {
@@ -154,7 +182,7 @@ describe('HouseholdsPage admin server list', () => {
     const section = await screen.findByTestId('operator-households-section');
     const title = await screen.findByText(longName);
     expect(title).toHaveClass('admin-household-name');
-    expect(screen.getByText(/0 scanners online/)).toBeVisible();
+    expect(screen.getByTestId('operator-household-stats')).toHaveTextContent('Scanners: 0 online · 0 offline');
     expectNoMemberPii(section, ['leak@example.com', 'Leak Person']);
   });
 });

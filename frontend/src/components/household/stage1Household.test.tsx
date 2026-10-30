@@ -326,7 +326,7 @@ describe('household management', () => {
     const { unmount: unmountOperator } = renderStage(<HouseholdsPage />, { ...session('owner'), operator: true });
     expect(await screen.findByTestId('operator-households-section')).toBeVisible();
     expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
-    expect(screen.getByText(/1 scanner online/)).toBeVisible();
+    expect(screen.getByText(/Scanners: 1 online/)).toBeVisible();
     expect(screen.getByText(/1 scan this week/)).toBeVisible();
     expect(screen.queryByText('dee@example.com')).not.toBeInTheDocument();
     expect(operatorList).toHaveBeenCalled();
