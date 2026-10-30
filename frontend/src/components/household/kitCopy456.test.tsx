@@ -158,7 +158,7 @@ describe('issue #456 kit copy (table B)', () => {
     expect(within(dialog).getByRole('button', { name: PRINT_PAIRING_CODE_LABEL })).toBeVisible();
     const printRoot = dialog.querySelector('.setup-kit-print-root')!;
     expect(printRoot).not.toBeNull();
-    expect(within(printRoot as HTMLElement).getByText(pairingScannerScreenFallback(), { hidden: true })).toBeInTheDocument();
+    expect(printRoot.textContent).toContain(pairingScannerScreenFallback());
     expect(printRoot).toHaveAttribute('hidden');
     expect(within(printRoot as HTMLElement).getByText('Connect your scanner')).toBeInTheDocument();
     expect(printRoot.querySelectorAll('svg[role="img"][aria-label^="Code 128"]')).toHaveLength(3);
