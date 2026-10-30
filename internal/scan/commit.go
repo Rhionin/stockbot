@@ -1139,13 +1139,6 @@ func (r *Queue) BackfillItem(ctx context.Context, scope tenant.Scope, itemID str
 	}, nil
 }
 
-func consumptionIDs(id string) []string {
-	if id == "" {
-		return nil
-	}
-	return []string{id}
-}
-
 type backfillPairParams struct {
 	itemID         string
 	productID      string
@@ -1376,26 +1369,3 @@ func (r *Queue) publishLinkedScan(ctx context.Context, scope tenant.Scope, id st
 	return linkErr
 }
 
-func (r *Queue) publishCommitted(ctx context.Context, scope tenant.Scope, scanID, itemID string) error {
-	if r.Broadcaster == nil {
-		return nil
-	}
-	committed, err := r.GetScanEntry(ctx, scope, scanID)
-	if err != nil {
-		return err
-	}
-	if committed != nil {
-		r.Broadcaster.PublishScanEvent(scope.HouseholdID(), *committed)
-	}
-	if r.Pantry == nil {
-		return nil
-	}
-	invItem, err := r.Pantry.GetInventoryItem(ctx, scope, itemID, time.Now(), inventory.DefaultWarningDays)
-	if err != nil {
-		return err
-	}
-	if invItem != nil {
-		r.Broadcaster.PublishInventoryEvent(scope.HouseholdID(), *invItem)
-	}
-	return nil
-}

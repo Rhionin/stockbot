@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 func TestLoadDeviceScanReplayReturnsStoredLCD(t *testing.T) {
@@ -43,6 +46,64 @@ func TestLoadDeviceScanReplayReturnsStoredLCD(t *testing.T) {
 		out[0].ProductName == nil || *out[0].ProductName != "Canned Beans" || out[0].QueuedCount == nil || *out[0].QueuedCount != 3 {
 		t.Fatalf("out %#v err %v", out, err)
 	}
+}
+
+func TestLoadDeviceScanReplayUsesPreparedMatchWhenProductNameMissing(t *testing.T) {
+	ctx, svc, userID, house := bootDeviceAPI(t)
+	_, err := svc.db.Exec(`INSERT INTO products (id, name, category, unit_of_measure) VALUES ('prod-replay', 'Replay Tea', 'Pantry', 'each')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.db.Exec(`INSERT INTO barcodes (barcode, product_id, source, user_id, household_id) VALUES ('4000000000033', 'prod-replay', 'global', '', ?)`, house)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetDeviceProductLookup(deviceProductResolverStub{})
+	pair, err := svc.StartPairing(ctx, userID, house)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired, err := svc.CompletePairing(ctx, pair.Code, "Scanner", "esp32_scanner", "1.0", "boot-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := svc.AuthenticateDevice(ctx, paired.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	_, err = svc.db.Exec(`
+		INSERT INTO scan_entries (id, user_id, household_id, device_id, client_scan_id, barcode, scanned_at, direction, unit_count, status, product_id)
+		VALUES ('scan-row-2', ?, ?, ?, 'replay-2', '4000000000033', ?, 'stock_in', 1, 'pending', 'prod-replay')`,
+		principal.DeviceID, house, principal.DeviceID, stamp(at))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.db.Exec(`
+		INSERT INTO device_scan_receipts (
+			household_id, device_id, client_scan_id, scan_entry_id, barcode, direction, unit_count, scanned_at,
+			device_result_status, device_on_hand, device_queued_count, device_delta, device_backfilled, product_name
+		) VALUES (?, ?, 'replay-2', 'scan-row-2', '4000000000033', 'stock_in', 1, ?, 'queued', 0, 1, 0, 0, NULL)`,
+		house, principal.DeviceID, stamp(at))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := svc.IngestScans(ctx, principal, []ScanInput{{
+		ID: "replay-2", Barcode: "4000000000033", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0)
+	if err != nil || len(out) != 1 || out[0].Status != "duplicate" || out[0].ProductName == nil || *out[0].ProductName != "Replay Tea" {
+		t.Fatalf("out %#v err %v", out, err)
+	}
+}
+
+type deviceProductResolverStub struct{}
+
+func (deviceProductResolverStub) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (DeviceProductMatch, error) {
+	_ = ctx
+	if barcode != "4000000000033" {
+		return DeviceProductMatch{}, nil
+	}
+	return DeviceProductMatch{Found: true, ProductID: "prod-replay", Name: "Replay Tea"}, nil
 }
 
 func TestUpdateDeviceRejectsInvalidCommitMode(t *testing.T) {

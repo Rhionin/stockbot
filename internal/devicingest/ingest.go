@@ -124,10 +124,6 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 }
 
 func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *scan.Queue, scope tenant.Scope, p auth.Principal, item auth.PreparedScanItem, group int, match auth.DeviceProductMatch) (auth.DeviceLCD, string, bool, error) {
-	if !match.Found {
-		lcd, id, err := queueScan(ctx, q, svc, queue, scope, p, item, group, match)
-		return lcd, id, false, err
-	}
 	dir := scanDirection(item.Direction())
 	entry := entryFromMatch(p.DeviceID, item.Barcode(), match, dir, item.At(), item.Unit())
 	entry.DeviceID = p.DeviceID

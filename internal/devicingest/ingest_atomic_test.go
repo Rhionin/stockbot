@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/devicingest"
+	"github.com/Rhionin/stockbot/internal/events"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 )
@@ -313,6 +316,156 @@ func TestDeviceIngestConcurrentConflict(t *testing.T) {
 	wg.Wait()
 	if created != 1 || conflict != 1 {
 		t.Fatalf("created %d conflict %d", created, conflict)
+	}
+}
+
+type hintSpy struct {
+	kinds *[]string
+}
+
+func (h hintSpy) PublishHint(_, kind string) {
+	*h.kinds = append(*h.kinds, kind)
+}
+
+func TestDeviceIngestProcessorBatchSideEffects(t *testing.T) {
+	ctx, svc, p, house, catalog, db := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-side", "Oil", "4000000000099")
+	var hints []string
+	svc.SetHints(hintSpy{&hints})
+	var lookedUp bool
+	svc.SetBarcodeLookup(func(_ context.Context, _, _, _ string) { lookedUp = true })
+	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "side-1", Barcode: "4000000000099", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if !lookedUp {
+		t.Fatal("barcode lookup not queued")
+	}
+	if len(hints) == 0 {
+		t.Fatalf("hints %v", hints)
+	}
+	var dropped int
+	if err := db.QueryRow(`SELECT dropped_total FROM devices WHERE id = ?`, p.DeviceID).Scan(&dropped); err != nil || dropped != 3 {
+		t.Fatalf("dropped %d err %v", dropped, err)
+	}
+}
+
+func TestDeviceIngestDuplicateFlaggedScanWithoutStoredProductName(t *testing.T) {
+	ctx, svc, p, house, _, db := bootIngest(t)
+	first := ingest(t, ctx, svc, p, "flag-dup", "8888888888888", "stock_in")
+	if first.ScanStatus != "flagged" {
+		t.Fatalf("first %#v", first)
+	}
+	dup := ingest(t, ctx, svc, p, "flag-dup", "8888888888888", "stock_in")
+	if dup.Status != "duplicate" || dup.ScanStatus != "flagged" {
+		t.Fatalf("dup %#v", dup)
+	}
+	var receipts int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_scan_receipts WHERE household_id = ? AND client_scan_id = 'flag-dup'`, house).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatalf("receipts %d", receipts)
+	}
+}
+
+func TestDeviceIngestReceiptMissingStatusIsConflict(t *testing.T) {
+	ctx, svc, p, house, catalog, db := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-conf", "Pasta", "4000000000111")
+	ingest(t, ctx, svc, p, "claim-1", "4000000000111", "stock_in")
+	if _, err := db.Exec(`UPDATE device_scan_receipts SET device_result_status = '' WHERE household_id = ? AND client_scan_id = 'claim-1'`, house); err != nil {
+		t.Fatal(err)
+	}
+	out, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "claim-1", Barcode: "4000000000111", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0)
+	if err != nil || len(out) != 1 || out[0].Status != "conflict" {
+		t.Fatalf("out %#v err %v", out, err)
+	}
+}
+
+func TestDeviceIngestProcessorDeviceCameOnline(t *testing.T) {
+	ctx, svc, p, house, catalog, db := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-online", "Honey", "4000000000122")
+	var hints []string
+	svc.SetHints(hintSpy{&hints})
+	if _, err := db.Exec(`UPDATE devices SET last_seen_at = '2000-01-01T00:00:00Z' WHERE id = ?`, p.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "online-1", Barcode: "4000000000122", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	var sawDevices bool
+	for _, kind := range hints {
+		if kind == "devices" {
+			sawDevices = true
+		}
+	}
+	if !sawDevices {
+		t.Fatalf("hints %v", hints)
+	}
+}
+
+type errPublisher struct{ err error }
+
+func (e errPublisher) PublishAfterIngest(context.Context, string, string, bool) error {
+	return e.err
+}
+
+func TestDeviceIngestPublishErrorFailsIngest(t *testing.T) {
+	ctx, svc, p, house, catalog, _ := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-pub-err", "Jam", "4000000000133")
+	setImmediate(t, ctx, svc, p)
+	svc.SetDeviceIngestEventPublisher(errPublisher{err: errors.New("publish failed")})
+	_, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "pub-err", Barcode: "4000000000133", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0)
+	if err == nil {
+		t.Fatal("expected publish error")
+	}
+}
+
+func bootIngestWithBroadcaster(t *testing.T) (context.Context, *auth.Service, auth.Principal, string, *product.Catalog, *sql.DB, <-chan events.Message) {
+	t.Helper()
+	ctx, svc, p, house, catalog, db := bootIngestFile(t)
+	queue := scan.NewQueue(db)
+	queue.Pantry = inventory.NewPantry(db)
+	b := events.NewBroadcaster()
+	queue.Broadcaster = b
+	msgs, unsub := b.SubscribeHousehold(house, "", "")
+	t.Cleanup(unsub)
+	devicingest.Attach(svc, queue, &product.LookupService{
+		Catalog: catalog,
+		Upstream: stubFanOut{func(context.Context, string) product.FanOutResult {
+			return product.FanOutResult{Outcome: product.FanOutConfirmedMiss}
+		}},
+	})
+	return ctx, svc, p, house, catalog, db, msgs
+}
+
+func TestDeviceIngestImmediatePublishesLiveEvents(t *testing.T) {
+	ctx, svc, p, house, catalog, _, msgs := bootIngestWithBroadcaster(t)
+	seedProduct(t, ctx, catalog, house, "prod-live-ev", "Syrup", "4000000000144")
+	setImmediate(t, ctx, svc, p)
+	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "live-ev", Barcode: "4000000000144", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	var scanEvent, invEvent bool
+	deadline := time.After(2 * time.Second)
+	for !scanEvent || !invEvent {
+		select {
+		case msg := <-msgs:
+			switch msg.EventType {
+			case "scan":
+				scanEvent = true
+			case "inventory":
+				invEvent = true
+			}
+		case <-deadline:
+			t.Fatalf("scan=%v inventory=%v", scanEvent, invEvent)
+		}
 	}
 }
 
