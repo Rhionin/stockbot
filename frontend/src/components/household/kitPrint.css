@@ -414,7 +414,13 @@
     margin-top: 2px;
   }
 
-  .printable-barcode-svg {
+  .setup-kit-print-root .kit-wall-panel .printable-barcode-svg,
+  .wall-kit-print-root .printable-barcode-svg {
     max-width: none;
+  }
+
+  .setup-kit-print-root .kit-wall-panel .printable-barcode-block {
+    padding-left: 1mm !important;
+    padding-right: 1mm !important;
   }
 }
