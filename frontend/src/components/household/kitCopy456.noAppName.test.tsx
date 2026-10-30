@@ -1,7 +1,9 @@
-import { render } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import { describe, expect, it, vi } from 'vitest';
 import { KitPrintFooter } from './kitPrintFooter';
 import { PAIRING_DIALOG_STEP_TWO, PAIRING_DIALOG_WIFI_SETUP_STEP_ONE } from './kitCopy456';
+import { PairingDialog } from './PairingDialog';
 import * as kitCopy456 from './kitCopy456';
 
 const SAMPLE_EXPIRY = '2026-06-15T14:05:00.000Z';
@@ -67,5 +69,16 @@ describe('kit copy avoids app name in customer strings (#375)', () => {
   it('allows Stockbot only in the configured print footer meta', () => {
     const { container } = render(<KitPrintFooter printableName="Setup & wall sheet" />);
     expect(container.textContent).toMatch(/Stockbot/);
+  });
+
+  it('PairingDialog network error copy avoids the app name', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('network down'))));
+    render(
+      <MantineProvider env="test">
+        <PairingDialog opened householdName="Pantry" onClose={() => undefined} />
+      </MantineProvider>,
+    );
+    expect(await screen.findByText("Can't reach the server. Check your connection and try again.")).toBeVisible();
+    expect(screen.queryByText(/Stockbot/i)).not.toBeInTheDocument();
   });
 });

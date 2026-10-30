@@ -342,6 +342,13 @@
     visibility: visible !important;
   }
 
+  .kit-print-ruler {
+    border-top: none !important;
+    height: 0.45mm !important;
+    min-height: 0.45mm !important;
+    background: #000 !important;
+  }
+
   .pairing-screen-only,
   .wall-sheet-screen-extra,
   .mantine-Modal-header,
@@ -402,21 +409,34 @@
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
-    gap: 6px;
+    gap: 4px 8px;
+    margin-top: 2px;
   }
 
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-instruction {
     margin: 0;
+    flex: 0 1 auto;
   }
 
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-wrap {
     display: inline-flex !important;
     align-items: center;
+    gap: 6px;
     margin: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler {
+    flex: 0 0 50mm;
   }
 
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-caption {
-    display: none !important;
+    display: block !important;
+    margin: 0;
+    font-size: 9pt;
+    line-height: 1.1;
+    flex: 1 1 8rem;
   }
 
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-panel-copy {
@@ -428,10 +448,6 @@
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-wall-mode-word {
     font-size: 18pt;
     margin-bottom: 0;
-  }
-
-  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer {
-    margin-top: 2px;
   }
 
   .setup-kit-print-root .kit-wall-panel .printable-barcode-svg,

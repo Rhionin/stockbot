@@ -51,6 +51,7 @@ describe('kit printables spec (#454 / #456 B16–B18)', () => {
     assertBarcodeSpec(root);
     expect(root.textContent).not.toMatch(/%%SpecCode99|Symcode|Setup B/);
     expect(screen.getByText(/Connect your scanner/)).toBeVisible();
+    expect(root.querySelector('.kit-print-ruler-caption')).not.toBeNull();
   });
 
   it('standalone wall sheet barcodes meet module sizing', () => {

@@ -4,15 +4,20 @@ import {
   PAIRING_ON_SCREEN_TOO_SMALL_HINT,
   countPdfPages,
   install,
-  pdfContainsText,
   resetStage,
   signInAndOpenHouseholdScannerPairing,
   stage,
   stubWindowPrint,
 } from './householdStageFixtures'
 import { pairingScannerScreenFallback } from '../src/components/household/kitCopy456'
+import {
+  assertPdfDecodesCode128,
+  pdfContainsVisibleText,
+  pdfVisibleText,
+} from './pdfCode128'
 
 const SCREEN_FALLBACK_COPY = pairingScannerScreenFallback()
+const RULER_CAPTION_SNIPPET = '50 mm (about 2 inches)'
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
 const DPR1_PHONE_WIDTHS = MOBILE_WIDTHS
@@ -199,6 +204,9 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
     expect(pdf.length).toBeGreaterThan(5000)
     expect(countPdfPages(pdf)).toBe(1)
+    await assertPdfDecodesCode128(pdf, [PAIRING, 'STOCK-OUT', 'STOCK-IN'])
+    expect(await pdfContainsVisibleText(pdf, 'Print at Actual size')).toBe(true)
+    expect(await pdfVisibleText(pdf)).not.toMatch(/\bMenu\b/)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
     await page.getByRole('button', { name: 'Print setup & wall sheet' }).click()
@@ -243,7 +251,8 @@ test('collapsed wall sheet prints one Letter/A4 page through the real Print butt
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
     expect(countPdfPages(pdf)).toBe(1)
-    expect(pdfContainsText(pdf, 'STOCK-OUT') || wallText.includes('STOCK-OUT')).toBe(true)
+    await assertPdfDecodesCode128(pdf, ['STOCK-OUT', 'STOCK-IN'])
+    expect(await pdfContainsVisibleText(pdf, 'Print at Actual size')).toBe(true)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
     await wallSheet.getByRole('button', { name: 'Print' }).click()
@@ -275,10 +284,17 @@ test('wall sheet print includes expanded Symcode on one page', async ({ page }) 
   expect(wallText).toMatch(/Print at Actual size/)
   await expect(wallPrintRoot.locator('.kit-print-footer-instruction')).toContainText('Print at Actual size')
   await expect(wallPrintRoot.locator('.kit-print-ruler')).toBeVisible()
+  await expect(wallPrintRoot.locator('.kit-print-ruler-caption')).toContainText(RULER_CAPTION_SNIPPET)
+  const rulerMmPrintLayout = await wallPrintRoot.locator('.kit-print-ruler').evaluate(
+    (el) => el.getBoundingClientRect().width / (96 / 25.4),
+  )
+  expect(rulerMmPrintLayout).toBeGreaterThanOrEqual(49.5)
+  expect(rulerMmPrintLayout).toBeLessThanOrEqual(50.5)
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
     expect(countPdfPages(pdf)).toBe(1)
-    expect(pdfContainsText(pdf, 'SpecCode99') || wallText.includes('SpecCode99')).toBe(true)
+    await assertPdfDecodesCode128(pdf, ['%%SpecCode99', 'STOCK-OUT', 'STOCK-IN'])
+    expect(await pdfContainsVisibleText(pdf, RULER_CAPTION_SNIPPET)).toBe(true)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
     await wallSheet.getByRole('button', { name: 'Print' }).click()
@@ -287,5 +303,23 @@ test('wall sheet print includes expanded Symcode on one page', async ({ page }) 
     await page.setViewportSize({ width: PRINT_LAYOUT_VIEWPORT_WIDTH, height: 900 })
     await assertNoDocumentHorizontalOverflow(page)
   }
+  await page.emulateMedia({ media: 'screen' })
+})
+
+test('print media hides app chrome on the setup sheet', async ({ page }) => {
+  resetStage()
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await install(page)
+  await signInAndOpenHouseholdScannerPairing(page)
+  await stubWindowPrint(page)
+  await page.getByRole('button', { name: 'Print setup & wall sheet' }).click()
+  await expect(page.locator('.setup-kit-print-root[data-printing="true"]')).toBeVisible()
+  await page.emulateMedia({ media: 'print' })
+  await expect(page.getByRole('button', { name: 'Menu' })).toBeHidden()
+  await expect(page.getByRole('dialog', { name: 'Connect a scanner' }).locator('.mantine-Modal-header')).toBeHidden()
+  const pdf = Buffer.from(await page.pdf({ format: 'Letter', preferCSSPageSize: true }))
+  const pdfText = await pdfVisibleText(pdf)
+  expect(pdfText).not.toMatch(/\bMenu\b/)
+  expect(pdfText).not.toMatch(/Sign in/)
   await page.emulateMedia({ media: 'screen' })
 })

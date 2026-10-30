@@ -55,9 +55,14 @@ export function computePairingCode128Layout(
   }
 
   const fitDevice = Math.floor((availableCssWidth * dpr) / totalModules);
-  let moduleDevicePx = fitDevice >= PAIRING_CODE128_MIN_MODULE_DEVICE_PX
-    ? fitDevice
-    : 1;
+  let moduleDevicePx: number;
+  if (fitDevice >= PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
+    moduleDevicePx = fitDevice;
+  } else if (dpr === 1) {
+    moduleDevicePx = 1;
+  } else {
+    moduleDevicePx = PAIRING_CODE128_MIN_MODULE_DEVICE_PX;
+  }
   let moduleCssPx = moduleDevicePx / dpr;
   if (moduleCssPx > PAIRING_CODE128_MAX_MODULE_CSS_PX) {
     moduleDevicePx = Math.max(

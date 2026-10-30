@@ -51,7 +51,7 @@ export function PairingDialog({
       if (requestError instanceof ApiError && requestError.code !== '') {
         setIssueError(hostedErrorSentence(requestError.code));
       } else {
-        setIssueError("Can't reach Stockbot. Check your connection and try again.");
+        setIssueError("Can't reach the server. Check your connection and try again.");
       }
       setCode(null);
     } finally {

@@ -40,9 +40,30 @@ export function setupSheetPairingStepCopy(): string {
   return 'When your scanner says "Scan the pairing barcode to connect", hold it 10–30 cm (4–12 in) from this barcode and pull the trigger.';
 }
 
-export function setupSheetExpiryLine(expiresAt: string | Date, locale = 'en-US', timeZone?: string): string {
-  const time = formatPairingExpiryTime(expiresAt, locale, timeZone);
-  return `Use within 10 minutes · expires at ${time}`;
+export function setupSheetExpiryLine(
+  expiresAt: string | Date,
+  locale = 'en-US',
+  timeZone?: string,
+  now: Date = new Date(),
+): string {
+  const expiryDate = typeof expiresAt === 'string' ? new Date(expiresAt) : expiresAt;
+  const time = formatPairingExpiryTime(expiryDate, locale, timeZone);
+  if (!(expiryDate instanceof Date) || Number.isNaN(expiryDate.getTime())) {
+    return `Use within 10 minutes · expires at ${time}`;
+  }
+  const dayKey = (date: Date) => date.toLocaleDateString(locale, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    ...(timeZone ? { timeZone } : {}),
+  });
+  const daySuffix = dayKey(expiryDate) === dayKey(now)
+    ? ''
+    : ` (${expiryDate.toLocaleDateString(locale, {
+      weekday: 'short',
+      ...(timeZone ? { timeZone } : {}),
+    })})`;
+  return `Use within 10 minutes · expires at ${time}${daySuffix}`;
 }
 
 export function setupSheetExpiryHelpCopy(): string {

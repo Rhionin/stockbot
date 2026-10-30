@@ -61,6 +61,14 @@ describe('pairingCode128 layout math', () => {
     const phone = computePairingCode128Layout(320, BAR_MODULES, 1);
     expect(phone.moduleDevicePx).toBe(1);
     expect(phone.svgWidthCssPx).toBeCloseTo(220, 5);
+
+    const fractionalDpr = computePairingCode128Layout(292, BAR_MODULES, 1.5);
+    expect(fractionalDpr.moduleDevicePx).toBeGreaterThanOrEqual(2);
+    expect(fractionalDpr.moduleDevicePx).not.toBe(1);
+
+    const highDprPhone = computePairingCode128Layout(320, BAR_MODULES, 2.625);
+    expect(highDprPhone.moduleDevicePx).toBeGreaterThanOrEqual(2);
+    expect(highDprPhone.svgWidthCssPx).toBeLessThanOrEqual(320 + 0.01);
   });
 });
 
@@ -90,6 +98,7 @@ describe('on-screen Code128Mark geometry', () => {
       pairingCode128SvgWidthPx(Number(svg.getAttribute('data-module-css-px')), BAR_MODULES),
       5,
     );
+    expect(svg.getAttribute('shape-rendering')).toBe('crispEdges');
     expect(container.querySelector('.pairing-barcode-too-small-hint')).toBeNull();
   });
 
