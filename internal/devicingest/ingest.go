@@ -12,9 +12,9 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-// AfterDeviceStockCommitHook is set by tests to force a failure after stock is committed
-// but before the device scan receipt is finalized, inside the ingest transaction.
-var AfterDeviceStockCommitHook func() error
+// afterDeviceStockCommitHook is set via export_test.go to force a failure after stock is
+// committed but before the device scan receipt is finalized, inside the ingest transaction.
+var afterDeviceStockCommitHook func() error
 
 // Attach wires queue-aware device scan handling onto the auth service.
 func Attach(svc *auth.Service, queue *scan.Queue, lookup *product.LookupService) {
@@ -112,8 +112,8 @@ func queueScan(ctx context.Context, q auth.Queryer, svc *auth.Service, queue *sc
 		Barcode: item.Barcode(), Direction: item.Direction(),
 		QueuedCount: merged.UnitCount, OnHand: onHand,
 	}
-	if AfterDeviceStockCommitHook != nil {
-		if err := AfterDeviceStockCommitHook(); err != nil {
+	if afterDeviceStockCommitHook != nil {
+		if err := afterDeviceStockCommitHook(); err != nil {
 			return auth.DeviceLCD{}, "", auth.AsError(err)
 		}
 	}
@@ -173,8 +173,8 @@ func commitImmediate(ctx context.Context, q auth.Queryer, svc *auth.Service, que
 	default:
 		return auth.DeviceLCD{}, "", false, auth.Validation()
 	}
-	if AfterDeviceStockCommitHook != nil {
-		if err := AfterDeviceStockCommitHook(); err != nil {
+	if afterDeviceStockCommitHook != nil {
+		if err := afterDeviceStockCommitHook(); err != nil {
 			return auth.DeviceLCD{}, "", false, auth.AsError(err)
 		}
 	}

@@ -108,8 +108,8 @@ func productOnHandDB(t *testing.T, db *sql.DB, house, productID string) int {
 func TestDeviceIngestFaultInjectionRollsBackQueue(t *testing.T) {
 	ctx, svc, p, house, catalog, db := bootIngest(t)
 	seedProduct(t, ctx, catalog, house, "prod-q", "Beans", "4000000000011")
-	devicingest.AfterDeviceStockCommitHook = func() error { return errors.New("injected") }
-	t.Cleanup(func() { devicingest.AfterDeviceStockCommitHook = nil })
+	devicingest.SetAfterDeviceStockCommitHook(func() error { return errors.New("injected") })
+	t.Cleanup(func() { devicingest.SetAfterDeviceStockCommitHook(nil) })
 
 	_, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
 		ID: "fault-q", Barcode: "4000000000011", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
@@ -124,7 +124,7 @@ func TestDeviceIngestFaultInjectionRollsBackQueue(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM scan_entries WHERE client_scan_id = 'fault-q'`).Scan(&entries); err != nil || entries != 0 {
 		t.Fatalf("entries %d", entries)
 	}
-	devicingest.AfterDeviceStockCommitHook = nil
+	devicingest.SetAfterDeviceStockCommitHook(nil)
 	r := ingest(t, ctx, svc, p, "fault-q", "4000000000011", "stock_in")
 	if r.Status != "created" || r.QueuedCount == nil || *r.QueuedCount != 1 {
 		t.Fatalf("retry %#v", r)
@@ -138,8 +138,8 @@ func TestDeviceIngestFaultInjectionRollsBackImmediateStockIn(t *testing.T) {
 	ctx, svc, p, house, catalog, db := bootIngest(t)
 	seedProduct(t, ctx, catalog, house, "prod-in", "Rice", "4000000000022")
 	setImmediate(t, ctx, svc, p)
-	devicingest.AfterDeviceStockCommitHook = func() error { return errors.New("injected") }
-	t.Cleanup(func() { devicingest.AfterDeviceStockCommitHook = nil })
+	devicingest.SetAfterDeviceStockCommitHook(func() error { return errors.New("injected") })
+	t.Cleanup(func() { devicingest.SetAfterDeviceStockCommitHook(nil) })
 
 	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
 		ID: "fault-in", Barcode: "4000000000022", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
@@ -149,7 +149,7 @@ func TestDeviceIngestFaultInjectionRollsBackImmediateStockIn(t *testing.T) {
 	if countStockMoves(t, db, house) != 0 || productOnHandDB(t, db, house, "prod-in") != 0 {
 		t.Fatalf("stock leaked")
 	}
-	devicingest.AfterDeviceStockCommitHook = nil
+	devicingest.SetAfterDeviceStockCommitHook(nil)
 	r := ingest(t, ctx, svc, p, "fault-in", "4000000000022", "stock_in")
 	if r.Status != "created" || countStockMoves(t, db, house) != 1 || productOnHandDB(t, db, house, "prod-in") != 1 {
 		t.Fatalf("retry moves=%d onHand=%d result %#v", countStockMoves(t, db, house), productOnHandDB(t, db, house, "prod-in"), r)
@@ -163,8 +163,8 @@ func TestDeviceIngestFaultInjectionRollsBackImmediateBackfill(t *testing.T) {
 	ingest(t, ctx, svc, p, "setup-in", "4000000000033", "stock_in")
 	ingest(t, ctx, svc, p, "setup-out", "4000000000033", "stock_out")
 
-	devicingest.AfterDeviceStockCommitHook = func() error { return errors.New("injected") }
-	t.Cleanup(func() { devicingest.AfterDeviceStockCommitHook = nil })
+	devicingest.SetAfterDeviceStockCommitHook(func() error { return errors.New("injected") })
+	t.Cleanup(func() { devicingest.SetAfterDeviceStockCommitHook(nil) })
 
 	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
 		ID: "fault-bf", Barcode: "4000000000033", Direction: "stock_out", UnitCount: 1, HasBarcode: true,
@@ -174,7 +174,7 @@ func TestDeviceIngestFaultInjectionRollsBackImmediateBackfill(t *testing.T) {
 	if countStockMoves(t, db, house) != 2 {
 		t.Fatalf("moves %d want 2 from setup", countStockMoves(t, db, house))
 	}
-	devicingest.AfterDeviceStockCommitHook = nil
+	devicingest.SetAfterDeviceStockCommitHook(nil)
 	r := ingest(t, ctx, svc, p, "fault-bf", "4000000000033", "stock_out")
 	if r.Status != "created" || r.Backfilled == nil || !*r.Backfilled {
 		t.Fatalf("backfill %#v", r)
@@ -316,8 +316,109 @@ func TestDeviceIngestConcurrentConflict(t *testing.T) {
 	}
 }
 
+type ingestPublishSpy struct {
+	mu    sync.Mutex
+	calls []ingestPublishCall
+}
+
+type ingestPublishCall struct {
+	householdID, scanEntryID string
+	stockMoved               bool
+}
+
+func (s *ingestPublishSpy) PublishAfterIngest(_ context.Context, householdID, scanEntryID string, stockMoved bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, ingestPublishCall{householdID: householdID, scanEntryID: scanEntryID, stockMoved: stockMoved})
+	return nil
+}
+
+func (s *ingestPublishSpy) len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
+}
+
+func bootIngestWithPublishSpy(t *testing.T) (context.Context, *auth.Service, auth.Principal, string, *product.Catalog, *sql.DB, *ingestPublishSpy) {
+	t.Helper()
+	ctx, svc, p, house, catalog, db := bootIngest(t)
+	spy := &ingestPublishSpy{}
+	svc.SetDeviceIngestEventPublisher(spy)
+	return ctx, svc, p, house, catalog, db, spy
+}
+
+func TestDeviceIngestRollbackDoesNotPublishAfterIngest(t *testing.T) {
+	ctx, svc, p, house, catalog, _, spy := bootIngestWithPublishSpy(t)
+	seedProduct(t, ctx, catalog, house, "prod-pub-rollback", "Corn", "4000000000077")
+	setImmediate(t, ctx, svc, p)
+	devicingest.SetAfterDeviceStockCommitHook(func() error { return errors.New("injected") })
+	t.Cleanup(func() { devicingest.SetAfterDeviceStockCommitHook(nil) })
+
+	if _, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
+		ID: "pub-rollback", Barcode: "4000000000077", Direction: "stock_in", UnitCount: 1, HasBarcode: true,
+	}}, 0); err == nil {
+		t.Fatal("expected error")
+	}
+	if spy.len() != 0 {
+		t.Fatalf("publish calls %d want 0", spy.len())
+	}
+}
+
+func TestDeviceIngestCommitPublishesAfterIngestOnce(t *testing.T) {
+	ctx, svc, p, house, catalog, _, spy := bootIngestWithPublishSpy(t)
+	seedProduct(t, ctx, catalog, house, "prod-pub-once", "Flour", "4000000000088")
+	setImmediate(t, ctx, svc, p)
+
+	first := ingest(t, ctx, svc, p, "pub-once", "4000000000088", "stock_in")
+	if spy.len() != 1 {
+		t.Fatalf("publish calls %d want 1", spy.len())
+	}
+	dup := ingest(t, ctx, svc, p, "pub-once", "4000000000088", "stock_in")
+	if dup.Status != "duplicate" || spy.len() != 1 {
+		t.Fatalf("duplicate %#v publish calls %d", dup, spy.len())
+	}
+	_ = first
+}
+
+func TestDeviceIngestProductColumnsMatchMasterBehavior(t *testing.T) {
+	ctx, svc, p, house, catalog, db := bootIngest(t)
+	seedProduct(t, ctx, catalog, house, "prod-master", "Beans", "4000000000011")
+
+	known := ingest(t, ctx, svc, p, "prod-known", "4000000000011", "stock_in")
+	if known.ProductName == nil || *known.ProductName != "Beans" {
+		t.Fatalf("lcd name %#v", known)
+	}
+	var entryProductID sql.NullString
+	var receiptName sql.NullString
+	if err := db.QueryRow(`
+		SELECT se.product_id, r.product_name
+		FROM scan_entries se
+		JOIN device_scan_receipts r ON r.scan_entry_id = se.id AND r.household_id = se.household_id
+		WHERE se.household_id = ? AND se.client_scan_id = 'prod-known'`, house).Scan(&entryProductID, &receiptName); err != nil {
+		t.Fatal(err)
+	}
+	if !entryProductID.Valid || entryProductID.String != "prod-master" || !receiptName.Valid || receiptName.String != "Beans" {
+		t.Fatalf("known product_id=%v name=%v", entryProductID, receiptName)
+	}
+
+	unk := ingest(t, ctx, svc, p, "prod-unk", "9999999999999", "stock_in")
+	if unk.ProductName != nil {
+		t.Fatalf("unknown lcd name %#v", unk)
+	}
+	if err := db.QueryRow(`
+		SELECT se.product_id, r.product_name
+		FROM scan_entries se
+		JOIN device_scan_receipts r ON r.scan_entry_id = se.id AND r.household_id = se.household_id
+		WHERE se.household_id = ? AND se.client_scan_id = 'prod-unk'`, house).Scan(&entryProductID, &receiptName); err != nil {
+		t.Fatal(err)
+	}
+	if entryProductID.Valid || receiptName.Valid {
+		t.Fatalf("unknown product_id=%v name=%v", entryProductID, receiptName)
+	}
+}
+
 func TestMain(m *testing.M) {
 	code := m.Run()
-	devicingest.AfterDeviceStockCommitHook = nil
+	devicingest.SetAfterDeviceStockCommitHook(nil)
 	os.Exit(code)
 }
