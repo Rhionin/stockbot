@@ -1,4 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { rulerContinuousLineMmFromPng, rulerWidthInToleranceMm, rulerWidthMmFromPng } from './kitPrintRulerMeasure'
 
@@ -32,6 +35,16 @@ describe('kitPrintRulerMeasure', () => {
   it('does not treat a light grey bar as the 50mm ruler', () => {
     const mm = rulerWidthMmFromPng(syntheticRulerPng(50, 2, '#ccc'), 2)
     expect(rulerWidthInToleranceMm(mm)).toBe(false)
+  })
+
+  it('requires the kit print ruler CSS to use a border line, not a background fill', () => {
+    const cssPath = join(dirname(fileURLToPath(import.meta.url)), 'kitPrint.css')
+    const css = readFileSync(cssPath, 'utf8')
+    const screenRule = css.match(/\.kit-print-ruler\s*\{([^}]+)\}/)?.[1] ?? ''
+    expect(screenRule).toMatch(/border-top:\s*2px\s+solid/)
+    expect(screenRule).not.toMatch(/background:\s*(?!none)/)
+    expect(css).toContain('border-top: 0.45mm solid #000 !important')
+    expect(css).toMatch(/@media print[\s\S]*\.kit-print-ruler[\s\S]*background:\s*none !important/)
   })
 
   it('falls back to column projection when no single scan line spans the bar', () => {

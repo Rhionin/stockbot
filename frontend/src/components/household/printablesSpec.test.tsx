@@ -2,8 +2,12 @@ import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it } from 'vitest';
 import { formatPairingCode } from '@stockbot/shared/contract';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SetupKitPrintSheet } from './setupKitPrintSheet';
 import { WallKitPrintSheet } from './wallKitPrintSheet';
+import './kitPrint.css';
 
 const MM_PER_CSS_PX = 25.4 / 96;
 const MIN_X_MM = 0.375;
@@ -52,6 +56,14 @@ describe('kit printables spec (#454 / #456 B16–B18)', () => {
     expect(root.textContent).not.toMatch(/%%SpecCode99|Symcode|Setup B/);
     expect(screen.getByText(/Connect your scanner/)).toBeVisible();
     expect(root.querySelector('.kit-print-ruler-caption')).not.toBeNull();
+  });
+
+  it('draws the print ruler with a border line, not a background fill', () => {
+    const cssPath = join(dirname(fileURLToPath(import.meta.url)), 'kitPrint.css');
+    const css = readFileSync(cssPath, 'utf8');
+    const screenRule = css.match(/\.kit-print-ruler\s*\{([^}]+)\}/)?.[1] ?? '';
+    expect(screenRule).toMatch(/border-top:\s*2px\s+solid/);
+    expect(screenRule).not.toMatch(/background:\s*(?!none)/);
   });
 
   it('standalone wall sheet barcodes meet module sizing', () => {

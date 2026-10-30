@@ -10,6 +10,7 @@ import {
   UPDATING_SENTENCE,
   applyHttpResponse,
   formatPairingCode,
+  SCANNER_SETUP_SSID_PREFIX,
   deviceKindLabel,
   serverNoticeText,
   type AuthSession,
@@ -994,7 +995,7 @@ describe('devices, pairing, and live hints', () => {
     fireEvent.click(await screen.findByRole('button', { name: CONNECT_SCANNER_OR_HUB_LABEL }));
     const pairingDialog = await screen.findByRole('dialog', { name: CONNECT_SCANNER_OR_HUB_LABEL });
     expect(within(pairingDialog).getByText('Setting up a brand-new scanner?')).toBeVisible();
-    expect(within(pairingDialog).getByText(/Scanner-Setup-/)).toBeVisible();
+    expect(within(pairingDialog).getByText(new RegExp(SCANNER_SETUP_SSID_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeVisible();
     const screenOnly = pairingDialog.querySelector('.pairing-screen-only') as HTMLElement;
     expect(within(screenOnly).getByRole('img', { name: `Code 128 ${PAIRING}` })).toBeVisible();
     expect(within(screenOnly).queryByRole('img', { name: /^QR code / })).not.toBeInTheDocument();
