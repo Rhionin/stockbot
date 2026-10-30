@@ -94,7 +94,6 @@ async function assertTouchTargetSize(locator: import('@playwright/test').Locator
 async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
   const isNarrowPhone = viewportWidth <= 399
-  const openModalRoot = page.locator('.mantine-Modal-root:visible')
   if (isNarrowPhone) {
     await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toHaveAttribute('data-full-screen', /.*/)
