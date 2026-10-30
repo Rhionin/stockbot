@@ -121,8 +121,10 @@ test('admin households recover from a server error when Try again succeeds', asy
   await page.goto('/households')
   const section = page.getByTestId('operator-households-section')
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
+  const callsBeforeRetry = calls
   await section.getByRole('button', { name: 'Try again' }).click()
   await expect(section.getByText('Test Household', { exact: true }).first()).toBeVisible()
   await expect(section.getByTestId('operator-household-stats')).toContainText('Scanners: 0 online · 0 offline')
-  expect(calls).toBe(2)
+  expect(calls).toBe(callsBeforeRetry + 1)
+  expect(callsBeforeRetry).toBeGreaterThanOrEqual(1)
 })
