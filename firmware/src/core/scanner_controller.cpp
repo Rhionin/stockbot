@@ -134,12 +134,15 @@ void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& su
 }
 
 void ScannerController::finishPairingSuccess(const PairCompleteParsed& paired, uint64_t now_ms) {
+  if (!ring_.clearAll()) {
+    showPairingCantConnect(now_ms);
+    return;
+  }
   config_.device_token = paired.device_token;
   applyHubConfig(paired.config);
   connected_household_name_ = paired.household_name;
   nvs_.save(config_);
   client_.setDeviceToken(config_.device_token);
-  ring_.clearAll();
   device_revoked_ = false;
   state_.operational = OperationalState::Paired;
   scanner_.enable1DOnly(true);
@@ -160,6 +163,20 @@ void ScannerController::showPairingCodeExpired(uint64_t now_ms) {
   render(now_ms);
 }
 
+void ScannerController::showPairingTooManyTries(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingTooManyTries;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::ScanBeepLowTick);
+  render(now_ms);
+}
+
+void ScannerController::showPairingCodeNotAccepted(uint64_t now_ms) {
+  ui_screen_ = UiScreen::S_PairingCodeNotAccepted;
+  transient_until_ms_ = now_ms + kTransientScanMs;
+  play(AudioCue::TripleErrorBuzz);
+  render(now_ms);
+}
+
 void ScannerController::showPairingCantConnect(uint64_t now_ms) {
   ui_screen_ = UiScreen::S_PairingCantConnect;
   transient_until_ms_ = now_ms + kTransientScanMs;
@@ -168,13 +185,15 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
 }
 
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms) {
-  ring_.clearAll();
+  (void)ring_.clearAll();
   nvs_.clearDeviceToken();
+  config_.device_token.clear();
   client_.setDeviceToken("");
-  device_revoked_ = false;
+  device_revoked_ = true;
   connected_household_name_.clear();
+  ui_screen_ = UiScreen::S7_HardError;
   play(AudioCue::TripleErrorBuzz);
-  enterPairing(now_ms);
+  render(now_ms);
 }
 
 void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {
@@ -189,6 +208,14 @@ void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t 
   }
   if (pairingCompleteFailureIsExpired(res.transport_ok, res.http_status, res.body)) {
     showPairingCodeExpired(now_ms);
+    return;
+  }
+  if (pairingCompleteFailureIsRateLimited(res.transport_ok, res.http_status, res.body)) {
+    showPairingTooManyTries(now_ms);
+    return;
+  }
+  if (pairingCompleteFailureIsClientRejected(res.transport_ok, res.http_status, res.body)) {
+    showPairingCodeNotAccepted(now_ms);
     return;
   }
   showPairingCantConnect(now_ms);
@@ -296,7 +323,9 @@ void ScannerController::render(uint64_t now_ms) {
       (ui_screen_ == UiScreen::S3_ScanResult || ui_screen_ == UiScreen::S4_UnknownBarcode ||
        ui_screen_ == UiScreen::S5_OfflineBuffered || ui_screen_ == UiScreen::S6_DockReminder ||
        ui_screen_ == UiScreen::S7_OfflineBufferRefused || ui_screen_ == UiScreen::S_Connected ||
-       ui_screen_ == UiScreen::S_PairingExpired || ui_screen_ == UiScreen::S_PairingCantConnect)) {
+       ui_screen_ == UiScreen::S_PairingExpired || ui_screen_ == UiScreen::S_PairingTooManyTries ||
+       ui_screen_ == UiScreen::S_PairingCodeNotAccepted ||
+       ui_screen_ == UiScreen::S_PairingCantConnect)) {
     // keep transient screen
   } else if (wifi_button_hold_active_) {
     ui_screen_ = wifi_button_hold_erase_ ? UiScreen::S_WifiButtonHoldErase : UiScreen::S_WifiButtonHold;
@@ -344,8 +373,8 @@ void ScannerController::render(uint64_t now_ms) {
     std::string right = wifi_online_ ? "Wi-Fi" : "OFFLINE";
     if (ps.battery_pct.has_value()) {
       right += " " + std::to_string(*ps.battery_pct) + "%";
-      if (ps.charging) {
-        right += "⚡";
+    if (ps.charging) {
+        right += " chg";
       }
     }
     bands.band1_right = right;
@@ -481,6 +510,15 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
     return;
   }
 
+  if (device_revoked_) {
+    std::string norm;
+    normalizeScan(raw_line, norm);
+    if (isPairingCode(norm)) {
+      tryPairingBarcode(raw_line, now_ms);
+    }
+    return;
+  }
+
   const BarcodeKind kind = classifyBarcode(raw_line, state_.operational);
 
   if (state_.operational == OperationalState::Pairing && kind == BarcodeKind::PairingCode) {
@@ -534,6 +572,79 @@ void ScannerController::onBarcodeLine(const std::string& raw_line, bool manual_r
   }
 }
 
+void ScannerController::applyModeButtonHoldPhase(ModeButtonHoldPhase phase, uint64_t now_ms) {
+  wifi_button_hold_active_ = true;
+  wifi_button_hold_erase_ = phase == ModeButtonHoldPhase::EraseWarning;
+  state_.wakeBacklight(now_ms);
+  render(now_ms);
+}
+
+void ScannerController::clearModeButtonHoldUi() {
+  wifi_button_hold_active_ = false;
+  wifi_button_hold_erase_ = false;
+  mode_button_shown_phase_ = std::nullopt;
+}
+
+void ScannerController::executeFactoryResetFromHold(uint64_t now_ms) {
+  if (!ring_.clearAll()) {
+    return;
+  }
+  nvs_.factoryReset();
+  config_ = NvsConfig{};
+  device_revoked_ = false;
+  last_buffer_full_buzz_ms_ = std::nullopt;
+  cooldown_ = DuplicateCooldownState{};
+  client_.setDeviceToken("");
+  enterUnprovisioned(now_ms);
+}
+
+void ScannerController::executeWifiSetupFromHold(uint64_t now_ms) {
+  wifi_update_mode_ = true;
+  portal_.start(ap_suffix_);
+  portal_active_ = true;
+  ui_screen_ = UiScreen::S_WifiSetup;
+  state_.wakeBacklight(now_ms);
+  render(now_ms);
+}
+
+void ScannerController::onModeButtonDown(uint64_t now_ms) {
+  mode_button_tracker_.onPress(now_ms);
+  mode_button_shown_phase_ = std::nullopt;
+}
+
+void ScannerController::onModeButtonHoldPoll(uint64_t now_ms) {
+  if (!mode_button_tracker_.isDown()) {
+    return;
+  }
+  if (mode_button_tracker_.heldMs(now_ms) < 500) {
+    return;
+  }
+  if (const auto phase = mode_button_tracker_.onHoldProgress(now_ms)) {
+    if (!mode_button_shown_phase_.has_value() || *mode_button_shown_phase_ != *phase) {
+      mode_button_shown_phase_ = *phase;
+      applyModeButtonHoldPhase(*phase, now_ms);
+    }
+  }
+}
+
+void ScannerController::onModeButtonUp(uint64_t now_ms) {
+  const ModeButtonReleaseAction action = mode_button_tracker_.onRelease(now_ms);
+  clearModeButtonHoldUi();
+  switch (action) {
+    case ModeButtonReleaseAction::ShortPress:
+      onModeButtonShortPress(now_ms);
+      break;
+    case ModeButtonReleaseAction::WifiSetup:
+      executeWifiSetupFromHold(now_ms);
+      break;
+    case ModeButtonReleaseAction::FactoryReset:
+      executeFactoryResetFromHold(now_ms);
+      break;
+    case ModeButtonReleaseAction::None:
+      break;
+  }
+}
+
 void ScannerController::onModeButtonShortPress(uint64_t now_ms) {
   const auto result = state_.onModeButtonPress(now_ms);
   if (result.woke_backlight) {
@@ -548,46 +659,34 @@ void ScannerController::onModeButtonShortPress(uint64_t now_ms) {
 }
 
 void ScannerController::onModeButtonHoldTick(uint64_t hold_ms, uint64_t now_ms) {
+  ModeButtonHoldPhase phase = ModeButtonHoldPhase::None;
   if (hold_ms >= 10000) {
-    wifi_button_hold_active_ = true;
-    wifi_button_hold_erase_ = true;
-    state_.wakeBacklight(now_ms);
-    render(now_ms);
+    phase = ModeButtonHoldPhase::EraseWarning;
+  } else if (hold_ms >= 5000) {
+    phase = ModeButtonHoldPhase::WifiSetupHold;
+  }
+  if (phase == ModeButtonHoldPhase::None) {
+    if (mode_button_shown_phase_.has_value()) {
+      clearModeButtonHoldUi();
+      render(now_ms);
+    }
     return;
   }
-  if (hold_ms >= 5000) {
-    wifi_button_hold_active_ = true;
-    wifi_button_hold_erase_ = false;
-    state_.wakeBacklight(now_ms);
-    render(now_ms);
-    return;
+  if (!mode_button_shown_phase_.has_value() || *mode_button_shown_phase_ != phase) {
+    mode_button_shown_phase_ = phase;
+    applyModeButtonHoldPhase(phase, now_ms);
   }
-  wifi_button_hold_active_ = false;
-  wifi_button_hold_erase_ = false;
 }
 
 void ScannerController::onModeButtonHold(uint64_t hold_ms, uint64_t now_ms) {
-  wifi_button_hold_active_ = false;
-  wifi_button_hold_erase_ = false;
+  clearModeButtonHoldUi();
   const ButtonHoldGesture gesture = ScannerState::classifyButtonHold(hold_ms);
   if (gesture == ButtonHoldGesture::FactoryReset) {
-    nvs_.factoryReset();
-    config_ = NvsConfig{};
-    device_revoked_ = false;
-    last_buffer_full_buzz_ms_ = std::nullopt;
-    cooldown_ = DuplicateCooldownState{};
-    ring_.clearAll();
-    client_.setDeviceToken("");
-    enterUnprovisioned(now_ms);
+    executeFactoryResetFromHold(now_ms);
     return;
   }
   if (gesture == ButtonHoldGesture::WifiUpdate) {
-    wifi_update_mode_ = true;
-    portal_.start(ap_suffix_);
-    portal_active_ = true;
-    ui_screen_ = UiScreen::S_WifiSetup;
-    state_.wakeBacklight(now_ms);
-    render(now_ms);
+    executeWifiSetupFromHold(now_ms);
   }
 }
 

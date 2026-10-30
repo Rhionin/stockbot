@@ -75,6 +75,12 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
 	c := &stage1Caller{t: t, h: handler}
 
+	const otherName = "NeverShown Cupboard"
+	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES ('hh-never-shown', ?, 'auto', datetime('now'), 'cccccccccccccccccccccccccccccccc', 0)`, otherName); err != nil {
+		t.Fatal(err)
+	}
+
 	code, err := auth.ReadSetupCode(setupDir)
 	if err != nil {
 		t.Fatal(err)
@@ -93,12 +99,6 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	}
 	c.cookie = cookieFrom(t, login, site.SessionCookie().Name)
 	c.house = *session.ActiveHouseholdID
-
-	const otherName = "NeverShown Cupboard"
-	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
-		VALUES ('hh-never-shown', ?, 'auto', datetime('now'), 'cccccccccccccccccccccccccccccccc', 0)`, otherName); err != nil {
-		t.Fatal(err)
-	}
 
 	var activeName string
 	if err := db.QueryRow(`SELECT name FROM households WHERE id = ?`, c.house).Scan(&activeName); err != nil {

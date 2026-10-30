@@ -32,7 +32,6 @@ static WifiStation* g_wifi = nullptr;
 static ScannerController* g_controller = nullptr;
 
 static bool g_btn_mode_down = false;
-static uint64_t g_btn_mode_down_ms = 0;
 static bool g_btn_trigger_down = false;
 
 void setup() {
@@ -61,25 +60,13 @@ void loop() {
   const bool mode_pressed = digitalRead(PIN_BTN_MODE) == LOW;
   if (mode_pressed && !g_btn_mode_down) {
     g_btn_mode_down = true;
-    g_btn_mode_down_ms = now;
+    g_controller->onModeButtonDown(now);
   }
   if (mode_pressed && g_btn_mode_down) {
-    const uint64_t held = now - g_btn_mode_down_ms;
-    if (held >= 500) {
-      g_controller->onModeButtonHoldTick(held, now);
-    }
+    g_controller->onModeButtonHoldPoll(now);
   }
   if (!mode_pressed && g_btn_mode_down) {
-    const uint64_t held = now - g_btn_mode_down_ms;
-    if (held < 5000) {
-      g_controller->onModeButtonShortPress(now);
-    } else {
-      g_controller->onModeButtonHold(held, now);
-    }
-    g_btn_mode_down = false;
-  }
-  if (mode_pressed && g_btn_mode_down && now - g_btn_mode_down_ms >= 10000) {
-    g_controller->onModeButtonHold(now - g_btn_mode_down_ms, now);
+    g_controller->onModeButtonUp(now);
     g_btn_mode_down = false;
   }
 

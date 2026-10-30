@@ -201,6 +201,31 @@ bool pairingCompleteFailureIsExpiredImpl(bool transport_ok, int http_status, con
   return http_status == 404 && code == "not_found";
 }
 
+bool pairingCompleteFailureIsRateLimitedImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  if (http_status == 429) {
+    return true;
+  }
+  std::string code;
+  parseApiErrorCodeImpl(body, code);
+  return code == "rate_limited";
+}
+
+bool pairingCompleteFailureIsClientRejectedImpl(bool transport_ok, int http_status, const std::string& body) {
+  if (!transport_ok || http_status == 201) {
+    return false;
+  }
+  if (pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body)) {
+    return false;
+  }
+  if (pairingCompleteFailureIsRateLimitedImpl(transport_ok, http_status, body)) {
+    return false;
+  }
+  return http_status >= 400 && http_status < 500;
+}
+
 }  // namespace
 
 std::string buildPairCompleteRequestJson(const std::string& code, const std::string& label,
@@ -516,6 +541,14 @@ bool parseApiErrorCode(const std::string& body, std::string& code_out) {
 
 bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {
   return pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body);
+}
+
+bool pairingCompleteFailureIsRateLimited(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsRateLimitedImpl(transport_ok, http_status, body);
+}
+
+bool pairingCompleteFailureIsClientRejected(bool transport_ok, int http_status, const std::string& body) {
+  return pairingCompleteFailureIsClientRejectedImpl(transport_ok, http_status, body);
 }
 
 }  // namespace stockbot

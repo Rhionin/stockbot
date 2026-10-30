@@ -25,7 +25,7 @@ void styleBand1(DisplayBands& out, const char* hex, uint16_t fg_rgb565) {
 }
 
 void finalizeBand3Color(DisplayBands& out) {
-  if (out.band3.find("Queued +") != std::string::npos || out.band3.rfind("+1 ·", 0) == 0) {
+  if (out.band3.find("Queued +") != std::string::npos || out.band3.rfind("+1 -", 0) == 0) {
     out.band3_fg_rgb565 = 0x5FE0;
   } else if (out.band3.find("0 left") != std::string::npos ||
              out.band3.find("Added & used") != std::string::npos) {
@@ -237,19 +237,19 @@ std::string formatRevertCountdown(uint32_t inactivity_revert_seconds, uint64_t l
                                   uint64_t now_ms, Direction default_direction) {
   const std::string mode = defaultDirectionPhrase(default_direction);
   if (last_activity_ms == 0 || now_ms <= last_activity_ms) {
-    return "Back to " + mode + " in " + std::to_string(inactivity_revert_seconds / 60) + ":00";
+    return "Back to " + mode + ": " + std::to_string(inactivity_revert_seconds / 60) + ":00";
   }
   const uint64_t elapsed = now_ms - last_activity_ms;
   const uint64_t total = static_cast<uint64_t>(inactivity_revert_seconds) * 1000ULL;
   if (elapsed >= total) {
-    return "Back to " + mode + " in 0:00";
+    return "Back to " + mode + ": 0:00";
   }
   const uint64_t remaining_ms = total - elapsed;
   const uint64_t rem_sec = remaining_ms / 1000;
   const uint64_t minutes = rem_sec / 60;
   const uint64_t seconds = rem_sec % 60;
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "Back to %s in %llu:%02llu", mode.c_str(),
+  std::snprintf(buf, sizeof(buf), "Back to %s: %llu:%02llu", mode.c_str(),
                 static_cast<unsigned long long>(minutes), static_cast<unsigned long long>(seconds));
   return buf;
 }
@@ -268,7 +268,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     return out;
   }
 
-  if (in.screen == UiScreen::S_WifiSetup || (in.wifi_update_mode && in.screen == UiScreen::S0_Unprovisioned)) {
+  if (in.screen == UiScreen::S_WifiSetup) {
     out.band1 = "WI-FI SETUP";
     styleBand1(out, "#334155", 0xFFFF);
     out.band2_line1 = "Join Wi-Fi:";
@@ -320,6 +320,27 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     return out;
   }
 
+  if (in.screen == UiScreen::S_PairingTooManyTries) {
+    out.band1 = "TOO MANY TRIES";
+    out.band1_bg_rgb565 = rgb565FromHex("#F59E0B");
+    out.band1_fg_rgb565 = rgb565FromHex("#111827");
+    out.band2_line1 = "Wait a minute,";
+    out.band2_line2 = "then scan again";
+    out.band3 = "Then scan the setup sheet again";
+    out.audio = AudioCue::ScanBeepLowTick;
+    return out;
+  }
+
+  if (in.screen == UiScreen::S_PairingCodeNotAccepted) {
+    out.band1 = "CODE NOT ACCEPTED";
+    styleBand1(out, "#DC2626", 0xFFFF);
+    out.band2_line1 = "This setup sheet";
+    out.band2_line2 = "didn't work";
+    out.band3 = "Print a new setup sheet";
+    out.audio = AudioCue::TripleErrorBuzz;
+    return out;
+  }
+
   if (in.screen == UiScreen::S_PairingCantConnect) {
     out.band1 = "CAN'T CONNECT";
     styleBand1(out, "#DC2626", 0xFFFF);
@@ -335,7 +356,7 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     styleBand1(out, "#0D9488", 0xFFFF);
     out.band2_line1 = "Scan the pairing";
     out.band2_line2 = "barcode to connect";
-    out.band3 = "Wi-Fi connected · Ready";
+    out.band3 = "Wi-Fi connected - Ready";
     out.audio = AudioCue::Silent;
     return out;
   }
@@ -365,13 +386,6 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       out.band2_line2 = "Scans won't save";
       out.band3 = "Connect Wi-Fi to send";
       out.audio = AudioCue::Silent;
-    } else {
-      out.band1 = "SCANNER ALERT";
-      styleBand1(out, "#DC2626", 0xFFFF);
-      out.band2_line1 = "Disconnected";
-      out.band2_line2 = "from household";
-      out.band3 = "Needs a new setup sheet";
-      out.audio = AudioCue::TripleErrorBuzz;
     }
     return out;
   }
@@ -407,7 +421,8 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     } else {
       out.band2_line1 = "Put me back on";
       out.band2_line2 = "the dock to charge";
-      out.band3 = in.battery_pct.has_value() ? "Battery " + std::to_string(*in.battery_pct) + "%" : "Battery —";
+      out.band3 = in.battery_pct.has_value() ? "Battery " + std::to_string(*in.battery_pct) + "%"
+                                             : "Battery: no reading";
       out.audio = AudioCue::OffDockChirp;
     }
     return out;
@@ -441,31 +456,31 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
       const int q = scan.queued_count > 0 ? scan.queued_count : 1;
       if (scan.direction == Direction::StockOut) {
         if (scan.on_hand == 0) {
-          out.band3 = "Queued -1 · 0 on hand · Check app";
+          out.band3 = "Queued -1 - 0 on hand - Check app";
           out.audio = AudioCue::SoftDoublePulse;
         } else if (scan.on_hand == 1 && q == 1) {
-          out.band3 = "Queued -1 · Last one (1 on hand)";
+          out.band3 = "Queued -1 - Last one (1 on hand)";
           out.audio = AudioCue::DoubleBeep;
         } else {
-          out.band3 = "Queued -" + std::to_string(q) + " · " + std::to_string(scan.on_hand) + " on hand";
+          out.band3 = "Queued -" + std::to_string(q) + " - " + std::to_string(scan.on_hand) + " on hand";
           out.audio = AudioCue::MediumBeep;
         }
       } else {
-        out.band3 = "Queued +" + std::to_string(q) + " · " + std::to_string(scan.on_hand) + " on hand";
+        out.band3 = "Queued +" + std::to_string(q) + " - " + std::to_string(scan.on_hand) + " on hand";
         out.audio = AudioCue::HighBeep;
       }
     } else {
       if (scan.direction == Direction::StockIn) {
-        out.band3 = "+1 · " + std::to_string(scan.on_hand) + " on hand";
+        out.band3 = "+1 - " + std::to_string(scan.on_hand) + " on hand";
         out.audio = AudioCue::HighBeep;
       } else if (scan.backfilled) {
-        out.band3 = "0 on hand · Added & used 1";
+        out.band3 = "0 on hand - Added & used 1";
         out.audio = AudioCue::SoftDoublePulse;
       } else if (scan.on_hand == 0) {
-        out.band3 = "-1 · 0 left (Out of stock)";
+        out.band3 = "-1 - 0 left (Out of stock)";
         out.audio = AudioCue::DoubleBeep;
       } else {
-        out.band3 = "-1 · " + std::to_string(scan.on_hand) + " left";
+        out.band3 = "-1 - " + std::to_string(scan.on_hand) + " left";
         out.audio = AudioCue::MediumBeep;
       }
     }

@@ -122,9 +122,9 @@ bool RingBuffer::acknowledge(const std::string& client_scan_id) {
   return false;
 }
 
-void RingBuffer::clearAll() {
+bool RingBuffer::clearAll() {
   records_.clear();
-  persist();
+  return persist();
 }
 
 }  // namespace stockbot

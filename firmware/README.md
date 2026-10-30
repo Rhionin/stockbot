@@ -4,6 +4,8 @@ Unified PlatformIO project for **Setup A** (`M5StickS3` + `U173`), **day-1 bench
 
 Portable scanner logic lives in `src/core/` (no Arduino dependencies) and is covered by host unit tests.
 
+The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where `XXXX` is the last four hex digits of the device MAC. That suffix is not guaranteed unique across devices.
+
 ## Hardware assembly
 
 ### Setup A — `sticks3_u173` (M5StickS3 K150 + U173)

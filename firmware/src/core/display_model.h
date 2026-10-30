@@ -20,6 +20,8 @@ enum class UiScreen {
   S7_OfflineBufferRefused,
   S_Connected,
   S_PairingExpired,
+  S_PairingTooManyTries,
+  S_PairingCodeNotAccepted,
   S_PairingCantConnect,
   S_WifiButtonHold,
   S_WifiButtonHoldErase,
