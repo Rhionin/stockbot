@@ -33,6 +33,15 @@ function renderAdminPage(auth: AuthSession) {
   );
 }
 
+/** Member email/name/role must not appear anywhere: text, attributes, or as role words. */
+function expectNoMemberPii(section: HTMLElement, secrets: string[]) {
+  for (const secret of secrets) {
+    expect(document.body.textContent).not.toContain(secret);
+    expect(document.body.innerHTML).not.toContain(secret);
+  }
+  expect(within(section).queryAllByText(/^\s*(Owner|Member|Admin)\s*$/)).toHaveLength(0);
+}
+
 const testHouseholdRow: OperatorHouseholdView = {
   id: 'hh-test',
   name: 'Test Household',
@@ -77,15 +86,12 @@ describe('HouseholdsPage admin server list', () => {
       return Promise.reject(new Error(url));
     }));
     renderAdminPage(session(true));
-    expect(await screen.findByTestId('operator-households-section')).toBeVisible();
+    const section = await screen.findByTestId('operator-households-section');
+    expect(section).toBeVisible();
     expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
     const stats = screen.getByTestId('operator-household-stats');
-    expect(stats.textContent).toContain('1 member');
-    expect(stats.textContent).toContain('1 scanner online');
-    expect(stats.textContent).toContain('0 scanners offline');
-    expect(stats.textContent).toContain('1 scan this week');
-    expect(screen.queryByText('secret@example.com')).not.toBeInTheDocument();
-    expect(screen.queryByText('Secret Person')).not.toBeInTheDocument();
+    expect(stats.textContent).toMatch(/^1 member · 2 products · 3 items on hand · 1 scanner online · 0 scanners offline · 1 scan this week · 0 pending scans · /);
+    expectNoMemberPii(section, ['secret@example.com', 'Secret Person']);
     expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
 
@@ -101,8 +107,11 @@ describe('HouseholdsPage admin server list', () => {
     }));
     renderAdminPage(session(true));
     expect(await screen.findByText('Loading households…')).toBeVisible();
+    expect(screen.queryByText('No households on this server yet.')).not.toBeInTheDocument();
     resolveList(json({ households: [] }));
     await waitFor(() => expect(screen.getByText('No households on this server yet.')).toBeVisible());
+    expect(screen.queryByText('Loading households…')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
 
   it('shows load errors inline in the admin section', async () => {
@@ -115,7 +124,9 @@ describe('HouseholdsPage admin server list', () => {
     }));
     renderAdminPage(session(true));
     const section = await screen.findByTestId('operator-households-section');
-    expect(within(section).getByRole('alert')).toHaveTextContent('Only an admin can do this.');
+    expect(within(section).getByRole('alert')).toHaveTextContent(/^Only an admin can do this\.$/);
+    expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\boperator\b/i);
   });
 
   it('wraps a very long household name without leaking member rows', async () => {
@@ -132,7 +143,7 @@ describe('HouseholdsPage admin server list', () => {
         }], [{
           userId: 'x',
           email: 'leak@example.com',
-          name: 'Leak',
+          name: 'Leak Person',
           role: 'member',
           createdAt: '2026-04-01T00:00:00Z',
         }])));
@@ -140,11 +151,10 @@ describe('HouseholdsPage admin server list', () => {
       return Promise.reject(new Error(url));
     }));
     renderAdminPage(session(true));
+    const section = await screen.findByTestId('operator-households-section');
     const title = await screen.findByText(longName);
     expect(title).toHaveClass('admin-household-name');
     expect(screen.getByText(/0 scanners online/)).toBeVisible();
-    expect(screen.queryByText('leak@example.com')).not.toBeInTheDocument();
-    expect(screen.queryByText('Leak')).not.toBeInTheDocument();
-    expect(screen.queryByText('Member')).not.toBeInTheDocument();
+    expectNoMemberPii(section, ['leak@example.com', 'Leak Person']);
   });
 });

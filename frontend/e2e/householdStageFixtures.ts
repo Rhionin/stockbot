@@ -183,7 +183,7 @@ export const install = async (page: Page) => {
           },
           {
             id: 'hh-9',
-            name: 'Loft',
+            name: 'Test Household 2',
             isPrimary: false,
             restockMode: 'auto',
             createdAt: '2026-04-01T00:00:00Z',
@@ -194,7 +194,6 @@ export const install = async (page: Page) => {
             scannersOnline: 0,
             scannersOffline: 0,
             scansThisWeek: 0,
-            lastActivityAt: null,
           },
         ],
       })
