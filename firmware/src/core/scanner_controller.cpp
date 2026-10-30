@@ -373,9 +373,6 @@ void ScannerController::render(uint64_t now_ms) {
     std::string right = wifi_online_ ? "Wi-Fi" : "OFFLINE";
     if (ps.battery_pct.has_value()) {
       right += " " + std::to_string(*ps.battery_pct) + "%";
-    if (ps.charging) {
-        right += " chg";
-      }
     }
     bands.band1_right = right;
   } else if (ps.battery_pct.has_value()) {

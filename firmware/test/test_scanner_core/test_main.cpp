@@ -1801,6 +1801,31 @@ void test_display_strings_printable_ascii() {
   }
 }
 
+void test_docked_band1_right_no_charging_suffix() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  power.status.vbus_present = true;
+  power.status.battery_pct = 87;
+  power.status.charging = true;
+  wifi.connected = true;
+  controller.begin(1000);
+  controller.tick(1001);
+  EXPECT(display.last.band1_right == "Wi-Fi 87%");
+  EXPECT(display.last.band1_right.find("chg") == std::string::npos);
+}
+
 void test_ota_install_gate_placeholder_until_firmware_452() {
   // Documents #452 install precondition (ring empty). No production OTA gate in firmware yet.
   const auto policy_ring_empty_required = [](size_t queued) { return queued == 0; };
@@ -1854,6 +1879,7 @@ int main() {
   test_disconnect_clears_persisted_ring();
   test_scanner_setup_network_and_portal_copy();
   test_display_strings_printable_ascii();
+  test_docked_band1_right_no_charging_suffix();
   test_ota_install_gate_placeholder_until_firmware_452();
 
   if (failures != 0) {
