@@ -1,46 +1,79 @@
-import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
-import { Code128Mark } from './symbols';
+import { useMemo, useState } from 'react';
+import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import type { Device } from '@stockbot/shared/contract';
+import {
+  SYMCODE_DISCLOSURE_LABEL,
+  defaultWallBarcodeSettings,
+  resolveWallBarcodeSettings,
+} from './kitCopy456';
+import { useKitPrintRoot } from './kitPrintUtils';
+import { WallKitPrintSheet } from './wallKitPrintSheet';
+import { PrintableBarcode } from './printableBarcode';
 
 export function WallBarcodeSheetModal({
   opened,
   onClose,
+  devices = [],
 }: {
   opened: boolean;
   onClose: () => void;
+  devices?: Device[];
 }) {
+  const [symcodeOpen, setSymcodeOpen] = useState(false);
+  const { printing, print } = useKitPrintRoot();
+  const settings = devices.length > 0
+    ? resolveWallBarcodeSettings(devices)
+    : defaultWallBarcodeSettings();
+  const scannerName = useMemo(() => {
+    const scanners = devices.filter((row) => row.kind === 'esp32_scanner' && row.revokedAt == null);
+    if (scanners.length === 1) return scanners[0].label?.trim() || undefined;
+    return undefined;
+  }, [devices]);
+
   return (
-    <Modal opened={opened} onClose={onClose} title="Storage-room barcode sheet" size="lg">
-      <Stack className="storage-barcode-sheet" gap="lg">
-        <article className="storage-barcode-card storage-barcode-card-out">
-          <Text className="storage-barcode-badge" fw={700}>STOCK OUT · DEFAULT</Text>
-          <Title order={4}>Taking items from the shelf</Title>
-          <Code128Mark value="STOCK-OUT" quietZone />
-          <Text size="sm">
-            Scan this barcode (or press the mode button) before taking items out. Scanners automatically return to Stock out 5 minutes after the last scan.
-          </Text>
-        </article>
-        <article className="storage-barcode-card storage-barcode-card-in">
-          <Text className="storage-barcode-badge" fw={700}>STOCK IN · PUTTING AWAY</Text>
-          <Title order={4}>Adding groceries to the shelf</Title>
-          <Code128Mark value="STOCK-IN" quietZone />
-          <Text size="sm">
-            Scan this barcode before unloading groceries. Each scan resets the 5-minute timer; after 5 minutes of inactivity, the scanner switches back to Stock out.
-          </Text>
-        </article>
-        <article className="storage-barcode-card storage-barcode-card-setup">
-          <Text className="storage-barcode-badge" fw={600}>
-            Setup B Only (Symcode Wireless Handheld) — Disable QR Codes
-          </Text>
-          <Code128Mark value="%%SpecCode99" quietZone />
-          <Text size="sm">
-            Scan this once after pairing a Symcode handheld scanner so it ignores marketing QR codes printed next to UPC barcodes on food packages. (M5StickS3 scanners disable QR codes automatically.)
-          </Text>
-        </article>
+    <Modal opened={opened} onClose={onClose} title="Wall barcodes" size="lg">
+      <Stack gap="md">
+        <div
+          className="kit-print-root wall-kit-print-root"
+          data-printing={printing ? 'true' : 'false'}
+        >
+          <WallKitPrintSheet settings={settings} scannerName={scannerName} />
+          {symcodeOpen && printing && (
+            <section className="kit-wall-panel wall-sheet-symcode-print" aria-label="Symcode QR disable">
+              <p className="kit-wall-panel-title">Symcode handheld only: turn off QR codes</p>
+              <PrintableBarcode value="%%SpecCode99" moduleMm={0.5} heightMm={14} />
+              <p className="kit-wall-panel-copy">
+                Scan this once after connecting a Symcode handheld so it ignores QR codes on food packages. The built-in scanner already does this.
+              </p>
+            </section>
+          )}
+        </div>
+        <div className="pairing-screen-only wall-sheet-screen-extra">
+          <button
+            type="button"
+            className="storage-barcode-symcode-disclosure device-touch-target"
+            aria-expanded={symcodeOpen}
+            onClick={() => setSymcodeOpen((open) => !open)}
+          >
+            {SYMCODE_DISCLOSURE_LABEL}
+          </button>
+          {symcodeOpen && (
+            <Stack mt="sm" gap="sm" className="storage-barcode-symcode-panel">
+              <Text className="storage-barcode-badge storage-barcode-badge-lg" fw={600}>
+                Symcode handheld only: turn off QR codes
+              </Text>
+              <PrintableBarcode value="%%SpecCode99" moduleMm={0.6} heightMm={18} />
+              <Text size="sm">
+                Scan this once after connecting a Symcode handheld so it ignores QR codes on food packages. The built-in scanner already does this.
+              </Text>
+            </Stack>
+          )}
+        </div>
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Close</Button>
+          <Button onClick={print}>Print</Button>
+        </Group>
       </Stack>
-      <Group justify="flex-end" mt="md">
-        <Button variant="default" onClick={onClose}>Close</Button>
-        <Button onClick={() => window.print()}>Print sheet</Button>
-      </Group>
     </Modal>
   );
 }
