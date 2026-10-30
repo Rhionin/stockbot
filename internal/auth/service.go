@@ -33,6 +33,7 @@ type Service struct {
 	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
 	productLookup     DeviceProductResolver
 	deviceScanProcessor DeviceScanProcessor
+	deviceIngestEvents  DeviceIngestEventPublisher
 }
 
 // NewService uses the pantry database. setupDir is the display-file directory.

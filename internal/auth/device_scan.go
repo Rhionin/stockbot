@@ -3,19 +3,63 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 )
 
 func (s *Service) insertScan(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
+	if s.deviceScanProcessor != nil {
+		return s.insertScanWithProcessor(ctx, p, item, group)
+	}
 	if dup, ok, err := s.loadDeviceScanReplay(ctx, q, p, item); err != nil {
 		return ScanResult{}, createdScan{}, err
 	} else if ok {
 		return dup, createdScan{}, nil
 	}
-	if s.deviceScanProcessor != nil {
-		out, created, err := s.deviceScanProcessor(ctx, q, s, p, preparedItem(item), group)
-		return out, createdScan{ScanID: created.ScanID, Barcode: created.Barcode, stock: created.Stock}, err
-	}
 	return s.insertScanLegacy(ctx, q, p, item, group)
+}
+
+func (s *Service) insertScanWithProcessor(ctx context.Context, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ScanResult{}, createdScan{}, AsError(err)
+	}
+	defer tx.Rollback()
+
+	if dup, ok, err := s.claimOrReplayDeviceScan(ctx, tx, p, item); err != nil {
+		return ScanResult{}, createdScan{}, err
+	} else if ok {
+		return dup, createdScan{}, nil
+	}
+
+	out, created, err := s.deviceScanProcessor(ctx, tx, s, p, preparedItem(item), group)
+	if err != nil {
+		return ScanResult{}, createdScan{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ScanResult{}, createdScan{}, AsError(err)
+	}
+	if s.deviceIngestEvents != nil && created.ScanID != "" {
+		if err := s.deviceIngestEvents.PublishAfterIngest(ctx, p.HouseholdID, created.ScanID, created.Stock); err != nil {
+			slog.Error("device ingest live publish failed",
+				"err", err,
+				"household_id", p.HouseholdID,
+				"device_id", p.DeviceID,
+				"scan_entry_id", created.ScanID,
+			)
+		}
+	}
+	return out, createdScan{ScanID: created.ScanID, Barcode: created.Barcode, stock: created.Stock}, nil
+}
+
+func (s *Service) claimOrReplayDeviceScan(ctx context.Context, tx *sql.Tx, p Principal, item preparedScan) (ScanResult, bool, error) {
+	claimed, err := s.claimDeviceScanReceipt(ctx, tx, p, item)
+	if err != nil {
+		return ScanResult{}, false, err
+	}
+	if claimed {
+		return ScanResult{}, false, nil
+	}
+	return s.loadDeviceScanReplay(ctx, tx, p, item)
 }
 
 func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Principal, item preparedScan) (ScanResult, bool, error) {
@@ -40,40 +84,29 @@ func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Princip
 	if barcode.String != item.barcode || direction.String != item.item.Direction || units != item.unit {
 		return ScanResult{ID: item.item.ID, Status: "conflict"}, true, nil
 	}
+	if !resultStatus.Valid || resultStatus.String == "" {
+		return ScanResult{ID: item.item.ID, Status: "conflict"}, true, nil
+	}
 	result := ScanResult{ID: item.item.ID, Status: "duplicate", Cursor: item.item.ID}
-	if resultStatus.Valid {
-		known := resultStatus.String != "flagged"
-		lcd := deviceLCD{
-			ScanStatus:  resultStatus.String,
-			Known:       known,
-			Barcode:     item.barcode,
-			Direction:   item.item.Direction,
-			QueuedCount: int(queued.Int64),
-			OnHand:      int(onHand.Int64),
-			Delta:       int(delta.Int64),
-			Backfilled:  backfilled.Int64 != 0,
-		}
-		if productName.Valid {
-			name := productName.String
-			lcd.ProductName = &name
-		} else if lookupName, err := s.lookupDisplayName(ctx, p.HouseholdID, item.barcode); err == nil && lookupName != nil {
-			lcd.ProductName = lookupName
-		}
-		lcd.apply(&result)
+	known := resultStatus.String != "flagged"
+	lcd := deviceLCD{
+		ScanStatus:  resultStatus.String,
+		Known:       known,
+		Barcode:     item.barcode,
+		Direction:   item.item.Direction,
+		QueuedCount: int(queued.Int64),
+		OnHand:      int(onHand.Int64),
+		Delta:       int(delta.Int64),
+		Backfilled:  backfilled.Int64 != 0,
 	}
+	if productName.Valid {
+		name := productName.String
+		lcd.ProductName = &name
+	} else if name := displayProductName(item.match); name != nil {
+		lcd.ProductName = name
+	}
+	lcd.apply(&result)
 	return result, true, nil
-}
-
-func (s *Service) lookupDisplayName(ctx context.Context, householdID, barcode string) (*string, error) {
-	scope, err := tenantScope(householdID)
-	if err != nil || s.productLookup == nil {
-		return nil, err
-	}
-	lookup, err := s.productLookup.Lookup(ctx, scope, barcode)
-	if err != nil || !lookup.Found {
-		return nil, err
-	}
-	return displayProductName(lookup), nil
 }
 
 func boolToInt(v bool) int {

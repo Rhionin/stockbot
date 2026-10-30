@@ -49,12 +49,30 @@ func TestRecordDeviceScanReceiptSetsApprox(t *testing.T) {
 		item: ScanInput{ID: "approx-1", Barcode: "1234567890123", Direction: "stock_in", UnitCount: 1},
 		at: at, unit: 1, barcode: "1234567890123", approx: true,
 	})
+	if _, err := svc.db.Exec(`
+		INSERT INTO device_scan_receipts (household_id, device_id, client_scan_id, scan_entry_id, barcode, direction, unit_count, scanned_at)
+		VALUES (?, ?, 'approx-1', '', '1234567890123', 'stock_in', 1, ?)`, house, principal.DeviceID, stamp(at)); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.RecordDeviceScanReceipt(ctx, svc.db, principal, item, "scan-approx", DeviceLCD{ScanStatus: "queued", QueuedCount: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var approx int
 	if err := svc.db.QueryRow(`SELECT time_approx FROM scan_entries WHERE id = 'scan-approx'`).Scan(&approx); err != nil || approx != 1 {
 		t.Fatalf("approx %d %v", approx, err)
+	}
+}
+
+func TestRecordDeviceScanReceiptRequiresClaimedRow(t *testing.T) {
+	ctx, svc, userID, house := bootDeviceAPI(t)
+	principal, _ := pairESP32(t, ctx, svc, userID, house)
+	item := preparedItem(preparedScan{
+		item: ScanInput{ID: "unclaimed-1", Barcode: "1234567890123", Direction: "stock_in", UnitCount: 1},
+		at: time.Now().UTC(), unit: 1, barcode: "1234567890123",
+	})
+	err := svc.RecordDeviceScanReceipt(ctx, svc.db, principal, item, "scan-missing-claim", DeviceLCD{ScanStatus: "queued", QueuedCount: 1})
+	if err == nil {
+		t.Fatal("expected error without claimed receipt row")
 	}
 }
 
