@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createCanvas } from '@napi-rs/canvas'
@@ -13,7 +15,27 @@ import {
 } from '@zxing/library'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { PNG } from 'pngjs'
-import { rulerWidthMmFromPng } from '../src/components/household/kitPrintRulerMeasure.ts'
+import { longestRunMmInBand, rulerContinuousLineMmFromPng, rulerWidthInToleranceMm, rulerWidthMmFromPng } from '../src/components/household/kitPrintRulerMeasure.ts'
+
+const PDF_RULER_RASTER_DPI = 300
+const PDF_RULER_RASTER_SCALE = PDF_RULER_RASTER_DPI / 72
+
+function rasterizePdfFirstPagePng(pdf: Buffer, dpi = PDF_RULER_RASTER_DPI): Buffer {
+  const dir = mkdtempSync(join(tmpdir(), 'stockbot-pdf-ruler-'))
+  try {
+    const pdfPath = join(dir, 'sheet.pdf')
+    const outPrefix = join(dir, 'sheet')
+    writeFileSync(pdfPath, pdf)
+    execFileSync(
+      'pdftoppm',
+      ['-png', '-r', String(dpi), '-f', '1', '-l', '1', '-singlefile', pdfPath, outPrefix],
+      { stdio: 'pipe' },
+    )
+    return readFileSync(`${outPrefix}.png`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
 
 const pdfjsDir = join(dirname(fileURLToPath(import.meta.url)), '../node_modules/pdfjs-dist/legacy/build')
 GlobalWorkerOptions.workerSrc = join(pdfjsDir, 'pdf.worker.mjs')
@@ -115,9 +137,20 @@ export async function assertPdfDecodesCode128(pdf: Buffer, expected: string | st
   }
 }
 
-export async function rulerWidthMmFromPdf(pdf: Buffer, renderScale = 4): Promise<number> {
-  const pngBuffer = await renderPdfPageToPng(pdf, renderScale)
-  return rulerWidthMmFromPng(pngBuffer, renderScale)
+export async function rulerWidthMmFromPdf(pdf: Buffer, renderScale = PDF_RULER_RASTER_SCALE): Promise<number> {
+  const pngBuffer = rasterizePdfFirstPagePng(pdf, PDF_RULER_RASTER_DPI)
+  return rulerContinuousLineMmFromPng(pngBuffer, renderScale)
+}
+
+export async function assertPdfRulerContinuousLineMm(pdf: Buffer): Promise<void> {
+  const pngBuffer = rasterizePdfFirstPagePng(pdf, PDF_RULER_RASTER_DPI)
+  const mm = rulerWidthMmFromPng(pngBuffer, PDF_RULER_RASTER_SCALE)
+  if (!rulerWidthInToleranceMm(mm)) {
+    const longest = longestRunMmInBand(PNG.sync.read(pngBuffer), PDF_RULER_RASTER_SCALE)
+    throw new Error(
+      `PDF ruler line missing or wrong size: ${mm.toFixed(2)} mm (expected ~50 mm; longest footer run ${longest.toFixed(2)} mm)`,
+    )
+  }
 }
 
 export async function pdfVisibleText(pdf: Buffer): Promise<string> {

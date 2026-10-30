@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import QRCode from 'qrcode';
 import { PAIRING_ON_SCREEN_TOO_SMALL_HINT } from './kitCopy456';
 import {
+  PAIRING_CODE128_MIN_MODULE_DEVICE_PX,
   PAIRING_CODE128_QUIET_MODULES,
   computePairingCode128Layout,
   pairingCode128BarRuns,
@@ -86,7 +87,7 @@ export function Code128Mark({ value, quietZone = false }: { value: string; quiet
       <div className="pairing-code128-frame" ref={measureRef}>
         {svg}
       </div>
-      {layout.moduleDevicePx === 1 && (
+      {layout.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX && (
         <p className="pairing-barcode-too-small-hint">{PAIRING_ON_SCREEN_TOO_SMALL_HINT}</p>
       )}
     </div>

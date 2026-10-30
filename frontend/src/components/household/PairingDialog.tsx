@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Group, Modal, Stack, Text, Title } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
 import { PAIRING_EXPIRED_SENTENCE, hostedErrorSentence, type PairingCode } from '@stockbot/shared/contract';
 import {
   PAIRING_DIALOG_STEP_TWO,
@@ -39,6 +40,7 @@ export function PairingDialog({
     ? pairingKeyboardFallback(code.barcodeValue, 'hub')
     : null;
   const { printing, print } = useKitPrintRoot();
+  const narrowPhone = useMediaQuery('(max-width: 399px)');
 
   const issue = useCallback(async () => {
     setIssuing(true);
@@ -89,7 +91,14 @@ export function PairingDialog({
   const spaced = barcodeValue.split('').join(' ');
 
   return (
-    <Modal opened={opened} onClose={onClose} title={pairingDialogTitle(pairingContext)} size="lg">
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={pairingDialogTitle(pairingContext)}
+      size="lg"
+      fullScreen={narrowPhone}
+      classNames={{ body: 'pairing-dialog-modal-body' }}
+    >
       {issuing && !code && (
         <Text role="status">Getting a pairing barcode…</Text>
       )}

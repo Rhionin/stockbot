@@ -1,13 +1,39 @@
 import { PNG } from 'pngjs'
 
-const CSS_PX_PER_MM = 96 / 25.4
 const RULER_TARGET_MM = 50
 const RULER_TOLERANCE_MM = 0.5
+/** Footer band in full-page Letter/A4 rasters (pdftoppm 300dpi). */
+const RULER_FOOTER_ROW_START = 0.62
+const RULER_FOOTER_ROW_END = 0.88
+
+function horizontalPxPerMm(renderScale: number): number {
+  return (72 * renderScale) / 25.4
+}
+
+function mmFromHorizontalPx(px: number, renderScale: number): number {
+  return px / horizontalPxPerMm(renderScale)
+}
 
 function isDark(data: Buffer, width: number, x: number, y: number, threshold = 80): boolean {
   const offset = (y * width + x) * 4
   const lum = (data[offset] + data[offset + 1] + data[offset + 2]) / 3
   return lum < threshold
+}
+
+export function longestRunMmInBand(png: PNG, renderScale: number, rowStartRatio = RULER_FOOTER_ROW_START): number {
+  const { height } = png
+  const rowStart = Math.floor(height * rowStartRatio)
+  const rowEnd = Math.floor(height * RULER_FOOTER_ROW_END)
+  let bestMm = 0
+  for (const threshold of [64, 96, 128, 160, 192]) {
+    for (let row = rowStart; row < rowEnd; row += 1) {
+      for (const run of darkRunWidthAtRow(png, row, threshold)) {
+        const mm = mmFromHorizontalPx(run.right - run.left + 1, renderScale)
+        if (mm > bestMm) bestMm = mm
+      }
+    }
+  }
+  return bestMm
 }
 
 function darkRunWidthAtRow(png: PNG, row: number, threshold = 80): { left: number; right: number }[] {
@@ -27,26 +53,14 @@ function darkRunWidthAtRow(png: PNG, row: number, threshold = 80): { left: numbe
   return runs
 }
 
-function rulerCandidatesFromBand(png: PNG, rowStart: number, renderScale: number, threshold: number): number[] {
-  const { height } = png
-  const mmValues: number[] = []
-  for (let row = rowStart; row < height; row += 1) {
-    for (const run of darkRunWidthAtRow(png, row, threshold)) {
-      const px = run.right - run.left + 1
-      const mm = px / renderScale / CSS_PX_PER_MM
-      if (mm >= 40 && mm <= 60) mmValues.push(mm)
-    }
-  }
-  return mmValues
-}
-
 function rulerWidthViaColumnProjection(png: PNG, renderScale: number): number {
   const { width, height, data } = png
-  const rowStart = Math.floor(height * 0.75)
-  const minPx = Math.floor((RULER_TARGET_MM - RULER_TOLERANCE_MM) * CSS_PX_PER_MM * renderScale)
-  const maxPx = Math.ceil((RULER_TARGET_MM + RULER_TOLERANCE_MM) * CSS_PX_PER_MM * renderScale)
+  const rowStart = Math.floor(height * RULER_FOOTER_ROW_START)
+  const rowEnd = Math.floor(height * RULER_FOOTER_ROW_END)
+  const minPx = Math.floor(mmFromHorizontalPx(RULER_TARGET_MM - RULER_TOLERANCE_MM, renderScale))
+  const maxPx = Math.ceil(mmFromHorizontalPx(RULER_TARGET_MM + RULER_TOLERANCE_MM, renderScale))
   const colHasInk = new Uint8Array(width)
-  for (let y = rowStart; y < height; y += 1) {
+  for (let y = rowStart; y < rowEnd; y += 1) {
     for (let x = 0; x < width; x += 1) {
       if (isDark(data, width, x, y, 120)) colHasInk[x] = 1
     }
@@ -67,7 +81,7 @@ function rulerWidthViaColumnProjection(png: PNG, renderScale: number): number {
         }
       }
       if (!filled) continue
-      const mm = span / renderScale / CSS_PX_PER_MM
+      const mm = mmFromHorizontalPx(span, renderScale)
       const delta = Math.abs(mm - RULER_TARGET_MM)
       if (delta < bestDelta) {
         bestDelta = delta
@@ -78,23 +92,35 @@ function rulerWidthViaColumnProjection(png: PNG, renderScale: number): number {
   return bestMm
 }
 
-/** Measure a ~50mm footer ruler bar in a raster image (used by kit print e2e helpers). */
-export function rulerWidthMmFromPng(pngBuffer: Buffer, renderScale = 1): number {
+/** Measure a ~50mm footer ruler as a continuous horizontal ink run on one scan line (ignores tick-only artifacts). */
+export function rulerContinuousLineMmFromPng(pngBuffer: Buffer, renderScale = 1): number {
   const png = PNG.sync.read(pngBuffer)
   const { height } = png
-  const rowStart = Math.floor(height * 0.68)
+  const rowStart = Math.floor(height * RULER_FOOTER_ROW_START)
+  const rowEnd = Math.floor(height * RULER_FOOTER_ROW_END)
   let bestMm = 0
   let bestDelta = Number.POSITIVE_INFINITY
-  for (const threshold of [64, 80, 96, 112]) {
-    for (const mm of rulerCandidatesFromBand(png, rowStart, renderScale, threshold)) {
-      const delta = Math.abs(mm - RULER_TARGET_MM)
-      if (mm >= RULER_TARGET_MM - RULER_TOLERANCE_MM && mm <= RULER_TARGET_MM + RULER_TOLERANCE_MM && delta < bestDelta) {
-        bestDelta = delta
-        bestMm = mm
+  for (const threshold of [64, 96, 128, 160, 192, 230]) {
+    for (let row = rowStart; row < rowEnd; row += 1) {
+      for (const run of darkRunWidthAtRow(png, row, threshold)) {
+        const px = run.right - run.left + 1
+        const mm = mmFromHorizontalPx(px, renderScale)
+        const delta = Math.abs(mm - RULER_TARGET_MM)
+        if (mm >= RULER_TARGET_MM - RULER_TOLERANCE_MM && mm <= RULER_TARGET_MM + RULER_TOLERANCE_MM && delta < bestDelta) {
+          bestDelta = delta
+          bestMm = mm
+        }
       }
     }
   }
-  if (bestMm > 0) return bestMm
+  return bestMm
+}
+
+/** Measure a ~50mm footer ruler bar in a raster image (used by kit print e2e helpers). */
+export function rulerWidthMmFromPng(pngBuffer: Buffer, renderScale = 1): number {
+  const continuous = rulerContinuousLineMmFromPng(pngBuffer, renderScale)
+  if (continuous > 0) return continuous
+  const png = PNG.sync.read(pngBuffer)
   return rulerWidthViaColumnProjection(png, renderScale)
 }
 

@@ -139,8 +139,15 @@
   justify-content: center;
   align-items: center;
   width: 100%;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
+}
+
+@media (max-width: 399px) {
+  .pairing-dialog-modal-body {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 }
 
 .code128-quiet-zone .pairing-code128 {

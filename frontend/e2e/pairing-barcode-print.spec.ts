@@ -12,17 +12,20 @@ import {
 import { pairingScannerScreenFallback } from '../src/components/household/kitCopy456'
 import {
   assertPdfDecodesCode128,
+  assertPdfRulerContinuousLineMm,
   pdfContainsVisibleText,
   pdfVisibleText,
 } from './pdfCode128'
+import { PAIRING_CODE128_MIN_MODULE_DEVICE_PX } from '../src/components/household/pairingScreenCode128'
 
 const SCREEN_FALLBACK_COPY = pairingScannerScreenFallback()
+const PDF_PRINT_OPTIONS = { preferCSSPageSize: true, printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } } as const
 const RULER_CAPTION_SNIPPET = '50 mm (about 2 inches)'
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
 const DPR1_PHONE_WIDTHS = MOBILE_WIDTHS
 const MATRIX_WIDTHS = [...MOBILE_WIDTHS, 1280] as const
-const DPRS = [1, 2, 3] as const
+const DPRS = [1, 1.5, 2, 2.625, 3] as const
 const PRINT_LAYOUT_VIEWPORT_WIDTH = 720
 
 const CSS_PX_PER_MM = 96 / 25.4
@@ -71,6 +74,14 @@ async function assertRenderedQuietModules(svg: import('@playwright/test').Locato
   })
 }
 
+async function assertPrintRuler50mm(printRoot: import('@playwright/test').Locator) {
+  const rulerMm = await printRoot.locator('.kit-print-ruler').evaluate(
+    (el) => el.getBoundingClientRect().width / (96 / 25.4),
+  )
+  expect(rulerMm).toBeGreaterThanOrEqual(49.5)
+  expect(rulerMm).toBeLessThanOrEqual(50.5)
+}
+
 async function assertOnScreenPairingBarcode(page: import('@playwright/test').Page, viewportWidth: number, dpr: number) {
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
   const svg = dialog.locator('.pairing-screen-only svg.pairing-code128')
@@ -99,20 +110,20 @@ async function assertOnScreenPairingBarcode(page: import('@playwright/test').Pag
   expect(Math.abs(metrics.devicePxPerModule - Math.round(metrics.devicePxPerModule))).toBeLessThan(0.01)
 
   const isDpr1Phone = dpr === 1 && (DPR1_PHONE_WIDTHS as readonly number[]).includes(viewportWidth)
-  if (isDpr1Phone) {
-    expect(metrics.moduleDevicePx).toBe(1)
-    expect(metrics.devicePxPerModule).toBeGreaterThanOrEqual(0.99)
-    expect(metrics.devicePxPerModule).toBeLessThanOrEqual(1.01)
+  if (metrics.moduleDevicePx < PAIRING_CODE128_MIN_MODULE_DEVICE_PX) {
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toBeVisible()
-  } else if (metrics.moduleDevicePx === 1) {
-    expect(isDpr1Phone).toBe(true)
+    if (isDpr1Phone) {
+      expect(metrics.moduleDevicePx).toBe(1)
+      expect(metrics.devicePxPerModule).toBeGreaterThanOrEqual(0.99)
+      expect(metrics.devicePxPerModule).toBeLessThanOrEqual(1.01)
+    }
   } else {
-    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(2)
     await expect(dialog.getByText(PAIRING_ON_SCREEN_TOO_SMALL_HINT)).toHaveCount(0)
+    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
   }
 
   if (viewportWidth >= 1280 && dpr === 1) {
-    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(2)
+    expect(metrics.moduleDevicePx).toBeGreaterThanOrEqual(PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
   }
 
   await assertRenderedQuietModules(svg)
@@ -188,6 +199,7 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
   const hintBottom = await printRoot.locator('.kit-print-footer-instruction').evaluate((el) => el.getBoundingClientRect().bottom)
   const rulerTop = await printRoot.locator('.kit-print-ruler').evaluate((el) => el.getBoundingClientRect().top)
   expect(rulerTop).toBeGreaterThanOrEqual(hintBottom - 0.5)
+  await assertPrintRuler50mm(printRoot)
   const sheetText = await printRoot.evaluate((el) => el.textContent ?? '')
   expect(sheetText).toMatch(/STOCK-OUT/)
   expect(sheetText).toMatch(/STOCK-IN/)
@@ -201,11 +213,12 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
     assertPrintBarcodeMetrics(box!, totalModules)
   }
   for (const format of ['Letter', 'A4'] as const) {
-    const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
+    const pdf = Buffer.from(await page.pdf({ format, ...PDF_PRINT_OPTIONS }))
     expect(pdf.length).toBeGreaterThan(5000)
     expect(countPdfPages(pdf)).toBe(1)
     await assertPdfDecodesCode128(pdf, [PAIRING, 'STOCK-OUT', 'STOCK-IN'])
     expect(await pdfContainsVisibleText(pdf, 'Print at Actual size')).toBe(true)
+    await assertPdfRulerContinuousLineMm(pdf)
     expect(await pdfVisibleText(pdf)).not.toMatch(/\bMenu\b/)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
@@ -248,11 +261,13 @@ test('collapsed wall sheet prints one Letter/A4 page through the real Print butt
   expect(wallText).toMatch(/STOCK-IN/)
   expect(wallText).toMatch(/Storage room/)
   expect(wallText).toMatch(/Print at Actual size/)
+  await assertPrintRuler50mm(wallPrintRoot)
   for (const format of ['Letter', 'A4'] as const) {
-    const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
+    const pdf = Buffer.from(await page.pdf({ format, ...PDF_PRINT_OPTIONS }))
     expect(countPdfPages(pdf)).toBe(1)
     await assertPdfDecodesCode128(pdf, ['STOCK-OUT', 'STOCK-IN'])
     expect(await pdfContainsVisibleText(pdf, 'Print at Actual size')).toBe(true)
+    await assertPdfRulerContinuousLineMm(pdf)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
     await wallSheet.getByRole('button', { name: 'Print' }).click()
@@ -285,16 +300,13 @@ test('wall sheet print includes expanded Symcode on one page', async ({ page }) 
   await expect(wallPrintRoot.locator('.kit-print-footer-instruction')).toContainText('Print at Actual size')
   await expect(wallPrintRoot.locator('.kit-print-ruler')).toBeVisible()
   await expect(wallPrintRoot.locator('.kit-print-ruler-caption')).toContainText(RULER_CAPTION_SNIPPET)
-  const rulerMmPrintLayout = await wallPrintRoot.locator('.kit-print-ruler').evaluate(
-    (el) => el.getBoundingClientRect().width / (96 / 25.4),
-  )
-  expect(rulerMmPrintLayout).toBeGreaterThanOrEqual(49.5)
-  expect(rulerMmPrintLayout).toBeLessThanOrEqual(50.5)
+  await assertPrintRuler50mm(wallPrintRoot)
   for (const format of ['Letter', 'A4'] as const) {
-    const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
+    const pdf = Buffer.from(await page.pdf({ format, ...PDF_PRINT_OPTIONS }))
     expect(countPdfPages(pdf)).toBe(1)
     await assertPdfDecodesCode128(pdf, ['%%SpecCode99', 'STOCK-OUT', 'STOCK-IN'])
     expect(await pdfContainsVisibleText(pdf, RULER_CAPTION_SNIPPET)).toBe(true)
+    await assertPdfRulerContinuousLineMm(pdf)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
     await wallSheet.getByRole('button', { name: 'Print' }).click()
@@ -317,7 +329,7 @@ test('print media hides app chrome on the setup sheet', async ({ page }) => {
   await page.emulateMedia({ media: 'print' })
   await expect(page.getByRole('button', { name: 'Menu' })).toBeHidden()
   await expect(page.getByRole('dialog', { name: 'Connect a scanner' }).locator('.mantine-Modal-header')).toBeHidden()
-  const pdf = Buffer.from(await page.pdf({ format: 'Letter', preferCSSPageSize: true }))
+  const pdf = Buffer.from(await page.pdf({ format: 'Letter', ...PDF_PRINT_OPTIONS }))
   const pdfText = await pdfVisibleText(pdf)
   expect(pdfText).not.toMatch(/\bMenu\b/)
   expect(pdfText).not.toMatch(/Sign in/)

@@ -63,12 +63,12 @@ describe('pairingCode128 layout math', () => {
     expect(phone.svgWidthCssPx).toBeCloseTo(220, 5);
 
     const fractionalDpr = computePairingCode128Layout(292, BAR_MODULES, 1.5);
-    expect(fractionalDpr.moduleDevicePx).toBeGreaterThanOrEqual(2);
-    expect(fractionalDpr.moduleDevicePx).not.toBe(1);
+    expect(fractionalDpr.moduleDevicePx).toBe(1);
+    expect(fractionalDpr.svgWidthCssPx).toBeLessThanOrEqual(292 + 0.05);
 
-    const highDprPhone = computePairingCode128Layout(320, BAR_MODULES, 2.625);
-    expect(highDprPhone.moduleDevicePx).toBeGreaterThanOrEqual(2);
-    expect(highDprPhone.svgWidthCssPx).toBeLessThanOrEqual(320 + 0.01);
+    const phoneFractional = computePairingCode128Layout(304, BAR_MODULES, 1.5);
+    expect(phoneFractional.moduleDevicePx).toBeGreaterThanOrEqual(2);
+    expect(phoneFractional.svgWidthCssPx).toBeLessThanOrEqual(304 + 0.05);
   });
 });
 
