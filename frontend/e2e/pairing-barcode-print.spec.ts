@@ -263,13 +263,13 @@ test('on-screen pairing barcode at 520px DPR 1 uses 1 device px with hint and no
   await assertPairingBarcodeModulePx(dialog, 1, true)
 })
 
-test('on-screen pairing barcode at 1280px DPR 1 uses more than 2 device px without hint', async ({ page }) => {
+test('on-screen pairing barcode at 1280px DPR 1 uses 2 device px without hint', async ({ page }) => {
   resetStage()
   await page.setViewportSize({ width: 1280, height: 900 })
   await install(page)
   await signInAndOpenHouseholdScannerPairing(page)
   const dialog = page.getByRole('dialog', { name: 'Connect a scanner' })
-  await assertPairingBarcodeModuleAbove(dialog, PAIRING_CODE128_MIN_MODULE_DEVICE_PX)
+  await assertPairingBarcodeModulePx(dialog, 2, false)
 })
 
 test('on-screen pairing barcode at 390px DPR 3 uses more than 2 device px without hint', async ({ browser }) => {
