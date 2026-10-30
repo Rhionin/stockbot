@@ -35,8 +35,9 @@ export function PairingDialog({
   const [issueError, setIssueError] = useState('');
   const [issuing, setIssuing] = useState(false);
   const wallSettings = wallBarcodeSettings ?? defaultWallBarcodeSettings();
-  const keyboardContext = pairingContext === 'scanner' ? 'scanner' : 'hub';
-  const keyboardLine = code ? pairingKeyboardFallback(code.barcodeValue, keyboardContext) : null;
+  const hubKeyboardLine = code && pairingContext === 'devices'
+    ? pairingKeyboardFallback(code.barcodeValue, 'hub')
+    : null;
   const { printing, print } = useKitPrintRoot();
 
   const issue = useCallback(async () => {
@@ -115,7 +116,7 @@ export function PairingDialog({
               <Text size="sm">2. {PAIRING_DIALOG_STEP_TWO}</Text>
             </Stack>
             <Code128Mark value={barcodeValue} quietZone />
-            {keyboardLine && <Text className="pairing-keyboard">{keyboardLine}</Text>}
+            {hubKeyboardLine && <Text className="pairing-keyboard">{hubKeyboardLine}</Text>}
           </div>
           <div
             className="kit-print-root setup-kit-print-root"

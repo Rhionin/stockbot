@@ -394,8 +394,28 @@
     display: none !important;
   }
 
-  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-wrap,
   .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-meta {
+    display: none !important;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-footer-instruction {
+    margin: 0;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-wrap {
+    display: inline-flex !important;
+    align-items: center;
+    margin: 0;
+  }
+
+  .wall-kit-print-root:has(.wall-sheet-symcode-print) .kit-print-ruler-caption {
     display: none !important;
   }
 

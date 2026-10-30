@@ -10,6 +10,9 @@ import {
   stage,
   stubWindowPrint,
 } from './householdStageFixtures'
+import { pairingScannerScreenFallback } from '../src/components/household/kitCopy456'
+
+const SCREEN_FALLBACK_COPY = pairingScannerScreenFallback()
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
 const DPR1_PHONE_WIDTHS = MOBILE_WIDTHS
@@ -161,8 +164,11 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
   await page.setViewportSize({ width: 1280, height: 900 })
   await install(page)
   await signInAndOpenHouseholdScannerPairing(page)
-  await expect(page.getByRole('dialog', { name: 'Connect a scanner' })).toBeVisible()
-  await expect(page.locator('.pairing-screen-only svg.pairing-code128')).toBeVisible()
+  const pairingDialog = page.getByRole('dialog', { name: 'Connect a scanner' })
+  await expect(pairingDialog).toBeVisible()
+  await expect(pairingDialog.locator('.pairing-screen-only').first()).not.toContainText(SCREEN_FALLBACK_COPY)
+  await expect(pairingDialog.locator('.setup-kit-print-root')).toContainText(SCREEN_FALLBACK_COPY)
+  await expect(pairingDialog.locator('.pairing-screen-only svg.pairing-code128')).toBeVisible()
   await stubWindowPrint(page)
   await page.getByRole('button', { name: 'Print setup & wall sheet' }).click()
   const printRoot = page.locator('.setup-kit-print-root[data-printing="true"]')
@@ -268,7 +274,7 @@ test('wall sheet print includes expanded Symcode on one page', async ({ page }) 
   expect(wallText).toMatch(/Storage room/)
   expect(wallText).toMatch(/Print at Actual size/)
   await expect(wallPrintRoot.locator('.kit-print-footer-instruction')).toContainText('Print at Actual size')
-  await expect(wallPrintRoot.locator('.kit-print-ruler')).toBeHidden()
+  await expect(wallPrintRoot.locator('.kit-print-ruler')).toBeVisible()
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, preferCSSPageSize: true }))
     expect(countPdfPages(pdf)).toBe(1)

@@ -153,11 +153,12 @@ describe('issue #456 kit copy (table B)', () => {
     expect(within(screenOnly).getByText(setupSheetExpiryLine('2099-06-15T14:05:00.000Z'))).toBeVisible();
     expect(within(screenOnly).getAllByRole('img', { name: new RegExp(`^Code 128 ${PAIRING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })).toHaveLength(1);
     expect(within(screenOnly).queryByRole('img', { name: /^QR code / })).not.toBeInTheDocument();
-    expect(within(screenOnly).getByText(pairingScannerScreenFallback())).toBeVisible();
+    expect(within(screenOnly).queryByText(pairingScannerScreenFallback())).not.toBeInTheDocument();
     expect(within(dialog).queryByText(/USB keyboard/)).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: PRINT_PAIRING_CODE_LABEL })).toBeVisible();
     const printRoot = dialog.querySelector('.setup-kit-print-root')!;
     expect(printRoot).not.toBeNull();
+    expect(within(printRoot as HTMLElement).getByText(pairingScannerScreenFallback(), { hidden: true })).toBeInTheDocument();
     expect(printRoot).toHaveAttribute('hidden');
     expect(within(printRoot as HTMLElement).getByText('Connect your scanner')).toBeInTheDocument();
     expect(printRoot.querySelectorAll('svg[role="img"][aria-label^="Code 128"]')).toHaveLength(3);
