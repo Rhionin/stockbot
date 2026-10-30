@@ -206,8 +206,10 @@ test('owner renames household and operator sees admin households list', async ({
   await page.reload()
   await expect(page.getByTestId('operator-households-section')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'All households (Admin)' })).toBeVisible()
-  await expect(page.getByText('Loft')).toBeVisible()
-  await expect(page.getByText('dee@example.com')).toBeVisible()
+  await expect(page.getByText('Test Household 2')).toBeVisible()
+  await expect(page.getByText(/Scanners: 0 online/)).toBeVisible()
+  await expect(page.getByText(/0 scans this week/)).toBeVisible()
+  await expect(page.getByText('dee@example.com')).toHaveCount(0)
 })
 
 test('shows contract admin-only copy when operator households access is denied', async ({ page }) => {

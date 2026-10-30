@@ -4,32 +4,30 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 )
-
-// OperatorHouseholdMember is one person in a household for the operator admin list.
-type OperatorHouseholdMember struct {
-	UserID    string `json:"userId"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"createdAt"`
-}
 
 // OperatorHouseholdSummary is one household row on the operator admin list.
 type OperatorHouseholdSummary struct {
-	ID             string                    `json:"id"`
-	Name           string                    `json:"name"`
-	IsPrimary      bool                      `json:"isPrimary"`
-	RestockMode    string                    `json:"restockMode"`
-	CreatedAt      string                    `json:"createdAt"`
-	DeletedAt      string                    `json:"deletedAt,omitempty"`
-	PurgeAfter     string                    `json:"purgeAfter,omitempty"`
-	Members        []OperatorHouseholdMember `json:"members"`
-	MemberCount    int                       `json:"memberCount"`
-	ProductCount   int                       `json:"productCount"`
-	ItemsOnHand    int                       `json:"itemsOnHand"`
-	PendingScans   int                       `json:"pendingScans"`
-	LastActivityAt string                    `json:"lastActivityAt,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	IsPrimary       bool   `json:"isPrimary"`
+	RestockMode     string `json:"restockMode"`
+	CreatedAt       string `json:"createdAt"`
+	DeletedAt       string `json:"deletedAt,omitempty"`
+	PurgeAfter      string `json:"purgeAfter,omitempty"`
+	MemberCount     int    `json:"memberCount"`
+	ProductCount    int    `json:"productCount"`
+	ItemsOnHand     int    `json:"itemsOnHand"`
+	PendingScans    int    `json:"pendingScans"`
+	ScannersOnline  int    `json:"scannersOnline"`
+	ScannersOffline int    `json:"scannersOffline"`
+	// ScansThisWeek counts scan units received in the rolling seven-day window ending
+	// at the service clock. Each unit is counted once: SUM(unit_count) on scan_entries
+	// in the window, plus device_scan_receipts that have no linked scan_entries row
+	// (for example a failed ingest before a card is written).
+	ScansThisWeek  int    `json:"scansThisWeek"`
+	LastActivityAt   string `json:"lastActivityAt,omitempty"`
 }
 
 // ListAllHouseholdsForOperator returns every household in the product for the operator account.
@@ -77,7 +75,6 @@ func (s *Service) ListAllHouseholdsForOperator(ctx context.Context) ([]OperatorH
 		row.DeletedAt = strings.TrimSpace(deleted)
 		row.PurgeAfter = strings.TrimSpace(purge)
 		row.LastActivityAt = strings.TrimSpace(lastActivity)
-		row.Members = []OperatorHouseholdMember{}
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -86,49 +83,107 @@ func (s *Service) ListAllHouseholdsForOperator(ctx context.Context) ([]OperatorH
 	if len(out) == 0 {
 		return out, nil
 	}
-	if err := s.attachOperatorMembers(ctx, out); err != nil {
+	if err := s.attachOperatorDeviceCounts(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := s.attachOperatorScansThisWeek(ctx, out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (s *Service) attachOperatorMembers(ctx context.Context, households []OperatorHouseholdSummary) error {
-	ids := make([]string, len(households))
-	byID := map[string]*OperatorHouseholdSummary{}
-	for i := range households {
-		ids[i] = households[i].ID
-		byID[households[i].ID] = &households[i]
-	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+func (s *Service) attachOperatorDeviceCounts(ctx context.Context, households []OperatorHouseholdSummary) error {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.household_id, m.user_id, u.email_norm, u.name, m.role, m.created_at
-		FROM memberships m
-		JOIN users u ON u.id = m.user_id
-		WHERE m.household_id IN (`+placeholders+`) AND u.deleted_at IS NULL
-		ORDER BY m.household_id,
-			CASE m.role WHEN 'owner' THEN 0 ELSE 1 END,
-			m.created_at ASC,
-			u.id ASC`, args...)
+		SELECT household_id, id, kind, COALESCE(last_seen_at, ''), COALESCE(revoked_at, '')
+		FROM devices`)
 	if err != nil {
 		return AsError(err)
 	}
 	defer rows.Close()
+	now := s.clock()
+	online := map[string]int{}
+	offline := map[string]int{}
 	for rows.Next() {
-		var houseID string
-		var member OperatorHouseholdMember
-		if err := rows.Scan(&houseID, &member.UserID, &member.Email, &member.Name, &member.Role, &member.CreatedAt); err != nil {
+		var houseID, deviceID, kind, seen, revoked string
+		if err := rows.Scan(&houseID, &deviceID, &kind, &seen, &revoked); err != nil {
 			return AsError(err)
 		}
-		if h := byID[houseID]; h != nil {
-			h.Members = append(h.Members, member)
+		if strings.TrimSpace(revoked) != "" {
+			continue
+		}
+		if s.deviceOnlineAt(now, deviceID, kind, seen) {
+			online[houseID]++
+		} else {
+			offline[houseID]++
 		}
 	}
-	return AsError(rows.Err())
+	if err := rows.Err(); err != nil {
+		return AsError(err)
+	}
+	for i := range households {
+		households[i].ScannersOnline = online[households[i].ID]
+		households[i].ScannersOffline = offline[households[i].ID]
+	}
+	return nil
+}
+
+func (s *Service) attachOperatorScansThisWeek(ctx context.Context, households []OperatorHouseholdSummary) error {
+	now := s.clock()
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	receiptCutoff := stamp(cutoff)
+	counts := map[string]int{}
+
+	entryRows, err := s.db.QueryContext(ctx, `
+		SELECT household_id, COALESCE(SUM(unit_count), 0)
+		FROM scan_entries
+		WHERE scanned_at >= ?
+		GROUP BY household_id`, cutoff)
+	if err != nil {
+		return AsError(err)
+	}
+	defer entryRows.Close()
+	for entryRows.Next() {
+		var houseID string
+		var n int
+		if err := entryRows.Scan(&houseID, &n); err != nil {
+			return AsError(err)
+		}
+		counts[houseID] += n
+	}
+	if err := entryRows.Err(); err != nil {
+		return AsError(err)
+	}
+
+	orphanRows, err := s.db.QueryContext(ctx, `
+		SELECT r.household_id, COALESCE(SUM(r.unit_count), 0)
+		FROM device_scan_receipts r
+		WHERE r.scanned_at >= ?
+		  AND (TRIM(COALESCE(r.scan_entry_id, '')) = ''
+		    OR NOT EXISTS (
+		      SELECT 1 FROM scan_entries e
+		      WHERE e.household_id = r.household_id AND e.id = r.scan_entry_id
+		    ))
+		GROUP BY r.household_id`, receiptCutoff)
+	if err != nil {
+		return AsError(err)
+	}
+	defer orphanRows.Close()
+	for orphanRows.Next() {
+		var houseID string
+		var n int
+		if err := orphanRows.Scan(&houseID, &n); err != nil {
+			return AsError(err)
+		}
+		counts[houseID] += n
+	}
+	if err := orphanRows.Err(); err != nil {
+		return AsError(err)
+	}
+
+	for i := range households {
+		households[i].ScansThisWeek = counts[households[i].ID]
+	}
+	return nil
 }
 
 // OperatorForbidden is returned when a signed-in user who is not the operator calls an operator route.

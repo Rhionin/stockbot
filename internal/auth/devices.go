@@ -390,6 +390,23 @@ func (s *Service) HouseholdName(ctx context.Context, householdID string) (string
 	return name, nil
 }
 
+// deviceOnlineAt reports whether a non-revoked device is online at now using the same
+// last_seen_at, in-memory presence, and direct-kind rules as ListDevices.
+func (s *Service) deviceOnlineAt(now time.Time, deviceID, kind, seenDB string) bool {
+	online := false
+	if t, ok := s.presence.last(deviceID); ok {
+		online = now.Sub(t) < onlineWindow
+	} else if seenDB != "" {
+		if at, ok := parseStamp(seenDB); ok {
+			online = now.Sub(at) < onlineWindow
+		}
+	}
+	if kind == "direct" {
+		online = true
+	}
+	return online
+}
+
 func (s *Service) ListDevices(ctx context.Context, userID, householdID string) ([]DeviceView, error) {
 	if _, _, ok, err := s.membershipRole(ctx, s.db, userID, householdID); err != nil || !ok {
 		if err != nil {
@@ -434,16 +451,10 @@ func (s *Service) ListDevices(ctx context.Context, userID, householdID string) (
 		if t, ok := s.presence.last(d.ID); ok {
 			stamp := stamp(t)
 			d.LastSeenAt = &stamp
-			d.Online = revoked == "" && now.Sub(t) < onlineWindow
 		} else if seen != "" {
 			d.LastSeenAt = &seen
-			if at, ok := parseStamp(seen); ok {
-				d.Online = revoked == "" && now.Sub(at) < onlineWindow
-			}
 		}
-		if d.Kind == "direct" && revoked == "" {
-			d.Online = true
-		}
+		d.Online = revoked == "" && s.deviceOnlineAt(now, d.ID, d.Kind, seen)
 		if n, ok := s.presence.queue(d.ID); ok {
 			queued = n
 		}

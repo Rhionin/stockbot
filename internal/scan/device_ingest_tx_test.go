@@ -72,6 +72,41 @@ func TestCreateScanEntryTxMergesPendingCard(t *testing.T) {
 	}
 }
 
+func TestInsertScanEntryTxInsertsWithoutMerging(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	ctx := context.Background()
+	catalog := product.NewCatalog(db)
+	if err := catalog.CreateProduct(ctx, product.Product{ID: "prod-no-merge", Name: "No Merge", Category: "Pantry", UnitOfMeasure: "each"}); err != nil {
+		t.Fatal(err)
+	}
+	productID := "prod-no-merge"
+	dir := scan.StockIn
+	at := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000606", ScannedAt: at, Direction: &dir, UnitCount: 3, ProductID: &productID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := queue.InsertScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "device-1", Barcode: "4000000000606", ScannedAt: at.Add(time.Minute), Direction: &dir, UnitCount: 1, ProductID: &productID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || second.UnitCount != 1 || first.UnitCount != 3 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
 func TestPublishAfterIngestPublishesScanAndInventory(t *testing.T) {
 	queue, db, scope := newTestQueue(t)
 	ctx := context.Background()
@@ -245,10 +280,6 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	productID := "prod-bump"
 	dir := scan.StockIn
 	at := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	before, err := changes.Current(ctx, db, scope.HouseholdID(), changes.ScopeScans)
-	if err != nil {
-		t.Fatal(err)
-	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -256,6 +287,10 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
 		UserID: "device-1", Barcode: "4000000000505", ScannedAt: at, Direction: &dir, UnitCount: 1, ProductID: &productID,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeMerge, err := changes.Current(ctx, tx, scope.HouseholdID(), changes.ScopeScans)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := queue.CreateScanEntryTx(ctx, scope, tx, scan.ScanEntry{
@@ -266,11 +301,11 @@ func TestCreateScanEntryTxMergeBumpsScansCursor(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, before)
+	out, err := changes.Compare(ctx, db, scope.HouseholdID(), changes.ScopeScans, beforeMerge)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Changed || out.Cursor == before {
-		t.Fatalf("merge path did not bump scans cursor: before %q after %+v", before, out)
+	if !out.Changed || out.Cursor == beforeMerge {
+		t.Fatalf("merge path did not bump scans cursor: before merge %q after %+v", beforeMerge, out)
 	}
 }

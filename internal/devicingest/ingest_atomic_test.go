@@ -315,13 +315,19 @@ func TestDeviceIngestConcurrentConflict(t *testing.T) {
 	ctx, svc, p, house, catalog, _ := bootIngestFile(t)
 	seedProduct(t, ctx, catalog, house, "prod-x", "Sugar", "4000000000066")
 
+	const workers = 2
 	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	start := make(chan struct{})
 	var created, conflict int
 	for _, dir := range []string{"stock_in", "stock_out"} {
 		dir := dir
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ready.Done()
+			<-start
 			out, err := svc.IngestScans(ctx, p, []auth.ScanInput{{
 				ID: "conflict-id", Barcode: "4000000000066", Direction: dir, UnitCount: 1, HasBarcode: true,
 			}}, 0)
@@ -343,6 +349,8 @@ func TestDeviceIngestConcurrentConflict(t *testing.T) {
 			}
 		}()
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
 	if created != 1 || conflict != 1 {
 		t.Fatalf("created %d conflict %d", created, conflict)
