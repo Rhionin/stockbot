@@ -752,8 +752,9 @@ describe('inlineFailure', () => {
 });
 
 describe('provisionResultStatus', () => {
-  it('maps outcomes to added, skipped, failed, and unknown', () => {
-    expect(provisionResultStatus('confirmed')).toBe('added');
+  it('maps outcomes to added, sent, skipped, failed, and unknown', () => {
+    expect(provisionResultStatus('confirmed', undefined, 'per_line')).toBe('added');
+    expect(provisionResultStatus('confirmed')).toBe('sent');
     expect(provisionResultStatus('unknown')).toBe('unknown');
     expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
     expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
