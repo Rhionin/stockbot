@@ -7,16 +7,17 @@ import type { ProviderInfo } from '@stockbot/shared/types';
 import { BuildStamp } from '../build/BuildStamp';
 import { CredentialsDialog } from '../shopping/CredentialsDialog';
 import { inlineFailure } from '@stockbot/shared/contract';
+import { canManageProviderAppCredentials } from '@stockbot/shared/providerCredentials';
 
 export interface AppMenuProps {
   onCredentialsChanged: () => void;
 }
 
-const canEditCredentials = (provider: ProviderInfo) =>
+const usesOAuthConnection = (provider: ProviderInfo) =>
   provider.capabilities.auth === 'oauth2_authorization_code';
 
 const canDisconnect = (provider: ProviderInfo) =>
-  canEditCredentials(provider)
+  usesOAuthConnection(provider)
   && provider.credentialsConfigured
   && provider.connectionState === 'connected';
 
@@ -33,6 +34,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
   const [disconnectError, setDisconnectError] = useState('');
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [credentialsAccessDenied, setCredentialsAccessDenied] = useState(false);
   const [suggestionCount, setSuggestionCount] = useState(0);
 
   const reload = useCallback(async () => {
@@ -74,6 +76,10 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
   };
 
   const stage1 = session.auth?.kind === 'account';
+  const isServerAdmin = session.auth?.operator === true;
+  const canEditCredentials = (provider: ProviderInfo) =>
+    !credentialsAccessDenied
+    && canManageProviderAppCredentials(provider, isServerAdmin);
   const editable = providers.filter(canEditCredentials);
   const editing = editable.find((provider) => provider.id === editingId) ?? null;
 
@@ -170,6 +176,10 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
         }}
         onChanged={() => {
           void reload().then(() => onCredentialsChanged());
+        }}
+        onAccessDenied={() => {
+          setCredentialsAccessDenied(true);
+          setEditingId(null);
         }}
         onDisconnect={editing !== null && canDisconnect(editing)
           ? () => {

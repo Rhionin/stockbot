@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderInfo } from '@stockbot/shared/types';
+import { PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE } from '@stockbot/shared/providerCredentials';
 import { CredentialsDialog } from './CredentialsDialog';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
@@ -19,9 +20,19 @@ const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
   ...overrides,
 });
 
-const renderDialog = (row: ProviderInfo, onChanged: () => void = () => undefined) => render(
+const renderDialog = (
+  row: ProviderInfo,
+  onChanged: () => void = () => undefined,
+  onAccessDenied: () => void = () => undefined,
+) => render(
   <MantineProvider>
-    <CredentialsDialog provider={row} opened onClose={() => undefined} onChanged={onChanged} />
+    <CredentialsDialog
+      provider={row}
+      opened
+      onClose={() => undefined}
+      onChanged={onChanged}
+      onAccessDenied={onAccessDenied}
+    />
   </MantineProvider>,
 );
 
@@ -108,5 +119,35 @@ describe('CredentialsDialog', () => {
       '/api/providers/kroger/credentials',
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+
+  it('shows an admin-only message on forbidden_operator and hides access', async () => {
+    const onAccessDenied = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'Only an admin can do this.',
+          code: 'forbidden_operator',
+        }), { status: 403, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    renderDialog(provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'saved',
+      },
+    }), () => undefined, onAccessDenied);
+
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'ui-client' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: 'https://pantry.example/cb' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE);
+    expect(onAccessDenied).toHaveBeenCalledTimes(1);
   });
 });

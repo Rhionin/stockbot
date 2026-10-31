@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuthSession } from '@stockbot/shared/contract';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { AppMenu } from './AppMenu';
@@ -18,6 +19,13 @@ const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
   },
   connectionState: 'disconnected',
   credentialsConfigured: true,
+  credentials: {
+    clientId: 'fixture-client',
+    redirectUri: 'https://test-household.example/cb',
+    modality: 'PICKUP',
+    secretSet: true,
+    source: 'saved',
+  },
   ...overrides,
 });
 
@@ -55,6 +63,75 @@ const openMenu = async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
   return screen.findByRole('menuitem', { name: 'Manage Kroger connection' });
 };
+
+const renderMenuWithSession = (
+  rows: ProviderInfo[],
+  auth: AuthSession | null,
+  onCredentialsChanged: () => void = () => undefined,
+) => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/providers') return Promise.resolve(jsonResponse(rows));
+    if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+    if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
+  }));
+  return render(
+    <MantineProvider env="test">
+      <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth, replaceAuth: () => undefined }}>
+        <MemoryRouter initialEntries={['/shopping']}>
+          <AppMenu onCredentialsChanged={onCredentialsChanged} />
+        </MemoryRouter>
+      </HouseholdSessionContext.Provider>
+    </MantineProvider>,
+  );
+};
+
+const testHouseholdSession = (operator: boolean): AuthSession => ({
+  kind: 'account',
+  user: { id: 'user-1', email: 'member@test.example', name: 'Member' },
+  memberships: [{ householdId: 'hh-test', name: 'Test Household', role: 'member', deletedAt: null }],
+  households: [{ id: 'hh-test', name: 'Test Household', role: 'member', deletedAt: null }],
+  activeHouseholdId: 'hh-test',
+  operator,
+});
+
+describe('AppMenu Kroger app keys visibility', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shows Manage Kroger connection for the server admin', async () => {
+    renderMenuWithSession([provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'none',
+      },
+    })], testHouseholdSession(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    expect(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage Kroger connection' }));
+    expect(await screen.findByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+  });
+
+  it('hides Manage Kroger connection for Test Household when credential source is none', async () => {
+    renderMenuWithSession([provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'none',
+      },
+    })], testHouseholdSession(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+});
 
 describe('AppMenu', () => {
   afterEach(() => {

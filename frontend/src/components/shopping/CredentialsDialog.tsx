@@ -3,12 +3,17 @@ import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
+import {
+  PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE,
+  providerAppCredentialsAccessDenied,
+} from '@stockbot/shared/providerCredentials';
 
 export interface CredentialsDialogProps {
   provider: ProviderInfo | null;
   opened: boolean;
   onClose: () => void;
   onChanged: () => void;
+  onAccessDenied?: () => void;
   onDisconnect?: () => void;
   disconnecting?: boolean;
   disconnectError?: string;
@@ -19,6 +24,7 @@ export const CredentialsDialog = ({
   opened,
   onClose,
   onChanged,
+  onAccessDenied,
   onDisconnect,
   disconnecting = false,
   disconnectError = '',
@@ -37,6 +43,7 @@ export const CredentialsDialog = ({
             key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
             provider={provider}
             onChanged={onChanged}
+            onAccessDenied={onAccessDenied}
           />
           {onDisconnect !== undefined && (
             <Stack gap="xs">
@@ -61,7 +68,22 @@ export const CredentialsDialog = ({
   );
 };
 
-const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onChanged: () => void }) => {
+const credentialFailure = (requestError: unknown, fallback: string): string => {
+  if (providerAppCredentialsAccessDenied(requestError)) {
+    return PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE;
+  }
+  return inlineFailure(requestError, fallback) ?? fallback;
+};
+
+const CredentialForm = ({
+  provider,
+  onChanged,
+  onAccessDenied,
+}: {
+  provider: ProviderInfo;
+  onChanged: () => void;
+  onAccessDenied?: () => void;
+}) => {
   const saved = provider.credentials;
   const [clientId, setClientId] = useState(saved?.clientId ?? '');
   const [clientSecret, setClientSecret] = useState('');
@@ -83,7 +105,10 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       setClientSecret('');
       onChanged();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to save credentials.') ?? '');
+      setError(credentialFailure(requestError, 'Unable to save credentials.'));
+      if (providerAppCredentialsAccessDenied(requestError)) {
+        onAccessDenied?.();
+      }
     } finally {
       setPending(false);
     }
@@ -96,7 +121,10 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       await clearProviderCredentials(provider.id);
       onChanged();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to clear credentials.') ?? '');
+      setError(credentialFailure(requestError, 'Unable to clear credentials.'));
+      if (providerAppCredentialsAccessDenied(requestError)) {
+        onAccessDenied?.();
+      }
     } finally {
       setPending(false);
     }
@@ -155,7 +183,7 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
           </Button>
         )}
       </Group>
-      {error !== '' && <Text c="red" size="sm">{error}</Text>}
+      {error !== '' && <Text c="red" size="sm" role="alert">{error}</Text>}
     </Stack>
   );
 };
