@@ -75,6 +75,11 @@ export function formatOperatorHouseholdLastActivity(
   return `Last activity ${formatOperatorHouseholdShortDate(date, now, true)}`;
 }
 
+export function formatInviteExpiresAt(at: string, now: Date = new Date()): string {
+  const date = new Date(at);
+  return `Expires ${formatOperatorHouseholdShortDate(date, now, true)}`;
+}
+
 export type OperatorHouseholdStatLineTexts = {
   inventory: string;
   scanners: string;

@@ -9,7 +9,8 @@ import {
   type RestockMode,
 } from '@stockbot/shared/contract';
 import { ApiError, acceptInvite, currentAuthSession, getSession, previewInvite } from '../../api/client';
-import { HOUSEHOLD_RESTOCK_CHOICES } from '../household/operatorHouseholdCopy';
+import { formatInviteExpiresAt, HOUSEHOLD_RESTOCK_CHOICES } from '../household/operatorHouseholdCopy';
+import './LoginPage.css';
 
 export const InviteAcceptPage = ({
   code: codeProp,
@@ -81,14 +82,14 @@ export const InviteAcceptPage = ({
   };
 
   return (
-    <main className="login-screen">
+    <main className="login-screen invite-accept-page">
       <section className="login-card" aria-labelledby="invite-title">
         <Title id="invite-title" order={1} size="h2">
           {preview?.kind === 'start_household' ? 'Start a household' : 'Join a household'}
         </Title>
         {preview?.householdName && <Text className="login-lede">{preview.householdName}</Text>}
         {preview?.invitedBy && <Text>Invited by {preview.invitedBy}</Text>}
-        {preview && <Text>Expires {new Date(preview.expiresAt).toLocaleString()}</Text>}
+        {preview && <Text data-testid="invite-expires">{formatInviteExpiresAt(preview.expiresAt)}</Text>}
         {error !== '' && <Alert color="red" variant="light" role="alert">{error}</Alert>}
         {preview && (
           <form aria-label="Accept invite" onSubmit={(event) => { void submit(event); }}>
@@ -97,7 +98,14 @@ export const InviteAcceptPage = ({
                 <>
                   <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} required disabled={pending} />
                   <TextInput label="Email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} required disabled={pending} />
-                  <PasswordInput label="Password" value={password} onChange={(event) => setPassword(event.currentTarget.value)} required disabled={pending} />
+                  <PasswordInput
+                    label="Password"
+                    value={password}
+                    onChange={(event) => setPassword(event.currentTarget.value)}
+                    required
+                    disabled={pending}
+                    visibilityToggleButtonProps={{ className: 'invite-accept-password-toggle' }}
+                  />
                 </>
               )}
               {preview.kind === 'start_household' && (

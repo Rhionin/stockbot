@@ -353,7 +353,7 @@ describe('household management', () => {
       return Promise.reject(new Error(url));
     }));
     renderStage(<HouseholdSwitcher />, session('owner'), replaceAuth);
-    fireEvent.click(screen.getByRole('combobox', { name: 'Household' }));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Pantry' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Cabin' }));
     await waitFor(() => expect(replaceAuth).toHaveBeenCalledWith(expect.objectContaining({ activeHouseholdId: 'hh-2' })));
   });
@@ -379,7 +379,7 @@ describe('household management', () => {
 
   it('navigates to other households from the multi-household switcher', async () => {
     renderStageRoutes(<HouseholdSwitcher />, session('owner'));
-    fireEvent.click(screen.getByRole('combobox', { name: 'Household' }));
+    fireEvent.click(screen.getByRole('combobox', { name: 'Pantry' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Other households…' }));
     expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
   });
