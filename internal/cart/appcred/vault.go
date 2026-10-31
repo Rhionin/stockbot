@@ -132,16 +132,18 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 }
 
 // LoadServerProvider returns saved credentials that may configure the
-// server-wide grocery adapter. Rows stored under a household the operator
+// server-wide grocery adapter. The returned household ID is the row's
+// household when ok is true. Rows stored under a household the operator
 // does not belong to are ignored. Rows saved by a non-operator are ignored
 // unless they are legacy primary-household rows with no actor recorded.
-func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Saved, bool, error) {
+func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Saved, string, bool, error) {
 	if v == nil || v.db == nil {
-		return Saved{}, false, nil
+		return Saved{}, "", false, nil
 	}
 	var saved Saved
+	var householdID string
 	err := v.db.QueryRowContext(ctx, `
-		SELECT pac.provider_id, pac.client_id, pac.client_secret, pac.redirect_uri, pac.modality
+		SELECT pac.household_id, pac.provider_id, pac.client_id, pac.client_secret, pac.redirect_uri, pac.modality
 		FROM provider_app_credentials pac
 		JOIN households h ON h.id = pac.household_id
 		WHERE pac.provider_id = ?
@@ -156,6 +158,7 @@ func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Save
 		      AND (
 		        pac.actor_user_id IN (SELECT id FROM users WHERE operator = 1 AND deleted_at IS NULL)
 		        OR ((pac.actor_user_id IS NULL OR pac.actor_user_id = '') AND h.is_primary = 1)
+		        OR (h.is_primary = 1 AND pac.actor_user_id = h.legacy_user_id AND h.legacy_user_id != '')
 		      )
 		    )
 		    OR (
@@ -165,14 +168,14 @@ func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Save
 		  )
 		ORDER BY h.is_primary DESC, pac.updated_at DESC
 		LIMIT 1`, providerID,
-	).Scan(&saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
+	).Scan(&householdID, &saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
 	if err == sql.ErrNoRows {
-		return Saved{}, false, nil
+		return Saved{}, "", false, nil
 	}
 	if err != nil {
-		return Saved{}, false, fmt.Errorf("read server provider credentials: %w", err)
+		return Saved{}, "", false, fmt.Errorf("read server provider credentials: %w", err)
 	}
-	return saved, true, nil
+	return saved, householdID, true, nil
 }
 
 // Clear removes the saved credentials for one provider.

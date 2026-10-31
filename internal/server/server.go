@@ -652,7 +652,6 @@ func newAPIMux(
 	}
 	providersHandler := &ProvidersHandler{
 		Registry:      registry,
-		Adapters:      cart.ServerRegistryResolver{Registry: registry},
 		ConnectionDir: connDir,
 		Credentials:   credentialVault,
 		EnvFallback:   envFallback,

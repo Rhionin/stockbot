@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -258,5 +260,48 @@ func TestLoadCartRegistryDisabledIsNotConfigured(t *testing.T) {
 	}
 	if registry.CredentialsConfigured("kroger") {
 		t.Fatal("DISABLE_KROGER should clear credentials-configured")
+	}
+}
+
+func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	var logs strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	db := newCartDB(t)
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), scope, appcred.Saved{
+		ProviderID:   "kroger",
+		ClientID:     "saved-client",
+		ClientSecret: "saved-secret",
+		RedirectURI:  "https://saved.example/cb",
+		Modality:     "DELIVERY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loadCartRegistry(db)
+	out := logs.String()
+	if !strings.Contains(out, "using saved row for household "+scope.HouseholdID()) {
+		t.Fatalf("log missing saved household: %q", out)
+	}
+	if strings.Contains(out, "env-secret") || strings.Contains(out, "saved-secret") {
+		t.Fatalf("log leaked secret: %q", out)
+	}
+
+	logs.Reset()
+	loadCartRegistry(newCartDB(t))
+	out = logs.String()
+	if !strings.Contains(out, "using environment") {
+		t.Fatalf("log missing environment source: %q", out)
 	}
 }

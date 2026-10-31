@@ -62,7 +62,7 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 		return nil, &HTTPError{Code: 422, Message: "Redirect URI must be an http or https URL."}
 	}
 
-	scope, err := requestScope(req.Context)
+	scope, err := h.serverCredentialScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -118,7 +118,7 @@ func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerC
 	if err != nil {
 		return nil, err
 	}
-	scope, err := requestScope(req.Context)
+	scope, err := h.serverCredentialScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
 	}
@@ -176,6 +176,13 @@ func (h *ProvidersHandler) credentialActor(ctx context.Context) string {
 	return p.UserID
 }
 
+func (h *ProvidersHandler) serverCredentialScope(ctx context.Context) (tenant.Scope, error) {
+	if h.Auth != nil {
+		return h.Auth.Primary(ctx)
+	}
+	return requestScope(ctx)
+}
+
 var errCredentialStore = &HTTPError{Code: 500, Message: "Credential store is not available."}
 
 func (h *ProvidersHandler) credentialSink(providerID string) (cart.Provider, cart.AppCredentialSink, error) {
@@ -194,8 +201,9 @@ func (h *ProvidersHandler) credentialSink(providerID string) (cart.Provider, car
 }
 
 func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scope, provider cart.Provider) (CredentialView, error) {
+	providerID := string(provider.ID())
 	if h.Credentials != nil {
-		saved, ok, err := h.Credentials.Public(ctx, scope, string(provider.ID()))
+		saved, ok, err := h.Credentials.Public(ctx, scope, providerID)
 		if err != nil {
 			return CredentialView{}, err
 		}
@@ -209,14 +217,45 @@ func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scop
 			}, nil
 		}
 	}
+
+	primaryScope := scope
+	if h.Auth != nil {
+		ps, err := h.Auth.Primary(ctx)
+		if err != nil {
+			return CredentialView{}, err
+		}
+		primaryScope = ps
+	}
+
+	if h.Credentials != nil && scope.HouseholdID() != primaryScope.HouseholdID() {
+		if pub, ok, err := h.Credentials.Public(ctx, primaryScope, providerID); err != nil {
+			return CredentialView{}, err
+		} else if ok {
+			modality := pub.Modality
+			if modality == "" {
+				modality = "PICKUP"
+			}
+			return CredentialView{Source: "none", Modality: modality}, nil
+		}
+		return CredentialView{Source: "none", Modality: "PICKUP"}, nil
+	}
+
 	sink, ok := provider.(cart.AppCredentialSink)
 	if !ok {
 		return CredentialView{Source: "none", Modality: "PICKUP"}, nil
 	}
 	snap := sink.PublicAppCredentials()
 	source := "none"
-	if h.Registry != nil && h.Registry.CredentialsConfigured(provider.ID()) {
-		source = "environment"
+	if h.Registry != nil && h.Registry.CredentialsConfigured(provider.ID()) && h.EnvFallback.Complete() {
+		if h.Credentials != nil {
+			if _, ok, err := h.Credentials.Public(ctx, primaryScope, providerID); err != nil {
+				return CredentialView{}, err
+			} else if !ok {
+				source = "environment"
+			}
+		} else {
+			source = "environment"
+		}
 	}
 	modality := snap.Modality
 	if modality == "" {

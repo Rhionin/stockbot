@@ -120,9 +120,10 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 		adapter = kroger.NewUnconfigured()
 	}
 
+	var savedHousehold string
 	if !disabled {
 		vault := appcred.NewVault(db)
-		saved, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
+		saved, savedHousehold, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
@@ -130,6 +131,7 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 				log.Printf("saved Kroger credentials were not applied: %v", err)
 			} else {
 				configured = true
+				log.Printf("Kroger app credentials: using saved row for household %s", savedHousehold)
 			}
 		}
 	}
@@ -142,7 +144,9 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 		log.Printf("failed to register Kroger: %v", err)
 	}
 	if !configured && !disabled {
-		log.Println("Kroger credentials are not configured; set them in the shopping list or with KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, and KROGER_REDIRECT_URI")
+		log.Println("Kroger app credentials: none configured; set them in the shopping list or with KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, and KROGER_REDIRECT_URI")
+	} else if configured && !disabled && savedHousehold == "" {
+		log.Println("Kroger app credentials: using environment")
 	}
 	return registry, ledger, envCreds
 }

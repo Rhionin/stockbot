@@ -18,22 +18,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-func TestServerRegistryResolverReturnsSharedAdapter(t *testing.T) {
-	registry := cart.NewRegistry()
-	if err := registry.Register(kroger.NewUnconfigured()); err != nil {
-		t.Fatal(err)
-	}
-	resolver := cart.ServerRegistryResolver{Registry: registry}
-	scope, err := tenant.New("01900000-0000-7000-8000-000000000001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, ok := resolver.Adapter(scope, "kroger")
-	if !ok || provider.ID() != "kroger" {
-		t.Fatalf("adapter ok=%v id=%v", ok, provider)
-	}
-}
-
 func TestKrogerCredentialsRequireOperator(t *testing.T) {
 	t.Setenv("KROGER_CLIENT_ID", "env-client")
 	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
@@ -168,13 +152,57 @@ func TestKrogerCredentialsRequireOperator(t *testing.T) {
 	if after := adapter.PublicAppCredentials().ClientID; after != before {
 		t.Fatalf("live client id changed %q -> %q", before, after)
 	}
-	birchScope, err := tenant.New(member.house)
+	birchScope, err := tenant.New(birchHouse.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	saved, ok, err := appcred.NewVault(db).Load(context.Background(), birchScope, "kroger")
 	if err != nil || ok || saved.ClientID != "" {
 		t.Fatalf("birch row written ok=%v err=%v saved=%+v", ok, err, saved)
+	}
+
+	primaryScope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	birchAdminPut := operator.authed(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
+		"clientId": "birch-session-admin", "clientSecret": "admin-secret",
+		"redirectUri": "https://birch-session.example/cb", "modality": "DELIVERY",
+	})
+	if birchAdminPut.Code != http.StatusOK {
+		t.Fatalf("admin PUT on birch session %d %s", birchAdminPut.Code, birchAdminPut.Body.String())
+	}
+	savedPrimary, ok, err := appcred.NewVault(db).Load(context.Background(), primaryScope, "kroger")
+	if err != nil || !ok || savedPrimary.ClientID != "birch-session-admin" {
+		t.Fatalf("primary row after birch-session PUT ok=%v err=%v saved=%+v", ok, err, savedPrimary)
+	}
+	if saved, ok, err := appcred.NewVault(db).Load(context.Background(), birchScope, "kroger"); err != nil || ok || saved.ClientID != "" {
+		t.Fatalf("birch household row ok=%v err=%v saved=%+v", ok, err, saved)
+	}
+	if got := adapter.PublicAppCredentials().ClientID; got != "birch-session-admin" {
+		t.Fatalf("live client id = %q", got)
+	}
+	reloadKrogerAdapter(t, db, adapter)
+	if got := adapter.PublicAppCredentials().ClientID; got != "birch-session-admin" {
+		t.Fatalf("after restart client id = %q", got)
+	}
+	providersMember := member.authed(http.MethodGet, "/api/providers", nil)
+	if providersMember.Code != http.StatusOK {
+		t.Fatalf("member GET providers %d %s", providersMember.Code, providersMember.Body.String())
+	}
+	if strings.Contains(providersMember.Body.String(), `"source":"environment"`) {
+		t.Fatalf("member providers leaked environment source: %s", providersMember.Body.String())
+	}
+
+	birchDel := operator.authed(http.MethodDelete, "/api/providers/kroger/credentials", nil)
+	if birchDel.Code != http.StatusOK {
+		t.Fatalf("admin DELETE on birch session %d %s", birchDel.Code, birchDel.Body.String())
+	}
+	if _, ok, err := appcred.NewVault(db).Load(context.Background(), primaryScope, "kroger"); err != nil || ok {
+		t.Fatalf("primary row after birch-session DELETE ok=%v err=%v", ok, err)
+	}
+	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
+		t.Fatalf("after birch-session delete live client id = %q", got)
 	}
 
 	reloadKrogerAdapter(t, db, adapter)
@@ -279,7 +307,7 @@ func errorsAsHTTP(err error, target **HTTPError) bool {
 
 func reloadKrogerAdapter(t *testing.T, db *sql.DB, adapter *kroger.Adapter) {
 	t.Helper()
-	saved, ok, err := appcred.NewVault(db).LoadServerProvider(context.Background(), "kroger")
+	saved, _, ok, err := appcred.NewVault(db).LoadServerProvider(context.Background(), "kroger")
 	if err != nil {
 		t.Fatal(err)
 	}
