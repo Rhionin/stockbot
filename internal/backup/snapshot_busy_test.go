@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +38,9 @@ func deleteJournalReservedWriter(t *testing.T) (path string, release func()) {
 	}
 }
 
-// TestSnapshotSourceTxlockDeferred pins deferred txlock on the snapshot source connection.
+// TestSnapshotSourceTxlockDeferred pins _txlock=deferred in openSource's DSN
+// (Begin must not block while another connection holds RESERVED). It does not
+// assert VACUUM INTO behavior under contention.
 func TestSnapshotSourceTxlockDeferred(t *testing.T) {
 	path, release := deleteJournalReservedWriter(t)
 	defer release()
@@ -152,5 +155,19 @@ func TestRunnerExplicitZeroBusyRetries(t *testing.T) {
 func TestRunnerUnsetBusyRetriesDefaultsToThree(t *testing.T) {
 	if got := (&Runner{}).busyRetries(); got != 3 {
 		t.Fatalf("busyRetries = %d, want 3 when unset", got)
+	}
+}
+
+func TestRunnerRejectsNegativeBusyRetries(t *testing.T) {
+	path := fixtureDB(t)
+	neg := -1
+	recips, _ := testRecipient(t)
+	r := &Runner{
+		DBPath: path, StageDir: t.TempDir(), TmpfsLimit: 1 << 30, Reason: "nightly",
+		Recipients: recips, Store: newMemStore(time.Now), BusyRetries: intPtr(neg),
+	}
+	_, err := r.Run(context.Background())
+	if err == nil || ExitCode(err) != ExitPreflight || !strings.Contains(err.Error(), "snapshot retry count cannot be negative") {
+		t.Fatalf("err = %v", err)
 	}
 }

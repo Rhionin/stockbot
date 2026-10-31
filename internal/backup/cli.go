@@ -13,6 +13,9 @@ import (
 	"github.com/Rhionin/stockbot/internal/buildinfo"
 )
 
+// cmdRunRunnerHook is set by tests to observe the Runner cmdRun builds before Run.
+var cmdRunRunnerHook func(*Runner)
+
 // CLI runs stockbot-backup. args are the arguments after the program name.
 func CLI(args []string) int {
 	if len(args) == 0 {
@@ -93,6 +96,9 @@ func cmdRun(args []string) int {
 		IncludeSecrets:    cfg.IncludeSecrets,
 		SecretsPaths:      cfg.SecretsPaths,
 		HealthURL:         cfg.HealthchecksURL,
+	}
+	if cmdRunRunnerHook != nil {
+		cmdRunRunnerHook(runner)
 	}
 	if _, err := runner.Run(context.Background()); err != nil {
 		return fail(err)
