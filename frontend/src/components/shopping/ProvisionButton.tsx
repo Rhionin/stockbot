@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button, Loader, Stack, Text } from '@mantine/core';
 import { authorizeProvider, exportShoppingList, resolveUnknownProvision, ApiError } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
@@ -8,6 +8,7 @@ import {
   inlineFailure,
 } from '@stockbot/shared/contract';
 import {
+  provisionBlockedSendHint,
   provisionEmptyListNote,
   provisionSendButtonLabel,
   provisionSendHint,
@@ -50,6 +51,8 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
   const [envelopeError, setEnvelopeError] = useState<ProvisionWholeRequestError | undefined>();
   const [requestError, setRequestError] = useState('');
   const [cartUrl, setCartUrl] = useState<string | undefined>();
+  const flushRef = useRef<((options?: { blockedSend?: boolean }) => true | Promise<boolean>) | null>(null);
+  const [blockedSendHint, setBlockedSendHint] = useState('');
 
   const staged = entries.some((entry) => provisionQuantity(entry) >= 1);
   const enabled = canProvision(provider, entries, inFlight);
@@ -58,6 +61,18 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
 
   const provision = async () => {
     setInFlight(true);
+    // Commit pending cart checks before the export, so the server ledger sees them first.
+    let flush = flushRef.current;
+    if (flush === null && showResultPanel) {
+      await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
+      flush = flushRef.current;
+    }
+    const flushed = flush?.({ blockedSend: true }) ?? (!showResultPanel);
+    if (flushed !== true && !(await flushed)) {
+      setInFlight(false);
+      return;
+    }
+    setBlockedSendHint('');
     setRequestError('');
     setReport(null);
     setEnvelopeError(undefined);
@@ -124,6 +139,11 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
       <Text className="shopping-send-hint" size="sm" c="dimmed">
         {provisionSendHint(storeLabel)}
       </Text>
+      {blockedSendHint !== '' && (
+        <Text className="provision-blocked-send-hint" size="sm" c="red" role="alert">
+          {blockedSendHint}
+        </Text>
+      )}
       {hasNotices && (
         <Stack className="provision-notices" gap="sm">
           {showEmpty && (
@@ -156,6 +176,9 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
               onTryAgain={() => void provision()}
               onReconnect={() => void reconnect()}
               onResolveUnknown={(entryId, reached) => resolve(entryId, reached)}
+              flushRef={flushRef}
+              onBlockedSave={(failedIds) => setBlockedSendHint(provisionBlockedSendHint(failedIds.length))}
+              onBlockedSaveCleared={() => setBlockedSendHint('')}
             />
           )}
         </Stack>

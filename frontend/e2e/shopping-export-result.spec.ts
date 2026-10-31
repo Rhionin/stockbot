@@ -440,6 +440,77 @@ test('HTTP export errors show Try again at 390 and 1280', async ({ page }) => {
   }
 })
 
+test('blocked Send waits for resolve before export and shows hint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const order: string[] = []
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    order.push('resolve')
+    resolveCalls += 1
+    await route.fulfill({
+      status: resolveCalls === 1 ? 500 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(resolveCalls === 1 ? { error: 'boom', code: 'internal' } : { entryId: 'a' }),
+    })
+  })
+  await page.route('**/api/shopping-list/export**', async (route) => {
+    if (route.request().method() === 'POST') {
+      order.push('export')
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(exportBodies['all-unknown']) })
+      return
+    }
+    await route.continue()
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  const blockedResolve = page.waitForResponse(
+    (response) => response.url().includes('unknown-resolution') && response.status() === 500,
+  )
+  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await blockedResolve
+  await expect(page.locator('.provision-blocked-send-hint')).toHaveText("One item didn't save. Fix it below, then send again.")
+  await expect.poll(() => order).toEqual(['export', 'resolve'])
+  await saveShot(page, 'blocked-send-390.png')
+})
+
+test('dismiss keeps the panel when the pending save fails', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom', code: 'internal' }) })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await panel.getByRole('button', { name: 'Dismiss cart send result' }).click()
+  await expect(panel.getByText("Couldn't save that.")).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeVisible()
+})
+
+test('row Try again retries a failed check-row save', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    resolveCalls += 1
+    await route.fulfill({
+      status: resolveCalls === 1 ? 500 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(resolveCalls === 1 ? { error: 'boom', code: 'internal' } : { entryId: 'a' }),
+    })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await panel.getByRole('button', { name: 'Try again: Oats' }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Undo: Oats' })).toHaveCount(0)
+})
+
 test('nothing-sent error Reconnect control is at least 44px tall', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await installShoppingMocks(page, {

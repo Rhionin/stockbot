@@ -379,6 +379,29 @@ a.group-row {
   min-height: 44px;
 }
 
+.provision-check-marked {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.25rem;
+}
+
+.provision-row-saving-spinner {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.provision-check-row:focus {
+  outline: none;
+}
+
+.provision-check-row:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+  border-radius: var(--mantine-radius-sm);
+}
+
 @media (max-width: 47.99em) {
   .shopping-toolbar {
     width: 100%;

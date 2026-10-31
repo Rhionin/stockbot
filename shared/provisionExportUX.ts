@@ -159,6 +159,22 @@ export function provisionPartialReconnectPrompt(storeLabel: string): string {
 
 export const PROVISION_RESOLVE_FAILED = "Couldn't save that. Try again.";
 
+export const PROVISION_RESOLVE_FAILED_LEAD = "Couldn't save that.";
+
+export const PROVISION_RESOLVE_TRY_AGAIN = 'Try again';
+
+export function provisionRowRetryAria(itemName: string): string {
+  return `Try again: ${itemName}`;
+}
+
+/** Shown under the Send hint when a new export is blocked by failed check-row saves. */
+export function provisionBlockedSendHint(failedCount: number): string {
+  if (failedCount === 1) {
+    return "One item didn't save. Fix it below, then send again.";
+  }
+  return `${failedCount} items didn't save. Fix them below, then send again.`;
+}
+
 export function provisionUndoAria(itemName: string): string {
   return `Undo: ${itemName}`;
 }

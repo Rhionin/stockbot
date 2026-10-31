@@ -4,6 +4,7 @@ import {
   PROVISION_NOTHING_SENT_LINE,
   PROVISION_RESOLVE_UNDO_MS,
   groupProvisionResults,
+  provisionBlockedSendHint,
   provisionCheckInCartAria,
   provisionEmptyListNote,
   provisionItemReasonLine,
@@ -254,6 +255,18 @@ describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
     })).toBeUndefined();
   });
 
+  it('does not block when a row was sent even without sentCount or exported', () => {
+    expect(provisionLegacyNothingSentError({
+      provider: 'kroger',
+      exported: 0,
+      ...legacyError('reconnect_required'),
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        ...unknownRows,
+      ],
+    })).toBeUndefined();
+  });
+
   it('collapses groups so per-item sections stay hidden', () => {
     const groups = groupProvisionResults({
       provider: 'kroger',
@@ -348,4 +361,21 @@ describe('provisionExportUX review fixes', () => {
     expect(groups.sentRows).toEqual([]);
   });
 
+});
+
+describe('provisionBlockedSendHint', () => {
+  it('uses singular and plural copy', () => {
+    expect(provisionBlockedSendHint(1)).toBe("One item didn't save. Fix it below, then send again.");
+    expect(provisionBlockedSendHint(2)).toBe("2 items didn't save. Fix them below, then send again.");
+  });
+});
+
+describe('provisionProviderUnavailableEnvelope', () => {
+  it('names the store when known', () => {
+    expect(provisionProviderUnavailableEnvelope("Smith's")).toBe("Nothing was sent. Smith's isn't responding right now.");
+  });
+
+  it('says Your store when no store is known', () => {
+    expect(provisionProviderUnavailableEnvelope(provisionStoreLabel(undefined))).toBe("Nothing was sent. Your store isn't responding right now.");
+  });
 });

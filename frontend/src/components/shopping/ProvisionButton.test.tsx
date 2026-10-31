@@ -543,10 +543,9 @@ describe('ProvisionButton check-row undo window (ledger advance is not reversibl
     } finally {
       vi.useRealTimers();
     }
-    const alert = await within(row).findByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't save that. Try again.");
-    expect(within(row).getByRole('button', { name: "It's not: Oats" })).toBeInTheDocument();
-    expect(within(panel).queryByRole('alert')).toBe(alert);
+    expect(await within(row).findByText("Couldn't save that.")).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: "It's not: Oats" })).not.toBeInTheDocument();
     expect(within(panel).queryByText('Marked as not in your cart')).not.toBeInTheDocument();
   });
 
@@ -561,15 +560,171 @@ describe('ProvisionButton check-row undo window (ledger advance is not reversibl
     expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
   });
 
-  it('commits a pending choice when Send starts again during the undo window', async () => {
-    const api = stubExportAndResolve(oneUnknown);
+  const orderedStub = (resolveStatus = 200) => {
+    const order: string[] = [];
+    const inits: RequestInit[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        order.push('resolve');
+        inits.push(init ?? {});
+        return resolveStatus === 200 ? jsonResponse({ entryId: 'sli-oats' }) : jsonResponse({ error: 'boom' }, resolveStatus);
+      }
+      if (url.includes('/export') && init?.method === 'POST') {
+        order.push('export');
+        return jsonResponse(oneUnknown);
+      }
+      return jsonResponse({});
+    }));
+    return { order, inits };
+  };
+
+  it('waits for a save the timer already started before sending again', async () => {
+    const order: string[] = [];
+    let finishSave: (r: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        order.push('resolve-start');
+        return new Promise<Response>((resolve) => { finishSave = resolve; });
+      }
+      if (url.includes('/export') && init?.method === 'POST') {
+        order.push('export');
+        return jsonResponse(oneUnknown);
+      }
+      return jsonResponse({});
+    }));
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(order).toEqual(['export', 'resolve-start']);
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await flush();
+    expect(order).toEqual(['export', 'resolve-start']);
+    await act(async () => { finishSave(new Response(JSON.stringify({ entryId: 'sli-oats' }), { status: 200, headers: { 'Content-Type': 'application/json' } })); });
+    await waitFor(() => expect(order).toEqual(['export', 'resolve-start', 'export']));
+  });
+
+  it('records a pending choice on pagehide', async () => {
+    const api = orderedStub();
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    act(() => { window.dispatchEvent(new Event('pagehide')); });
+    await waitFor(() => expect(api.order).toEqual(['export', 'resolve']));
+    expect(api.inits[0].keepalive).toBe(true);
+  });
+
+  it('records the pending choice before the new export starts', async () => {
+    const api = orderedStub();
     renderButton();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
-    await flush();
-    expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
+    await waitFor(() => expect(api.order).toEqual(['export', 'resolve', 'export']));
+    expect(api.inits[0].keepalive).toBe(true);
+  });
+
+  it('keeps the panel and does not send again when the pending save fails', async () => {
+    const api = orderedStub(500);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await waitFor(() => expect(screen.getByText("One item didn't save. Fix it below, then send again.")).toBeInTheDocument());
+    const row = within(panel).getByText('Oats').closest('.provision-check-row') as HTMLElement;
+    await waitFor(() => expect(within(row).getByRole('button', { name: 'Try again: Oats' })).toHaveFocus());
+    expect(api.order).toEqual(['export', 'resolve']);
+    expect(screen.getByRole('button', { name: 'Send to Kroger' })).toBeEnabled();
+  });
+
+  it('keeps the panel open with the row alert when the save on dismiss fails', async () => {
+    orderedStub(500);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    const row = within(panel).getByText('Oats').closest('.provision-check-row') as HTMLElement;
+    expect(await within(row).findByText("Couldn't save that.")).toBeInTheDocument();
+    await waitFor(() => expect(within(row).getByRole('button', { name: 'Try again: Oats' })).toHaveFocus());
+    expect(screen.getByRole('status', { name: 'Cart send result' })).toBe(panel);
+    expect(screen.queryByText("One item didn't save. Fix it below, then send again.")).not.toBeInTheDocument();
+  });
+
+  it('hides Undo while the save is in flight, shows a spinner, and focuses the row container', async () => {
+    let finishSave: (r: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        return new Promise<Response>((resolve) => { finishSave = resolve; });
+      }
+      if (url.includes('/export') && init?.method === 'POST') {
+        return jsonResponse(oneUnknown);
+      }
+      return jsonResponse({});
+    }));
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    const row = within(panel).getByText('Oats').closest('.provision-check-row') as HTMLElement;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      const markedGroup = within(row).getByText('Marked as in your cart').closest('.provision-check-marked') as HTMLElement;
+      const heightBefore = markedGroup.getBoundingClientRect().height;
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+      expect(row.querySelector('.provision-row-saving-spinner')).toBeTruthy();
+      expect(markedGroup.getBoundingClientRect().height).toBeCloseTo(heightBefore, 0);
+    } finally {
+      vi.useRealTimers();
+    }
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+    expect(document.activeElement).toBe(row);
+    await act(async () => {
+      finishSave(new Response(JSON.stringify({ entryId: 'sli-oats' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Undo: Oats' })).not.toBeInTheDocument();
+  });
+
+  it('row Try again succeeds and clears the blocked Send hint', async () => {
+    let resolveCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        resolveCalls += 1;
+        if (resolveCalls === 1) {
+          return jsonResponse({ error: 'boom' }, 500);
+        }
+        return jsonResponse({ entryId: 'sli-oats' });
+      }
+      if (url.includes('/export') && init?.method === 'POST') {
+        return jsonResponse(oneUnknown);
+      }
+      return jsonResponse({});
+    }));
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await waitFor(() => expect(screen.getByText("One item didn't save. Fix it below, then send again.")).toBeInTheDocument());
+    const row = within(panel).getByText('Oats').closest('.provision-check-row') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Try again: Oats' }));
+    await waitFor(() => expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument());
+    expect(within(panel).queryByRole('button', { name: 'Undo: Oats' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("One item didn't save. Fix it below, then send again.")).not.toBeInTheDocument());
   });
 });
 

@@ -592,6 +592,8 @@ export function resolveUnknownProvision(entryId: string, provider: string, reach
   return apiFetch(`/api/shopping-list/items/${entryId}/unknown-resolution`, {
     method: 'POST',
     body: JSON.stringify({ provider, reachedProvider }),
+    // A choice committed on pagehide must survive the page unloading.
+    keepalive: true,
   });
 }
 
