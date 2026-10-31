@@ -462,5 +462,3 @@ These responses have no `code`.
 | `GET /health` after boot, and a wrong method on `/health` | `{"status":"ok"}` is not an error. Deploy checks `GET` only. The web and mobile apps do not call `/health`. While migrations run, `/health` is `updating`, which is not this exemption. |
 | `GET /api/build` during migration | 200 build JSON, not an error (`cmd/server/boot.go`). |
 | A 502, 503, 504, or 530 this server did not produce | A proxy or a failed fetch. No `code`, so the client can still treat it as offline. |
-
-<!-- CI proof #488 docs-only: remove after aggregator run -->
