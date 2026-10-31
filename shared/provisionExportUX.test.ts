@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { ProvisionReport } from './types';
+import type { ProvisionReport, ShoppingListExportResultEntry } from './types';
 import {
   PROVISION_NOTHING_SENT_LINE,
   PROVISION_RESOLVE_UNDO_MS,
   groupProvisionResults,
+  mapProvisionEntryResultRow,
   provisionBlockedSendHint,
   provisionCheckInCartAria,
+  provisionCheckRowLabel,
   provisionEmptyListNote,
   provisionItemReasonLine,
   provisionLegacyNothingSentError,
@@ -60,6 +62,10 @@ describe('provisionReasonText', () => {
   it('handles unavailable separately from generic errors', () => {
     expect(provisionReasonText(store, 'unavailable')).toBe("Not available at Smith's right now");
     expect(provisionReasonText(store, 'weird_code')).toBe('Something went wrong sending this item');
+  });
+
+  it('returns halt copy for request_incomplete', () => {
+    expect(provisionReasonText(store, 'request_incomplete')).toBe('Not sent. Send again to finish.');
   });
 });
 
@@ -329,6 +335,199 @@ describe('provisionItemReasonLine', () => {
     expect(provisionItemReasonLine('Soup', 'Kroger', 'batch_rejected', { status: 'failed', reason: 'batch_rejected' }, true)).toBe(
       "Soup: Kroger didn't accept this item",
     );
+  });
+
+  it('uses halt copy for failed request_incomplete', () => {
+    const row = {
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Synthetic line',
+      quantity: 1,
+      status: 'failed',
+      reason: 'request_incomplete',
+    } satisfies ShoppingListExportResultEntry;
+    expect(provisionItemReasonLine('Synthetic line', 'Example store', row.reason, row)).toBe(
+      'Synthetic line: Not sent. Send again to finish.',
+    );
+  });
+});
+
+describe('unknown request_incomplete check rows', () => {
+  const unknownIncomplete = {
+    entryId: 'u1',
+    itemId: 'i1',
+    name: 'Synthetic line U',
+    quantity: 1,
+    status: 'unknown',
+    reason: 'request_incomplete',
+  } satisfies ShoppingListExportResultEntry;
+
+  it('stays in the check section with the item name only', () => {
+    expect(provisionRowGroup(unknownIncomplete)).toBe('not_confirmed');
+    const groups = groupProvisionResults({
+      provider: 'example',
+      exported: 0,
+      results: [unknownIncomplete],
+    });
+    expect(groups.U).toBe(1);
+    expect(groups.M).toBe(0);
+    expect(groups.check).toEqual([unknownIncomplete]);
+    expect(provisionCheckRowLabel(unknownIncomplete)).toBe('Synthetic line U');
+    expect(provisionItemReasonLine('Synthetic line U', 'Example store', 'request_incomplete', unknownIncomplete)).toBe(
+      'Synthetic line U',
+    );
+  });
+});
+
+describe('failed request_incomplete export rows', () => {
+  const failedIncompleteRow = {
+    entryId: 'e1',
+    itemId: 'i1',
+    name: 'Synthetic line A',
+    quantity: 1,
+    status: 'failed',
+    reason: 'request_incomplete',
+  } satisfies ShoppingListExportResultEntry;
+
+  it('groups into the couldnt-be-sent bucket, not the check section', () => {
+    expect(provisionRowGroup(failedIncompleteRow)).toBe('not_added');
+    const groups = groupProvisionResults({
+      provider: 'example',
+      exported: 0,
+      results: [failedIncompleteRow],
+    });
+    expect(groups.M).toBe(1);
+    expect(groups.U).toBe(0);
+    expect(groups.notAdded).toEqual([failedIncompleteRow]);
+    expect(groups.check).toEqual([]);
+  });
+
+  it('shows the halt copy from provisionReasonText', () => {
+    expect(provisionReasonText('Example store', 'request_incomplete')).toBe(
+      'Not sent. Send again to finish.',
+    );
+    expect(provisionItemReasonLine(
+      'Synthetic line A',
+      'Example store',
+      'request_incomplete',
+      failedIncompleteRow,
+    )).toBe('Synthetic line A: Not sent. Send again to finish.');
+  });
+});
+
+describe('provisionRowGroup no_per_item_result precedence', () => {
+  it('routes no_per_item_result to check even when status is failed', () => {
+    const mismatchedStatus = {
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Synthetic line Z',
+      quantity: 1,
+      status: 'failed',
+      reason: 'no_per_item_result',
+    } as ShoppingListExportResultEntry;
+    expect(provisionRowGroup(mismatchedStatus)).toBe('not_confirmed');
+    const groups = groupProvisionResults({
+      provider: 'example',
+      exported: 0,
+      results: [mismatchedStatus],
+    });
+    expect(groups.U).toBe(1);
+    expect(groups.M).toBe(0);
+  });
+});
+
+describe('ShoppingListExportResultEntry fixtures', () => {
+  it('accepts failed halt reasons on failed lines', () => {
+    const haltReconnect = {
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Line A',
+      quantity: 1,
+      status: 'failed',
+      reason: 'reconnect_required',
+    } satisfies ShoppingListExportResultEntry;
+    const haltIncomplete = {
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Line B',
+      quantity: 1,
+      status: 'failed',
+      reason: 'request_incomplete',
+    } satisfies ShoppingListExportResultEntry;
+    expect(haltReconnect.reason).toBe('reconnect_required');
+    expect(haltIncomplete.reason).toBe('request_incomplete');
+  });
+});
+
+describe('mapProvisionEntryResultRow', () => {
+  it('maps unknown outcome with a valid unknown reason', () => {
+    expect(mapProvisionEntryResultRow({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Line A',
+      quantity: 1,
+      outcome: 'unknown',
+      outcomeReason: 'no_per_item_result',
+    })).toEqual({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Line A',
+      quantity: 1,
+      status: 'unknown',
+      reason: 'no_per_item_result',
+    });
+  });
+
+  it('omits skip reasons on unknown legacy entries', () => {
+    expect(mapProvisionEntryResultRow({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Line A',
+      quantity: 1,
+      outcome: 'unknown',
+      outcomeReason: 'no_upc',
+    })).toEqual({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Line A',
+      quantity: 1,
+      status: 'unknown',
+    });
+  });
+
+  it('maps failed outcome with a valid failed reason', () => {
+    expect(mapProvisionEntryResultRow({
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Line B',
+      quantity: 1,
+      outcome: 'failed',
+      outcomeReason: 'request_incomplete',
+    })).toEqual({
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Line B',
+      quantity: 1,
+      status: 'failed',
+      reason: 'request_incomplete',
+    });
+  });
+
+  it('omits skip reasons on failed legacy entries', () => {
+    expect(mapProvisionEntryResultRow({
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Line B',
+      quantity: 1,
+      outcome: 'failed',
+      outcomeReason: 'unavailable',
+    })).toEqual({
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Line B',
+      quantity: 1,
+      status: 'failed',
+    });
   });
 });
 

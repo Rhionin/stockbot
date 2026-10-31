@@ -207,6 +207,31 @@ describe('ProvisionButton', () => {
     expect(within(panel).getByText('Nothing was sent to your cart.')).toBeInTheDocument();
     expect(within(panel).getByText("1 couldn't be sent.")).toBeInTheDocument();
   });
+
+  it('renders a failed request_incomplete line in the couldnt-be-sent section', async () => {
+    mockExport({
+      provider: 'example',
+      exported: 0,
+      results: [
+        {
+          entryId: 'e1',
+          itemId: 'i1',
+          name: 'Synthetic line A',
+          quantity: 1,
+          status: 'failed',
+          reason: 'request_incomplete',
+        },
+      ],
+    });
+    renderButton({ provider: provider({ id: 'example', displayName: 'Example store' }) });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Example store' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    const rowLine = within(panel).getByText('Synthetic line A: Not sent. Send again to finish.');
+    expect(rowLine).toBeVisible();
+    expect(within(panel).getByText("Couldn't be sent (1)")).toBeVisible();
+    expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: /Try again:/ })).not.toBeInTheDocument();
+  });
 });
 
 const spuriousUnknownResults = Array.from({ length: 4 }, (_, index) => ({
@@ -318,6 +343,8 @@ describe('ProvisionButton partial reconnectRequired', () => {
     expect(within(panel).getByText('Sent (1)')).toBeInTheDocument();
     expect(within(panel).getByText("Couldn't be sent (1)")).toBeInTheDocument();
     expect(within(panel).getByText('Check these in your cart (1)')).toBeInTheDocument();
+    expect(within(panel).getByText('Butter')).toBeInTheDocument();
+    expect(within(panel).queryByText(/Butter: Not sent/)).not.toBeInTheDocument();
     expect(within(panel).getByText('Bread: Reconnect Kroger to send this')).toBeInTheDocument();
     expect(within(panel).getByText(
       'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.',
@@ -821,6 +848,85 @@ describe('ProvisionButton blocked send and failed saves (63cf468 review)', () =>
     fireEvent.click(within(panel).getByRole('button', { name: 'Try again: Jam' }));
     await waitFor(() => expect(screen.queryByText(ONE_HINT)).not.toBeInTheDocument());
     expect(calls.filter((c) => c === 'export')).toHaveLength(1);
+  });
+
+  it('a blocked dismiss shows the row alert but not the Send hint alert', async () => {
+    stubScripted(oneUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument());
+    expect(screen.queryByText(ONE_HINT)).not.toBeInTheDocument();
+    expect(document.querySelector('.provision-blocked-send-hint')).toBeNull();
+  });
+
+  it('a blocked Send shows the Send hint alert under the Send control', async () => {
+    stubScripted(oneUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    sendNow();
+    await waitFor(() => expect(screen.getByText(ONE_HINT)).toBeInTheDocument());
+    const hint = document.querySelector('.provision-blocked-send-hint');
+    expect(hint).toHaveAttribute('role', 'alert');
+    expect(hint).toHaveTextContent(ONE_HINT);
+  });
+
+  it('clears the blocked Send hint when every failed save succeeds', async () => {
+    const calls = stubScripted(twoUnknown, { 'sli-oats': [500], 'sli-jam': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Jam" }));
+    sendNow();
+    await waitFor(() => expect(screen.getByText(TWO_HINT)).toBeInTheDocument());
+    fireEvent.click(within(panel).getByRole('button', { name: 'Try again: Oats' }));
+    await waitFor(() => expect(screen.getByText(ONE_HINT)).toBeInTheDocument());
+    fireEvent.click(within(panel).getByRole('button', { name: 'Try again: Jam' }));
+    await waitFor(() => expect(screen.queryByText(TWO_HINT)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText(ONE_HINT)).not.toBeInTheDocument());
+    expect(screen.queryByText(/0 items didn't save/)).not.toBeInTheDocument();
+    expect(document.querySelector('.provision-blocked-send-hint')).toBeNull();
+    expect(calls.filter((c) => c.startsWith('resolve:')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not start a second resolve while the first save is still in flight', async () => {
+    let resolveCalls = 0;
+    let release!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        resolveCalls += 1;
+        return new Promise<Response>((resolve) => { release = resolve; });
+      }
+      if (url.includes('/export') && init?.method === 'POST') {
+        return jsonResponse(oneUnknown);
+      }
+      return jsonResponse({});
+    }));
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(resolveCalls).toBe(1));
+    sendNow();
+    expect(resolveCalls).toBe(1);
+    await act(async () => {
+      release(new Response(JSON.stringify({ entryId: 'sli-oats' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    });
   });
 
   it('a second dismiss with a still-failing save keeps the panel', async () => {

@@ -17,6 +17,7 @@ import {
   groupProvisionResults,
   provisionCheckInCartAria,
   provisionCheckNotInCartAria,
+  provisionCheckRowLabel,
   provisionItemReasonLine,
   provisionPartialReconnectPrompt,
   provisionNothingSentReconnectLabel,
@@ -473,7 +474,7 @@ export const ProvisionResultPanel = ({
                 }}
               >
                 <Stack gap={4} className="provision-result-item">
-                  <Text size="sm">{row.name}</Text>
+                  <Text size="sm">{provisionCheckRowLabel(row)}</Text>
                 {entryId !== '' && rowErrors[entryId] !== undefined && (
                   <Stack gap={4} role="alert">
                     <Text size="sm" c="red">{rowErrors[entryId]}</Text>

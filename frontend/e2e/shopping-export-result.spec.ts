@@ -22,6 +22,12 @@ const krogerProvider = {
   credentialsConfigured: true,
 }
 
+const exampleProvider = {
+  ...krogerProvider,
+  id: 'example',
+  displayName: 'Example store',
+}
+
 const stagedEntry = {
   id: 'sli-test-1',
   itemId: 'item-test-1',
@@ -606,4 +612,61 @@ test('saving keeps the row height and focus in the row; Try again takes focus an
   await expect(panel.getByText('Marked as in your cart')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Undo: Oats' })).toHaveCount(0)
   await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? '')).toContain('provision-check-row')
+})
+
+test('failed request_incomplete after 502 retry: couldnt-be-sent section, halt copy, no row Try again', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  let exportCalls = 0
+  const failedIncompleteBody = {
+    provider: 'example',
+    exported: 0,
+    results: [
+      {
+        entryId: 'e1',
+        itemId: 'i1',
+        name: 'Synthetic line A',
+        quantity: 1,
+        status: 'failed',
+        reason: 'request_incomplete',
+      },
+    ],
+  }
+  await installShoppingMocks(page, { providers: [exampleProvider] })
+  await page.route('**/api/shopping-list/export**', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    exportCalls += 1
+    if (exportCalls === 1) {
+      await route.fulfill({
+        status: 502,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Example store unreachable', code: 'provider_unavailable' }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(failedIncompleteBody),
+    })
+  })
+  await openShoppingAndSend(page, 'Send to Example store')
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  const envelopeTryAgain = panel.getByRole('button', { name: 'Try again' })
+  await expect(envelopeTryAgain).toBeVisible()
+  const tryAgainBox = await envelopeTryAgain.boundingBox()
+  expect(tryAgainBox!.width).toBeGreaterThanOrEqual(44)
+  expect(tryAgainBox!.height).toBeGreaterThanOrEqual(44)
+  await envelopeTryAgain.click()
+  await expect(panel.getByText("Couldn't be sent (1)")).toBeVisible()
+  await expect(panel.getByText('Synthetic line A: Not sent. Send again to finish.')).toBeVisible()
+  await expect(panel.getByRole('button', { name: /Try again:/ })).toHaveCount(0)
+  await expect(panel.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+  const send = page.getByRole('button', { name: 'Send to Example store' })
+  await expect(send).toBeVisible()
+  const sendBox = await send.boundingBox()
+  expect(sendBox!.width).toBeGreaterThanOrEqual(44)
+  expect(sendBox!.height).toBeGreaterThanOrEqual(44)
 })

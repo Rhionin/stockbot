@@ -1,8 +1,10 @@
 import { provisionReasonUXCategory } from './contract';
 import type {
   ProvisionEntryResult,
+  ProvisionFailedReason,
   ProvisionReport,
   ProvisionResultStatus,
+  ProvisionUnknownReason,
   ShoppingListExportResultEntry,
 } from './types';
 
@@ -98,6 +100,9 @@ export function provisionRowGroup(row: ShoppingListExportResultEntry): Provision
 }
 
 export function provisionReasonText(storeLabel: string, reason: string | undefined): string {
+  if (reason === 'request_incomplete') {
+    return 'Not sent. Send again to finish.';
+  }
   if (reason === 'unavailable') {
     return `Not available at ${storeLabel} right now`;
   }
@@ -135,7 +140,18 @@ export function provisionItemReasonLine(
   if (row !== undefined && failedNeedsReconnectSend(row, reconnectRequired)) {
     return `${itemName}: Reconnect ${storeLabel} to send this`;
   }
+  if (row?.status === 'unknown' && row.reason === 'request_incomplete') {
+    return itemName;
+  }
   return `${itemName}: ${provisionReasonText(storeLabel, reason)}`;
+}
+
+/** Primary label for a check-section row (name only; no reason suffix for unknown/request_incomplete). */
+export function provisionCheckRowLabel(row: Pick<ShoppingListExportResultEntry, 'name' | 'status' | 'reason'>): string {
+  if (row.status === 'unknown' && row.reason === 'request_incomplete') {
+    return row.name;
+  }
+  return row.name;
 }
 
 export type ProvisionWholeRequestError = 'provider_unavailable' | 'reconnect_required';
@@ -329,16 +345,64 @@ function legacyCheck(report: ProvisionReport): ShoppingListExportResultEntry[] {
   }));
 }
 
-function entryRowToResult(entry: ProvisionEntryResult): ShoppingListExportResultEntry {
-  return {
+function isProvisionFailedReason(value: string): value is ProvisionFailedReason {
+  switch (value) {
+    case 'api_error':
+    case 'batch_rejected':
+    case 'invalid_line':
+    case 'reconnect_required':
+    case 'request_incomplete':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isProvisionUnknownReason(value: string): value is ProvisionUnknownReason {
+  switch (value) {
+    case 'no_per_item_result':
+    case 'provider_unavailable':
+    case 'reconnect_required':
+    case 'request_incomplete':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function legacyFailedReason(raw: string | undefined): ProvisionFailedReason | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  return isProvisionFailedReason(raw) ? raw : undefined;
+}
+
+function legacyUnknownReason(raw: string | undefined): ProvisionUnknownReason | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  return isProvisionUnknownReason(raw) ? raw : undefined;
+}
+
+/** Maps legacy `entries[]` rows into discriminated `results[]`-shaped lines. */
+export function mapProvisionEntryResultRow(entry: ProvisionEntryResult): ShoppingListExportResultEntry {
+  const base = {
     entryId: entry.entryId,
     itemId: entry.itemId,
     name: entry.name,
     quantity: entry.quantity,
-    status: entry.outcome === 'unknown' ? 'unknown' : 'failed',
-    reason: entry.outcomeReason as ShoppingListExportResultEntry['reason'],
     detail: entry.detail,
   };
+  if (entry.outcome === 'unknown') {
+    const reason = legacyUnknownReason(entry.outcomeReason);
+    return reason === undefined
+      ? { ...base, status: 'unknown' }
+      : { ...base, status: 'unknown', reason };
+  }
+  const reason = legacyFailedReason(entry.outcomeReason);
+  return reason === undefined
+    ? { ...base, status: 'failed' }
+    : { ...base, status: 'failed', reason };
+}
+
+function entryRowToResult(entry: ProvisionEntryResult): ShoppingListExportResultEntry {
+  return mapProvisionEntryResultRow(entry);
 }
 
 function partitionRows(rows: ShoppingListExportResultEntry[]) {
