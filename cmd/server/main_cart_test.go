@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	_ "modernc.org/sqlite"
 )
 
@@ -84,6 +87,134 @@ func TestLoadCartRegistryInvalidModalityStaysConfigured(t *testing.T) {
 	}
 	if got := registry.BatchSize("kroger"); got != 50 {
 		t.Fatalf("batch size %d, want default 50", got)
+	}
+}
+
+func TestLoadCartRegistryUsesOperatorSavedRow(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	db := newCartDB(t)
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorID := "01909999-9999-7000-8000-0000000000op"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Op', 'op@pantry.test', 'hash', 'local', 1, '2026-02-02T00:00:00Z')`, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'owner', '2026-02-02T00:00:00Z')`, operatorID, scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), scope, appcred.Saved{
+		ProviderID:   "kroger",
+		ClientID:     "operator-saved",
+		ClientSecret: "operator-secret",
+		RedirectURI:  "https://op.example/cb",
+		Modality:     "DELIVERY",
+		ActorUserID:  operatorID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, _, _ := loadCartRegistry(db)
+	provider, ok := registry.Get("kroger")
+	if !ok {
+		t.Fatal("missing kroger")
+	}
+	adapter := provider.(*kroger.Adapter)
+	if got := adapter.PublicAppCredentials().ClientID; got != "operator-saved" {
+		t.Fatalf("client id = %q", got)
+	}
+}
+
+func TestLoadCartRegistryIgnoresForeignHouseholdSavedCreds(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	db := newCartDB(t)
+	const birch = "0190aaaa-bbbb-7000-8000-0000000000c3"
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Birch', '', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, birch); err != nil {
+		t.Fatal(err)
+	}
+	birchScope, err := tenant.New(birch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), birchScope, appcred.Saved{
+		ProviderID:   "kroger",
+		ClientID:     "birch-only",
+		ClientSecret: "birch-secret",
+		RedirectURI:  "https://birch.example/cb",
+		Modality:     "DELIVERY",
+		ActorUserID:  "member-user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, _, _ := loadCartRegistry(db)
+	provider, ok := registry.Get("kroger")
+	if !ok {
+		t.Fatal("kroger adapter missing")
+	}
+	adapter, ok := provider.(*kroger.Adapter)
+	if !ok {
+		t.Fatal("kroger adapter type")
+	}
+	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
+		t.Fatalf("client id = %q want env-client", got)
+	}
+}
+
+func TestLoadCartRegistryForeignOperatorRowDoesNotApplyWhenPrimaryEmpty(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	db := newCartDB(t)
+	const birch = "0190aaaa-bbbb-7000-8000-0000000000c3"
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Birch', '', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, birch); err != nil {
+		t.Fatal(err)
+	}
+	operatorID := "01909999-9999-7000-8000-0000000000op"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Op', 'op@pantry.test', 'hash', 'local', 1, '2026-02-02T00:00:00Z')`, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'owner', '2026-02-02T00:00:00Z')`, operatorID, birch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, ?, 'kroger', 'foreign-op', 'secret', 'https://foreign.example/cb', 'DELIVERY', '2026-03-01T00:00:00Z')`,
+		birch+":kroger", birch, birch, operatorID); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, _, _ := loadCartRegistry(db)
+	provider, ok := registry.Get("kroger")
+	if !ok {
+		t.Fatal("missing kroger")
+	}
+	adapter := provider.(*kroger.Adapter)
+	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
+		t.Fatalf("client id = %q want env-client", got)
 	}
 }
 
@@ -171,5 +302,48 @@ func TestLoadCartRegistryDisabledIsNotConfigured(t *testing.T) {
 	}
 	if registry.CredentialsConfigured("kroger") {
 		t.Fatal("DISABLE_KROGER should clear credentials-configured")
+	}
+}
+
+func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	var logs strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	db := newCartDB(t)
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appcred.NewVault(db).Save(context.Background(), scope, appcred.Saved{
+		ProviderID:   "kroger",
+		ClientID:     "saved-client",
+		ClientSecret: "saved-secret",
+		RedirectURI:  "https://saved.example/cb",
+		Modality:     "DELIVERY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loadCartRegistry(db)
+	out := logs.String()
+	if !strings.Contains(out, "using saved row for household "+scope.HouseholdID()) {
+		t.Fatalf("log missing saved household: %q", out)
+	}
+	if strings.Contains(out, "env-secret") || strings.Contains(out, "saved-secret") {
+		t.Fatalf("log leaked secret: %q", out)
+	}
+
+	logs.Reset()
+	loadCartRegistry(newCartDB(t))
+	out = logs.String()
+	if !strings.Contains(out, "using environment") {
+		t.Fatalf("log missing environment source: %q", out)
 	}
 }
