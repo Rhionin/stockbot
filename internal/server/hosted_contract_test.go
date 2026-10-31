@@ -51,13 +51,13 @@ func existingContractSentences() map[string]string {
 		"device_revoked":                "This device was disconnected. Pair it again to keep using it.",
 		"upgrade_required":              "Update Stockbot to keep using it.",
 		"store_name_taken":              "You already have a store with that name.",
-		"store_already_linked":          "Another store is already linked to this cart.",
+		"store_already_linked":          "Another store is already linked to your online cart.",
 		"store_not_linked":              "This store isn't linked to an online cart.",
 		"store_check_failed":            "Couldn't reach the store right now. Try again later.",
 		"store_check_unavailable":       "Checking isn't on for this store.",
-		"kroger_not_connected":          "Connect your store's online cart first.",
-		"reconnect_required":            "Couldn't connect to your {provider} account. Nothing was sent.",
-		"provider_unavailable":          "{provider} isn't responding. Try again later.",
+		"kroger_not_connected":          "Connect your store account first.",
+		"reconnect_required":            "Couldn't connect to your store account. Nothing was sent.",
+		"provider_unavailable":          "Your store isn't responding. Try again later.",
 	}
 }
 
@@ -152,17 +152,6 @@ func parseEndpointIndex(doc string) []string {
 	return paths
 }
 
-func renderHostedErrorSentence(sentence, providerDisplayName string) string {
-	if !strings.Contains(sentence, "{provider}") {
-		return sentence
-	}
-	label := strings.TrimSpace(providerDisplayName)
-	if label == "" {
-		label = "your store"
-	}
-	return strings.ReplaceAll(sentence, "{provider}", label)
-}
-
 func TestHostedAPIContract(t *testing.T) {
 	doc, ts := readContract(t)
 	rows := parseRegistry(doc)
@@ -219,11 +208,11 @@ func TestHostedAPIContract(t *testing.T) {
 		}
 	}
 	for code, sentence := range existing {
-		for _, name := range []string{"", "Smith's"} {
-			rendered := renderHostedErrorSentence(sentence, name)
-			if strings.Contains(rendered, "{provider}") {
-				t.Fatalf("code %s still contains {provider} after render: %q", code, rendered)
-			}
+		if strings.Contains(sentence, "{") {
+			t.Fatalf("hosted sentence for %s contains {: %q", code, sentence)
+		}
+		if strings.Contains(strings.ToLower(sentence), "kroger") {
+			t.Fatalf("hosted sentence for %s contains Kroger: %q", code, sentence)
 		}
 	}
 

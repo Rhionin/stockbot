@@ -1609,7 +1609,7 @@ Kroger product and location lookups run only through the calling household's own
 
 **`lookupsEnabled`** (household) is true only when the server setting is on, the household is connected with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `POST /api/providers/kroger/authorize` today.
 
-In hosted error sentences, **`{provider}`** is the linked store's display name (e.g. Smith's). The web fills `{provider}` from that name and uses **`your store`** when it is missing. The web never shows the raw `{provider}` token; `renderHostedErrorSentence` in `shared/contract.ts` is the contract pin for substitution.
+Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): no `{…}` placeholders, no retailer names in the sentence (store names come from the UI), and send-panel UX keys **`c.res.reconnectMsg`** / **`c.res.down`** for send failures.
 
 ### Types
 
@@ -1724,23 +1724,25 @@ interface ShoppingListEntryStoreFields {
 
 **Export with `storeId`:** only unbought lines whose run store is `storeId`; the just-in-time check runs first if checking is on (a rejected token refresh ends the send with `409 reconnect_required`, nothing sent). Sendable lines go through `cart.Engine.Provision` as #484 leaves it. Held-back lines never reach the engine or the ledger and appear as `{entryId, itemId, name, quantity, reason:'not_confirmed', checkStatus, checkReason?}`. Without `storeId`: today's behavior for one release with `Deprecation: true`; zero-store households keep calling without it . **`cartUrl`:** from a static, reviewed banner→URL map on `location_chain` (T1 verifies), omitted for unknown banners.
 
-**Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted):** before any cart `PUT`, `409 reconnect_required` or `502 provider_unavailable` with no `results[]` and no ledger change. After a batch was accepted: a later 401/403 gives `200` with `reconnectRequired: true`, that batch and every never-attempted batch `failed`/`reconnect_required`; a 5xx or timeout makes only that batch `unknown`/`request_incomplete`, later batches `failed`/`request_incomplete`. At most one cart-triggered refresh retry, only before any batch succeeds.
+**Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted; [PM on #481](https://github.com/Rhionin/stockbot/issues/481#issuecomment-6546229451)):** Whole-request `409 reconnect_required` or `502 provider_unavailable` (no `results[]`, no ledger change) only **before any batch is accepted**. `502 provider_unavailable` covers non-reconnect OAuth/token failures before the first accepted batch; it is never returned for a cart `PUT` 5xx or timeout, including the first PUT.
 
-Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr), including `{provider}` substitution and **`c.res.down`** on the send result screen for `502 provider_unavailable`.
+- **401/403 on a cart PUT:** if no batch was accepted yet, `409 reconnect_required` with no `results[]` and the connection marked `reauth_required`. After a batch was accepted, `200` with `reconnectRequired: true` and per-line `results[]` (below).
+- **5xx or timeout on a cart PUT (including the first):** always `200` with `results[]`, never `502`. Lines in the failing batch are `unknown` / `request_incomplete`; every later batch is not sent—those lines are `failed` / `request_incomplete`.
+- At most one cart-triggered OAuth refresh retry per send, only before any batch is accepted.
 
 ### Send result reasons (canonical set = #484's public names)
 
 | `reason` | status | when |
 |---|---|---|
 | `no_upc` | `skipped` | No barcode to derive. |
-| `no_match` | `skipped` | Barcodes, but none normalize to a Kroger UPC. |
-| `batch_rejected` | `failed` | Kroger rejected the batch (4xx on cart `PUT`). |
+| `no_match` | `skipped` | Barcodes, but none normalize to a store UPC. |
+| `unavailable` | `skipped` | `per_line` providers only; never Kroger cart send. |
+| `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
-| `reconnect_required` | `failed` | Partial send only: the refused batch and every later batch. |
-| `request_incomplete` | `unknown` / `failed` | `unknown`: sent, then failed or indeterminate. `failed`: never attempted after that. |
 | `api_error` | `failed` | Fallback. |
-| `unavailable` | `skipped` | `per_line` providers only; never Kroger. |
-| `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger. |
+| `reconnect_required` | `unknown` | 401/403 on a cart `PUT`; whole-request `409` when no batch was accepted yet. |
+| `request_incomplete` | `unknown` | 5xx, timeout, or indeterminate disposition on a cart `PUT`, including the first (response stays `200`, never `502`). |
+| `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.
 
@@ -1811,13 +1813,13 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
 | `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`, and a malformed `expo/` value. Also Basic with no `X-Stockbot-Client`, or Basic with a value that does not start with `expo/`, after the household password is retired. A missing header, or any other non-`expo/` value, is web and is not gated. The gate skips `GET /api/config`, `GET /api/build`, and telemetry. |
 | `store_name_taken` | 409 | You already have a store with that name. | `field:"name"`. |
-| `store_already_linked` | 409 | Another store is already linked to this cart. | One store per provider. |
+| `store_already_linked` | 409 | Another store is already linked to your online cart. | One store per provider. |
 | `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
-| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Kroger 5xx or timeout after retry; also store location search. |
-| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows the reconnect line only when `checkReason` is `no_product_access` and `canConnect` is true. The web hides check controls from `lookupsEnabled`, so this is a guard. |
-| `kroger_not_connected` | 409 | Connect your store's online cart first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
-| `reconnect_required` | 409 | Couldn't connect to your {provider} account. Nothing was sent. | From #484. Send only, before any cart `PUT`. Body `{error, code, provider}`. Marks the connection `reauth_required`. |
-| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | Shared with non-send routes (e.g. Open Food Facts refresh). Send-only before any cart `PUT`; the send result screen shows UX copy key **`c.res.down`** instead of this sentence. |
+| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Provider 5xx or timeout after retry; also store location search. |
+| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows Reconnect only when `checkReason` is `no_product_access` and `canConnect` is true. The web hides check controls from `lookupsEnabled`, so this is a guard. |
+| `kroger_not_connected` | 409 | Connect your store account first. | Store search and check routes when the household has no working connection. Zero provider lookup calls. The web goes to the connect step with no error text. |
+| `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows UX **`c.res.reconnectMsg`** with the store name; this sentence is the code fallback only. |
+| `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows UX **`c.res.down`** and this sentence is the code fallback only. |
 
 ## Decided by PM
 

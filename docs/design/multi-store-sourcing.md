@@ -89,7 +89,7 @@ sequenceDiagram
     S-->>W: 200 {results[] per #484, heldBack[], cartUrl?}
 ```
 
-A token failure before any cart `PUT` is #484's whole-request `409 reconnect_required` or `502 provider_unavailable` (§6.5). If the just-in-time check's token refresh is rejected, the send stops with `409 reconnect_required` and nothing is sent, because the cart `PUT` would use the same token.
+A token failure before any batch is accepted is #484's whole-request `409 reconnect_required` or `502 provider_unavailable` (§6.5). If the just-in-time check's token refresh is rejected, the send stops with `409 reconnect_required` and nothing is sent, because the cart `PUT` would use the same token.
 
 ## 3. Data model (PROPOSED: migration `030_multi_store.sql`)
 
@@ -277,7 +277,7 @@ Fresh rows win over `not_eligible`, except that a disconnect deletes them (§4.2
   - **401 on a lookup:** one forced refresh through the broker, then one retry. If the refresh is rejected (an OAuth reconnect-class error, as #484 classifies), call `MarkReauthRequired`, fail the check with `auth`, and stop. Later sends then fail fast with `409 reconnect_required` exactly as #484 does. **No lookup retries with any other credential** or another household's connection.
   - **403 for a missing scope** (T1 records the body): sets nothing on the connection state; B5 removes `product.compact` from `granted_scope`, so lines show `no_product_access`. Cart sends keep working.
   - Tokens stay in the existing encrypted connection row and are never logged.
-- **Credentials resolved per connection (Q4-ready).** Code exchange, refresh, cart and lookup calls get app credentials from one function, `connection.AppFor(ctx, conn) (AppCreds, appKey)`. Under Q4 option A (today's model) it always returns the server's app. Under option B it returns the household's own app (§4.6). B5 builds only option A plus this seam; it doesn't build option B.
+- **Credentials resolved per connection (Q4-ready).** B5 owns the single **`connection.AppFor(ctx, conn) (AppCreds, appKey)`** used for OAuth code exchange, refresh, cart sends, and Products/Locations lookups—one resolver per connection, not a per-household adapter graph. Under Q4 option A (today's model) it returns the server's app; under option B the household's own app (§4.6). B5 builds only option A plus this seam; it doesn't build option B. Until [#489](https://github.com/Rhionin/stockbot/issues/489) lands, **[#498](https://github.com/Rhionin/stockbot/pull/498)** is its interim fix: `PUT`/`DELETE` Kroger app keys are **server-wide** and **admin-only** (non-admins get `403` `forbidden_operator`). Do not extend #498's **`HouseholdAdapterResolver`** / **`ServerRegistryResolver`** for #481.
 - **Scope and the admin setting.** The Products API needs `product.compact` on the token: "if you need to get a token to call the Public Products API, you must include the `product.compact` scope in the token request" ([FAQ](https://developer.kroger.com/support/faq)). Locations needs no scope ([Applications](https://developer.kroger.com/documentation/support/website-help/applications)).
   - New server setting `KROGER_PRODUCT_CHECKS` (admin only, default **off**). Off: sign-in asks for `cart.basic:write`, and the authorize URL is byte-for-byte today's (test). On: sign-in asks for `cart.basic:write product.compact`.
   - It's turned on only after T1 confirms the server's app is registered for Products and that asking for the scope doesn't break sign-in (Kroger's help says an app without an API can't add it later: "If you find that you need an API you did not select during registration, you must create a new application"). That switch is ticket I1 (Network Engineer).
@@ -339,15 +339,17 @@ Fresh rows win over `not_eligible`, except that a disconnect deletes them (§4.2
 - **DEP-7 fields on `GET /api/stores`:** `lookupsEnabled`; per linked store `checkReason` when checking is off (`not_configured`, `not_connected`, `no_product_access`, `no_location`); and `canConnect`, true when this person may start the Kroger connect flow under the same rule as today's connect button (`POST /api/providers/kroger/authorize`), computed by the same check, not a copy of it. When `KROGER_PRODUCT_CHECKS` is off the reason is `not_configured`, never `no_product_access`, so the web's reconnect line (shown only for `no_product_access` and `canConnect`) stays hidden.
 
 ### 4.6 Q4: which Kroger app households sign in through (open for CJ, gates B5's merge)
+
+**Kroger app credentials ([#489](https://github.com/Rhionin/stockbot/issues/489), interim [#498](https://github.com/Rhionin/stockbot/pull/498)):** Today any household can overwrite the shared server adapter's app keys (#489). **#498** is the interim fix until #489: `PUT`/`DELETE /api/providers/kroger/credentials` accepts writes only from the server admin; anyone else gets `403` `forbidden_operator`. Keys saved that way are **server-wide** (one developer app under option A). B5 implements the single **`connection.AppFor(ctx, conn)`** lookup for cart and Products/Locations; #481 must not extend #498's **`HouseholdAdapterResolver`** / **`ServerRegistryResolver`**.
+
 - **Option A (today):** one server app for every household's sign-in. Each household still uses its own shopper login, token and results. B5 as written.
 - **Option B:** each household registers its own Kroger developer app and enters its keys; nothing goes through the server's app. `AppFor` returns the household's app. Extra work is listed under §8 ("If Q4 = B").
-- Either way, today's bug #489 (one household's saved keys swap the app for everyone) is fixed in its own issue, not in #481 tickets. Under A, #489's interim fix (admin-only keys) is the end state.
 
 ## 5. Security and tenancy
 
 ### 5.1 Credentials
 - **No new credentials.** Lookups use the household's existing connection tokens through the broker. There are no lookup client ID or secret variables and no `client_credentials` token.
-- **App credentials:** unchanged and resolved through `AppFor` (§4.1): the server's `KROGER_CLIENT_ID`/`KROGER_CLIENT_SECRET`, or the saved `provider_app_credentials` row as today (see #489 for that row's cross-household bug).
+- **App credentials:** resolved through **`connection.AppFor`** (§4.1, owned by B5): the server's admin-only `KROGER_CLIENT_ID`/`KROGER_CLIENT_SECRET` ([#498](https://github.com/Rhionin/stockbot/pull/498)), or a household's own saved row under Q4 option B. Do not route #481 lookups through **`HouseholdAdapterResolver`**.
 - **`app_key`:** a truncated SHA-256 of the client ID, only for the rate window. Never the secret.
 - **Never exposed:** tokens, client ID and secret never appear in a response, UI payload, log line or error. B5's test greps every new route's bodies and captured logs for the stub's token, client ID and secret.
 - **Testing:** never CJ's shopper account or tokens. Tests use `httptest` through `Adapter.WithBaseURL`/`WithTransport` and `carttest` fakes; CI has no network access to Kroger. T1 uses a fresh non-CJ developer app and a throwaway test shopper.
@@ -482,37 +484,41 @@ interface ShoppingListEntryStoreFields {
 
 ### 6.5 Error codes (registry rows and the `HostedErrorCode` union, same PR)
 
-In hosted error sentences, **`{provider}`** is the linked store's display name (e.g. Smith's). The web fills `{provider}` from that name and uses **`your store`** when it is missing. The web never shows the raw `{provider}` token; `renderHostedErrorSentence` in `shared/contract.ts` is the contract pin for substitution.
+Hosted error sentences have **no `{…}` placeholders** and never name a retailer; store names come from the UI. The web uses **`hostedErrorSentence(code)`** only as a fallback when it has no richer copy.
 
 | code | HTTP | sentence | notes |
 |---|---|---|---|
 | `store_name_taken` | 409 | You already have a store with that name. | `field:"name"`. |
-| `store_already_linked` | 409 | Another store is already linked to this cart. | One store per provider. |
+| `store_already_linked` | 409 | Another store is already linked to your online cart. | One store per provider. |
 | `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
-| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Kroger 5xx or timeout after retry; also store location search. |
-| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows the reconnect line only when `checkReason` is `no_product_access` and `canConnect` is true; without `checkReason`, a store with no location would wrongly show Reconnect. The web hides check controls from `lookupsEnabled`, so this is a guard. |
-| `kroger_not_connected` | 409 | Connect your store's online cart first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
-| `reconnect_required` | 409 | Couldn't connect to your {provider} account. Nothing was sent. | From #484. Send only, before any cart `PUT`. Body `{error, code, provider}`. Marks the connection `reauth_required`. |
-| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | Shared with non-send routes (e.g. Open Food Facts refresh). Send-only before any cart `PUT`; the send result screen shows UX copy key **`c.res.down`** instead of this sentence. |
+| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Provider 5xx or timeout after retry; also store location search. |
+| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows Reconnect only when `checkReason` is `no_product_access` and `canConnect` is true. The web hides check controls from `lookupsEnabled`, so this is a guard. |
+| `kroger_not_connected` | 409 | Connect your store account first. | Store search and check routes when the household has no working connection. Zero provider lookup calls. The web goes to the connect step with no error text. |
+| `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. The send panel shows UX copy **`c.res.reconnectMsg`** with the store name; this sentence is the code fallback only. |
+| `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes (e.g. Open Food Facts refresh). Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows UX **`c.res.down`** and this sentence is the code fallback only. |
 
-- The `rate_limited` notes gain: manual checks and the store search when the household's daily share of its Kroger app's limit is used up, with `Retry-After`.
+- The `rate_limited` notes gain: manual checks and the store search when the household's daily share of its app's limit is used up, with `Retry-After`.
 - Sentences for the six new store and connection codes are drafts for PM and UX approval at C0.
 
-**Send failure rules (#484's, adopted):** before any cart `PUT`, `409 reconnect_required` or `502 provider_unavailable` with no `results[]` and no ledger change. After a batch was accepted: a later 401/403 gives `200` with `reconnectRequired: true`, that batch and every never-attempted batch `failed`/`reconnect_required`; a 5xx or timeout makes only that batch `unknown`/`request_incomplete`, later batches `failed`/`request_incomplete`. At most one cart-triggered refresh retry, only before any batch succeeds.
+**Send failure rules (#484's, adopted; [PM on #481](https://github.com/Rhionin/stockbot/issues/481#issuecomment-6546229451)):** Whole-request `409 reconnect_required` or `502 provider_unavailable` (no `results[]`, no ledger change) only **before any batch is accepted**. `502 provider_unavailable` covers non-reconnect OAuth/token failures before the first accepted batch; it is never returned for a cart `PUT` 5xx or timeout, including the first PUT.
+
+- **401/403 on a cart PUT:** if no batch was accepted yet, `409 reconnect_required` with no `results[]` and the connection marked `reauth_required`. After a batch was accepted, `200` with `reconnectRequired: true` and per-line `results[]` (§6.6).
+- **5xx or timeout on a cart PUT (including the first):** always `200` with `results[]`, never `502`. Lines in the failing batch are `unknown` / `request_incomplete`; every later batch is not sent—those lines are `failed` / `request_incomplete`.
+- At most one cart-triggered OAuth refresh retry per send, only before any batch is accepted.
 
 ### 6.6 Send result reasons (canonical set = #484's public names)
 
 | `reason` | status | when |
 |---|---|---|
 | `no_upc` | `skipped` | No barcode to derive. |
-| `no_match` | `skipped` | Barcodes, but none normalize to a Kroger UPC. |
-| `batch_rejected` | `failed` | Kroger rejected the batch (4xx on cart `PUT`). |
+| `no_match` | `skipped` | Barcodes, but none normalize to a store UPC. |
+| `unavailable` | `skipped` | `per_line` providers only; never Kroger cart send. |
+| `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
-| `reconnect_required` | `failed` | Partial send only: the refused batch and every later batch. |
-| `request_incomplete` | `unknown` / `failed` | `unknown`: sent, then failed or indeterminate. `failed`: never attempted after that. |
 | `api_error` | `failed` | Fallback. |
-| `unavailable` | `skipped` | `per_line` providers only; never Kroger. |
-| `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger. |
+| `reconnect_required` | `unknown` | 401/403 on a cart `PUT`; whole-request `409` when no batch was accepted yet. |
+| `request_incomplete` | `unknown` | 5xx, timeout, or indeterminate disposition on a cart `PUT`, including the first (response stays `200`, never `502`). |
+| `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.
 
@@ -631,5 +637,5 @@ Nothing waits on Kroger. No support request is planned.
   - Budget per issuing app; per-shopper limits marked Unverified.
   - `checkReason`: `gated` replaced by `not_configured`, `not_connected`, `no_product_access`. `lookupsEnabled` also requires a located linked store. New `canConnect` and per-store `checkReason` on `GET /api/stores` (UX v3).
   - Errors: `kroger_not_connected` and `store_check_unavailable` (409) for the store search and check routes; `reconnect_required` and `provider_unavailable` stay send-only, from #484. Registry +8. Endpoint count stays 78.
-  - Send failures and reasons follow #484 (partial-send `failed`/`reconnect_required`, never-attempted `failed`/`request_incomplete`). Alias `no_product_identity` → `no_upc`.
+  - Send failures and reasons follow #484 and [PM on #481](https://github.com/Rhionin/stockbot/issues/481#issuecomment-6546229451) (first-PUT 5xx is `200`/`unknown`, never `502`; halt lines `failed`/`request_incomplete`). Alias `no_product_identity` → `no_upc`.
   - T1 re-scoped to shopper-token access, per-app vs per-shopper limits, and a Products-less app. New conditional I1 (NE). B5's merge waits on CJ's Q4.
