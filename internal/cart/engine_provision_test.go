@@ -193,7 +193,8 @@ func TestProvision_Rejected_FailsAndLeavesLedgerUntouched(t *testing.T) {
 		Name:     "Milk",
 		Quantity: 2,
 		Outcome:  OutcomeFailed,
-		Reason:   ReasonAPIError,
+		Reason:   ReasonBatchRejected,
+		Detail:   "The store rejected this batch.",
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -223,8 +224,9 @@ func TestProvision_Indeterminate_UnknownAndLeavesLedgerUntouched(t *testing.T) {
 		ItemID:   itemID,
 		Name:     "Milk",
 		Quantity: 2,
-		Outcome:  OutcomeFailed,
-		Reason:   ReasonAPIError,
+		Outcome:  OutcomeUnknown,
+		Reason:   ReasonRequestIncomplete,
+		Detail:   "The store did not confirm this item.",
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")

@@ -57,16 +57,17 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.exported", value: float64(1)},
-					{path: "$.addedCount", value: float64(1)},
+					{path: "$.sentCount", value: float64(1)},
+					{path: "$.addedCount", value: float64(0)},
 					{path: "$.skippedCount", value: float64(2)},
 					{path: "$.failedCount", value: float64(1)},
 					{path: "$.unknownCount", value: float64(0)},
 				},
 				bodyContains: []string{
-					`"status":"added"`,
+					`"status":"sent"`,
 					`"reason":"no_upc"`,
 					`"reason":"no_match"`,
-					`"reason":"api_error"`,
+					`"reason":"batch_rejected"`,
 				},
 				bodyExcludes: []string{
 					"super-secret",
@@ -114,7 +115,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 			},
 		},
 		{
-			name: "export oauth auth failure before cart calls returns provider unavailable",
+			name: "export oauth refresh revoked returns reconnect required on 200",
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-auth", "Milk", "item-auth")
 				insertManualShoppingItem(env.T, env.DB, "sli-auth", "user-1", "item-auth", 1)
@@ -122,7 +123,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 					env.T.Fatalf("barcode: %v", err)
 				}
 				script := carttest.NewScript().
-					WithTokenExchangeError(errors.New("refresh denied")).
+					WithTokenExchangeError(&cart.OAuthTokenError{StatusCode: 400, OAuthError: "invalid_grant"}).
 					WithIdentityLookup("888", cart.ProductIdentity("SKU-AUTH"))
 				provider := carttest.NewFake(cart.Capabilities{
 					Auth:         cart.AuthOAuth2,
@@ -149,11 +150,60 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				method:         "POST",
 				path:           "/api/shopping-list/export",
 				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
-				expectedStatus: http.StatusBadGateway,
+				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$.code", value: "provider_unavailable"},
+					{path: "$.exported", value: float64(0)},
+					{path: "$.error", value: "reconnect_required"},
+					{path: "$.unknownCount", value: float64(1)},
+					{path: "$.results[0].reason", value: "reconnect_required"},
 				},
-				bodyExcludes: []string{"refresh-me", "stale-access", "refresh denied"},
+				bodyExcludes: []string{"refresh-me", "stale-access", "invalid_grant"},
+			},
+		},
+		{
+			name: "export oauth refresh transport failure returns provider unavailable on 200",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-auth2", "Bread", "item-auth2")
+				insertManualShoppingItem(env.T, env.DB, "sli-auth2", "user-1", "item-auth2", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "889", "prod-auth2", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithTokenExchangeError(&cart.OAuthTokenError{Err: errors.New("connection reset")}).
+					WithIdentityLookup("889", cart.ProductIdentity("SKU-AUTH2"))
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthOAuth2,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+				expired := time.Now().UTC().Add(-time.Hour)
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
+					Provider:     "test-oauth2_authorization_code-server_push",
+					State:        connection.StateConnected,
+					AccessToken:  "stale-access-2",
+					RefreshToken: "refresh-me-2",
+					ExpiresAt:    &expired,
+				}); err != nil {
+					env.T.Fatalf("connection: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+					{path: "$.error", value: "provider_unavailable"},
+					{path: "$.unknownCount", value: float64(1)},
+					{path: "$.results[0].reason", value: "provider_unavailable"},
+				},
+				bodyExcludes: []string{"refresh-me-2", "stale-access-2", "connection reset"},
 			},
 		},
 	}
@@ -197,7 +247,8 @@ func TestShoppingListExportResultEntryIDsUnique(t *testing.T) {
 				body:           `{"provider":"test-none-server_push"}`,
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$.addedCount", value: float64(2)},
+					{path: "$.sentCount", value: float64(2)},
+					{path: "$.addedCount", value: float64(0)},
 				},
 				bodyContains: []string{`"entryId":"sli-a"`, `"entryId":"sli-b"`},
 			},

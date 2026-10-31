@@ -169,7 +169,24 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		// For OAuth2, use the token broker to get an access token
 		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
 		if err != nil {
-			return ProvisionReport{}, &AuthExchangeFailed{Provider: providerID, Err: err}
+			reason := OAuthFailureReason(err)
+			detail := OAuthFailureDetail(reason)
+			for _, item := range resolvedItems {
+				outcomes = append(outcomes, EntryOutcome{
+					EntryID:  item.EntryID,
+					ItemID:   item.ItemID,
+					Name:     item.Name,
+					Quantity: item.Quantity,
+					Outcome:  OutcomeUnknown,
+					Reason:   reason,
+					Detail:   detail,
+				})
+			}
+			return ProvisionReport{
+				Provider:  providerID,
+				Confirmed: 0,
+				Entries:   outcomes,
+			}, nil
 		}
 		cred = NewBearerCredential(token)
 	}
@@ -201,8 +218,23 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 			err = fmt.Errorf("provider does not support %s delivery", caps.Delivery)
 		}
 
-		if err != nil || result.Disposition == DispositionIndeterminate {
-			// Indeterminate or error: record all accounted entries as unknown
+		if err != nil {
+			if result.Disposition == DispositionRejected {
+				for _, line := range req.Lines {
+					for _, item := range line.Accounts {
+						outcomes = append(outcomes, EntryOutcome{
+							EntryID:  item.EntryID,
+							ItemID:   item.ItemID,
+							Name:     item.Name,
+							Quantity: item.Quantity,
+							Outcome:  OutcomeFailed,
+							Reason:   ReasonInvalidLine,
+							Detail:   "This line could not be sent to the store.",
+						})
+					}
+				}
+				continue
+			}
 			for _, line := range req.Lines {
 				for _, item := range line.Accounts {
 					outcomes = append(outcomes, EntryOutcome{
@@ -210,8 +242,26 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 						ItemID:   item.ItemID,
 						Name:     item.Name,
 						Quantity: item.Quantity,
-						Outcome:  OutcomeFailed,
-						Reason:   ReasonAPIError,
+						Outcome:  OutcomeUnknown,
+						Reason:   ReasonRequestIncomplete,
+						Detail:   "The store did not confirm this item.",
+					})
+				}
+			}
+			continue
+		}
+
+		if result.Disposition == DispositionIndeterminate {
+			for _, line := range req.Lines {
+				for _, item := range line.Accounts {
+					outcomes = append(outcomes, EntryOutcome{
+						EntryID:  item.EntryID,
+						ItemID:   item.ItemID,
+						Name:     item.Name,
+						Quantity: item.Quantity,
+						Outcome:  OutcomeUnknown,
+						Reason:   ReasonRequestIncomplete,
+						Detail:   "The store did not confirm this item.",
 					})
 				}
 			}
@@ -219,7 +269,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		}
 
 		if result.Disposition == DispositionRejected {
-			// Rejected: record all accounted entries as failed
+			detail := batchRejectedDetail(result.ProviderErrorCode)
 			for _, line := range req.Lines {
 				for _, item := range line.Accounts {
 					outcomes = append(outcomes, EntryOutcome{
@@ -228,7 +278,8 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 						Name:     item.Name,
 						Quantity: item.Quantity,
 						Outcome:  OutcomeFailed,
-						Reason:   ReasonAPIError,
+						Reason:   ReasonBatchRejected,
+						Detail:   detail,
 					})
 				}
 			}

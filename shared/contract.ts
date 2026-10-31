@@ -137,6 +137,7 @@ export const UPDATING_SENTENCE = 'Updating. Try again in a minute.';
 export const UPDATING_STATUS = 'migrating';
 
 export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
+export const CODE_RECONNECT_REQUIRED = 'reconnect_required';
 export const PROVIDER_FIELD = 'provider';
 export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
 
@@ -1742,6 +1743,12 @@ export function deviceKindLabel(kind: string): string {
 // POST /api/shopping-list/export — send the staged shopping plan to a grocery
 // provider (Kroger). Matches shoppingListExportResponse in
 // internal/server/handler_shopping_list_export.go.
+//
+// Whole-request failure (HTTP 200, nothing sent): top-level `error` is
+// `provider_unavailable` (try again) or `reconnect_required` (reconnect store).
+//
+// Per-line UX mapping via provisionReasonUXCategory: no_upc → no_barcode,
+// no_match → no_match, batch_rejected → rejected, api_error → error.
 export const SHOPPING_LIST_EXPORT_PATH = '/api/shopping-list/export';
 
 export interface ShoppingListExportRequest {
@@ -1760,8 +1767,11 @@ export interface ShoppingListExportResponse extends ProvisionReport {
 export function provisionResultStatus(
   outcome: string,
   reason?: string,
+  confirmation?: 'per_line' | 'per_request' | 'none',
 ): ProvisionResultStatus {
-  if (outcome === 'confirmed') return 'added';
+  if (outcome === 'confirmed') {
+    return confirmation === 'per_line' ? 'added' : 'sent';
+  }
   if (outcome === 'unknown') return 'unknown';
   if (outcome === 'failed') {
     if (reason === 'no_upc' || reason === 'no_match' || reason === 'unavailable') {
@@ -1770,4 +1780,22 @@ export function provisionResultStatus(
     return 'failed';
   }
   return 'failed';
+}
+
+/** UX copy buckets for per-line `results[].reason` (#481). */
+export type ProvisionReasonUXCategory = 'no_barcode' | 'no_match' | 'rejected' | 'error';
+
+export function provisionReasonUXCategory(reason: string | undefined): ProvisionReasonUXCategory | '' {
+  switch (reason) {
+    case 'no_upc':
+      return 'no_barcode';
+    case 'no_match':
+      return 'no_match';
+    case 'batch_rejected':
+      return 'rejected';
+    case 'api_error':
+      return 'error';
+    default:
+      return '';
+  }
 }

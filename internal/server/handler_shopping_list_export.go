@@ -40,12 +40,15 @@ type ProvisionEntry struct {
 	Quantity      int    `json:"quantity"`
 	Outcome       string `json:"outcome"`
 	OutcomeReason string `json:"outcomeReason,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 type shoppingListExportResponse struct {
 	Provider     string                 `json:"provider,omitempty"`
 	Exported     int                    `json:"exported"`
+	Error        string                 `json:"error,omitempty"`
 	AddedCount   int                    `json:"addedCount"`
+	SentCount    int                    `json:"sentCount"`
 	SkippedCount int                    `json:"skippedCount"`
 	FailedCount  int                    `json:"failedCount"`
 	UnknownCount int                    `json:"unknownCount"`
@@ -135,14 +138,11 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if errors.As(err, &conflict) {
 			return nil, Conflict(conflict.Reason)
 		}
-		var authFail *cart.AuthExchangeFailed
-		if errors.As(err, &authFail) {
-			return nil, ProviderUnavailable(provider.DisplayName())
-		}
 		return nil, InternalError(err)
 	}
 
-	entries, results, failedItems, unknownItems, counts := buildProvisionExportViews(report.Entries)
+	entries, results, failedItems, unknownItems, counts := buildProvisionExportViews(report.Entries, caps.Confirmation)
+	exportErr := exportErrorCode(report.Entries)
 
 	var handoff *HandoffResponse
 	if report.Handoff != nil && report.Handoff.URL != "" {
@@ -155,7 +155,9 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	return &shoppingListExportResponse{
 		Provider:     string(providerID),
 		Exported:     report.Confirmed,
+		Error:        exportErr,
 		AddedCount:   counts.AddedCount,
+		SentCount:    counts.SentCount,
 		SkippedCount: counts.SkippedCount,
 		FailedCount:  counts.FailedCount,
 		UnknownCount: counts.UnknownCount,

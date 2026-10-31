@@ -11,19 +11,25 @@ type provisionResultEntry struct {
 	Quantity int    `json:"quantity"`
 	Status   string `json:"status"`
 	Reason   string `json:"reason,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type provisionSummaryCounts struct {
-	AddedCount    int `json:"addedCount"`
-	SkippedCount  int `json:"skippedCount"`
-	FailedCount   int `json:"failedCount"`
-	UnknownCount  int `json:"unknownCount"`
+	AddedCount   int `json:"addedCount"`
+	SentCount    int `json:"sentCount"`
+	SkippedCount int `json:"skippedCount"`
+	FailedCount  int `json:"failedCount"`
+	UnknownCount int `json:"unknownCount"`
 }
 
-func provisionStatus(outcome cart.Outcome, reason cart.OutcomeReason) string {
+func provisionResultStatus(outcome cart.Outcome, reason cart.OutcomeReason, confirm cart.ConfirmationCapability) string {
 	switch outcome {
 	case cart.OutcomeConfirmed:
-		return "added"
+		if confirm == cart.ConfirmPerLine {
+			return "added"
+		}
+		// Kroger and other per_request providers: bodyless acceptance is not per-line proof.
+		return "sent"
 	case cart.OutcomeUnknown:
 		return "unknown"
 	case cart.OutcomeFailed:
@@ -44,21 +50,53 @@ func publicProvisionReason(outcome cart.Outcome, reason cart.OutcomeReason) stri
 	}
 	switch reason {
 	case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonUnavailable,
-		cart.ReasonAPIError, cart.ReasonNoPerItemResult:
+		cart.ReasonAPIError, cart.ReasonBatchRejected, cart.ReasonInvalidLine,
+		cart.ReasonProviderUnavailable, cart.ReasonReconnectRequired,
+		cart.ReasonNoPerItemResult, cart.ReasonRequestIncomplete:
 		return string(reason)
-	case cart.ReasonProviderRejected, cart.ReasonRequestIncomplete:
-		return string(cart.ReasonAPIError)
 	case cart.ReasonNoProductIdentity:
 		return string(cart.ReasonNoMatch)
+	case cart.ReasonProviderRejected:
+		return string(cart.ReasonBatchRejected)
 	default:
 		if outcome == cart.OutcomeUnknown {
-			return string(cart.ReasonNoPerItemResult)
+			return string(cart.ReasonRequestIncomplete)
 		}
 		return string(cart.ReasonAPIError)
 	}
 }
 
-func buildProvisionExportViews(entries []cart.EntryOutcome) (
+func exportErrorCode(entries []cart.EntryOutcome) string {
+	for _, entry := range entries {
+		if entry.Reason == cart.ReasonReconnectRequired {
+			return "reconnect_required"
+		}
+	}
+	for _, entry := range entries {
+		if entry.Reason == cart.ReasonProviderUnavailable {
+			return "provider_unavailable"
+		}
+	}
+	return ""
+}
+
+// provisionReasonUXCategory maps machine-readable result reasons to UX copy buckets.
+func provisionReasonUXCategory(reason string) string {
+	switch reason {
+	case string(cart.ReasonNoUPC):
+		return "no_barcode"
+	case string(cart.ReasonNoMatch):
+		return "no_match"
+	case string(cart.ReasonBatchRejected):
+		return "rejected"
+	case string(cart.ReasonAPIError):
+		return "error"
+	default:
+		return ""
+	}
+}
+
+func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.ConfirmationCapability) (
 	[]ProvisionEntry,
 	[]provisionResultEntry,
 	[]string,
@@ -72,8 +110,9 @@ func buildProvisionExportViews(entries []cart.EntryOutcome) (
 	var counts provisionSummaryCounts
 
 	for _, entry := range entries {
-		status := provisionStatus(entry.Outcome, entry.Reason)
+		status := provisionResultStatus(entry.Outcome, entry.Reason, confirm)
 		reason := publicProvisionReason(entry.Outcome, entry.Reason)
+		detail := entry.Detail
 
 		provisionEntries = append(provisionEntries, ProvisionEntry{
 			EntryID:       entry.EntryID,
@@ -82,6 +121,7 @@ func buildProvisionExportViews(entries []cart.EntryOutcome) (
 			Quantity:      entry.Quantity,
 			Outcome:       string(entry.Outcome),
 			OutcomeReason: reason,
+			Detail:        detail,
 		})
 		results = append(results, provisionResultEntry{
 			EntryID:  entry.EntryID,
@@ -90,19 +130,27 @@ func buildProvisionExportViews(entries []cart.EntryOutcome) (
 			Quantity: entry.Quantity,
 			Status:   status,
 			Reason:   reason,
+			Detail:   detail,
 		})
+
+		switch entry.Outcome {
+		case cart.OutcomeFailed:
+			failedItems = append(failedItems, entry.Name)
+		case cart.OutcomeUnknown:
+			unknownItems = append(unknownItems, entry.Name)
+		}
 
 		switch status {
 		case "added":
 			counts.AddedCount++
+		case "sent":
+			counts.SentCount++
 		case "skipped":
 			counts.SkippedCount++
 		case "failed":
 			counts.FailedCount++
-			failedItems = append(failedItems, entry.Name)
 		case "unknown":
 			counts.UnknownCount++
-			unknownItems = append(unknownItems, entry.Name)
 		}
 	}
 

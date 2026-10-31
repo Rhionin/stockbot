@@ -318,9 +318,10 @@ const (
 
 // ProvisionResult is what one adapter reports for one request.
 type ProvisionResult struct {
-	Disposition ResultDisposition        // Accepted | Rejected | Indeterminate
-	PerLine     map[ProductIdentity]bool // populated only when Confirmation == per_line
-	Status      int                      // provider HTTP status, for the error message
+	Disposition       ResultDisposition        // Accepted | Rejected | Indeterminate
+	PerLine           map[ProductIdentity]bool // populated only when Confirmation == per_line
+	Status            int                      // provider HTTP status, for the error message
+	ProviderErrorCode string                   // sanitized provider error code, never raw body
 }
 
 // Outcome is the final classification of one entry's provisioning attempt.
@@ -342,6 +343,10 @@ const (
 	ReasonNoMatch           OutcomeReason = "no_match"
 	ReasonUnavailable       OutcomeReason = "unavailable"
 	ReasonAPIError          OutcomeReason = "api_error"
+	ReasonBatchRejected     OutcomeReason = "batch_rejected"
+	ReasonInvalidLine       OutcomeReason = "invalid_line"
+	ReasonProviderUnavailable OutcomeReason = "provider_unavailable"
+	ReasonReconnectRequired   OutcomeReason = "reconnect_required"
 	ReasonProviderRejected  OutcomeReason = "provider_rejected"
 	ReasonRequestIncomplete OutcomeReason = "request_incomplete"
 	ReasonNoPerItemResult   OutcomeReason = "no_per_item_result"
@@ -355,6 +360,7 @@ type EntryOutcome struct {
 	Quantity int
 	Outcome  Outcome
 	Reason   OutcomeReason
+	Detail   string
 }
 
 // HandoffArtifact is created by client_handoff delivery.
