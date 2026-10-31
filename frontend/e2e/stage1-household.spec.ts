@@ -54,7 +54,7 @@ test.describe('stage-1 household screens', () => {
     await page.getByRole('button', { name: 'Menu' }).click()
     await page.getByRole('menuitem', { name: 'Household', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Pantry' })).toBeVisible()
-    await expect(page.getByRole('combobox', { name: 'Pantry' })).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Household' })).toBeVisible()
     await shot(page, 'switcher', width)
     await expect(page.getByRole('button', { name: 'Make owner' })).toBeVisible()
     await page.getByRole('button', { name: 'Create invite' }).click()

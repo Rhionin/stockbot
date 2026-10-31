@@ -22,9 +22,16 @@ export function HouseholdSwitcher() {
     );
   }
   if (options.length === 1 && auth.activeHouseholdId) {
+    const householdName = options[0]?.label ?? 'Household';
     return (
-      <button type="button" className="household-switch-name" onClick={() => navigate('/households')}>
-        {options[0]?.label}
+      <button
+        type="button"
+        className="household-switch-name"
+        aria-label={`Household: ${householdName}`}
+        title={householdName}
+        onClick={() => navigate('/households')}
+      >
+        {householdName}
       </button>
     );
   }
@@ -34,7 +41,9 @@ export function HouseholdSwitcher() {
   return (
     <Select
       className="household-switch"
-      aria-label={activeLabel}
+      aria-label="Household"
+      aria-valuetext={activeLabel}
+      title={activeLabel}
       data={data}
       value={auth.activeHouseholdId}
       allowDeselect={false}

@@ -184,6 +184,7 @@ describe('HouseholdsPage admin server list', () => {
     const idleLabels = tryIdle.querySelectorAll('.admin-household-retry-label-stack span');
     expect(idleLabels[0]).not.toHaveAttribute('aria-hidden', 'true');
     expect(idleLabels[1]).toHaveAttribute('aria-hidden', 'true');
+    expect(tryIdle.querySelector('.admin-household-retry-label-busy')).not.toBeNull();
     fireEvent.click(tryIdle);
     await waitFor(() => expect(calls).toBe(2));
     const retry = within(section).getByRole('button', { name: 'Trying again…' });
@@ -198,6 +199,12 @@ describe('HouseholdsPage admin server list', () => {
     expect(activeBusyLabel).not.toBeNull();
     expect(activeBusyLabel!.querySelector('[aria-hidden="true"]')).not.toBeNull();
     expect(getComputedStyle(activeBusyLabel!)).toMatchObject({ opacity: '1', visibility: 'visible' });
+    await waitFor(() => {
+      const spinner = activeBusyLabel!.firstElementChild;
+      expect(spinner).not.toBeNull();
+      expect(String(spinner!.className)).toMatch(/Loader/i);
+      expect(spinner).toHaveAttribute('aria-hidden', 'true');
+    });
     expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
     resolveRetry(json({ households: [testHouseholdRow] }));

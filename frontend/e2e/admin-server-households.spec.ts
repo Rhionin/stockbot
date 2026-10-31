@@ -67,9 +67,9 @@ async function assertAppHeaderTouchTargets(page: Page) {
   for (const name of ['Scan Queue', 'Inventory', 'History', 'Shopping List'] as const) {
     await assertTouchTargetSize(page.getByRole('link', { name }))
   }
-  const householdControl = page.getByRole('combobox', { name: stage.householdName })
+  const householdControl = page.getByRole('combobox', { name: 'Household' })
     .or(page.getByRole('button', { name: 'Choose a household' }))
-    .or(page.getByRole('button', { name: stage.householdName }))
+    .or(page.getByRole('button', { name: `Household: ${stage.householdName}` }))
   await assertTouchTargetSize(householdControl.first())
 }
 
@@ -262,7 +262,10 @@ async function assertRadioRowTouchTarget(page: Page, rootSelector: string, label
 async function assertHouseholdSwitcherEllipsis(page: Page, fullName: string) {
   const switcher = page.locator('.app-header .household-switch .mantine-Select-input')
   await expect(switcher).toBeVisible()
-  await expect(page.getByRole('combobox', { name: fullName })).toBeVisible()
+  const combobox = page.getByRole('combobox', { name: 'Household' })
+  await expect(combobox).toBeVisible()
+  await expect(combobox).toHaveAttribute('aria-valuetext', fullName)
+  await expect(switcher).toHaveAttribute('title', fullName)
   await expect(switcher.evaluate((el) => {
     const style = getComputedStyle(el)
     return el.scrollWidth > el.clientWidth + 0.5 && style.textOverflow === 'ellipsis'
@@ -634,7 +637,7 @@ test('app header control layout matches master at 1280x800', async ({ page }) =>
   await openAdmin(page, 1280, 800)
   await page.goto('/')
   const menu = await page.getByRole('button', { name: 'Menu' }).boundingBox()
-  const household = await page.getByRole('combobox', { name: 'Test Household' }).boundingBox()
+  const household = await page.getByRole('combobox', { name: 'Household' }).boundingBox()
   const scanQueue = await page.getByRole('link', { name: 'Scan Queue' }).boundingBox()
   const inventory = await page.getByRole('link', { name: 'Inventory' }).boundingBox()
   const history = await page.getByRole('link', { name: 'History' }).boundingBox()
@@ -767,6 +770,10 @@ async function assertTryAgainButtonSizing(
     const rightSpace = stackBox.right - text.right
     return Math.abs(leftSpace - rightSpace) <= 1
   }), 'Idle Try again text is centered in the label cell').resolves.toBe(true)
+  await expect(tryAgain.locator('.admin-household-retry-label-busy .mantine-Loader-root').evaluate((el) => {
+    const busy = el.closest('.admin-household-retry-label-busy') as HTMLElement | null
+    return busy !== null && getComputedStyle(busy).visibility === 'hidden'
+  }), 'Idle Try again hides the busy spinner').resolves.toBe(true)
   if (captureScreenshots) {
     await tryAgain.screenshot({ path: testInfo.outputPath('try-again-idle.png') })
   }
@@ -782,6 +789,12 @@ async function assertTryAgainButtonSizing(
     const style = getComputedStyle(el)
     return { opacity: style.opacity, visibility: style.visibility }
   })).resolves.toEqual({ opacity: '1', visibility: 'visible' })
+  await expect(busyButton.locator('.admin-household-retry-label-busy .mantine-Loader-root').evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    const busy = el.closest('.admin-household-retry-label-busy') as HTMLElement | null
+    const busyStyle = busy ? getComputedStyle(busy) : getComputedStyle(el)
+    return box.width > 0 && box.height > 0 && busyStyle.visibility === 'visible'
+  }), 'Busy Try again shows a visible spinner').resolves.toBe(true)
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   const busyBox = await busyButton.boundingBox()
   expect(busyBox).not.toBeNull()
