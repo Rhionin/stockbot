@@ -16,6 +16,10 @@
   max-width: 62ch;
 }
 
+.app-header .household-switch .mantine-Select-input {
+  min-height: 44px;
+}
+
 .household-switch {
   width: min(220px, 46vw);
 }
@@ -33,6 +37,17 @@
 [data-mantine-color-scheme='dark'] .household-switch-name,
 [data-mantine-color-scheme='dark'] .household-switch-link {
   color: var(--stock-full-ink);
+}
+
+.app-header .household-switch-link,
+.app-header .household-switch-name {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .household-page {

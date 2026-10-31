@@ -181,8 +181,9 @@ describe('HouseholdsPage admin server list', () => {
     await within(section).findByRole('alert');
     fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(calls).toBe(2));
-    const retry = within(section).getByRole('button', { name: 'Try again' });
+    const retry = within(section).getByRole('button', { name: 'Trying again…' });
     await waitFor(() => expect(retry).toHaveAttribute('data-loading', 'true'));
+    expect(retry).toHaveAttribute('aria-busy', 'true');
     expect(retry).toBeDisabled();
     expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();

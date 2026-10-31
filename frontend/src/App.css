@@ -141,8 +141,10 @@ a.group-row {
 }
 
 .app-menu-button {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   color: var(--mantine-color-gray-8);
   -webkit-tap-highlight-color: transparent;
 }
@@ -199,6 +201,11 @@ a.group-row {
 .app-nav-link:active,
 .app-nav-link:focus {
   flex: 0 0 auto;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
   text-align: center;
   text-decoration: none;
   color: var(--nav-muted);
@@ -277,7 +284,7 @@ a.group-row {
     width: 100%;
     min-width: 0;
     flex: none;
-    overflow-x: auto;
+    overflow-x: hidden;
     scrollbar-width: none;
   }
 
@@ -291,10 +298,10 @@ a.group-row {
   .app-nav-link:hover,
   .app-nav-link:active,
   .app-nav-link:focus {
-    flex: 1 1 auto;
-    min-width: max-content;
+    flex: 1 1 0;
+    min-width: 0;
     font-size: 0.75rem;
-    padding: 8px 4px;
+    padding: 8px 2px;
   }
 }
 

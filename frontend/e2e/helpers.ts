@@ -151,6 +151,43 @@ export const commitSelectedScan = async (
 export const inventoryRow = (page: Page, productName: string): Locator =>
   page.getByRole('article').filter({ has: page.getByRole('heading', { name: productName }) })
 
+const VIEWPORT_EDGE_EPS = 0.01
+
+/** Catches clipped controls that scrollWidth checks miss when overflow is hidden on html. */
+export async function assertVisibleControlsWithinViewport(page: Page) {
+  const width = page.viewportSize()?.width
+  if (width === undefined) throw new Error('viewport size required')
+  for (const role of ['button', 'link', 'textbox', 'combobox', 'radio'] as const) {
+    const locator = page.getByRole(role)
+    const count = await locator.count()
+    for (let index = 0; index < count; index += 1) {
+      const target = locator.nth(index)
+      if (!(await target.isVisible())) continue
+      const box = await target.boundingBox()
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(-VIEWPORT_EDGE_EPS)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + VIEWPORT_EDGE_EPS)
+    }
+  }
+}
+
+export async function assertSectionsWithinViewport(page: Page, selectors: string[]) {
+  const width = page.viewportSize()?.width
+  if (width === undefined) throw new Error('viewport size required')
+  for (const selector of selectors) {
+    const locator = page.locator(selector)
+    const count = await locator.count()
+    for (let index = 0; index < count; index += 1) {
+      const target = locator.nth(index)
+      if (!(await target.isVisible())) continue
+      const box = await target.boundingBox()
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(-VIEWPORT_EDGE_EPS)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + VIEWPORT_EDGE_EPS)
+    }
+  }
+}
+
 // Specs share one SQLite database and one scanner mode for the whole
 // Playwright run. Clear shopping-list rows, on-hand stock, and the opening
 // snapshot, and put the scanner back to stock_in, so a spec neither inherits

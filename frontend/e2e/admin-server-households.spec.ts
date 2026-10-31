@@ -1,8 +1,15 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { assertSectionsWithinViewport, assertVisibleControlsWithinViewport } from './helpers'
 import { install, resetStage, stage } from './householdStageFixtures'
 
 const MIN_TOUCH_TARGET_CSS_PX = 44
 const TOUCH_TARGET_FLOAT_EPS = 0.01
+
+const PM_HOUSEHOLD_RESTOCK_LABELS = [
+  'New items restock automatically',
+  'Ask before restocking new items',
+  'Ask before restocking, and hold until you answer',
+] as const
 
 function touchTargetDimensionMeetsMinimum(value: number) {
   return value >= MIN_TOUCH_TARGET_CSS_PX - TOUCH_TARGET_FLOAT_EPS
@@ -15,8 +22,18 @@ async function assertTouchTargetSize(locator: Locator) {
   expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
 }
 
+async function assertAppHeaderTouchTargets(page: Page) {
+  await assertTouchTargetSize(page.getByRole('button', { name: 'Menu' }))
+  for (const name of ['Scan Queue', 'Inventory', 'History', 'Shopping List'] as const) {
+    await assertTouchTargetSize(page.getByRole('link', { name }))
+  }
+  const householdControl = page.getByRole('combobox', { name: 'Household' })
+    .or(page.getByRole('button', { name: 'Choose a household' }))
+    .or(page.getByRole('button', { name: stage.householdName }))
+  await assertTouchTargetSize(householdControl.first())
+}
+
 async function assertHouseholdsPageTouchTargets(page: Page) {
-  // Global header touch targets (switcher, nav links, menu) are tracked separately; #475 covers /households content only.
   const root = page.locator('.households-admin-page')
   for (const locator of [
     root.getByRole('button'),
@@ -56,6 +73,64 @@ async function assertNoHorizontalScroll(page: Page) {
   await expect(page.locator('.households-admin-page').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
   // The AppShell main is the real horizontal scroll container (.app-shell clips overflow on html).
   await expect(page.locator('main.mantine-AppShell-main').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
+}
+
+async function assertAdminLayoutWithinViewport(page: Page) {
+  await assertNoHorizontalScroll(page)
+  await assertSectionsWithinViewport(page, [
+    '.app-header',
+    'main.mantine-AppShell-main',
+    '[data-testid="operator-households-section"]',
+  ])
+  await assertVisibleControlsWithinViewport(page)
+}
+
+async function routeInviteStartPreview(page: Page) {
+  await page.route('**/api/invites/preview', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      kind: 'start_household',
+      role: 'owner',
+      expiresAt: '2026-11-06T17:00:00.000Z',
+    }),
+  }))
+  await page.route('**/api/auth/session', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      user: null,
+      kind: 'signed_out',
+      memberships: [],
+      households: [],
+      activeHouseholdId: null,
+      operator: false,
+    }),
+  }))
+}
+
+async function assertInviteAcceptTouchTargets(page: Page) {
+  const root = page.locator('.invite-accept-page')
+  for (const locator of [
+    root.getByRole('button'),
+    root.getByRole('textbox'),
+    root.locator('.mantine-Radio-label'),
+  ]) {
+    const count = await locator.count()
+    for (let index = 0; index < count; index += 1) {
+      const target = locator.nth(index)
+      if (!(await target.isVisible())) continue
+      await assertTouchTargetSize(target)
+    }
+  }
+}
+
+async function openInviteAccept(page: Page, width: number, height: number) {
+  resetStage()
+  await page.setViewportSize({ width, height })
+  await routeInviteStartPreview(page)
+  await page.goto('/invite/test-start-code')
+  await expect(page.getByRole('heading', { name: 'Start a household' })).toBeVisible()
 }
 
 const idealStatsHousehold = {
@@ -129,6 +204,7 @@ for (const viewportWidth of [390, 320]) {
     const box = await name.boundingBox()
     expect(box!.x + box!.width).toBeLessThanOrEqual(card!.x + card!.width)
     await assertNoHorizontalScroll(page)
+    await assertAdminLayoutWithinViewport(page)
     await expectNoMemberPii(page)
   })
 }
@@ -152,6 +228,7 @@ test('admin households wrap stat lines at 320x844', async ({ page }) => {
   expect(partTops.length).toBeGreaterThanOrEqual(2)
   expect(partTops[partTops.length - 1]).toBeGreaterThan(partTops[0] + 1)
   await assertNoHorizontalScroll(page)
+  await assertAdminLayoutWithinViewport(page)
 })
 
 test('admin households show the load error inline, without the empty copy', async ({ page }) => {
@@ -219,7 +296,34 @@ for (const viewportWidth of [390, 320]) {
       scannersOnline: 0, scannersOffline: 0, scansThisWeek: 0,
     }])
     await page.goto('/households')
+    for (const label of PM_HOUSEHOLD_RESTOCK_LABELS) {
+      await expect(page.getByLabel(label, { exact: true })).toBeVisible()
+    }
+    await assertAppHeaderTouchTargets(page)
     await assertHouseholdsPageTouchTargets(page)
+    await assertAdminLayoutWithinViewport(page)
+  })
+}
+
+for (const viewportWidth of [390, 320]) {
+  test(`app header meets 44x44 touch targets at ${viewportWidth}x844`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844)
+    await page.goto('/')
+    await assertAppHeaderTouchTargets(page)
+    await assertSectionsWithinViewport(page, ['.app-header'])
+    await assertVisibleControlsWithinViewport(page)
+  })
+}
+
+for (const viewportWidth of [390, 320]) {
+  test(`invite accept meets 44px touch targets at ${viewportWidth}x844`, async ({ page }) => {
+    await openInviteAccept(page, viewportWidth, 844)
+    for (const label of PM_HOUSEHOLD_RESTOCK_LABELS) {
+      await expect(page.getByLabel(label, { exact: true })).toBeVisible()
+    }
+    await assertInviteAcceptTouchTargets(page)
+    await assertSectionsWithinViewport(page, ['.invite-accept-page', '.login-card'])
+    await assertVisibleControlsWithinViewport(page)
   })
 }
 
@@ -250,8 +354,10 @@ test('admin households Try again is at least 44px tall while retrying', async ({
   fail = false
   const tryAgain = section.getByRole('button', { name: 'Try again' })
   const clickPromise = tryAgain.click()
-  await expect(tryAgain).toHaveAttribute('data-loading', 'true')
-  const box = await tryAgain.boundingBox()
+  await expect(section.getByRole('button', { name: 'Trying again…' })).toHaveAttribute('data-loading', 'true')
+  const busyButton = section.getByRole('button', { name: 'Trying again…' })
+  await expect(busyButton).toHaveAttribute('aria-busy', 'true')
+  const box = await busyButton.boundingBox()
   expect(box).not.toBeNull()
   expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
   releaseRetry()
