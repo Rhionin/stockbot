@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, TargetConflictMember } from './types';
+import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ProvisionReport, ProvisionResultStatus, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, ShoppingListExportResultEntry, TargetConflictMember } from './types';
 
 export interface HouseholdSession {
   required: boolean;
