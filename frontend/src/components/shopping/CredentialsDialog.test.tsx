@@ -142,7 +142,7 @@ describe('CredentialsDialog', () => {
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
     const cancel = screen.getByRole('button', { name: 'Cancel' });
-    const disconnect = screen.getByRole('button', { name: 'Disconnect', exact: true });
+    const disconnect = screen.getByRole('button', { name: /^Disconnect$/ });
     const disconnectBgVar = disconnect.style.getPropertyValue('--button-bg');
     const cancelBgVar = cancel.style.getPropertyValue('--button-bg');
     expect(disconnectBgVar.toLowerCase()).toContain('red');
