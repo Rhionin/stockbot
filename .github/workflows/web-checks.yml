@@ -1,5 +1,5 @@
 # Reusable frontend checks (typecheck, lint, build, Vitest, Playwright e2e).
-# Called from web.yml on path-filtered PR/push events and from ci.yml on release
+# Called from web.yml when changes touch web/server paths, and from ci.yml on release
 # (workflow_call) so master image publish still waits on web tests.
 name: Web checks
 
@@ -40,8 +40,16 @@ jobs:
         run: npm run build
 
   web-vitest:
-    name: web-vitest
+    name: web-vitest (${{ matrix.tz }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # UTC plus the household's zone (restores the Vitest run the
+        # America/Denver job in ci.yml had before #488).
+        tz: [UTC, America/Denver]
+    env:
+      TZ: ${{ matrix.tz }}
     defaults:
       run:
         working-directory: frontend

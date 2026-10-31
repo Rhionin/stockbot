@@ -125,9 +125,11 @@ jobs:
         run: pio run -e ${{ matrix.env }}
 
   web-checks:
-    # Pull requests use the path-filtered Web workflow. Release calls this
-    # workflow on master push (github.event_name is push, not workflow_call).
+    # Pull requests use the Web workflow (change detection + aggregator). Release
+    # calls this workflow on master push (github.event_name is push, not workflow_call).
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
     uses: ./.github/workflows/web-checks.yml
 
   denver:
