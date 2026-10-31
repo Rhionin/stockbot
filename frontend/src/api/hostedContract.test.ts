@@ -59,6 +59,14 @@ const existingSentences: Record<string, string> = {
   account_exists: 'That email already has an account. Sign in, then open the invite again.',
   device_revoked: 'This device was disconnected. Pair it again to keep using it.',
   upgrade_required: 'Update Stockbot to keep using it.',
+  store_name_taken: 'You already have a store with that name.',
+  store_already_linked: 'Another store is already linked to your online cart.',
+  store_not_linked: "This store isn't linked to an online cart.",
+  store_check_failed: "Couldn't reach the store right now. Try again later.",
+  store_check_unavailable: "Checking isn't on for this store.",
+  kroger_not_connected: 'Connect your store account first.',
+  reconnect_required: "Couldn't connect to your store account. Nothing was sent.",
+  provider_unavailable: "Your store isn't responding. Try again later.",
 };
 
 interface RegistryRow {
@@ -114,6 +122,13 @@ describe('hosted API contract', () => {
     const codes = rows.map((row) => row.code);
     expect(new Set(codes).size).toBe(codes.length);
     expect(errorCodes(source).sort()).toEqual([...codes].sort());
+  });
+
+  it('keeps hosted error sentences free of placeholders and the word Kroger', () => {
+    for (const [code, sentence] of Object.entries(HOSTED_ERROR_SENTENCES)) {
+      expect(sentence, code).not.toContain('{');
+      expect(sentence.toLowerCase(), code).not.toContain('kroger');
+    }
   });
 
   it('keeps the approved sentences and does not leave them for PM to confirm', () => {
