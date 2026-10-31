@@ -1,13 +1,13 @@
 # Frontend typecheck, lint, build, Vitest (UTC + America/Denver), and Playwright e2e.
 # Runs on every pull_request (no branches: filter — includes stacked PRs whose
 # base is another feature branch) and on push to master. A changes job decides
-# whether to invoke web-checks from the diff since the previous push (on
-# synchronize) or since the PR base / push before commit. Matched paths include
-# frontend/, shared/, cmd/, internal/, testdata/, docs/release-notes/ (not all
-# docs/ — e.g. docs/release-notes/2026-10-25.md matches, docs/other.md does not),
-# go.mod/go.sum, and web workflow files. The web-required aggregator always
-# aggregator always reports "Web checks passed" so branch protection can require
-# one check without deadlocking Go-only PRs.
+# whether to invoke web-checks from the diff between the PR base (or the push
+# "before" commit) and the checked-out commit. Matched paths: frontend/, shared/,
+# mobile/, cmd/, internal/, testdata/, docs/release-notes/, go.mod/go.sum,
+# eslint.config.mjs, docs/design/api-contract.md, and the web workflow files
+# (not all of docs/: docs/release-notes/2026-10-25.md matches, docs/other.md does
+# not). The web-required aggregator always reports "Web checks passed" so branch
+# protection can require one check without deadlocking Go-only PRs.
 name: Web
 
 on:
@@ -31,6 +31,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify web change path pattern
+        run: bash scripts/check-web-change-pattern.sh
+
       - name: Detect web-relevant changes
         id: filter
         env:
@@ -38,13 +41,8 @@ jobs:
           HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
-          pattern='^(frontend/|shared/|cmd/|internal/|testdata/|go\.(mod|sum)$|\.github/workflows/web(-checks)?\.yml$)'
+          pattern='^(frontend/|shared/|mobile/|cmd/|internal/|testdata/|docs/release-notes/|go\.(mod|sum)$|eslint\.config\.mjs$|docs/design/api-contract\.md$|\.github/workflows/web(-checks)?\.yml$)'
           from="${BASE}"
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.action }}" = "synchronize" ]; then
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              from=$(git rev-parse HEAD~1)
-            fi
-          fi
           if [ -z "${from}" ] || ! git cat-file -e "${from}^{commit}" 2>/dev/null; then
             echo "web=true" >> "$GITHUB_OUTPUT"
             exit 0
