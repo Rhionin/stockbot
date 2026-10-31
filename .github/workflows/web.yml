@@ -2,7 +2,10 @@
 # Runs on every pull_request (no branches: filter — includes stacked PRs whose
 # base is another feature branch) and on push to master. A changes job decides
 # whether to invoke web-checks from the diff since the previous push (on
-# synchronize) or since the PR base / push before commit. The web-required
+# synchronize) or since the PR base / push before commit. Matched paths include
+# frontend/, shared/, cmd/, internal/, testdata/, docs/release-notes/ (not all
+# docs/ — e.g. docs/release-notes/2026-10-25.md matches, docs/other.md does not),
+# go.mod/go.sum, and web workflow files. The web-required aggregator always
 # aggregator always reports "Web checks passed" so branch protection can require
 # one check without deadlocking Go-only PRs.
 name: Web
