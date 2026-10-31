@@ -47,6 +47,8 @@ import type {
 import {
   BATCH_COMMIT_PATH,
   type BatchCommitInput,
+  CODE_PROVIDER_UNAVAILABLE,
+  CODE_RECONNECT_REQUIRED,
   type CreateScanEntryInput,
   type HouseholdSession,
   SCANNER_CONFIG_PATH,
@@ -539,7 +541,7 @@ export function markShoppingListItemPurchased(id: string): Promise<ShoppingListE
 export function exportShoppingList(provider?: string): Promise<ProvisionReport> {
   const body: { provider?: string } = {};
   if (provider) body.provider = provider;
-  return apiFetch('/api/shopping-list/export', {
+  return apiFetch<ProvisionReport>('/api/shopping-list/export', {
     method: 'POST',
     body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
   });

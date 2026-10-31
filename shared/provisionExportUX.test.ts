@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ProvisionReport } from './types';
 import {
+  PROVISION_ENVELOPE_NOTHING_SENT,
+  PROVISION_NOTHING_SENT_LINE,
   groupProvisionResults,
   provisionCheckInCartAria,
   provisionEmptyListNote,
   provisionItemReasonLine,
+  provisionLegacyNothingSentError,
+  provisionNothingSentReconnectLabel,
   provisionReasonText,
   provisionRowGroup,
   provisionSectionHeadingCheck,
@@ -137,6 +141,67 @@ describe('provisionStatusGroup', () => {
   });
 });
 
+describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
+  const unknownRows = Array.from({ length: 3 }, (_, index) => ({
+    entryId: `u-${index}`,
+    itemId: `i-${index}`,
+    name: `Item ${index}`,
+    quantity: 1,
+    status: 'unknown' as const,
+    reason: 'request_incomplete' as const,
+  }));
+
+  it('treats reconnect_required as blocking when nothing was sent', () => {
+    expect(provisionLegacyNothingSentError({
+      provider: 'kroger',
+      exported: 0,
+      error: 'reconnect_required',
+      results: unknownRows,
+    })).toBe('reconnect_required');
+  });
+
+  it('treats provider_unavailable as blocking when nothing was sent', () => {
+    expect(provisionLegacyNothingSentError({
+      provider: 'kroger',
+      exported: 0,
+      error: 'provider_unavailable',
+      results: unknownRows,
+    })).toBe('provider_unavailable');
+  });
+
+  it('does not block when at least one line was sent', () => {
+    expect(provisionLegacyNothingSentError({
+      provider: 'kroger',
+      exported: 1,
+      sentCount: 1,
+      error: 'reconnect_required',
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        ...unknownRows,
+      ],
+    })).toBeUndefined();
+  });
+
+  it('collapses groups so per-item sections stay hidden', () => {
+    const groups = groupProvisionResults({
+      provider: 'kroger',
+      exported: 0,
+      error: 'reconnect_required',
+      results: unknownRows,
+    });
+    expect(groups.wholeRequestError).toBe('reconnect_required');
+    expect(groups.check).toHaveLength(0);
+    expect(groups.N).toBe(0);
+  });
+});
+
+describe('provisionNothingSent copy (#486)', () => {
+  it('uses the manager line and UX reconnect label', () => {
+    expect(PROVISION_NOTHING_SENT_LINE).toBe('Nothing was sent to your cart.');
+    expect(provisionNothingSentReconnectLabel('Kroger')).toBe('Reconnect Kroger');
+  });
+});
+
 describe('check button aria labels', () => {
   it('starts with the visible phrase', () => {
     expect(provisionCheckInCartAria('Oats')).toBe("It's in my cart: Oats");
@@ -150,7 +215,7 @@ describe('unknown store name', () => {
       "Couldn't connect to your store account. Nothing was sent.",
     );
     expect(provisionWholeRequestMessage('provider_unavailable', store)).toBe(
-      "Your store isn't responding right now. Nothing was sent.",
+      PROVISION_ENVELOPE_NOTHING_SENT,
     );
     expect(provisionWholeRequestActionLabel('reconnect_required', store)).toBe('Reconnect your store');
   });

@@ -118,6 +118,33 @@ export function provisionItemReasonLine(itemName: string, storeLabel: string, re
 
 export type ProvisionWholeRequestError = 'provider_unavailable' | 'reconnect_required';
 
+/** Summary when N and U are both zero (per-item failures only). */
+export const PROVISION_NOTHING_SENT_LINE = 'Nothing was sent to your cart.';
+
+/** HTTP 502 `provider_unavailable` envelope when nothing was sent (#481 contract comment). */
+export const PROVISION_ENVELOPE_NOTHING_SENT = 'Nothing was sent';
+
+export function provisionNothingSentReconnectLabel(storeLabel: string): string {
+  return `Reconnect ${storeLabel}`;
+}
+
+function legacyReportError(report: ProvisionReport): string | undefined {
+  const error = (report as ProvisionReport & { error?: string }).error;
+  return typeof error === 'string' ? error : undefined;
+}
+
+/** Legacy HTTP 200 body with top-level `error` (pre-#484 contract). Final API uses 409/502 instead. */
+export function provisionLegacyNothingSentError(report: ProvisionReport): ProvisionWholeRequestError | undefined {
+  if (!isWholeRequestError(legacyReportError(report))) return undefined;
+  const rows = modernResults(report);
+  if (rows !== null && rows.some((row) => provisionRowGroup(row) === 'sent_or_added')) {
+    return undefined;
+  }
+  if ((report.sentCount ?? 0) > 0 || (report.addedCount ?? 0) > 0) return undefined;
+  if (rows === null && (report.exported ?? 0) > 0) return undefined;
+  return legacyReportError(report) as ProvisionWholeRequestError;
+}
+
 export function provisionWholeRequestMessage(
   code: ProvisionWholeRequestError,
   storeLabel: string,
@@ -125,7 +152,7 @@ export function provisionWholeRequestMessage(
   if (code === 'reconnect_required') {
     return `Couldn't connect to ${yourStore(storeLabel, 'account')}. Nothing was sent.`;
   }
-  return `${provisionStoreLabelSentence(storeLabel)} isn't responding right now. Nothing was sent.`;
+  return PROVISION_ENVELOPE_NOTHING_SENT;
 }
 
 export function provisionWholeRequestActionLabel(
@@ -309,9 +336,17 @@ export function groupProvisionResults(report: ProvisionReport): ProvisionResultG
   const M = notAdded.length;
   const U = check.length;
 
-  let wholeRequestError: ProvisionWholeRequestError | undefined;
-  if (isWholeRequestError(report.error) && N === 0) {
-    wholeRequestError = report.error;
+  const blocking = provisionLegacyNothingSentError(report);
+  if (blocking !== undefined) {
+    return {
+      sentRows: [],
+      notAdded: [],
+      check: [],
+      N: 0,
+      M: 0,
+      U: 0,
+      wholeRequestError: blocking,
+    };
   }
 
   return {
@@ -321,7 +356,6 @@ export function groupProvisionResults(report: ProvisionReport): ProvisionResultG
     N,
     M,
     U,
-    wholeRequestError,
   };
 }
 

@@ -15,6 +15,7 @@ import {
   provisionCheckInCartAria,
   provisionCheckNotInCartAria,
   provisionItemReasonLine,
+  provisionNothingSentReconnectLabel,
   provisionSectionHeadingCheck,
   provisionSectionHeadingCouldntSend,
   provisionSectionHeadingSent,
@@ -22,12 +23,14 @@ import {
   provisionSummaryCopy,
   provisionWholeRequestActionLabel,
   provisionWholeRequestMessage,
+  type ProvisionWholeRequestError,
 } from '@stockbot/shared/provisionExportUX';
 
 export type CheckResolution = 'in' | 'not';
 
 export interface ProvisionResultPanelProps {
-  report: ProvisionReport;
+  report: ProvisionReport | null;
+  envelopeError?: ProvisionWholeRequestError;
   provider: ProviderInfo | null;
   cartUrl?: string;
   onDismiss: () => void;
@@ -36,8 +39,56 @@ export interface ProvisionResultPanelProps {
   onResolveUnknown: (entryId: string, reachedProvider: boolean) => Promise<void>;
 }
 
+const NothingSentEnvelope = ({
+  code,
+  storeLabel,
+  onDismiss,
+  onTryAgain,
+  onReconnect,
+}: {
+  code: ProvisionWholeRequestError;
+  storeLabel: string;
+  onDismiss: () => void;
+  onTryAgain: () => void;
+  onReconnect: () => void;
+}) => {
+  const message = provisionWholeRequestMessage(code, storeLabel);
+  const actionLabel = provisionWholeRequestActionLabel(code, storeLabel);
+  const reconnect = code === 'reconnect_required';
+
+  return (
+    <Stack
+      className="provision-result-panel"
+      gap="xs"
+      role="status"
+      aria-live="polite"
+      aria-label={PROVISION_RESULT_PANEL_LABEL}
+    >
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <Text component="h3" size="sm" fw={600} m={0}>
+          {PROVISION_RESULT_PANEL_LABEL}
+        </Text>
+        <CloseButton
+          className="provision-result-dismiss"
+          aria-label="Dismiss cart send result"
+          onClick={onDismiss}
+        />
+      </Group>
+      <Text size="sm">{message}</Text>
+      <Button
+        className="provision-result-action"
+        variant="light"
+        onClick={reconnect ? onReconnect : onTryAgain}
+      >
+        {actionLabel}
+      </Button>
+    </Stack>
+  );
+};
+
 export const ProvisionResultPanel = ({
   report,
+  envelopeError,
   provider,
   cartUrl,
   onDismiss,
@@ -50,21 +101,27 @@ export const ProvisionResultPanel = ({
   const [resolved, setResolved] = useState<Record<string, CheckResolution>>({});
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const storeLabel = provisionStoreLabel(provider?.displayName);
-  const groups = useMemo(() => groupProvisionResults(report), [report]);
-  const summary = useMemo(
-    () => provisionSummaryCopy({ N: groups.N, M: groups.M, U: groups.U }, storeLabel),
-    [groups.M, groups.N, groups.U, storeLabel],
+  const groups = useMemo(
+    () => (report !== null ? groupProvisionResults(report) : null),
+    [report],
   );
+  const legacyEnvelope = groups?.wholeRequestError;
+  const blockingCode = envelopeError ?? legacyEnvelope;
 
-  const notAddedVisible = showAllNotAdded || groups.notAdded.length <= PROVISION_SHOW_ALL_THRESHOLD
-    ? groups.notAdded.slice(0, PROVISION_ROW_CAP)
+  const summary = useMemo(() => {
+    if (groups === null) return { lines: [] as string[] };
+    return provisionSummaryCopy({ N: groups.N, M: groups.M, U: groups.U }, storeLabel);
+  }, [groups, storeLabel]);
+
+  const notAddedVisible = groups === null || showAllNotAdded || groups.notAdded.length <= PROVISION_SHOW_ALL_THRESHOLD
+    ? (groups?.notAdded ?? []).slice(0, PROVISION_ROW_CAP)
     : groups.notAdded.slice(0, PROVISION_SHOW_ALL_THRESHOLD);
-  const notAddedHidden = groups.notAdded.length - notAddedVisible.length;
+  const notAddedHidden = (groups?.notAdded.length ?? 0) - notAddedVisible.length;
 
-  const sentVisible = showAllSent || groups.sentRows.length <= PROVISION_SENT_SHOW_ALL_THRESHOLD
-    ? groups.sentRows.slice(0, PROVISION_ROW_CAP)
+  const sentVisible = groups === null || showAllSent || groups.sentRows.length <= PROVISION_SENT_SHOW_ALL_THRESHOLD
+    ? (groups?.sentRows ?? []).slice(0, PROVISION_ROW_CAP)
     : groups.sentRows.slice(0, PROVISION_SENT_SHOW_ALL_THRESHOLD);
-  const sentHidden = groups.sentRows.length - sentVisible.length;
+  const sentHidden = (groups?.sentRows.length ?? 0) - sentVisible.length;
 
   const markResolved = (entryId: string, choice: CheckResolution) => {
     setResolved((prev) => ({ ...prev, [entryId]: choice }));
@@ -90,38 +147,23 @@ export const ProvisionResultPanel = ({
     markResolved(entryId, reachedProvider ? 'in' : 'not');
   };
 
-  if (groups.wholeRequestError !== undefined) {
-    const code = groups.wholeRequestError;
-    const actionLabel = provisionWholeRequestActionLabel(code, storeLabel);
+  if (blockingCode !== undefined) {
     return (
-      <Stack
-        className="provision-result-panel"
-        gap="xs"
-        role="status"
-        aria-live="polite"
-        aria-label={PROVISION_RESULT_PANEL_LABEL}
-      >
-        <Group justify="space-between" align="flex-start" wrap="nowrap">
-          <Text component="h3" size="sm" fw={600} m={0}>
-            {PROVISION_RESULT_PANEL_LABEL}
-          </Text>
-          <CloseButton
-            className="provision-result-dismiss"
-            aria-label="Dismiss cart send result"
-            onClick={onDismiss}
-          />
-        </Group>
-        <Text size="sm">{provisionWholeRequestMessage(code, storeLabel)}</Text>
-        <Button
-          className="provision-result-action"
-          variant="light"
-          onClick={() => (code === 'reconnect_required' ? onReconnect() : onTryAgain())}
-        >
-          {actionLabel}
-        </Button>
-      </Stack>
+      <NothingSentEnvelope
+        code={blockingCode}
+        storeLabel={storeLabel}
+        onDismiss={onDismiss}
+        onTryAgain={onTryAgain}
+        onReconnect={onReconnect}
+      />
     );
   }
+
+  if (groups === null || report === null) {
+    return null;
+  }
+
+  const reconnectLabel = provisionNothingSentReconnectLabel(storeLabel);
 
   return (
     <Stack
@@ -253,6 +295,16 @@ export const ProvisionResultPanel = ({
             );
           })}
         </Stack>
+      )}
+
+      {report.reconnectRequired === true && (
+        <Button
+          className="provision-result-action"
+          variant="light"
+          onClick={onReconnect}
+        >
+          {reconnectLabel}
+        </Button>
       )}
     </Stack>
   );

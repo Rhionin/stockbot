@@ -49,7 +49,9 @@ type ExportCase =
   | 'batch-rejected'
   | 'error-try-again'
   | 'reconnect'
+  | 'partial-reconnect'
   | 'legacy'
+  | 'legacy-200-error'
   | 'overflow'
 
 interface MockOptions {
@@ -57,6 +59,7 @@ interface MockOptions {
   exportStatus?: number
   delayExportMs?: number
   sessionHousehold?: string
+  exportEnvelope?: { status: number; code: string; error?: string }
 }
 
 const idealExport = () => ({
@@ -75,6 +78,15 @@ const idealExport = () => ({
   ],
   entries: [{ entryId: 'e', itemId: '5', name: 'Oats', quantity: 1, outcome: 'unknown' }],
 })
+
+const spuriousUnknownResults = Array.from({ length: 5 }, (_, index) => ({
+  entryId: `spurious-${index}`,
+  itemId: `item-${index}`,
+  name: `Staged ${index}`,
+  quantity: 1,
+  status: 'unknown',
+  reason: 'request_incomplete',
+}))
 
 const exportBodies: Record<ExportCase, Record<string, unknown>> = {
   ideal: idealExport(),
@@ -132,14 +144,29 @@ const exportBodies: Record<ExportCase, Record<string, unknown>> = {
     ],
   },
   'error-try-again': {
+    error: 'Kroger is unreachable',
+    code: 'provider_unavailable',
+  },
+  reconnect: {
+    error: 'Token revoked',
+    code: 'reconnect_required',
+  },
+  'partial-reconnect': {
+    provider: 'kroger',
+    exported: 1,
+    sentCount: 1,
+    reconnectRequired: true,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+      { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+      { entryId: 'c', itemId: '3', name: 'Butter', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+    ],
+  },
+  'legacy-200-error': {
     provider: 'kroger',
     exported: 0,
     error: 'provider_unavailable',
-  },
-  reconnect: {
-    provider: 'kroger',
-    exported: 0,
-    error: 'reconnect_required',
+    results: spuriousUnknownResults,
   },
   legacy: {
     provider: 'kroger',
@@ -199,6 +226,15 @@ async function installShoppingMocks(page: Page, options: MockOptions) {
       if (options.delayExportMs) {
         await new Promise((resolve) => setTimeout(resolve, options.delayExportMs))
       }
+      if (options.exportEnvelope) {
+        const { status, code, error } = options.exportEnvelope
+        await route.fulfill({
+          status,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: error ?? 'export failed', code }),
+        })
+        return
+      }
       await route.fulfill({
         status: options.exportStatus ?? 200,
         contentType: 'application/json',
@@ -255,22 +291,30 @@ const singleViewportCases: { case: ExportCase; file: string; role?: 'button'; ex
   { case: 'many-skipped', file: 'many-skipped-390.png', expectText: 'Show all 12' },
   { case: 'nothing-added', file: 'nothing-added-390.png', expectText: /Nothing was sent to your cart/ },
   { case: 'batch-rejected', file: 'batch-rejected-390.png', expectText: /didn't accept this item/ },
-  { case: 'error-try-again', file: 'error-try-again-390.png', expectText: "Kroger isn't responding right now" },
-  { case: 'reconnect', file: 'reconnect-390.png', expectText: "Couldn't connect to your Kroger account" },
+  { case: 'error-try-again', file: 'provider-unavailable-502-390.png', expectText: 'Nothing was sent' },
+  { case: 'reconnect', file: 'reconnect-required-409-390.png', expectText: "Couldn't connect to your Kroger account. Nothing was sent." },
+  { case: 'partial-reconnect', file: 'partial-reconnect-390.png', expectText: 'Sent (1)' },
+  { case: 'legacy-200-error', file: 'legacy-502-body-390.png', expectText: 'Nothing was sent' },
   { case: 'legacy', file: 'legacy-390.png', role: 'button', expectText: "It's in my cart: Oats" },
 ]
 
-const uxShots: { case: ExportCase; file: string }[] = [
+const uxShots: { case: ExportCase; file: string; envelope?: MockOptions['exportEnvelope'] }[] = [
   { case: 'ideal', file: 'ideal-390.png' },
   { case: 'all-unknown', file: 'all-unknown-390.png' },
   { case: 'mixed', file: 'mixed-390.png' },
   { case: 'unavailable', file: 'unavailable-390.png' },
+  { case: 'error-try-again', file: 'provider-unavailable-502-390.png', envelope: { status: 502, code: 'provider_unavailable' } },
+  { case: 'reconnect', file: 'reconnect-required-409-390.png', envelope: { status: 409, code: 'reconnect_required' } },
+  { case: 'partial-reconnect', file: 'partial-reconnect-390.png' },
 ]
 
 for (const shot of uxShots) {
   test(`screenshot ${shot.file}`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await installShoppingMocks(page, { exportBody: exportBodies[shot.case] })
+    await installShoppingMocks(page, {
+      exportBody: exportBodies[shot.case],
+      exportEnvelope: shot.envelope,
+    })
     await openShoppingAndSend(page)
     await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
     await saveShot(page, shot.file)
@@ -293,7 +337,15 @@ test('screenshot mixed at 320px and 125% text', async ({ page }) => {
 for (const scenario of singleViewportCases) {
   test(`export ${scenario.case} at 390px`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await installShoppingMocks(page, { exportBody: exportBodies[scenario.case] })
+    const envelope = scenario.case === 'error-try-again'
+      ? { status: 502, code: 'provider_unavailable' }
+      : scenario.case === 'reconnect'
+        ? { status: 409, code: 'reconnect_required' }
+        : undefined
+    await installShoppingMocks(page, {
+      exportBody: exportBodies[scenario.case],
+      exportEnvelope: envelope,
+    })
     await openShoppingAndSend(page)
     const panel = page.getByRole('status', { name: 'Cart send result' })
     await expect(panel).toBeVisible()
@@ -301,6 +353,19 @@ for (const scenario of singleViewportCases) {
       await expect(panel.getByRole('button', { name: scenario.expectText })).toBeVisible()
     } else {
       await expect(panel.getByText(scenario.expectText)).toBeVisible()
+    }
+    if (scenario.case === 'reconnect') {
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+      await expect(panel.getByText(/might not have reached your cart/)).toHaveCount(0)
+      await expect(panel.getByText('Check these in your cart')).toHaveCount(0)
+    }
+    if (scenario.case === 'error-try-again' || scenario.case === 'legacy-200-error') {
+      await expect(panel.getByRole('button', { name: 'Try again' })).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toHaveCount(0)
+    }
+    if (scenario.case === 'partial-reconnect') {
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toBeVisible()
     }
     await saveShot(page, scenario.file)
   })
@@ -345,13 +410,15 @@ test('HTTP export errors show Try again at 390 and 1280', async ({ page }) => {
   }
 })
 
-test('whole-request Try again and Reconnect actions are tappable', async ({ page }) => {
+test('nothing-sent error Reconnect control is at least 44px tall', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await installShoppingMocks(page, { exportBody: exportBodies['error-try-again'] })
+  await installShoppingMocks(page, {
+    exportEnvelope: { status: 409, code: 'reconnect_required' },
+  })
   await openShoppingAndSend(page)
-  const tryAgain = page.getByRole('button', { name: 'Try again' })
-  await expect(tryAgain).toBeVisible()
-  const box = await tryAgain.boundingBox()
+  const reconnect = page.getByRole('button', { name: 'Reconnect Kroger' })
+  await expect(reconnect).toBeVisible()
+  const box = await reconnect.boundingBox()
   expect(box).not.toBeNull()
   expect(box!.width).toBeGreaterThanOrEqual(44)
   expect(box!.height).toBeGreaterThanOrEqual(44)
@@ -363,7 +430,7 @@ for (const scenario of [
   { width: 390, rootPercent: 125 },
   { width: 320, rootPercent: 125 },
 ]) {
-  for (const exportCase of ['ideal', 'all-sent', 'reconnect', 'many-skipped'] as const) {
+  for (const exportCase of ['ideal', 'all-sent', 'partial-reconnect', 'many-skipped'] as const) {
     test(`every control is at least 44x44 for ${exportCase} at ${scenario.width}px and ${scenario.rootPercent}% text`, async ({ page }) => {
       await page.setViewportSize({ width: scenario.width, height: 800 })
       await page.addInitScript((percent) => {

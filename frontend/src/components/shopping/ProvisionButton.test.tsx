@@ -1,8 +1,9 @@
 import type { ComponentProps } from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
+import { CODE_PROVIDER_UNAVAILABLE, CODE_RECONNECT_REQUIRED } from '@stockbot/shared/contract';
 import { ProvisionButton } from './ProvisionButton';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
@@ -40,8 +41,22 @@ const renderButton = (props: Partial<ComponentProps<typeof ProvisionButton>> = {
   </MantineProvider>,
 );
 
-const mockExport = (body: ProvisionReport, status = 200) => {
+const mockExport = (body: ProvisionReport | Record<string, unknown>, status = 200) => {
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  }))));
+};
+
+const mockExportEnvelope = (
+  status: number,
+  code: typeof CODE_RECONNECT_REQUIRED | typeof CODE_PROVIDER_UNAVAILABLE,
+  message = 'export failed',
+) => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+    error: message,
+    code,
+  }), {
     status,
     headers: { 'Content-Type': 'application/json' },
   }))));
@@ -190,6 +205,142 @@ describe('ProvisionButton', () => {
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     expect(within(panel).getByText('Nothing was sent to your cart.')).toBeInTheDocument();
     expect(within(panel).getByText("1 couldn't be sent.")).toBeInTheDocument();
+  });
+});
+
+const spuriousUnknownResults = Array.from({ length: 4 }, (_, index) => ({
+  entryId: `u-${index}`,
+  itemId: `i-${index}`,
+  name: `Item ${index}`,
+  quantity: 1,
+  status: 'unknown' as const,
+  reason: 'request_incomplete' as const,
+}));
+
+describe('ProvisionButton export envelopes (409/502)', () => {
+  it('409 reconnect_required shows reconnect copy and no Try again', async () => {
+    mockExportEnvelope(409, CODE_RECONNECT_REQUIRED);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText("Couldn't connect to your Kroger account. Nothing was sent.")).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(within(panel).queryByText('Check these in your cart')).not.toBeInTheDocument();
+  });
+
+  it('502 provider_unavailable shows Nothing was sent and Try again, not Reconnect', async () => {
+    mockExportEnvelope(502, CODE_PROVIDER_UNAVAILABLE);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('Nothing was sent')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
+  });
+
+  it('Try again on 502 retries export', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'down', code: CODE_PROVIDER_UNAVAILABLE }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        provider: 'kroger',
+        exported: 1,
+        results: [{ entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Try again' }));
+    await within(panel).findByText('1 item sent to your Kroger cart.');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('Reconnect on 409 starts authorize', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/export') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'revoked', code: CODE_RECONNECT_REQUIRED }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.includes('/authorize')) {
+        return Promise.resolve(new Response(JSON.stringify({ authorizationUrl: 'https://oauth.test/start' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    }));
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Reconnect Kroger' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://oauth.test/start'));
+  });
+});
+
+describe('ProvisionButton partial reconnectRequired', () => {
+  it('shows sections and Reconnect when some items sent', async () => {
+    mockExport({
+      provider: 'kroger',
+      exported: 1,
+      sentCount: 1,
+      reconnectRequired: true,
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+        { entryId: 'c', itemId: '3', name: 'Butter', quantity: 1, status: 'unknown', reason: 'request_incomplete' },
+      ],
+    });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('Sent (1)')).toBeInTheDocument();
+    expect(within(panel).getByText("Couldn't be sent (1)")).toBeInTheDocument();
+    expect(within(panel).getByText('Check these in your cart (1)')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
+  });
+});
+
+describe('ProvisionButton legacy HTTP 200 top-level error', () => {
+  it('blocks per-item UI for reconnect_required on 200 body', async () => {
+    mockExport({
+      provider: 'kroger',
+      exported: 0,
+      error: 'reconnect_required',
+      results: spuriousUnknownResults,
+    });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText("Couldn't connect to your Kroger account. Nothing was sent.")).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
+    expect(within(panel).queryByText(/might not have reached your cart/)).not.toBeInTheDocument();
+  });
+
+  it('502 legacy body shows Try again only', async () => {
+    mockExport({
+      provider: 'kroger',
+      exported: 0,
+      error: 'provider_unavailable',
+      results: spuriousUnknownResults,
+    });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('Nothing was sent')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
   });
 });
 

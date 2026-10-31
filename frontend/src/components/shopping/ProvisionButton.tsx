@@ -1,13 +1,18 @@
 import { useState } from 'react';
 import { Button, Loader, Stack, Text } from '@mantine/core';
-import { authorizeProvider, exportShoppingList, resolveUnknownProvision } from '../../api/client';
+import { authorizeProvider, exportShoppingList, resolveUnknownProvision, ApiError } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
-import { inlineFailure } from '@stockbot/shared/contract';
+import {
+  CODE_PROVIDER_UNAVAILABLE,
+  CODE_RECONNECT_REQUIRED,
+  inlineFailure,
+} from '@stockbot/shared/contract';
 import {
   provisionEmptyListNote,
   provisionSendButtonLabel,
   provisionSendHint,
   provisionStoreLabel,
+  type ProvisionWholeRequestError,
 } from '@stockbot/shared/provisionExportUX';
 import { provisionQuantity } from './outcome';
 import { ProvisionResultPanel } from './ProvisionResultPanel';
@@ -32,9 +37,17 @@ const canProvision = (provider: ProviderInfo | null, entries: ShoppingListEntry[
   return storeIsReady(provider);
 };
 
+function exportEnvelopeError(error: unknown): ProvisionWholeRequestError | undefined {
+  if (!(error instanceof ApiError)) return undefined;
+  if (error.code === CODE_RECONNECT_REQUIRED) return 'reconnect_required';
+  if (error.code === CODE_PROVIDER_UNAVAILABLE) return 'provider_unavailable';
+  return undefined;
+}
+
 export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFinished }: ProvisionButtonProps) => {
   const [inFlight, setInFlight] = useState(false);
   const [report, setReport] = useState<ProvisionReport | null>(null);
+  const [envelopeError, setEnvelopeError] = useState<ProvisionWholeRequestError | undefined>();
   const [requestError, setRequestError] = useState('');
   const [cartUrl, setCartUrl] = useState<string | undefined>();
 
@@ -47,6 +60,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
     setInFlight(true);
     setRequestError('');
     setReport(null);
+    setEnvelopeError(undefined);
     setCartUrl(undefined);
     try {
       const providerId = provider !== null && provider.credentialsConfigured ? provider.id : undefined;
@@ -59,7 +73,12 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
       onFinished();
     } catch (requestError) {
       setReport(null);
-      setRequestError(inlineFailure(requestError, 'These items could not be sent to your store.') ?? '');
+      const envelope = exportEnvelopeError(requestError);
+      if (envelope !== undefined) {
+        setEnvelopeError(envelope);
+      } else {
+        setRequestError(inlineFailure(requestError, 'These items could not be sent to your store.') ?? '');
+      }
     } finally {
       setInFlight(false);
     }
@@ -85,7 +104,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
 
   const showEmpty = explainEmpty && !staged;
   const showUnconfigured = provider !== null && !provider.credentialsConfigured;
-  const showResultPanel = report !== null && requestError === '';
+  const showResultPanel = (report !== null || envelopeError !== undefined) && requestError === '';
   const showHttpError = requestError !== '';
   const hasNotices = showEmpty || showUnconfigured || showResultPanel || showHttpError;
 
@@ -123,12 +142,16 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
               </Button>
             </Stack>
           )}
-          {showResultPanel && report !== null && (
+          {showResultPanel && (
             <ProvisionResultPanel
               report={report}
+              envelopeError={envelopeError}
               provider={provider}
               cartUrl={cartUrl}
-              onDismiss={() => setReport(null)}
+              onDismiss={() => {
+                setReport(null);
+                setEnvelopeError(undefined);
+              }}
               onTryAgain={() => void provision()}
               onReconnect={() => void reconnect()}
               onResolveUnknown={(entryId, reached) => resolve(entryId, reached)}
