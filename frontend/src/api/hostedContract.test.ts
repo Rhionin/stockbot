@@ -59,6 +59,14 @@ const existingSentences: Record<string, string> = {
   account_exists: 'That email already has an account. Sign in, then open the invite again.',
   device_revoked: 'This device was disconnected. Pair it again to keep using it.',
   upgrade_required: 'Update Stockbot to keep using it.',
+  store_name_taken: 'You already have a store with that name.',
+  store_already_linked: 'Another store is already linked to this cart.',
+  store_not_linked: "This store isn't linked to an online cart.",
+  store_check_failed: "Couldn't check the store right now. Try again later.",
+  store_check_unavailable: "Checking isn't on for this store.",
+  kroger_not_connected: 'Connect your Kroger account first.',
+  reconnect_required: "Couldn't connect to your {provider} account. Nothing was sent.",
+  provider_unavailable: "{provider} isn't responding. Try again later.",
 };
 
 interface RegistryRow {

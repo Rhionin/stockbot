@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 63
+endpoint-count: 78
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -209,6 +209,21 @@ POST /api/scans/{id}/commit
 POST /api/scans/batch-commit
 GET /api/inventory
 GET /api/shopping-list
+GET /api/stores
+POST /api/stores
+PATCH /api/stores/{id}
+DELETE /api/stores/{id}
+GET /api/stores/{id}/removal-preview
+PUT /api/stores/order
+PUT /api/stores/default
+GET /api/stores/kroger-locations
+POST /api/stores/{id}/check
+GET /api/products/{id}/stores
+PUT /api/products/{id}/stores
+POST /api/products/{id}/stores/check
+PUT /api/shopping-list/items/{id}/store
+PATCH /api/shopping-list/items/{id}
+POST /api/shopping-list/export
 POST /api/export
 GET /api/export/{id}
 POST /api/household/import/uploads
@@ -1584,6 +1599,150 @@ interface LiveFallbackRules {
 - Reconnect backs off exponentially with jitter. An expired ticket is refreshed with a new `POST /api/live/ticket` and is not shown as an error.
 - The client connects with the subprotocols `aws-appsync-event-ws` and `header-<base64url>`. The value is base64url of `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}` with no `=` padding and no `Bearer` prefix. `host` is the AppSync HTTP domain, the same host as `LiveConfig.appsync.httpUrl`, not the realtime domain. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, again with no `Bearer` prefix. This is the [AppSync Events WebSocket protocol](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html).
 
+## Stores and multi-store sourcing
+
+Added for [#481](https://github.com/Rhionin/stockbot/issues/481). The design, data model and rules are in [multi-store-sourcing.md](multi-store-sourcing.md). Auth is Session, `X-Household-Id` required, role **Member** unless stated. Errors use `{error, code, field?}`. Every route can also return `unauthorized`, `not_found`, `busy` and `internal`. New error codes are in the [error code registry](#error-code-registry).
+
+Kroger product and location lookups run only through the calling household's own Kroger connection. No route here uses another household's connection or any server-wide Kroger token.
+
+**`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the server setting `KROGER_PRODUCT_CHECKS` is off), `not_connected` (no working connection, including one marked `reauth_required`), `no_product_access` (connected without `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line).
+
+**`lookupsEnabled`** (household) is true only when the server setting is on, the household is connected with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `POST /api/providers/kroger/authorize` today.
+
+### Types
+
+```ts
+type StoreKind = 'physical' | 'online';
+type Origin = 'person' | 'found' | 'trip';
+type CheckStatus = 'not_checked' | 'not_eligible' | 'checking' | 'found' | 'not_found' | 'error';
+type CheckReason = 'not_configured' | 'not_connected' | 'no_product_access' | 'no_location' | 'no_barcode';
+type UsualReason = 'person' | 'habit' | 'found' | 'household' | 'none';
+
+interface Store {
+  id: string; name: string; kind: StoreKind; position: number;
+  linkedProvider: 'kroger' | null;
+  locationId: string | null;
+  locationChain: string | null;
+  cartUrl: string | null;                // DEP-6
+  check: StoreCheck | null;              // DEP-3
+  checkReason?: CheckReason;             // DEP-7: linked store only, present when lookupsEnabled is false
+}
+interface StoreCheck {
+  state: 'running' | 'done' | 'failed';
+  startedAt: string; finishedAt: string | null;
+  checked: number; found: number; total: number;
+  failure: 'budget' | 'kroger_unavailable' | 'rate_limited' | 'auth' | null;
+}
+interface StoresResponse {
+  stores: Store[];
+  defaultStoreId: string | null;
+  lookupsEnabled: boolean;               // DEP-7
+  canConnect: boolean;                   // DEP-7: this person may start the Kroger connect flow (today's connect-button rule)
+}
+interface Availability {                 // only while fresh
+  priceCents?: number; promoPriceCents?: number;
+  stockLevel?: 'HIGH' | 'LOW' | 'TEMPORARILY_OUT_OF_STOCK';
+  checkedAt: string;
+}
+```
+
+### Stores
+
+| Route | Request | Response | Errors (besides the common ones) |
+|---|---|---|---|
+| `GET /api/stores` | | `200 StoresResponse` | |
+| `POST /api/stores` | `{name, kind?, linkedProvider?, locationId?, locationChain?}` | `201 Store`, appended last; starts a `store_setup` check if checking is on | `validation`, `store_name_taken`, `store_already_linked` |
+| `PATCH /api/stores/{id}` | any of the same fields | `200 Store`. A location change deletes the store's availability rows and starts a check; unlinking clears location and rows. | `validation`, `store_name_taken`, `store_already_linked` |
+| `GET /api/stores/{id}/removal-preview` | | `200 StoreRemovalPreview` (DEP-4) | |
+| `DELETE /api/stores/{id}` | | `204` (DEP-4) | |
+| `PUT /api/stores/order` | `{storeIds}`, exact permutation | `200 StoresResponse` | `validation`, `conflict` |
+| `PUT /api/stores/default` | `{storeId \| null}` | `200 StoresResponse` | `validation` |
+| `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited` |
+| `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited` |
+
+```ts
+interface StoreRemovalPreview {
+  storeId: string;
+  openLines: number;
+  openLinesNext: { storeId: string | null; count: number }[];
+  runOverrides: number; usualChoices: number; personChoices: number;
+  checkedItems: number; tripsKept: number;
+  isDefault: boolean; isLinked: boolean;
+}
+```
+
+### Product stores
+
+| Route | Request | Response | Errors |
+|---|---|---|---|
+| `GET /api/products/{id}/stores` | | `200 ProductStores` | |
+| `PUT /api/products/{id}/stores` | `{stores: [{storeId, state:'carries'\|'excluded'}], usualStoreId}`; `{stores:[], usualStoreId:null}` = "Let the app decide" | `200 ProductStores` | `validation` |
+| `POST /api/products/{id}/stores/check` | | `200 ProductStores` after one synchronous batched call | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `store_check_failed`, `rate_limited` |
+
+```ts
+interface ProductStores {
+  productId: string;
+  usualStoreId: string | null; usualReason: UsualReason;
+  usualChangedAt?: string; previousUsualStoreId?: string | null;   // DEP-5
+  lookupsEnabled: boolean;
+  entries: {
+    storeId: string;
+    carries: 'yes' | 'no' | 'unknown';
+    origin: Origin | null;
+    person: { state: 'carries' | 'excluded'; isUsual: boolean } | null;
+    checkStatus?: CheckStatus; checkReason?: CheckReason;          // linked store only
+    checkedAt: string | null;
+    availability?: Availability;
+  }[];
+  suggestions: { storeId: string; from: 'open_food_facts' }[];   // [] in the MVP
+}
+```
+
+### Shopping list (changed and new)
+
+| Route | Change |
+|---|---|
+| `GET /api/shopping-list` (already indexed) | Entries gain the fields below. The body gains `lookupsEnabled` and `storeChecks: {storeId, check}[]`. (The reconnect line lives on `/household`, so `checkReason` per store and `canConnect` are on `GET /api/stores` only.) With zero stores the new fields are absent or null and existing fields are unchanged. |
+| `PUT /api/shopping-list/items/{id}/store` (new) | `{storeId \| null}`; null = "Move back to {usual}". `200 ShoppingListEntry`. Errors `validation`, `conflict` (already bought). |
+| `PATCH /api/shopping-list/items/{id}` (newly indexed) | `{purchased}`; `false` un-marks (DEP-1), or `not_found` after "Start a new cart". |
+| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`. |
+
+```ts
+interface ShoppingListEntryStoreFields {
+  store: { id: string; name: string } | null;
+  storeReason: 'run' | 'usual' | null;
+  usualStoreId: string | null; usualReason: UsualReason;
+  usualChangedAt?: string; previousUsualStoreId?: string | null;
+  availableAt: { storeId: string; origin: Origin; checkedAt: string | null }[];
+  sendable: boolean | null;              // null when the line's store isn't linked
+  checkStatus?: CheckStatus; checkReason?: CheckReason;
+  availability?: Availability;
+}
+```
+
+**Export with `storeId`:** only unbought lines whose run store is `storeId`; the just-in-time check runs first if checking is on (a rejected token refresh ends the send with `409 reconnect_required`, nothing sent). Sendable lines go through `cart.Engine.Provision` as #484 leaves it. Held-back lines never reach the engine or the ledger and appear as `{entryId, itemId, name, quantity, reason:'not_confirmed', checkStatus, checkReason?}`. Without `storeId`: today's behavior for one release with `Deprecation: true`; zero-store households keep calling without it . **`cartUrl`:** from a static, reviewed banner→URL map on `location_chain` (T1 verifies), omitted for unknown banners.
+
+**Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted):** before any cart `PUT`, `409 reconnect_required` or `502 provider_unavailable` with no `results[]` and no ledger change. After a batch was accepted: a later 401/403 gives `200` with `reconnectRequired: true`, that batch and every never-attempted batch `failed`/`reconnect_required`; a 5xx or timeout makes only that batch `unknown`/`request_incomplete`, later batches `failed`/`request_incomplete`. At most one cart-triggered refresh retry, only before any batch succeeds.
+
+### Send result reasons (canonical set = #484's public names)
+
+| `reason` | status | when |
+|---|---|---|
+| `no_upc` | `skipped` | No barcode to derive. |
+| `no_match` | `skipped` | Barcodes, but none normalize to a Kroger UPC. |
+| `batch_rejected` | `failed` | Kroger rejected the batch (4xx on cart `PUT`). |
+| `invalid_line` | `failed` | A rejected batch with a line-level error. |
+| `reconnect_required` | `failed` | Partial send only: the refused batch and every later batch. |
+| `request_incomplete` | `unknown` / `failed` | `unknown`: sent, then failed or indeterminate. `failed`: never attempted after that. |
+| `api_error` | `failed` | Fallback. |
+| `unavailable` | `skipped` | `per_line` providers only; never Kroger. |
+| `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger. |
+
+`heldBack[].reason` is separate, with the single value `not_confirmed`.
+
+**Aliases, accepted only until ticket A1 in [multi-store-sourcing.md](multi-store-sourcing.md#8-ticket-breakdown):** `no_product_identity` → `no_upc` (copy "No barcode saved for this item", PM ruling); `provider_rejected` → `batch_rejected`; per-line `provider_unavailable` in #484's `ProvisionUnknownReason` is never emitted per line and A1 removes it from the union.
+
+
 ## Error model
 
 Every error body is JSON:
@@ -1642,11 +1801,19 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
-| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. |
+| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. Store search and manual store checks use it when the household's daily share of its Kroger app's limit is used up, with `Retry-After` ([multi-store sourcing](multi-store-sourcing.md)). |
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. Also a `POST /api/device/scans` body over 64 KB. |
 | `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
 | `upgrade_required` | 426 | Update Stockbot to keep using it. | Expo below `minClientVersion.expo`, and a malformed `expo/` value. Also Basic with no `X-Stockbot-Client`, or Basic with a value that does not start with `expo/`, after the household password is retired. A missing header, or any other non-`expo/` value, is web and is not gated. The gate skips `GET /api/config`, `GET /api/build`, and telemetry. |
+| `store_name_taken` | 409 | You already have a store with that name. | `field:"name"`. |
+| `store_already_linked` | 409 | Another store is already linked to this cart. | One store per provider. |
+| `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
+| `store_check_failed` | 503 | Couldn't check the store right now. Try again later. | Kroger 5xx or timeout after retry. |
+| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). The web hides check controls from `lookupsEnabled`, so this is a guard. |
+| `kroger_not_connected` | 409 | Connect your Kroger account first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
+| `reconnect_required` | 409 | Couldn't connect to your {provider} account. Nothing was sent. | From #484. Send only, before any cart `PUT`. Body `{error, code, provider}`. Marks the connection `reauth_required`. |
+| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | From #484 (existing server code). Send only, before any cart `PUT`. |
 
 ## Decided by PM
 
