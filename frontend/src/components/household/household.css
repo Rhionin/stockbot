@@ -91,16 +91,28 @@
   min-height: 44px;
 }
 
-.admin-household-retry-spinner-idle {
-  visibility: hidden;
-}
-
 .admin-household-retry-label-stack {
   display: grid;
 }
 
 .admin-household-retry-label-stack > span {
   grid-area: 1 / 1;
+}
+
+.admin-household-retry-label-idle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: stretch;
+  width: 100%;
+}
+
+.admin-household-retry-label-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  gap: var(--mantine-spacing-xs);
 }
 
 .admin-household-retry-label-stack > span[aria-hidden='true'] {

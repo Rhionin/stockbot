@@ -194,8 +194,10 @@ describe('HouseholdsPage admin server list', () => {
     const busyLabels = retry.querySelectorAll('.admin-household-retry-label-stack span');
     expect(busyLabels[0]).toHaveAttribute('aria-hidden', 'true');
     expect(busyLabels[1]).not.toHaveAttribute('aria-hidden', 'true');
-    const activeBusyLabel = busyLabels[1];
-    expect(getComputedStyle(activeBusyLabel)).toMatchObject({ opacity: '1', visibility: 'visible' });
+    const activeBusyLabel = retry.querySelector('.admin-household-retry-label-busy');
+    expect(activeBusyLabel).not.toBeNull();
+    expect(activeBusyLabel!.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    expect(getComputedStyle(activeBusyLabel!)).toMatchObject({ opacity: '1', visibility: 'visible' });
     expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
     resolveRetry(json({ households: [testHouseholdRow] }));

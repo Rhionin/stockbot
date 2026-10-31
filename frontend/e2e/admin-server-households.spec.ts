@@ -741,9 +741,32 @@ async function assertTryAgainButtonSizing(
   await expect(tryAgain).toHaveAccessibleName('Try again')
   await expect(tryAgain.locator('.admin-household-retry-label-stack span').nth(1)).toHaveAttribute('aria-hidden', 'true')
   const idleMinWidth = await tryAgain.evaluate((el) => getComputedStyle(el).minWidth)
-  expect(idleMinWidth, 'Try again uses content width, not a fixed min-width').not.toMatch(/11\.5rem/)
+  // getComputedStyle reports min-width in px (e.g. 172.5px), never rem, so match the unset values.
+  expect(['auto', '0px'], 'Try again uses content width, not a fixed min-width').toContain(idleMinWidth)
   const idleBox = await tryAgain.boundingBox()
   expect(idleBox).not.toBeNull()
+  const contentWidth = await tryAgain.evaluate((el) => {
+    const px = (v: string) => parseFloat(v) || 0
+    const cs = getComputedStyle(el)
+    const labelWidths = [...el.querySelectorAll('.admin-household-retry-label-stack > span')].map((span) => (
+      span.getBoundingClientRect().width
+    ))
+    return px(cs.borderLeftWidth) + px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderRightWidth)
+      + Math.max(...labelWidths)
+  })
+  expect(Math.abs(idleBox!.width - contentWidth), 'Try again width follows the widest stacked label').toBeLessThanOrEqual(0.5)
+  await expect(tryAgain.evaluate((el) => {
+    const idle = el.querySelector('.admin-household-retry-label-idle')
+    const stack = el.querySelector('.admin-household-retry-label-stack')
+    if (!idle || !stack) return false
+    const range = document.createRange()
+    range.selectNodeContents(idle)
+    const text = range.getBoundingClientRect()
+    const stackBox = stack.getBoundingClientRect()
+    const leftSpace = text.left - stackBox.left
+    const rightSpace = stackBox.right - text.right
+    return Math.abs(leftSpace - rightSpace) <= 1
+  }), 'Idle Try again text is centered in the label cell').resolves.toBe(true)
   if (captureScreenshots) {
     await tryAgain.screenshot({ path: testInfo.outputPath('try-again-idle.png') })
   }
@@ -754,7 +777,7 @@ async function assertTryAgainButtonSizing(
   await expect(busyButton).toHaveAttribute('aria-busy', 'true')
   await expect(busyButton).toBeDisabled()
   await expect(busyButton.locator('.admin-household-retry-label-stack span').first()).toHaveAttribute('aria-hidden', 'true')
-  const activeBusyLabel = busyButton.locator('.admin-household-retry-label-stack span').nth(1)
+  const activeBusyLabel = busyButton.locator('.admin-household-retry-label-busy')
   await expect(activeBusyLabel.evaluate((el) => {
     const style = getComputedStyle(el)
     return { opacity: style.opacity, visibility: style.visibility }
