@@ -126,7 +126,7 @@ describe('ShoppingListPage', () => {
     renderPage();
 
     expect(await screen.findByText('Build the list before sending it to your store.')).toBeInTheDocument();
-    expect(screen.getByText('Sends these items to your store cart.')).toBeInTheDocument();
+    expect(screen.getByText("Sends these items to your store's cart.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build the list' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send to your store' })).toBeDisabled();
     expect(screen.queryByLabelText('Pantry item')).not.toBeInTheDocument();

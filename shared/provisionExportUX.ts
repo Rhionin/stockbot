@@ -59,7 +59,10 @@ export function provisionSendButtonLabel(storeLabel: string): string {
 }
 
 export function provisionSendHint(storeLabel: string): string {
-  return `Sends these items to ${provisionCartTarget(storeLabel)}.`;
+  if (storeLabel === UNKNOWN_STORE) {
+    return "Sends these items to your store's cart.";
+  }
+  return `Sends these items to your ${storeLabel} cart.`;
 }
 
 export function provisionEmptyListNote(storeLabel: string): string {

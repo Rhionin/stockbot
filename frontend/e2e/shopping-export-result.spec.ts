@@ -329,6 +329,7 @@ test('screenshot 502-unavailable-no-store-390.png', async ({ page }) => {
     exportEnvelope: { status: 502, code: 'provider_unavailable' },
   })
   await openShoppingAndSend(page, 'Send to your store')
+  await expect(page.getByText("Sends these items to your store's cart.")).toBeVisible()
   const panel = page.getByRole('status', { name: 'Cart send result' })
   await expect(panel.getByText("Nothing was sent. Your store isn't responding right now.")).toBeVisible()
   await saveShot(page, '502-unavailable-no-store-390.png')
@@ -463,6 +464,7 @@ test('blocked Send waits for resolve before export and shows hint', async ({ pag
     await route.continue()
   })
   await openShoppingAndSend(page)
+  await expect(page.getByText('Sends these items to your Kroger cart.')).toBeVisible()
   const panel = page.getByRole('status', { name: 'Cart send result' })
   await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
   await expect(panel.getByText('Marked as in your cart')).toBeVisible()

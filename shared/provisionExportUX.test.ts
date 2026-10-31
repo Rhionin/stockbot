@@ -42,7 +42,7 @@ describe('provisionSendButtonLabel and hints', () => {
     expect(provisionSendButtonLabel("Smith's")).toBe("Send to Smith's");
     expect(provisionSendButtonLabel('your store')).toBe('Send to your store');
     expect(provisionSendHint('Kroger')).toBe('Sends these items to your Kroger cart.');
-    expect(provisionSendHint('your store')).toBe('Sends these items to your store cart.');
+    expect(provisionSendHint('your store')).toBe("Sends these items to your store's cart.");
     expect(provisionEmptyListNote("Smith's")).toBe("Build the list before sending it to Smith's.");
   });
 });
