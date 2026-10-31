@@ -881,6 +881,8 @@ export type HostedErrorCode =
   | 'store_check_failed'
   | 'store_check_unavailable'
   | 'kroger_not_connected'
+  | 'store_app_keys_rejected'
+  | 'store_app_unreachable'
   | 'reconnect_required'
   | 'provider_unavailable'
   ;
@@ -1715,6 +1717,8 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   store_check_failed: "Couldn't reach the store right now. Try again later.",
   store_check_unavailable: "Checking isn't on for this store.",
   kroger_not_connected: 'Connect your store account first.',
+  store_app_keys_rejected: "Those keys didn't work. Check that you copied both keys.",
+  store_app_unreachable: "Couldn't reach the store. Try again in a few minutes.",
   reconnect_required: "Couldn't connect to your store account. Nothing was sent.",
   provider_unavailable: "Your store isn't responding. Try again later.",
 };
