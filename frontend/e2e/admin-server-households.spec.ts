@@ -4,6 +4,46 @@ import { install, resetStage, stage } from './householdStageFixtures'
 
 const MIN_TOUCH_TARGET_CSS_PX = 44
 const TOUCH_TARGET_FLOAT_EPS = 0.01
+// Master pins are measured in local Chromium; Linux CI subpixel and font metrics differ slightly.
+const MASTER_LAYOUT_X_TOLERANCE_PX = 4
+const MASTER_LAYOUT_WIDTH_TOLERANCE_PX = 8
+
+function expectBoxLayout(
+  label: string,
+  box: { x: number; width: number; height: number } | null,
+  expected: { x: number; width: number; height?: number },
+  heightTolerance = 0.5,
+  widthTolerance = MASTER_LAYOUT_WIDTH_TOLERANCE_PX,
+) {
+  expect(box, label).not.toBeNull()
+  expect(Math.abs(box!.x - expected.x), `${label} x`).toBeLessThanOrEqual(MASTER_LAYOUT_X_TOLERANCE_PX)
+  expect(Math.abs(box!.width - expected.width), `${label} width`).toBeLessThanOrEqual(widthTolerance)
+  if (expected.height !== undefined) {
+    expect(Math.abs(box!.height - expected.height), `${label} height`).toBeLessThanOrEqual(heightTolerance)
+  }
+}
+
+const MASTER_NAV_GAP_TOLERANCE_PX = 2
+
+function expectHorizontalGap(
+  label: string,
+  left: { x: number; width: number },
+  right: { x: number; width: number },
+  expectedGap: number,
+  tolerance = MASTER_NAV_GAP_TOLERANCE_PX,
+) {
+  const gap = right.x - (left.x + left.width)
+  expect(Math.abs(gap - expectedGap), label).toBeLessThanOrEqual(tolerance)
+}
+
+async function blurActiveElement(page: Page) {
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur() })
+}
+
+async function assertDocumentAndMainNoHorizontalScroll(page: Page) {
+  await expect(page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).resolves.toBe(true)
+  await expect(page.locator('main.mantine-AppShell-main').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
+}
 
 const PM_HOUSEHOLD_RESTOCK_LABELS = [
   'New items restock automatically',
@@ -73,7 +113,7 @@ async function assertCornersHit(locator: Locator) {
   }
 }
 
-/** Taps 2px inside each corner of an invite text field and expects focus on the input. */
+/** Taps 2px inside each corner of an invite text field; password left corners focus, right corners toggle. */
 async function assertInviteInputCornersFocus(page: Page) {
   const inset = 2
   for (const name of ['Name', 'Email', 'Household name'] as const) {
@@ -87,70 +127,119 @@ async function assertInviteInputCornersFocus(page: Page) {
       [box!.x + inset, box!.y + box!.height - inset],
       [box!.x + box!.width - inset, box!.y + box!.height - inset],
     ]) {
+      await blurActiveElement(page)
       await page.mouse.click(x, y)
       await expect(input).toBeFocused()
     }
   }
   const passwordInput = page.getByRole('textbox', { name: 'Password', exact: true })
+  const toggle = page.locator('.invite-accept-password-toggle')
   await expect(passwordInput).toBeVisible()
-  // Tap the visible bordered field, not the inner input, so a short inner input fails.
   const passwordBox = await page.locator('.invite-accept-page .mantine-PasswordInput-input').boundingBox()
   expect(passwordBox).not.toBeNull()
-  for (const [x, y] of [
+  const leftCorners = [
     [passwordBox!.x + inset, passwordBox!.y + inset],
-    [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + inset],
     [passwordBox!.x + inset, passwordBox!.y + passwordBox!.height - inset],
+    [passwordBox!.x + inset, passwordBox!.y + passwordBox!.height / 2],
+  ] as const
+  const rightCorners = [
+    [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + inset],
     [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + passwordBox!.height - inset],
-    [passwordBox!.x + passwordBox!.width / 2, passwordBox!.y + passwordBox!.height - inset],
-  ]) {
+    [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + passwordBox!.height / 2],
+  ] as const
+  await blurActiveElement(page)
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  for (const [x, y] of leftCorners) {
+    await blurActiveElement(page)
     await page.mouse.click(x, y)
     await expect(passwordInput).toBeFocused()
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  }
+  for (const [x, y] of rightCorners) {
+    await blurActiveElement(page)
+    await page.mouse.click(x, y)
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await page.mouse.click(x, y)
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
   }
 }
 
 async function assertPasswordToggleInsideField(page: Page) {
-  const wrapper = page.locator('.invite-accept-page .mantine-PasswordInput-root')
+  const field = page.locator('.invite-accept-page .mantine-PasswordInput-input')
   const toggle = page.locator('.invite-accept-password-toggle')
-  const field = await wrapper.boundingBox()
+  const fieldBox = await field.boundingBox()
   const button = await toggle.boundingBox()
-  expect(field).not.toBeNull()
+  expect(fieldBox).not.toBeNull()
   expect(button).not.toBeNull()
-  expect(button!.x + button!.width).toBeLessThanOrEqual(field!.x + field!.width + 0.5)
-  expect(button!.x).toBeGreaterThanOrEqual(field!.x - 0.5)
+  expect(button!.x + button!.width).toBeLessThanOrEqual(fieldBox!.x + fieldBox!.width + 0.5)
+  expect(button!.x).toBeGreaterThanOrEqual(fieldBox!.x - 0.5)
 }
 
-/** Taps the row just under the radio circle, outside the label text. */
-async function tapRadioRowUnderCircle(page: Page, rootSelector: string, label: string) {
+/** Row taps at circle, label text, and body left/right edges must select that option. */
+async function assertRadioRowTapPoints(page: Page, rootSelector: string, label: string) {
   const row = page.locator(`${rootSelector} .mantine-Radio-root`, { hasText: label })
-  const body = await row.locator('.mantine-Radio-body').boundingBox()
+  const bodyBox = await row.locator('.mantine-Radio-body').boundingBox()
   const circle = await row.locator('.mantine-Radio-inner').boundingBox()
-  expect(body).not.toBeNull()
+  const labelBox = await row.locator('.mantine-Radio-label').boundingBox()
+  expect(bodyBox).not.toBeNull()
   expect(circle).not.toBeNull()
-  await page.mouse.click(circle!.x + circle!.width / 2, body!.y + body!.height - 3)
-  await expect(page.getByRole('radio', { name: label })).toBeChecked()
+  expect(labelBox).not.toBeNull()
+  const inset = 2
+  const tapPoints = [
+    [circle!.x + circle!.width / 2, bodyBox!.y + bodyBox!.height / 2],
+    [labelBox!.x + labelBox!.width / 2, labelBox!.y + labelBox!.height / 2],
+    [bodyBox!.x + inset, bodyBox!.y + bodyBox!.height / 2],
+    [bodyBox!.x + bodyBox!.width - inset, bodyBox!.y + bodyBox!.height / 2],
+  ] as const
+  for (const [x, y] of tapPoints) {
+    await page.mouse.click(x, y)
+    await expect(page.getByRole('radio', { name: label })).toBeChecked()
+  }
 }
 
-/** Row touch target spans the radio group field; circle tap at row center selects. */
+async function assertRadioRowsDoNotOverlap(page: Page, rootSelector: string) {
+  const bodies = page.locator(`${rootSelector} .mantine-Radio-body`)
+  const count = await bodies.count()
+  const tops: number[] = []
+  const bottoms: number[] = []
+  for (let index = 0; index < count; index += 1) {
+    const box = await bodies.nth(index).boundingBox()
+    expect(box).not.toBeNull()
+    tops.push(box!.y)
+    bottoms.push(box!.y + box!.height)
+  }
+  for (let index = 0; index < tops.length - 1; index += 1) {
+    expect(bottoms[index], `row ${index} overlaps row ${index + 1}`).toBeLessThanOrEqual(tops[index + 1] + 1)
+  }
+}
+
+async function assertRadioRowsAt125Percent(page: Page, rootSelector: string) {
+  await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
+  await assertRadioRowsDoNotOverlap(page, rootSelector)
+  const bodies = page.locator(`${rootSelector} .mantine-Radio-body`)
+  const count = await bodies.count()
+  for (let index = 0; index < count; index += 1) {
+    const body = bodies.nth(index)
+    const box = await body.boundingBox()
+    expect(box).not.toBeNull()
+    expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
+    const label = body.locator('.mantine-Radio-label')
+    await expect(label.evaluate((el) => el.scrollHeight <= el.clientHeight + 0.5)).resolves.toBe(true)
+  }
+}
+
 async function assertRadioRowTouchTarget(page: Page, rootSelector: string, label: string) {
   const row = page.locator(`${rootSelector} .mantine-Radio-root`, { hasText: label })
   const body = row.locator('.mantine-Radio-body')
   const field = page.locator(`${rootSelector} .mantine-RadioGroup-root`).first()
   const bodyBox = await body.boundingBox()
   const fieldBox = await field.boundingBox()
-  const labelBox = await row.locator('.mantine-Radio-label').boundingBox()
   expect(bodyBox).not.toBeNull()
   expect(fieldBox).not.toBeNull()
-  expect(labelBox).not.toBeNull()
   expect(Math.abs(bodyBox!.width - fieldBox!.width)).toBeLessThanOrEqual(1)
-  expect(Math.abs(labelBox!.width - fieldBox!.width)).toBeLessThanOrEqual(1)
   expect(touchTargetDimensionMeetsMinimum(bodyBox!.height)).toBe(true)
-  const circle = await row.locator('.mantine-Radio-inner').boundingBox()
-  expect(circle).not.toBeNull()
-  const inset = 2
-  await page.mouse.click(bodyBox!.x + inset, bodyBox!.y + bodyBox!.height - inset)
-  await expect(page.getByRole('radio', { name: label })).toBeChecked()
-  await page.mouse.click(circle!.x + circle!.width / 2, bodyBox!.y + bodyBox!.height / 2)
-  await expect(page.getByRole('radio', { name: label })).toBeChecked()
+  await assertRadioRowTapPoints(page, rootSelector, label)
+  await assertRadioRowsDoNotOverlap(page, rootSelector)
 }
 
 async function assertHouseholdSwitcherEllipsis(page: Page, fullName: string) {
@@ -458,23 +547,26 @@ for (const viewportWidth of [390, 320]) {
     await page.goto('/')
     await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
     const nav = page.locator('.app-nav')
+    await expect(nav).toHaveCSS('overflow-x', 'auto')
+    await assertDocumentAndMainNoHorizontalScroll(page)
     for (const name of NAV_LINK_NAMES) {
       const link = page.getByRole('link', { name })
-      await link.scrollIntoViewIfNeeded()
+      await assertTouchTargetSize(link)
+      await expect(link).toHaveCSS('white-space', 'nowrap')
+      await expect(link.evaluate((el) => getComputedStyle(el).textOverflow !== 'ellipsis')).resolves.toBe(true)
+      await link.evaluate((el) => { el.scrollIntoView({ block: 'nearest', inline: 'center' }) })
       const visible = await link.evaluate((el) => {
         const range = document.createRange()
         range.selectNodeContents(el)
         const text = range.getBoundingClientRect()
         const box = el.getBoundingClientRect()
         const navBox = el.closest('.app-nav')!.getBoundingClientRect()
-        return text.left >= box.left - 0.5 && text.right <= box.right + 0.5
-          && text.left >= navBox.left - 0.5 && text.right <= navBox.right + 0.5
+        const eps = 0.5
+        return text.left >= box.left - eps && text.right <= box.right + eps
+          && text.left >= navBox.left - eps && text.right <= navBox.right + eps
       })
-      expect(visible, `${name} can be scrolled fully into view`).toBe(true)
+      expect(visible, `${name} label is fully visible after horizontal scroll`).toBe(true)
     }
-    // Overflow must stay reachable by swiping, not silently clipped.
-    await expect(nav.evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5
-      || getComputedStyle(el).overflowX !== 'hidden')).resolves.toBe(true)
   })
 }
 
@@ -491,14 +583,7 @@ for (const viewportWidth of [390, 320]) {
     await assertPasswordToggleInsideField(page)
     await assertInviteInputCornersFocus(page)
     await assertRadioRowTouchTarget(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
-    await page.locator('.invite-accept-page .mantine-Radio-root', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[1] }).screenshot({
-      path: `/opt/cursor/artifacts/invite-radio-touch-${viewportWidth}.png`,
-    })
-    await tapRadioRowUnderCircle(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
-    const labelBox = await page.locator('.invite-accept-page .mantine-Radio-label', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[2] }).boundingBox()
-    expect(labelBox).not.toBeNull()
-    await page.mouse.click(labelBox!.x + labelBox!.width - 4, labelBox!.y + labelBox!.height - 3)
-    await expect(page.getByRole('radio', { name: PM_HOUSEHOLD_RESTOCK_LABELS[2] })).toBeChecked()
+    await assertRadioRowTapPoints(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[2])
     // The row overlay must not steal pointer events from the radio itself.
     await page.getByRole('radio', { name: PM_HOUSEHOLD_RESTOCK_LABELS[0] }).check({ timeout: 2000 })
   })
@@ -510,64 +595,97 @@ for (const viewportWidth of [390, 320]) {
     await page.goto('/')
     await page.addStyleTag({ content: 'html { font-size: 110% !important; }' })
     await assertHouseholdSwitcherEllipsis(page, 'Test Household Pantry Storage')
-    await page.locator('.app-header .household-switch').screenshot({
-      path: `/opt/cursor/artifacts/header-switcher-110pct-${viewportWidth}.png`,
-    })
   })
 }
 
-test('app header control heights match master at 1280x800', async ({ page }) => {
+for (const viewportWidth of [390, 320]) {
+  test(`invite accept radio rows fit at ${viewportWidth}x844 with 125% text`, async ({ page }) => {
+    await openInviteAccept(page, viewportWidth, 844)
+    await assertRadioRowTapPoints(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[0])
+    await assertRadioRowsAt125Percent(page, '.invite-accept-page')
+  })
+
+  test(`admin households radio rows fit at ${viewportWidth}x844 with 125% text`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844)
+    await page.goto('/households')
+    await assertRadioRowTapPoints(page, '.households-admin-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
+    await assertRadioRowsAt125Percent(page, '.households-admin-page')
+  })
+}
+
+test('app header control layout matches master at 1280x800', async ({ page }) => {
   await openAdmin(page, 1280, 800)
   await page.goto('/')
-  const withinPx = (value: number, expected: number) => Math.abs(value - expected) <= 0.5
   const menu = await page.getByRole('button', { name: 'Menu' }).boundingBox()
   const household = await page.getByRole('combobox', { name: 'Test Household' }).boundingBox()
   const scanQueue = await page.getByRole('link', { name: 'Scan Queue' }).boundingBox()
+  const inventory = await page.getByRole('link', { name: 'Inventory' }).boundingBox()
+  const history = await page.getByRole('link', { name: 'History' }).boundingBox()
   const shopping = await page.getByRole('link', { name: 'Shopping List' }).boundingBox()
-  expect(menu).not.toBeNull()
-  expect(household).not.toBeNull()
-  expect(scanQueue).not.toBeNull()
-  expect(shopping).not.toBeNull()
-  // Pinned from master 95bc5a2a at 1280x800 (Playwright chromium).
-  for (const [label, height, expected] of [
-    ['Menu', menu!.height, 42],
-    ['Household switcher', household!.height, 33.75],
-    ['Scan Queue link', scanQueue!.height, 31.75],
-    ['Shopping List link', shopping!.height, 31.75],
+  const header = await page.locator('.app-header').boundingBox()
+  expect(header).not.toBeNull()
+  expect(header!.height).toBeLessThanOrEqual(52)
+  expectBoxLayout('Menu', menu, { x: 976.75, width: 42, height: 42 }, 0.5, 1)
+  expectBoxLayout('Household switcher', household, { x: 383.84375, width: 220, height: 33.75 })
+  expectHorizontalGap('Household switcher to Scan Queue', household!, scanQueue!, 15)
+  expectHorizontalGap('Scan Queue to Inventory', scanQueue!, inventory!, 2)
+  expectHorizontalGap('Inventory to History', inventory!, history!, 2)
+  expectHorizontalGap('History to Shopping List', history!, shopping!, 2)
+  for (const [label, box, height] of [
+    ['Scan Queue link', scanQueue, 31.75],
+    ['Inventory link', inventory, 31.75],
+    ['History link', history, 31.75],
+    ['Shopping List link', shopping, 31.75],
   ] as const) {
-    expect(withinPx(height, expected), `${label} height ${height} vs master ${expected}`).toBe(true)
+    expect(Math.abs(box!.height - height), `${label} height`).toBeLessThanOrEqual(0.5)
   }
+  const navRowY = scanQueue!.y
+  for (const [label, box] of [
+    ['Household switcher', household],
+    ['Inventory', inventory],
+    ['History', history],
+    ['Shopping List', shopping],
+  ] as const) {
+    expect(Math.abs(box!.y - navRowY), `${label} vertical alignment`).toBeLessThanOrEqual(2)
+  }
+  await assertDocumentAndMainNoHorizontalScroll(page)
 })
 
-test('invite accept control heights match master at 1280x800', async ({ page }) => {
+test('invite accept control layout matches master at 1280x800', async ({ page }) => {
   await openInviteAccept(page, 1280, 800)
-  const withinPx = (value: number, expected: number, tolerance = 1) => Math.abs(value - expected) <= tolerance
   const name = await page.getByRole('textbox', { name: 'Name', exact: true }).boundingBox()
-  const password = await page.getByRole('textbox', { name: 'Password', exact: true }).boundingBox()
+  const email = await page.getByRole('textbox', { name: 'Email', exact: true }).boundingBox()
+  const passwordInner = await page.getByRole('textbox', { name: 'Password', exact: true }).boundingBox()
+  const passwordWrap = await page.locator('.invite-accept-page .mantine-PasswordInput-input').boundingBox()
   const household = await page.getByRole('textbox', { name: 'Household name', exact: true }).boundingBox()
   const create = await page.getByRole('button', { name: 'Create household' }).boundingBox()
-  const radioLabel = await page.locator('.invite-accept-page .mantine-Radio-label').first().boundingBox()
+  const radioBody = await page.locator('.invite-accept-page .mantine-Radio-body').first().boundingBox()
   const toggle = await page.locator('.invite-accept-password-toggle').boundingBox()
-  expect(name).not.toBeNull()
-  expect(password).not.toBeNull()
-  expect(household).not.toBeNull()
-  expect(create).not.toBeNull()
-  expect(radioLabel).not.toBeNull()
-  expect(toggle).not.toBeNull()
-  // Pinned from master 95bc5a2a at 1280x800 (Playwright chromium, default Mantine sm).
-  for (const [label, height, expected] of [
-    ['Name', name!.height, 33.75],
-    ['Password', password!.height, 31.75],
-    ['Household name', household!.height, 33.75],
-    ['Create household', create!.height, 33.75],
-    ['Radio label', radioLabel!.height, 18.75],
-    ['Password toggle', toggle!.height, 26.25],
-  ] as const) {
-    expect(withinPx(height, expected, 0.5), `${label} height ${height} vs master ${expected}`).toBe(true)
-  }
+  const fieldPin = { x: 459, width: 362, height: 33.75 }
+  expectBoxLayout('Name', name, fieldPin)
+  expectBoxLayout('Email', email, fieldPin)
+  expectBoxLayout('Household name', household, fieldPin)
+  expectBoxLayout('Create household', create, fieldPin)
+  expectBoxLayout('Password wrapper', passwordWrap, fieldPin)
+  expectBoxLayout('Password inner', passwordInner, { x: 460, width: 360, height: 31.75 })
+  expectBoxLayout('Radio row', radioBody, { x: 459, width: 362, height: 18.75 })
+  expectBoxLayout('Password toggle', toggle, { x: 791, width: 26.25, height: 26.25 })
+  await assertRadioRowTapPoints(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[0])
+  await assertRadioRowsDoNotOverlap(page, '.invite-accept-page')
+  await expect(page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).resolves.toBe(true)
 })
 
-test('admin households Try again is at least 44px tall while retrying', async ({ page }) => {
+test('admin households radio layout matches master at 1280x800', async ({ page }) => {
+  await openAdmin(page, 1280, 800)
+  await page.goto('/households')
+  const radioBody = await page.locator('.households-admin-page .mantine-Radio-body').first().boundingBox()
+  expectBoxLayout('Admin radio row', radioBody, { x: 311, width: 598, height: 44 })
+  expect(touchTargetDimensionMeetsMinimum(radioBody!.height)).toBe(true)
+  await assertRadioRowTapPoints(page, '.households-admin-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
+  await assertRadioRowsDoNotOverlap(page, '.households-admin-page')
+})
+
+test('admin households Try again keeps width, alert, and visible busy label', async ({ page }) => {
   await openAdmin(page, 390, 844)
   let fail = true
   let releaseRetry: () => void = () => undefined
@@ -593,13 +711,19 @@ test('admin households Try again is at least 44px tall while retrying', async ({
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   fail = false
   const tryAgain = section.getByRole('button', { name: 'Try again' })
+  const idleBox = await tryAgain.boundingBox()
+  expect(idleBox).not.toBeNull()
   const clickPromise = tryAgain.click()
-  await expect(section.getByRole('button', { name: 'Trying again…' })).toHaveAttribute('data-loading', 'true')
   const busyButton = section.getByRole('button', { name: 'Trying again…' })
+  await expect(busyButton).toHaveAttribute('data-loading', 'true')
   await expect(busyButton).toHaveAttribute('aria-busy', 'true')
-  const box = await busyButton.boundingBox()
-  expect(box).not.toBeNull()
-  expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
+  await expect(busyButton).toBeDisabled()
+  await expect(busyButton).toHaveText('Trying again…')
+  await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
+  const busyBox = await busyButton.boundingBox()
+  expect(busyBox).not.toBeNull()
+  expect(Math.abs(idleBox!.width - busyBox!.width)).toBeLessThanOrEqual(1)
+  expect(touchTargetDimensionMeetsMinimum(busyBox!.height)).toBe(true)
   releaseRetry()
   await clickPromise
 })
@@ -614,7 +738,7 @@ test('admin households select a restock radio when tapping the label padding', a
   expect(box).not.toBeNull()
   await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 10)
   await expect(page.getByRole('radio', { name: 'Ask before restocking new items' })).toBeChecked()
-  await tapRadioRowUnderCircle(page, '.households-admin-page', 'Ask before restocking, and hold until you answer')
+  await assertRadioRowTapPoints(page, '.households-admin-page', 'Ask before restocking new items')
 })
 
 test('manage household keeps compact member controls at 390x844', async ({ page }) => {

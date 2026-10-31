@@ -89,6 +89,7 @@
 
 .admin-household-retry {
   min-height: 44px;
+  min-width: 8.75rem;
 }
 
 .households-admin-page .mantine-Button-root {
@@ -99,37 +100,44 @@
   min-height: 44px;
 }
 
+.households-admin-page .mantine-Radio-root {
+  width: 100%;
+}
+
+.households-admin-page .mantine-Radio-body {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 44px;
+}
+
+.households-admin-page .mantine-Radio-inner {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  margin-top: calc((44px - var(--radio-size, var(--radio-icon-size, 1.25rem))) / 2);
+}
+
+.households-admin-page .mantine-Radio-labelWrapper {
+  position: static;
+  flex: 1;
+  min-width: 0;
+  margin-inline-start: calc(-1 * (var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm)));
+  padding-inline-start: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
+}
+
+.households-admin-page .mantine-Radio-label {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  cursor: pointer;
+}
+
 @media (max-width: 47.99em) {
   .households-admin-page .mantine-Radio-root {
     width: 100%;
-  }
-
-  .households-admin-page .mantine-Radio-body {
-    position: relative;
-    align-items: center;
-    min-height: 44px;
-    width: 100%;
-  }
-
-  .households-admin-page .mantine-Radio-labelWrapper {
-    position: absolute;
-    inset: 0;
-  }
-
-  .households-admin-page .mantine-Radio-inner {
-    position: relative;
-    z-index: 2;
-  }
-
-  .households-admin-page .mantine-Radio-label {
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    min-height: 44px;
-    height: 100%;
-    width: 100%;
-    padding-left: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
-    cursor: pointer;
   }
 }
 

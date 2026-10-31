@@ -185,6 +185,7 @@ describe('HouseholdsPage admin server list', () => {
     await waitFor(() => expect(retry).toHaveAttribute('data-loading', 'true'));
     expect(retry).toHaveAttribute('aria-busy', 'true');
     expect(retry).toBeDisabled();
+    expect(retry).toHaveTextContent('Trying again…');
     expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
     resolveRetry(json({ households: [testHouseholdRow] }));

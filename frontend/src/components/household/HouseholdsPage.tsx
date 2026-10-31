@@ -265,11 +265,11 @@ export function HouseholdsPage() {
                   mt="sm"
                   className="admin-household-retry"
                   loading={operatorHouseholdsRetryLoading}
+                  disabled={operatorHouseholdsRetryLoading}
                   aria-busy={operatorHouseholdsRetryLoading || undefined}
-                  aria-label={operatorHouseholdsRetryLoading ? 'Trying again…' : undefined}
                   onClick={() => { void loadOperatorHouseholds({ retry: true }); }}
                 >
-                  Try again
+                  {operatorHouseholdsRetryLoading ? 'Trying again…' : 'Try again'}
                 </Button>
               )}
             </>
