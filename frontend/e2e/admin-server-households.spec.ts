@@ -2,12 +2,17 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { install, resetStage, stage } from './householdStageFixtures'
 
 const MIN_TOUCH_TARGET_CSS_PX = 44
+const TOUCH_TARGET_FLOAT_EPS = 0.01
+
+function touchTargetDimensionMeetsMinimum(value: number) {
+  return value >= MIN_TOUCH_TARGET_CSS_PX - TOUCH_TARGET_FLOAT_EPS
+}
 
 async function assertTouchTargetSize(locator: Locator) {
   const box = await locator.boundingBox()
   expect(box).not.toBeNull()
-  expect(Math.ceil(box!.width)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
-  expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+  expect(touchTargetDimensionMeetsMinimum(box!.width)).toBe(true)
+  expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
 }
 
 async function assertHouseholdsPageTouchTargets(page: Page) {
@@ -160,15 +165,17 @@ test('admin households recover from a server error when Try again succeeds', asy
   expect(callsBeforeRetry).toBeGreaterThanOrEqual(1)
 })
 
-test('admin households meet 44x44 touch targets at 390x844', async ({ page }) => {
-  await openAdmin(page, 390, 844)
-  await routeHouseholds(page, [{
-    ...baseRow, id: 'hh-1', name: 'Test Household', isPrimary: true, memberCount: 1, productCount: 1, itemsOnHand: 1,
-    scannersOnline: 0, scannersOffline: 0, scansThisWeek: 0,
-  }])
-  await page.goto('/households')
-  await assertHouseholdsPageTouchTargets(page)
-})
+for (const viewportWidth of [390, 320]) {
+  test(`admin households meet 44x44 touch targets at ${viewportWidth}x844`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844)
+    await routeHouseholds(page, [{
+      ...baseRow, id: 'hh-1', name: 'Test Household', isPrimary: true, memberCount: 1, productCount: 1, itemsOnHand: 1,
+      scannersOnline: 0, scannersOffline: 0, scansThisWeek: 0,
+    }])
+    await page.goto('/households')
+    await assertHouseholdsPageTouchTargets(page)
+  })
+}
 
 test('admin households Try again is at least 44px tall while retrying', async ({ page }) => {
   await openAdmin(page, 390, 844)
@@ -200,7 +207,7 @@ test('admin households Try again is at least 44px tall while retrying', async ({
   await expect(tryAgain).toHaveAttribute('data-loading', 'true')
   const box = await tryAgain.boundingBox()
   expect(box).not.toBeNull()
-  expect(Math.ceil(box!.height)).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET_CSS_PX)
+  expect(touchTargetDimensionMeetsMinimum(box!.height)).toBe(true)
   releaseRetry()
   await clickPromise
 })

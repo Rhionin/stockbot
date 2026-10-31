@@ -191,7 +191,7 @@ describe('HouseholdsPage admin server list', () => {
     expect(within(section).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
-  it('keeps each stat separator on the end of the previous part', async () => {
+  it('renders stat lines with nbsp separators in fixed positions', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/operator/households') return Promise.resolve(json({ households: [testHouseholdRow] }));
@@ -199,9 +199,26 @@ describe('HouseholdsPage admin server list', () => {
     }));
     renderAdminPage(session(true));
     const stats = await screen.findByTestId('operator-household-stats');
-    const parts = Array.from(stats.querySelectorAll('.admin-household-stat-part')).map((el) => el.textContent ?? '');
-    expect(parts.filter((part) => part.startsWith('·') || part.startsWith(' '))).toEqual([]);
-    expect(parts.some((part) => part.endsWith('\u00a0·'))).toBe(true);
+    const statLines = stats.querySelectorAll('.admin-household-stat-line');
+    expect(statLines[0].textContent).toBe('1 member\u00a0· 2 products\u00a0· 3 items on hand');
+    expect(statLines[1].textContent).toBe('Scanners: 1 online\u00a0· 0 offline');
+    expect(statLines[2].textContent).toBe('1 scan this week\u00a0· 0 pending scans');
+    expect(statLines[3].textContent).toBe('Last activity Apr 2, 12:00 PM');
+  });
+
+  it('formats Created using the viewer local calendar date near UTC midnight', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('TZ', 'America/Denver');
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        return Promise.resolve(json({ households: [{ ...testHouseholdRow, createdAt: '2026-04-01T03:00:00.000Z' }] }));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderAdminPage(session(true));
+    const section = await screen.findByTestId('operator-households-section');
+    expect(within(section).getByText('Created Mar 31', { exact: true })).toBeVisible();
   });
 
   it('retries after a server error with Try again', async () => {
@@ -288,6 +305,73 @@ describe('HouseholdsPage admin server list', () => {
     resolveFirst(json({ error: 'boom', code: 'internal' }, 500));
     await waitFor(() => expect(within(section).queryByRole('alert')).not.toBeInTheDocument());
     expect(within(section).getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
+  });
+
+  it('keeps loading visible until a newer in-flight load settles when an older request finishes first', async () => {
+    let calls = 0;
+    let resolveFirst: (value: Response) => void = () => undefined;
+    let resolveSecond: (value: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url !== '/api/operator/households') return Promise.reject(new Error(url));
+      calls += 1;
+      if (calls === 1) return new Promise<Response>((resolve) => { resolveFirst = resolve; });
+      return new Promise<Response>((resolve) => { resolveSecond = resolve; });
+    }));
+    render(
+      <StrictMode>
+        <MantineProvider env="test">
+          <MemoryRouter>
+            <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth: session(true), replaceAuth: vi.fn() }}>
+              <HouseholdsPage />
+            </HouseholdSessionContext.Provider>
+          </MemoryRouter>
+        </MantineProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText('Loading households…')).toBeVisible();
+    resolveFirst(json({ households: [{ ...testHouseholdRow, name: 'Stale Household' }] }));
+    await waitFor(() => {
+      expect(screen.queryByText('Stale Household', { selector: '.admin-household-name' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Loading households…')).toBeVisible();
+    resolveSecond(json({ households: [testHouseholdRow] }));
+    await waitFor(() => expect(screen.queryByText('Loading households…')).not.toBeInTheDocument());
+    expect(screen.getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
+  });
+
+  it('does not reset a newer successful load when an older request settles late', async () => {
+    let calls = 0;
+    let resolveFirst: (value: Response) => void = () => undefined;
+    let resolveSecond: (value: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url !== '/api/operator/households') return Promise.reject(new Error(url));
+      calls += 1;
+      if (calls === 1) return new Promise<Response>((resolve) => { resolveFirst = resolve; });
+      return new Promise<Response>((resolve) => { resolveSecond = resolve; });
+    }));
+    render(
+      <StrictMode>
+        <MantineProvider env="test">
+          <MemoryRouter>
+            <HouseholdSessionContext.Provider value={{ required: true, logout: vi.fn(), auth: session(true), replaceAuth: vi.fn() }}>
+              <HouseholdsPage />
+            </HouseholdSessionContext.Provider>
+          </MemoryRouter>
+        </MantineProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+    resolveSecond(json({ households: [testHouseholdRow] }));
+    const section = await screen.findByTestId('operator-households-section');
+    await screen.findByText('Test Household', { selector: '.admin-household-name' });
+    expect(screen.queryByText('Loading households…')).not.toBeInTheDocument();
+    resolveFirst(json({ error: 'boom', code: 'internal' }, 500));
+    await waitFor(() => expect(within(section).queryByRole('alert')).not.toBeInTheDocument());
+    expect(within(section).getByText('Test Household', { selector: '.admin-household-name' })).toBeVisible();
+    expect(screen.queryByText('Loading households…')).not.toBeInTheDocument();
   });
 
   it('ignores a stale success after a newer load failed', async () => {

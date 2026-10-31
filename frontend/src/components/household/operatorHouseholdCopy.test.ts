@@ -89,6 +89,16 @@ describe('formatOperatorHouseholdCreated', () => {
   it('includes the year when created in a past year', () => {
     expect(formatOperatorHouseholdCreated('2025-03-15T12:00:00Z', now2026)).toBe('Created Mar 15, 2025');
   });
+
+  it('uses UTC calendar date for a near-midnight UTC timestamp', () => {
+    expect(formatOperatorHouseholdCreated('2026-04-01T03:00:00.000Z', now2026)).toBe('Created Apr 1');
+  });
+
+  it('uses Denver local calendar date for a near-midnight UTC timestamp', () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('TZ', 'America/Denver');
+    expect(formatOperatorHouseholdCreated('2026-04-01T03:00:00.000Z', now2026)).toBe('Created Mar 31');
+  });
 });
 
 describe('formatOperatorHouseholdLastActivity', () => {
