@@ -1,9 +1,17 @@
 package cart
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -193,7 +201,8 @@ func TestProvision_Rejected_FailsAndLeavesLedgerUntouched(t *testing.T) {
 		Name:     "Milk",
 		Quantity: 2,
 		Outcome:  OutcomeFailed,
-		Reason:   ReasonProviderRejected,
+		Reason:   ReasonBatchRejected,
+		Detail:   "The store rejected this batch.",
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -225,6 +234,7 @@ func TestProvision_Indeterminate_UnknownAndLeavesLedgerUntouched(t *testing.T) {
 		Quantity: 2,
 		Outcome:  OutcomeUnknown,
 		Reason:   ReasonRequestIncomplete,
+		Detail:   "The store did not confirm this item.",
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -255,7 +265,7 @@ func TestProvision_NoResolvableIdentity_FailsWithNoProductIdentity(t *testing.T)
 		Name:     "Milk",
 		Quantity: 2,
 		Outcome:  OutcomeFailed,
-		Reason:   ReasonNoProductIdentity,
+		Reason:   ReasonNoMatch,
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -393,7 +403,7 @@ func TestProvision_PerLine_RejectedLineDoesNotAdvanceLedger(t *testing.T) {
 	}
 	assert.Equal(t, OutcomeConfirmed, byItem[okItem].Outcome)
 	assert.Equal(t, OutcomeFailed, byItem[noItem].Outcome)
-	assert.Equal(t, ReasonProviderRejected, byItem[noItem].Reason)
+	assert.Equal(t, ReasonUnavailable, byItem[noItem].Reason)
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)
@@ -476,4 +486,355 @@ func TestProvision_ClientHandoff_RecordsUnknownAndDoesNotAdvanceLedger(t *testin
 	require.NoError(t, err)
 	_, advanced := ledger[itemID]
 	assert.False(t, advanced)
+}
+
+func TestProvision_PartialReconnectHaltsLaterBatchesAsFailed(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted, DispositionRejected},
+		addStatuses:   []int{http.StatusNoContent, http.StatusUnauthorized},
+		addErrors:     []error{nil, errors.New("cart api returned status 401")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.True(t, report.ReconnectRequired)
+	assert.Equal(t, 1, report.Confirmed)
+	var sent, failed, unknown int
+	for _, entry := range report.Entries {
+		switch entry.Outcome {
+		case OutcomeConfirmed:
+			sent++
+		case OutcomeFailed:
+			failed++
+			if entry.Reason != ReasonReconnectRequired {
+				t.Fatalf("failed entry reason = %q, want reconnect_required", entry.Reason)
+			}
+		case OutcomeUnknown:
+			unknown++
+		}
+	}
+	assert.Equal(t, 1, sent)
+	assert.Equal(t, 2, failed)
+	assert.Equal(t, 0, unknown)
+}
+
+func TestProvision_PartialIndeterminateHaltsLaterBatchesAsFailed(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted, DispositionIndeterminate},
+		addErrors:     []error{nil, errors.New("upstream timeout")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.False(t, report.ReconnectRequired)
+	assert.Equal(t, 1, report.Confirmed)
+	var unknown, failed int
+	for _, entry := range report.Entries {
+		if entry.Outcome == OutcomeUnknown {
+			unknown++
+		}
+		if entry.Outcome == OutcomeFailed {
+			failed++
+			assert.Equal(t, ReasonRequestIncomplete, entry.Reason)
+		}
+	}
+	assert.Equal(t, 1, unknown)
+	assert.Equal(t, 1, failed)
+}
+
+func TestProvision_RejectedWithErrorUsesInvalidLineForCanonical(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionRejected},
+		addErrors:     []error{errors.New("invalid quantity 0 (must be 1-999)")},
+		addStatuses:   []int{400},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	_, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	require.Len(t, report.Entries, 1)
+	assert.Equal(t, OutcomeFailed, report.Entries[0].Outcome)
+	assert.Equal(t, ReasonInvalidLine, report.Entries[0].Reason)
+	assert.Equal(t, entryID, report.Entries[0].EntryID)
+}
+
+func TestProvision_Put1IndeterminateNoErrorHaltsRemainingBatches(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	script := &fakeScript{
+		dispositions:  []ResultDisposition{DispositionIndeterminate},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	}
+	provider := newFakeProvider("fake-none", caps, script)
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.Equal(t, 0, report.Confirmed)
+	if script.addCalls != 1 {
+		t.Fatalf("Add calls = %d, want exactly 1", script.addCalls)
+	}
+	var unknown, failed, sent int
+	for _, entry := range report.Entries {
+		switch entry.Outcome {
+		case OutcomeConfirmed:
+			sent++
+		case OutcomeUnknown:
+			unknown++
+			assert.Equal(t, ReasonRequestIncomplete, entry.Reason)
+		case OutcomeFailed:
+			failed++
+			assert.Equal(t, ReasonRequestIncomplete, entry.Reason)
+		}
+	}
+	assert.Equal(t, 0, sent)
+	assert.Equal(t, 1, unknown)
+	assert.Equal(t, 2, failed)
+}
+
+func TestProvision_Put1IndeterminateHaltsRemainingBatches(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionIndeterminate},
+		addErrors:     []error{errors.New("upstream 503")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.Equal(t, 0, report.Confirmed)
+	var unknown, failed int
+	for _, entry := range report.Entries {
+		switch entry.Outcome {
+		case OutcomeUnknown:
+			unknown++
+		case OutcomeFailed:
+			failed++
+		}
+	}
+	assert.Equal(t, 1, unknown)
+	assert.Equal(t, 2, failed)
+
+	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	for itemID, row := range ledger {
+		if row.Requested != 0 {
+			t.Fatalf("ledger[%q].Requested = %d, want 0", itemID, row.Requested)
+		}
+	}
+}
+
+func TestProvision_PreSendOAuthFailureLeavesLedgerEmpty(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
+		refreshErr:    &OAuthTokenError{StatusCode: 400, OAuthError: "invalid_grant"},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	_, _ = env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+	expired := time.Now().UTC().Add(-time.Hour)
+	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "stale",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &expired,
+	}))
+
+	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
+	var reconnect *ErrReconnectRequired
+	require.ErrorAs(t, err, &reconnect)
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
+}
+
+func snapshotProviderLedger(t *testing.T, env *provisionEnv, providerID ProviderID) map[string]LedgerEntry {
+	t.Helper()
+	ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, providerID)
+	require.NoError(t, err)
+	return ledger
+}
+
+func assertProviderLedgerUnchanged(t *testing.T, before, after map[string]LedgerEntry) {
+	t.Helper()
+	assert.Equal(t, before, after, "ledger must be unchanged on whole-request 409")
+}
+
+func TestProvision_FirstPut401MarksReauthRequired(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
+		addStatuses:   []int{http.StatusUnauthorized, http.StatusUnauthorized},
+		addErrors:     []error{errors.New("401"), errors.New("401")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &future,
+	}))
+
+	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
+	var reconnect *ErrReconnectRequired
+	require.ErrorAs(t, err, &reconnect)
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
+	conn, err := env.directory.Read(ctx, env.scope, "fake-oauth")
+	require.NoError(t, err)
+	if conn.State != connection.StateReauthRequired {
+		t.Fatalf("state = %q, want reauth_required", conn.State)
+	}
+}
+
+func TestProvision_WholeRequest409WhenMarkReauthFails(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
+	if _, err := env.db.Exec(`
+		CREATE TRIGGER block_reauth_write409 BEFORE UPDATE ON provider_connections
+		WHEN NEW.state = 'reauth_required'
+		BEGIN
+			SELECT RAISE(ABORT, 'disk full');
+		END`); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
+		addStatuses:   []int{http.StatusUnauthorized, http.StatusUnauthorized},
+		addErrors:     []error{errors.New("401"), errors.New("401")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &future,
+	}))
+
+	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
+	var reconnect *ErrReconnectRequired
+	require.ErrorAs(t, err, &reconnect)
+	if !strings.Contains(logBuf.String(), "mark reauth_required before reconnect response") {
+		t.Fatalf("log = %q, want mark reauth_required before reconnect response", logBuf.String())
+	}
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
+}
+
+func TestProvision_PartialReconnectStill200WhenMarkReauthFails(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	if _, err := env.db.Exec(`
+		CREATE TRIGGER block_reauth_write BEFORE UPDATE ON provider_connections
+		WHEN NEW.state = 'reauth_required'
+		BEGIN
+			SELECT RAISE(ABORT, 'disk full');
+		END`); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted, DispositionRejected},
+		addStatuses:   []int{http.StatusNoContent, http.StatusUnauthorized},
+		addErrors:     []error{nil, errors.New("401")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &future,
+	}))
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
+	require.NoError(t, err)
+	if !report.ReconnectRequired {
+		t.Fatal("ReconnectRequired = false, want true even when mark reauth fails")
+	}
+}
+
+func TestProvision_Cart401RefreshRetryCanSucceed(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionRejected, DispositionAccepted},
+		addStatuses:   []int{http.StatusUnauthorized, http.StatusNoContent},
+		addErrors:     []error{errors.New("401"), nil},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &future,
+	}))
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
+	require.NoError(t, err)
+	if report.Confirmed != 1 {
+		t.Fatalf("Confirmed = %d, want 1 after refresh retry", report.Confirmed)
+	}
 }

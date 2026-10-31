@@ -52,6 +52,8 @@ import {
   pairUndoCopy,
   pairUndoHideLine,
   previewReshelves,
+  provisionResultStatus,
+  provisionReasonUXCategory,
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
@@ -89,6 +91,7 @@ import {
   type BatchCommitResponse,
   type ScanListEntry,
   type UndoPreview,
+  type ShoppingListExportResultEntry,
 } from './contract';
 
 const oneUnnamed = '1 card had fewer on hand than scanned, so only what was on hand was taken out.';
@@ -747,6 +750,102 @@ describe('inlineFailure', () => {
     { name: 'plain network error', error: new Error('Network error'), fallback: 'Unable to load history.', message: 'Network error' },
   ])('$name', ({ error, fallback, message }) => {
     expect(inlineFailure(error, fallback)).toBe(message);
+  });
+});
+
+describe('provisionResultStatus', () => {
+  it('maps outcomes to added, sent, skipped, failed, and unknown', () => {
+    expect(provisionResultStatus('confirmed', undefined, 'per_line')).toBe('added');
+    expect(provisionResultStatus('confirmed')).toBe('sent');
+    expect(provisionResultStatus('unknown')).toBe('unknown');
+    expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
+    expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
+  });
+});
+
+describe('provisionReasonUXCategory', () => {
+  it('maps every dedicated results reason to a UX bucket', () => {
+    expect(provisionReasonUXCategory('no_upc')).toBe('no_barcode');
+    expect(provisionReasonUXCategory('no_match')).toBe('no_match');
+    expect(provisionReasonUXCategory('batch_rejected')).toBe('rejected');
+    expect(provisionReasonUXCategory('api_error')).toBe('error');
+    expect(provisionReasonUXCategory('reconnect_required')).toBe('');
+    expect(provisionReasonUXCategory('request_incomplete')).toBe('');
+    expect(provisionReasonUXCategory(undefined)).toBe('');
+  });
+});
+
+describe('ShoppingListExportResultEntry types', () => {
+  it('allows failed halt reasons and canonical fail reasons', () => {
+    const haltReconnect: ShoppingListExportResultEntry = {
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Tea',
+      quantity: 1,
+      status: 'failed',
+      reason: 'reconnect_required',
+    };
+    const haltIncomplete: ShoppingListExportResultEntry = {
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Rice',
+      quantity: 1,
+      status: 'failed',
+      reason: 'request_incomplete',
+    };
+    const validation: ShoppingListExportResultEntry = {
+      entryId: 'e3',
+      itemId: 'i3',
+      name: 'Spice',
+      quantity: 1,
+      status: 'failed',
+      reason: 'invalid_line',
+    };
+    const indeterminate: ShoppingListExportResultEntry = {
+      entryId: 'e4',
+      itemId: 'i4',
+      name: 'Oats',
+      quantity: 1,
+      status: 'unknown',
+      reason: 'request_incomplete',
+    };
+    expect(haltReconnect.reason).toBe('reconnect_required');
+    expect(haltIncomplete.reason).toBe('request_incomplete');
+    expect(validation.reason).toBe('invalid_line');
+    expect(indeterminate.status).toBe('unknown');
+  });
+
+  it('rejects invalid status and reason pairings at compile time', () => {
+    // @ts-expect-error no_per_item_result is only valid on unknown lines
+    const failedUnknownReason: ShoppingListExportResultEntry = {
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Tea',
+      quantity: 1,
+      status: 'failed',
+      reason: 'no_per_item_result',
+    };
+    // @ts-expect-error invalid_line is not a valid unknown reason
+    const unknownInvalidLine: ShoppingListExportResultEntry = {
+      entryId: 'e2',
+      itemId: 'i2',
+      name: 'Rice',
+      quantity: 1,
+      status: 'unknown',
+      reason: 'invalid_line',
+    };
+    // @ts-expect-error batch_rejected is not a valid skipped reason
+    const skippedBatchRejected: ShoppingListExportResultEntry = {
+      entryId: 'e3',
+      itemId: 'i3',
+      name: 'Milk',
+      quantity: 1,
+      status: 'skipped',
+      reason: 'batch_rejected',
+    };
+    void failedUnknownReason;
+    void unknownInvalidLine;
+    void skippedBatchRejected;
   });
 });
 

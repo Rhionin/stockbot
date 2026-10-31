@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, TargetConflictMember } from './types';
+import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ProvisionReport, ProvisionResultStatus, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, ShoppingListExportResultEntry, TargetConflictMember } from './types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -137,6 +137,9 @@ export const UPDATING_SENTENCE = 'Updating. Try again in a minute.';
 export const UPDATING_STATUS = 'migrating';
 
 export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
+export const CODE_RECONNECT_REQUIRED = 'reconnect_required';
+export const RECONNECT_REQUIRED_SENTENCE =
+  "Couldn't connect to your {provider} account. Nothing was sent.";
 export const PROVIDER_FIELD = 'provider';
 export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
 
@@ -1753,4 +1756,73 @@ export function deviceKindLabel(kind: string): string {
   if (kind === 'phone') return 'Phone';
   if (kind === 'direct') return 'Direct scanner';
   return kind;
+}
+
+// POST /api/shopping-list/export — send the staged shopping plan to a grocery
+// provider (Kroger). Matches shoppingListExportResponse in
+// internal/server/handler_shopping_list_export.go.
+//
+// Whole-request failure before anything is sent: HTTP 409 `reconnect_required`
+// or HTTP 502 `provider_unavailable` in the standard error envelope (no results[]).
+//
+// Partial send after reconnect-class failure: HTTP 200 with per-line results and
+// `reconnectRequired: true`. The refused batch and every never-attempted batch are
+// `failed` (not sent), not unknown. Only a batch whose PUT might have landed
+// (5xx or timeout) is `unknown` / `request_incomplete`; later batches are failed.
+// A 5xx or timeout on the first PUT also stops later batches (HTTP 200, not 502).
+//
+// HTTP 502 `provider_unavailable` is only for failures before any cart PUT (token
+// call or store unreachable), with no results[].
+//
+// Per-line UX mapping via provisionReasonUXCategory: no_upc → no_barcode,
+// no_match → no_match, batch_rejected → rejected, api_error → error.
+export const SHOPPING_LIST_EXPORT_PATH = '/api/shopping-list/export';
+
+export interface ShoppingListExportRequest {
+  provider?: string;
+  useItemIds?: Record<string, string>;
+}
+
+export type { ProvisionSkipReason, ProvisionFailReason, ProvisionHaltFailReason, ProvisionFailedReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
+
+export interface ShoppingListExportResponse extends ProvisionReport {
+  results: ShoppingListExportResultEntry[];
+  items?: Array<{ itemId: string; name: string; quantity: number }>;
+  handoff?: { url?: string; expires?: string };
+}
+
+export function provisionResultStatus(
+  outcome: string,
+  reason?: string,
+  confirmation?: 'per_line' | 'per_request' | 'none',
+): ProvisionResultStatus {
+  if (outcome === 'confirmed') {
+    return confirmation === 'per_line' ? 'added' : 'sent';
+  }
+  if (outcome === 'unknown') return 'unknown';
+  if (outcome === 'failed') {
+    if (reason === 'no_upc' || reason === 'no_match' || reason === 'unavailable') {
+      return 'skipped';
+    }
+    return 'failed';
+  }
+  return 'failed';
+}
+
+/** UX copy buckets for per-line `results[].reason` (#481). */
+export type ProvisionReasonUXCategory = 'no_barcode' | 'no_match' | 'rejected' | 'error';
+
+export function provisionReasonUXCategory(reason: string | undefined): ProvisionReasonUXCategory | '' {
+  switch (reason) {
+    case 'no_upc':
+      return 'no_barcode';
+    case 'no_match':
+      return 'no_match';
+    case 'batch_rejected':
+      return 'rejected';
+    case 'api_error':
+      return 'error';
+    default:
+      return '';
+  }
 }
