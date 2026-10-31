@@ -417,6 +417,7 @@ describe('failed request_incomplete export rows', () => {
 
 describe('provisionRowGroup no_per_item_result precedence', () => {
   it('routes no_per_item_result to check even when status is failed', () => {
+    // Deliberately off-contract: failed status must not carry no_per_item_result on the wire.
     const mismatchedStatus = {
       entryId: 'e1',
       itemId: 'i1',
@@ -424,7 +425,7 @@ describe('provisionRowGroup no_per_item_result precedence', () => {
       quantity: 1,
       status: 'failed',
       reason: 'no_per_item_result',
-    } as ShoppingListExportResultEntry;
+    } as unknown as ShoppingListExportResultEntry;
     expect(provisionRowGroup(mismatchedStatus)).toBe('not_confirmed');
     const groups = groupProvisionResults({
       provider: 'example',

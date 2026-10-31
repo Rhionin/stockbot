@@ -32,6 +32,7 @@ import {
   provisionWholeRequestMessage,
   type ProvisionWholeRequestError,
 } from '@stockbot/shared/provisionExportUX';
+import { dedupeConcurrentSave } from './provisionInFlightSave';
 
 export type CheckResolution = 'in' | 'not';
 
@@ -229,32 +230,30 @@ export const ProvisionResultPanel = ({
   }, [onBlockedSaveCleared, onBlockedSaveRemaining]);
 
   const saveChoice = useCallback((entryId: string, choice: CheckResolution): Promise<boolean> => {
-    const existing = inFlight.current[entryId];
-    if (existing !== undefined) return existing;
-    setSavingRows((prev) => ({ ...prev, [entryId]: true }));
-    // Undo or Try again is about to hide; keep focus in the row, never on body. Leave focus alone elsewhere.
-    if (rowHasFocus(entryId)) rowRefs.current[entryId]?.focus();
-    const saving = resolveRef.current(entryId, choice === 'in').then(
-      () => {
-        persistChoice(entryId, choice, true);
-        return true;
-      },
-      () => {
-        persistChoice(entryId, choice, false);
-        return false;
-      },
-    ).finally(() => {
-      delete inFlight.current[entryId];
-      setSavingRows((prev) => {
-        const next = { ...prev };
-        delete next[entryId];
-        return next;
+    return dedupeConcurrentSave(inFlight.current, entryId, () => {
+      setSavingRows((prev) => ({ ...prev, [entryId]: true }));
+      // Undo or Try again is about to hide; keep focus in the row, never on body. Leave focus alone elsewhere.
+      if (rowHasFocus(entryId)) rowRefs.current[entryId]?.focus();
+      return resolveRef.current(entryId, choice === 'in').then(
+        () => {
+          persistChoice(entryId, choice, true);
+          return true;
+        },
+        () => {
+          persistChoice(entryId, choice, false);
+          return false;
+        },
+      ).finally(() => {
+        delete inFlight.current[entryId];
+        setSavingRows((prev) => {
+          const next = { ...prev };
+          delete next[entryId];
+          return next;
+        });
+        // On success the row container keeps focus; on failure Try again takes it.
+        if (rowHasFocus(entryId) && failedRetry.current[entryId] !== undefined) focusRowRetry(entryId);
       });
-      // On success the row container keeps focus; on failure Try again takes it.
-      if (rowHasFocus(entryId) && failedRetry.current[entryId] !== undefined) focusRowRetry(entryId);
     });
-    inFlight.current[entryId] = saving;
-    return saving;
   }, [focusRowRetry, persistChoice]);
 
   const commit = useCallback((entryId: string): Promise<boolean> => {
