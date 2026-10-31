@@ -3,6 +3,7 @@ import {
   formatOperatorHouseholdCreated,
   formatOperatorHouseholdInventoryLine,
   formatOperatorHouseholdLastActivity,
+  formatInviteExpiresAt,
   formatOperatorHouseholdRestockLabel,
   formatOperatorHouseholdScannersLine,
   formatOperatorHouseholdScansLine,
@@ -143,6 +144,55 @@ describe('formatOperatorHouseholdLastActivity', () => {
     const now = new Date(2027, 0, 1, 12, 0, 0);
     vi.setSystemTime(now);
     expect(formatOperatorHouseholdLastActivity('2027-01-01T03:00:00.000Z', now)).toBe('Last activity Dec 31, 2026, 8:00 PM');
+  });
+});
+
+describe('formatInviteExpiresAt', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubEnv('TZ', 'UTC');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('uses short month, day, and time without seconds in the current year', () => {
+    const now = new Date(2026, 9, 30, 12, 0, 0);
+    vi.setSystemTime(now);
+    expect(formatInviteExpiresAt('2026-11-06T17:00:00.000Z', now)).toBe('Expires Nov 6, 5:00 PM');
+    expect(formatInviteExpiresAt('2026-11-06T17:00:00.000Z', now)).not.toMatch(/2026/);
+  });
+
+  it('shows the year when expiry is in a later calendar year', () => {
+    const now = new Date(2026, 9, 30, 12, 0, 0);
+    vi.setSystemTime(now);
+    expect(formatInviteExpiresAt('2027-01-15T12:00:00.000Z', now)).toBe('Expires Jan 15, 2027, 12:00 PM');
+  });
+
+  it('uses Denver local date and time near midnight', () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('TZ', 'America/Denver');
+    const now = new Date(2026, 10, 5, 23, 45, 0);
+    vi.setSystemTime(now);
+    expect(formatInviteExpiresAt('2026-11-06T17:00:00.000Z', now)).toBe('Expires Nov 6, 10:00 AM');
+  });
+
+  it('formats 2026-11-07T03:00:00Z as Nov 7 3:00 AM in UTC', () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('TZ', 'UTC');
+    const now = new Date(2026, 10, 5, 12, 0, 0);
+    vi.setSystemTime(now);
+    expect(formatInviteExpiresAt('2026-11-07T03:00:00.000Z', now)).toBe('Expires Nov 7, 3:00 AM');
+  });
+
+  it('formats 2026-11-07T03:00:00Z as Nov 6 8:00 PM in America/Denver', () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('TZ', 'America/Denver');
+    const now = new Date(2026, 10, 5, 12, 0, 0);
+    vi.setSystemTime(now);
+    expect(formatInviteExpiresAt('2026-11-07T03:00:00.000Z', now)).toBe('Expires Nov 6, 8:00 PM');
   });
 });
 

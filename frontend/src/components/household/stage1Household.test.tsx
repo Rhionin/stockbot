@@ -358,12 +358,20 @@ describe('household management', () => {
     await waitFor(() => expect(replaceAuth).toHaveBeenCalledWith(expect.objectContaining({ activeHouseholdId: 'hh-2' })));
   });
 
+  it('names the multi-household switcher Household and exposes the active value', () => {
+    renderStage(<HouseholdSwitcher />, session('owner'));
+    const combobox = screen.getByRole('combobox', { name: 'Household' });
+    expect(combobox).toHaveAccessibleName('Household');
+    expect(combobox).toHaveValue('Pantry');
+    expect(combobox).not.toHaveAttribute('aria-valuetext');
+  });
+
   it('shows one household as a name, not a menu', () => {
     const auth = session('owner');
     auth.households = [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     auth.memberships = [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     renderStage(<HouseholdSwitcher />, auth);
-    expect(screen.getByRole('button', { name: 'Pantry' })).toHaveClass('household-switch-name');
+    expect(screen.getByRole('button', { name: 'Household: Pantry' })).toHaveClass('household-switch-name');
     expect(screen.queryByRole('combobox', { name: 'Household' })).not.toBeInTheDocument();
     expect(document.querySelector('select')).toBeNull();
   });
@@ -373,7 +381,7 @@ describe('household management', () => {
     auth.households = [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     auth.memberships = [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }];
     renderStageRoutes(<HouseholdSwitcher />, auth);
-    fireEvent.click(screen.getByRole('button', { name: 'Pantry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Household: Pantry' }));
     expect(await screen.findByRole('heading', { name: 'Your households' })).toBeVisible();
   });
 

@@ -277,8 +277,14 @@ a.group-row {
     width: 100%;
     min-width: 0;
     flex: none;
+    /* Scroll instead of clip: if a label ever outgrows its slot (larger
+       system font, text zoom, a fallback font), it stays reachable. */
     overflow-x: auto;
     scrollbar-width: none;
+    /* A scroll container clips hit-testing to its own border-radius; a
+       full pill would make the outer corners of Scan Queue and Shopping
+       List untappable. */
+    border-radius: 12px;
   }
 
   .app-nav::-webkit-scrollbar {
@@ -291,10 +297,32 @@ a.group-row {
   .app-nav-link:hover,
   .app-nav-link:active,
   .app-nav-link:focus {
+    box-sizing: border-box;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
     flex: 1 1 auto;
     min-width: max-content;
     font-size: 0.75rem;
     padding: 8px 4px;
+  }
+
+  .app-menu-button {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* The pill's rounded corners are outside the hit area in browsers that
+     clip hit-testing to border-radius; a square overlay keeps the full
+     44px box tappable. */
+  .app-nav-link::after {
+    content: '';
+    position: absolute;
+    inset: 0;
   }
 }
 
