@@ -190,10 +190,20 @@ async function assertRadioRowTapPoints(page: Page, rootSelector: string, label: 
     [labelBox!.x + labelBox!.width / 2, labelBox!.y + labelBox!.height / 2],
     [bodyBox!.x + inset, bodyBox!.y + bodyBox!.height / 2],
     [bodyBox!.x + bodyBox!.width - inset, bodyBox!.y + bodyBox!.height / 2],
+    // Above and below the circle: the label must cover the circle column, not just the text.
+    [circle!.x + circle!.width / 2, bodyBox!.y + inset],
+    [circle!.x + circle!.width / 2, bodyBox!.y + bodyBox!.height - inset],
+    [bodyBox!.x + inset, bodyBox!.y + inset],
+    [bodyBox!.x + bodyBox!.width - inset, bodyBox!.y + inset],
+    [bodyBox!.x + inset, bodyBox!.y + bodyBox!.height - inset],
+    [bodyBox!.x + bodyBox!.width - inset, bodyBox!.y + bodyBox!.height - inset],
   ] as const
+  const other = page.locator(`${rootSelector} .mantine-Radio-root`).filter({ hasNotText: label }).first()
   for (const [x, y] of tapPoints) {
+    // Reset to another option first so a dead tap cannot pass on the previous selection.
+    await other.locator('input[type="radio"]').click()
     await page.mouse.click(x, y)
-    await expect(page.getByRole('radio', { name: label })).toBeChecked()
+    await expect(row.locator('input[type="radio"]')).toBeChecked()
   }
 }
 
@@ -626,7 +636,11 @@ test('app header control layout matches master at 1280x800', async ({ page }) =>
   expect(header).not.toBeNull()
   expect(header!.height).toBeLessThanOrEqual(52)
   expectBoxLayout('Menu', menu, { x: 976.75, width: 42, height: 42 }, 0.5, 1)
-  expectBoxLayout('Household switcher', household, { x: 383.84375, width: 220, height: 33.75 })
+  expect(household).not.toBeNull()
+  expect(household!.x, 'Household switcher before Scan Queue').toBeLessThan(scanQueue!.x)
+  expect(household!.x + household!.width, 'Household switcher clear of Scan Queue').toBeLessThanOrEqual(scanQueue!.x)
+  expect(Math.abs(household!.width - 220), 'Household switcher width').toBeLessThanOrEqual(MASTER_LAYOUT_WIDTH_TOLERANCE_PX)
+  expect(Math.abs(household!.height - 33.75), 'Household switcher height').toBeLessThanOrEqual(0.5)
   expectHorizontalGap('Household switcher to Scan Queue', household!, scanQueue!, 15)
   expectHorizontalGap('Scan Queue to Inventory', scanQueue!, inventory!, 2)
   expectHorizontalGap('Inventory to History', inventory!, history!, 2)
@@ -719,6 +733,12 @@ test('admin households Try again keeps width, alert, and visible busy label', as
   await expect(busyButton).toHaveAttribute('aria-busy', 'true')
   await expect(busyButton).toBeDisabled()
   await expect(busyButton).toHaveText('Trying again…')
+  // Text content alone passes even when Mantine hides the label; assert it is painted.
+  await expect(busyButton.locator('.mantine-Button-inner').evaluate((el) => getComputedStyle(el).opacity)).resolves.toBe('1')
+  await expect(busyButton.locator('.mantine-Button-label').evaluate((el) => {
+    const style = getComputedStyle(el)
+    return { opacity: style.opacity, visibility: style.visibility }
+  })).resolves.toEqual({ opacity: '1', visibility: 'visible' })
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   const busyBox = await busyButton.boundingBox()
   expect(busyBox).not.toBeNull()

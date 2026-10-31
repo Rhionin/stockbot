@@ -186,6 +186,9 @@ describe('HouseholdsPage admin server list', () => {
     expect(retry).toHaveAttribute('aria-busy', 'true');
     expect(retry).toBeDisabled();
     expect(retry).toHaveTextContent('Trying again…');
+    const label = retry.querySelector('.mantine-Button-label');
+    expect(label).not.toBeNull();
+    expect(getComputedStyle(label!)).toMatchObject({ opacity: '1', visibility: 'visible' });
     expect(within(section).getByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
     expect(within(section).queryByText('No households on this server yet.')).not.toBeInTheDocument();
     resolveRetry(json({ households: [testHouseholdRow] }));

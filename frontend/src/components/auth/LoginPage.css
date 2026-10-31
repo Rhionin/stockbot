@@ -171,13 +171,14 @@
 
 .invite-accept-page .mantine-Radio-body {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   width: 100%;
 }
 
 @media (max-width: 47.99em) {
   .invite-accept-page .mantine-Radio-body {
     align-items: flex-start;
+    min-height: 44px;
   }
 }
 
@@ -185,6 +186,11 @@
   position: relative;
   z-index: 1;
   flex: none;
+  pointer-events: none;
+}
+
+.invite-accept-page .mantine-Radio-radio {
+  pointer-events: auto;
 }
 
 @media (max-width: 47.99em) {
@@ -197,14 +203,20 @@
   position: static;
   flex: 1;
   min-width: 0;
-  margin-inline-start: calc(-1 * (var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm)));
-  padding-inline-start: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin-inline-start: calc(-1 * var(--radio-size, var(--radio-icon-size, 1.25rem)));
+  padding-inline-start: 0;
 }
 
 .invite-accept-page .mantine-Radio-label {
   box-sizing: border-box;
+  padding-inline-start: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
   display: flex;
   align-items: center;
+  flex: 1;
+  min-height: 100%;
   width: 100%;
   cursor: pointer;
 }
