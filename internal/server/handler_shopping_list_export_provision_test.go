@@ -177,6 +177,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if conn.State != connection.StateReauthRequired {
 					env.T.Fatalf("connection state = %q, want reauth_required", conn.State)
 				}
+				assertExportLedgerEmpty(env, "test-oauth2_authorization_code-server_push")
 			},
 		},
 		{
@@ -297,6 +298,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 						env.T.Fatal("Add was called on provider_unavailable pre-send failure")
 					}
 				}
+				assertExportLedgerEmpty(env, "test-oauth2_authorization_code-server_push")
 			},
 		},
 		{
@@ -392,39 +394,82 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 			},
 		},
 		{
-			name: "export cart put 401 before any accept returns reconnect required envelope",
+			name: "export put1 fivexx halts remaining batches with 200",
 			setup: func(env testEnv) {
-				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-401", "Juice", "item-401")
-				insertManualShoppingItem(env.T, env.DB, "sli-401", "user-1", "item-401", 1)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "401", "prod-401", "global", ""); err != nil {
-					env.T.Fatalf("barcode: %v", err)
-				}
+				seedThreeBatchExportItems(env, "5xx1", "p01x", "p02x", "p03x")
 				script := carttest.NewScript().
 					WithTokenExchangeSuccess().
-					WithIdentityLookup("401", cart.ProductIdentity("SKU-401")).
+					WithIdentityLookup("p01x", cart.ProductIdentity("SKU-P1X")).
+					WithIdentityLookup("p02x", cart.ProductIdentity("SKU-P2X")).
+					WithIdentityLookup("p03x", cart.ProductIdentity("SKU-P3X")).
 					WithAddOutcomes(carttest.AddOutcome{
-						Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
-						Err:    errors.New("cart api returned status 401"),
+						Result: cart.ProvisionResult{Disposition: cart.DispositionIndeterminate, Status: 503},
+						Err:    errors.New("upstream 503"),
 					})
-				provider := carttest.NewFake(cart.Capabilities{
-					Auth:         cart.AuthOAuth2,
-					Delivery:     cart.DeliveryServerPush,
-					Confirmation: cart.ConfirmPerRequest,
-					Mutation:     cart.MutateAddOnly,
-					Identity:     cart.IdentityDerived,
-				}, script)
-				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
-					env.T.Fatalf("register: %v", err)
+				provider := registerOAuthExportFake(env, script, 1)
+				exportProvisionFake = provider.(carttest.Calls)
+				writeExpiredOAuthConnection(env, "access-5xx1", "refresh-5xx1")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+					{path: "$.sentCount", value: float64(0)},
+					{path: "$.unknownCount", value: float64(1)},
+					{path: "$.failedCount", value: float64(2)},
+					{path: "$.results[0].status", value: "unknown"},
+					{path: "$.results[1].status", value: "failed"},
+					{path: "$.results[2].status", value: "failed"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				adds := 0
+				for _, call := range exportProvisionFake.Calls() {
+					if call == "Add" {
+						adds++
+					}
 				}
-				expired := time.Now().UTC().Add(-time.Hour)
+				if adds != 1 {
+					env.T.Fatalf("Add calls = %d, want 1", adds)
+				}
+			},
+		},
+		{
+			name: "export cart put 401 uses at most one refresh retry per send",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-1retry", "Retry", "item-1retry")
+				insertManualShoppingItem(env.T, env.DB, "sli-1retry", "user-1", "item-1retry", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "1retry", "prod-1retry", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
+				future := time.Now().UTC().Add(2 * time.Hour)
+				script := carttest.NewScript().
+					WithTokenExchangeSuccess().
+					WithTokenExchangeSuccess().
+					WithIdentityLookup("1retry", cart.ProductIdentity("SKU-RETRY")).
+					WithAddOutcomes(
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+					)
+				provider := registerOAuthExportFake(env, script, 1)
+				exportProvisionFake = provider.(carttest.Calls)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
 					State:        connection.StateConnected,
-					AccessToken:  "access-401",
-					RefreshToken: "refresh-401",
-					ExpiresAt:    &expired,
+					AccessToken:  "valid-access",
+					RefreshToken: "refresh-retry",
+					ExpiresAt:    &future,
 				}); err != nil {
-					env.T.Fatalf("connection: %v", err)
+					env.T.Fatal(err)
 				}
 			},
 			httpExchange: httpExchange{
@@ -436,6 +481,140 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 					{path: "$.code", value: "reconnect_required"},
 					{path: "$.results", absent: true},
 				},
+			},
+			afterRequest: func(env testEnv) {
+				refreshes, adds := 0, 0
+				for _, call := range exportProvisionFake.Calls() {
+					switch call {
+					case "RefreshAccessToken":
+						refreshes++
+					case "Add":
+						adds++
+					}
+				}
+				if refreshes != 1 {
+					env.T.Fatalf("RefreshAccessToken calls = %d, want 1", refreshes)
+				}
+				if adds != 2 {
+					env.T.Fatalf("Add calls = %d, want 2 (initial + one retry)", adds)
+				}
+			},
+		},
+		{
+			name: "export after put1 401 fails fast without token or put",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-fast401", "Fast", "item-fast401")
+				insertManualShoppingItem(env.T, env.DB, "sli-fast401", "user-1", "item-fast401", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "fast401", "prod-fast401", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
+				future := time.Now().UTC().Add(2 * time.Hour)
+				script := carttest.NewScript().
+					WithTokenExchangeSuccess().
+					WithIdentityLookup("fast401", cart.ProductIdentity("SKU-F401")).
+					WithAddOutcomes(
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+					)
+				provider := registerOAuthExportFake(env, script, 1)
+				exportProvisionFake = provider.(carttest.Calls)
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
+					Provider:     "test-oauth2_authorization_code-server_push",
+					State:        connection.StateConnected,
+					AccessToken:  "valid-f401",
+					RefreshToken: "refresh-f401",
+					ExpiresAt:    &future,
+				}); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "reconnect_required"},
+					{path: "$.results", absent: true},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				callsAfterFirst := append([]string(nil), exportProvisionFake.Calls()...)
+				handler := handlerFromEnv(env)
+				executeExchange(env.T, handler, httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/export",
+					body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+					expectedStatus: http.StatusConflict,
+					assertions: []assertion{
+						{path: "$.code", value: "reconnect_required"},
+					},
+				})
+				callsAfterSecond := exportProvisionFake.Calls()
+				if len(callsAfterSecond) != len(callsAfterFirst) {
+					env.T.Fatalf("second export added provider calls: before %v after %v", callsAfterFirst, callsAfterSecond)
+				}
+			},
+		},
+		{
+			name: "export cart put 401 before any accept returns reconnect required envelope",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-401", "Juice", "item-401")
+				insertManualShoppingItem(env.T, env.DB, "sli-401", "user-1", "item-401", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "401", "prod-401", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithTokenExchangeSuccess().
+					WithTokenExchangeSuccess().
+					WithIdentityLookup("401", cart.ProductIdentity("SKU-401")).
+					WithAddOutcomes(
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+						carttest.AddOutcome{
+							Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: http.StatusUnauthorized},
+							Err:    errors.New("cart api returned status 401"),
+						},
+					)
+				provider := registerOAuthExportFake(env, script, 1)
+				exportProvisionFake = provider.(carttest.Calls)
+				writeExpiredOAuthConnection(env, "access-401", "refresh-401")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "reconnect_required"},
+					{path: "$.results", absent: true},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				conn, err := connection.NewDirectory(env.DB).Read(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push")
+				if err != nil {
+					env.T.Fatal(err)
+				}
+				if conn.State != connection.StateReauthRequired {
+					env.T.Fatalf("connection state = %q, want reauth_required", conn.State)
+				}
+				ledger, err := cart.NewLedger(env.DB).ListForProvider(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push")
+				if err != nil {
+					env.T.Fatal(err)
+				}
+				for itemID, row := range ledger {
+					if row.Requested != 0 {
+						env.T.Fatalf("ledger[%q].Requested = %d, want 0", itemID, row.Requested)
+					}
+				}
 			},
 		},
 		{
@@ -711,4 +890,17 @@ func TestShoppingListExportResultEntryIDsUnique(t *testing.T) {
 		},
 	}
 	runHandlerTests(t, tests)
+}
+
+func assertExportLedgerEmpty(env testEnv, providerID string) {
+	env.T.Helper()
+	ledger, err := cart.NewLedger(env.DB).ListForProvider(context.Background(), primaryScope(env.T, env.DB), cart.ProviderID(providerID))
+	if err != nil {
+		env.T.Fatal(err)
+	}
+	for itemID, row := range ledger {
+		if row.Requested != 0 {
+			env.T.Fatalf("ledger[%q].Requested = %d, want 0 after nothing-sent failure", itemID, row.Requested)
+		}
+	}
 }

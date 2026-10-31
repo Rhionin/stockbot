@@ -53,6 +53,7 @@ import {
   pairUndoHideLine,
   previewReshelves,
   provisionResultStatus,
+  provisionReasonUXCategory,
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
@@ -758,6 +759,18 @@ describe('provisionResultStatus', () => {
     expect(provisionResultStatus('unknown')).toBe('unknown');
     expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
     expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
+  });
+});
+
+describe('provisionReasonUXCategory', () => {
+  it('maps every dedicated results reason to a UX bucket', () => {
+    expect(provisionReasonUXCategory('no_upc')).toBe('no_barcode');
+    expect(provisionReasonUXCategory('no_match')).toBe('no_match');
+    expect(provisionReasonUXCategory('batch_rejected')).toBe('rejected');
+    expect(provisionReasonUXCategory('api_error')).toBe('error');
+    expect(provisionReasonUXCategory('reconnect_required')).toBe('');
+    expect(provisionReasonUXCategory('request_incomplete')).toBe('');
+    expect(provisionReasonUXCategory(undefined)).toBe('');
   });
 });
 

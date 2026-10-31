@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
@@ -111,6 +112,7 @@ type fakeProvider struct {
 	*serverPushBehavior
 	*derivedIdentityBehavior
 	*lookedUpIdentityBehavior
+	*oauthFlowBehavior
 }
 
 func (f *fakeProvider) ID() ProviderID             { return f.id }
@@ -126,6 +128,7 @@ type fakeScript struct {
 	addErrors     []error
 	perLine       map[ProductIdentity]bool
 	identityByBar map[string]ProductIdentity
+	refreshErr    error
 	addBlock      chan struct{} // when non-nil, Add blocks until it is closed
 	addStarted    chan struct{} // closed by Add once it is running
 }
@@ -180,6 +183,25 @@ func (b *lookedUpIdentityBehavior) LookUpIdentity(ctx context.Context, cred Cred
 	return id, ok, nil
 }
 
+type oauthFlowBehavior struct{ script *fakeScript }
+
+func (o *oauthFlowBehavior) AuthorizationScope() string { return "cart.test" }
+
+func (o *oauthFlowBehavior) AuthorizationURL(state string) (string, error) {
+	return "https://example.test/oauth?" + state, nil
+}
+
+func (o *oauthFlowBehavior) ExchangeCode(context.Context, string) (TokenSet, error) {
+	return TokenSet{}, nil
+}
+
+func (o *oauthFlowBehavior) RefreshAccessToken(context.Context, string) (TokenSet, error) {
+	if o.script.refreshErr != nil {
+		return TokenSet{}, o.script.refreshErr
+	}
+	return TokenSet{AccessToken: "access-token", RefreshToken: "refresh-token", ExpiresIn: time.Hour}, nil
+}
+
 // newFakeProvider builds a server_push provider for caps backed by script.
 // Both identity behaviors are attached; Provision calls only the one caps
 // selects, so the unused method never runs.
@@ -190,6 +212,7 @@ func newFakeProvider(id ProviderID, caps Capabilities, script *fakeScript) *fake
 		serverPushBehavior:       &serverPushBehavior{script: script},
 		derivedIdentityBehavior:  &derivedIdentityBehavior{script: script},
 		lookedUpIdentityBehavior: &lookedUpIdentityBehavior{script: script},
+		oauthFlowBehavior:        &oauthFlowBehavior{script: script},
 	}
 }
 
@@ -198,4 +221,5 @@ var (
 	_ ServerPush       = (*fakeProvider)(nil)
 	_ DerivedIdentity  = (*fakeProvider)(nil)
 	_ LookedUpIdentity = (*fakeProvider)(nil)
+	_ OAuthFlow        = (*fakeProvider)(nil)
 )

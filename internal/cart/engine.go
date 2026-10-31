@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -185,12 +186,15 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	var haltRemaining bool
 	var haltFailedReason OutcomeReason
 	var haltFailedDetail string
-	for _, req := range batches {
+	cartAuthRefreshRemaining := 1
+	for batchIdx := 0; batchIdx < len(batches); batchIdx++ {
+		req := batches[batchIdx]
 		if haltRemaining {
 			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, haltFailedReason, haltFailedDetail)
 			continue
 		}
 
+	retryBatch:
 		var result ProvisionResult
 		err = nil
 		if caps.Delivery == DeliveryServerPush {
@@ -215,29 +219,38 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		}
 
 		if err != nil {
+			if batchFailureNeedsReconnect(result, err) && caps.Auth == AuthOAuth2 && cartAuthRefreshRemaining > 0 && confirmedCount == 0 {
+				cartAuthRefreshRemaining--
+				newToken, refreshErr := e.tokenBroker.ForceRefresh(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
+				if refreshErr == nil {
+					cred = NewBearerCredential(newToken)
+					goto retryBatch
+				}
+			}
 			if provErr := wholeRequestProvisionError(providerID, confirmedCount, result, err); provErr != nil {
+				if batchFailureNeedsReconnect(result, err) {
+					_ = e.markConnectionReauthRequired(ctx, scope, providerID)
+				}
 				return ProvisionReport{}, provErr
 			}
-			if confirmedCount > 0 {
-				if batchFailureNeedsReconnect(result, err) {
-					reconnectRequired = true
-					if markErr := e.markConnectionReauthRequired(ctx, scope, providerID); markErr != nil {
-						return ProvisionReport{}, markErr
-					}
-					detail := OAuthFailureDetail(ReasonReconnectRequired)
-					outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, ReasonReconnectRequired, detail)
-					haltRemaining = true
-					haltFailedReason = ReasonReconnectRequired
-					haltFailedDetail = detail
-					continue
+			if batchFailureNeedsReconnect(result, err) {
+				reconnectRequired = true
+				if markErr := e.markConnectionReauthRequired(ctx, scope, providerID); markErr != nil {
+					log.Printf("mark reauth_required after partial send: %v", markErr)
 				}
-				if batchFailureIsIndeterminate(result, err) {
-					outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
-					haltRemaining = true
-					haltFailedReason = ReasonRequestIncomplete
-					haltFailedDetail = lineNotSentDetail
-					continue
-				}
+				detail := OAuthFailureDetail(ReasonReconnectRequired)
+				outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, ReasonReconnectRequired, detail)
+				haltRemaining = true
+				haltFailedReason = ReasonReconnectRequired
+				haltFailedDetail = detail
+				continue
+			}
+			if batchFailureIsIndeterminate(result, err) {
+				outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
+				haltRemaining = true
+				haltFailedReason = ReasonRequestIncomplete
+				haltFailedDetail = lineNotSentDetail
+				continue
 			}
 			if result.Disposition == DispositionRejected {
 				for _, line := range req.Lines {
@@ -256,16 +269,17 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 				continue
 			}
 			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
+			haltRemaining = true
+			haltFailedReason = ReasonRequestIncomplete
+			haltFailedDetail = lineNotSentDetail
 			continue
 		}
 
 		if result.Disposition == DispositionIndeterminate {
 			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
-			if confirmedCount > 0 {
-				haltRemaining = true
-				haltFailedReason = ReasonRequestIncomplete
-				haltFailedDetail = lineNotSentDetail
-			}
+			haltRemaining = true
+			haltFailedReason = ReasonRequestIncomplete
+			haltFailedDetail = lineNotSentDetail
 			continue
 		}
 

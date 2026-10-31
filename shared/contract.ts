@@ -1753,6 +1753,7 @@ export function deviceKindLabel(kind: string): string {
 // `reconnectRequired: true`. The refused batch and every never-attempted batch are
 // `failed` (not sent), not unknown. Only a batch whose PUT might have landed
 // (5xx or timeout) is `unknown` / `request_incomplete`; later batches are failed.
+// A 5xx or timeout on the first PUT also stops later batches (HTTP 200, not 502).
 //
 // HTTP 502 `provider_unavailable` is only for failures before any cart PUT (token
 // call or store unreachable), with no results[].

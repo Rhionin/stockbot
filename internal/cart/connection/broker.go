@@ -124,6 +124,68 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 	return call.accessToken, nil
 }
 
+// ForceRefresh exchanges the refresh token even when the persisted access token is still valid.
+// Used after a cart API 401/403 to retry the same batch at most once per send.
+func (b *TokenBroker) ForceRefresh(ctx context.Context, scope tenant.Scope, provider string, refreshFn func(refreshToken string) (accessToken string, refreshTokenOut string, expiresIn time.Duration, err error)) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	if call, ok := b.inFlight[provider]; ok {
+		b.mu.Unlock()
+		<-call.done
+		if call.err != nil {
+			return "", call.err
+		}
+		return call.accessToken, nil
+	}
+	conn, err := b.Directory.Read(ctx, scope, provider)
+	if err != nil {
+		b.mu.Unlock()
+		return "", err
+	}
+	if conn != nil && conn.State == StateReauthRequired {
+		b.mu.Unlock()
+		return "", ErrReauthRequired
+	}
+	if conn == nil || conn.RefreshToken == "" {
+		b.mu.Unlock()
+		return "", fmt.Errorf("no refresh token stored for provider %q", provider)
+	}
+	call := &refreshCall{done: make(chan struct{})}
+	b.inFlight[provider] = call
+	b.mu.Unlock()
+
+	accessToken, refreshToken, expiresIn, err := refreshFn(conn.RefreshToken)
+	call.accessToken = accessToken
+	call.err = err
+	call.refreshToken = refreshToken
+	call.expiresIn = expiresIn
+	call.receiptAt = time.Now().UTC()
+
+	b.mu.Lock()
+	delete(b.inFlight, provider)
+	b.mu.Unlock()
+	close(call.done)
+
+	if err != nil {
+		return "", err
+	}
+
+	expiresAt := call.receiptAt.Add(call.expiresIn)
+	newConn := &Connection{
+		Provider:     provider,
+		State:        StateConnected,
+		AccessToken:  call.accessToken,
+		RefreshToken: call.refreshToken,
+		ExpiresAt:    &expiresAt,
+	}
+	if err := b.Directory.Write(ctx, scope, newConn); err != nil {
+		return "", fmt.Errorf("failed to write connection: %w", err)
+	}
+	return call.accessToken, nil
+}
+
 // MarkReauthRequired persists reauth_required so later sends fail fast without calling the token endpoint.
 func (b *TokenBroker) MarkReauthRequired(ctx context.Context, scope tenant.Scope, provider string, conn *Connection) error {
 	if err := scope.Require(); err != nil {

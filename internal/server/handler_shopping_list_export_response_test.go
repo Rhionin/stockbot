@@ -31,10 +31,10 @@ func TestBuildProvisionExportViews(t *testing.T) {
 	assert.Equal(t, "sent", results[0].Status)
 	assert.Equal(t, "skipped", results[1].Status)
 	assert.Equal(t, "no_match", results[1].Reason)
-	assert.Equal(t, "no_match", provisionEntries[1].OutcomeReason)
+	assert.Equal(t, "no_product_identity", provisionEntries[1].OutcomeReason)
 	assert.Equal(t, "failed", results[3].Status)
 	assert.Equal(t, "batch_rejected", results[3].Reason)
-	assert.Equal(t, "batch_rejected", provisionEntries[3].OutcomeReason)
+	assert.Equal(t, "provider_rejected", provisionEntries[3].OutcomeReason)
 }
 
 func TestBuildProvisionExportViewsPerLineAdded(t *testing.T) {
@@ -46,9 +46,22 @@ func TestBuildProvisionExportViewsPerLineAdded(t *testing.T) {
 	assert.Equal(t, "added", results[0].Status)
 }
 
-func TestLegacyProvisionOutcomeReasonPreservesDeprecatedValues(t *testing.T) {
-	assert.Equal(t, "no_product_identity", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.ReasonNoProductIdentity))
-	assert.Equal(t, "provider_rejected", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.ReasonProviderRejected))
+func TestLegacyProvisionOutcomeReasonMapsNewEngineReasons(t *testing.T) {
+	cases := map[cart.OutcomeReason]string{
+		cart.ReasonNoUPC:               "no_product_identity",
+		cart.ReasonNoMatch:             "no_product_identity",
+		cart.ReasonNoProductIdentity:   "no_product_identity",
+		cart.ReasonBatchRejected:       "provider_rejected",
+		cart.ReasonProviderRejected:    "provider_rejected",
+		cart.ReasonReconnectRequired:   "reconnect_required",
+		cart.ReasonRequestIncomplete:   "request_incomplete",
+		cart.ReasonProviderUnavailable: "provider_unavailable",
+		cart.ReasonAPIError:            "api_error",
+	}
+	for reason, want := range cases {
+		assert.Equal(t, want, legacyProvisionOutcomeReason(cart.OutcomeFailed, reason), string(reason))
+	}
+	assert.Equal(t, "", legacyProvisionOutcomeReason(cart.OutcomeConfirmed, cart.ReasonNoUPC))
 }
 
 func TestProvisionResultStatusCoversEveryOutcomeReason(t *testing.T) {

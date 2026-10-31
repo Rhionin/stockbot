@@ -454,6 +454,66 @@ func TestCartHTTP(t *testing.T) {
 			},
 		},
 		{
+			name: "reauth callback clears flag and export succeeds",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-recon", "Reconnect", "item-recon")
+				insertManualShoppingItem(env.T, env.DB, "sli-recon", "user-1", "item-recon", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "recon", "prod-recon", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
+				script := carttest.NewScript().
+					WithTokenExchangeSuccess().
+					WithIdentityLookup("recon", cart.ProductIdentity("SKU-RC")).
+					WithAddOutcomes(carttest.AddOutcome{Result: cart.ProvisionResult{Disposition: cart.DispositionAccepted, Status: 204}})
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthOAuth2,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatal(err)
+				}
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
+					Provider:     "test-oauth2_authorization_code-server_push",
+					State:        connection.StateReauthRequired,
+					RefreshToken: "refresh-recon",
+				}); err != nil {
+					env.T.Fatal(err)
+				}
+				if err := connection.NewDirectory(env.DB).GenerateAuthState(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push", "cb-state-recon"); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/providers/test-oauth2_authorization_code-server_push/callback",
+				query:          map[string]string{"code": "good-code", "state": "cb-state-recon"},
+				expectedStatus: http.StatusSeeOther,
+			},
+			afterRequest: func(env testEnv) {
+				handler := handlerFromEnv(env)
+				executeExchange(env.T, handler, httpExchange{
+					method:         "POST",
+					path:           "/api/shopping-list/export",
+					body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$.exported", value: float64(1)},
+						{path: "$.sentCount", value: float64(1)},
+					},
+				})
+				conn, err := connection.NewDirectory(env.DB).Read(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push")
+				if err != nil {
+					env.T.Fatal(err)
+				}
+				if conn.State != connection.StateConnected {
+					env.T.Fatalf("connection state = %q, want connected after callback", conn.State)
+				}
+			},
+		},
+		{
 			name: "export names a product it cannot identify",
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-noid", "Oats", "item-noid")
@@ -477,7 +537,7 @@ func TestCartHTTP(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.failedItems[0]", value: "Oats"},
 					{path: "$.entries[0].outcome", value: "failed"},
-					{path: "$.entries[0].outcomeReason", value: "no_upc"},
+					{path: "$.entries[0].outcomeReason", value: "no_product_identity"},
 					{path: "$.results[0].status", value: "skipped"},
 					{path: "$.results[0].reason", value: "no_upc"},
 				},

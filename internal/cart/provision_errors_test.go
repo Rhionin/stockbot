@@ -3,6 +3,8 @@ package cart
 import (
 	"errors"
 	"testing"
+
+	"github.com/Rhionin/stockbot/internal/cart/connection"
 )
 
 func TestOAuthFailureReason(t *testing.T) {
@@ -13,8 +15,33 @@ func TestOAuthFailureReason(t *testing.T) {
 		want OutcomeReason
 	}{
 		{
-			name: "invalid grant reconnects",
-			err:  &OAuthTokenError{StatusCode: 400, OAuthError: "invalid_grant"},
+			name: "422 invalid_token reconnects without status 400",
+			err:  &OAuthTokenError{StatusCode: 422, OAuthError: "invalid_token"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "422 access_denied reconnects",
+			err:  &OAuthTokenError{StatusCode: 422, OAuthError: "access_denied"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "422 unauthorized_client reconnects",
+			err:  &OAuthTokenError{StatusCode: 422, OAuthError: "unauthorized_client"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "200 with oauth error code reconnects",
+			err:  &OAuthTokenError{StatusCode: 200, OAuthError: "invalid_token"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "status zero with oauth error reconnects",
+			err:  &OAuthTokenError{StatusCode: 0, OAuthError: "invalid_token"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "broker reauth required",
+			err:  connection.ErrReauthRequired,
 			want: ReasonReconnectRequired,
 		},
 		{

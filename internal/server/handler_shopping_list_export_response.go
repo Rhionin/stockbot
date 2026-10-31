@@ -71,13 +71,21 @@ func legacyProvisionOutcomeReason(outcome cart.Outcome, reason cart.OutcomeReaso
 	if outcome == cart.OutcomeConfirmed {
 		return ""
 	}
-	if reason != "" {
+	switch reason {
+	case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonNoProductIdentity:
+		return string(cart.ReasonNoProductIdentity)
+	case cart.ReasonBatchRejected, cart.ReasonProviderRejected:
+		return string(cart.ReasonProviderRejected)
+	case cart.ReasonUnavailable, cart.ReasonAPIError, cart.ReasonInvalidLine,
+		cart.ReasonProviderUnavailable, cart.ReasonReconnectRequired,
+		cart.ReasonRequestIncomplete, cart.ReasonNoPerItemResult:
 		return string(reason)
+	default:
+		if outcome == cart.OutcomeUnknown {
+			return string(cart.ReasonRequestIncomplete)
+		}
+		return string(cart.ReasonAPIError)
 	}
-	if outcome == cart.OutcomeUnknown {
-		return string(cart.ReasonRequestIncomplete)
-	}
-	return string(cart.ReasonAPIError)
 }
 
 func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.ConfirmationCapability) (

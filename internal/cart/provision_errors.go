@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Rhionin/stockbot/internal/cart/connection"
 )
 
 // OAuth token endpoint response or transport failure.
@@ -35,12 +37,7 @@ func (e *OAuthTokenError) ReconnectRequired() bool {
 	}
 	switch e.StatusCode {
 	case 400, 401, 403:
-		if e.OAuthError != "" {
-			return true
-		}
-	}
-	if e.StatusCode >= 500 {
-		return false
+		return e.OAuthError != ""
 	}
 	return false
 }
@@ -48,14 +45,11 @@ func (e *OAuthTokenError) ReconnectRequired() bool {
 // OAuthFailureReason maps a refresh or exchange error to a per-line outcome reason.
 func OAuthFailureReason(err error) OutcomeReason {
 	for err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "reauthorization required") {
+		if errors.Is(err, connection.ErrReauthRequired) {
 			return ReasonReconnectRequired
 		}
 		var tokenErr *OAuthTokenError
 		if errors.As(err, &tokenErr) && tokenErr.ReconnectRequired() {
-			return ReasonReconnectRequired
-		}
-		if strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
 			return ReasonReconnectRequired
 		}
 		err = errors.Unwrap(err)
