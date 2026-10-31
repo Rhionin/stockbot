@@ -35,6 +35,41 @@
   color: var(--stock-full-ink);
 }
 
+@media (max-width: 47.99em) {
+  .app-header .household-switch {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .app-header .household-switch .mantine-Select-input {
+    min-height: 44px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .app-header .household-switch .mantine-Select-wrapper {
+    min-width: 0;
+  }
+
+  .app-header .household-switch-link,
+  .app-header .household-switch-name {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 10px 6px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
 .household-page {
   max-width: 42rem;
 }
@@ -56,6 +91,44 @@
   min-height: 44px;
 }
 
+.admin-household-retry-label-stack {
+  display: grid;
+}
+
+.admin-household-retry-label-stack > span {
+  grid-area: 1 / 1;
+}
+
+.admin-household-retry-label-idle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: stretch;
+  width: 100%;
+}
+
+.admin-household-retry-label-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  gap: var(--mantine-spacing-xs);
+}
+
+.admin-household-retry-label-stack > span[aria-hidden='true'] {
+  visibility: hidden;
+}
+
+/* Busy state keeps stacked labels visible beside the inline spinner (not Mantine's loading prop). */
+.admin-household-retry[data-loading] .mantine-Button-inner {
+  opacity: 1;
+  transform: none;
+}
+
+.admin-household-retry[data-loading]::before {
+  display: none;
+}
+
 .households-admin-page .mantine-Button-root {
   min-height: 44px;
 }
@@ -64,19 +137,55 @@
   min-height: 44px;
 }
 
+.households-admin-page .mantine-Radio-root {
+  width: 100%;
+}
+
 .households-admin-page .mantine-Radio-body {
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 44px;
+}
+
+.households-admin-page .mantine-Radio-inner {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  margin-top: calc((44px - var(--radio-size, var(--radio-icon-size, 1.25rem))) / 2);
+  pointer-events: none;
+}
+
+.households-admin-page .mantine-Radio-radio {
+  pointer-events: auto;
 }
 
 .households-admin-page .mantine-Radio-labelWrapper {
+  position: static;
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin-inline-start: calc(-1 * var(--radio-size, var(--radio-icon-size, 1.25rem)));
+  padding-inline-start: 0;
 }
 
 .households-admin-page .mantine-Radio-label {
+  box-sizing: border-box;
+  padding-inline-start: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
   display: flex;
   align-items: center;
+  flex: 1;
+  width: 100%;
   min-height: 44px;
   cursor: pointer;
+}
+
+@media (max-width: 47.99em) {
+  .households-admin-page .mantine-Radio-root {
+    width: 100%;
+  }
 }
 
 .household-list,

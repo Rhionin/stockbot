@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Alert, Badge, Button, Group, Paper, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Badge, Button, Group, Loader, Paper, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import { hostedErrorSentence, type RestockMode } from '@stockbot/shared/contract';
 import {
@@ -264,10 +264,26 @@ export function HouseholdsPage() {
                   variant="default"
                   mt="sm"
                   className="admin-household-retry"
-                  loading={operatorHouseholdsRetryLoading}
+                  mod={{ loading: operatorHouseholdsRetryLoading }}
+                  disabled={operatorHouseholdsRetryLoading}
+                  aria-busy={operatorHouseholdsRetryLoading || undefined}
                   onClick={() => { void loadOperatorHouseholds({ retry: true }); }}
                 >
-                  Try again
+                  <span className="admin-household-retry-label-stack">
+                    <span
+                      className="admin-household-retry-label-idle"
+                      aria-hidden={operatorHouseholdsRetryLoading ? true : undefined}
+                    >
+                      Try again
+                    </span>
+                    <span
+                      className="admin-household-retry-label-busy"
+                      aria-hidden={operatorHouseholdsRetryLoading ? undefined : true}
+                    >
+                      <Loader size={14} color="currentColor" aria-hidden />
+                      Trying again…
+                    </span>
+                  </span>
                 </Button>
               )}
             </>

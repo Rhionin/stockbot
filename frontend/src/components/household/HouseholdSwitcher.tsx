@@ -22,17 +22,27 @@ export function HouseholdSwitcher() {
     );
   }
   if (options.length === 1 && auth.activeHouseholdId) {
+    const householdName = options[0]?.label ?? 'Household';
     return (
-      <button type="button" className="household-switch-name" onClick={() => navigate('/households')}>
-        {options[0]?.label}
+      <button
+        type="button"
+        className="household-switch-name"
+        aria-label={`Household: ${householdName}`}
+        title={householdName}
+        onClick={() => navigate('/households')}
+      >
+        {householdName}
       </button>
     );
   }
+  const activeLabel =
+    options.find((household) => household.value === auth.activeHouseholdId)?.label ?? 'Household';
   const data = [...options, { value: OTHER_HOUSEHOLDS_VALUE, label: 'Other households…' }];
   return (
     <Select
       className="household-switch"
       aria-label="Household"
+      title={activeLabel}
       data={data}
       value={auth.activeHouseholdId}
       allowDeselect={false}
