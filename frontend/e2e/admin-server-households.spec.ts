@@ -54,6 +54,8 @@ async function assertNoHorizontalScroll(page: Page) {
     return root.scrollWidth <= root.clientWidth
   })).resolves.toBe(true)
   await expect(page.locator('.households-admin-page').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
+  // The AppShell main is the real horizontal scroll container (.app-shell clips overflow on html).
+  await expect(page.locator('main.mantine-AppShell-main').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
 }
 
 const idealStatsHousehold = {
@@ -136,24 +138,19 @@ test('admin households wrap stat lines at 320x844', async ({ page }) => {
   await routeHouseholds(page, [{
     ...idealStatsHousehold,
     name: 'Test Household',
-    memberCount: 12,
-    productCount: 34,
-    itemsOnHand: 567,
-    pendingScans: 8,
-    scansThisWeek: 91,
+    memberCount: 1234,
+    productCount: 5678,
+    itemsOnHand: 91011,
+    pendingScans: 888,
+    scansThisWeek: 7777,
   }])
   await page.goto('/households')
   const stats = page.getByTestId('operator-household-stats')
   const inventoryLine = stats.locator('.admin-household-stat-line').first()
-  await expect(inventoryLine).toContainText('12 members · 34 products · 567 items on hand')
-  const lineBox = await inventoryLine.boundingBox()
-  const partBox = await stats.locator('.admin-household-stat-part').first().boundingBox()
-  const viewport = page.viewportSize()
-  expect(lineBox).not.toBeNull()
-  expect(partBox).not.toBeNull()
-  expect(viewport).not.toBeNull()
-  expect(lineBox!.x + lineBox!.width).toBeLessThanOrEqual(viewport!.width + 0.5)
-  expect(lineBox!.height).toBeGreaterThan(partBox!.height + 4)
+  await expect(inventoryLine).toContainText('1234 members · 5678 products · 91011 items on hand')
+  const partTops = await inventoryLine.locator('.admin-household-stat-part').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top))
+  expect(partTops.length).toBeGreaterThanOrEqual(2)
+  expect(partTops[partTops.length - 1]).toBeGreaterThan(partTops[0] + 1)
   await assertNoHorizontalScroll(page)
 })
 
