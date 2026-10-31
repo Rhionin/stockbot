@@ -1,11 +1,14 @@
 # Frontend typecheck, lint, build, Vitest (UTC + America/Denver), and Playwright e2e.
-# Runs on every pull_request and master push. A changes job decides whether to
-# invoke web-checks from the diff since the previous push (on synchronize) or
-# since the PR base / push before commit. The web-required aggregator always reports "Web checks passed" so branch
-# protection can require one check without deadlocking Go-only PRs.
+# Runs on every pull_request (no branches: filter — includes stacked PRs whose
+# base is another feature branch) and on push to master. A changes job decides
+# whether to invoke web-checks from the diff since the previous push (on
+# synchronize) or since the PR base / push before commit. The web-required
+# aggregator always reports "Web checks passed" so branch protection can require
+# one check without deadlocking Go-only PRs.
 name: Web
 
 on:
+  # Intentionally no branches: filter (contrast ci.yml pull_request → master only).
   pull_request:
   push:
     branches: [master]
