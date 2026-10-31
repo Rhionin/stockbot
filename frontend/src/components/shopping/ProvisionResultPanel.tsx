@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Anchor, Button, CloseButton, Group, Stack, Text } from '@mantine/core';
 import type { ProviderInfo, ProvisionReport } from '@stockbot/shared/types';
 import {
@@ -11,15 +11,19 @@ import {
   PROVISION_SENT_SHOW_ALL_THRESHOLD,
   PROVISION_SHOW_ALL_THRESHOLD,
   PROVISION_UNDO_LABEL,
+  PROVISION_RESOLVE_FAILED,
+  PROVISION_RESOLVE_UNDO_MS,
   groupProvisionResults,
   provisionCheckInCartAria,
   provisionCheckNotInCartAria,
   provisionItemReasonLine,
+  provisionPartialReconnectPrompt,
   provisionNothingSentReconnectLabel,
   provisionSectionHeadingCheck,
   provisionSectionHeadingCouldntSend,
   provisionSectionHeadingSent,
   provisionStoreLabel,
+  provisionUndoAria,
   provisionSummaryCopy,
   provisionWholeRequestActionLabel,
   provisionWholeRequestMessage,
@@ -99,6 +103,14 @@ export const ProvisionResultPanel = ({
   const [showAllNotAdded, setShowAllNotAdded] = useState(false);
   const [showAllSent, setShowAllSent] = useState(false);
   const [resolved, setResolved] = useState<Record<string, CheckResolution>>({});
+  const [committed, setCommitted] = useState<Record<string, true>>({});
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  // A choice stays local until the undo window ends: the server's ledger advance can't be undone.
+  const pending = useRef<Record<string, { choice: CheckResolution; timer: ReturnType<typeof setTimeout> }>>({});
+  const resolveRef = useRef(onResolveUnknown);
+  useEffect(() => {
+    resolveRef.current = onResolveUnknown;
+  }, [onResolveUnknown]);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const storeLabel = provisionStoreLabel(provider?.displayName);
   const groups = useMemo(
@@ -123,28 +135,75 @@ export const ProvisionResultPanel = ({
     : groups.sentRows.slice(0, PROVISION_SENT_SHOW_ALL_THRESHOLD);
   const sentHidden = (groups?.sentRows.length ?? 0) - sentVisible.length;
 
-  const markResolved = (entryId: string, choice: CheckResolution) => {
-    setResolved((prev) => ({ ...prev, [entryId]: choice }));
+  const focusRow = (entryId: string) => {
     requestAnimationFrame(() => {
       rowRefs.current[entryId]?.querySelector('button')?.focus();
     });
   };
 
+  const commit = useCallback((entryId: string) => {
+    const item = pending.current[entryId];
+    if (item === undefined) return;
+    clearTimeout(item.timer);
+    delete pending.current[entryId];
+    resolveRef.current(entryId, item.choice === 'in').then(
+      () => setCommitted((prev) => ({ ...prev, [entryId]: true })),
+      () => {
+        setResolved((prev) => {
+          const next = { ...prev };
+          delete next[entryId];
+          return next;
+        });
+        setRowErrors((prev) => ({ ...prev, [entryId]: PROVISION_RESOLVE_FAILED }));
+      },
+    );
+  }, []);
+
+  const flushAll = useCallback(() => {
+    for (const entryId of Object.keys(pending.current)) commit(entryId);
+  }, [commit]);
+
+  useEffect(() => {
+    window.addEventListener('pagehide', flushAll);
+    return () => {
+      window.removeEventListener('pagehide', flushAll);
+      // Dismiss, a new send, or leaving the page ends the undo window.
+      flushAll();
+    };
+  }, [flushAll]);
+
+  const confirmCheck = (entryId: string, reachedProvider: boolean) => {
+    if (entryId === '') return;
+    const choice: CheckResolution = reachedProvider ? 'in' : 'not';
+    setRowErrors((prev) => {
+      const next = { ...prev };
+      delete next[entryId];
+      return next;
+    });
+    setResolved((prev) => ({ ...prev, [entryId]: choice }));
+    pending.current[entryId] = {
+      choice,
+      timer: setTimeout(() => commit(entryId), PROVISION_RESOLVE_UNDO_MS),
+    };
+    focusRow(entryId);
+  };
+
   const undoResolution = (entryId: string) => {
+    const item = pending.current[entryId];
+    if (item === undefined) return;
+    clearTimeout(item.timer);
+    delete pending.current[entryId];
     setResolved((prev) => {
       const next = { ...prev };
       delete next[entryId];
       return next;
     });
-    requestAnimationFrame(() => {
-      rowRefs.current[entryId]?.querySelector('button')?.focus();
-    });
+    focusRow(entryId);
   };
 
-  const confirmCheck = async (entryId: string, reachedProvider: boolean) => {
-    if (entryId === '') return;
-    await onResolveUnknown(entryId, reachedProvider);
-    markResolved(entryId, reachedProvider ? 'in' : 'not');
+  const dismiss = () => {
+    flushAll();
+    onDismiss();
   };
 
   if (blockingCode !== undefined) {
@@ -180,7 +239,7 @@ export const ProvisionResultPanel = ({
         <CloseButton
           className="provision-result-dismiss"
           aria-label="Dismiss cart send result"
-          onClick={onDismiss}
+          onClick={dismiss}
         />
       </Group>
       {summary.lines.map((line) => (
@@ -210,7 +269,7 @@ export const ProvisionResultPanel = ({
               size="compact-sm"
               onClick={() => setShowAllSent(true)}
             >
-              {`Show all ${groups.N}`}
+              {`Show all ${groups.sentRows.length}`}
             </Button>
           )}
         </Stack>
@@ -221,7 +280,7 @@ export const ProvisionResultPanel = ({
           <Text size="sm" fw={600}>{provisionSectionHeadingCouldntSend(groups.M)}</Text>
           {notAddedVisible.map((row, index) => (
             <Text key={`${row.entryId}-${row.name}-${index}`} size="sm" className="provision-result-item">
-              {provisionItemReasonLine(row.name, storeLabel, row.reason)}
+              {provisionItemReasonLine(row.name, storeLabel, row.reason, row, report.reconnectRequired === true)}
             </Text>
           ))}
           {!showAllNotAdded && notAddedHidden > 0 && (
@@ -253,6 +312,9 @@ export const ProvisionResultPanel = ({
               >
                 <Stack gap={4} className="provision-result-item">
                   <Text size="sm">{row.name}</Text>
+                {entryId !== '' && rowErrors[entryId] !== undefined && (
+                  <Text size="sm" c="red" role="alert">{rowErrors[entryId]}</Text>
+                )}
                 {entryId !== '' && choice === undefined && (
                   <Group gap="xs" wrap="wrap">
                     <Button
@@ -260,7 +322,7 @@ export const ProvisionResultPanel = ({
                       size="compact-sm"
                       variant="light"
                       aria-label={provisionCheckInCartAria(row.name)}
-                      onClick={() => void confirmCheck(entryId, true)}
+                      onClick={() => confirmCheck(entryId, true)}
                     >
                       {PROVISION_CHECK_IN_CART}
                     </Button>
@@ -269,7 +331,7 @@ export const ProvisionResultPanel = ({
                       size="compact-sm"
                       variant="default"
                       aria-label={provisionCheckNotInCartAria(row.name)}
-                      onClick={() => void confirmCheck(entryId, false)}
+                      onClick={() => confirmCheck(entryId, false)}
                     >
                       {PROVISION_CHECK_NOT_IN_CART}
                     </Button>
@@ -280,14 +342,17 @@ export const ProvisionResultPanel = ({
                     <Text size="sm">
                       {choice === 'in' ? PROVISION_MARKED_IN_CART : PROVISION_MARKED_NOT_IN_CART}
                     </Text>
-                    <Button
-                      className="provision-result-action"
-                      size="compact-sm"
-                      variant="subtle"
-                      onClick={() => undoResolution(entryId)}
-                    >
-                      {PROVISION_UNDO_LABEL}
-                    </Button>
+                    {committed[entryId] !== true && (
+                      <Button
+                        className="provision-result-action"
+                        size="compact-sm"
+                        variant="subtle"
+                        aria-label={provisionUndoAria(row.name)}
+                        onClick={() => undoResolution(entryId)}
+                      >
+                        {PROVISION_UNDO_LABEL}
+                      </Button>
+                    )}
                   </Group>
                 )}
                 </Stack>
@@ -298,13 +363,16 @@ export const ProvisionResultPanel = ({
       )}
 
       {report.reconnectRequired === true && (
-        <Button
-          className="provision-result-action"
-          variant="light"
-          onClick={onReconnect}
-        >
-          {reconnectLabel}
-        </Button>
+        <Stack gap="xs">
+          <Text size="sm">{provisionPartialReconnectPrompt(storeLabel)}</Text>
+          <Button
+            className="provision-result-action"
+            variant="light"
+            onClick={onReconnect}
+          >
+            {reconnectLabel}
+          </Button>
+        </Stack>
       )}
     </Stack>
   );

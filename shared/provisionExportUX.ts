@@ -112,7 +112,26 @@ export function provisionReasonText(storeLabel: string, reason: string | undefin
   }
 }
 
-export function provisionItemReasonLine(itemName: string, storeLabel: string, reason: string | undefined): string {
+function failedNeedsReconnectSend(
+  row: Pick<ShoppingListExportResultEntry, 'status' | 'reason'>,
+  reconnectRequired: boolean,
+): boolean {
+  if (row.status !== 'failed') return false;
+  if (row.reason === 'reconnect_required') return true;
+  if (!reconnectRequired) return false;
+  return row.reason === undefined;
+}
+
+export function provisionItemReasonLine(
+  itemName: string,
+  storeLabel: string,
+  reason: string | undefined,
+  row?: Pick<ShoppingListExportResultEntry, 'status' | 'reason'>,
+  reconnectRequired = false,
+): string {
+  if (row !== undefined && failedNeedsReconnectSend(row, reconnectRequired)) {
+    return `${itemName}: Reconnect ${storeLabel} to send this`;
+  }
   return `${itemName}: ${provisionReasonText(storeLabel, reason)}`;
 }
 
@@ -121,8 +140,28 @@ export type ProvisionWholeRequestError = 'provider_unavailable' | 'reconnect_req
 /** Summary when N and U are both zero (per-item failures only). */
 export const PROVISION_NOTHING_SENT_LINE = 'Nothing was sent to your cart.';
 
-/** HTTP 502 `provider_unavailable` envelope when nothing was sent (#481 contract comment). */
-export const PROVISION_ENVELOPE_NOTHING_SENT = 'Nothing was sent';
+/** Undo window before a check-row choice is sent to the server (the ledger advance can't be reversed). */
+export const PROVISION_RESOLVE_UNDO_MS = 10_000;
+
+/** HTTP 502 `provider_unavailable` envelope when nothing was sent. */
+export function provisionProviderUnavailableEnvelope(storeLabel: string): string {
+  const responder = storeLabel === UNKNOWN_STORE ? 'Your store' : storeLabel;
+  return `Nothing was sent. ${responder} isn't responding right now.`;
+}
+
+/** Partial send after reconnect-class failure, above the Reconnect control. */
+export function provisionPartialReconnectPrompt(storeLabel: string): string {
+  const accountLead = storeLabel === UNKNOWN_STORE
+    ? 'Your store account'
+    : `Your ${storeLabel} account`;
+  return `${accountLead} disconnected before everything was sent. Reconnect, then send again to finish.`;
+}
+
+export const PROVISION_RESOLVE_FAILED = "Couldn't save that. Try again.";
+
+export function provisionUndoAria(itemName: string): string {
+  return `Undo: ${itemName}`;
+}
 
 export function provisionNothingSentReconnectLabel(storeLabel: string): string {
   return `Reconnect ${storeLabel}`;
@@ -152,7 +191,7 @@ export function provisionWholeRequestMessage(
   if (code === 'reconnect_required') {
     return `Couldn't connect to ${yourStore(storeLabel, 'account')}. Nothing was sent.`;
   }
-  return PROVISION_ENVELOPE_NOTHING_SENT;
+  return provisionProviderUnavailableEnvelope(storeLabel);
 }
 
 export function provisionWholeRequestActionLabel(
@@ -214,7 +253,7 @@ export function provisionSummaryCopy(
   }
 
   const cartConfirmLine = N + U >= 1
-    ? `${storeLabel} doesn't confirm each item, so check your cart to make sure everything is there.`
+    ? `${provisionStoreLabelSentence(storeLabel)} doesn't confirm each item, so check your cart to make sure everything is there.`
     : undefined;
 
   return {
@@ -317,19 +356,7 @@ export function groupProvisionResults(report: ProvisionReport): ProvisionResultG
     sentRows = [];
     notAdded = legacyNotAdded(report);
     check = legacyCheck(report);
-    const exported = report.exported ?? 0;
-    if (exported > 0 && sentRows.length === 0) {
-      // Legacy servers only expose a count, not names.
-      for (let i = 0; i < exported; i += 1) {
-        sentRows.push({
-          entryId: '',
-          itemId: '',
-          name: `Item ${i + 1}`,
-          quantity: 1,
-          status: 'sent',
-        });
-      }
-    }
+    // Legacy servers only expose a count, not names: N comes from `exported`, no rows are invented.
   }
 
   const N = countSentFromReport(report, sentRows);

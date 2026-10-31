@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { ProvisionReport } from './types';
 import {
-  PROVISION_ENVELOPE_NOTHING_SENT,
   PROVISION_NOTHING_SENT_LINE,
+  PROVISION_RESOLVE_UNDO_MS,
   groupProvisionResults,
   provisionCheckInCartAria,
   provisionEmptyListNote,
   provisionItemReasonLine,
   provisionLegacyNothingSentError,
   provisionNothingSentReconnectLabel,
+  provisionPartialReconnectPrompt,
+  provisionProviderUnavailableEnvelope,
   provisionReasonText,
   provisionRowGroup,
   provisionSectionHeadingCheck,
@@ -22,6 +24,9 @@ import {
   provisionWholeRequestActionLabel,
   provisionWholeRequestMessage,
 } from './provisionExportUX';
+
+// The #484 ProvisionReport type no longer declares the legacy top-level `error`; old servers can still send it.
+const legacyError = (error: string) => ({ error }) as unknown as Partial<ProvisionReport>;
 
 describe('provisionStoreLabel', () => {
   it('falls back when the name is blank', () => {
@@ -84,8 +89,75 @@ describe('provisionSummaryCopy', () => {
 
   it('shows nothing sent when N and U are both zero', () => {
     expect(provisionSummaryCopy({ N: 0, M: 1, U: 0 }, 'Kroger').lines[0]).toBe(
-      'Nothing was sent to your cart.',
+      PROVISION_NOTHING_SENT_LINE,
     );
+  });
+});
+
+describe('provisionSummaryCopy summary-line mutants', () => {
+  it('includes nothing-sent only when N and U are both zero', () => {
+    expect(provisionSummaryCopy({ N: 0, M: 0, U: 0 }, 'Kroger').lines).toEqual([
+      PROVISION_NOTHING_SENT_LINE,
+    ]);
+    expect(provisionSummaryCopy({ N: 0, M: 0, U: 1 }, 'Kroger').lines).toEqual([
+      '1 might not have reached your cart.',
+    ]);
+    expect(provisionSummaryCopy({ N: 1, M: 0, U: 0 }, 'Kroger').lines).toEqual([
+      '1 item sent to your Kroger cart.',
+    ]);
+    expect(provisionSummaryCopy({ N: 0, M: 2, U: 0 }, 'Kroger').lines).toEqual([
+      PROVISION_NOTHING_SENT_LINE,
+      "2 couldn't be sent.",
+    ]);
+  });
+
+  it('emits sent, failure, and unknown lines only when each count is at least 1', () => {
+    const all = provisionSummaryCopy({ N: 2, M: 1, U: 3 }, 'Kroger');
+    expect(all.lines).toEqual([
+      '2 items sent to your Kroger cart.',
+      "1 couldn't be sent.",
+      '3 might not have reached your cart.',
+    ]);
+    expect(provisionSummaryCopy({ N: 2, M: 0, U: 0 }, 'Kroger').lines).toEqual([
+      '2 items sent to your Kroger cart.',
+    ]);
+    expect(provisionSummaryCopy({ N: 0, M: 3, U: 0 }, 'Kroger').lines).toEqual([
+      PROVISION_NOTHING_SENT_LINE,
+      "3 couldn't be sent.",
+    ]);
+  });
+
+  it('uses singular wording for N, M, and U of 1', () => {
+    expect(provisionSummaryCopy({ N: 1, M: 1, U: 1 }, 'Kroger').lines).toEqual([
+      '1 item sent to your Kroger cart.',
+      "1 couldn't be sent.",
+      '1 might not have reached your cart.',
+    ]);
+  });
+
+  it('shows the cart confirm line only when N plus U is at least 1', () => {
+    expect(provisionSummaryCopy({ N: 0, M: 2, U: 0 }, 'Kroger').cartConfirmLine).toBeUndefined();
+    expect(provisionSummaryCopy({ N: 1, M: 0, U: 0 }, 'Kroger').cartConfirmLine).toContain("doesn't confirm each item");
+    expect(provisionSummaryCopy({ N: 0, M: 0, U: 1 }, 'Kroger').cartConfirmLine).toContain("doesn't confirm each item");
+  });
+});
+
+describe('groupProvisionResults N/M/U counts', () => {
+  it('matches partitioned row counts', () => {
+    const report: ProvisionReport = {
+      provider: 'kroger',
+      exported: 2,
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'sent' },
+        { entryId: 'c', itemId: '3', name: 'Jam', quantity: 1, status: 'skipped', reason: 'no_upc' },
+        { entryId: 'd', itemId: '4', name: 'Oats', quantity: 1, status: 'unknown' },
+      ],
+    };
+    const groups = groupProvisionResults(report);
+    expect(groups.N).toBe(2);
+    expect(groups.M).toBe(1);
+    expect(groups.U).toBe(1);
   });
 });
 
@@ -155,7 +227,7 @@ describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
     expect(provisionLegacyNothingSentError({
       provider: 'kroger',
       exported: 0,
-      error: 'reconnect_required',
+      ...legacyError('reconnect_required'),
       results: unknownRows,
     })).toBe('reconnect_required');
   });
@@ -164,7 +236,7 @@ describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
     expect(provisionLegacyNothingSentError({
       provider: 'kroger',
       exported: 0,
-      error: 'provider_unavailable',
+      ...legacyError('provider_unavailable'),
       results: unknownRows,
     })).toBe('provider_unavailable');
   });
@@ -174,7 +246,7 @@ describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
       provider: 'kroger',
       exported: 1,
       sentCount: 1,
-      error: 'reconnect_required',
+      ...legacyError('reconnect_required'),
       results: [
         { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
         ...unknownRows,
@@ -186,7 +258,7 @@ describe('provisionLegacyNothingSentError (#486 legacy 200 body)', () => {
     const groups = groupProvisionResults({
       provider: 'kroger',
       exported: 0,
-      error: 'reconnect_required',
+      ...legacyError('reconnect_required'),
       results: unknownRows,
     });
     expect(groups.wholeRequestError).toBe('reconnect_required');
@@ -215,7 +287,10 @@ describe('unknown store name', () => {
       "Couldn't connect to your store account. Nothing was sent.",
     );
     expect(provisionWholeRequestMessage('provider_unavailable', store)).toBe(
-      PROVISION_ENVELOPE_NOTHING_SENT,
+      provisionProviderUnavailableEnvelope(store),
+    );
+    expect(provisionProviderUnavailableEnvelope('Kroger')).toBe(
+      "Nothing was sent. Kroger isn't responding right now.",
     );
     expect(provisionWholeRequestActionLabel('reconnect_required', store)).toBe('Reconnect your store');
   });
@@ -227,4 +302,50 @@ describe('provisionItemReasonLine', () => {
       'Soup: Not available at Kroger right now',
     );
   });
+
+  it('uses reconnect copy when reason is reconnect_required', () => {
+    expect(provisionItemReasonLine('Bread', 'Kroger', 'reconnect_required', { status: 'failed', reason: 'reconnect_required' })).toBe(
+      'Bread: Reconnect Kroger to send this',
+    );
+  });
+
+  it('falls back to reconnect copy on failed rows when reconnectRequired and reason is omitted', () => {
+    expect(provisionItemReasonLine('Bread', 'Kroger', undefined, { status: 'failed' }, true)).toBe(
+      'Bread: Reconnect Kroger to send this',
+    );
+    expect(provisionItemReasonLine('Soup', 'Kroger', 'batch_rejected', { status: 'failed', reason: 'batch_rejected' }, true)).toBe(
+      "Soup: Kroger didn't accept this item",
+    );
+  });
+});
+
+describe('provisionPartialReconnectPrompt', () => {
+  it('names the store account in the lead sentence', () => {
+    expect(provisionPartialReconnectPrompt('Kroger')).toBe(
+      'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.',
+    );
+    expect(provisionPartialReconnectPrompt(provisionStoreLabel(undefined))).toBe(
+      'Your store account disconnected before everything was sent. Reconnect, then send again to finish.',
+    );
+  });
+});
+
+describe('PROVISION_RESOLVE_UNDO_MS', () => {
+  it('is a ten-second undo window', () => {
+    expect(PROVISION_RESOLVE_UNDO_MS).toBe(10_000);
+  });
+});
+
+describe('provisionExportUX review fixes', () => {
+  it('starts the confirm line with a capital when the store is unknown', () => {
+    const copy = provisionSummaryCopy({ N: 1, M: 0, U: 1 }, provisionStoreLabel(undefined));
+    expect(copy.cartConfirmLine).toBe("Your store doesn't confirm each item, so check your cart to make sure everything is there.");
+  });
+
+  it('counts legacy sends without inventing rows', () => {
+    const groups = groupProvisionResults({ provider: 'kroger', exported: 2 } as ProvisionReport);
+    expect(groups.N).toBe(2);
+    expect(groups.sentRows).toEqual([]);
+  });
+
 });

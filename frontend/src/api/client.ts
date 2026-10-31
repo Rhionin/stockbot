@@ -47,8 +47,6 @@ import type {
 import {
   BATCH_COMMIT_PATH,
   type BatchCommitInput,
-  CODE_PROVIDER_UNAVAILABLE,
-  CODE_RECONNECT_REQUIRED,
   type CreateScanEntryInput,
   type HouseholdSession,
   SCANNER_CONFIG_PATH,

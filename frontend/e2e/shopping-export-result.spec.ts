@@ -60,6 +60,7 @@ interface MockOptions {
   delayExportMs?: number
   sessionHousehold?: string
   exportEnvelope?: { status: number; code: string; error?: string }
+  providers?: typeof krogerProvider[] | []
 }
 
 const idealExport = () => ({
@@ -208,7 +209,7 @@ async function installShoppingMocks(page: Page, options: MockOptions) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([krogerProvider]),
+      body: JSON.stringify(options.providers ?? [krogerProvider]),
     })
   })
 
@@ -258,10 +259,10 @@ async function installShoppingMocks(page: Page, options: MockOptions) {
   })
 }
 
-async function openShoppingAndSend(page: Page) {
+async function openShoppingAndSend(page: Page, sendLabel = 'Send to Kroger') {
   await page.goto('/shopping')
   await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible()
-  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await page.getByRole('button', { name: sendLabel }).click()
 }
 
 async function saveShot(page: Page, filename: string) {
@@ -291,10 +292,10 @@ const singleViewportCases: { case: ExportCase; file: string; role?: 'button'; ex
   { case: 'many-skipped', file: 'many-skipped-390.png', expectText: 'Show all 12' },
   { case: 'nothing-added', file: 'nothing-added-390.png', expectText: /Nothing was sent to your cart/ },
   { case: 'batch-rejected', file: 'batch-rejected-390.png', expectText: /didn't accept this item/ },
-  { case: 'error-try-again', file: 'provider-unavailable-502-390.png', expectText: 'Nothing was sent' },
+  { case: 'error-try-again', file: '502-unavailable-390.png', expectText: "Nothing was sent. Kroger isn't responding right now." },
   { case: 'reconnect', file: 'reconnect-required-409-390.png', expectText: "Couldn't connect to your Kroger account. Nothing was sent." },
-  { case: 'partial-reconnect', file: 'partial-reconnect-390.png', expectText: 'Sent (1)' },
-  { case: 'legacy-200-error', file: 'legacy-502-body-390.png', expectText: 'Nothing was sent' },
+  { case: 'partial-reconnect', file: 'c-partial-reconnect-390.png', expectText: 'Sent (1)' },
+  { case: 'legacy-200-error', file: 'legacy-502-body-390.png', expectText: "Nothing was sent. Kroger isn't responding right now." },
   { case: 'legacy', file: 'legacy-390.png', role: 'button', expectText: "It's in my cart: Oats" },
 ]
 
@@ -303,9 +304,9 @@ const uxShots: { case: ExportCase; file: string; envelope?: MockOptions['exportE
   { case: 'all-unknown', file: 'all-unknown-390.png' },
   { case: 'mixed', file: 'mixed-390.png' },
   { case: 'unavailable', file: 'unavailable-390.png' },
-  { case: 'error-try-again', file: 'provider-unavailable-502-390.png', envelope: { status: 502, code: 'provider_unavailable' } },
+  { case: 'error-try-again', file: '502-unavailable-390.png', envelope: { status: 502, code: 'provider_unavailable' } },
   { case: 'reconnect', file: 'reconnect-required-409-390.png', envelope: { status: 409, code: 'reconnect_required' } },
-  { case: 'partial-reconnect', file: 'partial-reconnect-390.png' },
+  { case: 'partial-reconnect', file: 'c-partial-reconnect-390.png' },
 ]
 
 for (const shot of uxShots) {
@@ -320,6 +321,34 @@ for (const shot of uxShots) {
     await saveShot(page, shot.file)
   })
 }
+
+test('screenshot 502-unavailable-no-store-390.png', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, {
+    providers: [],
+    exportEnvelope: { status: 502, code: 'provider_unavailable' },
+  })
+  await openShoppingAndSend(page, 'Send to your store')
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await expect(panel.getByText("Nothing was sent. Your store isn't responding right now.")).toBeVisible()
+  await saveShot(page, '502-unavailable-no-store-390.png')
+})
+
+test('screenshot marked-undo at 320px and 125% text', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.style.fontSize = '125%'
+    })
+  })
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Undo: Oats' })).toBeVisible()
+  await saveShot(page, 'marked-undo-320-125.png')
+})
 
 test('screenshot mixed at 320px and 125% text', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 })
@@ -366,6 +395,7 @@ for (const scenario of singleViewportCases) {
     }
     if (scenario.case === 'partial-reconnect') {
       await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toBeVisible()
+      await expect(panel.getByText(/account disconnected before everything was sent/)).toBeVisible()
     }
     await saveShot(page, scenario.file)
   })

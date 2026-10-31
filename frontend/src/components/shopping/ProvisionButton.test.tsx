@@ -4,6 +4,7 @@ import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
 import { CODE_PROVIDER_UNAVAILABLE, CODE_RECONNECT_REQUIRED } from '@stockbot/shared/contract';
+import { PROVISION_RESOLVE_UNDO_MS } from '@stockbot/shared/provisionExportUX';
 import { ProvisionButton } from './ProvisionButton';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
@@ -109,8 +110,8 @@ describe('ProvisionButton', () => {
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     expect(within(panel).getByText('Sent (2)')).toBeInTheDocument();
     expect(within(panel).getByText('Milk')).toBeInTheDocument();
-    expect(within(panel).queryByText("Couldn't be sent")).not.toBeInTheDocument();
-    expect(within(panel).queryByText('Check these in your cart')).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Couldn't be sent/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
   });
 
   it('shows unavailable under Couldn\'t be sent', async () => {
@@ -173,7 +174,7 @@ describe('ProvisionButton', () => {
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     fireEvent.click(within(panel).getByRole('button', { name: "It's not: Oats" }));
     expect(await within(panel).findByText('Marked as not in your cart')).toBeInTheDocument();
-    fireEvent.click(within(panel).getByRole('button', { name: 'Undo' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Undo: Oats' }));
     expect(within(panel).getByRole('button', { name: "It's in my cart: Oats" })).toBeInTheDocument();
   });
 
@@ -226,15 +227,15 @@ describe('ProvisionButton export envelopes (409/502)', () => {
     expect(within(panel).getByText("Couldn't connect to your Kroger account. Nothing was sent.")).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    expect(within(panel).queryByText('Check these in your cart')).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
   });
 
-  it('502 provider_unavailable shows Nothing was sent and Try again, not Reconnect', async () => {
+  it('502 provider_unavailable shows store-unavailable copy and Try again, not Reconnect', async () => {
     mockExportEnvelope(502, CODE_PROVIDER_UNAVAILABLE);
     renderButton();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
-    expect(within(panel).getByText('Nothing was sent')).toBeInTheDocument();
+    expect(within(panel).getByText("Nothing was sent. Kroger isn't responding right now.")).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
   });
@@ -317,7 +318,44 @@ describe('ProvisionButton partial reconnectRequired', () => {
     expect(within(panel).getByText('Sent (1)')).toBeInTheDocument();
     expect(within(panel).getByText("Couldn't be sent (1)")).toBeInTheDocument();
     expect(within(panel).getByText('Check these in your cart (1)')).toBeInTheDocument();
+    expect(within(panel).getByText('Bread: Reconnect Kroger to send this')).toBeInTheDocument();
+    expect(within(panel).getByText(
+      'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.',
+    )).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
+  });
+
+  it('partial-send Reconnect starts authorize', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/export') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          provider: 'kroger',
+          exported: 1,
+          sentCount: 1,
+          failedCount: 1,
+          reconnectRequired: true,
+          results: [
+            { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+            { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.includes('/authorize')) {
+        return Promise.resolve(new Response(JSON.stringify({ authorizationUrl: 'https://oauth.test/start' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    }));
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Reconnect Kroger' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://oauth.test/start'));
   });
 });
 
@@ -335,6 +373,11 @@ describe('ProvisionButton legacy HTTP 200 top-level error', () => {
     expect(within(panel).getByText("Couldn't connect to your Kroger account. Nothing was sent.")).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Reconnect Kroger' })).toBeInTheDocument();
     expect(within(panel).queryByText(/might not have reached your cart/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Sent \(/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Couldn't be sent \(/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText('Item 0')).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/doesn't confirm each item/)).not.toBeInTheDocument();
   });
 
   it('502 legacy body shows Try again only', async () => {
@@ -347,7 +390,7 @@ describe('ProvisionButton legacy HTTP 200 top-level error', () => {
     renderButton();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
-    expect(within(panel).getByText('Nothing was sent')).toBeInTheDocument();
+    expect(within(panel).getByText('Nothing was sent. Kroger isn\'t responding right now.')).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
   });
@@ -384,5 +427,225 @@ describe('ProvisionButton result panel limits (#485 UX)', () => {
     await act(async () => {
       resolveFetch(new Response(JSON.stringify({ provider: 'kroger', exported: 0, results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     });
+  });
+});
+
+const jsonResponse = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), {
+  status,
+  headers: { 'Content-Type': 'application/json' },
+}));
+
+const stubExportAndResolve = (body: unknown, { exportStatus = 200, resolveStatus = 200 } = {}) => {
+  const resolutions: { provider: string; reachedProvider: boolean }[] = [];
+  let exports = 0;
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('unknown-resolution')) {
+      resolutions.push(JSON.parse(String(init?.body)) as { provider: string; reachedProvider: boolean });
+      return resolveStatus === 200 ? jsonResponse({ entryId: 'sli-oats' }) : jsonResponse({ error: 'boom' }, resolveStatus);
+    }
+    if (url.includes('/export') && init?.method === 'POST') {
+      exports += 1;
+      return jsonResponse(body, exportStatus);
+    }
+    return jsonResponse({});
+  }));
+  return { resolutions, exportCount: () => exports };
+};
+
+const oneUnknown = {
+  provider: 'kroger',
+  exported: 0,
+  results: [{ entryId: 'sli-oats', itemId: 'oats', name: 'Oats', quantity: 1, status: 'unknown' }],
+};
+
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+};
+
+describe('ProvisionButton check-row undo window (ledger advance is not reversible)', () => {
+  it('does not record a choice until the undo window ends, then hides Undo', async () => {
+    const api = stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument();
+      expect(api.resolutions).toEqual([]);
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+      await flush();
+      expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
+      await flush();
+      expect(within(panel).queryByRole('button', { name: 'Undo: Oats' })).not.toBeInTheDocument();
+      expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Undo cancels the choice so in, undo, in records once', async () => {
+    const api = stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      fireEvent.click(within(panel).getByRole('button', { name: 'Undo: Oats' }));
+      fireEvent.click(within(panel).getByRole('button', { name: "It's not: Oats" }));
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+      await flush();
+      expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: false }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records a pending choice when the panel is dismissed', async () => {
+    const api = stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    await flush();
+    expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
+  });
+
+  it('keeps focus in the row after marking and after Undo', async () => {
+    stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: 'Undo: Oats' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Undo: Oats' }));
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+  });
+
+  it('shows a row error under the row and restores the buttons when recording fails', async () => {
+    stubExportAndResolve(oneUnknown, { resolveStatus: 500 });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    const row = within(panel).getByText('Oats').closest('.provision-check-row') as HTMLElement;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's not: Oats" }));
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't save that. Try again.");
+    expect(within(row).getByRole('button', { name: "It's not: Oats" })).toBeInTheDocument();
+    expect(within(panel).queryByRole('alert')).toBe(alert);
+    expect(within(panel).queryByText('Marked as not in your cart')).not.toBeInTheDocument();
+  });
+
+  it('commits a pending choice when the panel unmounts', async () => {
+    const api = stubExportAndResolve(oneUnknown);
+    const { unmount } = renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    unmount();
+    await flush();
+    expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
+  });
+
+  it('commits a pending choice when Send starts again during the undo window', async () => {
+    const api = stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await flush();
+    expect(api.resolutions).toEqual([{ provider: 'kroger', reachedProvider: true }]);
+  });
+});
+
+describe('ProvisionButton legacy reports', () => {
+  it('shows the legacy sent count without inventing item names', async () => {
+    mockExport({ provider: 'kroger', exported: 3 });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('3 items sent to your Kroger cart.')).toBeInTheDocument();
+    expect(within(panel).queryByText(/^Item \d/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Sent \(/)).not.toBeInTheDocument();
+  });
+});
+
+describe('ProvisionResultPanel summary and sections (mutants)', () => {
+  it('omits empty Sent and Check sections when only failures exist', async () => {
+    mockExport({
+      provider: 'kroger',
+      exported: 0,
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Soup', quantity: 1, status: 'failed', reason: 'batch_rejected' },
+      ],
+    });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText("Couldn't be sent (1)")).toBeInTheDocument();
+    expect(within(panel).queryByText(/^Sent \(/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/doesn't confirm each item/)).not.toBeInTheDocument();
+  });
+
+  it('Show all labels the number of sent rows, not summary N alone', async () => {
+    const sent = Array.from({ length: 6 }, (_, index) => ({
+      entryId: `s-${index}`,
+      itemId: `i-${index}`,
+      name: `Sent ${index}`,
+      quantity: 1,
+      status: 'sent' as const,
+    }));
+    mockExport({ provider: 'kroger', exported: 6, sentCount: 6, results: sent });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByRole('button', { name: 'Show all 6' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Show all 4' })).not.toBeInTheDocument();
+    expect(within(panel).getAllByText(/^Sent \d/)).toHaveLength(5);
+  });
+
+  it('shows singular and plural summary lines from grouped counts', async () => {
+    mockExport({
+      provider: 'kroger',
+      exported: 1,
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'no_match' },
+        { entryId: 'c', itemId: '3', name: 'Oats', quantity: 1, status: 'unknown' },
+      ],
+    });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('1 item sent to your Kroger cart.')).toBeInTheDocument();
+    expect(within(panel).getByText("1 couldn't be sent.")).toBeInTheDocument();
+    expect(within(panel).getByText('1 might not have reached your cart.')).toBeInTheDocument();
+    expect(within(panel).getByText(/doesn't confirm each item/)).toBeInTheDocument();
+  });
+
+  it('focuses the undo control after confirming a check row', async () => {
+    stubExportAndResolve(oneUnknown);
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's not: Oats" }));
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: 'Undo: Oats' }));
   });
 });

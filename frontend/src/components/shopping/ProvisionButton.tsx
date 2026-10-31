@@ -89,6 +89,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
     setRequestError('');
     await resolveUnknownProvision(entryId, provider.id, reachedProvider);
     onFinished();
+    // Errors propagate to the panel, which shows them in the row.
   };
 
   const reconnect = async () => {
