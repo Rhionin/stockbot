@@ -739,15 +739,7 @@ describe('networkErrorResult', () => {
   });
 });
 
-describe('provisionResultStatus', () => {
-  it('maps outcomes to added, skipped, failed, and unknown', () => {
-    expect(provisionResultStatus('confirmed')).toBe('added');
-    expect(provisionResultStatus('unknown')).toBe('unknown');
-    expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
-    expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
-  });
-});
-
+describe('inlineFailure', () => {
   it.each([
     { name: 'unreachable', error: new UnreachableError(), fallback: 'Unable to load history.', message: null },
     { name: 'server sentence', error: new Error('That scan is no longer pending.'), fallback: 'Unable to load history.', message: 'That scan is no longer pending.' },
@@ -756,6 +748,15 @@ describe('provisionResultStatus', () => {
     { name: 'plain network error', error: new Error('Network error'), fallback: 'Unable to load history.', message: 'Network error' },
   ])('$name', ({ error, fallback, message }) => {
     expect(inlineFailure(error, fallback)).toBe(message);
+  });
+});
+
+describe('provisionResultStatus', () => {
+  it('maps outcomes to added, skipped, failed, and unknown', () => {
+    expect(provisionResultStatus('confirmed')).toBe('added');
+    expect(provisionResultStatus('unknown')).toBe('unknown');
+    expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
+    expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
   });
 });
 
