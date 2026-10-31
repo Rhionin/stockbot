@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 78
+endpoint-count: 82
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -218,6 +218,10 @@ PUT /api/stores/order
 PUT /api/stores/default
 GET /api/stores/kroger-locations
 POST /api/stores/{id}/check
+GET /api/households/{id}/kroger-app
+PUT /api/households/{id}/kroger-app
+DELETE /api/households/{id}/kroger-app
+POST /api/households/{id}/kroger-app/test
 GET /api/products/{id}/stores
 PUT /api/products/{id}/stores
 POST /api/products/{id}/stores/check
@@ -1605,11 +1609,15 @@ Added for [#481](https://github.com/Rhionin/stockbot/issues/481). The design, da
 
 Kroger product and location lookups run only through the calling household's own Kroger connection. No route here uses another household's connection or any server-wide Kroger token.
 
-**`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the server setting `KROGER_PRODUCT_CHECKS` is off), `not_connected` (no working connection, including one marked `reauth_required`), `no_product_access` (connected without `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line).
+**Store app per household (Q4 = B, [design §4.6](multi-store-sourcing.md#46-one-kroger-app-per-household-q4--b-decided-requirements-v7-b11a)).** Each household registers its own Kroger developer app (the "store app") and saves its keys with the [store app routes](#store-app) below (ticket #489, B11a). No household uses a server-wide app or another household's app; with no store app, a household makes zero Kroger calls. Changes to existing routes, which are not in the hosted endpoint index:
+- `PUT` and `DELETE /api/providers/kroger/credentials` are retired in B11a and return `404` `not_found`. `GET /api/providers` no longer returns `credentials` for Kroger; its `credentialsConfigured` is true when the caller's household has a store app.
+- `GET /api/providers/kroger/authorize` uses the household's store app; with none it returns `409` `kroger_not_connected` with `checkReason:"not_configured"` (was `409` `conflict`), so the setup screen can tell the app was removed. The callback exchanges the code with the app the sign-in started with. The scope adds `product.compact` only when the app's `productAccess` is `true`.
 
-**`lookupsEnabled`** (household) is true only when the server setting is on, the household is connected with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `POST /api/providers/kroger/authorize` today.
+**`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the household has no store app; `DISABLE_KROGER` reports the same), `not_connected` (a store app exists but no member has a live connection through it, including one marked `reauth_required`), `no_product_access` (the store app's `productAccess` isn't `true`, or the connection lacks `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line).
 
-Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): on **non-send** routes, no `{…}` placeholders and no retailer names in the hosted registry (store names come from the UI). #484 **send** routes still return provider-named text in the JSON **`error`** field on whole-request failures; the send panel shows UX **`c.res.reconnectMsg`** / **`c.res.down`** instead of the hosted registry sentences.
+**`lookupsEnabled`** (household) is true only when the household's store app has `productAccess` `true`, the household is connected through it with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `GET /api/providers/kroger/authorize` today, which includes "this household has a store app".
+
+Hosted error sentences for the ten store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): on **non-send** routes, no `{…}` placeholders and no retailer names in the hosted registry (store names come from the UI). #484 **send** routes still return provider-named text in the JSON **`error`** field on whole-request failures; the send panel shows #485's **`provisionWholeRequestMessage(code, storeLabel)`** copy (`shared/provisionExportUX.ts`, lines 222–231 at #485 head `d2c8ff5a`) instead of the hosted registry sentences.
 
 ### Types
 
@@ -1646,6 +1654,26 @@ interface Availability {                 // only while fresh
   stockLevel?: 'HIGH' | 'LOW' | 'TEMPORARILY_OUT_OF_STOCK';
   checkedAt: string;
 }
+type KrogerAppStatus = 'not_set_up' | 'ready_to_connect' | 'connected' | 'needs_reconnect';
+interface KrogerApp {
+  configured: boolean;
+  clientIdLast4: string | null;          // never the full client ID
+  redirectUri: string | null;            // exact redirect URL to register; null when this server has none
+  modality: 'pickup' | 'delivery' | null;
+  productAccess: 'true' | 'false' | 'unknown';
+  status: KrogerAppStatus;
+  canManage: boolean;                    // caller is an owner of this household
+}
+type KrogerAppTestCode = 'wrong_keys' | 'redirect_mismatch' | 'kroger_unreachable' | 'no_product_access';
+interface KrogerAppTest {
+  ok: boolean;                           // true: the keys work (and were saved, on PUT)
+  code?: KrogerAppTestCode;              // absent = every check passed
+}
+interface KrogerAppSaved extends KrogerApp { test: KrogerAppTest; }
+interface KrogerNotConnectedBody {       // 409 kroger_not_connected
+  error: string; code: 'kroger_not_connected';
+  checkReason: 'not_configured' | 'not_connected';
+}
 ```
 
 ### Stores
@@ -1672,6 +1700,21 @@ interface StoreRemovalPreview {
   isDefault: boolean; isLinked: boolean;
 }
 ```
+
+### Store app
+
+`{id}` must name the household selected for the request; anything else is `404` `not_found`. Writes and the test need role **Owner**; a member gets `403` `forbidden_role` and nothing changes. The client secret and tokens are never returned or logged. `status` is derived per request: `not_set_up` (no app), `connected` (a member is connected through this app), `needs_reconnect` (none connected, at least one `reauth_required`), else `ready_to_connect`. `redirectUri` is `KROGER_REDIRECT_URI` if set, else `APP_BASE_URL` + `/api/providers/kroger/callback`, else null; a saved app keeps the value it was saved with, and a request can't set it.
+
+| Route | Request | Response | Errors (besides the common ones) |
+|---|---|---|---|
+| `GET /api/households/{id}/kroger-app` | | `200 KrogerApp` | |
+| `PUT /api/households/{id}/kroger-app` | `{clientId, clientSecret, modality?}`, or `{modality}` alone on a saved app | `200 KrogerAppSaved`. Runs the test first. `wrong_keys` and `kroger_unreachable` save nothing (as errors below), so a replace keeps the old keys. `no_product_access` saves with `productAccess:"false"`; `redirect_mismatch` saves too; both come back in `test`. A different client ID marks every household connection `reauth_required` and deletes the household's check results; the same client ID with a new secret keeps connections. | `validation`, `forbidden_role`, `store_app_keys_rejected`, `store_app_unreachable` |
+| `POST /api/households/{id}/kroger-app/test` | `{clientId, clientSecret}` (nothing saved), or `{}` (re-test the saved keys and record `productAccess`) | `200 KrogerAppTest`. `ok:false`: `wrong_keys` or `kroger_unreachable`. `ok:true` with `no_product_access` (can't check products) or `redirect_mismatch` (the redirect URL registered at Kroger doesn't match `redirectUri`); `redirect_mismatch` wins when both apply. | `validation`, `forbidden_role`, `rate_limited` (10 per hour per household), `kroger_not_connected` with `checkReason:"not_configured"` for `{}` with no saved app |
+| `DELETE /api/households/{id}/kroger-app` | | `200 KrogerApp` with `configured:false`, `status:"not_set_up"`. In one transaction, removes the app, every member's Kroger connection and the household's check results. Idempotent. | `forbidden_role` |
+
+The key test is one token request with `client_credentials` and `product.compact`. Its token is discarded unread, never stored and never used for a lookup. When the keys pass, a redirect check makes one `GET` to the provider's authorize URL with `redirectUri` (no cookies, no redirects followed) and reports `redirect_mismatch` only on the exact mismatch response the T1 spike recorded; anything unrecognized reports nothing. If T1 finds no detectable response, `redirect_mismatch` comes only from the callback.
+
+**Sign-in return (changes the existing callback).** `GET /api/providers/kroger/authorize` takes optional `return=household` (default `shopping`). The callback always redirects to `/{return}?kroger=connected|cancelled|redirect_mismatch|failed`; provider text is never passed through. `/shopping?connected=kroger` stays for one release.
 
 ### Product stores
 
@@ -1740,8 +1783,8 @@ interface ShoppingListEntryStoreFields {
 | `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
 | `api_error` | `failed` | Fallback. |
-| `reconnect_required` | `unknown` / `failed` | **`failed`:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). (#484 `shared/types.ts` currently declares this reason unknown-only; fix tracked on #484.) |
-| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. (#484 `shared/types.ts` currently declares both reasons unknown-only; fix tracked on #484.) |
+| `reconnect_required` | `failed` | **Per line, `failed` only:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). #484's union still allows `unknown` for it, but `engine.go` never emits it per line as `unknown`. |
+| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. |
 | `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.
@@ -1807,7 +1850,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
-| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. Store search and manual store checks use it when the household's daily share of its Kroger app's limit is used up, with `Retry-After` ([multi-store sourcing](multi-store-sourcing.md)). |
+| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. Store search and manual store checks use it when the household's store app's daily budget is used up, and the store app test after 10 tests in an hour, with `Retry-After` ([multi-store sourcing](multi-store-sourcing.md)). |
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. Also a `POST /api/device/scans` body over 64 KB. |
 | `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
@@ -1817,9 +1860,11 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
 | `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Provider 5xx or timeout after retry; also store location search. |
 | `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows Reconnect only when `checkReason` is `no_product_access` and `canConnect` is true. The web hides check controls from `lookupsEnabled`, so this is a guard. |
-| `kroger_not_connected` | 409 | Connect your store account first. | Store search and check routes when the household has no working connection. Zero provider lookup calls. The web goes to the connect step with no error text. |
-| `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows UX **`c.res.reconnectMsg`** with the store name; this sentence is the code fallback only. |
-| `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows UX **`c.res.down`** and this sentence is the code fallback only. |
+| `kroger_not_connected` | 409 | Connect your store account first. | Store search and check routes when the household has no working connection. Body `{error, code, checkReason}`: `not_configured` (no store app) or `not_connected`. Zero provider calls. The web sends an owner to store app setup or the connect step, and a member to "Ask a household admin", with no error text. |
+| `store_app_keys_rejected` | 400 | Those keys didn't work. Check that you copied both keys. | `PUT /api/households/{id}/kroger-app` when the key test fails as wrong keys. Nothing is saved. |
+| `store_app_unreachable` | 503 | Couldn't reach the store. Try again in a few minutes. | `PUT /api/households/{id}/kroger-app` when the key test can't reach the provider. Nothing is saved. |
+| `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
+| `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
 
 ## Decided by PM
 
