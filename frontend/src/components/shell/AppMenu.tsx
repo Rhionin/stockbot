@@ -81,6 +81,8 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
   };
 
   const stage1 = session.auth?.kind === 'account';
+  // HouseholdGate keeps signed_out and null auth on the login screen (HouseholdGate.tsx),
+  // so callers here always have kind === 'account' in the real app shell.
   const isServerAdmin = session.auth?.kind === 'account' && session.auth.operator === true;
   const canEditKeys = (provider: ProviderInfo) =>
     !credentialsAccessDenied && canManageProviderAppCredentials(provider, isServerAdmin);

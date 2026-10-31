@@ -48,7 +48,7 @@ const renderMenu = (
   }));
   return render(
     <MantineProvider env="test">
-      <HouseholdSessionContext.Provider value={adminLanSession()}>
+      <HouseholdSessionContext.Provider value={adminAccountSession()}>
         <MemoryRouter initialEntries={['/shopping']}>
           <Routes>
             <Route path="/shopping" element={<AppMenu onCredentialsChanged={onCredentialsChanged} />} />
@@ -99,10 +99,17 @@ const testHouseholdSession = (operator: boolean): AuthSession => ({
 });
 
 // Most menu tests drive the app keys form, which only the server admin gets.
-const adminLanSession = () => ({
+const adminAccountSession = () => ({
   required: false,
   logout: () => undefined,
   auth: testHouseholdSession(true),
+  replaceAuth: () => undefined,
+});
+
+const lanListenerSession = () => ({
+  required: false,
+  logout: () => undefined,
+  auth: null,
   replaceAuth: () => undefined,
 });
 
@@ -188,6 +195,28 @@ describe('AppMenu Kroger app keys visibility', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/providers/kroger/connection', expect.objectContaining({ method: 'DELETE' }));
   });
 
+  it('hides Kroger app keys when auth is null (LAN listener); HouseholdGate keeps that off the app shell', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={lanListenerSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
   it('keeps the dialog open with the admin-only alert after a 403, then drops the app keys', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -201,7 +230,7 @@ describe('AppMenu Kroger app keys visibility', () => {
     }));
     render(
       <MantineProvider env="test">
-        <HouseholdSessionContext.Provider value={adminLanSession()}>
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
           <MemoryRouter>
             <AppMenu onCredentialsChanged={() => undefined} />
           </MemoryRouter>
@@ -216,6 +245,39 @@ describe('AppMenu Kroger app keys visibility', () => {
     expect(screen.getByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
+  });
+
+  it('clears access denied when the dialog closes so reopening shows the app keys form again', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse({ error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    fireEvent.change(await screen.findByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Only the server admin can change the Kroger app keys\.$/);
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Kroger connection' }), { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Kroger connection' })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    expect(await screen.findByLabelText('Client ID')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
@@ -278,7 +340,7 @@ describe('AppMenu', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(
       <MantineProvider env="test">
-        <HouseholdSessionContext.Provider value={adminLanSession()}>
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
           <MemoryRouter>
             <AppMenu onCredentialsChanged={onChanged} />
           </MemoryRouter>
@@ -309,7 +371,7 @@ describe('AppMenu', () => {
     }));
     render(
       <MantineProvider env="test">
-        <HouseholdSessionContext.Provider value={adminLanSession()}>
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
           <MemoryRouter>
             <AppMenu onCredentialsChanged={onChanged} />
           </MemoryRouter>

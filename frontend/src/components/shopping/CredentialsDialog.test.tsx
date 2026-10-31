@@ -235,4 +235,34 @@ describe('CredentialsDialog', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE);
     expect(onAccessDenied).toHaveBeenCalledTimes(1);
   });
+
+  it('shows sign-in failure copy on unauthorized, not the admin-only message', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: 'Sign in required.',
+          code: 'unauthorized',
+        }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    renderDialog(provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'saved',
+      },
+    }));
+
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'ui-client' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: 'https://pantry.example/cb' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Sign in required.');
+    expect(alert).not.toHaveTextContent(PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE);
+  });
 });
