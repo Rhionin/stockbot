@@ -1783,8 +1783,8 @@ interface ShoppingListEntryStoreFields {
 | `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
 | `api_error` | `failed` | Fallback. |
-| `reconnect_required` | `failed` | **Per line, `failed` only:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). #484's union still allows `unknown` for it, but `engine.go` never emits it per line as `unknown`. (#484 `shared/types.ts` currently declares this reason unknown-only; fix tracked on #484.) |
-| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. (#484 `shared/types.ts` currently declares both reasons unknown-only; fix tracked on #484.) |
+| `reconnect_required` | `failed` | **Per line, `failed` only:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). #484's union still allows `unknown` for it, but `engine.go` never emits it per line as `unknown`. |
+| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. |
 | `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.

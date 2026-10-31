@@ -638,8 +638,8 @@ Hosted error sentences on **non-send** routes have **no `{…}` placeholders** a
 | `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
 | `api_error` | `failed` | Fallback. |
-| `reconnect_required` | `failed` | **Per line, `failed` only:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). #484's union still allows `unknown` for it, but `engine.go` never emits it per line as `unknown`. (#484 `shared/types.ts` currently declares this reason unknown-only; fix tracked on #484.) |
-| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. (#484 `shared/types.ts` currently declares both reasons unknown-only; fix tracked on #484.) |
+| `reconnect_required` | `failed` | **Per line, `failed` only:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). #484's union still allows `unknown` for it, but `engine.go` never emits it per line as `unknown`. |
+| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. |
 | `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.
@@ -792,6 +792,6 @@ Nothing waits on Kroger. No support request is planned.
   - F9 progress in browser storage (my technical ruling, §4.6.8). T1 gains the §12 items. Tests T-B11f–l (§7.3 case 15). I1 is a re-test by the admin, not a server changeover.
   - Estimate: +8.5 dev-days over Q4 = A (§8), about 5 weeks.
   - **UX spec v4 and PM v4 rulings (16:21 MDT):** `redirect_mismatch` added as a test code with a separate pre-sign-in redirect check, and an honest fallback if T1 shows it can't be detected (§4.6.3); PUT returns `KrogerAppSaved` with the test result; failed tests keep the old keys; `checkReason` `not_configured` = no app, `not_connected` = app but no live connection; callback outcomes `?kroger=connected|cancelled|redirect_mismatch|failed` with `auth_return` (DEP-11); F9 progress uses UX's DEP-10 fields in browser storage (my technical ruling) with a household-derived suggested name; product words "household admin" and "store app"; authorize with no app now returns `kroger_not_connected`/`not_configured` (UX §9A.4 "app removed"). B11a +0.5 d.
-  - #484 merged to master (`36e8aa14`) during this revision. "#484 merged" dependencies are met; the "fix tracked on #484" notes stay as history.
+  - #484 merged to master (`36e8aa14`) during this revision. "#484 merged" dependencies are met.
   - Corrections: the authorize route is `GET`, not `POST`; tokens aren't encrypted at rest; #498 head is `01c88d1a` and already removed `HouseholdAdapterResolver`.
   - #490 follow-ups: `reconnect_required` is `failed` only per line (§6.6); send-panel copy cites #485's `provisionWholeRequestMessage` instead of `c.res.reconnectMsg`/`c.res.down` (§6.5).
