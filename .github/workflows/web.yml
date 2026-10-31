@@ -1,0 +1,25 @@
+# Frontend typecheck, lint, build, Vitest, and Playwright e2e on web/shared changes.
+# Skipped runs do not block merge (same pattern as mobile.yml).
+name: Web
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'shared/**'
+      - '.github/workflows/web.yml'
+      - '.github/workflows/web-checks.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'frontend/**'
+      - 'shared/**'
+      - '.github/workflows/web.yml'
+      - '.github/workflows/web-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  web-checks:
+    uses: ./.github/workflows/web-checks.yml
