@@ -139,6 +139,7 @@ test('forbidden_operator keeps the admin alert visible and hides the app keys fo
   await expect(dialog).toBeVisible()
   const alert = dialog.getByRole('alert')
   await expect(alert).toHaveText('Only the server admin can change the Kroger app keys.')
+  await expect(alert).toBeFocused()
   await expect(page.getByRole('form', { name: 'Kroger credentials' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Save credentials' })).toHaveCount(0)
 })
