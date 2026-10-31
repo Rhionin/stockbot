@@ -240,26 +240,35 @@ describe('ProvisionButton export envelopes (409/502)', () => {
   });
 
   it('Try again on 502 retries export', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'down', code: CODE_PROVIDER_UNAVAILABLE }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        provider: 'kroger',
-        exported: 1,
-        results: [{ entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' }],
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }));
-    vi.stubGlobal('fetch', fetchMock);
+    let exportCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/export') && init?.method === 'POST') {
+        exportCalls += 1;
+        if (exportCalls === 1) {
+          return Promise.resolve(new Response(JSON.stringify({ error: 'down', code: CODE_PROVIDER_UNAVAILABLE }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({
+          provider: 'kroger',
+          exported: 1,
+          results: [{ entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
     renderButton();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     fireEvent.click(within(panel).getByRole('button', { name: 'Try again' }));
-    await within(panel).findByText('1 item sent to your Kroger cart.');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(exportCalls).toBe(2));
+    const panelAfter = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panelAfter).getByText('1 item sent to your Kroger cart.')).toBeInTheDocument();
   });
 
   it('Reconnect on 409 starts authorize', async () => {
