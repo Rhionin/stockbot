@@ -350,11 +350,13 @@ export interface ProvisionEntryResult {
 
 export type ProvisionSkipReason = 'no_upc' | 'no_match' | 'unavailable';
 export type ProvisionFailReason = 'api_error' | 'batch_rejected' | 'invalid_line';
+/** Reasons for `failed` lines that were never confirmed (halt after auth or indeterminate batch). */
+export type ProvisionHaltFailReason = 'reconnect_required' | 'request_incomplete';
+export type ProvisionFailedReason = ProvisionFailReason | ProvisionHaltFailReason;
 export type ProvisionUnknownReason =
   | 'no_per_item_result'
   | 'provider_unavailable'
-  | 'reconnect_required'
-  | 'request_incomplete';
+  | ProvisionHaltFailReason;
 export type ProvisionResultReason =
   | ProvisionSkipReason
   | ProvisionFailReason
@@ -363,15 +365,20 @@ export type ProvisionResultReason =
 /** Per-line proof of cart add. Kroger bodyless 204 uses `sent` instead (see PM #481). */
 export type ProvisionResultStatus = 'added' | 'sent' | 'skipped' | 'failed' | 'unknown';
 
-export interface ShoppingListExportResultEntry {
+type ShoppingListExportResultEntryBase = {
   entryId: string;
   itemId: string;
   name: string;
   quantity: number;
-  status: ProvisionResultStatus;
-  reason?: ProvisionResultReason;
   detail?: string;
-}
+};
+
+/** Canonical per-line `results[]` row; reason must match status (see engine halt/reconnect paths). */
+export type ShoppingListExportResultEntry =
+  | (ShoppingListExportResultEntryBase & { status: 'added' | 'sent'; reason?: undefined })
+  | (ShoppingListExportResultEntryBase & { status: 'skipped'; reason: ProvisionSkipReason })
+  | (ShoppingListExportResultEntryBase & { status: 'failed'; reason?: ProvisionFailedReason })
+  | (ShoppingListExportResultEntryBase & { status: 'unknown'; reason?: ProvisionUnknownReason });
 
 export interface ProvisionReport {
   provider: string;

@@ -1767,7 +1767,7 @@ export interface ShoppingListExportRequest {
   useItemIds?: Record<string, string>;
 }
 
-export type { ProvisionSkipReason, ProvisionFailReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
+export type { ProvisionSkipReason, ProvisionFailReason, ProvisionHaltFailReason, ProvisionFailedReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
 
 export interface ShoppingListExportResponse extends ProvisionReport {
   results: ShoppingListExportResultEntry[];
