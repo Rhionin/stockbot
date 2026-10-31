@@ -45,9 +45,14 @@ type ProvisionEntry struct {
 type shoppingListExportResponse struct {
 	Provider     string                 `json:"provider,omitempty"`
 	Exported     int                    `json:"exported"`
+	AddedCount   int                    `json:"addedCount"`
+	SkippedCount int                    `json:"skippedCount"`
+	FailedCount  int                    `json:"failedCount"`
+	UnknownCount int                    `json:"unknownCount"`
 	FailedItems  []string               `json:"failedItems,omitempty"`
 	UnknownItems []string               `json:"unknownItems,omitempty"`
 	Entries      []ProvisionEntry       `json:"entries,omitempty"`
+	Results      []provisionResultEntry `json:"results"`
 	Handoff      *HandoffResponse       `json:"handoff,omitempty"`
 	Items        []exportedItemResponse `json:"items,omitempty"`
 }
@@ -96,7 +101,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 				return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 			}
 		}
-		return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Items: planned}, nil
+		return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
 	}
 
 	provider, ok := h.Registry.Get(providerID)
@@ -130,28 +135,14 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if errors.As(err, &conflict) {
 			return nil, Conflict(conflict.Reason)
 		}
+		var authFail *cart.AuthExchangeFailed
+		if errors.As(err, &authFail) {
+			return nil, ProviderUnavailable(provider.DisplayName())
+		}
 		return nil, InternalError(err)
 	}
 
-	entries := make([]ProvisionEntry, 0, len(report.Entries))
-	failedItems := make([]string, 0)
-	unknownItems := make([]string, 0)
-	for _, entry := range report.Entries {
-		entries = append(entries, ProvisionEntry{
-			EntryID:       entry.EntryID,
-			ItemID:        entry.ItemID,
-			Name:          entry.Name,
-			Quantity:      entry.Quantity,
-			Outcome:       string(entry.Outcome),
-			OutcomeReason: string(entry.Reason),
-		})
-		switch entry.Outcome {
-		case cart.OutcomeFailed:
-			failedItems = append(failedItems, entry.Name)
-		case cart.OutcomeUnknown:
-			unknownItems = append(unknownItems, entry.Name)
-		}
-	}
+	entries, results, failedItems, unknownItems, counts := buildProvisionExportViews(report.Entries)
 
 	var handoff *HandoffResponse
 	if report.Handoff != nil && report.Handoff.URL != "" {
@@ -164,9 +155,14 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	return &shoppingListExportResponse{
 		Provider:     string(providerID),
 		Exported:     report.Confirmed,
+		AddedCount:   counts.AddedCount,
+		SkippedCount: counts.SkippedCount,
+		FailedCount:  counts.FailedCount,
+		UnknownCount: counts.UnknownCount,
 		FailedItems:  failedItems,
 		UnknownItems: unknownItems,
 		Entries:      entries,
+		Results:      results,
 		Handoff:      handoff,
 		Items:        planned,
 	}, nil

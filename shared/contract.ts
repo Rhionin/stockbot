@@ -1738,3 +1738,36 @@ export function deviceKindLabel(kind: string): string {
   if (kind === 'direct') return 'Direct scanner';
   return kind;
 }
+
+// POST /api/shopping-list/export — send the staged shopping plan to a grocery
+// provider (Kroger). Matches shoppingListExportResponse in
+// internal/server/handler_shopping_list_export.go.
+export const SHOPPING_LIST_EXPORT_PATH = '/api/shopping-list/export';
+
+export interface ShoppingListExportRequest {
+  provider?: string;
+  useItemIds?: Record<string, string>;
+}
+
+export type { ProvisionSkipReason, ProvisionFailReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
+
+export interface ShoppingListExportResponse extends ProvisionReport {
+  results: ShoppingListExportResultEntry[];
+  items?: Array<{ itemId: string; name: string; quantity: number }>;
+  handoff?: { url?: string; expires?: string };
+}
+
+export function provisionResultStatus(
+  outcome: string,
+  reason?: string,
+): ProvisionResultStatus {
+  if (outcome === 'confirmed') return 'added';
+  if (outcome === 'unknown') return 'unknown';
+  if (outcome === 'failed') {
+    if (reason === 'no_upc' || reason === 'no_match' || reason === 'unavailable') {
+      return 'skipped';
+    }
+    return 'failed';
+  }
+  return 'failed';
+}

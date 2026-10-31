@@ -193,7 +193,7 @@ func TestProvision_Rejected_FailsAndLeavesLedgerUntouched(t *testing.T) {
 		Name:     "Milk",
 		Quantity: 2,
 		Outcome:  OutcomeFailed,
-		Reason:   ReasonProviderRejected,
+		Reason:   ReasonAPIError,
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -223,8 +223,8 @@ func TestProvision_Indeterminate_UnknownAndLeavesLedgerUntouched(t *testing.T) {
 		ItemID:   itemID,
 		Name:     "Milk",
 		Quantity: 2,
-		Outcome:  OutcomeUnknown,
-		Reason:   ReasonRequestIncomplete,
+		Outcome:  OutcomeFailed,
+		Reason:   ReasonAPIError,
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -255,7 +255,7 @@ func TestProvision_NoResolvableIdentity_FailsWithNoProductIdentity(t *testing.T)
 		Name:     "Milk",
 		Quantity: 2,
 		Outcome:  OutcomeFailed,
-		Reason:   ReasonNoProductIdentity,
+		Reason:   ReasonNoMatch,
 	}, report.Entries[0])
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
@@ -393,7 +393,7 @@ func TestProvision_PerLine_RejectedLineDoesNotAdvanceLedger(t *testing.T) {
 	}
 	assert.Equal(t, OutcomeConfirmed, byItem[okItem].Outcome)
 	assert.Equal(t, OutcomeFailed, byItem[noItem].Outcome)
-	assert.Equal(t, ReasonProviderRejected, byItem[noItem].Reason)
+	assert.Equal(t, ReasonUnavailable, byItem[noItem].Reason)
 
 	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-none")
 	require.NoError(t, err)

@@ -133,15 +133,19 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	// Combine resolved and unresolved into outcomes for entries with quantity >= 1
 	outcomes := make([]EntryOutcome, 0, len(resolvedItems)+len(unresolved))
 
-	// Add unresolved items as failed with reason no_product_identity
+	// Add unresolved items as failed with a skip reason (no_upc / no_match).
 	for _, item := range unresolved {
+		reason := item.UnresolvedReason
+		if reason == "" {
+			reason = ReasonNoMatch
+		}
 		outcomes = append(outcomes, EntryOutcome{
 			EntryID:  item.EntryID,
 			ItemID:   item.ItemID,
 			Name:     item.Name,
 			Quantity: item.Quantity,
 			Outcome:  OutcomeFailed,
-			Reason:   ReasonNoProductIdentity,
+			Reason:   reason,
 		})
 	}
 
@@ -165,22 +169,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		// For OAuth2, use the token broker to get an access token
 		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
 		if err != nil {
-			// For indeterminate outcomes, record failed/unknown and return
-			for _, item := range resolvedItems {
-				outcomes = append(outcomes, EntryOutcome{
-					EntryID:  item.EntryID,
-					ItemID:   item.ItemID,
-					Name:     item.Name,
-					Quantity: item.Quantity,
-					Outcome:  OutcomeUnknown,
-					Reason:   ReasonRequestIncomplete,
-				})
-			}
-			return ProvisionReport{
-				Provider:  providerID,
-				Confirmed: 0,
-				Entries:   outcomes,
-			}, nil
+			return ProvisionReport{}, &AuthExchangeFailed{Provider: providerID, Err: err}
 		}
 		cred = NewBearerCredential(token)
 	}
@@ -221,8 +210,8 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 						ItemID:   item.ItemID,
 						Name:     item.Name,
 						Quantity: item.Quantity,
-						Outcome:  OutcomeUnknown,
-						Reason:   ReasonRequestIncomplete,
+						Outcome:  OutcomeFailed,
+						Reason:   ReasonAPIError,
 					})
 				}
 			}
@@ -239,7 +228,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 						Name:     item.Name,
 						Quantity: item.Quantity,
 						Outcome:  OutcomeFailed,
-						Reason:   ReasonProviderRejected,
+						Reason:   ReasonAPIError,
 					})
 				}
 			}
@@ -274,7 +263,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 			for _, line := range req.Lines {
 				confirmed := result.PerLine[line.Identity]
 				outcome := OutcomeFailed
-				reason := ReasonProviderRejected
+				reason := ReasonUnavailable
 				if confirmed {
 					outcome = OutcomeConfirmed
 					reason = ""
@@ -501,6 +490,11 @@ func (e *Engine) resolveIdentities(ctx context.Context, scope tenant.Scope, prov
 			entry.Identity = identity
 			resolved = append(resolved, entry)
 		} else {
+			if len(barcodes) == 0 {
+				entry.UnresolvedReason = ReasonNoUPC
+			} else {
+				entry.UnresolvedReason = ReasonNoMatch
+			}
 			unresolved = append(unresolved, entry)
 		}
 	}

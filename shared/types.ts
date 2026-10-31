@@ -344,15 +344,39 @@ export interface ProvisionEntryResult {
   name: string;
   quantity: number;
   outcome: 'confirmed' | 'failed' | 'unknown' | string;
-  outcomeReason?: string;
+  outcomeReason?: ProvisionResultReason | string;
+}
+
+export type ProvisionSkipReason = 'no_upc' | 'no_match' | 'unavailable';
+export type ProvisionFailReason = 'api_error';
+export type ProvisionUnknownReason = 'no_per_item_result';
+export type ProvisionResultReason =
+  | ProvisionSkipReason
+  | ProvisionFailReason
+  | ProvisionUnknownReason;
+
+export type ProvisionResultStatus = 'added' | 'skipped' | 'failed' | 'unknown';
+
+export interface ShoppingListExportResultEntry {
+  entryId: string;
+  itemId: string;
+  name: string;
+  quantity: number;
+  status: ProvisionResultStatus;
+  reason?: ProvisionResultReason;
 }
 
 export interface ProvisionReport {
   provider: string;
   exported: number;
+  addedCount?: number;
+  skippedCount?: number;
+  failedCount?: number;
+  unknownCount?: number;
   failedItems?: string[];
   unknownItems?: string[];
   entries?: ProvisionEntryResult[];
+  results?: ShoppingListExportResultEntry[];
 }
 
 // Result of a three-tier product lookup (user override -> global DB -> external API).

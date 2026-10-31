@@ -289,6 +289,8 @@ type ResolvedItem struct {
 	Name      string
 	Identity  ProductIdentity
 	Quantity  int // 1..999
+	// UnresolvedReason is set when identity resolution fails before provisioning.
+	UnresolvedReason OutcomeReason
 }
 
 // ProvisionLine is one identity/quantity pair submitted to a provider.
@@ -334,7 +336,12 @@ const (
 type OutcomeReason string
 
 const (
+	// ReasonNoProductIdentity is deprecated; prefer ReasonNoUPC or ReasonNoMatch.
 	ReasonNoProductIdentity OutcomeReason = "no_product_identity"
+	ReasonNoUPC             OutcomeReason = "no_upc"
+	ReasonNoMatch           OutcomeReason = "no_match"
+	ReasonUnavailable       OutcomeReason = "unavailable"
+	ReasonAPIError          OutcomeReason = "api_error"
 	ReasonProviderRejected  OutcomeReason = "provider_rejected"
 	ReasonRequestIncomplete OutcomeReason = "request_incomplete"
 	ReasonNoPerItemResult   OutcomeReason = "no_per_item_result"

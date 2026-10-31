@@ -52,6 +52,7 @@ import {
   pairUndoCopy,
   pairUndoHideLine,
   previewReshelves,
+  provisionResultStatus,
   PROVIDER_FIELD,
   PROVIDER_UNAVAILABLE_SENTENCE,
   RATE_LIMITED_SENTENCE,
@@ -738,7 +739,15 @@ describe('networkErrorResult', () => {
   });
 });
 
-describe('inlineFailure', () => {
+describe('provisionResultStatus', () => {
+  it('maps outcomes to added, skipped, failed, and unknown', () => {
+    expect(provisionResultStatus('confirmed')).toBe('added');
+    expect(provisionResultStatus('unknown')).toBe('unknown');
+    expect(provisionResultStatus('failed', 'no_upc')).toBe('skipped');
+    expect(provisionResultStatus('failed', 'api_error')).toBe('failed');
+  });
+});
+
   it.each([
     { name: 'unreachable', error: new UnreachableError(), fallback: 'Unable to load history.', message: null },
     { name: 'server sentence', error: new Error('That scan is no longer pending.'), fallback: 'Unable to load history.', message: 'That scan is no longer pending.' },
