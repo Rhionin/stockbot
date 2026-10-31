@@ -73,6 +73,50 @@ async function assertCornersHit(locator: Locator) {
   }
 }
 
+/** Taps 2px inside each corner of an invite text field and expects focus on the input. */
+async function assertInviteInputCornersFocus(page: Page) {
+  const inset = 2
+  for (const name of ['Name', 'Email', 'Household name'] as const) {
+    const input = page.getByRole('textbox', { name, exact: true })
+    await expect(input).toBeVisible()
+    const box = await input.boundingBox()
+    expect(box).not.toBeNull()
+    for (const [x, y] of [
+      [box!.x + inset, box!.y + inset],
+      [box!.x + box!.width - inset, box!.y + inset],
+      [box!.x + inset, box!.y + box!.height - inset],
+      [box!.x + box!.width - inset, box!.y + box!.height - inset],
+    ]) {
+      await page.mouse.click(x, y)
+      await expect(input).toBeFocused()
+    }
+  }
+  const passwordInput = page.getByRole('textbox', { name: 'Password', exact: true })
+  await expect(passwordInput).toBeVisible()
+  const passwordBox = await passwordInput.boundingBox()
+  expect(passwordBox).not.toBeNull()
+  for (const [x, y] of [
+    [passwordBox!.x + inset, passwordBox!.y + inset],
+    [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + inset],
+    [passwordBox!.x + inset, passwordBox!.y + passwordBox!.height - inset],
+    [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + passwordBox!.height - inset],
+  ]) {
+    await page.mouse.click(x, y)
+    await expect(passwordInput).toBeFocused()
+  }
+}
+
+async function assertPasswordToggleInsideField(page: Page) {
+  const wrapper = page.locator('.invite-accept-page .mantine-PasswordInput-root')
+  const toggle = page.locator('.invite-accept-password-toggle')
+  const field = await wrapper.boundingBox()
+  const button = await toggle.boundingBox()
+  expect(field).not.toBeNull()
+  expect(button).not.toBeNull()
+  expect(button!.x + button!.width).toBeLessThanOrEqual(field!.x + field!.width + 0.5)
+  expect(button!.x).toBeGreaterThanOrEqual(field!.x - 0.5)
+}
+
 /** Taps the row just under the radio circle, outside the label text. */
 async function tapRadioRowUnderCircle(page: Page, rootSelector: string, label: string) {
   const row = page.locator(`${rootSelector} .mantine-Radio-root`, { hasText: label })
@@ -164,7 +208,6 @@ async function assertInviteAcceptTouchTargets(page: Page) {
   const root = page.locator('.invite-accept-page')
   for (const locator of [
     root.getByRole('button'),
-    root.getByRole('textbox'),
     root.locator('.mantine-Radio-label'),
   ]) {
     const count = await locator.count()
@@ -174,6 +217,10 @@ async function assertInviteAcceptTouchTargets(page: Page) {
       await assertTouchTargetSize(target)
     }
   }
+  for (const name of ['Name', 'Email', 'Household name'] as const) {
+    await assertTouchTargetSize(root.getByRole('textbox', { name, exact: true }))
+  }
+  await assertTouchTargetSize(root.locator('.mantine-PasswordInput-input'))
 }
 
 async function openInviteAccept(page: Page, width: number, height: number) {
@@ -405,6 +452,8 @@ for (const viewportWidth of [390, 320]) {
     await assertSectionsWithinViewport(page, ['.invite-accept-page', '.login-card'])
     await assertVisibleControlsWithinViewport(page)
     await assertCornersHit(page.locator('.invite-accept-password-toggle'))
+    await assertPasswordToggleInsideField(page)
+    await assertInviteInputCornersFocus(page)
     await tapRadioRowUnderCircle(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
     const labelBox = await page.locator('.invite-accept-page .mantine-Radio-label', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[2] }).boundingBox()
     expect(labelBox).not.toBeNull()
@@ -414,6 +463,29 @@ for (const viewportWidth of [390, 320]) {
     await page.getByRole('radio', { name: PM_HOUSEHOLD_RESTOCK_LABELS[0] }).check({ timeout: 2000 })
   })
 }
+
+test('app header control heights match master at 1280x800', async ({ page }) => {
+  await openAdmin(page, 1280, 800)
+  await page.goto('/')
+  const withinPx = (value: number, expected: number) => Math.abs(value - expected) <= 0.5
+  const menu = await page.getByRole('button', { name: 'Menu' }).boundingBox()
+  const household = await page.getByRole('combobox', { name: 'Household' }).boundingBox()
+  const scanQueue = await page.getByRole('link', { name: 'Scan Queue' }).boundingBox()
+  const shopping = await page.getByRole('link', { name: 'Shopping List' }).boundingBox()
+  expect(menu).not.toBeNull()
+  expect(household).not.toBeNull()
+  expect(scanQueue).not.toBeNull()
+  expect(shopping).not.toBeNull()
+  // Pinned from master 95bc5a2a at 1280x800 (Playwright chromium).
+  for (const [label, height, expected] of [
+    ['Menu', menu!.height, 42],
+    ['Household switcher', household!.height, 33.75],
+    ['Scan Queue link', scanQueue!.height, 31.75],
+    ['Shopping List link', shopping!.height, 31.75],
+  ] as const) {
+    expect(withinPx(height, expected), `${label} height ${height} vs master ${expected}`).toBe(true)
+  }
+})
 
 test('invite accept control heights match master at 1280x800', async ({ page }) => {
   await openInviteAccept(page, 1280, 800)

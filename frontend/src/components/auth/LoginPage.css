@@ -127,13 +127,21 @@
 
   .invite-accept-page .mantine-Input-input,
   .invite-accept-page .mantine-TextInput-input,
-  .invite-accept-page .mantine-PasswordInput-input,
-  .invite-accept-page .mantine-PasswordInput-innerInput {
+  .invite-accept-page .mantine-PasswordInput-input {
     min-height: 44px;
   }
 
-  .invite-accept-page .mantine-Button-root {
-    min-height: 44px;
+  .invite-accept-page .mantine-PasswordInput-innerInput {
+    min-height: calc(var(--input-height, 44px) - 2px);
+    max-height: calc(var(--input-height, 44px) - 2px);
+  }
+
+  .invite-accept-page .mantine-PasswordInput-section[data-position='right'] {
+    width: 44px;
+  }
+
+  .invite-accept-page .mantine-PasswordInput-input {
+    padding-right: 44px;
   }
 
   .invite-accept-page .invite-accept-password-toggle {
@@ -142,6 +150,11 @@
     width: 44px;
     height: 44px;
     --ai-size: 44px;
+    margin-inline-end: 0;
+  }
+
+  .invite-accept-page .mantine-Button-root {
+    min-height: 44px;
   }
 
   .invite-accept-page .mantine-Radio-body {
