@@ -656,6 +656,9 @@ func newAPIMux(
 		Credentials:   credentialVault,
 		EnvFallback:   envFallback,
 	}
+	if cfg != nil && cfg.stage1svc != nil {
+		providersHandler.Auth = cfg.stage1svc
+	}
 
 	listProvidersHandler := &ListProvidersHandler{ProvidersHandler: *providersHandler}
 	providerAuthorizeHandler := &ProviderAuthorizeHandler{ProvidersHandler: *providersHandler}
