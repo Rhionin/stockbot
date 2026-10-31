@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -20,6 +21,9 @@ type Saved struct {
 	ClientSecret string
 	RedirectURI  string
 	Modality     string
+	// ActorUserID is who saved the row. Only operator actors configure the
+	// server-wide adapter at startup.
+	ActorUserID string
 }
 
 // Public is the view safe to return from GET. It records that a secret exists
@@ -106,23 +110,69 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 	}
 	householdID := scope.HouseholdID()
 	id := householdID + ":" + saved.ProviderID
+	actor := strings.TrimSpace(saved.ActorUserID)
 	_, err = v.db.ExecContext(ctx, `
 		INSERT INTO provider_app_credentials
-			(id, household_id, user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (user_id, provider_id) DO UPDATE SET
 			client_id = excluded.client_id,
 			client_secret = excluded.client_secret,
 			redirect_uri = excluded.redirect_uri,
 			modality = excluded.modality,
+			actor_user_id = excluded.actor_user_id,
 			updated_at = excluded.updated_at
 		WHERE provider_app_credentials.household_id = excluded.household_id`,
-		id, householdID, householdID, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality, time.Now().UTC().Format(time.RFC3339),
+		id, householdID, householdID, actor, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality, time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("save provider credentials: %w", err)
 	}
 	return nil
+}
+
+// LoadServerProvider returns saved credentials that may configure the
+// server-wide grocery adapter. Rows stored under a household the operator
+// does not belong to are ignored. Rows saved by a non-operator are ignored
+// unless they are legacy primary-household rows with no actor recorded.
+func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Saved, bool, error) {
+	if v == nil || v.db == nil {
+		return Saved{}, false, nil
+	}
+	var saved Saved
+	err := v.db.QueryRowContext(ctx, `
+		SELECT pac.provider_id, pac.client_id, pac.client_secret, pac.redirect_uri, pac.modality
+		FROM provider_app_credentials pac
+		JOIN households h ON h.id = pac.household_id
+		WHERE pac.provider_id = ?
+		  AND (
+		    (
+		      EXISTS (SELECT 1 FROM users WHERE operator = 1 AND deleted_at IS NULL)
+		      AND EXISTS (
+		        SELECT 1 FROM memberships m
+		        JOIN users u ON u.id = m.user_id AND u.operator = 1 AND u.deleted_at IS NULL
+		        WHERE m.household_id = pac.household_id
+		      )
+		      AND (
+		        pac.actor_user_id IN (SELECT id FROM users WHERE operator = 1 AND deleted_at IS NULL)
+		        OR ((pac.actor_user_id IS NULL OR pac.actor_user_id = '') AND h.is_primary = 1)
+		      )
+		    )
+		    OR (
+		      NOT EXISTS (SELECT 1 FROM users WHERE operator = 1 AND deleted_at IS NULL)
+		      AND h.is_primary = 1
+		    )
+		  )
+		ORDER BY h.is_primary DESC, pac.updated_at DESC
+		LIMIT 1`, providerID,
+	).Scan(&saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
+	if err == sql.ErrNoRows {
+		return Saved{}, false, nil
+	}
+	if err != nil {
+		return Saved{}, false, fmt.Errorf("read server provider credentials: %w", err)
+	}
+	return saved, true, nil
 }
 
 // Clear removes the saved credentials for one provider.

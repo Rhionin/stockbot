@@ -578,7 +578,7 @@ func codeArg(expr ast.Expr) bool {
 		switch v.Name {
 		case "codeUnauthorized", "codeValidation", "codeConfirmationMismatch", "codeRateLimited",
 			"codePayloadTooLarge", "codeNotFound", "codeConflict", "codeMethodNotAllowed",
-			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "authNotConfiguredCode", "CodeInternal":
+			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "codeForbiddenOperator", "authNotConfiguredCode", "CodeInternal":
 			return true
 		default:
 			return false
@@ -593,7 +593,7 @@ func codeArg(expr ast.Expr) bool {
 		switch s {
 		case "unauthorized", "validation", "confirmation_mismatch", "rate_limited", "payload_too_large",
 			"not_found", "conflict", "method_not_allowed", "internal", "sync_read_only",
-			"provider_unavailable", "updating", "busy", "no_space", "auth_not_configured":
+			"provider_unavailable", "forbidden_operator", "updating", "busy", "no_space", "auth_not_configured":
 			return true
 		default:
 			return false

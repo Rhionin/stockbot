@@ -11,15 +11,18 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ProvidersHandler handles provider-related operations.
 type ProvidersHandler struct {
 	Registry      *cart.Registry
+	Adapters      cart.HouseholdAdapterResolver
 	ConnectionDir *connection.Directory
 	Credentials   *appcred.Vault
 	EnvFallback   ProviderEnv
+	Auth          *auth.Service
 }
 
 // ProviderEnv is the deploy-time credential fallback. It is never written to a

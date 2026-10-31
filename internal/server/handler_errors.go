@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"modernc.org/sqlite"
@@ -36,6 +37,7 @@ const (
 	codeInternal             = inventory.CodeInternal
 	codeSyncReadOnly         = "sync_read_only"
 	codeProviderUnavailable  = "provider_unavailable"
+	codeForbiddenOperator    = auth.CodeForbiddenOperator
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -143,6 +145,25 @@ func ShelfCount(status int, message, code, itemID string, onHand int) error {
 
 func InternalError(err error) error {
 	return &HTTPError{Code: http.StatusInternalServerError, Err: err}
+}
+
+// ForbiddenOperator is returned when a signed-in user who is not the server
+// operator tries to change server-wide provider application credentials.
+func ForbiddenOperator() error {
+	return &HTTPError{
+		Code:      http.StatusForbidden,
+		Message:   auth.SentenceForbiddenOperator,
+		ErrorCode: codeForbiddenOperator,
+	}
+}
+
+// Unauthorized returns the standard sign-in required response.
+func Unauthorized() error {
+	return &HTTPError{
+		Code:      http.StatusUnauthorized,
+		Message:   auth.SentenceUnauthorized,
+		ErrorCode: auth.CodeUnauthorized,
+	}
 }
 
 func BadGateway(message string) error {

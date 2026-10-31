@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -32,6 +33,9 @@ type ProviderCredentialDeleteHandler struct {
 }
 
 func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody, providerCredentialParams]) (*CredentialView, error) {
+	if err := h.requireServerOperator(req.Context); err != nil {
+		return nil, err
+	}
 	provider, sink, err := h.credentialSink(req.PathParams.ProviderID)
 	if err != nil {
 		return nil, err
@@ -79,12 +83,14 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 	if h.Credentials == nil {
 		return nil, errCredentialStore
 	}
+	actorID := h.credentialActor(req.Context)
 	if err := h.Credentials.Save(req.Context, scope, appcred.Saved{
 		ProviderID:   providerID,
 		ClientID:     clientID,
 		ClientSecret: secret,
 		RedirectURI:  redirectURI,
 		Modality:     modality,
+		ActorUserID:  actorID,
 	}); err != nil {
 		return nil, InternalError(err)
 	}
@@ -105,6 +111,9 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 }
 
 func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerCredentialParams]) (*CredentialView, error) {
+	if err := h.requireServerOperator(req.Context); err != nil {
+		return nil, err
+	}
 	provider, sink, err := h.credentialSink(req.PathParams.ProviderID)
 	if err != nil {
 		return nil, err
@@ -136,6 +145,35 @@ func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerC
 		return nil, InternalError(err)
 	}
 	return &view, nil
+}
+
+func (h *ProvidersHandler) requireServerOperator(ctx context.Context) error {
+	if h.Auth == nil {
+		return nil
+	}
+	p, ok := auth.PrincipalFrom(ctx)
+	if !ok || p.Kind != "account" || p.UserID == "" {
+		return Unauthorized()
+	}
+	if p.Operator {
+		return nil
+	}
+	isOp, err := h.Auth.IsOperator(ctx, p.UserID)
+	if err != nil {
+		return InternalError(err)
+	}
+	if isOp {
+		return nil
+	}
+	return ForbiddenOperator()
+}
+
+func (h *ProvidersHandler) credentialActor(ctx context.Context) string {
+	p, ok := auth.PrincipalFrom(ctx)
+	if !ok || p.Kind != "account" {
+		return ""
+	}
+	return p.UserID
 }
 
 var errCredentialStore = &HTTPError{Code: 500, Message: "Credential store is not available."}

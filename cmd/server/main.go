@@ -121,12 +121,8 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	}
 
 	if !disabled {
-		scope, err := auth.PrimaryScope(context.Background(), db)
-		var saved appcred.Saved
-		var ok bool
-		if err == nil {
-			saved, ok, err = appcred.NewVault(db).Load(context.Background(), scope, "kroger")
-		}
+		vault := appcred.NewVault(db)
+		saved, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
