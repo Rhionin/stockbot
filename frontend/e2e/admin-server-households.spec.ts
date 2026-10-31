@@ -48,6 +48,28 @@ async function routeHouseholds(page: Page, households: Record<string, unknown>[]
 
 const baseRow = { isPrimary: false, restockMode: 'auto', createdAt: '2026-04-01T00:00:00Z', pendingScans: 0 }
 
+async function assertNoHorizontalScroll(page: Page) {
+  await expect(page.evaluate(() => {
+    const root = document.documentElement
+    return root.scrollWidth <= root.clientWidth
+  })).resolves.toBe(true)
+  await expect(page.locator('.households-admin-page').evaluate((el) => el.scrollWidth <= el.clientWidth)).resolves.toBe(true)
+}
+
+const idealStatsHousehold = {
+  ...baseRow,
+  id: 'hh-1',
+  name: '',
+  isPrimary: true,
+  memberCount: 3,
+  productCount: 4,
+  itemsOnHand: 2,
+  scannersOnline: 2,
+  scannersOffline: 1,
+  scansThisWeek: 5,
+  lastActivityAt: '2026-04-02T00:00:00Z',
+}
+
 async function openAdmin(page: Page, width: number, height: number) {
   resetStage()
   stage.kind = 'account'
@@ -87,25 +109,52 @@ for (const { width, height } of [{ width: 390, height: 844 }, { width: 1280, hei
   })
 }
 
-test('admin households wrap a long Test Household name inside the card at 390x844', async ({ page }) => {
-  await openAdmin(page, 390, 844)
-  const longName = `Test Household ${'X'.repeat(60)}`
+for (const viewportWidth of [390, 320]) {
+  test(`admin households fit without horizontal scroll at ${viewportWidth}x844`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844)
+    const longName = `Test Household ${'X'.repeat(60)}`
+    await routeHouseholds(page, [{ ...idealStatsHousehold, name: longName }])
+    await page.goto('/households')
+    const section = page.getByTestId('operator-households-section')
+    const name = section.getByText(longName, { exact: true })
+    await expect(name).toBeVisible()
+    const stats = section.getByTestId('operator-household-stats')
+    await expect(stats).toContainText('3 members · 4 products · 2 items on hand')
+    await expect(stats).toContainText('Scanners: 2 online · 1 offline')
+    await expect(stats).toContainText('5 scans this week · 0 pending scans')
+    await expect(stats).toContainText('Last activity')
+    const card = await section.boundingBox()
+    const box = await name.boundingBox()
+    expect(box!.x + box!.width).toBeLessThanOrEqual(card!.x + card!.width)
+    await assertNoHorizontalScroll(page)
+    await expectNoMemberPii(page)
+  })
+}
+
+test('admin households wrap stat lines at 320x844', async ({ page }) => {
+  await openAdmin(page, 320, 844)
   await routeHouseholds(page, [{
-    ...baseRow, id: 'hh-long', name: longName, memberCount: 1, productCount: 1, itemsOnHand: 1,
-    scannersOnline: 0, scannersOffline: 0, scansThisWeek: 0,
+    ...idealStatsHousehold,
+    name: 'Test Household',
+    memberCount: 12,
+    productCount: 34,
+    itemsOnHand: 567,
+    pendingScans: 8,
+    scansThisWeek: 91,
   }])
   await page.goto('/households')
-  const section = page.getByTestId('operator-households-section')
-  const name = section.getByText(longName, { exact: true })
-  await expect(name).toBeVisible()
-  const stats = section.getByTestId('operator-household-stats')
-  await expect(stats).toContainText('1 member · 1 product · 1 item on hand')
-  await expect(stats).toContainText('Scanners: 0 online · 0 offline')
-  const box = await name.boundingBox()
-  const card = await section.boundingBox()
-  expect(box!.x + box!.width).toBeLessThanOrEqual(card!.x + card!.width)
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
-  await expectNoMemberPii(page)
+  const stats = page.getByTestId('operator-household-stats')
+  const inventoryLine = stats.locator('.admin-household-stat-line').first()
+  await expect(inventoryLine).toContainText('12 members · 34 products · 567 items on hand')
+  const lineBox = await inventoryLine.boundingBox()
+  const partBox = await stats.locator('.admin-household-stat-part').first().boundingBox()
+  const viewport = page.viewportSize()
+  expect(lineBox).not.toBeNull()
+  expect(partBox).not.toBeNull()
+  expect(viewport).not.toBeNull()
+  expect(lineBox!.x + lineBox!.width).toBeLessThanOrEqual(viewport!.width + 0.5)
+  expect(lineBox!.height).toBeGreaterThan(partBox!.height + 4)
+  await assertNoHorizontalScroll(page)
 })
 
 test('admin households show the load error inline, without the empty copy', async ({ page }) => {

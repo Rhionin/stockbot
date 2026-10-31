@@ -244,6 +244,30 @@ describe('HouseholdsPage admin server list', () => {
     expect(within(section).queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('shows the latest error after Try again fails with a different message', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/operator/households') {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve(json({ error: 'boom', code: 'internal' }, 500));
+        }
+        return Promise.resolve(json({ error: 'nope', code: 'forbidden_operator' }, 403));
+      }
+      return Promise.reject(new Error(url));
+    }));
+    renderAdminPage(session(true));
+    const section = await screen.findByTestId('operator-households-section');
+    expect(await within(section).findByRole('alert')).toHaveTextContent(SERVER_ERROR_FALLBACK);
+    fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(within(section).getByRole('alert')).toHaveTextContent(/^Only an admin can do this\.$/));
+    expect(within(section).queryByText(SERVER_ERROR_FALLBACK)).not.toBeInTheDocument();
+    expect(within(section).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading households…')).not.toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
   it('same-instance reload failure clears rows and keeps alert plus Try again', async () => {
     let fail = false;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
