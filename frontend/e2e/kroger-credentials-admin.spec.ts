@@ -112,6 +112,18 @@ test('Test Household non-admin in the primary household disconnects without app 
   const cancel = dialog.getByRole('button', { name: 'Cancel' })
   await expect.poll(async () => cancel.evaluate((el) => el === document.activeElement)).toBe(true)
   const disconnect = dialog.getByRole('button', { name: 'Disconnect', exact: true })
+  const redFilled = await page.evaluate(() => {
+    const probe = document.createElement('div')
+    probe.style.backgroundColor = 'var(--mantine-color-red-filled)'
+    document.body.appendChild(probe)
+    const color = getComputedStyle(probe).backgroundColor
+    document.body.removeChild(probe)
+    return color
+  })
+  const disconnectBg = await disconnect.evaluate((el) => getComputedStyle(el).backgroundColor)
+  const cancelBg = await cancel.evaluate((el) => getComputedStyle(el).backgroundColor)
+  expect(disconnectBg).toBe(redFilled)
+  expect(cancelBg).not.toBe(redFilled)
   const cancelBox = await cancel.boundingBox()
   const disconnectBox = await disconnect.boundingBox()
   expect(cancelBox).not.toBeNull()

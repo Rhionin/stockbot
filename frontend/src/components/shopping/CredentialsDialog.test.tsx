@@ -141,6 +141,13 @@ describe('CredentialsDialog', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const disconnect = screen.getByRole('button', { name: 'Disconnect', exact: true });
+    const disconnectBgVar = disconnect.style.getPropertyValue('--button-bg');
+    const cancelBgVar = cancel.style.getPropertyValue('--button-bg');
+    expect(disconnectBgVar.toLowerCase()).toContain('red');
+    expect(cancelBgVar.toLowerCase()).not.toContain('red');
+    expect(cancelBgVar).not.toBe(disconnectBgVar);
   });
 
   it('closes the disconnect-only dialog from Cancel without calling disconnect', () => {
