@@ -314,13 +314,18 @@ func (o *oauthFlow) RefreshAccessToken(ctx context.Context, refreshToken string)
 
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
-		return cart.TokenSet{}, fmt.Errorf("token refresh failed: %w", err)
+		return cart.TokenSet{}, &cart.OAuthTokenError{Err: fmt.Errorf("token refresh failed: %w", err)}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return cart.TokenSet{}, fmt.Errorf("token refresh returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		oauthErr := parseOAuthErrorBody(body)
+		return cart.TokenSet{}, &cart.OAuthTokenError{
+			StatusCode: resp.StatusCode,
+			OAuthError: oauthErr,
+			Err:        fmt.Errorf("token refresh returned status %d", resp.StatusCode),
+		}
 	}
 
 	var tokenResp struct {
@@ -434,7 +439,7 @@ func (s *serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Pro
 	defer resp.Body.Close()
 
 	// Read response body (for error messages)
-	_, _ = io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 
 	// Determine disposition based on status code
 	var disposition cart.ResultDisposition
@@ -442,9 +447,25 @@ func (s *serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Pro
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		disposition = cart.DispositionAccepted
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		if cart.CartResponseNeedsReconnect(resp.StatusCode) {
+			return cart.ProvisionResult{
+				Disposition: cart.DispositionRejected,
+				Status:      resp.StatusCode,
+			}, fmt.Errorf("cart api returned status %d", resp.StatusCode)
+		}
 		disposition = cart.DispositionRejected
 	default:
 		disposition = cart.DispositionIndeterminate
+	}
+
+	providerCode := ""
+	if disposition == cart.DispositionRejected && len(respBody) > 0 {
+		var parsed struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(respBody, &parsed) == nil {
+			providerCode = cart.SanitizeProviderErrorCode(parsed.Code)
+		}
 	}
 
 	// For per_request confirmation, all items are confirmed together
@@ -456,13 +477,28 @@ func (s *serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Pro
 	}
 
 	return cart.ProvisionResult{
-		Disposition: disposition,
-		PerLine:     perLine,
-		Status:      resp.StatusCode,
+		Disposition:       disposition,
+		PerLine:           perLine,
+		Status:            resp.StatusCode,
+		ProviderErrorCode: providerCode,
 	}, nil
 }
 
 // Helper functions
+
+func parseOAuthErrorBody(body []byte) string {
+	var parsed struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if json.Unmarshal(body, &parsed) != nil {
+		return ""
+	}
+	if code := cart.SanitizeProviderErrorCode(parsed.Error); code != "" {
+		return code
+	}
+	return cart.SanitizeProviderErrorCode(parsed.ErrorDescription)
+}
 
 func urlQueryEscape(s string) string {
 	return strings.ReplaceAll(s, " ", "%20")

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 func TestAccessTokenReturnsPersistedTokenWhenFresh(t *testing.T) {
@@ -98,7 +99,7 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 
 	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
-		State:        connection.StateReauthRequired,
+		State:        connection.StateConnected,
 		RefreshToken: "refresh-1",
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -124,12 +125,40 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 	}
 }
 
-func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
+func TestAccessTokenFailsFastWhenReauthRequired(t *testing.T) {
 	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	if err := dir.Write(ctx, scope, &connection.Connection{
-		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
+		Provider:     "kroger",
+		State:        connection.StateReauthRequired,
+		RefreshToken: "refresh-1",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	broker := connection.NewTokenBroker(dir)
+	called := false
+	_, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
+		called = true
+		return "first-token", "refresh-2", time.Hour, nil
+	})
+	if !errors.Is(err, connection.ErrReauthRequired) {
+		t.Fatalf("AccessToken error = %v, want ErrReauthRequired", err)
+	}
+	if called {
+		t.Fatal("refresh ran while connection is reauth_required")
+	}
+}
+
+func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+
+	expired := time.Now().UTC().Add(-time.Hour)
+	if err := dir.Write(ctx, scope, &connection.Connection{
+		Provider: "kroger", State: connection.StateConnected, RefreshToken: "refresh-1",
+		AccessToken: "stale", ExpiresAt: &expired,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -188,12 +217,95 @@ func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
 	}
 }
 
+func TestAccessTokenReauthRequiredIsScopedPerHousehold(t *testing.T) {
+	dir, db, primaryScope := newTestDirectory(t)
+	ctx := context.Background()
+	const cedarID = "0190bbbb-cccc-7000-8000-0000000000e5"
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Cedar', '', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, cedarID); err != nil {
+		t.Fatalf("insert cedar household: %v", err)
+	}
+	cedarScope, err := tenant.New(cedarID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.Write(ctx, primaryScope, &connection.Connection{
+		Provider:     "kroger",
+		State:        connection.StateReauthRequired,
+		RefreshToken: "refresh-primary",
+	}); err != nil {
+		t.Fatalf("Write primary: %v", err)
+	}
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	if err := dir.Write(ctx, cedarScope, &connection.Connection{
+		Provider:     "kroger",
+		State:        connection.StateConnected,
+		AccessToken:  "cedar-token",
+		RefreshToken: "refresh-cedar",
+		ExpiresAt:    &expiresAt,
+	}); err != nil {
+		t.Fatalf("Write cedar: %v", err)
+	}
+
+	broker := connection.NewTokenBroker(dir)
+	got, err := broker.AccessToken(ctx, cedarScope, "kroger", func(string) (string, string, time.Duration, error) {
+		t.Fatal("refresh should not run for cedar while primary is reauth_required")
+		return "", "", 0, nil
+	})
+	if err != nil {
+		t.Fatalf("AccessToken cedar: %v", err)
+	}
+	if got != "cedar-token" {
+		t.Fatalf("AccessToken cedar = %q, want cedar-token", got)
+	}
+	cedarConn, err := dir.Read(ctx, cedarScope, "kroger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cedarConn.State != connection.StateConnected {
+		t.Fatalf("cedar connection state = %q, want connected", cedarConn.State)
+	}
+}
+
+func TestForceRefreshExchangesEvenWhenAccessTokenFresh(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	if err := dir.Write(ctx, scope, &connection.Connection{
+		Provider:     "kroger",
+		State:        connection.StateConnected,
+		AccessToken:  "still-valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &expiresAt,
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	broker := connection.NewTokenBroker(dir)
+	called := false
+	got, err := broker.ForceRefresh(ctx, scope, "kroger", func(refreshToken string) (string, string, time.Duration, error) {
+		called = true
+		if refreshToken != "refresh-1" {
+			t.Fatalf("refresh token = %q, want refresh-1", refreshToken)
+		}
+		return "rotated", "refresh-2", time.Hour, nil
+	})
+	if err != nil {
+		t.Fatalf("ForceRefresh: %v", err)
+	}
+	if !called || got != "rotated" {
+		t.Fatalf("ForceRefresh = %q, called=%v", got, called)
+	}
+}
+
 func TestAccessTokenPropagatesRefreshError(t *testing.T) {
 	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
+	expired := time.Now().UTC().Add(-time.Hour)
 	if err := dir.Write(ctx, scope, &connection.Connection{
-		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
+		Provider: "kroger", State: connection.StateConnected, RefreshToken: "refresh-1",
+		AccessToken: "stale", ExpiresAt: &expired,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -208,5 +320,39 @@ func TestAccessTokenPropagatesRefreshError(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("AccessToken on error: want empty token, got %q", got)
+	}
+}
+
+func TestForceRefreshWithoutRefreshToken(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+	if err := dir.Write(ctx, scope, &connection.Connection{
+		Provider: "kroger", State: connection.StateConnected, AccessToken: "tok",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	broker := connection.NewTokenBroker(dir)
+	_, err := broker.ForceRefresh(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
+		t.Fatal("refresh should not run")
+		return "", "", 0, nil
+	})
+	if err == nil {
+		t.Fatal("ForceRefresh error = nil, want missing refresh token")
+	}
+}
+
+func TestMarkReauthRequiredWithNilConnection(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+	broker := connection.NewTokenBroker(dir)
+	if err := broker.MarkReauthRequired(ctx, scope, "kroger", nil); err != nil {
+		t.Fatalf("MarkReauthRequired: %v", err)
+	}
+	conn, err := dir.Read(ctx, scope, "kroger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.State != connection.StateReauthRequired || conn.RefreshToken != "" {
+		t.Fatalf("conn = %+v", conn)
 	}
 }

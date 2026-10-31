@@ -3,6 +3,7 @@ package kroger
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -244,8 +245,79 @@ func TestRefreshAccessTokenNon200(t *testing.T) {
 	}
 	adapter.WithTransport(rt)
 
-	if _, err := adapter.OAuthFlow().RefreshAccessToken(context.Background(), "rt-old"); err == nil {
+	_, err = adapter.OAuthFlow().RefreshAccessToken(context.Background(), "rt-old")
+	if err == nil {
 		t.Fatal("RefreshAccessToken error = nil, want error on non-200 response")
+	}
+	var tokenErr *cart.OAuthTokenError
+	if !errors.As(err, &tokenErr) {
+		t.Fatalf("error type = %T, want *cart.OAuthTokenError", err)
+	}
+	if tokenErr.OAuthError != "invalid_token" {
+		t.Fatalf("OAuthError = %q, want invalid_token", tokenErr.OAuthError)
+	}
+	if !tokenErr.ReconnectRequired() {
+		t.Fatal("ReconnectRequired() = false, want true for invalid_token")
+	}
+	if cart.OAuthFailureReason(err) != cart.ReasonReconnectRequired {
+		t.Fatalf("OAuthFailureReason = %q, want reconnect_required", cart.OAuthFailureReason(err))
+	}
+}
+
+func TestRefreshAccessTokenInvalidGrant(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusBadRequest, `{"error":"invalid_grant"}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+
+	_, err = adapter.OAuthFlow().RefreshAccessToken(context.Background(), "rt-old")
+	if err == nil {
+		t.Fatal("RefreshAccessToken error = nil, want error")
+	}
+	var tokenErr *cart.OAuthTokenError
+	if !errors.As(err, &tokenErr) || tokenErr.OAuthError != "invalid_grant" {
+		t.Fatalf("RefreshAccessToken error = %v", err)
+	}
+}
+
+func TestServerPushAddUnauthorizedIsReconnectClass(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusUnauthorized, `{"error":"invalid_token"}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+
+	req := provisionRequest(cart.ProvisionLine{Identity: "0001111072822", Quantity: 1})
+	result, err := adapter.ServerPush().Add(context.Background(), cart.NewBearerCredential("tok"), req)
+	if err == nil {
+		t.Fatal("Add error = nil, want error on 401")
+	}
+	if result.Status != http.StatusUnauthorized {
+		t.Fatalf("Status = %d, want 401", result.Status)
+	}
+	if !cart.CartResponseNeedsReconnect(result.Status) {
+		t.Fatal("expected reconnect-class cart response")
+	}
+}
+
+func TestServerPushAddRejectedSanitizesProviderCode(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusBadRequest, `{"code":"Bearer deadbeef"}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+
+	req := provisionRequest(cart.ProvisionLine{Identity: "0001111072822", Quantity: 1})
+	result, err := adapter.ServerPush().Add(context.Background(), cart.NewBearerCredential("tok"), req)
+	if err != nil {
+		t.Fatalf("Add error: %v", err)
+	}
+	if result.ProviderErrorCode != "" {
+		t.Fatalf("ProviderErrorCode = %q, want empty for hostile code", result.ProviderErrorCode)
 	}
 }
 
@@ -348,5 +420,38 @@ func TestServerPushAddLineValidation(t *testing.T) {
 				t.Error("transport was called; validation should reject before sending")
 			}
 		})
+	}
+}
+
+func TestRefreshAccessTokenParsesOAuthErrorBody(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusUnauthorized, `{"error":"access_denied","error_description":"secret"}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	_, err = adapter.OAuthFlow().RefreshAccessToken(context.Background(), "rt")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	var tokenErr *cart.OAuthTokenError
+	if !errors.As(err, &tokenErr) || tokenErr.OAuthError != "access_denied" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusForbidden, `{}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	result, err := adapter.ServerPush().Add(context.Background(), cart.NewBearerCredential("tok"), provisionRequest(cart.ProvisionLine{Identity: "0001111072822", Quantity: 1}))
+	if err == nil {
+		t.Fatal("want error on 403")
+	}
+	if !cart.CartResponseNeedsReconnect(result.Status) {
+		t.Fatalf("status = %d", result.Status)
 	}
 }
