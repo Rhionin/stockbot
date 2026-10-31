@@ -6,7 +6,11 @@ import { inlineFailure } from '@stockbot/shared/contract';
 import {
   PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE,
   providerAppCredentialsAccessDenied,
+  providerDisconnectDialogBody,
+  providerDisconnectDialogTitle,
 } from '@stockbot/shared/providerCredentials';
+
+const touchTargetButton = { root: { minHeight: 44 } };
 
 export interface CredentialsDialogProps {
   provider: ProviderInfo | null;
@@ -37,17 +41,39 @@ export const CredentialsDialog = ({
 }: CredentialsDialogProps) => {
   const saved = provider?.credentials;
   const accessDeniedRef = useRef<HTMLParagraphElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const disconnectOnly = provider !== null
+    && onDisconnect !== undefined
+    && !showCredentialForm
+    && !accessDenied;
+
   useEffect(() => {
     if (accessDenied && opened && provider !== null) {
       accessDeniedRef.current?.focus();
     }
   }, [accessDenied, opened, provider]);
+
+  useEffect(() => {
+    if (disconnectOnly && opened) {
+      window.requestAnimationFrame(() => {
+        cancelRef.current?.focus();
+      });
+    }
+  }, [disconnectOnly, opened, provider?.id]);
+
+  const modalTitle = provider === null
+    ? 'Connection'
+    : (disconnectOnly
+      ? providerDisconnectDialogTitle(provider.displayName)
+      : `${provider.displayName} connection`);
+
   return (
     <Modal
       opened={opened && provider !== null}
       onClose={onClose}
-      title={provider === null ? 'Connection' : `${provider.displayName} connection`}
+      title={modalTitle}
       size="sm"
+      closeButtonProps={disconnectOnly ? { 'aria-label': 'Close' } : undefined}
     >
       {opened && provider !== null && (
         <Stack gap="sm">
@@ -62,6 +88,9 @@ export const CredentialsDialog = ({
               {PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE}
             </Text>
           )}
+          {disconnectOnly && (
+            <Text size="sm">{providerDisconnectDialogBody(provider.displayName)}</Text>
+          )}
           {!accessDenied && showCredentialForm && (
             <CredentialForm
               key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
@@ -70,7 +99,7 @@ export const CredentialsDialog = ({
               onAccessDenied={onAccessDenied}
             />
           )}
-          {onDisconnect !== undefined && (
+          {onDisconnect !== undefined && !disconnectOnly && (
             <Stack gap="xs">
               {!accessDenied && showCredentialForm && <Divider />}
               <Button
@@ -82,6 +111,34 @@ export const CredentialsDialog = ({
               >
                 {`Disconnect ${provider.displayName}`}
               </Button>
+              {disconnectError !== '' && (
+                <Text c="red" size="sm" role="alert">{disconnectError}</Text>
+              )}
+            </Stack>
+          )}
+          {disconnectOnly && (
+            <Stack gap="xs">
+              <Group justify="flex-end" gap="sm">
+                <Button
+                  ref={cancelRef}
+                  type="button"
+                  variant="default"
+                  styles={touchTargetButton}
+                  data-autofocus
+                  onClick={onClose}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  color="red"
+                  styles={touchTargetButton}
+                  loading={disconnecting}
+                  onClick={onDisconnect}
+                >
+                  Disconnect
+                </Button>
+              </Group>
               {disconnectError !== '' && (
                 <Text c="red" size="sm" role="alert">{disconnectError}</Text>
               )}

@@ -181,9 +181,9 @@ describe('AppMenu Kroger app keys visibility', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
-    expect(await screen.findByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Kroger' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith('/api/providers/kroger/connection', expect.objectContaining({ method: 'DELETE' }));
   });

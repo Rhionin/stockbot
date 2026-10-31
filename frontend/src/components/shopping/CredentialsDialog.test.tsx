@@ -121,6 +121,72 @@ describe('CredentialsDialog', () => {
     );
   });
 
+  it('shows the disconnect-only dialog copy for a non-admin', () => {
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          onDisconnect={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.getByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    expect(screen.getByText(
+      'This disconnects your Kroger account for everyone in your household. Nothing on your list is deleted. Sending to your Kroger cart stops until someone reconnects.',
+    )).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  });
+
+  it('closes the disconnect-only dialog from Cancel without calling disconnect', () => {
+    const onClose = vi.fn();
+    const onDisconnect = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('Unexpected fetch'))));
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={onClose}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          onDisconnect={onDisconnect}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('closes the disconnect-only dialog from Close without calling disconnect', () => {
+    const onClose = vi.fn();
+    const onDisconnect = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('Unexpected fetch'))));
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={onClose}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          onDisconnect={onDisconnect}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
   it('shows the admin-only alert without the app keys form when access is denied', () => {
     render(
       <MantineProvider>

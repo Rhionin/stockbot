@@ -3,6 +3,8 @@ import type { ProviderInfo } from './types';
 import {
   canManageProviderAppCredentials,
   providerAppCredentialsAccessDenied,
+  providerDisconnectDialogBody,
+  providerDisconnectDialogTitle,
   PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE,
 } from './providerCredentials';
 
@@ -80,6 +82,16 @@ describe('canManageProviderAppCredentials', () => {
         identity: 'derived',
       },
     }), true)).toBe(false);
+  });
+});
+
+describe('providerDisconnectDialogCopy', () => {
+  it('names the disconnect-only dialog for Kroger', () => {
+    expect(providerDisconnectDialogTitle('Kroger')).toBe('Disconnect Kroger?');
+    expect(providerDisconnectDialogBody('Kroger')).toBe(
+      'This disconnects your Kroger account for everyone in your household. Nothing on your list is deleted. Sending to your Kroger cart stops until someone reconnects.',
+    );
+    expect(providerDisconnectDialogBody('Kroger')).not.toMatch(/\boperator\b/i);
   });
 });
 

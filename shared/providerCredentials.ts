@@ -22,3 +22,16 @@ export function providerAppCredentialsAccessDenied(error: unknown): boolean {
   }
   return false;
 }
+
+/** Title for the non-admin disconnect-only connection dialog. */
+export function providerDisconnectDialogTitle(displayName: string): string {
+  return `Disconnect ${displayName}?`;
+}
+
+/**
+ * Body copy for the non-admin disconnect-only dialog.
+ * OAuth provider connections are stored per household (see internal/cart/connection/connection.go).
+ */
+export function providerDisconnectDialogBody(displayName: string): string {
+  return `This disconnects your ${displayName} account for everyone in your household. Nothing on your list is deleted. Sending to your ${displayName} cart stops until someone reconnects.`;
+}
