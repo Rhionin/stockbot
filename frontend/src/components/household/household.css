@@ -89,10 +89,25 @@
 
 .admin-household-retry {
   min-height: 44px;
-  min-width: 11.5rem;
 }
 
-/* Busy state keeps "Trying again…" visible beside an inline spinner (Mantine's loading prop hides the label). */
+.admin-household-retry-spinner-idle {
+  visibility: hidden;
+}
+
+.admin-household-retry-label-stack {
+  display: grid;
+}
+
+.admin-household-retry-label-stack > span {
+  grid-area: 1 / 1;
+}
+
+.admin-household-retry-label-stack > span[aria-hidden='true'] {
+  visibility: hidden;
+}
+
+/* Busy state keeps stacked labels visible beside the inline spinner (not Mantine's loading prop). */
 .admin-household-retry[data-loading] .mantine-Button-inner {
   opacity: 1;
   transform: none;

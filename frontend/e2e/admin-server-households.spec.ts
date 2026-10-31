@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { assertSectionsWithinViewport, assertVisibleControlsWithinViewport } from './helpers'
 import { install, resetStage, stage } from './householdStageFixtures'
 
@@ -184,6 +184,13 @@ async function assertRadioRowTapPoints(page: Page, rootSelector: string, label: 
   expect(bodyBox).not.toBeNull()
   expect(circle).not.toBeNull()
   expect(labelBox).not.toBeNull()
+  // The label text must start clear of the circle, not under it.
+  const textLeft = await row.locator('.mantine-Radio-label').evaluate((el) => {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    return range.getBoundingClientRect().left
+  })
+  expect(textLeft, `${label} text starts right of the circle`).toBeGreaterThanOrEqual(circle!.x + circle!.width)
   const inset = 2
   const tapPoints = [
     [circle!.x + circle!.width / 2, bodyBox!.y + bodyBox!.height / 2],
@@ -699,8 +706,7 @@ test('admin households radio layout matches master at 1280x800', async ({ page }
   await assertRadioRowsDoNotOverlap(page, '.households-admin-page')
 })
 
-test('admin households Try again keeps width, alert, and visible busy label', async ({ page }) => {
-  await openAdmin(page, 390, 844)
+async function installTryAgainRetryRoute(page: Page) {
   let fail = true
   let releaseRetry: () => void = () => undefined
   const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve })
@@ -720,33 +726,71 @@ test('admin households Try again keeps width, alert, and visible busy label', as
       body: JSON.stringify({ households: [] }),
     })
   })
-  await page.goto('/households')
-  const section = page.getByTestId('operator-households-section')
-  await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
-  fail = false
+  return {
+    unlockRetry: () => { fail = false },
+    releaseRetry,
+  }
+}
+
+async function assertTryAgainButtonSizing(
+  section: Locator,
+  testInfo: TestInfo,
+  captureScreenshots: boolean,
+) {
   const tryAgain = section.getByRole('button', { name: 'Try again' })
+  await expect(tryAgain).toHaveAccessibleName('Try again')
+  await expect(tryAgain.locator('.admin-household-retry-label-stack span').nth(1)).toHaveAttribute('aria-hidden', 'true')
+  const idleMinWidth = await tryAgain.evaluate((el) => getComputedStyle(el).minWidth)
+  expect(idleMinWidth, 'Try again uses content width, not a fixed min-width').not.toMatch(/11\.5rem/)
   const idleBox = await tryAgain.boundingBox()
   expect(idleBox).not.toBeNull()
+  if (captureScreenshots) {
+    await tryAgain.screenshot({ path: testInfo.outputPath('try-again-idle.png') })
+  }
   const clickPromise = tryAgain.click()
   const busyButton = section.getByRole('button', { name: 'Trying again…' })
+  await expect(busyButton).toHaveAccessibleName('Trying again…')
   await expect(busyButton).toHaveAttribute('data-loading', 'true')
   await expect(busyButton).toHaveAttribute('aria-busy', 'true')
   await expect(busyButton).toBeDisabled()
-  await expect(busyButton).toHaveText('Trying again…')
-  // Text content alone passes even when Mantine hides the label; assert it is painted.
-  await expect(busyButton.locator('.mantine-Button-inner').evaluate((el) => getComputedStyle(el).opacity)).resolves.toBe('1')
-  await expect(busyButton.locator('.mantine-Button-label').evaluate((el) => {
+  await expect(busyButton.locator('.admin-household-retry-label-stack span').first()).toHaveAttribute('aria-hidden', 'true')
+  const activeBusyLabel = busyButton.locator('.admin-household-retry-label-stack span').nth(1)
+  await expect(activeBusyLabel.evaluate((el) => {
     const style = getComputedStyle(el)
     return { opacity: style.opacity, visibility: style.visibility }
   })).resolves.toEqual({ opacity: '1', visibility: 'visible' })
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   const busyBox = await busyButton.boundingBox()
   expect(busyBox).not.toBeNull()
-  expect(Math.abs(idleBox!.width - busyBox!.width)).toBeLessThanOrEqual(1)
+  expect(Math.abs(idleBox!.width - busyBox!.width)).toBeLessThanOrEqual(0.5)
+  await expect(busyButton.evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5)).resolves.toBe(true)
   expect(touchTargetDimensionMeetsMinimum(busyBox!.height)).toBe(true)
-  releaseRetry()
-  await clickPromise
-})
+  if (captureScreenshots) {
+    await busyButton.screenshot({ path: testInfo.outputPath('try-again-busy.png') })
+  }
+  return clickPromise
+}
+
+for (const { viewportWidth, viewportHeight, font125, captureScreenshots } of [
+  { viewportWidth: 390, viewportHeight: 844, font125: false, captureScreenshots: true },
+  { viewportWidth: 1280, viewportHeight: 800, font125: false, captureScreenshots: true },
+  { viewportWidth: 320, viewportHeight: 844, font125: true, captureScreenshots: false },
+] as const) {
+  test(`admin households Try again sizing at ${viewportWidth}x${viewportHeight}${font125 ? ' with 125% text' : ''}`, async ({ page }, testInfo) => {
+    await openAdmin(page, viewportWidth, viewportHeight)
+    const harness = await installTryAgainRetryRoute(page)
+    if (font125) {
+      await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
+    }
+    await page.goto('/households')
+    const section = page.getByTestId('operator-households-section')
+    await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
+    harness.unlockRetry()
+    const clickPromise = await assertTryAgainButtonSizing(section, testInfo, captureScreenshots)
+    harness.releaseRetry()
+    await clickPromise
+  })
+}
 
 test('admin households select a restock radio when tapping the label padding', async ({ page }) => {
   await openAdmin(page, 390, 844)

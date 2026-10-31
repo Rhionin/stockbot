@@ -265,12 +265,22 @@ export function HouseholdsPage() {
                   mt="sm"
                   className="admin-household-retry"
                   mod={{ loading: operatorHouseholdsRetryLoading }}
-                  leftSection={operatorHouseholdsRetryLoading ? <Loader size={14} color="currentColor" aria-hidden /> : undefined}
+                  leftSection={(
+                    <Loader
+                      size={14}
+                      color="currentColor"
+                      aria-hidden
+                      className={operatorHouseholdsRetryLoading ? undefined : 'admin-household-retry-spinner-idle'}
+                    />
+                  )}
                   disabled={operatorHouseholdsRetryLoading}
                   aria-busy={operatorHouseholdsRetryLoading || undefined}
                   onClick={() => { void loadOperatorHouseholds({ retry: true }); }}
                 >
-                  {operatorHouseholdsRetryLoading ? 'Trying again…' : 'Try again'}
+                  <span className="admin-household-retry-label-stack">
+                    <span aria-hidden={operatorHouseholdsRetryLoading ? true : undefined}>Try again</span>
+                    <span aria-hidden={operatorHouseholdsRetryLoading ? undefined : true}>Trying again…</span>
+                  </span>
                 </Button>
               )}
             </>
