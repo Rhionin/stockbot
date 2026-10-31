@@ -138,6 +138,8 @@ export const UPDATING_STATUS = 'migrating';
 
 export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
 export const CODE_RECONNECT_REQUIRED = 'reconnect_required';
+export const RECONNECT_REQUIRED_SENTENCE =
+  "Couldn't connect to your {provider} account. Nothing was sent.";
 export const PROVIDER_FIELD = 'provider';
 export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
 
@@ -1744,8 +1746,16 @@ export function deviceKindLabel(kind: string): string {
 // provider (Kroger). Matches shoppingListExportResponse in
 // internal/server/handler_shopping_list_export.go.
 //
-// Whole-request failure (HTTP 200, nothing sent): top-level `error` is
-// `provider_unavailable` (try again) or `reconnect_required` (reconnect store).
+// Whole-request failure before anything is sent: HTTP 409 `reconnect_required`
+// or HTTP 502 `provider_unavailable` in the standard error envelope (no results[]).
+//
+// Partial send after reconnect-class failure: HTTP 200 with per-line results and
+// `reconnectRequired: true`. The refused batch and every never-attempted batch are
+// `failed` (not sent), not unknown. Only a batch whose PUT might have landed
+// (5xx or timeout) is `unknown` / `request_incomplete`; later batches are failed.
+//
+// HTTP 502 `provider_unavailable` is only for failures before any cart PUT (token
+// call or store unreachable), with no results[].
 //
 // Per-line UX mapping via provisionReasonUXCategory: no_upc → no_barcode,
 // no_match → no_match, batch_rejected → rejected, api_error → error.

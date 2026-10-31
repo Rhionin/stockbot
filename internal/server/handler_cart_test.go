@@ -532,7 +532,10 @@ func TestCartHTTP(t *testing.T) {
 				path:           "/api/shopping-list/export",
 				body:           `{"provider":"kroger"}`,
 				expectedStatus: http.StatusConflict,
-				bodyContains:   []string{"not connected"},
+				assertions: []assertion{
+					{path: "$.code", value: "reconnect_required"},
+				},
+				bodyContains: []string{"Nothing was sent"},
 			},
 		},
 		{

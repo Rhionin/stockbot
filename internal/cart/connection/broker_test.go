@@ -98,7 +98,7 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 
 	if err := dir.Write(ctx, scope, &connection.Connection{
 		Provider:     "kroger",
-		State:        connection.StateReauthRequired,
+		State:        connection.StateConnected,
 		RefreshToken: "refresh-1",
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -124,12 +124,40 @@ func TestAccessTokenRefreshesWhenNoTokenPersisted(t *testing.T) {
 	}
 }
 
-func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
+func TestAccessTokenFailsFastWhenReauthRequired(t *testing.T) {
 	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
 	if err := dir.Write(ctx, scope, &connection.Connection{
-		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
+		Provider:     "kroger",
+		State:        connection.StateReauthRequired,
+		RefreshToken: "refresh-1",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	broker := connection.NewTokenBroker(dir)
+	called := false
+	_, err := broker.AccessToken(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
+		called = true
+		return "first-token", "refresh-2", time.Hour, nil
+	})
+	if !errors.Is(err, connection.ErrReauthRequired) {
+		t.Fatalf("AccessToken error = %v, want ErrReauthRequired", err)
+	}
+	if called {
+		t.Fatal("refresh ran while connection is reauth_required")
+	}
+}
+
+func TestAccessTokenSharesOneRefreshAcrossConcurrentCallers(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+
+	expired := time.Now().UTC().Add(-time.Hour)
+	if err := dir.Write(ctx, scope, &connection.Connection{
+		Provider: "kroger", State: connection.StateConnected, RefreshToken: "refresh-1",
+		AccessToken: "stale", ExpiresAt: &expired,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -192,8 +220,10 @@ func TestAccessTokenPropagatesRefreshError(t *testing.T) {
 	dir, _, scope := newTestDirectory(t)
 	ctx := context.Background()
 
+	expired := time.Now().UTC().Add(-time.Hour)
 	if err := dir.Write(ctx, scope, &connection.Connection{
-		Provider: "kroger", State: connection.StateReauthRequired, RefreshToken: "refresh-1",
+		Provider: "kroger", State: connection.StateConnected, RefreshToken: "refresh-1",
+		AccessToken: "stale", ExpiresAt: &expired,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}

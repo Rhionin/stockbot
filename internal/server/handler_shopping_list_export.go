@@ -44,20 +44,20 @@ type ProvisionEntry struct {
 }
 
 type shoppingListExportResponse struct {
-	Provider     string                 `json:"provider,omitempty"`
-	Exported     int                    `json:"exported"`
-	Error        string                 `json:"error,omitempty"`
-	AddedCount   int                    `json:"addedCount"`
-	SentCount    int                    `json:"sentCount"`
-	SkippedCount int                    `json:"skippedCount"`
-	FailedCount  int                    `json:"failedCount"`
-	UnknownCount int                    `json:"unknownCount"`
-	FailedItems  []string               `json:"failedItems,omitempty"`
-	UnknownItems []string               `json:"unknownItems,omitempty"`
-	Entries      []ProvisionEntry       `json:"entries,omitempty"`
-	Results      []provisionResultEntry `json:"results"`
-	Handoff      *HandoffResponse       `json:"handoff,omitempty"`
-	Items        []exportedItemResponse `json:"items,omitempty"`
+	Provider           string                 `json:"provider,omitempty"`
+	Exported           int                    `json:"exported"`
+	AddedCount         int                    `json:"addedCount"`
+	SentCount          int                    `json:"sentCount"`
+	SkippedCount       int                    `json:"skippedCount"`
+	FailedCount        int                    `json:"failedCount"`
+	UnknownCount       int                    `json:"unknownCount"`
+	ReconnectRequired  bool                   `json:"reconnectRequired,omitempty"`
+	FailedItems        []string               `json:"failedItems,omitempty"`
+	UnknownItems       []string               `json:"unknownItems,omitempty"`
+	Entries            []ProvisionEntry       `json:"entries,omitempty"`
+	Results            []provisionResultEntry `json:"results"`
+	Handoff            *HandoffResponse       `json:"handoff,omitempty"`
+	Items              []exportedItemResponse `json:"items,omitempty"`
 }
 
 type HandoffResponse struct {
@@ -128,7 +128,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 			return nil, InternalError(err)
 		}
 		if conn == nil || conn.State != connection.StateConnected {
-			return nil, Conflict(fmt.Sprintf("%s is not connected", provider.DisplayName()))
+			return nil, ReconnectRequired(provider.DisplayName())
 		}
 	}
 
@@ -138,11 +138,18 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if errors.As(err, &conflict) {
 			return nil, Conflict(conflict.Reason)
 		}
+		var reconnect *cart.ErrReconnectRequired
+		if errors.As(err, &reconnect) {
+			return nil, ReconnectRequired(provider.DisplayName())
+		}
+		var unavailable *cart.ErrProviderUnavailable
+		if errors.As(err, &unavailable) {
+			return nil, ProviderUnavailable(provider.DisplayName())
+		}
 		return nil, InternalError(err)
 	}
 
 	entries, results, failedItems, unknownItems, counts := buildProvisionExportViews(report.Entries, caps.Confirmation)
-	exportErr := exportErrorCode(report.Entries)
 
 	var handoff *HandoffResponse
 	if report.Handoff != nil && report.Handoff.URL != "" {
@@ -153,20 +160,20 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	}
 
 	return &shoppingListExportResponse{
-		Provider:     string(providerID),
-		Exported:     report.Confirmed,
-		Error:        exportErr,
-		AddedCount:   counts.AddedCount,
-		SentCount:    counts.SentCount,
-		SkippedCount: counts.SkippedCount,
-		FailedCount:  counts.FailedCount,
-		UnknownCount: counts.UnknownCount,
-		FailedItems:  failedItems,
-		UnknownItems: unknownItems,
-		Entries:      entries,
-		Results:      results,
-		Handoff:      handoff,
-		Items:        planned,
+		Provider:          string(providerID),
+		Exported:          report.Confirmed,
+		AddedCount:        counts.AddedCount,
+		SentCount:         counts.SentCount,
+		SkippedCount:      counts.SkippedCount,
+		FailedCount:       counts.FailedCount,
+		UnknownCount:      counts.UnknownCount,
+		ReconnectRequired: report.ReconnectRequired,
+		FailedItems:       failedItems,
+		UnknownItems:      unknownItems,
+		Entries:           entries,
+		Results:           results,
+		Handoff:           handoff,
+		Items:             planned,
 	}, nil
 }
 

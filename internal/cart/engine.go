@@ -3,6 +3,7 @@ package cart
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -169,24 +170,10 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		// For OAuth2, use the token broker to get an access token
 		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
 		if err != nil {
-			reason := OAuthFailureReason(err)
-			detail := OAuthFailureDetail(reason)
-			for _, item := range resolvedItems {
-				outcomes = append(outcomes, EntryOutcome{
-					EntryID:  item.EntryID,
-					ItemID:   item.ItemID,
-					Name:     item.Name,
-					Quantity: item.Quantity,
-					Outcome:  OutcomeUnknown,
-					Reason:   reason,
-					Detail:   detail,
-				})
+			if OAuthFailureReason(err) == ReasonReconnectRequired {
+				_ = e.markConnectionReauthRequired(ctx, scope, providerID)
 			}
-			return ProvisionReport{
-				Provider:  providerID,
-				Confirmed: 0,
-				Entries:   outcomes,
-			}, nil
+			return ProvisionReport{}, ClassifyOAuthAccessError(providerID, err)
 		}
 		cred = NewBearerCredential(token)
 	}
@@ -194,7 +181,16 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	// Submit each batch to provider
 	var confirmedCount int
 	var reportHandoff *HandoffArtifact
+	var reconnectRequired bool
+	var haltRemaining bool
+	var haltFailedReason OutcomeReason
+	var haltFailedDetail string
 	for _, req := range batches {
+		if haltRemaining {
+			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, haltFailedReason, haltFailedDetail)
+			continue
+		}
+
 		var result ProvisionResult
 		err = nil
 		if caps.Delivery == DeliveryServerPush {
@@ -219,6 +215,30 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		}
 
 		if err != nil {
+			if provErr := wholeRequestProvisionError(providerID, confirmedCount, result, err); provErr != nil {
+				return ProvisionReport{}, provErr
+			}
+			if confirmedCount > 0 {
+				if batchFailureNeedsReconnect(result, err) {
+					reconnectRequired = true
+					if markErr := e.markConnectionReauthRequired(ctx, scope, providerID); markErr != nil {
+						return ProvisionReport{}, markErr
+					}
+					detail := OAuthFailureDetail(ReasonReconnectRequired)
+					outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, ReasonReconnectRequired, detail)
+					haltRemaining = true
+					haltFailedReason = ReasonReconnectRequired
+					haltFailedDetail = detail
+					continue
+				}
+				if batchFailureIsIndeterminate(result, err) {
+					outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
+					haltRemaining = true
+					haltFailedReason = ReasonRequestIncomplete
+					haltFailedDetail = lineNotSentDetail
+					continue
+				}
+			}
 			if result.Disposition == DispositionRejected {
 				for _, line := range req.Lines {
 					for _, item := range line.Accounts {
@@ -235,35 +255,16 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 				}
 				continue
 			}
-			for _, line := range req.Lines {
-				for _, item := range line.Accounts {
-					outcomes = append(outcomes, EntryOutcome{
-						EntryID:  item.EntryID,
-						ItemID:   item.ItemID,
-						Name:     item.Name,
-						Quantity: item.Quantity,
-						Outcome:  OutcomeUnknown,
-						Reason:   ReasonRequestIncomplete,
-						Detail:   "The store did not confirm this item.",
-					})
-				}
-			}
+			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
 			continue
 		}
 
 		if result.Disposition == DispositionIndeterminate {
-			for _, line := range req.Lines {
-				for _, item := range line.Accounts {
-					outcomes = append(outcomes, EntryOutcome{
-						EntryID:  item.EntryID,
-						ItemID:   item.ItemID,
-						Name:     item.Name,
-						Quantity: item.Quantity,
-						Outcome:  OutcomeUnknown,
-						Reason:   ReasonRequestIncomplete,
-						Detail:   "The store did not confirm this item.",
-					})
-				}
+			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeUnknown, ReasonRequestIncomplete, requestIncompleteDetail)
+			if confirmedCount > 0 {
+				haltRemaining = true
+				haltFailedReason = ReasonRequestIncomplete
+				haltFailedDetail = lineNotSentDetail
 			}
 			continue
 		}
@@ -381,11 +382,82 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	}
 
 	return ProvisionReport{
-		Provider:  providerID,
-		Confirmed: confirmedCount,
-		Entries:   outcomes,
-		Handoff:   reportHandoff,
+		Provider:           providerID,
+		Confirmed:          confirmedCount,
+		Entries:            outcomes,
+		Handoff:            reportHandoff,
+		ReconnectRequired:  reconnectRequired,
 	}, nil
+}
+
+func batchFailureNeedsReconnect(result ProvisionResult, err error) bool {
+	if CartResponseNeedsReconnect(result.Status) {
+		return true
+	}
+	return OAuthFailureReason(err) == ReasonReconnectRequired
+}
+
+func batchFailureIsIndeterminate(result ProvisionResult, err error) bool {
+	if result.Disposition == DispositionIndeterminate {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	if batchFailureNeedsReconnect(result, err) {
+		return false
+	}
+	return result.Status >= 500 || result.Status == 0
+}
+
+const (
+	requestIncompleteDetail = "The store did not confirm this item."
+	lineNotSentDetail       = "This line was not sent."
+)
+
+func appendProvisionOutcomes(outcomes []EntryOutcome, req ProvisionRequest, outcome Outcome, reason OutcomeReason, detail string) []EntryOutcome {
+	for _, line := range req.Lines {
+		for _, item := range line.Accounts {
+			outcomes = append(outcomes, EntryOutcome{
+				EntryID:  item.EntryID,
+				ItemID:   item.ItemID,
+				Name:     item.Name,
+				Quantity: item.Quantity,
+				Outcome:  outcome,
+				Reason:   reason,
+				Detail:   detail,
+			})
+		}
+	}
+	return outcomes
+}
+
+func wholeRequestProvisionError(providerID ProviderID, confirmedCount int, result ProvisionResult, err error) error {
+	if confirmedCount > 0 || err == nil {
+		return nil
+	}
+	if batchFailureNeedsReconnect(result, err) {
+		return &ErrReconnectRequired{Provider: providerID, Err: err}
+	}
+	var tokenErr *OAuthTokenError
+	if !errors.As(err, &tokenErr) {
+		return nil
+	}
+	if OAuthFailureReason(err) == ReasonReconnectRequired {
+		return &ErrReconnectRequired{Provider: providerID, Err: err}
+	}
+	return &ErrProviderUnavailable{Provider: providerID, Err: err}
+}
+
+func (e *Engine) markConnectionReauthRequired(ctx context.Context, scope tenant.Scope, providerID ProviderID) error {
+	if e.tokenBroker == nil || e.tokenBroker.Directory == nil {
+		return nil
+	}
+	conn, err := e.tokenBroker.Directory.Read(ctx, scope, string(providerID))
+	if err != nil {
+		return err
+	}
+	return e.tokenBroker.MarkReauthRequired(ctx, scope, string(providerID), conn)
 }
 
 // getComputedEntries reads the staged cart with ledger-net quantities.

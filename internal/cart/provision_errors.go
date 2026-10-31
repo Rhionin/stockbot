@@ -6,22 +6,7 @@ import (
 	"strings"
 )
 
-// AuthExchangeFailed means OAuth token refresh or exchange failed before any
-// provider cart batch was accepted.
-type AuthExchangeFailed struct {
-	Provider ProviderID
-	Err      error
-}
-
-func (e *AuthExchangeFailed) Error() string {
-	return fmt.Sprintf("provider %q auth exchange failed: %v", e.Provider, e.Err)
-}
-
-func (e *AuthExchangeFailed) Unwrap() error {
-	return e.Err
-}
-
-// OAuthTokenError classifies a token endpoint response or transport failure.
+// OAuth token endpoint response or transport failure.
 type OAuthTokenError struct {
 	StatusCode int
 	OAuthError string
@@ -54,12 +39,18 @@ func (e *OAuthTokenError) ReconnectRequired() bool {
 			return true
 		}
 	}
+	if e.StatusCode >= 500 {
+		return false
+	}
 	return false
 }
 
 // OAuthFailureReason maps a refresh or exchange error to a per-line outcome reason.
 func OAuthFailureReason(err error) OutcomeReason {
 	for err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "reauthorization required") {
+			return ReasonReconnectRequired
+		}
 		var tokenErr *OAuthTokenError
 		if errors.As(err, &tokenErr) && tokenErr.ReconnectRequired() {
 			return ReasonReconnectRequired
@@ -70,6 +61,56 @@ func OAuthFailureReason(err error) OutcomeReason {
 		err = errors.Unwrap(err)
 	}
 	return ReasonProviderUnavailable
+}
+
+// ErrReconnectRequired is returned when provisioning cannot proceed until the owner reconnects the store.
+type ErrReconnectRequired struct {
+	Provider ProviderID
+	Err      error
+}
+
+func (e *ErrReconnectRequired) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("reconnect required for provider %q", e.Provider)
+}
+
+func (e *ErrReconnectRequired) Unwrap() error {
+	return e.Err
+}
+
+// ErrProviderUnavailable is returned when the store or token endpoint is unreachable or returns 5xx.
+type ErrProviderUnavailable struct {
+	Provider ProviderID
+	Err      error
+}
+
+func (e *ErrProviderUnavailable) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("provider %q unavailable", e.Provider)
+}
+
+func (e *ErrProviderUnavailable) Unwrap() error {
+	return e.Err
+}
+
+// ClassifyOAuthAccessError maps a token broker refresh failure to a provisioning error.
+func ClassifyOAuthAccessError(provider ProviderID, err error) error {
+	if err == nil {
+		return nil
+	}
+	if OAuthFailureReason(err) == ReasonReconnectRequired {
+		return &ErrReconnectRequired{Provider: provider, Err: err}
+	}
+	return &ErrProviderUnavailable{Provider: provider, Err: err}
+}
+
+// CartResponseNeedsReconnect is true when a cart API response indicates the credential was rejected.
+func CartResponseNeedsReconnect(status int) bool {
+	return status == 401 || status == 403
 }
 
 // OAuthFailureDetail is a safe per-line message when token refresh fails.

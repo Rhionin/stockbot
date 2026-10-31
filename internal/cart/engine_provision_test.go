@@ -2,6 +2,8 @@ package cart
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -478,4 +480,74 @@ func TestProvision_ClientHandoff_RecordsUnknownAndDoesNotAdvanceLedger(t *testin
 	require.NoError(t, err)
 	_, advanced := ledger[itemID]
 	assert.False(t, advanced)
+}
+
+func TestProvision_PartialReconnectHaltsLaterBatchesAsFailed(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted, DispositionRejected},
+		addStatuses:   []int{http.StatusNoContent, http.StatusUnauthorized},
+		addErrors:     []error{nil, errors.New("cart api returned status 401")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.True(t, report.ReconnectRequired)
+	assert.Equal(t, 1, report.Confirmed)
+	var sent, failed, unknown int
+	for _, entry := range report.Entries {
+		switch entry.Outcome {
+		case OutcomeConfirmed:
+			sent++
+		case OutcomeFailed:
+			failed++
+			if entry.Reason != ReasonReconnectRequired {
+				t.Fatalf("failed entry reason = %q, want reconnect_required", entry.Reason)
+			}
+		case OutcomeUnknown:
+			unknown++
+		}
+	}
+	assert.Equal(t, 1, sent)
+	assert.Equal(t, 2, failed)
+	assert.Equal(t, 0, unknown)
+}
+
+func TestProvision_PartialIndeterminateHaltsLaterBatchesAsFailed(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted, DispositionIndeterminate},
+		addErrors:     []error{nil, errors.New("upstream timeout")},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1", "0002": "SKU-2", "0003": "SKU-3"},
+	})
+	require.NoError(t, env.registry.Register(provider, WithBatchSize(1)))
+	env.seedShortfall(t, "prod-1", "One", "0001", 1)
+	env.seedShortfall(t, "prod-2", "Two", "0002", 1)
+	env.seedShortfall(t, "prod-3", "Three", "0003", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	assert.False(t, report.ReconnectRequired)
+	assert.Equal(t, 1, report.Confirmed)
+	var unknown, failed int
+	for _, entry := range report.Entries {
+		if entry.Outcome == OutcomeUnknown {
+			unknown++
+		}
+		if entry.Outcome == OutcomeFailed {
+			failed++
+			assert.Equal(t, ReasonRequestIncomplete, entry.Reason)
+		}
+	}
+	assert.Equal(t, 1, unknown)
+	assert.Equal(t, 1, failed)
 }

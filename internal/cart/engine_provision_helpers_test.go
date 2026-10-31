@@ -3,6 +3,7 @@ package cart
 import (
 	"context"
 	"database/sql"
+	"net/http"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -121,6 +122,8 @@ func (f *fakeProvider) Capabilities() Capabilities { return f.caps }
 // barcode resolves to.
 type fakeScript struct {
 	dispositions  []ResultDisposition
+	addStatuses   []int
+	addErrors     []error
 	perLine       map[ProductIdentity]bool
 	identityByBar map[string]ProductIdentity
 	addBlock      chan struct{} // when non-nil, Add blocks until it is closed
@@ -146,11 +149,21 @@ func (b *serverPushBehavior) Add(ctx context.Context, cred Credential, req Provi
 		disposition = b.script.dispositions[0]
 		b.script.dispositions = b.script.dispositions[1:]
 	}
+	status := http.StatusOK
+	if len(b.script.addStatuses) > 0 {
+		status = b.script.addStatuses[0]
+		b.script.addStatuses = b.script.addStatuses[1:]
+	}
+	var err error
+	if len(b.script.addErrors) > 0 {
+		err = b.script.addErrors[0]
+		b.script.addErrors = b.script.addErrors[1:]
+	}
 	return ProvisionResult{
 		Disposition: disposition,
 		PerLine:     b.script.perLine,
-		Status:      200,
-	}, nil
+		Status:      status,
+	}, err
 }
 
 type derivedIdentityBehavior struct{ script *fakeScript }

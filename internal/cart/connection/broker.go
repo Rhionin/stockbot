@@ -2,12 +2,16 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+// ErrReauthRequired means the stored connection must be renewed before any token call.
+var ErrReauthRequired = errors.New("provider reauthorization required")
 
 // TokenBroker implements result-sharing single flight for token refresh.
 // Every waiting caller receives the token the one in-progress exchange produced.
@@ -54,12 +58,14 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 		return call.accessToken, nil
 	}
 
-	// Check if we need to refresh (single-flight setup)
-	// Read the connection record
 	conn, err := b.Directory.Read(ctx, scope, provider)
 	if err != nil {
 		b.mu.Unlock()
 		return "", err
+	}
+	if conn != nil && conn.State == StateReauthRequired {
+		b.mu.Unlock()
+		return "", ErrReauthRequired
 	}
 
 	// Check if we have a valid token or need refresh
@@ -72,7 +78,6 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 	}
 
 	if !shouldRefresh {
-		// Return existing token
 		b.mu.Unlock()
 		return conn.AccessToken, nil
 	}
@@ -117,4 +122,20 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 	}
 
 	return call.accessToken, nil
+}
+
+// MarkReauthRequired persists reauth_required so later sends fail fast without calling the token endpoint.
+func (b *TokenBroker) MarkReauthRequired(ctx context.Context, scope tenant.Scope, provider string, conn *Connection) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	var refreshToken string
+	if conn != nil {
+		refreshToken = conn.RefreshToken
+	}
+	return b.Directory.Write(ctx, scope, &Connection{
+		Provider:     provider,
+		State:        StateReauthRequired,
+		RefreshToken: refreshToken,
+	})
 }

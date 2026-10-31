@@ -18,14 +18,44 @@ func TestOAuthFailureReason(t *testing.T) {
 			want: ReasonReconnectRequired,
 		},
 		{
-			name: "transport is try again",
-			err:  &OAuthTokenError{Err: errors.New("connection reset")},
+			name: "invalid token reconnects without substring fallback",
+			err:  &OAuthTokenError{StatusCode: 400, OAuthError: "invalid_token"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "access denied reconnects",
+			err:  &OAuthTokenError{StatusCode: 400, OAuthError: "access_denied"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "unauthorized client reconnects",
+			err:  &OAuthTokenError{StatusCode: 400, OAuthError: "unauthorized_client"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "401 with oauth error code reconnects",
+			err:  &OAuthTokenError{StatusCode: 401, OAuthError: "invalid_token"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "403 with oauth error code reconnects",
+			err:  &OAuthTokenError{StatusCode: 403, OAuthError: "access_denied"},
+			want: ReasonReconnectRequired,
+		},
+		{
+			name: "401 empty oauth error is try again",
+			err:  &OAuthTokenError{StatusCode: 401, OAuthError: ""},
 			want: ReasonProviderUnavailable,
 		},
 		{
-			name: "wrapped invalid grant",
-			err:  fmtWrap(errors.New("oauth: invalid_grant")),
-			want: ReasonReconnectRequired,
+			name: "5xx is try again",
+			err:  &OAuthTokenError{StatusCode: 503, OAuthError: "server_error"},
+			want: ReasonProviderUnavailable,
+		},
+		{
+			name: "transport is try again",
+			err:  &OAuthTokenError{Err: errors.New("connection reset")},
+			want: ReasonProviderUnavailable,
 		},
 	}
 	for _, tt := range tests {
@@ -37,6 +67,9 @@ func TestOAuthFailureReason(t *testing.T) {
 	}
 }
 
-func fmtWrap(err error) error {
-	return &OAuthTokenError{Err: err}
+func TestOAuthFailureReasonInvalidGrantWithoutTypedError(t *testing.T) {
+	err := errors.New("oauth failure")
+	if got := OAuthFailureReason(err); got != ReasonProviderUnavailable {
+		t.Fatalf("untyped error = %q, want provider_unavailable", got)
+	}
 }

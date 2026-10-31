@@ -376,7 +376,7 @@ export interface ShoppingListExportResultEntry {
 export interface ProvisionReport {
   provider: string;
   exported: number;
-  error?: 'provider_unavailable' | 'reconnect_required' | string;
+  reconnectRequired?: boolean;
   addedCount?: number;
   sentCount?: number;
   skippedCount?: number;

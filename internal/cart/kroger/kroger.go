@@ -447,6 +447,12 @@ func (s *serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Pro
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		disposition = cart.DispositionAccepted
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		if cart.CartResponseNeedsReconnect(resp.StatusCode) {
+			return cart.ProvisionResult{
+				Disposition: cart.DispositionRejected,
+				Status:      resp.StatusCode,
+			}, fmt.Errorf("cart api returned status %d", resp.StatusCode)
+		}
 		disposition = cart.DispositionRejected
 	default:
 		disposition = cart.DispositionIndeterminate

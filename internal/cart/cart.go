@@ -371,10 +371,11 @@ type HandoffArtifact struct {
 
 // ProvisionReport is what a Provision operation returns.
 type ProvisionReport struct {
-	Provider  ProviderID
-	Confirmed int
-	Entries   []EntryOutcome
-	Handoff   *HandoffArtifact
+	Provider           ProviderID
+	Confirmed          int
+	Entries            []EntryOutcome
+	Handoff            *HandoffArtifact
+	ReconnectRequired  bool
 }
 
 // LedgerEntry is what Pantry believes it has already requested from one provider.

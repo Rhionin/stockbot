@@ -31,8 +31,10 @@ func TestBuildProvisionExportViews(t *testing.T) {
 	assert.Equal(t, "sent", results[0].Status)
 	assert.Equal(t, "skipped", results[1].Status)
 	assert.Equal(t, "no_match", results[1].Reason)
+	assert.Equal(t, "no_match", provisionEntries[1].OutcomeReason)
 	assert.Equal(t, "failed", results[3].Status)
 	assert.Equal(t, "batch_rejected", results[3].Reason)
+	assert.Equal(t, "batch_rejected", provisionEntries[3].OutcomeReason)
 }
 
 func TestBuildProvisionExportViewsPerLineAdded(t *testing.T) {
@@ -44,40 +46,31 @@ func TestBuildProvisionExportViewsPerLineAdded(t *testing.T) {
 	assert.Equal(t, "added", results[0].Status)
 }
 
-func TestExportErrorCodeWholeRequestFailures(t *testing.T) {
-	assert.Equal(t, "reconnect_required", exportErrorCode([]cart.EntryOutcome{
-		{Reason: cart.ReasonReconnectRequired},
-	}))
-	assert.Equal(t, "provider_unavailable", exportErrorCode([]cart.EntryOutcome{
-		{Reason: cart.ReasonProviderUnavailable},
-	}))
-	assert.Equal(t, "", exportErrorCode([]cart.EntryOutcome{
-		{Reason: cart.ReasonRequestIncomplete, Outcome: cart.OutcomeUnknown},
-	}))
-}
-
-func TestProvisionReasonUXCategory(t *testing.T) {
-	assert.Equal(t, "no_barcode", provisionReasonUXCategory("no_upc"))
-	assert.Equal(t, "no_match", provisionReasonUXCategory("no_match"))
-	assert.Equal(t, "rejected", provisionReasonUXCategory("batch_rejected"))
-	assert.Equal(t, "error", provisionReasonUXCategory("api_error"))
-	assert.Equal(t, "", provisionReasonUXCategory("unavailable"))
+func TestLegacyProvisionOutcomeReasonPreservesDeprecatedValues(t *testing.T) {
+	assert.Equal(t, "no_product_identity", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.ReasonNoProductIdentity))
+	assert.Equal(t, "provider_rejected", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.ReasonProviderRejected))
 }
 
 func TestProvisionResultStatusCoversEveryOutcomeReason(t *testing.T) {
-	reasons := []cart.OutcomeReason{
-		cart.ReasonNoUPC,
-		cart.ReasonNoMatch,
-		cart.ReasonUnavailable,
-		cart.ReasonBatchRejected,
+	want := map[cart.OutcomeReason]struct {
+		outcome cart.Outcome
+		status  string
+	}{
+		cart.ReasonNoUPC:               {cart.OutcomeFailed, "skipped"},
+		cart.ReasonNoMatch:             {cart.OutcomeFailed, "skipped"},
+		cart.ReasonUnavailable:         {cart.OutcomeFailed, "skipped"},
+		cart.ReasonNoProductIdentity:   {cart.OutcomeFailed, "failed"},
+		cart.ReasonAPIError:            {cart.OutcomeFailed, "failed"},
+		cart.ReasonBatchRejected:       {cart.OutcomeFailed, "failed"},
+		cart.ReasonInvalidLine:         {cart.OutcomeFailed, "failed"},
+		cart.ReasonProviderRejected:    {cart.OutcomeFailed, "failed"},
+		cart.ReasonProviderUnavailable: {cart.OutcomeUnknown, "unknown"},
+		cart.ReasonReconnectRequired:   {cart.OutcomeUnknown, "unknown"},
+		cart.ReasonNoPerItemResult:     {cart.OutcomeUnknown, "unknown"},
+		cart.ReasonRequestIncomplete:   {cart.OutcomeUnknown, "unknown"},
 	}
-	for _, reason := range reasons {
-		status := provisionResultStatus(cart.OutcomeFailed, reason, cart.ConfirmPerRequest)
-		if reason == cart.ReasonNoUPC || reason == cart.ReasonNoMatch || reason == cart.ReasonUnavailable {
-			assert.Equal(t, "skipped", status, string(reason))
-		} else {
-			assert.Equal(t, "failed", status, string(reason))
-		}
+	for reason, exp := range want {
+		assert.Equal(t, exp.status, provisionResultStatus(exp.outcome, reason, cart.ConfirmPerRequest), string(reason))
 	}
 	assert.Equal(t, "unknown", provisionResultStatus(cart.OutcomeUnknown, "", cart.ConfirmPerRequest))
 	assert.Equal(t, "sent", provisionResultStatus(cart.OutcomeConfirmed, "", cart.ConfirmPerRequest))

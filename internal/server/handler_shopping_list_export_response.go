@@ -66,34 +66,18 @@ func publicProvisionReason(outcome cart.Outcome, reason cart.OutcomeReason) stri
 	}
 }
 
-func exportErrorCode(entries []cart.EntryOutcome) string {
-	for _, entry := range entries {
-		if entry.Reason == cart.ReasonReconnectRequired {
-			return "reconnect_required"
-		}
-	}
-	for _, entry := range entries {
-		if entry.Reason == cart.ReasonProviderUnavailable {
-			return "provider_unavailable"
-		}
-	}
-	return ""
-}
-
-// provisionReasonUXCategory maps machine-readable result reasons to UX copy buckets.
-func provisionReasonUXCategory(reason string) string {
-	switch reason {
-	case string(cart.ReasonNoUPC):
-		return "no_barcode"
-	case string(cart.ReasonNoMatch):
-		return "no_match"
-	case string(cart.ReasonBatchRejected):
-		return "rejected"
-	case string(cart.ReasonAPIError):
-		return "error"
-	default:
+// legacyProvisionOutcomeReason preserves the pre-#484 entries[].outcomeReason values.
+func legacyProvisionOutcomeReason(outcome cart.Outcome, reason cart.OutcomeReason) string {
+	if outcome == cart.OutcomeConfirmed {
 		return ""
 	}
+	if reason != "" {
+		return string(reason)
+	}
+	if outcome == cart.OutcomeUnknown {
+		return string(cart.ReasonRequestIncomplete)
+	}
+	return string(cart.ReasonAPIError)
 }
 
 func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.ConfirmationCapability) (
@@ -113,6 +97,7 @@ func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.Confirm
 		status := provisionResultStatus(entry.Outcome, entry.Reason, confirm)
 		reason := publicProvisionReason(entry.Outcome, entry.Reason)
 		detail := entry.Detail
+		legacyReason := legacyProvisionOutcomeReason(entry.Outcome, entry.Reason)
 
 		provisionEntries = append(provisionEntries, ProvisionEntry{
 			EntryID:       entry.EntryID,
@@ -120,7 +105,7 @@ func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.Confirm
 			Name:          entry.Name,
 			Quantity:      entry.Quantity,
 			Outcome:       string(entry.Outcome),
-			OutcomeReason: reason,
+			OutcomeReason: legacyReason,
 			Detail:        detail,
 		})
 		results = append(results, provisionResultEntry{
