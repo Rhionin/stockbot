@@ -420,9 +420,28 @@ func TestVaultLoadServerProviderLegacyMigrationActor(t *testing.T) {
 		scopeB.HouseholdID()+":kroger", scopeB.HouseholdID(), scopeB.HouseholdID(), now); err != nil {
 		t.Fatal(err)
 	}
-	_, _, ok, err = vault.LoadServerProvider(ctx, "kroger")
-	if err != nil || !ok || saved.ClientID != "legacy-migrated" {
-		t.Fatalf("non-primary legacy-shaped row must not win ok=%v err=%v", ok, err)
+	got, hid, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || !ok || got.ClientID != "legacy-migrated" || hid != primaryID {
+		t.Fatalf("primary row must still win ok=%v err=%v got=%+v hid=%q", ok, err, got, hid)
+	}
+}
+
+func TestVaultLoadServerProviderForeignLegacyRowAlone(t *testing.T) {
+	vault, db, ctx, _, scopeB := newTestVault(t)
+	if _, err := db.Exec(`UPDATE households SET legacy_user_id = ? WHERE id = ?`, "legacy-b", scopeB.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	const now = "2026-02-02T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, 'legacy-b', 'kroger', 'birch-legacy-shape', 'secret', 'https://birch.example/cb', 'DELIVERY', ?)`,
+		scopeB.HouseholdID()+":kroger", scopeB.HouseholdID(), scopeB.HouseholdID(), now); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || ok {
+		t.Fatalf("foreign legacy row alone must not load ok=%v err=%v", ok, err)
 	}
 }
 

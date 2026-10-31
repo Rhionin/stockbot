@@ -202,6 +202,20 @@ func (h *ProvidersHandler) credentialSink(providerID string) (cart.Provider, car
 
 func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scope, provider cart.Provider) (CredentialView, error) {
 	providerID := string(provider.ID())
+
+	primaryScope := scope
+	if h.Auth != nil {
+		ps, err := h.Auth.Primary(ctx)
+		if err != nil {
+			return CredentialView{}, err
+		}
+		primaryScope = ps
+	}
+
+	if scope.HouseholdID() != primaryScope.HouseholdID() {
+		return CredentialView{Source: "none", Modality: "PICKUP"}, nil
+	}
+
 	if h.Credentials != nil {
 		saved, ok, err := h.Credentials.Public(ctx, scope, providerID)
 		if err != nil {
@@ -216,28 +230,6 @@ func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scop
 				Source:      "saved",
 			}, nil
 		}
-	}
-
-	primaryScope := scope
-	if h.Auth != nil {
-		ps, err := h.Auth.Primary(ctx)
-		if err != nil {
-			return CredentialView{}, err
-		}
-		primaryScope = ps
-	}
-
-	if h.Credentials != nil && scope.HouseholdID() != primaryScope.HouseholdID() {
-		if pub, ok, err := h.Credentials.Public(ctx, primaryScope, providerID); err != nil {
-			return CredentialView{}, err
-		} else if ok {
-			modality := pub.Modality
-			if modality == "" {
-				modality = "PICKUP"
-			}
-			return CredentialView{Source: "none", Modality: modality}, nil
-		}
-		return CredentialView{Source: "none", Modality: "PICKUP"}, nil
 	}
 
 	sink, ok := provider.(cart.AppCredentialSink)

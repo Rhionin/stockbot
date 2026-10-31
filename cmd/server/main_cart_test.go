@@ -176,6 +176,48 @@ func TestLoadCartRegistryIgnoresForeignHouseholdSavedCreds(t *testing.T) {
 	}
 }
 
+func TestLoadCartRegistryForeignOperatorRowDoesNotApplyWhenPrimaryEmpty(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "env-client")
+	t.Setenv("KROGER_CLIENT_SECRET", "env-secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://env.example/cb")
+	t.Setenv("KROGER_MODALITY", "PICKUP")
+
+	db := newCartDB(t)
+	const birch = "0190aaaa-bbbb-7000-8000-0000000000c3"
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Birch', '', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, birch); err != nil {
+		t.Fatal(err)
+	}
+	operatorID := "01909999-9999-7000-8000-0000000000op"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Op', 'op@pantry.test', 'hash', 'local', 1, '2026-02-02T00:00:00Z')`, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'owner', '2026-02-02T00:00:00Z')`, operatorID, birch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, ?, 'kroger', 'foreign-op', 'secret', 'https://foreign.example/cb', 'DELIVERY', '2026-03-01T00:00:00Z')`,
+		birch+":kroger", birch, birch, operatorID); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, _, _ := loadCartRegistry(db)
+	provider, ok := registry.Get("kroger")
+	if !ok {
+		t.Fatal("missing kroger")
+	}
+	adapter := provider.(*kroger.Adapter)
+	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
+		t.Fatalf("client id = %q want env-client", got)
+	}
+}
+
 func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 	t.Setenv("DISABLE_KROGER", "")
 	t.Setenv("KROGER_CLIENT_ID", "env-client")

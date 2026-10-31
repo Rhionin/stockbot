@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +19,37 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
+
+func credentialsDBSnap(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.Query(`SELECT id, household_id, user_id, COALESCE(actor_user_id,'<nil>'), provider_id, client_id, redirect_uri, modality, updated_at FROM provider_app_credentials ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var c [9]string
+		if err := rows.Scan(&c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7], &c[8]); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(&b, strings.Join(c[:], "|"))
+	}
+	return b.String()
+}
+
+func primarySavedClientID(t *testing.T, db *sql.DB) (string, bool) {
+	t.Helper()
+	scope, err := auth.PrimaryScope(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := appcred.NewVault(db).Load(context.Background(), scope, "kroger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return saved.ClientID, ok
+}
 
 func TestKrogerCredentialsRequireOperator(t *testing.T) {
 	t.Setenv("KROGER_CLIENT_ID", "env-client")
@@ -71,7 +104,6 @@ func TestKrogerCredentialsRequireOperator(t *testing.T) {
 		t.Fatalf("session %s", login.Body.String())
 	}
 	primaryHouse := *opSession.ActiveHouseholdID
-	operator.house = primaryHouse
 
 	start := operator.authed(http.MethodPost, "/api/operator/household-invites", nil)
 	if start.Code != http.StatusCreated {
@@ -97,6 +129,8 @@ func TestKrogerCredentialsRequireOperator(t *testing.T) {
 	if rec := operator.authed(http.MethodPost, "/api/auth/session/household", map[string]string{"householdId": birchHouse.ID}); rec.Code != http.StatusOK {
 		t.Fatalf("switch birch %d %s", rec.Code, rec.Body.String())
 	}
+	operator.house = birchHouse.ID
+
 	join := operator.authed(http.MethodPost, "/api/invites", map[string]string{"role": "member"})
 	if join.Code != http.StatusCreated {
 		t.Fatalf("join invite %d %s", join.Code, join.Body.String())
@@ -123,121 +157,187 @@ func TestKrogerCredentialsRequireOperator(t *testing.T) {
 		t.Fatalf("member login %d %s", memberLogin.Code, memberLogin.Body.String())
 	}
 	member.cookie = cookieFrom(t, memberLogin, site.SessionCookie().Name)
-	var memberSession auth.SessionView
-	if err := json.Unmarshal(memberLogin.Body.Bytes(), &memberSession); err != nil || memberSession.ActiveHouseholdID == nil {
-		t.Fatal("member session")
-	}
-	member.house = *memberSession.ActiveHouseholdID
+	member.house = birchHouse.ID
 
-	before := adapter.PublicAppCredentials().ClientID
-	putBody := map[string]string{
-		"clientId": "birch-ui", "clientSecret": "birch-secret",
-		"redirectUri": "https://birch.example/cb", "modality": "DELIVERY",
-	}
-	denied := member.authed(http.MethodPut, "/api/providers/kroger/credentials", putBody)
-	if denied.Code != http.StatusForbidden ||
-		!strings.Contains(denied.Body.String(), auth.CodeForbiddenOperator) ||
-		!strings.Contains(denied.Body.String(), auth.SentenceForbiddenOperator) {
-		t.Fatalf("member PUT %d %s", denied.Code, denied.Body.String())
-	}
-	if strings.Contains(denied.Body.String(), primaryHouse) {
-		t.Fatalf("403 leaked primary household id")
-	}
-
-	delDenied := member.authed(http.MethodDelete, "/api/providers/kroger/credentials", nil)
-	if delDenied.Code != http.StatusForbidden || !strings.Contains(delDenied.Body.String(), auth.CodeForbiddenOperator) {
-		t.Fatalf("member DELETE %d %s", delDenied.Code, delDenied.Body.String())
-	}
-
-	if after := adapter.PublicAppCredentials().ClientID; after != before {
-		t.Fatalf("live client id changed %q -> %q", before, after)
-	}
-	birchScope, err := tenant.New(birchHouse.ID)
-	if err != nil {
+	var beaID string
+	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'bea@pantry.test'`).Scan(&beaID); err != nil {
 		t.Fatal(err)
 	}
-	saved, ok, err := appcred.NewVault(db).Load(context.Background(), birchScope, "kroger")
-	if err != nil || ok || saved.ClientID != "" {
-		t.Fatalf("birch row written ok=%v err=%v saved=%+v", ok, err, saved)
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'member', '2026-02-02T00:00:00Z')`, beaID, primaryHouse); err != nil {
+		t.Fatal(err)
 	}
 
+	seedPut := map[string]string{
+		"clientId": "seed-admin", "clientSecret": "seed-secret",
+		"redirectUri": "https://seed.example/cb", "modality": "DELIVERY",
+	}
+	if rec := operator.authed(http.MethodPut, "/api/providers/kroger/credentials", seedPut); rec.Code != http.StatusOK {
+		t.Fatalf("seed admin put %d %s", rec.Code, rec.Body.String())
+	}
+	snapDB := credentialsDBSnap(t, db)
+	liveClient := adapter.PublicAppCredentials().ClientID
 	primaryScope, err := auth.PrimaryScope(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	birchAdminPut := operator.authed(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
-		"clientId": "birch-session-admin", "clientSecret": "admin-secret",
-		"redirectUri": "https://birch-session.example/cb", "modality": "DELIVERY",
-	})
-	if birchAdminPut.Code != http.StatusOK {
-		t.Fatalf("admin PUT on birch session %d %s", birchAdminPut.Code, birchAdminPut.Body.String())
+	var operatorUserID string
+	if err := db.QueryRow(`SELECT id FROM users WHERE email_norm = 'ada@pantry.test'`).Scan(&operatorUserID); err != nil {
+		t.Fatal(err)
 	}
-	savedPrimary, ok, err := appcred.NewVault(db).Load(context.Background(), primaryScope, "kroger")
-	if err != nil || !ok || savedPrimary.ClientID != "birch-session-admin" {
-		t.Fatalf("primary row after birch-session PUT ok=%v err=%v saved=%+v", ok, err, savedPrimary)
+	var actorUserID sql.NullString
+	if err := db.QueryRow(`SELECT actor_user_id FROM provider_app_credentials WHERE household_id = ? AND provider_id = 'kroger'`, primaryScope.HouseholdID()).Scan(&actorUserID); err != nil {
+		t.Fatal(err)
 	}
-	if saved, ok, err := appcred.NewVault(db).Load(context.Background(), birchScope, "kroger"); err != nil || ok || saved.ClientID != "" {
-		t.Fatalf("birch household row ok=%v err=%v saved=%+v", ok, err, saved)
+	if !actorUserID.Valid || actorUserID.String != operatorUserID {
+		t.Fatalf("actor_user_id = %v want operator %q", actorUserID, operatorUserID)
 	}
-	if got := adapter.PublicAppCredentials().ClientID; got != "birch-session-admin" {
+
+	evilPut := map[string]string{
+		"clientId": "evil-cid", "clientSecret": "evil-sec",
+		"redirectUri": "https://evil.example/cb", "modality": "PICKUP",
+	}
+	assertDeniedUnchanged := func(t *testing.T, label string, c *stage1Caller, method string, body any, wantCode int) {
+		t.Helper()
+		var rec *httptest.ResponseRecorder
+		if c.cookie == "" {
+			r := c.anon(method, "/api/providers/kroger/credentials", body, app.EntryPublic)
+			rec = r
+		} else {
+			r := c.authed(method, "/api/providers/kroger/credentials", body)
+			rec = r
+		}
+		if rec.Code != wantCode {
+			t.Fatalf("%s %s code %d want %d body=%s", label, method, rec.Code, wantCode, rec.Body.String())
+		}
+		if credentialsDBSnap(t, db) != snapDB {
+			t.Fatalf("%s %s changed DB snapshot", label, method)
+		}
+		if got := adapter.PublicAppCredentials().ClientID; got != liveClient {
+			t.Fatalf("%s %s changed live client id %q want %q", label, method, got, liveClient)
+		}
+		if cid, ok := primarySavedClientID(t, db); !ok || cid != "seed-admin" {
+			t.Fatalf("%s %s primary row changed cid=%q ok=%v", label, method, cid, ok)
+		}
+	}
+
+	member.house = birchHouse.ID
+	assertDeniedUnchanged(t, "member-birch", member, http.MethodPut, evilPut, http.StatusForbidden)
+	assertDeniedUnchanged(t, "member-birch", member, http.MethodDelete, nil, http.StatusForbidden)
+
+	if _, err := db.Exec(`UPDATE memberships SET role = 'owner' WHERE household_id = ? AND user_id = ?`, birchHouse.ID, beaID); err != nil {
+		t.Fatal(err)
+	}
+	assertDeniedUnchanged(t, "owner-birch", member, http.MethodPut, evilPut, http.StatusForbidden)
+
+	member.house = primaryHouse
+	assertDeniedUnchanged(t, "member-primary", member, http.MethodPut, evilPut, http.StatusForbidden)
+	if _, err := db.Exec(`UPDATE memberships SET role = 'owner' WHERE household_id = ? AND user_id = ?`, primaryHouse, beaID); err != nil {
+		t.Fatal(err)
+	}
+	assertDeniedUnchanged(t, "owner-primary", member, http.MethodPut, evilPut, http.StatusForbidden)
+
+	member.house = birchHouse.ID
+	anonCaller := &stage1Caller{t: t, h: handler}
+	assertDeniedUnchanged(t, "anon-put", anonCaller, http.MethodPut, evilPut, http.StatusUnauthorized)
+	assertDeniedUnchanged(t, "anon-delete", anonCaller, http.MethodDelete, nil, http.StatusUnauthorized)
+
+	operator.house = birchHouse.ID
+	put2 := map[string]string{
+		"clientId": "admin2-cid", "clientSecret": "admin2-sec",
+		"redirectUri": "https://admin2.example/cb", "modality": "PICKUP",
+	}
+	if rec := operator.authed(http.MethodPut, "/api/providers/kroger/credentials", put2); rec.Code != http.StatusOK {
+		t.Fatalf("admin birch-session PUT %d %s", rec.Code, rec.Body.String())
+	}
+	var rowHouse string
+	if err := db.QueryRow(`SELECT household_id FROM provider_app_credentials WHERE provider_id = 'kroger'`).Scan(&rowHouse); err != nil {
+		t.Fatal(err)
+	}
+	if rowHouse != primaryScope.HouseholdID() {
+		t.Fatalf("credential row household %q want primary %q", rowHouse, primaryScope.HouseholdID())
+	}
+	if got := adapter.PublicAppCredentials().ClientID; got != "admin2-cid" {
 		t.Fatalf("live client id = %q", got)
 	}
 	reloadKrogerAdapter(t, db, adapter)
-	if got := adapter.PublicAppCredentials().ClientID; got != "birch-session-admin" {
+	if got := adapter.PublicAppCredentials().ClientID; got != "admin2-cid" {
 		t.Fatalf("after restart client id = %q", got)
 	}
+
 	providersMember := member.authed(http.MethodGet, "/api/providers", nil)
 	if providersMember.Code != http.StatusOK {
 		t.Fatalf("member GET providers %d %s", providersMember.Code, providersMember.Body.String())
 	}
-	if strings.Contains(providersMember.Body.String(), `"source":"environment"`) {
-		t.Fatalf("member providers leaked environment source: %s", providersMember.Body.String())
+	body := providersMember.Body.String()
+	if strings.Contains(body, `"source":"environment"`) || strings.Contains(body, "admin2-cid") || strings.Contains(body, "env-client") {
+		t.Fatalf("member GET leaked configured creds: %s", body)
 	}
 
-	birchDel := operator.authed(http.MethodDelete, "/api/providers/kroger/credentials", nil)
-	if birchDel.Code != http.StatusOK {
-		t.Fatalf("admin DELETE on birch session %d %s", birchDel.Code, birchDel.Body.String())
+	providersPrimary := operator.authed(http.MethodPost, "/api/auth/session/household", map[string]string{"householdId": primaryHouse})
+	if providersPrimary.Code != http.StatusOK {
+		t.Fatalf("switch primary %d", providersPrimary.Code)
+	}
+	operator.house = primaryHouse
+	getPrimary := operator.authed(http.MethodGet, "/api/providers", nil)
+	if getPrimary.Code != http.StatusOK || strings.Contains(getPrimary.Body.String(), `"source":"environment"`) {
+		t.Fatalf("primary GET with saved row must not be environment: %s", getPrimary.Body.String())
+	}
+	if !strings.Contains(getPrimary.Body.String(), `"source":"saved"`) {
+		t.Fatalf("primary GET want saved source: %s", getPrimary.Body.String())
+	}
+
+	operator.house = birchHouse.ID
+	if rec := operator.authed(http.MethodDelete, "/api/providers/kroger/credentials", nil); rec.Code != http.StatusOK {
+		t.Fatalf("admin DELETE birch session %d %s", rec.Code, rec.Body.String())
 	}
 	if _, ok, err := appcred.NewVault(db).Load(context.Background(), primaryScope, "kroger"); err != nil || ok {
-		t.Fatalf("primary row after birch-session DELETE ok=%v err=%v", ok, err)
-	}
-	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
-		t.Fatalf("after birch-session delete live client id = %q", got)
-	}
-
-	reloadKrogerAdapter(t, db, adapter)
-	if got := adapter.PublicAppCredentials().ClientID; got != before {
-		t.Fatalf("after restart client id = %q want %q", got, before)
-	}
-
-	if rec := operator.authed(http.MethodPost, "/api/auth/session/household", map[string]string{"householdId": primaryHouse}); rec.Code != http.StatusOK {
-		t.Fatalf("switch primary %d %s", rec.Code, rec.Body.String())
-	}
-	adminPut := operator.authed(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
-		"clientId": "admin-ui", "clientSecret": "admin-secret",
-		"redirectUri": "https://admin.example/cb", "modality": "DELIVERY",
-	})
-	if adminPut.Code != http.StatusOK {
-		t.Fatalf("admin PUT %d %s", adminPut.Code, adminPut.Body.String())
-	}
-	if got := adapter.PublicAppCredentials().ClientID; got != "admin-ui" {
-		t.Fatalf("live client id = %q", got)
-	}
-	reloadKrogerAdapter(t, db, adapter)
-	if got := adapter.PublicAppCredentials().ClientID; got != "admin-ui" {
-		t.Fatalf("after restart client id = %q", got)
-	}
-
-	adminDel := operator.authed(http.MethodDelete, "/api/providers/kroger/credentials", nil)
-	if adminDel.Code != http.StatusOK || !strings.Contains(adminDel.Body.String(), `"source":"environment"`) {
-		t.Fatalf("admin DELETE %d %s", adminDel.Code, adminDel.Body.String())
+		t.Fatalf("primary row after delete ok=%v err=%v", ok, err)
 	}
 	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
 		t.Fatalf("after delete live client id = %q", got)
 	}
-	reloadKrogerAdapter(t, db, adapter)
-	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
-		t.Fatalf("after restart env client id = %q", got)
+}
+
+func TestCredentialViewNonPrimaryIgnoresLeftoverSavedRow(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	const birch = "0190aaaa-bbbb-7000-8000-0000000000c3"
+	if _, err := db.Exec(`
+		INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Household Birch', '', '2026-02-02T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, birch); err != nil {
+		t.Fatal(err)
+	}
+	birchScope, err := tenant.New(birch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := appcred.NewVault(db)
+	if err := vault.Save(context.Background(), birchScope, appcred.Saved{
+		ProviderID: "kroger", ClientID: "leftover-birch", ClientSecret: "secret",
+		RedirectURI: "https://birch.example/cb", Modality: "DELIVERY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("env-client", "env-secret", "https://env.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	h := &ProvidersHandler{
+		Registry:    registry,
+		Credentials: vault,
+		Auth:        auth.NewService(db, t.TempDir()),
+		EnvFallback: ProviderEnv{ClientID: "env-client", ClientSecret: "env-secret", RedirectURI: "https://env.example/cb", Modality: "PICKUP"},
+	}
+	ctx := tenant.WithScope(context.Background(), birchScope)
+	view, err := h.credentialView(ctx, birchScope, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Source != "none" || view.ClientID != "" || strings.Contains(view.RedirectURI, "birch") {
+		t.Fatalf("view = %+v", view)
 	}
 }
 
@@ -250,11 +350,18 @@ func TestKrogerCredentialsUnauthenticated(t *testing.T) {
 	}
 	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, stage1Site(t)), WithCartRegistry(registry, cart.NewLedger(db)))
 	c := &stage1Caller{t: t, h: handler}
-	rec := c.anon(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
+	put := c.anon(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
 		"clientId": "x", "clientSecret": "y", "redirectUri": "https://x.example/cb",
 	}, app.EntryPublic)
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.CodeUnauthorized) {
-		t.Fatalf("anon PUT %d %s", rec.Code, rec.Body.String())
+	if put.Code != http.StatusUnauthorized || !strings.Contains(put.Body.String(), auth.CodeUnauthorized) {
+		t.Fatalf("anon PUT %d %s", put.Code, put.Body.String())
+	}
+	del := c.anon(http.MethodDelete, "/api/providers/kroger/credentials", nil, app.EntryPublic)
+	if del.Code != http.StatusUnauthorized || !strings.Contains(del.Body.String(), auth.CodeUnauthorized) {
+		t.Fatalf("anon DELETE %d %s", del.Code, del.Body.String())
+	}
+	if del.Body.String() == put.Body.String() && strings.Contains(del.Body.String(), auth.CodeForbiddenOperator) {
+		t.Fatal("anon DELETE must be unauthorized not forbidden_operator")
 	}
 }
 

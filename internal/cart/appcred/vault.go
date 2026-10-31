@@ -132,10 +132,14 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 }
 
 // LoadServerProvider returns saved credentials that may configure the
-// server-wide grocery adapter. The returned household ID is the row's
-// household when ok is true. Rows stored under a household the operator
-// does not belong to are ignored. Rows saved by a non-operator are ignored
-// unless they are legacy primary-household rows with no actor recorded.
+// server-wide grocery adapter. Only rows on the primary household
+// (households.is_primary = 1) are eligible; a non-primary row is never
+// loaded, even when the primary has no row. When a server operator account
+// exists, a primary row is accepted when actor_user_id is null or empty,
+// equals that household's legacy_user_id (non-empty), or is any operator
+// user id — operator membership in the primary household is not required.
+// When no operator exists yet, any primary row is accepted. The returned
+// household ID is the primary row's id when ok is true.
 func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Saved, string, bool, error) {
 	if v == nil || v.db == nil {
 		return Saved{}, "", false, nil
@@ -147,26 +151,14 @@ func (v *Vault) LoadServerProvider(ctx context.Context, providerID string) (Save
 		FROM provider_app_credentials pac
 		JOIN households h ON h.id = pac.household_id
 		WHERE pac.provider_id = ?
+		  AND h.is_primary = 1
 		  AND (
-		    (
-		      EXISTS (SELECT 1 FROM users WHERE operator = 1 AND deleted_at IS NULL)
-		      AND EXISTS (
-		        SELECT 1 FROM memberships m
-		        JOIN users u ON u.id = m.user_id AND u.operator = 1 AND u.deleted_at IS NULL
-		        WHERE m.household_id = pac.household_id
-		      )
-		      AND (
-		        pac.actor_user_id IN (SELECT id FROM users WHERE operator = 1 AND deleted_at IS NULL)
-		        OR ((pac.actor_user_id IS NULL OR pac.actor_user_id = '') AND h.is_primary = 1)
-		        OR (h.is_primary = 1 AND pac.actor_user_id = h.legacy_user_id AND h.legacy_user_id != '')
-		      )
-		    )
-		    OR (
-		      NOT EXISTS (SELECT 1 FROM users WHERE operator = 1 AND deleted_at IS NULL)
-		      AND h.is_primary = 1
-		    )
+		    NOT EXISTS (SELECT 1 FROM users WHERE operator = 1 AND deleted_at IS NULL)
+		    OR (pac.actor_user_id IS NULL OR pac.actor_user_id = '')
+		    OR (h.legacy_user_id != '' AND pac.actor_user_id = h.legacy_user_id)
+		    OR pac.actor_user_id IN (SELECT id FROM users WHERE operator = 1 AND deleted_at IS NULL)
 		  )
-		ORDER BY h.is_primary DESC, pac.updated_at DESC
+		ORDER BY pac.updated_at DESC
 		LIMIT 1`, providerID,
 	).Scan(&householdID, &saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
 	if err == sql.ErrNoRows {
