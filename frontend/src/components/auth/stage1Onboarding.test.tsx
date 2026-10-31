@@ -8,6 +8,12 @@ import { HouseholdPage } from '../household/HouseholdPage';
 import { HouseholdSessionContext } from './householdSession';
 import type { AuthSession } from '@stockbot/shared/contract';
 
+const PM_HOUSEHOLD_RESTOCK_LABELS = [
+  'New items restock automatically',
+  'Ask before restocking new items',
+  'Ask before restocking, and hold until you answer',
+] as const;
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -97,12 +103,14 @@ describe('setup, invites, and import', () => {
       </MantineProvider>,
     );
     expect(await screen.findByRole('heading', { name: 'Start a household' })).toBeVisible();
-    expect(screen.getByLabelText('Ask me before restocking a new item')).toBeInTheDocument();
+    for (const label of PM_HOUSEHOLD_RESTOCK_LABELS) {
+      expect(screen.getByLabelText(label, { exact: true })).toBeInTheDocument();
+    }
     fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Ada' } });
     fireEvent.change(screen.getByLabelText(/^Email/), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: 'long-password' } });
     fireEvent.change(screen.getByLabelText(/^Household name/), { target: { value: 'Pantry' } });
-    fireEvent.click(screen.getByLabelText('Ask me before restocking a new item'));
+    fireEvent.click(screen.getByLabelText('Ask before restocking new items'));
     fireEvent.click(screen.getByRole('button', { name: 'Create household' }));
     expect(await screen.findByRole('heading', { name: 'Home' })).toBeVisible();
     expect(bodies[0]).toMatchObject({
@@ -144,6 +152,9 @@ describe('setup, invites, and import', () => {
       </MantineProvider>,
     );
     expect(await screen.findByRole('heading', { name: 'Start a household' })).toBeVisible();
+    for (const label of PM_HOUSEHOLD_RESTOCK_LABELS) {
+      expect(screen.getByLabelText(label, { exact: true })).toBeInTheDocument();
+    }
     expect(screen.queryByLabelText(/^Email/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^Household name/), { target: { value: 'Cabin' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create household' }));

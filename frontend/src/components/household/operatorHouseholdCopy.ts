@@ -1,4 +1,19 @@
-import type { OperatorHouseholdView } from '@stockbot/shared/contract';
+import type { OperatorHouseholdView, RestockMode } from '@stockbot/shared/contract';
+
+export const HOUSEHOLD_RESTOCK_CHOICES: { value: RestockMode; label: string }[] = [
+  { value: 'auto', label: 'New items restock automatically' },
+  { value: 'ask_restock', label: 'Ask before restocking new items' },
+  { value: 'ask_hold', label: 'Ask before restocking, and hold until you answer' },
+];
+
+const restockLabelByMode = Object.fromEntries(
+  HOUSEHOLD_RESTOCK_CHOICES.map((choice) => [choice.value, choice.label]),
+) as Record<RestockMode, string>;
+
+export function formatOperatorHouseholdRestockLabel(mode: RestockMode | string): string {
+  if (mode in restockLabelByMode) return restockLabelByMode[mode as RestockMode];
+  return String(mode).replaceAll('_', ' ');
+}
 
 export type OperatorHouseholdStatsInput = Pick<
   OperatorHouseholdView,
@@ -36,21 +51,28 @@ export function formatOperatorHouseholdScansLine(input: OperatorHouseholdStatsIn
   ].join(' · ');
 }
 
+export function formatOperatorHouseholdShortDate(date: Date, now: Date, withTime: boolean): string {
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+}
+
+export function formatOperatorHouseholdCreated(at: string, now: Date = new Date()): string {
+  const date = new Date(at);
+  return `Created ${formatOperatorHouseholdShortDate(date, now, false)}`;
+}
+
 export function formatOperatorHouseholdLastActivity(
   at: string | undefined,
   now: Date = new Date(),
 ): string {
   if (at === undefined || at === '') return 'No activity yet';
   const date = new Date(at);
-  const sameYear = date.getFullYear() === now.getFullYear();
-  const when = date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    ...(sameYear ? {} : { year: 'numeric' }),
-  });
-  return `Last activity ${when}`;
+  return `Last activity ${formatOperatorHouseholdShortDate(date, now, true)}`;
 }
 
 export type OperatorHouseholdStatLineTexts = {

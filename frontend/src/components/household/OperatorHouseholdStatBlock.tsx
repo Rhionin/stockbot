@@ -10,9 +10,12 @@ function StatLine({ text }: { text: string }) {
   return (
     <div className="admin-household-stat-line">
       {parts.map((part, index) => (
-        <span key={`${index}-${part}`} className="admin-household-stat-part">
-          {index > 0 && <span className="admin-household-stat-sep"> · </span>}
-          {part}
+        <span key={`${index}-${part}`}>
+          <span className="admin-household-stat-part">
+            {part}
+            {index < parts.length - 1 && '\u00a0·'}
+          </span>
+          {index < parts.length - 1 && ' '}
         </span>
       ))}
     </div>

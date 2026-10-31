@@ -48,18 +48,35 @@
   font-size: var(--mantine-font-size-sm);
 }
 
-.admin-household-stat-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-
 .admin-household-stat-part {
   white-space: nowrap;
 }
 
 .admin-household-retry {
   min-height: 44px;
+}
+
+.households-admin-page .mantine-Button-root {
+  min-height: 44px;
+}
+
+.households-admin-page .mantine-TextInput-input {
+  min-height: 44px;
+}
+
+.households-admin-page .mantine-Radio-body {
+  align-items: center;
+}
+
+.households-admin-page .mantine-Radio-labelWrapper {
+  flex: 1;
+}
+
+.households-admin-page .mantine-Radio-label {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
 }
 
 .household-list,
