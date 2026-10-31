@@ -33,6 +33,57 @@ async function assertAppHeaderTouchTargets(page: Page) {
   await assertTouchTargetSize(householdControl.first())
 }
 
+const NAV_LINK_NAMES = ['Scan Queue', 'Inventory', 'History', 'Shopping List'] as const
+
+/** Box checks miss a label that overflows its link and is cut off by the nav. */
+async function assertNavLabelsFit(page: Page) {
+  const nav = page.locator('.app-nav')
+  await expect(nav.evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5)).resolves.toBe(true)
+  for (const name of NAV_LINK_NAMES) {
+    const fits = await page.getByRole('link', { name }).evaluate((link) => {
+      const range = document.createRange()
+      range.selectNodeContents(link)
+      const text = range.getBoundingClientRect()
+      const box = link.getBoundingClientRect()
+      const navBox = link.closest('.app-nav')!.getBoundingClientRect()
+      const eps = 0.5
+      return text.left >= box.left - eps && text.right <= box.right + eps
+        && box.left >= navBox.left - eps && box.right <= navBox.right + eps
+    })
+    expect(fits, `${name} label fits inside its link and the nav`).toBe(true)
+  }
+}
+
+/** Tapping 2px inside each corner of a 44px target must still activate it. */
+async function assertCornersHit(locator: Locator) {
+  const box = await locator.boundingBox()
+  expect(box).not.toBeNull()
+  const inset = 2
+  for (const [x, y] of [
+    [box!.x + inset, box!.y + inset],
+    [box!.x + box!.width - inset, box!.y + inset],
+    [box!.x + inset, box!.y + box!.height - inset],
+    [box!.x + box!.width - inset, box!.y + box!.height - inset],
+  ]) {
+    const hit = await locator.evaluate((el, [px, py]) => {
+      const top = document.elementFromPoint(px, py)
+      return top !== null && (top === el || el.contains(top))
+    }, [x, y])
+    expect(hit, `corner (${x.toFixed(1)}, ${y.toFixed(1)}) hits the target`).toBe(true)
+  }
+}
+
+/** Taps the row just under the radio circle, outside the label text. */
+async function tapRadioRowUnderCircle(page: Page, rootSelector: string, label: string) {
+  const row = page.locator(`${rootSelector} .mantine-Radio-root`, { hasText: label })
+  const body = await row.locator('.mantine-Radio-body').boundingBox()
+  const circle = await row.locator('.mantine-Radio-inner').boundingBox()
+  expect(body).not.toBeNull()
+  expect(circle).not.toBeNull()
+  await page.mouse.click(circle!.x + circle!.width / 2, body!.y + body!.height - 3)
+  await expect(page.getByRole('radio', { name: label })).toBeChecked()
+}
+
 async function assertHouseholdsPageTouchTargets(page: Page) {
   const root = page.locator('.households-admin-page')
   for (const locator of [
@@ -312,6 +363,35 @@ for (const viewportWidth of [390, 320]) {
     await assertAppHeaderTouchTargets(page)
     await assertSectionsWithinViewport(page, ['.app-header'])
     await assertVisibleControlsWithinViewport(page)
+    await assertNavLabelsFit(page)
+    for (const name of NAV_LINK_NAMES) {
+      await assertCornersHit(page.getByRole('link', { name }))
+    }
+    await assertCornersHit(page.getByRole('button', { name: 'Menu' }))
+  })
+
+  test(`app header nav labels stay reachable with 125% text at ${viewportWidth}x844`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844)
+    await page.goto('/')
+    await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
+    const nav = page.locator('.app-nav')
+    for (const name of NAV_LINK_NAMES) {
+      const link = page.getByRole('link', { name })
+      await link.scrollIntoViewIfNeeded()
+      const visible = await link.evaluate((el) => {
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        const text = range.getBoundingClientRect()
+        const box = el.getBoundingClientRect()
+        const navBox = el.closest('.app-nav')!.getBoundingClientRect()
+        return text.left >= box.left - 0.5 && text.right <= box.right + 0.5
+          && text.left >= navBox.left - 0.5 && text.right <= navBox.right + 0.5
+      })
+      expect(visible, `${name} can be scrolled fully into view`).toBe(true)
+    }
+    // Overflow must stay reachable by swiping, not silently clipped.
+    await expect(nav.evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5
+      || getComputedStyle(el).overflowX !== 'hidden')).resolves.toBe(true)
   })
 }
 
@@ -324,8 +404,44 @@ for (const viewportWidth of [390, 320]) {
     await assertInviteAcceptTouchTargets(page)
     await assertSectionsWithinViewport(page, ['.invite-accept-page', '.login-card'])
     await assertVisibleControlsWithinViewport(page)
+    await assertCornersHit(page.locator('.invite-accept-password-toggle'))
+    await tapRadioRowUnderCircle(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
+    const labelBox = await page.locator('.invite-accept-page .mantine-Radio-label', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[2] }).boundingBox()
+    expect(labelBox).not.toBeNull()
+    await page.mouse.click(labelBox!.x + labelBox!.width - 4, labelBox!.y + labelBox!.height - 3)
+    await expect(page.getByRole('radio', { name: PM_HOUSEHOLD_RESTOCK_LABELS[2] })).toBeChecked()
+    // The row overlay must not steal pointer events from the radio itself.
+    await page.getByRole('radio', { name: PM_HOUSEHOLD_RESTOCK_LABELS[0] }).check({ timeout: 2000 })
   })
 }
+
+test('invite accept control heights match master at 1280x800', async ({ page }) => {
+  await openInviteAccept(page, 1280, 800)
+  const withinPx = (value: number, expected: number, tolerance = 1) => Math.abs(value - expected) <= tolerance
+  const name = await page.getByRole('textbox', { name: 'Name', exact: true }).boundingBox()
+  const password = await page.getByRole('textbox', { name: 'Password', exact: true }).boundingBox()
+  const household = await page.getByRole('textbox', { name: 'Household name', exact: true }).boundingBox()
+  const create = await page.getByRole('button', { name: 'Create household' }).boundingBox()
+  const radioLabel = await page.locator('.invite-accept-page .mantine-Radio-label').first().boundingBox()
+  const toggle = await page.locator('.invite-accept-password-toggle').boundingBox()
+  expect(name).not.toBeNull()
+  expect(password).not.toBeNull()
+  expect(household).not.toBeNull()
+  expect(create).not.toBeNull()
+  expect(radioLabel).not.toBeNull()
+  expect(toggle).not.toBeNull()
+  // Pinned from master 95bc5a2a at 1280x800 (Playwright chromium, default Mantine sm).
+  for (const [label, height, expected] of [
+    ['Name', name!.height, 33.75],
+    ['Password', password!.height, 31.75],
+    ['Household name', household!.height, 33.75],
+    ['Create household', create!.height, 33.75],
+    ['Radio label', radioLabel!.height, 18.75],
+    ['Password toggle', toggle!.height, 26.25],
+  ] as const) {
+    expect(withinPx(height, expected, 0.5), `${label} height ${height} vs master ${expected}`).toBe(true)
+  }
+})
 
 test('admin households Try again is at least 44px tall while retrying', async ({ page }) => {
   await openAdmin(page, 390, 844)
@@ -373,6 +489,7 @@ test('admin households select a restock radio when tapping the label padding', a
   expect(box).not.toBeNull()
   await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 10)
   await expect(page.getByRole('radio', { name: 'Ask before restocking new items' })).toBeChecked()
+  await tapRadioRowUnderCircle(page, '.households-admin-page', 'Ask before restocking, and hold until you answer')
 })
 
 test('manage household keeps compact member controls at 390x844', async ({ page }) => {

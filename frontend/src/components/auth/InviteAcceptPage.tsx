@@ -96,11 +96,10 @@ export const InviteAcceptPage = ({
             <Stack gap="sm">
               {!signedIn && (
                 <>
-                  <TextInput label="Name" size="lg" value={name} onChange={(event) => setName(event.currentTarget.value)} required disabled={pending} />
-                  <TextInput label="Email" type="email" size="lg" value={email} onChange={(event) => setEmail(event.currentTarget.value)} required disabled={pending} />
+                  <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} required disabled={pending} />
+                  <TextInput label="Email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} required disabled={pending} />
                   <PasswordInput
                     label="Password"
-                    size="lg"
                     value={password}
                     onChange={(event) => setPassword(event.currentTarget.value)}
                     required
@@ -111,7 +110,7 @@ export const InviteAcceptPage = ({
               )}
               {preview.kind === 'start_household' && (
                 <>
-                  <TextInput label="Household name" size="lg" value={householdName} onChange={(event) => setHouseholdName(event.currentTarget.value)} required disabled={pending} />
+                  <TextInput label="Household name" value={householdName} onChange={(event) => setHouseholdName(event.currentTarget.value)} required disabled={pending} />
                   <Radio.Group label="When a new item shows up" value={restockMode} onChange={(value) => setRestockMode(value as RestockMode)}>
                     <Stack gap="xs" mt="xs">
                       {HOUSEHOLD_RESTOCK_CHOICES.map((choice) => (
@@ -121,7 +120,7 @@ export const InviteAcceptPage = ({
                   </Radio.Group>
                 </>
               )}
-              <Button type="submit" size="lg" loading={pending}>{preview.kind === 'start_household' ? 'Create household' : 'Join household'}</Button>
+              <Button type="submit" loading={pending}>{preview.kind === 'start_household' ? 'Create household' : 'Join household'}</Button>
             </Stack>
           </form>
         )}

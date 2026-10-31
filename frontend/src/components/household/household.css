@@ -80,7 +80,23 @@
 }
 
 .households-admin-page .mantine-Radio-body {
+  position: relative;
   align-items: center;
+}
+
+/* Stretch the label's hit area over the whole 44px row, including the
+   space above and below the radio circle. */
+.households-admin-page .mantine-Radio-label::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+/* Keep the circle itself above the overlay so it still receives its own
+   pointer and hover events. */
+.households-admin-page .mantine-Radio-inner {
+  position: relative;
+  z-index: 1;
 }
 
 .households-admin-page .mantine-Radio-labelWrapper {

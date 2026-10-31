@@ -119,36 +119,61 @@
   margin-top: 4px;
 }
 
-.invite-accept-page .mantine-Input-input,
-.invite-accept-page .mantine-TextInput-input,
-.invite-accept-page .mantine-PasswordInput-input {
-  min-height: 44px;
-}
+@media (max-width: 47.99em) {
+  .invite-accept-page {
+    --input-height: 44px;
+    --input-padding-y: 10px;
+  }
 
-.invite-accept-page .mantine-Button-root {
-  min-height: 44px;
-}
+  .invite-accept-page .mantine-Input-input,
+  .invite-accept-page .mantine-TextInput-input,
+  .invite-accept-page .mantine-PasswordInput-input,
+  .invite-accept-page .mantine-PasswordInput-innerInput {
+    min-height: 44px;
+  }
 
-.invite-accept-page .invite-accept-password-toggle {
-  min-width: 44px;
-  min-height: 44px;
-  width: 44px;
-  height: 44px;
-}
+  .invite-accept-page .mantine-Button-root {
+    min-height: 44px;
+  }
 
-.invite-accept-page .mantine-Radio-body {
-  align-items: center;
-}
+  .invite-accept-page .invite-accept-password-toggle {
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+    --ai-size: 44px;
+  }
 
-.invite-accept-page .mantine-Radio-labelWrapper {
-  flex: 1;
-}
+  .invite-accept-page .mantine-Radio-body {
+    position: relative;
+    align-items: center;
+  }
 
-.invite-accept-page .mantine-Radio-label {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  cursor: pointer;
+  .invite-accept-page .mantine-Radio-labelWrapper {
+    flex: 1;
+  }
+
+  /* Stretch the label's hit area over the whole 44px row, including the
+     space above and below the radio circle. */
+  .invite-accept-page .mantine-Radio-label::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+  }
+
+  /* Keep the circle itself above the overlay so it still receives its own
+     pointer and hover events. */
+  .invite-accept-page .mantine-Radio-inner {
+    position: relative;
+    z-index: 1;
+  }
+
+  .invite-accept-page .mantine-Radio-label {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    cursor: pointer;
+  }
 }
 
 @media (max-width: 480px) {
