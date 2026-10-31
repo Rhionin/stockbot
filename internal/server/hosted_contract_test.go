@@ -53,9 +53,9 @@ func existingContractSentences() map[string]string {
 		"store_name_taken":              "You already have a store with that name.",
 		"store_already_linked":          "Another store is already linked to this cart.",
 		"store_not_linked":              "This store isn't linked to an online cart.",
-		"store_check_failed":            "Couldn't check the store right now. Try again later.",
+		"store_check_failed":            "Couldn't reach the store right now. Try again later.",
 		"store_check_unavailable":       "Checking isn't on for this store.",
-		"kroger_not_connected":          "Connect your Kroger account first.",
+		"kroger_not_connected":          "Connect your store's online cart first.",
 		"reconnect_required":            "Couldn't connect to your {provider} account. Nothing was sent.",
 		"provider_unavailable":          "{provider} isn't responding. Try again later.",
 	}
@@ -152,6 +152,17 @@ func parseEndpointIndex(doc string) []string {
 	return paths
 }
 
+func renderHostedErrorSentence(sentence, providerDisplayName string) string {
+	if !strings.Contains(sentence, "{provider}") {
+		return sentence
+	}
+	label := strings.TrimSpace(providerDisplayName)
+	if label == "" {
+		label = "your store"
+	}
+	return strings.ReplaceAll(sentence, "{provider}", label)
+}
+
 func TestHostedAPIContract(t *testing.T) {
 	doc, ts := readContract(t)
 	rows := parseRegistry(doc)
@@ -205,6 +216,14 @@ func TestHostedAPIContract(t *testing.T) {
 		}
 		if row.sentence != want {
 			t.Fatalf("code %s sentence %q, want %q", row.code, row.sentence, want)
+		}
+	}
+	for code, sentence := range existing {
+		for _, name := range []string{"", "Smith's"} {
+			rendered := renderHostedErrorSentence(sentence, name)
+			if strings.Contains(rendered, "{provider}") {
+				t.Fatalf("code %s still contains {provider} after render: %q", code, rendered)
+			}
 		}
 	}
 

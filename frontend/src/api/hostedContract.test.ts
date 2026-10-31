@@ -8,7 +8,9 @@ import {
   EVENTS_PATH,
   EXPO_CLIENT_PREFIX,
   HOSTED_ERROR_SENTENCES,
+  HOSTED_ERROR_PROVIDER_PLACEHOLDER,
   LIVE_HINT_EVENT,
+  renderHostedErrorSentence,
   UPGRADE_REQUIRED_SENTENCE,
   expoClientHeader,
   type AcceptInviteRequest,
@@ -62,9 +64,9 @@ const existingSentences: Record<string, string> = {
   store_name_taken: 'You already have a store with that name.',
   store_already_linked: 'Another store is already linked to this cart.',
   store_not_linked: "This store isn't linked to an online cart.",
-  store_check_failed: "Couldn't check the store right now. Try again later.",
+  store_check_failed: "Couldn't reach the store right now. Try again later.",
   store_check_unavailable: "Checking isn't on for this store.",
-  kroger_not_connected: 'Connect your Kroger account first.',
+  kroger_not_connected: "Connect your store's online cart first.",
   reconnect_required: "Couldn't connect to your {provider} account. Nothing was sent.",
   provider_unavailable: "{provider} isn't responding. Try again later.",
 };
@@ -137,6 +139,18 @@ describe('hosted API contract', () => {
     expect(doc).toContain('<APP_BASE_URL>/invite/<code>');
     expect(doc).toContain('https://app.stockbot.rhionin.com');
     expect(doc).toContain('mail.stockbot.rhionin.com');
+  });
+
+  it('never leaves the raw {provider} token in rendered hosted error sentences', () => {
+    for (const sentence of Object.values(HOSTED_ERROR_SENTENCES)) {
+      for (const name of [undefined, null, '', "Smith's"]) {
+        const rendered = renderHostedErrorSentence(sentence, name);
+        expect(rendered).not.toContain(HOSTED_ERROR_PROVIDER_PLACEHOLDER);
+      }
+    }
+    expect(renderHostedErrorSentence(HOSTED_ERROR_SENTENCES.provider_unavailable, "Smith's")).toBe(
+      "Smith's isn't responding. Try again later.",
+    );
   });
 
   it('states the tenant rule and the endpoint index count', () => {

@@ -1609,6 +1609,8 @@ Kroger product and location lookups run only through the calling household's own
 
 **`lookupsEnabled`** (household) is true only when the server setting is on, the household is connected with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `POST /api/providers/kroger/authorize` today.
 
+In hosted error sentences, **`{provider}`** is the linked store's display name (e.g. Smith's). The web fills `{provider}` from that name and uses **`your store`** when it is missing. The web never shows the raw `{provider}` token; `renderHostedErrorSentence` in `shared/contract.ts` is the contract pin for substitution.
+
 ### Types
 
 ```ts
@@ -1724,6 +1726,8 @@ interface ShoppingListEntryStoreFields {
 
 **Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted):** before any cart `PUT`, `409 reconnect_required` or `502 provider_unavailable` with no `results[]` and no ledger change. After a batch was accepted: a later 401/403 gives `200` with `reconnectRequired: true`, that batch and every never-attempted batch `failed`/`reconnect_required`; a 5xx or timeout makes only that batch `unknown`/`request_incomplete`, later batches `failed`/`request_incomplete`. At most one cart-triggered refresh retry, only before any batch succeeds.
 
+Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr), including `{provider}` substitution and **`c.res.down`** on the send result screen for `502 provider_unavailable`.
+
 ### Send result reasons (canonical set = #484's public names)
 
 | `reason` | status | when |
@@ -1809,11 +1813,11 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_name_taken` | 409 | You already have a store with that name. | `field:"name"`. |
 | `store_already_linked` | 409 | Another store is already linked to this cart. | One store per provider. |
 | `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
-| `store_check_failed` | 503 | Couldn't check the store right now. Try again later. | Kroger 5xx or timeout after retry. |
-| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). The web hides check controls from `lookupsEnabled`, so this is a guard. |
-| `kroger_not_connected` | 409 | Connect your Kroger account first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
+| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Kroger 5xx or timeout after retry; also store location search. |
+| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows the reconnect line only when `checkReason` is `no_product_access` and `canConnect` is true. The web hides check controls from `lookupsEnabled`, so this is a guard. |
+| `kroger_not_connected` | 409 | Connect your store's online cart first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
 | `reconnect_required` | 409 | Couldn't connect to your {provider} account. Nothing was sent. | From #484. Send only, before any cart `PUT`. Body `{error, code, provider}`. Marks the connection `reauth_required`. |
-| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | From #484 (existing server code). Send only, before any cart `PUT`. |
+| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | Shared with non-send routes (e.g. Open Food Facts refresh). Send-only before any cart `PUT`; the send result screen shows UX copy key **`c.res.down`** instead of this sentence. |
 
 ## Decided by PM
 

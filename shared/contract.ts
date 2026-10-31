@@ -139,6 +139,8 @@ export const UPDATING_STATUS = 'migrating';
 export const CODE_PROVIDER_UNAVAILABLE = 'provider_unavailable';
 export const PROVIDER_FIELD = 'provider';
 export const PROVIDER_UNAVAILABLE_SENTENCE = "{provider} isn't responding. Try again later.";
+export const HOSTED_ERROR_PROVIDER_PLACEHOLDER = '{provider}';
+export const HOSTED_ERROR_PROVIDER_FALLBACK = 'your store';
 
 // Names shared with the hosted contract (#364) where the meaning is the same.
 // The sentence on these routes stays the one the server already returns.
@@ -1709,12 +1711,30 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   store_name_taken: 'You already have a store with that name.',
   store_already_linked: 'Another store is already linked to this cart.',
   store_not_linked: "This store isn't linked to an online cart.",
-  store_check_failed: "Couldn't check the store right now. Try again later.",
+  store_check_failed: "Couldn't reach the store right now. Try again later.",
   store_check_unavailable: "Checking isn't on for this store.",
-  kroger_not_connected: 'Connect your Kroger account first.',
+  kroger_not_connected: "Connect your store's online cart first.",
   reconnect_required: "Couldn't connect to your {provider} account. Nothing was sent.",
   provider_unavailable: PROVIDER_UNAVAILABLE_SENTENCE,
 };
+
+/** Linked store display name for `{provider}` in hosted error templates. */
+export function hostedErrorProviderLabel(displayName: string | null | undefined): string {
+  const trimmed = displayName?.trim();
+  return trimmed !== undefined && trimmed !== '' ? trimmed : HOSTED_ERROR_PROVIDER_FALLBACK;
+}
+
+/** Fills `{provider}` so the raw token never reaches the screen. */
+export function renderHostedErrorSentence(
+  sentence: string,
+  providerDisplayName?: string | null,
+): string {
+  if (!sentence.includes(HOSTED_ERROR_PROVIDER_PLACEHOLDER)) return sentence;
+  return sentence.replaceAll(
+    HOSTED_ERROR_PROVIDER_PLACEHOLDER,
+    hostedErrorProviderLabel(providerDisplayName),
+  );
+}
 
 export function hostedErrorSentence(code: string): string {
   if (code in HOSTED_ERROR_SENTENCES) return HOSTED_ERROR_SENTENCES[code as HostedErrorCode];

@@ -279,7 +279,7 @@ Fresh rows win over `not_eligible`, except that a disconnect deletes them (§4.2
   - Tokens stay in the existing encrypted connection row and are never logged.
 - **Credentials resolved per connection (Q4-ready).** Code exchange, refresh, cart and lookup calls get app credentials from one function, `connection.AppFor(ctx, conn) (AppCreds, appKey)`. Under Q4 option A (today's model) it always returns the server's app. Under option B it returns the household's own app (§4.6). B5 builds only option A plus this seam; it doesn't build option B.
 - **Scope and the admin setting.** The Products API needs `product.compact` on the token: "if you need to get a token to call the Public Products API, you must include the `product.compact` scope in the token request" ([FAQ](https://developer.kroger.com/support/faq)). Locations needs no scope ([Applications](https://developer.kroger.com/documentation/support/website-help/applications)).
-  - New server setting `KROGER_PRODUCT_CHECKS` (operator/admin only, default **off**). Off: sign-in asks for `cart.basic:write`, and the authorize URL is byte-for-byte today's (test). On: sign-in asks for `cart.basic:write product.compact`.
+  - New server setting `KROGER_PRODUCT_CHECKS` (admin only, default **off**). Off: sign-in asks for `cart.basic:write`, and the authorize URL is byte-for-byte today's (test). On: sign-in asks for `cart.basic:write product.compact`.
   - It's turned on only after T1 confirms the server's app is registered for Products and that asking for the scope doesn't break sign-in (Kroger's help says an app without an API can't add it later: "If you find that you need an API you did not select during registration, you must create a new application"). That switch is ticket I1 (Network Engineer).
   - At code exchange the server stores the token response's `scope` (or the requested scope if the response has none; **Spike** T1) in `granted_scope`.
   - **Older connections** (`granted_scope` NULL) never get checks and never get an error. A person reconnects through today's Connect flow to turn checking on.
@@ -482,19 +482,21 @@ interface ShoppingListEntryStoreFields {
 
 ### 6.5 Error codes (registry rows and the `HostedErrorCode` union, same PR)
 
+In hosted error sentences, **`{provider}`** is the linked store's display name (e.g. Smith's). The web fills `{provider}` from that name and uses **`your store`** when it is missing. The web never shows the raw `{provider}` token; `renderHostedErrorSentence` in `shared/contract.ts` is the contract pin for substitution.
+
 | code | HTTP | sentence | notes |
 |---|---|---|---|
 | `store_name_taken` | 409 | You already have a store with that name. | `field:"name"`. |
 | `store_already_linked` | 409 | Another store is already linked to this cart. | One store per provider. |
 | `store_not_linked` | 409 | This store isn't linked to an online cart. | Export or check on an unlinked store. |
-| `store_check_failed` | 503 | Couldn't check the store right now. Try again later. | Kroger 5xx or timeout after retry. |
-| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). The web hides check controls from `lookupsEnabled`, so this is a guard. |
-| `kroger_not_connected` | 409 | Connect your Kroger account first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
+| `store_check_failed` | 503 | Couldn't reach the store right now. Try again later. | Kroger 5xx or timeout after retry; also store location search. |
+| `store_check_unavailable` | 409 | Checking isn't on for this store. | Connected, but checking is off (`not_configured`, `no_product_access`, `no_location`). Body `{error, code, checkReason}`. The web shows the reconnect line only when `checkReason` is `no_product_access` and `canConnect` is true; without `checkReason`, a store with no location would wrongly show Reconnect. The web hides check controls from `lookupsEnabled`, so this is a guard. |
+| `kroger_not_connected` | 409 | Connect your store's online cart first. | Store search and check routes when the household has no working Kroger connection. Zero Kroger calls. The web goes to the connect step with no error text. |
 | `reconnect_required` | 409 | Couldn't connect to your {provider} account. Nothing was sent. | From #484. Send only, before any cart `PUT`. Body `{error, code, provider}`. Marks the connection `reauth_required`. |
-| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | From #484 (existing server code). Send only, before any cart `PUT`. |
+| `provider_unavailable` | 502 | {provider} isn't responding. Try again later. | Shared with non-send routes (e.g. Open Food Facts refresh). Send-only before any cart `PUT`; the send result screen shows UX copy key **`c.res.down`** instead of this sentence. |
 
 - The `rate_limited` notes gain: manual checks and the store search when the household's daily share of its Kroger app's limit is used up, with `Retry-After`.
-- Sentences for the four new store codes are drafts for PM and UX approval at C0.
+- Sentences for the six new store and connection codes are drafts for PM and UX approval at C0.
 
 **Send failure rules (#484's, adopted):** before any cart `PUT`, `409 reconnect_required` or `502 provider_unavailable` with no `results[]` and no ledger change. After a batch was accepted: a later 401/403 gives `200` with `reconnectRequired: true`, that batch and every never-attempted batch `failed`/`reconnect_required`; a 5xx or timeout makes only that batch `unknown`/`request_incomplete`, later batches `failed`/`request_incomplete`. At most one cart-triggered refresh retry, only before any batch succeeds.
 
@@ -527,7 +529,7 @@ interface ShoppingListEntryStoreFields {
 3. **B1** migration 030 and stores. Deployed with no stores, every household sees today's behavior.
 4. B6, B2, B3, B12, B8: trips and people only, no Kroger lookup calls.
 5. **B5, B11, B4, B7:** lookups through each household's own connection. `KROGER_PRODUCT_CHECKS` stays off, so sign-in and behavior are unchanged. **B5 merges only after CJ answers Q4** (§4.6).
-6. **I1:** after T1, the operator turns `KROGER_PRODUCT_CHECKS` on (and, only if T1 shows the server's app lacks Products access, plans a new app, which needs CJ's approval because every household would reconnect). From then on, each household that connects or reconnects gets checks; older connections show the quiet reconnect line.
+6. **I1:** after T1, the admin turns `KROGER_PRODUCT_CHECKS` on (and, only if T1 shows the server's app lacks Products access, plans a new app, which needs CJ's approval because every household would reconnect). From then on, each household that connects or reconnects gets checks; older connections show the quiet reconnect line.
 7. Frontend F1–F8 behind the zero-stores rule.
 
 No launch gate and nothing waits on Kroger. If T1 item (a) fails (a shopper token can't check products), stop and report to PM before B5; the fallback is trips-only for everyone, decided by CJ.
