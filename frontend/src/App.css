@@ -366,8 +366,16 @@ a.group-row {
 }
 
 .provision-result-dismiss,
-.provision-result-action {
+.provision-result-action,
+.shopping-toolbar .shopping-send {
   min-width: 44px;
+  min-height: 44px;
+}
+
+.provision-result-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
   min-height: 44px;
 }
 

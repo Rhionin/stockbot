@@ -6,6 +6,7 @@ import {
   PROVISION_GROUP_NOT_CONFIRMED,
   PROVISION_GROUP_SENT,
   PROVISION_RESULT_PANEL_LABEL,
+  PROVISION_ROW_CAP,
   PROVISION_SHOW_ALL_THRESHOLD,
   groupProvisionResults,
   provisionItemReasonLine,
@@ -38,14 +39,15 @@ export const ProvisionResultPanel = ({
   const [showAllNotAdded, setShowAllNotAdded] = useState(false);
   const storeLabel = provisionStoreLabel(provider?.displayName);
   const groups = useMemo(() => groupProvisionResults(report), [report]);
-  const summary = useMemo(
-    () => provisionSummaryCopy(groups.sentCount, groups.couldNotSendCount, storeLabel),
-    [groups.couldNotSendCount, groups.sentCount, storeLabel],
-  );
   const sentTotal = provisionSentTotal(groups);
+  // Count added (confirmed) lines too, so an added-only result never reads "0 items sent".
+  const summary = useMemo(
+    () => provisionSummaryCopy(sentTotal, groups.couldNotSendCount, storeLabel),
+    [groups.couldNotSendCount, sentTotal, storeLabel],
+  );
 
   const notAddedVisible = showAllNotAdded || groups.notAdded.length <= PROVISION_SHOW_ALL_THRESHOLD
-    ? groups.notAdded
+    ? groups.notAdded.slice(0, PROVISION_ROW_CAP)
     : groups.notAdded.slice(0, PROVISION_SHOW_ALL_THRESHOLD);
   const notAddedHidden = groups.notAdded.length - notAddedVisible.length;
 
@@ -105,7 +107,7 @@ export const ProvisionResultPanel = ({
         <Text size="sm" c="dimmed">{summary.cartConfirmLine}</Text>
       )}
       {summary.openCartLabel !== undefined && cartUrl !== undefined && cartUrl !== '' && (
-        <Anchor href={cartUrl} target="_blank" rel="noopener noreferrer" size="sm">
+        <Anchor className="provision-result-link" href={cartUrl} target="_blank" rel="noopener noreferrer" size="sm">
           {summary.openCartLabel}
         </Anchor>
       )}
@@ -143,7 +145,7 @@ export const ProvisionResultPanel = ({
       {groups.notConfirmed.length > 0 && (
         <Stack gap="xs">
           <Text size="sm" fw={600}>{PROVISION_GROUP_NOT_CONFIRMED}</Text>
-          {groups.notConfirmed.slice(0, 50).map((row) => (
+          {groups.notConfirmed.slice(0, PROVISION_ROW_CAP).map((row) => (
             <Stack key={row.entryId || row.name} gap={4} className="provision-result-item">
               <Text size="sm">{row.name}</Text>
               {row.entryId !== '' && (

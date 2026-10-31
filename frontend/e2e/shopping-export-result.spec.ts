@@ -1,8 +1,9 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-const shotDir = process.env.PROVISION_EXPORT_SHOTS ?? '/opt/cursor/artifacts/481'
+const shotDir = process.env.PROVISION_EXPORT_SHOTS ?? join(tmpdir(), 'stockbot-provision-export-shots')
 mkdirSync(shotDir, { recursive: true })
 
 const householdName = 'Test Household'
@@ -220,7 +221,7 @@ for (const viewport of viewports) {
     const panel = page.getByRole('status', { name: 'Cart send result' })
     await expect(panel).toBeVisible()
     await expect(panel).toHaveAttribute('aria-live', 'polite')
-    await expect(panel.getByText('Not added')).toBeVisible()
+    await expect(panel.getByText("Couldn't be sent", { exact: true })).toBeVisible()
     await expect(panel.getByText('Not confirmed')).toBeVisible()
     if (viewport.label === '390') {
       await saveShot(page, 'ideal-390.png')
@@ -266,14 +267,15 @@ test('loading clears the previous panel at 390px', async ({ page }) => {
   await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
 })
 
-test('long names wrap within 320px without horizontal overflow at 390px', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 })
+test('long names wrap without horizontal overflow at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
   await installShoppingMocks(page, { exportBody: exportBodies.overflow })
   await openShoppingAndSend(page)
   const item = page.locator('.provision-result-item').first()
   await expect(item).toBeVisible()
   await expect.poll(() => item.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
-  await saveShot(page, 'overflow-320-390.png')
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  await saveShot(page, 'overflow-320.png')
 })
 
 test('HTTP export errors show Try again at 390 and 1280', async ({ page }) => {
@@ -301,3 +303,36 @@ test('whole-request Try again and Reconnect actions are tappable', async ({ page
   expect(box!.width).toBeGreaterThanOrEqual(44)
   expect(box!.height).toBeGreaterThanOrEqual(44)
 })
+
+for (const scenario of [
+  { width: 390, rootPercent: 100 },
+  { width: 320, rootPercent: 100 },
+  { width: 390, rootPercent: 125 },
+  { width: 320, rootPercent: 125 },
+]) {
+  for (const exportCase of ['ideal', 'all-sent', 'reconnect', 'many-skipped'] as const) {
+    test(`every control is at least 44x44 for ${exportCase} at ${scenario.width}px and ${scenario.rootPercent}% text`, async ({ page }) => {
+      await page.setViewportSize({ width: scenario.width, height: 800 })
+      await page.addInitScript((percent) => {
+        document.addEventListener('DOMContentLoaded', () => {
+          document.documentElement.style.fontSize = `${percent}%`
+        })
+      }, scenario.rootPercent)
+      await installShoppingMocks(page, { exportBody: exportBodies[exportCase] })
+      await openShoppingAndSend(page)
+      const panel = page.getByRole('status', { name: 'Cart send result' })
+      await expect(panel).toBeVisible()
+      const controls = page.locator('.shopping-send, .provision-result-panel button, .provision-result-panel a')
+      const count = await controls.count()
+      expect(count).toBeGreaterThan(0)
+      for (let i = 0; i < count; i += 1) {
+        const box = await controls.nth(i).boundingBox()
+        const name = await controls.nth(i).innerText()
+        expect(box, name).not.toBeNull()
+        expect(box!.width, name).toBeGreaterThanOrEqual(44)
+        expect(box!.height, name).toBeGreaterThanOrEqual(44)
+      }
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    })
+  }
+}

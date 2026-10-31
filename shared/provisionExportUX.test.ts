@@ -147,8 +147,22 @@ describe('provisionItemReasonLine', () => {
 
 describe('group headings', () => {
   it('exports stable section titles for mobile reuse', () => {
-    expect(PROVISION_GROUP_NOT_ADDED).toBe('Not added');
+    expect(PROVISION_GROUP_NOT_ADDED).toBe("Couldn't be sent");
     expect(PROVISION_GROUP_NOT_CONFIRMED).toBe('Not confirmed');
-    expect(PROVISION_GROUP_SENT).toBe('Sent or added');
+    expect(PROVISION_GROUP_SENT).toBe('Sent');
+  });
+});
+
+describe('unknown store name', () => {
+  it('never says "your your store" and starts sentences with a capital', () => {
+    const store = provisionStoreLabel(undefined);
+    expect(provisionWholeRequestMessage('reconnect_required', store)).toBe(
+      "Couldn't connect to your store account. Nothing was sent.",
+    );
+    expect(provisionWholeRequestMessage('provider_unavailable', store)).toBe(
+      "Your store isn't responding right now. Nothing was sent.",
+    );
+    expect(provisionReasonText(store, 'batch_rejected')).toBe("Your store didn't accept this item");
+    expect(provisionSummaryCopy(1, 0, store).cartConfirmLine).toMatch(/^Your store doesn't confirm/);
   });
 });

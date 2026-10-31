@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Stack, Text } from '@mantine/core';
+import { Button, Loader, Stack, Text } from '@mantine/core';
 import { authorizeProvider, exportShoppingList, resolveUnknownProvision } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
@@ -91,8 +91,10 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
     <div className="provision-control">
       <Button
         className="shopping-send"
-        loading={inFlight}
-        disabled={!enabled}
+        // Not Mantine `loading`: it fades the label, so "Sending…" would be hidden.
+        leftSection={inFlight ? <Loader size="xs" color="currentColor" /> : undefined}
+        aria-busy={inFlight || undefined}
+        disabled={!enabled || inFlight}
         onClick={() => void provision()}
       >
         {inFlight ? 'Sending…' : 'Send to Kroger'}

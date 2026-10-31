@@ -2,6 +2,7 @@ import type { ComponentProps } from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
 import { ProvisionButton } from './ProvisionButton';
 
@@ -95,7 +96,7 @@ describe('ProvisionButton', () => {
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     expect(within(panel).getByText('2 items sent to your Kroger cart.')).toBeInTheDocument();
     expect(within(panel).getByText(/doesn't confirm each item/)).toBeInTheDocument();
-    expect(within(panel).getByText('Sent or added')).toBeInTheDocument();
+    expect(within(panel).getByText('Sent')).toBeInTheDocument();
   });
 
   it('shows mixed results with not-added reasons for every UX bucket', async () => {
@@ -259,5 +260,81 @@ describe('ProvisionButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
     const panel = await screen.findByRole('status', { name: 'Cart send result' });
     expect(within(panel).getByText("Nothing was sent to your cart. 1 item couldn't be sent:")).toBeInTheDocument();
+  });
+});
+
+const rowsOf = (count: number, status: 'skipped' | 'unknown') => Array.from({ length: count }, (_, index) => ({
+  entryId: `r-${index}`,
+  itemId: `i-${index}`,
+  name: `Row ${index}`,
+  quantity: 1,
+  status,
+  reason: status === 'skipped' ? ('no_upc' as const) : ('no_per_item_result' as const),
+}));
+
+describe('ProvisionButton result panel limits and a11y (#485 review)', () => {
+  it('announces the panel politely', async () => {
+    mockExport({ provider: 'kroger', exported: 1, sentCount: 1, results: [{ entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' }] });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(panel).toHaveAttribute('aria-live', 'polite');
+    expect(within(panel).getByRole('heading', { name: 'Cart send result' })).toBeInTheDocument();
+  });
+
+  it('shows exactly ten rows with no Show all at the threshold', async () => {
+    mockExport({ provider: 'kroger', exported: 0, results: rowsOf(10, 'skipped') });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getAllByText(/: No barcode saved for this item$/)).toHaveLength(10);
+    expect(within(panel).queryByRole('button', { name: /^Show all/ })).not.toBeInTheDocument();
+  });
+
+  it('collapses to ten rows with Show all 11 past the threshold', async () => {
+    mockExport({ provider: 'kroger', exported: 0, results: rowsOf(11, 'skipped') });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getAllByText(/: No barcode saved for this item$/)).toHaveLength(10);
+    expect(within(panel).getByRole('button', { name: 'Show all 11' })).toBeInTheDocument();
+  });
+
+  it('caps every section at fifty rows, even after Show all', async () => {
+    mockExport({ provider: 'kroger', exported: 0, results: [...rowsOf(60, 'skipped'), ...rowsOf(60, 'unknown').map((r) => ({ ...r, entryId: `u-${r.entryId}`, name: `Unk ${r.name}` }))] });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Show all 60' }));
+    expect(within(panel).getAllByText(/: No barcode saved for this item$/)).toHaveLength(50);
+    expect(within(panel).getAllByText(/^Unk Row /)).toHaveLength(50);
+  });
+
+  it('counts added lines in the summary', async () => {
+    mockExport({ provider: 'kroger', exported: 2, addedCount: 2, results: [
+      { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'added' },
+      { entryId: 'b', itemId: '2', name: 'Eggs', quantity: 1, status: 'added' },
+    ] });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText('2 items sent to your Kroger cart.')).toBeInTheDocument();
+    expect(within(panel).queryByText(/^0 items sent/)).not.toBeInTheDocument();
+  });
+
+  it('removes the previous result as soon as a new send starts and keeps Sending… readable', async () => {
+    mockExport({ provider: 'kroger', exported: 1, sentCount: 1, results: [{ entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' }] });
+    renderButton();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await screen.findByRole('status', { name: 'Cart send result' });
+    let resolveFetch!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve; })));
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const sending = await screen.findByRole('button', { name: 'Sending…' });
+    expect(sending).not.toHaveAttribute('data-loading');
+    expect(screen.queryByRole('status', { name: 'Cart send result' })).not.toBeInTheDocument();
+    await act(async () => {
+      resolveFetch(new Response(JSON.stringify({ provider: 'kroger', exported: 0, results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
   });
 });

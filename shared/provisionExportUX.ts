@@ -12,18 +12,33 @@ export function provisionStoreLabel(displayName: string | undefined): string {
   return trimmed !== undefined && trimmed !== '' ? trimmed : 'your store';
 }
 
+const UNKNOWN_STORE = 'your store';
+
+/** Store label for the start of a sentence ("Your store isn't responding…"). */
+export function provisionStoreLabelSentence(storeLabel: string): string {
+  return storeLabel === UNKNOWN_STORE ? 'Your store' : storeLabel;
+}
+
+/** "your Smith's account" vs "your store account" (never "your your store"). */
+function yourStore(storeLabel: string, noun: string): string {
+  return storeLabel === UNKNOWN_STORE ? `your store ${noun}` : `your ${storeLabel} ${noun}`;
+}
+
 /** "your Kroger cart" vs "your store cart" when the name is unknown. */
 export function provisionCartTarget(storeLabel: string): string {
   return storeLabel === 'your store' ? 'your store cart' : `your ${storeLabel} cart`;
 }
 
-export const PROVISION_GROUP_NOT_ADDED = 'Not added';
+export const PROVISION_GROUP_NOT_ADDED = "Couldn't be sent";
 export const PROVISION_GROUP_NOT_CONFIRMED = 'Not confirmed';
-export const PROVISION_GROUP_SENT = 'Sent or added';
+export const PROVISION_GROUP_SENT = 'Sent';
 
 export const PROVISION_RESULT_PANEL_LABEL = 'Cart send result';
 
 export const PROVISION_SHOW_ALL_THRESHOLD = 10;
+
+/** Most rows any one section renders, even after Show all. */
+export const PROVISION_ROW_CAP = 50;
 
 /** Maps each per-line status to the UI section it belongs in (#481). */
 export type ProvisionResultGroup = 'not_added' | 'not_confirmed' | 'sent_or_added';
@@ -42,7 +57,7 @@ export function provisionReasonText(storeLabel: string, reason: string | undefin
     case 'no_match':
       return `Couldn't find this at ${storeLabel}`;
     case 'rejected':
-      return `${storeLabel} didn't accept this item`;
+      return `${provisionStoreLabelSentence(storeLabel)} didn't accept this item`;
     case 'error':
       return 'Something went wrong sending this item';
     default:
@@ -61,9 +76,9 @@ export function provisionWholeRequestMessage(
   storeLabel: string,
 ): string {
   if (code === 'reconnect_required') {
-    return `Couldn't connect to your ${storeLabel} account. Nothing was sent.`;
+    return `Couldn't connect to ${yourStore(storeLabel, 'account')}. Nothing was sent.`;
   }
-  return `${storeLabel} isn't responding right now. Nothing was sent.`;
+  return `${provisionStoreLabelSentence(storeLabel)} isn't responding right now. Nothing was sent.`;
 }
 
 export function provisionWholeRequestActionLabel(
@@ -103,7 +118,7 @@ export function provisionSummaryCopy(
   }
 
   const cartConfirmLine = sentCount >= 1
-    ? `${storeLabel} doesn't confirm each item, so check your cart to make sure everything is there.`
+    ? `${provisionStoreLabelSentence(storeLabel)} doesn't confirm each item, so check your cart to make sure everything is there.`
     : undefined;
 
   return {
