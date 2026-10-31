@@ -322,3 +322,37 @@ func TestAccessTokenPropagatesRefreshError(t *testing.T) {
 		t.Errorf("AccessToken on error: want empty token, got %q", got)
 	}
 }
+
+func TestForceRefreshWithoutRefreshToken(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+	if err := dir.Write(ctx, scope, &connection.Connection{
+		Provider: "kroger", State: connection.StateConnected, AccessToken: "tok",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	broker := connection.NewTokenBroker(dir)
+	_, err := broker.ForceRefresh(ctx, scope, "kroger", func(string) (string, string, time.Duration, error) {
+		t.Fatal("refresh should not run")
+		return "", "", 0, nil
+	})
+	if err == nil {
+		t.Fatal("ForceRefresh error = nil, want missing refresh token")
+	}
+}
+
+func TestMarkReauthRequiredWithNilConnection(t *testing.T) {
+	dir, _, scope := newTestDirectory(t)
+	ctx := context.Background()
+	broker := connection.NewTokenBroker(dir)
+	if err := broker.MarkReauthRequired(ctx, scope, "kroger", nil); err != nil {
+		t.Fatalf("MarkReauthRequired: %v", err)
+	}
+	conn, err := dir.Read(ctx, scope, "kroger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.State != connection.StateReauthRequired || conn.RefreshToken != "" {
+		t.Fatalf("conn = %+v", conn)
+	}
+}

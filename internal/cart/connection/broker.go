@@ -49,13 +49,8 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 	}
 	b.mu.Lock()
 	if call, ok := b.inFlight[provider]; ok {
-		// Another request is already refreshing this provider's token
 		b.mu.Unlock()
-		<-call.done
-		if call.err != nil {
-			return "", call.err
-		}
-		return call.accessToken, nil
+		return waitRefreshCall(call)
 	}
 
 	conn, err := b.Directory.Read(ctx, scope, provider)
@@ -68,60 +63,16 @@ func (b *TokenBroker) AccessToken(ctx context.Context, scope tenant.Scope, provi
 		return "", ErrReauthRequired
 	}
 
-	// Check if we have a valid token or need refresh
-	shouldRefresh := true
 	if conn != nil && conn.AccessToken != "" && conn.ExpiresAt != nil {
 		remaining := conn.ExpiresAt.Sub(time.Now().UTC())
 		if remaining > 60*time.Second {
-			shouldRefresh = false
+			b.mu.Unlock()
+			return conn.AccessToken, nil
 		}
 	}
 
-	if !shouldRefresh {
-		b.mu.Unlock()
-		return conn.AccessToken, nil
-	}
-
-	// Start a new in-flight call
-	call := &refreshCall{done: make(chan struct{})}
-	b.inFlight[provider] = call
 	b.mu.Unlock()
-
-	// Perform the refresh
-	accessToken, refreshToken, expiresIn, err := refreshFn(conn.RefreshToken)
-
-	// Populate the result before closing done: waiting callers read these fields
-	// as soon as the channel closes, so the writes must happen-before the close.
-	call.accessToken = accessToken
-	call.err = err
-	call.refreshToken = refreshToken
-	call.expiresIn = expiresIn
-	call.receiptAt = time.Now().UTC()
-
-	b.mu.Lock()
-	delete(b.inFlight, provider)
-	b.mu.Unlock()
-
-	close(call.done)
-
-	if err != nil {
-		return "", err
-	}
-
-	// Update the connection record with new tokens
-	expiresAt := call.receiptAt.Add(call.expiresIn)
-	newConn := &Connection{
-		Provider:     provider,
-		State:        StateConnected,
-		AccessToken:  call.accessToken,
-		RefreshToken: call.refreshToken,
-		ExpiresAt:    &expiresAt,
-	}
-	if err := b.Directory.Write(ctx, scope, newConn); err != nil {
-		return "", fmt.Errorf("failed to write connection: %w", err)
-	}
-
-	return call.accessToken, nil
+	return b.runRefreshExchange(ctx, scope, provider, conn, refreshFn)
 }
 
 // ForceRefresh exchanges the refresh token even when the persisted access token is still valid.
@@ -133,11 +84,7 @@ func (b *TokenBroker) ForceRefresh(ctx context.Context, scope tenant.Scope, prov
 	b.mu.Lock()
 	if call, ok := b.inFlight[provider]; ok {
 		b.mu.Unlock()
-		<-call.done
-		if call.err != nil {
-			return "", call.err
-		}
-		return call.accessToken, nil
+		return waitRefreshCall(call)
 	}
 	conn, err := b.Directory.Read(ctx, scope, provider)
 	if err != nil {
@@ -152,14 +99,36 @@ func (b *TokenBroker) ForceRefresh(ctx context.Context, scope tenant.Scope, prov
 		b.mu.Unlock()
 		return "", fmt.Errorf("no refresh token stored for provider %q", provider)
 	}
+	b.mu.Unlock()
+	return b.runRefreshExchange(ctx, scope, provider, conn, refreshFn)
+}
+
+func waitRefreshCall(call *refreshCall) (string, error) {
+	<-call.done
+	if call.err != nil {
+		return "", call.err
+	}
+	return call.accessToken, nil
+}
+
+func (b *TokenBroker) runRefreshExchange(ctx context.Context, scope tenant.Scope, provider string, conn *Connection, refreshFn func(refreshToken string) (accessToken string, refreshTokenOut string, expiresIn time.Duration, err error)) (string, error) {
+	b.mu.Lock()
+	if call, ok := b.inFlight[provider]; ok {
+		b.mu.Unlock()
+		return waitRefreshCall(call)
+	}
 	call := &refreshCall{done: make(chan struct{})}
 	b.inFlight[provider] = call
 	b.mu.Unlock()
 
-	accessToken, refreshToken, expiresIn, err := refreshFn(conn.RefreshToken)
+	var refreshToken string
+	if conn != nil {
+		refreshToken = conn.RefreshToken
+	}
+	accessToken, refreshTokenOut, expiresIn, err := refreshFn(refreshToken)
 	call.accessToken = accessToken
 	call.err = err
-	call.refreshToken = refreshToken
+	call.refreshToken = refreshTokenOut
 	call.expiresIn = expiresIn
 	call.receiptAt = time.Now().UTC()
 

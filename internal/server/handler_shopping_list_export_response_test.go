@@ -62,6 +62,24 @@ func TestLegacyProvisionOutcomeReasonMapsNewEngineReasons(t *testing.T) {
 		assert.Equal(t, want, legacyProvisionOutcomeReason(cart.OutcomeFailed, reason), string(reason))
 	}
 	assert.Equal(t, "", legacyProvisionOutcomeReason(cart.OutcomeConfirmed, cart.ReasonNoUPC))
+	assert.Equal(t, "request_incomplete", legacyProvisionOutcomeReason(cart.OutcomeUnknown, ""))
+	assert.Equal(t, "api_error", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.OutcomeReason("weird")))
+}
+
+func TestPublicProvisionReasonMapsDeprecatedEngineReasons(t *testing.T) {
+	assert.Equal(t, "no_match", publicProvisionReason(cart.OutcomeFailed, cart.ReasonNoProductIdentity))
+	assert.Equal(t, "batch_rejected", publicProvisionReason(cart.OutcomeFailed, cart.ReasonProviderRejected))
+	assert.Equal(t, "request_incomplete", publicProvisionReason(cart.OutcomeUnknown, ""))
+	assert.Equal(t, "api_error", publicProvisionReason(cart.OutcomeFailed, cart.OutcomeReason("weird")))
+	assert.Equal(t, "", publicProvisionReason(cart.OutcomeConfirmed, cart.ReasonNoUPC))
+	for _, reason := range []cart.OutcomeReason{
+		cart.ReasonNoUPC, cart.ReasonUnavailable, cart.ReasonReconnectRequired,
+	} {
+		got := publicProvisionReason(cart.OutcomeFailed, reason)
+		if got != string(reason) {
+			t.Fatalf("public reason %q = %q", reason, got)
+		}
+	}
 }
 
 func TestProvisionResultStatusCoversEveryOutcomeReason(t *testing.T) {

@@ -422,3 +422,36 @@ func TestServerPushAddLineValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshAccessTokenParsesOAuthErrorBody(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusUnauthorized, `{"error":"access_denied","error_description":"secret"}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	_, err = adapter.OAuthFlow().RefreshAccessToken(context.Background(), "rt")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	var tokenErr *cart.OAuthTokenError
+	if !errors.As(err, &tokenErr) || tokenErr.OAuthError != "access_denied" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusForbidden, `{}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	result, err := adapter.ServerPush().Add(context.Background(), cart.NewBearerCredential("tok"), provisionRequest(cart.ProvisionLine{Identity: "0001111072822", Quantity: 1}))
+	if err == nil {
+		t.Fatal("want error on 403")
+	}
+	if !cart.CartResponseNeedsReconnect(result.Status) {
+		t.Fatalf("status = %d", result.Status)
+	}
+}
