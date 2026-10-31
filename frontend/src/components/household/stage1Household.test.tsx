@@ -362,7 +362,8 @@ describe('household management', () => {
     renderStage(<HouseholdSwitcher />, session('owner'));
     const combobox = screen.getByRole('combobox', { name: 'Household' });
     expect(combobox).toHaveAccessibleName('Household');
-    expect(combobox).toHaveAttribute('aria-valuetext', 'Pantry');
+    expect(combobox).toHaveValue('Pantry');
+    expect(combobox).not.toHaveAttribute('aria-valuetext');
   });
 
   it('shows one household as a name, not a menu', () => {

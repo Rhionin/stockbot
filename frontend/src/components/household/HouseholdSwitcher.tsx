@@ -42,7 +42,6 @@ export function HouseholdSwitcher() {
     <Select
       className="household-switch"
       aria-label="Household"
-      aria-valuetext={activeLabel}
       title={activeLabel}
       data={data}
       value={auth.activeHouseholdId}

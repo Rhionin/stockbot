@@ -264,7 +264,9 @@ async function assertHouseholdSwitcherEllipsis(page: Page, fullName: string) {
   await expect(switcher).toBeVisible()
   const combobox = page.getByRole('combobox', { name: 'Household' })
   await expect(combobox).toBeVisible()
-  await expect(combobox).toHaveAttribute('aria-valuetext', fullName)
+  await expect(combobox).toHaveAccessibleName('Household')
+  await expect(combobox).toHaveValue(fullName)
+  await expect(combobox).not.toHaveAttribute('aria-valuetext')
   await expect(switcher).toHaveAttribute('title', fullName)
   await expect(switcher.evaluate((el) => {
     const style = getComputedStyle(el)
@@ -751,9 +753,16 @@ async function assertTryAgainButtonSizing(
   const contentWidth = await tryAgain.evaluate((el) => {
     const px = (v: string) => parseFloat(v) || 0
     const cs = getComputedStyle(el)
-    const labelWidths = [...el.querySelectorAll('.admin-household-retry-label-stack > span')].map((span) => (
-      span.getBoundingClientRect().width
-    ))
+    // Intrinsic label widths (text ink, plus the spinner and gap for busy), not the grid cell, so an
+    // inflated label cell or fixed min-width anywhere in the button cannot satisfy this check.
+    const ink = (node: Element) => {
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      return range.getBoundingClientRect().width
+    }
+    const idleLabel = el.querySelector('.admin-household-retry-label-idle')
+    const busyLabel = el.querySelector('.admin-household-retry-label-busy')
+    const labelWidths = [idleLabel ? ink(idleLabel) : 0, busyLabel ? ink(busyLabel) : 0]
     return px(cs.borderLeftWidth) + px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderRightWidth)
       + Math.max(...labelWidths)
   })
@@ -765,11 +774,12 @@ async function assertTryAgainButtonSizing(
     const range = document.createRange()
     range.selectNodeContents(idle)
     const text = range.getBoundingClientRect()
-    const stackBox = stack.getBoundingClientRect()
-    const leftSpace = text.left - stackBox.left
-    const rightSpace = stackBox.right - text.right
+    // Centre against the button box, so asymmetric padding or a shifted label cell is caught too.
+    const buttonBox = el.getBoundingClientRect()
+    const leftSpace = text.left - buttonBox.left
+    const rightSpace = buttonBox.right - text.right
     return Math.abs(leftSpace - rightSpace) <= 1
-  }), 'Idle Try again text is centered in the label cell').resolves.toBe(true)
+  }), 'Idle Try again text is centered in the button').resolves.toBe(true)
   await expect(tryAgain.locator('.admin-household-retry-label-busy .mantine-Loader-root').evaluate((el) => {
     const busy = el.closest('.admin-household-retry-label-busy') as HTMLElement | null
     return busy !== null && getComputedStyle(busy).visibility === 'hidden'
@@ -795,6 +805,13 @@ async function assertTryAgainButtonSizing(
     const busyStyle = busy ? getComputedStyle(busy) : getComputedStyle(el)
     return box.width > 0 && box.height > 0 && busyStyle.visibility === 'visible'
   }), 'Busy Try again shows a visible spinner').resolves.toBe(true)
+  const busySpinner = busyButton.locator('.admin-household-retry-label-busy .mantine-Loader-root')
+  await expect(busySpinner, 'Busy spinner itself is visible').toBeVisible()
+  await expect(busySpinner).toHaveAttribute('aria-hidden', 'true')
+  await expect(busySpinner.evaluate((el) => {
+    const style = getComputedStyle(el)
+    return { opacity: style.opacity, visibility: style.visibility, display: style.display === 'none' ? 'none' : 'shown' }
+  }), 'Busy spinner is not hidden or transparent').resolves.toEqual({ opacity: '1', visibility: 'visible', display: 'shown' })
   await expect(section.getByRole('alert')).toHaveText('Something went wrong. Try again.')
   const busyBox = await busyButton.boundingBox()
   expect(busyBox).not.toBeNull()
