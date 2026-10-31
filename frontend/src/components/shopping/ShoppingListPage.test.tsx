@@ -126,7 +126,7 @@ describe('ShoppingListPage', () => {
     renderPage();
 
     expect(await screen.findByText('Build the list before sending it to Kroger.')).toBeInTheDocument();
-    expect(screen.getByText('Adds these items to your Kroger cart.')).toBeInTheDocument();
+    expect(screen.getByText('Adds these items to your store cart.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build the list' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send to Kroger' })).toBeDisabled();
     expect(screen.queryByLabelText('Pantry item')).not.toBeInTheDocument();
@@ -219,7 +219,7 @@ describe('ShoppingListPage', () => {
     ));
 
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
-    expect(await screen.findByText('1 item sent to Kroger.')).toBeInTheDocument();
+    expect(await screen.findByText('1 item sent to your store cart.')).toBeInTheDocument();
   });
 
   it('shows a group line with its rule and swap, and hides brand controls', async () => {
