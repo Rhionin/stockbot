@@ -2,6 +2,7 @@ package cart
 
 import (
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/cart/connection"
@@ -91,6 +92,26 @@ func TestOAuthFailureReason(t *testing.T) {
 				t.Fatalf("OAuthFailureReason() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCartResponseNeedsReconnect(t *testing.T) {
+	t.Parallel()
+	if !CartResponseNeedsReconnect(http.StatusUnauthorized) || !CartResponseNeedsReconnect(http.StatusForbidden) {
+		t.Fatal("401/403 should need reconnect")
+	}
+	if CartResponseNeedsReconnect(http.StatusBadGateway) {
+		t.Fatal("502 should not need reconnect")
+	}
+}
+
+func TestOAuthTokenErrorReconnectRequiredCases(t *testing.T) {
+	t.Parallel()
+	if !(&OAuthTokenError{OAuthError: "invalid_grant"}).ReconnectRequired() {
+		t.Fatal("invalid_grant should reconnect")
+	}
+	if (&OAuthTokenError{StatusCode: 401, OAuthError: ""}).ReconnectRequired() {
+		t.Fatal("401 without oauth error should not reconnect via status branch")
 	}
 }
 
