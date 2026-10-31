@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/url"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
@@ -20,6 +21,7 @@ type ProvidersHandler struct {
 	ConnectionDir *connection.Directory
 	Credentials   *appcred.Vault
 	EnvFallback   ProviderEnv
+	Auth          *auth.Service
 }
 
 // ProviderEnv is the deploy-time credential fallback. It is never written to a
