@@ -5,6 +5,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildProvisionExportViews(t *testing.T) {
@@ -46,24 +47,49 @@ func TestBuildProvisionExportViewsPerLineAdded(t *testing.T) {
 	assert.Equal(t, "added", results[0].Status)
 }
 
-func TestLegacyProvisionOutcomeReasonMapsNewEngineReasons(t *testing.T) {
-	cases := map[cart.OutcomeReason]string{
-		cart.ReasonNoUPC:               "no_product_identity",
-		cart.ReasonNoMatch:             "no_product_identity",
-		cart.ReasonNoProductIdentity:   "no_product_identity",
-		cart.ReasonBatchRejected:       "provider_rejected",
-		cart.ReasonProviderRejected:    "provider_rejected",
-		cart.ReasonReconnectRequired:   "reconnect_required",
-		cart.ReasonRequestIncomplete:   "request_incomplete",
-		cart.ReasonProviderUnavailable: "provider_unavailable",
-		cart.ReasonAPIError:            "api_error",
+// TestLegacyProvisionOutcomeReasonMatchesMasterEngine pins every post-#484
+// engine (outcome, reason) pair to the exact entries[].outcomeReason string
+// master emitted via string(entry.Reason). Expected values are literals only.
+func TestLegacyProvisionOutcomeReasonMatchesMasterEngine(t *testing.T) {
+	tests := []struct {
+		situation    string
+		outcome      cart.Outcome
+		engineReason cart.OutcomeReason
+		masterLegacy string
+	}{
+		{"confirmed", cart.OutcomeConfirmed, cart.OutcomeReason(""), ""},
+		{"unresolved no_upc", cart.OutcomeFailed, cart.ReasonNoUPC, "no_product_identity"},
+		{"unresolved no_match", cart.OutcomeFailed, cart.ReasonNoMatch, "no_product_identity"},
+		{"unresolved no_product_identity", cart.OutcomeFailed, cart.ReasonNoProductIdentity, "no_product_identity"},
+		{"indeterminate batch", cart.OutcomeUnknown, cart.ReasonRequestIncomplete, "request_incomplete"},
+		{"halt after indeterminate", cart.OutcomeFailed, cart.ReasonRequestIncomplete, "request_incomplete"},
+		{"halt after reconnect", cart.OutcomeFailed, cart.ReasonReconnectRequired, "request_incomplete"},
+		{"batch rejected", cart.OutcomeFailed, cart.ReasonBatchRejected, "provider_rejected"},
+		{"per-line not confirmed", cart.OutcomeFailed, cart.ReasonProviderRejected, "provider_rejected"},
+		{"per-line unavailable engine reason", cart.OutcomeFailed, cart.ReasonUnavailable, "provider_rejected"},
+		{"invalid line", cart.OutcomeFailed, cart.ReasonInvalidLine, "provider_rejected"},
+		{"handoff no per-item result", cart.OutcomeUnknown, cart.ReasonNoPerItemResult, "no_per_item_result"},
+		{"confirm none", cart.OutcomeUnknown, cart.ReasonNoPerItemResult, "no_per_item_result"},
+		{"provider unavailable", cart.OutcomeFailed, cart.ReasonProviderUnavailable, "request_incomplete"},
+		{"api error line", cart.OutcomeFailed, cart.ReasonAPIError, "request_incomplete"},
+		{"unknown empty reason", cart.OutcomeUnknown, cart.OutcomeReason(""), "request_incomplete"},
+		{"unknown unrecognized reason", cart.OutcomeUnknown, cart.OutcomeReason("weird"), "request_incomplete"},
+		{"failed unrecognized reason", cart.OutcomeFailed, cart.OutcomeReason("weird"), "provider_rejected"},
 	}
-	for reason, want := range cases {
-		assert.Equal(t, want, legacyProvisionOutcomeReason(cart.OutcomeFailed, reason), string(reason))
+	for _, tc := range tests {
+		t.Run(tc.situation, func(t *testing.T) {
+			got := legacyProvisionOutcomeReason(tc.outcome, tc.engineReason)
+			assert.Equal(t, tc.masterLegacy, got)
+		})
 	}
-	assert.Equal(t, "", legacyProvisionOutcomeReason(cart.OutcomeConfirmed, cart.ReasonNoUPC))
-	assert.Equal(t, "request_incomplete", legacyProvisionOutcomeReason(cart.OutcomeUnknown, ""))
-	assert.Equal(t, "api_error", legacyProvisionOutcomeReason(cart.OutcomeFailed, cart.OutcomeReason("weird")))
+}
+
+func TestLegacyPerLineUnconfirmedMapsToMasterProviderRejected(t *testing.T) {
+	provisionEntries, _, _, _, _ := buildProvisionExportViews([]cart.EntryOutcome{
+		{Name: "Tea", Outcome: cart.OutcomeFailed, Reason: cart.ReasonUnavailable},
+	}, cart.ConfirmPerLine)
+	require.Len(t, provisionEntries, 1)
+	assert.Equal(t, "provider_rejected", provisionEntries[0].OutcomeReason)
 }
 
 func TestPublicProvisionReasonMapsDeprecatedEngineReasons(t *testing.T) {

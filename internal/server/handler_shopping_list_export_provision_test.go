@@ -181,6 +181,57 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 			},
 		},
 		{
+			name: "export oauth reconnect 409 still returned when mark reauth fails",
+			setup: func(env testEnv) {
+				if _, err := env.DB.Exec(`
+					CREATE TRIGGER block_reauth_export409 BEFORE UPDATE ON provider_connections
+					WHEN NEW.state = 'reauth_required'
+					BEGIN
+						SELECT RAISE(ABORT, 'disk full');
+					END`); err != nil {
+					env.T.Fatalf("trigger: %v", err)
+				}
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-auth409", "Milk", "item-auth409")
+				insertManualShoppingItem(env.T, env.DB, "sli-auth409", "user-1", "item-auth409", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "auth409", "prod-auth409", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithTokenExchangeError(&cart.OAuthTokenError{StatusCode: 400, OAuthError: "invalid_grant"}).
+					WithIdentityLookup("auth409", cart.ProductIdentity("SKU-A409"))
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthOAuth2,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				exportProvisionFake = provider.(carttest.Calls)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+				expired := time.Now().UTC().Add(-time.Hour)
+				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
+					Provider:     "test-oauth2_authorization_code-server_push",
+					State:        connection.StateConnected,
+					AccessToken:  "stale-access-409",
+					RefreshToken: "refresh-409",
+					ExpiresAt:    &expired,
+				}); err != nil {
+					env.T.Fatalf("connection: %v", err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusConflict,
+				assertions: []assertion{
+					{path: "$.code", value: "reconnect_required"},
+				},
+			},
+		},
+		{
 			name: "second export fails fast after reauth required without token call",
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-auth3", "Milk", "item-auth3")
@@ -391,6 +442,50 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 					{path: "$.reconnectRequired", absent: true},
 				},
 				bodyExcludes: []string{"upstream timeout"},
+			},
+		},
+		{
+			name: "export put1 indeterminate without error halts remaining batches with 200",
+			setup: func(env testEnv) {
+				seedThreeBatchExportItems(env, "ind0", "p01i", "p02i", "p03i")
+				script := carttest.NewScript().
+					WithTokenExchangeSuccess().
+					WithIdentityLookup("p01i", cart.ProductIdentity("SKU-I1")).
+					WithIdentityLookup("p02i", cart.ProductIdentity("SKU-I2")).
+					WithIdentityLookup("p03i", cart.ProductIdentity("SKU-I3")).
+					WithAddOutcomes(carttest.AddOutcome{
+						Result: cart.ProvisionResult{Disposition: cart.DispositionIndeterminate, Status: 0},
+					})
+				provider := registerOAuthExportFake(env, script, 1)
+				exportProvisionFake = provider.(carttest.Calls)
+				writeExpiredOAuthConnection(env, "access-ind0", "refresh-ind0")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+					{path: "$.sentCount", value: float64(0)},
+					{path: "$.unknownCount", value: float64(1)},
+					{path: "$.failedCount", value: float64(2)},
+					{path: "$.results[0].status", value: "unknown"},
+					{path: "$.results[0].reason", value: "request_incomplete"},
+					{path: "$.results[1].status", value: "failed"},
+					{path: "$.results[2].status", value: "failed"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				adds := 0
+				for _, call := range exportProvisionFake.Calls() {
+					if call == "Add" {
+						adds++
+					}
+				}
+				if adds != 1 {
+					env.T.Fatalf("Add calls = %d, want 1", adds)
+				}
 			},
 		},
 		{

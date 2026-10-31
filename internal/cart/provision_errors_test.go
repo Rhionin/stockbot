@@ -121,3 +121,11 @@ func TestOAuthFailureReasonInvalidGrantWithoutTypedError(t *testing.T) {
 		t.Fatalf("untyped error = %q, want provider_unavailable", got)
 	}
 }
+
+func TestOAuthFailureReasonSubstringInvalidGrantStaysUnavailable(t *testing.T) {
+	t.Parallel()
+	err := errors.New("token refresh failed: invalid_grant in body")
+	if got := OAuthFailureReason(err); got != ReasonProviderUnavailable {
+		t.Fatalf("substring invalid_grant = %q, want provider_unavailable", got)
+	}
+}

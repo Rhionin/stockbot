@@ -229,7 +229,9 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 			}
 			if provErr := wholeRequestProvisionError(providerID, confirmedCount, result, err); provErr != nil {
 				if batchFailureNeedsReconnect(result, err) {
-					_ = e.markConnectionReauthRequired(ctx, scope, providerID)
+					if markErr := e.markConnectionReauthRequired(ctx, scope, providerID); markErr != nil {
+						log.Printf("mark reauth_required before reconnect response: %v", markErr)
+					}
 				}
 				return ProvisionReport{}, provErr
 			}

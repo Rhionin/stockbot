@@ -131,11 +131,13 @@ type fakeScript struct {
 	refreshErr    error
 	addBlock      chan struct{} // when non-nil, Add blocks until it is closed
 	addStarted    chan struct{} // closed by Add once it is running
+	addCalls      int
 }
 
 type serverPushBehavior struct{ script *fakeScript }
 
 func (b *serverPushBehavior) Add(ctx context.Context, cred Credential, req ProvisionRequest) (ProvisionResult, error) {
+	b.script.addCalls++
 	if b.script.addStarted != nil {
 		select {
 		case <-b.script.addStarted:

@@ -66,25 +66,28 @@ func publicProvisionReason(outcome cart.Outcome, reason cart.OutcomeReason) stri
 	}
 }
 
-// legacyProvisionOutcomeReason preserves the pre-#484 entries[].outcomeReason values.
+// legacyProvisionOutcomeReason maps post-#484 engine reasons to the exact
+// entries[].outcomeReason strings master emitted (string(entry.Reason) there).
 func legacyProvisionOutcomeReason(outcome cart.Outcome, reason cart.OutcomeReason) string {
 	if outcome == cart.OutcomeConfirmed {
 		return ""
 	}
 	switch reason {
 	case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonNoProductIdentity:
-		return string(cart.ReasonNoProductIdentity)
-	case cart.ReasonBatchRejected, cart.ReasonProviderRejected:
-		return string(cart.ReasonProviderRejected)
-	case cart.ReasonUnavailable, cart.ReasonAPIError, cart.ReasonInvalidLine,
-		cart.ReasonProviderUnavailable, cart.ReasonReconnectRequired,
-		cart.ReasonRequestIncomplete, cart.ReasonNoPerItemResult:
-		return string(reason)
+		return "no_product_identity"
+	case cart.ReasonBatchRejected, cart.ReasonProviderRejected, cart.ReasonInvalidLine,
+		cart.ReasonUnavailable:
+		return "provider_rejected"
+	case cart.ReasonNoPerItemResult:
+		return "no_per_item_result"
+	case cart.ReasonRequestIncomplete, cart.ReasonReconnectRequired,
+		cart.ReasonProviderUnavailable, cart.ReasonAPIError:
+		return "request_incomplete"
 	default:
 		if outcome == cart.OutcomeUnknown {
-			return string(cart.ReasonRequestIncomplete)
+			return "request_incomplete"
 		}
-		return string(cart.ReasonAPIError)
+		return "provider_rejected"
 	}
 }
 
