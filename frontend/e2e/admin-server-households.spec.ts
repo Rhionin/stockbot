@@ -27,7 +27,7 @@ async function assertAppHeaderTouchTargets(page: Page) {
   for (const name of ['Scan Queue', 'Inventory', 'History', 'Shopping List'] as const) {
     await assertTouchTargetSize(page.getByRole('link', { name }))
   }
-  const householdControl = page.getByRole('combobox', { name: 'Household' })
+  const householdControl = page.getByRole('combobox', { name: stage.householdName })
     .or(page.getByRole('button', { name: 'Choose a household' }))
     .or(page.getByRole('button', { name: stage.householdName }))
   await assertTouchTargetSize(householdControl.first())
@@ -130,12 +130,45 @@ async function tapRadioRowUnderCircle(page: Page, rootSelector: string, label: s
   await expect(page.getByRole('radio', { name: label })).toBeChecked()
 }
 
+/** Row touch target spans the radio group field; circle tap at row center selects. */
+async function assertRadioRowTouchTarget(page: Page, rootSelector: string, label: string) {
+  const row = page.locator(`${rootSelector} .mantine-Radio-root`, { hasText: label })
+  const body = row.locator('.mantine-Radio-body')
+  const field = page.locator(`${rootSelector} .mantine-RadioGroup-root`).first()
+  const bodyBox = await body.boundingBox()
+  const fieldBox = await field.boundingBox()
+  const labelBox = await row.locator('.mantine-Radio-label').boundingBox()
+  expect(bodyBox).not.toBeNull()
+  expect(fieldBox).not.toBeNull()
+  expect(labelBox).not.toBeNull()
+  expect(Math.abs(bodyBox!.width - fieldBox!.width)).toBeLessThanOrEqual(1)
+  expect(Math.abs(labelBox!.width - fieldBox!.width)).toBeLessThanOrEqual(1)
+  expect(touchTargetDimensionMeetsMinimum(bodyBox!.height)).toBe(true)
+  const circle = await row.locator('.mantine-Radio-inner').boundingBox()
+  expect(circle).not.toBeNull()
+  const inset = 2
+  await page.mouse.click(bodyBox!.x + inset, bodyBox!.y + bodyBox!.height - inset)
+  await expect(page.getByRole('radio', { name: label })).toBeChecked()
+  await page.mouse.click(circle!.x + circle!.width / 2, bodyBox!.y + bodyBox!.height / 2)
+  await expect(page.getByRole('radio', { name: label })).toBeChecked()
+}
+
+async function assertHouseholdSwitcherEllipsis(page: Page, fullName: string) {
+  const switcher = page.locator('.app-header .household-switch .mantine-Select-input')
+  await expect(switcher).toBeVisible()
+  await expect(page.getByRole('combobox', { name: fullName })).toBeVisible()
+  await expect(switcher.evaluate((el) => {
+    const style = getComputedStyle(el)
+    return el.scrollWidth > el.clientWidth + 0.5 && style.textOverflow === 'ellipsis'
+  })).resolves.toBe(true)
+}
+
 async function assertHouseholdsPageTouchTargets(page: Page) {
   const root = page.locator('.households-admin-page')
   for (const locator of [
     root.getByRole('button'),
     root.getByRole('textbox'),
-    root.locator('.mantine-Radio-label'),
+    root.locator('.mantine-Radio-body'),
   ]) {
     const count = await locator.count()
     for (let index = 0; index < count; index += 1) {
@@ -210,7 +243,7 @@ async function assertInviteAcceptTouchTargets(page: Page) {
   const root = page.locator('.invite-accept-page')
   for (const locator of [
     root.getByRole('button'),
-    root.locator('.mantine-Radio-label'),
+    root.locator('.mantine-Radio-body'),
   ]) {
     const count = await locator.count()
     for (let index = 0; index < count; index += 1) {
@@ -247,11 +280,11 @@ const idealStatsHousehold = {
   lastActivityAt: '2026-04-02T00:00:00Z',
 }
 
-async function openAdmin(page: Page, width: number, height: number) {
+async function openAdmin(page: Page, width: number, height: number, householdName = 'Test Household') {
   resetStage()
   stage.kind = 'account'
   stage.operator = true
-  stage.householdName = 'Test Household'
+  stage.householdName = householdName
   await page.setViewportSize({ width, height })
   await install(page)
 }
@@ -402,6 +435,7 @@ for (const viewportWidth of [390, 320]) {
     await assertAppHeaderTouchTargets(page)
     await assertHouseholdsPageTouchTargets(page)
     await assertAdminLayoutWithinViewport(page)
+    await assertRadioRowTouchTarget(page, '.households-admin-page', PM_HOUSEHOLD_RESTOCK_LABELS[0])
   })
 }
 
@@ -456,6 +490,10 @@ for (const viewportWidth of [390, 320]) {
     await assertCornersHit(page.locator('.invite-accept-password-toggle'))
     await assertPasswordToggleInsideField(page)
     await assertInviteInputCornersFocus(page)
+    await assertRadioRowTouchTarget(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
+    await page.locator('.invite-accept-page .mantine-Radio-root', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[1] }).screenshot({
+      path: `/opt/cursor/artifacts/invite-radio-touch-${viewportWidth}.png`,
+    })
     await tapRadioRowUnderCircle(page, '.invite-accept-page', PM_HOUSEHOLD_RESTOCK_LABELS[1])
     const labelBox = await page.locator('.invite-accept-page .mantine-Radio-label', { hasText: PM_HOUSEHOLD_RESTOCK_LABELS[2] }).boundingBox()
     expect(labelBox).not.toBeNull()
@@ -466,12 +504,24 @@ for (const viewportWidth of [390, 320]) {
   })
 }
 
+for (const viewportWidth of [390, 320]) {
+  test(`app header household switcher ellipsizes at ${viewportWidth}x844 with 110% text`, async ({ page }) => {
+    await openAdmin(page, viewportWidth, 844, 'Test Household Pantry Storage')
+    await page.goto('/')
+    await page.addStyleTag({ content: 'html { font-size: 110% !important; }' })
+    await assertHouseholdSwitcherEllipsis(page, 'Test Household Pantry Storage')
+    await page.locator('.app-header .household-switch').screenshot({
+      path: `/opt/cursor/artifacts/header-switcher-110pct-${viewportWidth}.png`,
+    })
+  })
+}
+
 test('app header control heights match master at 1280x800', async ({ page }) => {
   await openAdmin(page, 1280, 800)
   await page.goto('/')
   const withinPx = (value: number, expected: number) => Math.abs(value - expected) <= 0.5
   const menu = await page.getByRole('button', { name: 'Menu' }).boundingBox()
-  const household = await page.getByRole('combobox', { name: 'Household' }).boundingBox()
+  const household = await page.getByRole('combobox', { name: 'Test Household' }).boundingBox()
   const scanQueue = await page.getByRole('link', { name: 'Scan Queue' }).boundingBox()
   const shopping = await page.getByRole('link', { name: 'Shopping List' }).boundingBox()
   expect(menu).not.toBeNull()
@@ -557,9 +607,10 @@ test('admin households Try again is at least 44px tall while retrying', async ({
 test('admin households select a restock radio when tapping the label padding', async ({ page }) => {
   await openAdmin(page, 390, 844)
   await page.goto('/households')
-  const label = page.locator('.households-admin-page .mantine-Radio-label', { hasText: 'Ask before restocking new items' })
-  await expect(label).toBeVisible()
-  const box = await label.boundingBox()
+  const row = page.locator('.households-admin-page .mantine-Radio-root', { hasText: 'Ask before restocking new items' })
+  const body = row.locator('.mantine-Radio-body')
+  await expect(body).toBeVisible()
+  const box = await body.boundingBox()
   expect(box).not.toBeNull()
   await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 10)
   await expect(page.getByRole('radio', { name: 'Ask before restocking new items' })).toBeChecked()

@@ -160,34 +160,35 @@
     min-height: 44px;
   }
 
+  .invite-accept-page .mantine-Radio-root {
+    width: 100%;
+  }
+
   .invite-accept-page .mantine-Radio-body {
     position: relative;
     align-items: center;
+    min-height: 44px;
+    width: 100%;
   }
 
   .invite-accept-page .mantine-Radio-labelWrapper {
-    flex: 1;
-  }
-
-  /* Stretch the label's hit area over the whole 44px row, including the
-     space above and below the radio circle. */
-  .invite-accept-page .mantine-Radio-label::before {
-    content: '';
     position: absolute;
     inset: 0;
   }
 
-  /* Keep the circle itself above the overlay so it still receives its own
-     pointer and hover events. */
   .invite-accept-page .mantine-Radio-inner {
     position: relative;
-    z-index: 1;
+    z-index: 2;
   }
 
   .invite-accept-page .mantine-Radio-label {
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     min-height: 44px;
+    height: 100%;
+    width: 100%;
+    padding-left: calc(var(--radio-size, var(--radio-icon-size, 1.25rem)) + var(--mantine-spacing-sm));
     cursor: pointer;
   }
 }

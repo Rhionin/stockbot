@@ -28,11 +28,13 @@ export function HouseholdSwitcher() {
       </button>
     );
   }
+  const activeLabel =
+    options.find((household) => household.value === auth.activeHouseholdId)?.label ?? 'Household';
   const data = [...options, { value: OTHER_HOUSEHOLDS_VALUE, label: 'Other households…' }];
   return (
     <Select
       className="household-switch"
-      aria-label="Household"
+      aria-label={activeLabel}
       data={data}
       value={auth.activeHouseholdId}
       allowDeselect={false}
