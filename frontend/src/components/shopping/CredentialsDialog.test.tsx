@@ -121,6 +121,25 @@ describe('CredentialsDialog', () => {
     );
   });
 
+  it('shows the admin-only alert without the app keys form when access is denied', () => {
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          accessDenied
+          onDisconnect={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(/^Only the server admin can change the Kroger app keys\.$/);
+    expect(screen.queryByRole('form', { name: 'Kroger credentials' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disconnect Kroger' })).toBeInTheDocument();
+  });
+
   it('shows an admin-only message on forbidden_operator and hides access', async () => {
     const onAccessDenied = vi.fn();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

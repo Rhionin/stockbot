@@ -24,6 +24,11 @@ const canDisconnect = (provider: ProviderInfo) =>
 const suggestionReviewLabel = (count: number) =>
   `Review ${count} group ${count === 1 ? 'suggestion' : 'suggestions'}`;
 
+const providerMenuLabel = (provider: ProviderInfo, canEditAppKeys: boolean) =>
+  (canEditAppKeys
+    ? `Manage ${provider.displayName} connection`
+    : `Disconnect ${provider.displayName}`);
+
 export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
   const navigate = useNavigate();
   const session = useHouseholdSession();
@@ -76,12 +81,15 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
   };
 
   const stage1 = session.auth?.kind === 'account';
-  const isServerAdmin = session.auth?.operator === true;
-  const canEditCredentials = (provider: ProviderInfo) =>
-    !credentialsAccessDenied
-    && canManageProviderAppCredentials(provider, isServerAdmin);
-  const editable = providers.filter(canEditCredentials);
-  const editing = editable.find((provider) => provider.id === editingId) ?? null;
+  const isServerAdmin = session.auth?.kind === 'account' && session.auth.operator === true;
+  const canEditKeys = (provider: ProviderInfo) =>
+    !credentialsAccessDenied && canManageProviderAppCredentials(provider, isServerAdmin);
+  // Household disconnect stays open to every member; only the app keys are admin-only.
+  const manageable = (provider: ProviderInfo) => canEditKeys(provider) || canDisconnect(provider);
+  const editable = providers.filter(manageable);
+  // Keep the dialog open after a 403 so the admin-only message stays readable.
+  const editing = providers.find((provider) => provider.id === editingId
+    && (canManageProviderAppCredentials(provider, isServerAdmin) || canDisconnect(provider))) ?? null;
 
   return (
     <>
@@ -129,7 +137,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
                 setEditingId(provider.id);
               }}
             >
-              {`Manage ${provider.displayName} connection`}
+              {providerMenuLabel(provider, canEditKeys(provider))}
             </Menu.Item>
           ))}
           {!loaded && editable.length === 0 && (
@@ -173,13 +181,15 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
         onClose={() => {
           setEditingId(null);
           setDisconnectError('');
+          setCredentialsAccessDenied(false);
         }}
         onChanged={() => {
           void reload().then(() => onCredentialsChanged());
         }}
+        showCredentialForm={editing !== null && canEditKeys(editing)}
+        accessDenied={credentialsAccessDenied}
         onAccessDenied={() => {
           setCredentialsAccessDenied(true);
-          setEditingId(null);
         }}
         onDisconnect={editing !== null && canDisconnect(editing)
           ? () => {

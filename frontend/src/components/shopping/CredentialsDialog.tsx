@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
 import type { ProviderInfo } from '@stockbot/shared/types';
@@ -14,6 +14,10 @@ export interface CredentialsDialogProps {
   onClose: () => void;
   onChanged: () => void;
   onAccessDenied?: () => void;
+  /** False hides the app-keys form (non-admins get a disconnect-only dialog). */
+  showCredentialForm?: boolean;
+  /** True after the server refused an app-keys change: show why instead of the form. */
+  accessDenied?: boolean;
   onDisconnect?: () => void;
   disconnecting?: boolean;
   disconnectError?: string;
@@ -25,11 +29,19 @@ export const CredentialsDialog = ({
   onClose,
   onChanged,
   onAccessDenied,
+  showCredentialForm = true,
+  accessDenied = false,
   onDisconnect,
   disconnecting = false,
   disconnectError = '',
 }: CredentialsDialogProps) => {
   const saved = provider?.credentials;
+  const accessDeniedRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (accessDenied && opened && provider !== null) {
+      accessDeniedRef.current?.focus();
+    }
+  }, [accessDenied, opened, provider]);
   return (
     <Modal
       opened={opened && provider !== null}
@@ -39,15 +51,28 @@ export const CredentialsDialog = ({
     >
       {opened && provider !== null && (
         <Stack gap="sm">
-          <CredentialForm
-            key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
-            provider={provider}
-            onChanged={onChanged}
-            onAccessDenied={onAccessDenied}
-          />
+          {accessDenied && (
+            <Text
+              ref={accessDeniedRef}
+              tabIndex={-1}
+              c="red"
+              size="sm"
+              role="alert"
+            >
+              {PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE}
+            </Text>
+          )}
+          {!accessDenied && showCredentialForm && (
+            <CredentialForm
+              key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
+              provider={provider}
+              onChanged={onChanged}
+              onAccessDenied={onAccessDenied}
+            />
+          )}
           {onDisconnect !== undefined && (
             <Stack gap="xs">
-              <Divider />
+              {!accessDenied && showCredentialForm && <Divider />}
               <Button
                 size="xs"
                 type="button"

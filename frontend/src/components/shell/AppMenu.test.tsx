@@ -48,13 +48,15 @@ const renderMenu = (
   }));
   return render(
     <MantineProvider env="test">
-      <MemoryRouter initialEntries={['/shopping']}>
-        <Routes>
-          <Route path="/shopping" element={<AppMenu onCredentialsChanged={onCredentialsChanged} />} />
-          <Route path="/diagnostics" element={<h1>Diagnostics</h1>} />
-          <Route path="/inventory" element={<h1>Inventory</h1>} />
-        </Routes>
-      </MemoryRouter>
+      <HouseholdSessionContext.Provider value={adminLanSession()}>
+        <MemoryRouter initialEntries={['/shopping']}>
+          <Routes>
+            <Route path="/shopping" element={<AppMenu onCredentialsChanged={onCredentialsChanged} />} />
+            <Route path="/diagnostics" element={<h1>Diagnostics</h1>} />
+            <Route path="/inventory" element={<h1>Inventory</h1>} />
+          </Routes>
+        </MemoryRouter>
+      </HouseholdSessionContext.Provider>
     </MantineProvider>,
   );
 };
@@ -96,6 +98,22 @@ const testHouseholdSession = (operator: boolean): AuthSession => ({
   operator,
 });
 
+// Most menu tests drive the app keys form, which only the server admin gets.
+const adminLanSession = () => ({
+  required: false,
+  logout: () => undefined,
+  auth: testHouseholdSession(true),
+  replaceAuth: () => undefined,
+});
+
+const noKeys = {
+  clientId: '',
+  redirectUri: '',
+  modality: 'PICKUP' as const,
+  secretSet: false,
+  source: 'none' as const,
+};
+
 describe('AppMenu Kroger app keys visibility', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -130,6 +148,74 @@ describe('AppMenu Kroger app keys visibility', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
     await screen.findByRole('menuitem', { name: 'Look for more groups' });
     expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
+  it('hides app keys from a non-admin primary household member whose source is saved', async () => {
+    renderMenuWithSession([provider()], testHouseholdSession(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
+  it('lets a non-admin Test Household member disconnect Kroger without the app keys', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([provider({ connectionState: 'connected', credentials: noKeys })]));
+      }
+      if (url === '/api/providers/kroger/connection' && init?.method === 'DELETE') return Promise.resolve(jsonResponse({}));
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth: testHouseholdSession(false), replaceAuth: () => undefined }}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
+    expect(await screen.findByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Kroger' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith('/api/providers/kroger/connection', expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  it('keeps the dialog open with the admin-only alert after a 403, then drops the app keys', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse({ error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={adminLanSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    fireEvent.change(await screen.findByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Only the server admin can change the Kroger app keys\.$/);
+    expect(screen.getByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
   });
 });
 
@@ -192,9 +278,11 @@ describe('AppMenu', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(
       <MantineProvider env="test">
-        <MemoryRouter>
-          <AppMenu onCredentialsChanged={onChanged} />
-        </MemoryRouter>
+        <HouseholdSessionContext.Provider value={adminLanSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
       </MantineProvider>,
     );
 
@@ -221,9 +309,11 @@ describe('AppMenu', () => {
     }));
     render(
       <MantineProvider env="test">
-        <MemoryRouter>
-          <AppMenu onCredentialsChanged={onChanged} />
-        </MemoryRouter>
+        <HouseholdSessionContext.Provider value={adminLanSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
       </MantineProvider>,
     );
 

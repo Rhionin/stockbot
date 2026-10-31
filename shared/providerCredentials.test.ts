@@ -46,7 +46,19 @@ describe('canManageProviderAppCredentials', () => {
     }), false)).toBe(false);
   });
 
-  it('allows legacy LAN households to edit when source is environment', () => {
+  it('hides keys from a non-admin primary household member whose source is saved', () => {
+    expect(canManageProviderAppCredentials(kroger({
+      credentials: {
+        clientId: 'fixture-client',
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        secretSet: true,
+        source: 'saved',
+      },
+    }), false)).toBe(false);
+  });
+
+  it('hides keys from non-admins when source is environment', () => {
     expect(canManageProviderAppCredentials(kroger({
       credentials: {
         clientId: 'client',
@@ -55,7 +67,19 @@ describe('canManageProviderAppCredentials', () => {
         secretSet: true,
         source: 'environment',
       },
-    }), false)).toBe(true);
+    }), false)).toBe(false);
+  });
+
+  it('never offers app keys for a provider without OAuth', () => {
+    expect(canManageProviderAppCredentials(kroger({
+      capabilities: {
+        auth: 'none',
+        delivery: 'server_push',
+        confirmation: 'per_request',
+        mutation: 'add_only',
+        identity: 'derived',
+      },
+    }), true)).toBe(false);
   });
 });
 
