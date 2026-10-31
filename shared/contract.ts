@@ -872,6 +872,14 @@ export type HostedErrorCode =
   | 'payload_too_large'
   | 'device_revoked'
   | 'upgrade_required'
+  | 'store_name_taken'
+  | 'store_already_linked'
+  | 'store_not_linked'
+  | 'store_check_failed'
+  | 'store_check_unavailable'
+  | 'kroger_not_connected'
+  | 'reconnect_required'
+  | 'provider_unavailable'
   ;
 
 export interface HostedErrorBody {
@@ -1698,6 +1706,14 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   payload_too_large: 'That file is too large to import.',
   device_revoked: 'This device was disconnected. Pair it again to keep using it.',
   upgrade_required: UPGRADE_REQUIRED_SENTENCE,
+  store_name_taken: 'You already have a store with that name.',
+  store_already_linked: 'Another store is already linked to your online cart.',
+  store_not_linked: "This store isn't linked to an online cart.",
+  store_check_failed: "Couldn't reach the store right now. Try again later.",
+  store_check_unavailable: "Checking isn't on for this store.",
+  kroger_not_connected: 'Connect your store account first.',
+  reconnect_required: "Couldn't connect to your store account. Nothing was sent.",
+  provider_unavailable: "Your store isn't responding. Try again later.",
 };
 
 export function hostedErrorSentence(code: string): string {

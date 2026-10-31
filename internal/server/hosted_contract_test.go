@@ -50,6 +50,14 @@ func existingContractSentences() map[string]string {
 		"account_exists":                "That email already has an account. Sign in, then open the invite again.",
 		"device_revoked":                "This device was disconnected. Pair it again to keep using it.",
 		"upgrade_required":              "Update Stockbot to keep using it.",
+		"store_name_taken":              "You already have a store with that name.",
+		"store_already_linked":          "Another store is already linked to your online cart.",
+		"store_not_linked":              "This store isn't linked to an online cart.",
+		"store_check_failed":            "Couldn't reach the store right now. Try again later.",
+		"store_check_unavailable":       "Checking isn't on for this store.",
+		"kroger_not_connected":          "Connect your store account first.",
+		"reconnect_required":            "Couldn't connect to your store account. Nothing was sent.",
+		"provider_unavailable":          "Your store isn't responding. Try again later.",
 	}
 }
 
@@ -188,6 +196,14 @@ func TestHostedAPIContract(t *testing.T) {
 	} {
 		if !strings.Contains(doc, phrase) {
 			t.Fatalf("contract missing %q", phrase)
+		}
+	}
+	for code, sentence := range existing {
+		if strings.Contains(sentence, "{") {
+			t.Fatalf("hosted sentence for %s contains {: %q", code, sentence)
+		}
+		if strings.Contains(strings.ToLower(sentence), "kroger") {
+			t.Fatalf("hosted sentence for %s contains Kroger: %q", code, sentence)
 		}
 	}
 	for _, row := range rows {
