@@ -198,6 +198,14 @@ func TestHostedAPIContract(t *testing.T) {
 			t.Fatalf("contract missing %q", phrase)
 		}
 	}
+	for code, sentence := range existing {
+		if strings.Contains(sentence, "{") {
+			t.Fatalf("hosted sentence for %s contains {: %q", code, sentence)
+		}
+		if strings.Contains(strings.ToLower(sentence), "kroger") {
+			t.Fatalf("hosted sentence for %s contains Kroger: %q", code, sentence)
+		}
+	}
 	for _, row := range rows {
 		want, ok := existing[row.code]
 		if !ok {
@@ -205,14 +213,6 @@ func TestHostedAPIContract(t *testing.T) {
 		}
 		if row.sentence != want {
 			t.Fatalf("code %s sentence %q, want %q", row.code, row.sentence, want)
-		}
-	}
-	for code, sentence := range existing {
-		if strings.Contains(sentence, "{") {
-			t.Fatalf("hosted sentence for %s contains {: %q", code, sentence)
-		}
-		if strings.Contains(strings.ToLower(sentence), "kroger") {
-			t.Fatalf("hosted sentence for %s contains Kroger: %q", code, sentence)
 		}
 	}
 

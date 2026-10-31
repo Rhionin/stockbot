@@ -1609,7 +1609,7 @@ Kroger product and location lookups run only through the calling household's own
 
 **`lookupsEnabled`** (household) is true only when the server setting is on, the household is connected with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `POST /api/providers/kroger/authorize` today.
 
-Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): no `{…}` placeholders, no retailer names in the sentence (store names come from the UI), and send-panel UX keys **`c.res.reconnectMsg`** / **`c.res.down`** for send failures.
+Hosted error sentences for the eight store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): on **non-send** routes, no `{…}` placeholders and no retailer names in the hosted registry (store names come from the UI). #484 **send** routes still return provider-named text in the JSON **`error`** field on whole-request failures; the send panel shows UX **`c.res.reconnectMsg`** / **`c.res.down`** instead of the hosted registry sentences.
 
 ### Types
 
@@ -1724,10 +1724,10 @@ interface ShoppingListEntryStoreFields {
 
 **Export with `storeId`:** only unbought lines whose run store is `storeId`; the just-in-time check runs first if checking is on (a rejected token refresh ends the send with `409 reconnect_required`, nothing sent). Sendable lines go through `cart.Engine.Provision` as #484 leaves it. Held-back lines never reach the engine or the ledger and appear as `{entryId, itemId, name, quantity, reason:'not_confirmed', checkStatus, checkReason?}`. Without `storeId`: today's behavior for one release with `Deprecation: true`; zero-store households keep calling without it . **`cartUrl`:** from a static, reviewed banner→URL map on `location_chain` (T1 verifies), omitted for unknown banners.
 
-**Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted; [PM on #481](https://github.com/Rhionin/stockbot/issues/481#issuecomment-6546229451)):** Whole-request `409 reconnect_required` or `502 provider_unavailable` (no `results[]`, no ledger change) only **before any batch is accepted**. `502 provider_unavailable` covers non-reconnect OAuth/token failures before the first accepted batch; it is never returned for a cart `PUT` 5xx or timeout, including the first PUT.
+**Send failure rules ([#484](https://github.com/Rhionin/stockbot/pull/484)'s, adopted; [PM on #484](https://github.com/Rhionin/stockbot/pull/484#issuecomment-6546229451)):** Whole-request `409 reconnect_required` or `502 provider_unavailable` (no `results[]`, no ledger change) only **before any batch is accepted**. `502 provider_unavailable` covers non-reconnect OAuth/token failures before the first accepted batch; it is never returned for a cart `PUT` 5xx or timeout, including the first PUT.
 
-- **401/403 on a cart PUT:** if no batch was accepted yet, `409 reconnect_required` with no `results[]` and the connection marked `reauth_required`. After a batch was accepted, `200` with `reconnectRequired: true` and per-line `results[]` (below).
-- **5xx or timeout on a cart PUT (including the first):** always `200` with `results[]`, never `502`. Lines in the failing batch are `unknown` / `request_incomplete`; every later batch is not sent—those lines are `failed` / `request_incomplete`.
+- **401/403 on a cart PUT:** if no batch was accepted yet, `409 reconnect_required` with no `results[]` and the connection marked `reauth_required`. After a batch was accepted, `200` with `reconnectRequired: true` and per-line `results[]`: the refused batch's lines are **`failed` / `reconnect_required`**; every later batch is not sent—those lines are **`failed` / `reconnect_required`**.
+- **5xx or timeout on a cart PUT (including the first):** always `200` with `results[]`, never `502`. Lines in the failing batch are **`unknown` / `request_incomplete`**; every later batch is not sent—those lines are **`failed` / `request_incomplete`**.
 - At most one cart-triggered OAuth refresh retry per send, only before any batch is accepted.
 
 ### Send result reasons (canonical set = #484's public names)
@@ -1740,8 +1740,8 @@ interface ShoppingListEntryStoreFields {
 | `batch_rejected` | `failed` | Store rejected the batch (4xx on cart `PUT`). |
 | `invalid_line` | `failed` | A rejected batch with a line-level error. |
 | `api_error` | `failed` | Fallback. |
-| `reconnect_required` | `unknown` | 401/403 on a cart `PUT`; whole-request `409` when no batch was accepted yet. |
-| `request_incomplete` | `unknown` | 5xx, timeout, or indeterminate disposition on a cart `PUT`, including the first (response stays `200`, never `502`). |
+| `reconnect_required` | `unknown` / `failed` | **`failed`:** 401/403 on a cart `PUT` after a batch was accepted—the refused batch and every later batch not sent (#484 `engine.go`). Whole-request **`409`** when no batch was accepted yet (no `results[]`). (#484 `shared/types.ts` currently declares this reason unknown-only; fix tracked on #484.) |
+| `request_incomplete` | `unknown` / `failed` | **`unknown`:** 5xx, timeout, or indeterminate disposition on the batch that got the PUT (including the first; response stays `200`, never `502`). **`failed`:** lines in batches never sent after that halt. (#484 `shared/types.ts` currently declares both reasons unknown-only; fix tracked on #484.) |
 | `no_per_item_result` | `unknown` | `client_handoff`/`none` providers; never Kroger cart send. |
 
 `heldBack[].reason` is separate, with the single value `not_confirmed`.

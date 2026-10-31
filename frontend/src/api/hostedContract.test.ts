@@ -124,6 +124,13 @@ describe('hosted API contract', () => {
     expect(errorCodes(source).sort()).toEqual([...codes].sort());
   });
 
+  it('keeps hosted error sentences free of placeholders and the word Kroger', () => {
+    for (const [code, sentence] of Object.entries(HOSTED_ERROR_SENTENCES)) {
+      expect(sentence, code).not.toContain('{');
+      expect(sentence.toLowerCase(), code).not.toContain('kroger');
+    }
+  });
+
   it('keeps the approved sentences and does not leave them for PM to confirm', () => {
     expect(doc).not.toContain('proposed, PM to confirm');
     for (const row of registry(doc)) {
@@ -137,13 +144,6 @@ describe('hosted API contract', () => {
     expect(doc).toContain('<APP_BASE_URL>/invite/<code>');
     expect(doc).toContain('https://app.stockbot.rhionin.com');
     expect(doc).toContain('mail.stockbot.rhionin.com');
-  });
-
-  it('keeps hosted error sentences free of placeholders and the word Kroger', () => {
-    for (const [code, sentence] of Object.entries(HOSTED_ERROR_SENTENCES)) {
-      expect(sentence, code).not.toContain('{');
-      expect(sentence.toLowerCase(), code).not.toContain('kroger');
-    }
   });
 
   it('states the tenant rule and the endpoint index count', () => {
