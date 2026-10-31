@@ -73,6 +73,11 @@ func cmdRun(args []string) int {
 	if err := cfg.validate(); err != nil {
 		return fail(err)
 	}
+	if *retries < 0 {
+		fmt.Fprintln(os.Stderr, "busy-retries cannot be negative")
+		return ExitUsage
+	}
+	busyRetries := *retries
 	runner := &Runner{
 		DBPath:            *db,
 		StageDir:          *stage,
@@ -81,7 +86,7 @@ func cmdRun(args []string) int {
 		Recipients:        recipientText,
 		Store:             store,
 		BusyTimeout:       *busy,
-		BusyRetries:       *retries,
+		BusyRetries:       &busyRetries,
 		BusyRetryWait:     *retryWait,
 		ImageDigest:       *digest,
 		PrunePremigration: *prune,

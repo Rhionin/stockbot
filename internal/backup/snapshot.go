@@ -36,6 +36,9 @@ func Snapshot(src, dest string, opts SnapshotOptions) error {
 	if opts.RetryWait <= 0 {
 		opts.RetryWait = 30 * time.Second
 	}
+	if opts.Retries < 0 {
+		return errClass(ExitPreflight, "preflight", "snapshot retry count cannot be negative")
+	}
 	var err error
 	attempts := opts.Retries + 1
 	for attempt := 0; attempt < attempts; attempt++ {

@@ -106,6 +106,31 @@ func TestCLIRunFetchVerifyAndStale(t *testing.T) {
 	}
 }
 
+func TestCLIBusyRetriesRejectsNegative(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := fixtureDB(t)
+	srv := httptest.NewServer(newFakeS3())
+	t.Cleanup(srv.Close)
+	settings := writeSettings(t, srv.URL)
+	recipients := filepath.Join(t.TempDir(), "recipients")
+	if err := os.WriteFile(recipients, []byte(identity.Recipient().String()+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := CLI([]string{
+		"run",
+		"-db", db,
+		"-stage", t.TempDir(),
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-retries", "-1",
+	}); code != ExitUsage {
+		t.Fatalf("code = %d", code)
+	}
+}
+
 func TestCLIRejectsBadInput(t *testing.T) {
 	if code := CLI([]string{"verify"}); code != ExitUsage {
 		t.Fatalf("verify usage %d", code)

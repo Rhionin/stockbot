@@ -100,8 +100,8 @@ func TestSnapshotWhileWritingJournalAndWAL(t *testing.T) {
 				}
 			}()
 			dest := filepath.Join(t.TempDir(), "snap.db")
-			// Match production busy-retries (3) with a shorter per-attempt
-			// wait than nightly backup; delete journal mode needs the retries.
+			// Same retry count as nightly backup (3); shorter per-attempt busy
+			// wait and retry spacing than the CLI defaults (10s and 30s).
 			err = Snapshot(path, dest, SnapshotOptions{BusyTimeout: 5 * time.Second, Retries: 3, RetryWait: 5 * time.Millisecond})
 			close(stop)
 			<-done

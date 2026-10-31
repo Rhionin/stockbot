@@ -35,7 +35,7 @@ type Runner struct {
 	Now               func() time.Time
 	Sleep             func(time.Duration)
 	BusyTimeout       time.Duration
-	BusyRetries       int
+	BusyRetries       *int // nil uses the same default as stockbot-backup run (3)
 	BusyRetryWait     time.Duration
 	UploadRetries     int
 	UploadRetryWait   time.Duration
@@ -502,10 +502,10 @@ func (r *Runner) busyTimeout() time.Duration {
 }
 
 func (r *Runner) busyRetries() int {
-	if r.BusyRetries > 0 {
-		return r.BusyRetries
+	if r.BusyRetries == nil {
+		return 3
 	}
-	return 3
+	return *r.BusyRetries
 }
 
 func (r *Runner) retryWait() time.Duration {
