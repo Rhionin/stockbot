@@ -1,6 +1,7 @@
 package appcred
 
 import (
+	"database/sql"
 	"testing"
 )
 
@@ -127,6 +128,83 @@ func TestLoadServerProviderStartupRules(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, c.run)
 	}
+}
+
+func TestLoadServerProviderNoOperatorExistsBranch(t *testing.T) {
+	const memberID = "01908888-8888-7000-8000-0000000000mb"
+	const opID = "01909999-9999-7000-8000-0000000000op"
+	const rowClientID = "MEMBER-ACTOR-ROW"
+
+	seedPrimaryMemberActorRow := func(t *testing.T, db *sql.DB, primaryID string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at) VALUES (?, 'Member', 'mem@p.test', 'h', 'local', 0, '2026-02-02T00:00:00Z')`, memberID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO provider_app_credentials (id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at) VALUES (?, ?, ?, ?, 'kroger', ?, 's', 'https://x.example/cb', 'PICKUP', '2026-01-01T00:00:00Z')`,
+			primaryID+":kroger", primaryID, primaryID, memberID, rowClientID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loadClientID := func(t *testing.T, v *Vault) (string, bool) {
+		t.Helper()
+		s, _, ok, err := v.LoadServerProvider(t.Context(), "kroger")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if !ok {
+			return "", false
+		}
+		return s.ClientID, true
+	}
+
+	t.Run("loads when no operator ever existed", func(t *testing.T) {
+		vault, db, _, primaryScope, _ := newTestVault(t)
+		seedPrimaryMemberActorRow(t, db, primaryScope.HouseholdID())
+		cid, ok := loadClientID(t, vault)
+		if !ok || cid != rowClientID {
+			t.Fatalf("got ok=%v cid=%q want %q", ok, cid, rowClientID)
+		}
+	})
+
+	t.Run("loads when only operator is soft-deleted", func(t *testing.T) {
+		vault, db, _, primaryScope, _ := newTestVault(t)
+		if _, err := db.Exec(`INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at, deleted_at) VALUES (?, 'Op', 'op@p.test', 'h', 'local', 1, '2026-02-02T00:00:00Z', '2026-03-01T00:00:00Z')`, opID); err != nil {
+			t.Fatal(err)
+		}
+		seedPrimaryMemberActorRow(t, db, primaryScope.HouseholdID())
+		cid, ok := loadClientID(t, vault)
+		if !ok || cid != rowClientID {
+			t.Fatalf("deleted operator: ok=%v cid=%q", ok, cid)
+		}
+	})
+
+	t.Run("loads when former operator demoted", func(t *testing.T) {
+		vault, db, _, primaryScope, _ := newTestVault(t)
+		if _, err := db.Exec(`INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at) VALUES (?, 'Op', 'op@p.test', 'h', 'local', 1, '2026-02-02T00:00:00Z')`, opID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`UPDATE users SET operator = 0 WHERE id = ?`, opID); err != nil {
+			t.Fatal(err)
+		}
+		seedPrimaryMemberActorRow(t, db, primaryScope.HouseholdID())
+		cid, ok := loadClientID(t, vault)
+		if !ok || cid != rowClientID {
+			t.Fatalf("demoted operator: ok=%v cid=%q", ok, cid)
+		}
+	})
+
+	t.Run("rejects member-actor row when active operator exists", func(t *testing.T) {
+		vault, db, _, primaryScope, _ := newTestVault(t)
+		seedPrimaryMemberActorRow(t, db, primaryScope.HouseholdID())
+		if _, err := db.Exec(`INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at) VALUES (?, 'Op', 'op2@p.test', 'h', 'local', 1, '2026-02-02T00:00:00Z')`, opID); err != nil {
+			t.Fatal(err)
+		}
+		_, ok := loadClientID(t, vault)
+		if ok {
+			t.Fatal("expected row rejected when active operator exists")
+		}
+	})
 }
 
 func dbExecHouseholdLegacy(t *testing.T, v *Vault, householdID, legacy string) error {

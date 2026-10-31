@@ -239,15 +239,7 @@ func (h *ProvidersHandler) credentialView(ctx context.Context, scope tenant.Scop
 	snap := sink.PublicAppCredentials()
 	source := "none"
 	if h.Registry != nil && h.Registry.CredentialsConfigured(provider.ID()) && h.EnvFallback.Complete() {
-		if h.Credentials != nil {
-			if _, ok, err := h.Credentials.Public(ctx, primaryScope, providerID); err != nil {
-				return CredentialView{}, err
-			} else if !ok {
-				source = "environment"
-			}
-		} else {
-			source = "environment"
-		}
+		source = "environment"
 	}
 	modality := snap.Modality
 	if modality == "" {
