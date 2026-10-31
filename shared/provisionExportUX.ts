@@ -26,21 +26,59 @@ function yourStore(storeLabel: string, noun: string): string {
 
 /** "your Kroger cart" vs "your store cart" when the name is unknown. */
 export function provisionCartTarget(storeLabel: string): string {
-  return storeLabel === 'your store' ? 'your store cart' : `your ${storeLabel} cart`;
+  return storeLabel === UNKNOWN_STORE ? 'your store cart' : `your ${storeLabel} cart`;
 }
-
-export const PROVISION_GROUP_NOT_ADDED = "Couldn't be sent";
-export const PROVISION_GROUP_NOT_CONFIRMED = 'Not confirmed';
-export const PROVISION_GROUP_SENT = 'Sent';
 
 export const PROVISION_RESULT_PANEL_LABEL = 'Cart send result';
 
+/** Collapsed list length before Show all in the couldn't-be-sent section. */
 export const PROVISION_SHOW_ALL_THRESHOLD = 10;
+
+/** Collapsed list length before Show all under Sent. */
+export const PROVISION_SENT_SHOW_ALL_THRESHOLD = 5;
 
 /** Most rows any one section renders, even after Show all. */
 export const PROVISION_ROW_CAP = 50;
 
-/** Maps each per-line status to the UI section it belongs in (#481). */
+export const PROVISION_CHECK_IN_CART = "It's in my cart";
+export const PROVISION_CHECK_NOT_IN_CART = "It's not";
+export const PROVISION_MARKED_IN_CART = 'Marked as in your cart';
+export const PROVISION_MARKED_NOT_IN_CART = 'Marked as not in your cart';
+export const PROVISION_UNDO_LABEL = 'Undo';
+
+export function provisionCheckInCartAria(itemName: string): string {
+  return `${PROVISION_CHECK_IN_CART}: ${itemName}`;
+}
+
+export function provisionCheckNotInCartAria(itemName: string): string {
+  return `${PROVISION_CHECK_NOT_IN_CART}: ${itemName}`;
+}
+
+export function provisionSendButtonLabel(storeLabel: string): string {
+  return `Send to ${storeLabel}`;
+}
+
+export function provisionSendHint(storeLabel: string): string {
+  return `Sends these items to ${provisionCartTarget(storeLabel)}.`;
+}
+
+export function provisionEmptyListNote(storeLabel: string): string {
+  return `Build the list before sending it to ${storeLabel}.`;
+}
+
+export function provisionSectionHeadingSent(n: number): string {
+  return `Sent (${n})`;
+}
+
+export function provisionSectionHeadingCouldntSend(m: number): string {
+  return `Couldn't be sent (${m})`;
+}
+
+export function provisionSectionHeadingCheck(u: number): string {
+  return `Check these in your cart (${u})`;
+}
+
+/** Maps each per-line status to the UI section it belongs in (#481 / #485 UX). */
 export type ProvisionResultGroup = 'not_added' | 'not_confirmed' | 'sent_or_added';
 
 export function provisionStatusGroup(status: ProvisionResultStatus): ProvisionResultGroup | null {
@@ -50,7 +88,16 @@ export function provisionStatusGroup(status: ProvisionResultStatus): ProvisionRe
   return null;
 }
 
+/** Row-level grouping; `no_per_item_result` belongs in the check section, not failures. */
+export function provisionRowGroup(row: ShoppingListExportResultEntry): ProvisionResultGroup | null {
+  if (row.reason === 'no_per_item_result') return 'not_confirmed';
+  return provisionStatusGroup(row.status);
+}
+
 export function provisionReasonText(storeLabel: string, reason: string | undefined): string {
+  if (reason === 'unavailable') {
+    return `Not available at ${storeLabel} right now`;
+  }
   switch (provisionReasonUXCategory(reason)) {
     case 'no_barcode':
       return 'No barcode saved for this item';
@@ -91,49 +138,72 @@ export function provisionWholeRequestActionLabel(
   return 'Try again';
 }
 
+export interface ProvisionSummaryCounts {
+  N: number;
+  M: number;
+  U: number;
+}
+
 export interface ProvisionSummaryCopy {
-  primary: string;
+  lines: string[];
   cartConfirmLine?: string;
   openCartLabel?: string;
 }
 
+function sentSummaryLine(n: number, storeLabel: string): string {
+  const target = provisionCartTarget(storeLabel);
+  return n === 1 ? `1 item sent to ${target}.` : `${n} items sent to ${target}.`;
+}
+
+function couldntSendSummaryLine(m: number): string {
+  return m === 1 ? "1 couldn't be sent." : `${m} couldn't be sent.`;
+}
+
+function mightNotReachSummaryLine(u: number): string {
+  return u === 1
+    ? '1 might not have reached your cart.'
+    : `${u} might not have reached your cart.`;
+}
+
+/** Summary lines for the cart-send result panel (#485 UX). Never emits "0 items sent". */
 export function provisionSummaryCopy(
-  sentCount: number,
-  couldNotSendCount: number,
+  counts: ProvisionSummaryCounts,
   storeLabel: string,
 ): ProvisionSummaryCopy {
-  const sentPhrase = sentCount === 1
-    ? `1 item sent to ${provisionCartTarget(storeLabel)}.`
-    : `${sentCount} items sent to ${provisionCartTarget(storeLabel)}.`;
+  const { N, M, U } = counts;
+  const lines: string[] = [];
 
-  let primary: string;
-  if (sentCount <= 0 && couldNotSendCount > 0) {
-    const items = couldNotSendCount === 1 ? '1 item' : `${couldNotSendCount} items`;
-    primary = `Nothing was sent to your cart. ${items} couldn't be sent:`;
-  } else if (sentCount > 0 && couldNotSendCount > 0) {
-    const blocked = couldNotSendCount === 1 ? '1' : String(couldNotSendCount);
-    primary = `${sentPhrase} ${blocked} couldn't be sent:`;
-  } else {
-    primary = sentPhrase;
+  if (N === 0 && U === 0) {
+    lines.push('Nothing was sent to your cart.');
+  }
+  if (N >= 1) {
+    lines.push(sentSummaryLine(N, storeLabel));
+  }
+  if (M >= 1) {
+    lines.push(couldntSendSummaryLine(M));
+  }
+  if (U >= 1) {
+    lines.push(mightNotReachSummaryLine(U));
   }
 
-  const cartConfirmLine = sentCount >= 1
-    ? `${provisionStoreLabelSentence(storeLabel)} doesn't confirm each item, so check your cart to make sure everything is there.`
+  const cartConfirmLine = N + U >= 1
+    ? `${storeLabel} doesn't confirm each item, so check your cart to make sure everything is there.`
     : undefined;
 
   return {
-    primary,
+    lines,
     cartConfirmLine,
-    openCartLabel: sentCount >= 1 ? `Open ${storeLabel} cart` : undefined,
+    openCartLabel: N >= 1 ? `Open ${storeLabel} cart` : undefined,
   };
 }
 
 export interface ProvisionResultGroups {
-  sentCount: number;
-  addedCount: number;
+  sentRows: ShoppingListExportResultEntry[];
   notAdded: ShoppingListExportResultEntry[];
-  notConfirmed: ShoppingListExportResultEntry[];
-  couldNotSendCount: number;
+  check: ShoppingListExportResultEntry[];
+  N: number;
+  M: number;
+  U: number;
   wholeRequestError?: ProvisionWholeRequestError;
 }
 
@@ -158,7 +228,7 @@ function legacyNotAdded(report: ProvisionReport): ShoppingListExportResultEntry[
   }));
 }
 
-function legacyNotConfirmed(report: ProvisionReport): ShoppingListExportResultEntry[] {
+function legacyCheck(report: ProvisionReport): ShoppingListExportResultEntry[] {
   const fromEntries = (report.entries ?? [])
     .filter((entry) => entry.outcome === 'unknown')
     .map(entryRowToResult);
@@ -186,51 +256,76 @@ function entryRowToResult(entry: ProvisionEntryResult): ShoppingListExportResult
   };
 }
 
-function countSent(report: ProvisionReport, rows: ShoppingListExportResultEntry[] | null): number {
-  if (typeof report.sentCount === 'number') return report.sentCount;
-  if (rows !== null) {
-    return rows.filter((row) => row.status === 'sent').length;
+function partitionRows(rows: ShoppingListExportResultEntry[]) {
+  const sentRows: ShoppingListExportResultEntry[] = [];
+  const notAdded: ShoppingListExportResultEntry[] = [];
+  const check: ShoppingListExportResultEntry[] = [];
+  for (const row of rows) {
+    const group = provisionRowGroup(row);
+    if (group === 'sent_or_added') sentRows.push(row);
+    else if (group === 'not_added') notAdded.push(row);
+    else if (group === 'not_confirmed') check.push(row);
   }
-  return report.exported ?? 0;
+  return { sentRows, notAdded, check };
 }
 
-function countAdded(report: ProvisionReport, rows: ShoppingListExportResultEntry[] | null): number {
-  if (typeof report.addedCount === 'number') return report.addedCount;
-  if (rows !== null) {
-    return rows.filter((row) => row.status === 'added').length;
+function countSentFromReport(report: ProvisionReport, sentRows: ShoppingListExportResultEntry[]): number {
+  if (sentRows.length > 0) return sentRows.length;
+  if (typeof report.sentCount === 'number' || typeof report.addedCount === 'number') {
+    return (report.sentCount ?? 0) + (report.addedCount ?? 0);
   }
-  return 0;
+  return report.exported ?? 0;
 }
 
 /** Groups export rows for web/mobile UI (#481). Falls back to legacy lists when results[] is absent. */
 export function groupProvisionResults(report: ProvisionReport): ProvisionResultGroups {
   const rows = modernResults(report);
-  const notAdded = rows !== null
-    ? rows.filter((row) => row.status === 'skipped' || row.status === 'failed')
-    : legacyNotAdded(report);
-  const notConfirmed = rows !== null
-    ? rows.filter((row) => row.status === 'unknown')
-    : legacyNotConfirmed(report);
+  let sentRows: ShoppingListExportResultEntry[];
+  let notAdded: ShoppingListExportResultEntry[];
+  let check: ShoppingListExportResultEntry[];
 
-  const sentCount = countSent(report, rows);
-  const addedCount = countAdded(report, rows);
-  const couldNotSendCount = notAdded.length;
+  if (rows !== null) {
+    ({ sentRows, notAdded, check } = partitionRows(rows));
+  } else {
+    sentRows = [];
+    notAdded = legacyNotAdded(report);
+    check = legacyCheck(report);
+    const exported = report.exported ?? 0;
+    if (exported > 0 && sentRows.length === 0) {
+      // Legacy servers only expose a count, not names.
+      for (let i = 0; i < exported; i += 1) {
+        sentRows.push({
+          entryId: '',
+          itemId: '',
+          name: `Item ${i + 1}`,
+          quantity: 1,
+          status: 'sent',
+        });
+      }
+    }
+  }
+
+  const N = countSentFromReport(report, sentRows);
+  const M = notAdded.length;
+  const U = check.length;
 
   let wholeRequestError: ProvisionWholeRequestError | undefined;
-  if (isWholeRequestError(report.error) && sentCount === 0 && addedCount === 0) {
+  if (isWholeRequestError(report.error) && N === 0) {
     wholeRequestError = report.error;
   }
 
   return {
-    sentCount,
-    addedCount,
+    sentRows,
     notAdded,
-    notConfirmed,
-    couldNotSendCount,
+    check,
+    N,
+    M,
+    U,
     wholeRequestError,
   };
 }
 
+/** @deprecated Use groups.N */
 export function provisionSentTotal(groups: ProvisionResultGroups): number {
-  return groups.sentCount + groups.addedCount;
+  return groups.N;
 }

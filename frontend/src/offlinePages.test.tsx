@@ -196,7 +196,7 @@ describe('offline sentence appears once on each page', () => {
       run: async () => {
         vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
         shell(<ProvisionButton provider={null} entries={[shoppingEntry()]} onFinished={() => undefined} />);
-        fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Send to your store' }));
         expect(await screen.findByText(OFFLINE_SENTENCE)).toBeInTheDocument();
         expectOnce();
       },

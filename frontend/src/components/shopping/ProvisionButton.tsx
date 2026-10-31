@@ -3,7 +3,12 @@ import { Button, Loader, Stack, Text } from '@mantine/core';
 import { authorizeProvider, exportShoppingList, resolveUnknownProvision } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
-import { provisionCartTarget, provisionStoreLabel } from '@stockbot/shared/provisionExportUX';
+import {
+  provisionEmptyListNote,
+  provisionSendButtonLabel,
+  provisionSendHint,
+  provisionStoreLabel,
+} from '@stockbot/shared/provisionExportUX';
 import { provisionQuantity } from './outcome';
 import { ProvisionResultPanel } from './ProvisionResultPanel';
 
@@ -36,6 +41,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
   const staged = entries.some((entry) => provisionQuantity(entry) >= 1);
   const enabled = canProvision(provider, entries, inFlight);
   const storeLabel = provisionStoreLabel(provider?.displayName);
+  const sendLabel = provisionSendButtonLabel(storeLabel);
 
   const provision = async () => {
     setInFlight(true);
@@ -62,12 +68,8 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
   const resolve = async (entryId: string, reachedProvider: boolean) => {
     if (provider === null || entryId === '') return;
     setRequestError('');
-    try {
-      await resolveUnknownProvision(entryId, provider.id, reachedProvider);
-      onFinished();
-    } catch (requestError) {
-      setRequestError(inlineFailure(requestError, 'Unable to record that outcome.') ?? '');
-    }
+    await resolveUnknownProvision(entryId, provider.id, reachedProvider);
+    onFinished();
   };
 
   const reconnect = async () => {
@@ -91,21 +93,21 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
     <div className="provision-control">
       <Button
         className="shopping-send"
-        // Not Mantine `loading`: it fades the label, so "Sending…" would be hidden.
         leftSection={inFlight ? <Loader size="xs" color="currentColor" /> : undefined}
         aria-busy={inFlight || undefined}
+        aria-label={inFlight ? 'Sending…' : sendLabel}
         disabled={!enabled || inFlight}
         onClick={() => void provision()}
       >
-        {inFlight ? 'Sending…' : 'Send to Kroger'}
+        {inFlight ? 'Sending…' : sendLabel}
       </Button>
       <Text className="shopping-send-hint" size="sm" c="dimmed">
-        {`Adds these items to ${provisionCartTarget(storeLabel)}.`}
+        {provisionSendHint(storeLabel)}
       </Text>
       {hasNotices && (
         <Stack className="provision-notices" gap="sm">
           {showEmpty && (
-            <Text size="sm">Build the list before sending it to Kroger.</Text>
+            <Text size="sm">{provisionEmptyListNote(storeLabel)}</Text>
           )}
           {showUnconfigured && provider !== null && (
             <Text size="sm" c="dimmed">{provider.displayName} is unconfigured.</Text>
@@ -129,7 +131,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
               onDismiss={() => setReport(null)}
               onTryAgain={() => void provision()}
               onReconnect={() => void reconnect()}
-              onResolveUnknown={(entryId, reached) => void resolve(entryId, reached)}
+              onResolveUnknown={(entryId, reached) => resolve(entryId, reached)}
             />
           )}
         </Stack>

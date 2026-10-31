@@ -40,6 +40,9 @@ const viewports = [
 type ExportCase =
   | 'ideal'
   | 'all-sent'
+  | 'all-unknown'
+  | 'mixed'
+  | 'unavailable'
   | 'loading'
   | 'many-skipped'
   | 'nothing-added'
@@ -75,6 +78,22 @@ const idealExport = () => ({
 
 const exportBodies: Record<ExportCase, Record<string, unknown>> = {
   ideal: idealExport(),
+  mixed: idealExport(),
+  'all-unknown': {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Oats', quantity: 1, status: 'unknown', reason: 'no_per_item_result' },
+      { entryId: 'b', itemId: '2', name: 'Rice', quantity: 1, status: 'unknown' },
+    ],
+  },
+  unavailable: {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Soup', quantity: 1, status: 'skipped', reason: 'unavailable' },
+    ],
+  },
   'all-sent': {
     provider: 'kroger',
     exported: 2,
@@ -221,25 +240,55 @@ for (const viewport of viewports) {
     const panel = page.getByRole('status', { name: 'Cart send result' })
     await expect(panel).toBeVisible()
     await expect(panel).toHaveAttribute('aria-live', 'polite')
-    await expect(panel.getByText("Couldn't be sent", { exact: true })).toBeVisible()
-    await expect(panel.getByText('Not confirmed')).toBeVisible()
+    await expect(panel.getByText("Couldn't be sent (2)")).toBeVisible()
+    await expect(panel.getByText('Check these in your cart (1)')).toBeVisible()
     if (viewport.label === '390') {
-      await saveShot(page, 'ideal-390.png')
+      // ideal-390.png captured by dedicated screenshot test
     } else {
       await saveShot(page, 'ideal-1280.png')
     }
   })
 }
 
-const singleViewportCases: { case: ExportCase; file: string; expectText: RegExp | string }[] = [
+const singleViewportCases: { case: ExportCase; file: string; role?: 'button'; expectText: RegExp | string }[] = [
   { case: 'all-sent', file: 'all-sent-390.png', expectText: /2 items sent to your Kroger cart/ },
   { case: 'many-skipped', file: 'many-skipped-390.png', expectText: 'Show all 12' },
   { case: 'nothing-added', file: 'nothing-added-390.png', expectText: /Nothing was sent to your cart/ },
   { case: 'batch-rejected', file: 'batch-rejected-390.png', expectText: /didn't accept this item/ },
   { case: 'error-try-again', file: 'error-try-again-390.png', expectText: "Kroger isn't responding right now" },
   { case: 'reconnect', file: 'reconnect-390.png', expectText: "Couldn't connect to your Kroger account" },
-  { case: 'legacy', file: 'legacy-390.png', expectText: 'It reached Kroger' },
+  { case: 'legacy', file: 'legacy-390.png', role: 'button', expectText: "It's in my cart: Oats" },
 ]
+
+const uxShots: { case: ExportCase; file: string }[] = [
+  { case: 'ideal', file: 'ideal-390.png' },
+  { case: 'all-unknown', file: 'all-unknown-390.png' },
+  { case: 'mixed', file: 'mixed-390.png' },
+  { case: 'unavailable', file: 'unavailable-390.png' },
+]
+
+for (const shot of uxShots) {
+  test(`screenshot ${shot.file}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await installShoppingMocks(page, { exportBody: exportBodies[shot.case] })
+    await openShoppingAndSend(page)
+    await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
+    await saveShot(page, shot.file)
+  })
+}
+
+test('screenshot mixed at 320px and 125% text', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.style.fontSize = '125%'
+    })
+  })
+  await installShoppingMocks(page, { exportBody: exportBodies.mixed })
+  await openShoppingAndSend(page)
+  await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
+  await saveShot(page, 'mixed-320-125.png')
+})
 
 for (const scenario of singleViewportCases) {
   test(`export ${scenario.case} at 390px`, async ({ page }) => {
@@ -248,7 +297,11 @@ for (const scenario of singleViewportCases) {
     await openShoppingAndSend(page)
     const panel = page.getByRole('status', { name: 'Cart send result' })
     await expect(panel).toBeVisible()
-    await expect(panel.getByText(scenario.expectText)).toBeVisible()
+    if (scenario.role === 'button') {
+      await expect(panel.getByRole('button', { name: scenario.expectText })).toBeVisible()
+    } else {
+      await expect(panel.getByText(scenario.expectText)).toBeVisible()
+    }
     await saveShot(page, scenario.file)
   })
 }
