@@ -473,6 +473,16 @@ test('blocked Send waits for resolve before export and shows hint', async ({ pag
   await blockedResolve
   await expect(page.locator('.provision-blocked-send-hint')).toHaveText("One item didn't save. Fix it below, then send again.")
   await expect.poll(() => order).toEqual(['export', 'resolve'])
+  // The hint sits right under the Send hint, above the result panel, so it is on screen.
+  const sendHintBox = await page.locator('.shopping-send-hint').boundingBox()
+  const hintBox = await page.locator('.provision-blocked-send-hint').boundingBox()
+  const panelBox = await panel.boundingBox()
+  expect(hintBox!.y).toBeGreaterThanOrEqual(sendHintBox!.y + sendHintBox!.height - 1)
+  expect(hintBox!.y + hintBox!.height).toBeLessThanOrEqual(panelBox!.y + 1)
+  // Right-aligned under the Send hint, not auto-placed into a narrower column.
+  expect(Math.abs(hintBox!.x + hintBox!.width - (sendHintBox!.x + sendHintBox!.width))).toBeLessThanOrEqual(2)
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeFocused()
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeInViewport()
   await saveShot(page, 'blocked-send-390.png')
 })
 
@@ -557,3 +567,41 @@ for (const scenario of [
     })
   }
 }
+
+test('saving keeps the row height and focus in the row; Try again takes focus and works', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.setViewportSize({ width: 390, height: 844 })
+  let release: () => void = () => undefined
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    resolveCalls += 1
+    if (resolveCalls === 1) {
+      await new Promise<void>((done) => { release = done })
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom', code: 'internal' }) })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entryId: 'a' }) })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  const row = panel.locator('.provision-check-row', { hasText: 'Oats' })
+  const undo = panel.getByRole('button', { name: 'Undo: Oats' })
+  await expect(undo).toBeFocused()
+  const before = (await row.boundingBox())?.height ?? 0
+  // Let the undo window end on its own while Undo has focus.
+  await page.waitForRequest((request) => request.url().includes('unknown-resolution'), { timeout: 20_000 })
+  await expect(row.locator('.provision-row-saving-spinner')).toBeVisible()
+  await expect(undo).toHaveCount(0)
+  expect(Math.abs(((await row.boundingBox())?.height ?? 0) - before)).toBeLessThan(1)
+  await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? '')).toContain('provision-check-row')
+  release()
+  const retry = panel.getByRole('button', { name: 'Try again: Oats' })
+  await expect(retry).toBeFocused()
+  expect((await retry.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+  await retry.press('Enter')
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Undo: Oats' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? '')).toContain('provision-check-row')
+})

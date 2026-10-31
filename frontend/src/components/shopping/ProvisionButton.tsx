@@ -62,11 +62,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
   const provision = async () => {
     setInFlight(true);
     // Commit pending cart checks before the export, so the server ledger sees them first.
-    let flush = flushRef.current;
-    if (flush === null && showResultPanel) {
-      await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
-      flush = flushRef.current;
-    }
+    const flush = flushRef.current;
     const flushed = flush?.({ blockedSend: true }) ?? (!showResultPanel);
     if (flushed !== true && !(await flushed)) {
       setInFlight(false);
@@ -179,6 +175,9 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
               flushRef={flushRef}
               onBlockedSave={(failedIds) => setBlockedSendHint(provisionBlockedSendHint(failedIds.length))}
               onBlockedSaveCleared={() => setBlockedSendHint('')}
+              onBlockedSaveRemaining={(failedCount) => {
+                setBlockedSendHint((hint) => (hint === '' ? '' : provisionBlockedSendHint(failedCount)));
+              }}
             />
           )}
         </Stack>

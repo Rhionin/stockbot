@@ -544,6 +544,7 @@ describe('ProvisionButton check-row undo window (ledger advance is not reversibl
       vi.useRealTimers();
     }
     expect(await within(row).findByText("Couldn't save that.")).toBeInTheDocument();
+    expect(within(row).getByRole('alert')).toHaveTextContent("Couldn't save that.");
     expect(within(row).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: "It's not: Oats" })).not.toBeInTheDocument();
     expect(within(panel).queryByText('Marked as not in your cart')).not.toBeInTheDocument();
@@ -681,10 +682,13 @@ describe('ProvisionButton check-row undo window (ledger advance is not reversibl
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      within(row).getByRole('button', { name: 'Undo: Oats' }).focus();
       const markedGroup = within(row).getByText('Marked as in your cart').closest('.provision-check-marked') as HTMLElement;
       const heightBefore = markedGroup.getBoundingClientRect().height;
       await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
-      expect(row.querySelector('.provision-row-saving-spinner')).toBeTruthy();
+      expect(row.querySelector('.provision-row-saving-spinner')).toHaveAttribute('aria-hidden', 'true');
+      expect(within(row).queryByRole('button', { name: 'Undo: Oats' })).not.toBeInTheDocument();
+      expect(within(row).getByText('Marked as in your cart')).toBeInTheDocument();
       expect(markedGroup.getBoundingClientRect().height).toBeCloseTo(heightBefore, 0);
     } finally {
       vi.useRealTimers();
@@ -725,6 +729,213 @@ describe('ProvisionButton check-row undo window (ledger advance is not reversibl
     await waitFor(() => expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument());
     expect(within(panel).queryByRole('button', { name: 'Undo: Oats' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("One item didn't save. Fix it below, then send again.")).not.toBeInTheDocument());
+  });
+});
+
+const twoUnknown = {
+  provider: 'kroger',
+  exported: 0,
+  results: [
+    { entryId: 'sli-oats', itemId: 'oats', name: 'Oats', quantity: 1, status: 'unknown' },
+    { entryId: 'sli-jam', itemId: 'jam', name: 'Jam', quantity: 1, status: 'unknown' },
+  ],
+};
+
+// Scripted mock: each entry's resolve calls pop a status from its queue (200 once the queue is empty).
+const stubScripted = (body: unknown, failures: Record<string, number[]>) => {
+  const calls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('unknown-resolution')) {
+      const id = decodeURIComponent(url.split('/').find((part) => part.startsWith('sli-')) ?? '');
+      calls.push(`resolve:${id}`);
+      const status = failures[id]?.shift() ?? 200;
+      return status === 200 ? jsonResponse({ entryId: id }) : jsonResponse({ error: 'boom' }, status);
+    }
+    if (url.includes('/export') && init?.method === 'POST') {
+      calls.push('export');
+      return jsonResponse(body);
+    }
+    return jsonResponse({});
+  }));
+  return calls;
+};
+
+const sendNow = () => fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+const ONE_HINT = "One item didn't save. Fix it below, then send again.";
+const TWO_HINT = "2 items didn't save. Fix them below, then send again.";
+const nextFrame = async () => {
+  await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+};
+
+describe('ProvisionButton blocked send and failed saves (63cf468 review)', () => {
+  it('a second Send retries the failed save and still blocks while it fails', async () => {
+    const calls = stubScripted(oneUnknown, { 'sli-oats': [500, 500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    sendNow();
+    await waitFor(() => expect(screen.getByText(ONE_HINT)).toBeInTheDocument());
+    sendNow();
+    await waitFor(() => expect(calls.filter((c) => c === 'resolve:sli-oats')).toHaveLength(2));
+    await flush();
+    expect(calls.filter((c) => c === 'export')).toHaveLength(1);
+    expect(screen.getByText(ONE_HINT)).toBeInTheDocument();
+    sendNow();
+    await waitFor(() => expect(calls.filter((c) => c === 'export')).toHaveLength(2));
+    expect(calls.slice(-2)).toEqual(['resolve:sli-oats', 'export']);
+  });
+
+  it('Send after a failed timer save retries the save before exporting', async () => {
+    const calls = stubScripted(oneUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument());
+    sendNow();
+    await waitFor(() => expect(calls.filter((c) => c === 'export')).toHaveLength(2));
+    expect(calls).toEqual(['export', 'resolve:sli-oats', 'resolve:sli-oats', 'export']);
+  });
+
+  it('the plural hint counts down and stays until every failed save is fixed', async () => {
+    const calls = stubScripted(twoUnknown, { 'sli-oats': [500], 'sli-jam': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Jam" }));
+    sendNow();
+    await waitFor(() => expect(screen.getByText(TWO_HINT)).toBeInTheDocument());
+    expect(screen.getByText(TWO_HINT).closest('[role="alert"]')).toBeTruthy();
+    fireEvent.click(within(panel).getByRole('button', { name: 'Try again: Oats' }));
+    await waitFor(() => expect(screen.getByText(ONE_HINT)).toBeInTheDocument());
+    expect(within(panel).getByRole('button', { name: 'Try again: Jam' })).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole('button', { name: 'Try again: Jam' }));
+    await waitFor(() => expect(screen.queryByText(ONE_HINT)).not.toBeInTheDocument());
+    expect(calls.filter((c) => c === 'export')).toHaveLength(1);
+  });
+
+  it('a second dismiss with a still-failing save keeps the panel', async () => {
+    stubScripted(oneUnknown, { 'sli-oats': [500, 500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument());
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    await flush();
+    await nextFrame();
+    expect(screen.getByRole('status', { name: 'Cart send result' })).toBeInTheDocument();
+    expect(screen.queryByText(ONE_HINT)).not.toBeInTheDocument();
+  });
+
+  it('a double tap on Try again sends one save', async () => {
+    const calls = stubScripted(oneUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Dismiss cart send result' }));
+    const retry = await within(panel).findByRole('button', { name: 'Try again: Oats' });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await waitFor(() => expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument());
+    expect(calls.filter((c) => c === 'resolve:sli-oats')).toHaveLength(2);
+  });
+
+  it('after Try again works, focus stays on the row, not body', async () => {
+    stubScripted(oneUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+    sendNow();
+    const retry = await within(panel).findByRole('button', { name: 'Try again: Oats' });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    const row = retry.closest('.provision-check-row') as HTMLElement;
+    fireEvent.click(retry);
+    await waitFor(() => expect(within(panel).getByText('Marked as in your cart')).toBeInTheDocument());
+    await nextFrame();
+    expect(document.activeElement).toBe(row);
+  });
+
+  it('a blocked Send scrolls the failing row into view', async () => {
+    stubScripted(twoUnknown, { 'sli-jam': [500] });
+    const scrolled: Element[] = [];
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) { scrolled.push(this); });
+    try {
+      renderButton();
+      sendNow();
+      const panel = await screen.findByRole('status', { name: 'Cart send result' });
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Jam" }));
+      sendNow();
+      await waitFor(() => expect(screen.getByText(ONE_HINT)).toBeInTheDocument());
+      const jamRow = within(panel).getByText('Jam').closest('.provision-check-row');
+      await waitFor(() => expect(scrolled).toContain(jamRow));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a failed timer save does not pull focus from another row', async () => {
+    stubScripted(twoUnknown, { 'sli-oats': [500] });
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    const jam = within(panel).getByRole('button', { name: "It's in my cart: Jam" });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      await nextFrame();
+      jam.focus();
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Try again: Oats' })).toBeInTheDocument());
+    await nextFrame();
+    expect(document.activeElement).toBe(jam);
+  });
+
+  it('a timer save does not pull focus from another row', async () => {
+    let finishSave: (r: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('unknown-resolution')) {
+        return new Promise<Response>((resolve) => { finishSave = resolve; });
+      }
+      if (url.includes('/export') && init?.method === 'POST') return jsonResponse(twoUnknown);
+      return jsonResponse({});
+    }));
+    renderButton();
+    sendNow();
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const jam = within(panel).getByRole('button', { name: "It's in my cart: Jam" });
+    try {
+      fireEvent.click(within(panel).getByRole('button', { name: "It's in my cart: Oats" }));
+      await nextFrame();
+      jam.focus();
+      await act(async () => { vi.advanceTimersByTime(PROVISION_RESOLVE_UNDO_MS); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await nextFrame();
+    expect(document.activeElement).toBe(jam);
+    await act(async () => {
+      finishSave(new Response(JSON.stringify({ entryId: 'sli-oats' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    await nextFrame();
+    expect(document.activeElement).toBe(jam);
   });
 });
 

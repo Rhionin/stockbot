@@ -322,6 +322,29 @@ a.group-row {
     "notices notices notices";
 }
 
+/* A blocked Send hint sits right under the Send hint, above the result panel. */
+.shopping-toolbar:has(.provision-blocked-send-hint) {
+  grid-template-areas:
+    "title fill send"
+    "hint hint hint"
+    "blocked blocked blocked";
+}
+
+.shopping-toolbar:has(.provision-blocked-send-hint):has(.provision-notices) {
+  grid-template-areas:
+    "title fill send"
+    "hint hint hint"
+    "blocked blocked blocked"
+    "notices notices notices";
+}
+
+.shopping-toolbar .provision-blocked-send-hint {
+  grid-area: blocked;
+  justify-self: end;
+  margin: 0;
+  text-align: right;
+}
+
 .shopping-toolbar-title {
   grid-area: title;
   margin: 0;
@@ -383,7 +406,8 @@ a.group-row {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  min-height: 1.25rem;
+  /* Same height with Undo, the save spinner, or neither, so the row does not jump. */
+  min-height: 44px;
 }
 
 .provision-row-saving-spinner {
@@ -417,6 +441,23 @@ a.group-row {
       "title title"
       "fill send"
       "hint hint"
+      "notices notices";
+  }
+
+  .shopping-toolbar:has(.provision-blocked-send-hint) {
+    grid-template-areas:
+      "title title"
+      "fill send"
+      "hint hint"
+      "blocked blocked";
+  }
+
+  .shopping-toolbar:has(.provision-blocked-send-hint):has(.provision-notices) {
+    grid-template-areas:
+      "title title"
+      "fill send"
+      "hint hint"
+      "blocked blocked"
       "notices notices";
   }
 }

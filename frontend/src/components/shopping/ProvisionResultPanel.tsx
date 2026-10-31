@@ -48,6 +48,8 @@ export interface ProvisionResultPanelProps {
   onBlockedSave?: (failedEntryIds: string[]) => void;
   /** Called when every pending row save has succeeded again. */
   onBlockedSaveCleared?: () => void;
+  /** A retried save worked but others still failed; the Send hint count goes down. */
+  onBlockedSaveRemaining?: (failedCount: number) => void;
   flushRef?: MutableRefObject<((options?: { blockedSend?: boolean }) => true | Promise<boolean>) | null>;
 }
 
@@ -110,6 +112,7 @@ export const ProvisionResultPanel = ({
   flushRef,
   onBlockedSave,
   onBlockedSaveCleared,
+  onBlockedSaveRemaining,
 }: ProvisionResultPanelProps) => {
   const [showAllNotAdded, setShowAllNotAdded] = useState(false);
   const [showAllSent, setShowAllSent] = useState(false);
@@ -149,20 +152,24 @@ export const ProvisionResultPanel = ({
     : groups.sentRows.slice(0, PROVISION_SENT_SHOW_ALL_THRESHOLD);
   const sentHidden = (groups?.sentRows.length ?? 0) - sentVisible.length;
 
-  const focusRowRetry = (entryId: string) => {
-    requestAnimationFrame(() => {
-      const row = rowRefs.current[entryId];
-      const retry = row?.querySelector('.provision-row-retry');
-      if (retry instanceof HTMLButtonElement) {
-        retry.focus();
-      }
-    });
-  };
+  // The alert renders after the failed save settles, so wait a few frames for Try again.
+  const focusRowRetry = useCallback((entryId: string) => {
+    const attempt = (framesLeft: number) => {
+      requestAnimationFrame(() => {
+        const retry = rowRefs.current[entryId]?.querySelector('.provision-row-retry');
+        if (retry instanceof HTMLButtonElement) {
+          retry.focus();
+        } else if (framesLeft > 0) {
+          attempt(framesLeft - 1);
+        }
+      });
+    };
+    attempt(5);
+  }, []);
 
-  const focusRowContainer = (entryId: string) => {
-    requestAnimationFrame(() => {
-      rowRefs.current[entryId]?.focus();
-    });
+  const rowHasFocus = (entryId: string) => {
+    const row = rowRefs.current[entryId];
+    return row !== null && row !== undefined && row.contains(document.activeElement);
   };
 
   const focusRow = (entryId: string) => {
@@ -193,11 +200,7 @@ export const ProvisionResultPanel = ({
     if (blockedSend) {
       onBlockedSave?.(failedIds);
     }
-  }, [onBlockedSave]);
-
-  const clearBlockedIfClean = useCallback(() => {
-    onBlockedSaveCleared?.();
-  }, [onBlockedSaveCleared]);
+  }, [focusRowRetry, onBlockedSave]);
 
   const persistChoice = useCallback((entryId: string, choice: CheckResolution, ok: boolean) => {
     if (ok) {
@@ -207,11 +210,12 @@ export const ProvisionResultPanel = ({
       setRowErrors((prev) => {
         const next = { ...prev };
         delete next[entryId];
-        if (Object.keys(next).length === 0) {
-          queueMicrotask(() => onBlockedSaveCleared?.());
-        }
         return next;
       });
+      // The Send hint stays until every failed save is fixed.
+      const remaining = Object.keys(failedRetry.current).length;
+      if (remaining === 0) onBlockedSaveCleared?.();
+      else onBlockedSaveRemaining?.(remaining);
       return;
     }
     failedRetry.current[entryId] = choice;
@@ -221,11 +225,14 @@ export const ProvisionResultPanel = ({
       return next;
     });
     setRowErrors((prev) => ({ ...prev, [entryId]: PROVISION_RESOLVE_FAILED_LEAD }));
-  }, [onBlockedSaveCleared]);
+  }, [onBlockedSaveCleared, onBlockedSaveRemaining]);
 
   const saveChoice = useCallback((entryId: string, choice: CheckResolution): Promise<boolean> => {
+    const existing = inFlight.current[entryId];
+    if (existing !== undefined) return existing;
     setSavingRows((prev) => ({ ...prev, [entryId]: true }));
-    focusRowContainer(entryId);
+    // Undo or Try again is about to hide; keep focus in the row, never on body. Leave focus alone elsewhere.
+    if (rowHasFocus(entryId)) rowRefs.current[entryId]?.focus();
     const saving = resolveRef.current(entryId, choice === 'in').then(
       () => {
         persistChoice(entryId, choice, true);
@@ -242,11 +249,12 @@ export const ProvisionResultPanel = ({
         delete next[entryId];
         return next;
       });
-      focusRow(entryId);
+      // On success the row container keeps focus; on failure Try again takes it.
+      if (rowHasFocus(entryId) && failedRetry.current[entryId] !== undefined) focusRowRetry(entryId);
     });
     inFlight.current[entryId] = saving;
     return saving;
-  }, [persistChoice]);
+  }, [focusRowRetry, persistChoice]);
 
   const commit = useCallback((entryId: string): Promise<boolean> => {
     const item = pending.current[entryId];
@@ -264,9 +272,7 @@ export const ProvisionResultPanel = ({
   const retryRowSave = (entryId: string) => {
     const choice = failedRetry.current[entryId];
     if (choice === undefined) return;
-    void saveChoice(entryId, choice).then((ok) => {
-      if (ok) clearBlockedIfClean();
-    });
+    void saveChoice(entryId, choice);
   };
 
   // Returns true at once when nothing is waiting, so a new send clears the old result without a tick.
@@ -277,6 +283,11 @@ export const ProvisionResultPanel = ({
     }
     for (const id of Object.keys(pending.current)) {
       jobs.push({ id, promise: commit(id) });
+    }
+    // A save that already failed must not be dropped: retry it before dismiss or a new send.
+    for (const [id, choice] of Object.entries(failedRetry.current)) {
+      if (jobs.some((job) => job.id === id)) continue;
+      jobs.push({ id, promise: saveChoice(id, choice) });
     }
     if (jobs.length === 0) {
       onBlockedSaveCleared?.();
@@ -292,10 +303,12 @@ export const ProvisionResultPanel = ({
       onBlockedSaveCleared?.();
       return true;
     });
-  }, [announceBlocked, commit, onBlockedSaveCleared]);
+  }, [announceBlocked, commit, onBlockedSaveCleared, saveChoice]);
 
   const flushAllRef = useRef(flushAll);
-  flushAllRef.current = flushAll;
+  useLayoutEffect(() => {
+    flushAllRef.current = flushAll;
+  });
 
   useLayoutEffect(() => {
     if (flushRef !== undefined) {
@@ -454,7 +467,7 @@ export const ProvisionResultPanel = ({
               <div
                 key={entryId || row.name}
                 className="provision-check-row"
-                tabIndex={saving ? -1 : undefined}
+                tabIndex={-1}
                 ref={(node) => {
                   if (entryId !== '') rowRefs.current[entryId] = node;
                 }}
@@ -469,6 +482,7 @@ export const ProvisionResultPanel = ({
                       size="compact-sm"
                       variant="light"
                       aria-label={provisionRowRetryAria(row.name)}
+                      loading={saving}
                       onClick={() => retryRowSave(entryId)}
                     >
                       {PROVISION_RESOLVE_TRY_AGAIN}
