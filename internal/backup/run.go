@@ -35,7 +35,7 @@ type Runner struct {
 	Now               func() time.Time
 	Sleep             func(time.Duration)
 	BusyTimeout       time.Duration
-	BusyRetries       int
+	BusyRetries       *int // nil uses the same default as stockbot-backup run (3)
 	BusyRetryWait     time.Duration
 	UploadRetries     int
 	UploadRetryWait   time.Duration
@@ -108,7 +108,7 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	snap := plan.Dir + "/snap.db"
 	if err := Snapshot(r.DBPath, snap, SnapshotOptions{
 		BusyTimeout: r.busyTimeout(),
-		Retries:     r.BusyRetries,
+		Retries:     r.busyRetries(),
 		RetryWait:   r.retryWait(),
 		Sleep:       r.sleep,
 	}); err != nil {
@@ -499,6 +499,13 @@ func (r *Runner) busyTimeout() time.Duration {
 		return r.BusyTimeout
 	}
 	return 10 * time.Second
+}
+
+func (r *Runner) busyRetries() int {
+	if r.BusyRetries == nil {
+		return 3
+	}
+	return *r.BusyRetries
 }
 
 func (r *Runner) retryWait() time.Duration {

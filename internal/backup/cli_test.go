@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/Rhionin/stockbot/internal/app"
 )
 
 func TestCLIRunFetchVerifyAndStale(t *testing.T) {
@@ -106,6 +107,140 @@ func TestCLIRunFetchVerifyAndStale(t *testing.T) {
 	}
 }
 
+func TestCLIBusyRetriesRejectsNegative(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := fixtureDB(t)
+	srv := httptest.NewServer(newFakeS3())
+	t.Cleanup(srv.Close)
+	settings := writeSettings(t, srv.URL)
+	recipients := filepath.Join(t.TempDir(), "recipients")
+	if err := os.WriteFile(recipients, []byte(identity.Recipient().String()+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := CLI([]string{
+		"run",
+		"-db", db,
+		"-stage", t.TempDir(),
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-retries", "-1",
+	}); code != ExitUsage {
+		t.Fatalf("code = %d", code)
+	}
+}
+
+func cliRunFixture(t *testing.T) (settings, recipients string) {
+	t.Helper()
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newFakeS3())
+	t.Cleanup(srv.Close)
+	settings = writeSettings(t, srv.URL)
+	recipients = filepath.Join(t.TempDir(), "recipients")
+	if err := os.WriteFile(recipients, []byte(identity.Recipient().String()+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return settings, recipients
+}
+
+// TestCLIBusyRetriesZero pins cmdRun wiring: -busy-retries 0 must not retry (N5).
+func TestCLIBusyRetriesZero(t *testing.T) {
+	const retryWait = 7 * time.Millisecond
+	path := fixtureDB(t)
+	holder, err := app.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	holder.SetMaxOpenConns(1)
+	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	settings, recipients := cliRunFixture(t)
+	busySleeps := 0
+	cmdRunRunnerHook = func(r *Runner) {
+		r.Sleep = func(d time.Duration) {
+			if d == retryWait {
+				busySleeps++
+			}
+		}
+	}
+	t.Cleanup(func() { cmdRunRunnerHook = nil })
+	stderr := captureFD(t, &os.Stderr)
+	code := CLI([]string{
+		"run",
+		"-db", path,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "20ms",
+		"-busy-retries", "0",
+		"-busy-retry-wait", "7ms",
+	})
+	if code != ExitPreflight {
+		t.Fatalf("code = %d stderr=%q", code, stderr())
+	}
+	if busySleeps != 0 {
+		t.Fatalf("busy sleeps = %d, want 0 for -busy-retries 0", busySleeps)
+	}
+	if !strings.Contains(stderr(), "class=preflight") {
+		t.Fatalf("stderr = %q", stderr())
+	}
+}
+
+func TestCLIBusyRetriesTwo(t *testing.T) {
+	const retryWait = 7 * time.Millisecond
+	path := fixtureDB(t)
+	holder, err := app.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	holder.SetMaxOpenConns(1)
+	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	settings, recipients := cliRunFixture(t)
+	busySleeps := 0
+	released := false
+	cmdRunRunnerHook = func(r *Runner) {
+		r.Sleep = func(d time.Duration) {
+			if d != retryWait {
+				return
+			}
+			busySleeps++
+			if busySleeps == 2 && !released {
+				_, _ = holder.Exec(`COMMIT`)
+				released = true
+			}
+		}
+	}
+	t.Cleanup(func() { cmdRunRunnerHook = nil })
+	code := CLI([]string{
+		"run",
+		"-db", path,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "20ms",
+		"-busy-retries", "2",
+		"-busy-retry-wait", "7ms",
+	})
+	if code != ExitOK {
+		t.Fatalf("code = %d busySleeps=%d", code, busySleeps)
+	}
+	if busySleeps != 2 {
+		t.Fatalf("busy sleeps = %d, want 2 for -busy-retries 2", busySleeps)
+	}
+}
+
 func TestCLIRejectsBadInput(t *testing.T) {
 	if code := CLI([]string{"verify"}); code != ExitUsage {
 		t.Fatalf("verify usage %d", code)
@@ -194,7 +329,7 @@ func TestFetchNewestAndConfigOverrides(t *testing.T) {
 		t.Fatal(list)
 	}
 	(&Runner{}).sleep(0)
-	if (&Runner{}).busyTimeout() != 10*time.Second || (&Runner{}).retryWait() != 30*time.Second {
+	if (&Runner{}).busyTimeout() != 10*time.Second || (&Runner{}).busyRetries() != 3 || (&Runner{}).retryWait() != 30*time.Second {
 		t.Fatal("defaults")
 	}
 	if (&Runner{}).version() == "" || (&Runner{}).uploadAttempts() != 3 || (&Runner{}).uploadWait() != time.Second {

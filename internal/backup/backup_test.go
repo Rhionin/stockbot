@@ -65,6 +65,13 @@ func TestSnapshotSetsBusyTimeout(t *testing.T) {
 	if ms != 1500 {
 		t.Fatalf("busy_timeout = %d", ms)
 	}
+	var tempStore int
+	if err := db.QueryRow(`PRAGMA temp_store`).Scan(&tempStore); err != nil {
+		t.Fatal(err)
+	}
+	if tempStore != 2 { // MEMORY
+		t.Fatalf("temp_store = %d", tempStore)
+	}
 }
 
 func TestSnapshotWhileWritingJournalAndWAL(t *testing.T) {
@@ -93,7 +100,9 @@ func TestSnapshotWhileWritingJournalAndWAL(t *testing.T) {
 				}
 			}()
 			dest := filepath.Join(t.TempDir(), "snap.db")
-			err = Snapshot(path, dest, SnapshotOptions{BusyTimeout: 2 * time.Second, Retries: 2, RetryWait: time.Millisecond})
+			// Same retry count as nightly backup (3); shorter per-attempt busy
+			// wait and retry spacing than the CLI defaults (10s and 30s).
+			err = Snapshot(path, dest, SnapshotOptions{BusyTimeout: 5 * time.Second, Retries: 3, RetryWait: 5 * time.Millisecond})
 			close(stop)
 			<-done
 			if err != nil {
