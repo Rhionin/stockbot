@@ -93,13 +93,15 @@ async function assertInviteInputCornersFocus(page: Page) {
   }
   const passwordInput = page.getByRole('textbox', { name: 'Password', exact: true })
   await expect(passwordInput).toBeVisible()
-  const passwordBox = await passwordInput.boundingBox()
+  // Tap the visible bordered field, not the inner input, so a short inner input fails.
+  const passwordBox = await page.locator('.invite-accept-page .mantine-PasswordInput-input').boundingBox()
   expect(passwordBox).not.toBeNull()
   for (const [x, y] of [
     [passwordBox!.x + inset, passwordBox!.y + inset],
     [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + inset],
     [passwordBox!.x + inset, passwordBox!.y + passwordBox!.height - inset],
     [passwordBox!.x + passwordBox!.width - inset, passwordBox!.y + passwordBox!.height - inset],
+    [passwordBox!.x + passwordBox!.width / 2, passwordBox!.y + passwordBox!.height - inset],
   ]) {
     await page.mouse.click(x, y)
     await expect(passwordInput).toBeFocused()
