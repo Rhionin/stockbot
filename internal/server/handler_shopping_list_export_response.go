@@ -66,17 +66,27 @@ func publicProvisionReason(outcome cart.Outcome, reason cart.OutcomeReason) stri
 	}
 }
 
+// legacyProvisionEntryOutcome is the entries[].outcome value master returned.
+func legacyProvisionEntryOutcome(outcome cart.Outcome, reason cart.OutcomeReason) string {
+	if outcome == cart.OutcomeFailed && reason == cart.ReasonInvalidLine {
+		return string(cart.OutcomeUnknown)
+	}
+	return string(outcome)
+}
+
 // legacyProvisionOutcomeReason maps post-#484 engine reasons to the exact
 // entries[].outcomeReason strings master emitted (string(entry.Reason) there).
 func legacyProvisionOutcomeReason(outcome cart.Outcome, reason cart.OutcomeReason) string {
 	if outcome == cart.OutcomeConfirmed {
 		return ""
 	}
+	if outcome == cart.OutcomeFailed && reason == cart.ReasonInvalidLine {
+		return string(cart.ReasonRequestIncomplete)
+	}
 	switch reason {
 	case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonNoProductIdentity:
 		return "no_product_identity"
-	case cart.ReasonBatchRejected, cart.ReasonProviderRejected, cart.ReasonInvalidLine,
-		cart.ReasonUnavailable:
+	case cart.ReasonBatchRejected, cart.ReasonProviderRejected, cart.ReasonUnavailable:
 		return "provider_rejected"
 	case cart.ReasonNoPerItemResult:
 		return "no_per_item_result"
@@ -109,13 +119,14 @@ func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.Confirm
 		reason := publicProvisionReason(entry.Outcome, entry.Reason)
 		detail := entry.Detail
 		legacyReason := legacyProvisionOutcomeReason(entry.Outcome, entry.Reason)
+		legacyOutcome := legacyProvisionEntryOutcome(entry.Outcome, entry.Reason)
 
 		provisionEntries = append(provisionEntries, ProvisionEntry{
 			EntryID:       entry.EntryID,
 			ItemID:        entry.ItemID,
 			Name:          entry.Name,
 			Quantity:      entry.Quantity,
-			Outcome:       string(entry.Outcome),
+			Outcome:       legacyOutcome,
 			OutcomeReason: legacyReason,
 			Detail:        detail,
 		})
@@ -129,10 +140,10 @@ func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.Confirm
 			Detail:   detail,
 		})
 
-		switch entry.Outcome {
-		case cart.OutcomeFailed:
+		switch legacyOutcome {
+		case string(cart.OutcomeFailed):
 			failedItems = append(failedItems, entry.Name)
-		case cart.OutcomeUnknown:
+		case string(cart.OutcomeUnknown):
 			unknownItems = append(unknownItems, entry.Name)
 		}
 

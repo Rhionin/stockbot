@@ -1,9 +1,13 @@
 package cart
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -554,6 +558,27 @@ func TestProvision_PartialIndeterminateHaltsLaterBatchesAsFailed(t *testing.T) {
 	assert.Equal(t, 1, failed)
 }
 
+func TestProvision_RejectedWithErrorUsesInvalidLineForCanonical(t *testing.T) {
+	env := newProvisionEnv(t)
+	ctx := context.Background()
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, &fakeScript{
+		dispositions:  []ResultDisposition{DispositionRejected},
+		addErrors:     []error{errors.New("invalid quantity 0 (must be 1-999)")},
+		addStatuses:   []int{400},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	})
+	require.NoError(t, env.registry.Register(provider))
+	_, entryID := env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+
+	report, err := env.engine.Provision(ctx, env.scope, "fake-none")
+	require.NoError(t, err)
+	require.Len(t, report.Entries, 1)
+	assert.Equal(t, OutcomeFailed, report.Entries[0].Outcome)
+	assert.Equal(t, ReasonInvalidLine, report.Entries[0].Reason)
+	assert.Equal(t, entryID, report.Entries[0].EntryID)
+}
+
 func TestProvision_Put1IndeterminateNoErrorHaltsRemainingBatches(t *testing.T) {
 	env := newProvisionEnv(t)
 	ctx := context.Background()
@@ -633,6 +658,7 @@ func TestProvision_Put1IndeterminateHaltsRemainingBatches(t *testing.T) {
 func TestProvision_PreSendOAuthFailureLeavesLedgerEmpty(t *testing.T) {
 	env := newProvisionEnv(t)
 	ctx := context.Background()
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
 	caps := derivedNoneCaps(ConfirmPerRequest)
 	caps.Auth = AuthOAuth2
 	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
@@ -640,7 +666,7 @@ func TestProvision_PreSendOAuthFailureLeavesLedgerEmpty(t *testing.T) {
 		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
 	})
 	require.NoError(t, env.registry.Register(provider))
-	itemID, _ := env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
+	_, _ = env.seedShortfall(t, "prod-1", "Milk", "0001", 1)
 	expired := time.Now().UTC().Add(-time.Hour)
 	require.NoError(t, env.directory.Write(ctx, env.scope, &connection.Connection{
 		Provider:     "fake-oauth",
@@ -653,17 +679,26 @@ func TestProvision_PreSendOAuthFailureLeavesLedgerEmpty(t *testing.T) {
 	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
 	var reconnect *ErrReconnectRequired
 	require.ErrorAs(t, err, &reconnect)
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
+}
 
-	ledger, err := env.ledger.ListForProvider(ctx, env.scope, "fake-oauth")
+func snapshotProviderLedger(t *testing.T, env *provisionEnv, providerID ProviderID) map[string]LedgerEntry {
+	t.Helper()
+	ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, providerID)
 	require.NoError(t, err)
-	if ledger[itemID].Requested != 0 {
-		t.Fatalf("ledger requested = %d, want 0", ledger[itemID].Requested)
-	}
+	return ledger
+}
+
+func assertProviderLedgerUnchanged(t *testing.T, before, after map[string]LedgerEntry) {
+	t.Helper()
+	assert.Equal(t, before, after, "ledger must be unchanged on whole-request 409")
 }
 
 func TestProvision_FirstPut401MarksReauthRequired(t *testing.T) {
 	env := newProvisionEnv(t)
 	ctx := context.Background()
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
 	caps := derivedNoneCaps(ConfirmPerRequest)
 	caps.Auth = AuthOAuth2
 	provider := newFakeProvider("fake-oauth", caps, &fakeScript{
@@ -685,6 +720,8 @@ func TestProvision_FirstPut401MarksReauthRequired(t *testing.T) {
 	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
 	var reconnect *ErrReconnectRequired
 	require.ErrorAs(t, err, &reconnect)
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
 	conn, err := env.directory.Read(ctx, env.scope, "fake-oauth")
 	require.NoError(t, err)
 	if conn.State != connection.StateReauthRequired {
@@ -695,6 +732,10 @@ func TestProvision_FirstPut401MarksReauthRequired(t *testing.T) {
 func TestProvision_WholeRequest409WhenMarkReauthFails(t *testing.T) {
 	env := newProvisionEnv(t)
 	ctx := context.Background()
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
 	if _, err := env.db.Exec(`
 		CREATE TRIGGER block_reauth_write409 BEFORE UPDATE ON provider_connections
 		WHEN NEW.state = 'reauth_required'
@@ -724,6 +765,11 @@ func TestProvision_WholeRequest409WhenMarkReauthFails(t *testing.T) {
 	_, err := env.engine.Provision(ctx, env.scope, "fake-oauth")
 	var reconnect *ErrReconnectRequired
 	require.ErrorAs(t, err, &reconnect)
+	if !strings.Contains(logBuf.String(), "mark reauth_required before reconnect response") {
+		t.Fatalf("log = %q, want mark reauth_required before reconnect response", logBuf.String())
+	}
+	ledgerAfter := snapshotProviderLedger(t, env, "fake-oauth")
+	assertProviderLedgerUnchanged(t, ledgerBefore, ledgerAfter)
 }
 
 func TestProvision_PartialReconnectStill200WhenMarkReauthFails(t *testing.T) {

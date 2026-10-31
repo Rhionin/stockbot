@@ -16,6 +16,7 @@ import (
 )
 
 var exportProvisionFake carttest.Calls
+var exportLedgerBefore map[string]cart.LedgerEntry
 
 func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 	tests := []handlerTestCase{
@@ -120,6 +121,52 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 			},
 		},
 		{
+			name: "export rejected validation error keeps master legacy entry fields",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-badqty", "Bad qty", "item-badqty")
+				insertManualShoppingItem(env.T, env.DB, "sli-badqty", "user-1", "item-badqty", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "badqty", "prod-badqty", "global", ""); err != nil {
+					env.T.Fatalf("barcode: %v", err)
+				}
+				script := carttest.NewScript().
+					WithAddOutcomes(carttest.AddOutcome{
+						Result: cart.ProvisionResult{Disposition: cart.DispositionRejected, Status: 400},
+						Err:    errors.New("invalid quantity 1000 (must be 1-999)"),
+					}).
+					WithIdentityLookup("badqty", cart.ProductIdentity("SKU-BAD"))
+				provider := carttest.NewFake(cart.Capabilities{
+					Auth:         cart.AuthNone,
+					Delivery:     cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest,
+					Mutation:     cart.MutateAddOnly,
+					Identity:     cart.IdentityDerived,
+				}, script)
+				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true), cart.WithBatchSize(1)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+				exportLedgerBefore = snapshotExportLedger(env, "test-none-server_push")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"test-none-server_push"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+					{path: "$.failedCount", value: float64(1)},
+					{path: "$.unknownCount", value: float64(0)},
+					{path: "$.entries[0].outcome", value: "unknown"},
+					{path: "$.entries[0].outcomeReason", value: "request_incomplete"},
+					{path: "$.results[0].status", value: "failed"},
+					{path: "$.results[0].reason", value: "invalid_line"},
+				},
+				bodyContains: []string{`"unknownItems":["Bad qty"]`},
+			},
+			afterRequest: func(env testEnv) {
+				assertExportLedgerUnchanged(env, exportLedgerBefore, "test-none-server_push")
+			},
+		},
+		{
 			name: "export oauth refresh revoked returns reconnect required envelope",
 			setup: func(env testEnv) {
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-auth", "Milk", "item-auth")
@@ -151,6 +198,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				}); err != nil {
 					env.T.Fatalf("connection: %v", err)
 				}
+				exportLedgerBefore = snapshotExportLedger(env, "test-oauth2_authorization_code-server_push")
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -177,7 +225,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if conn.State != connection.StateReauthRequired {
 					env.T.Fatalf("connection state = %q, want reauth_required", conn.State)
 				}
-				assertExportLedgerEmpty(env, "test-oauth2_authorization_code-server_push")
+				assertExportLedgerUnchanged(env, exportLedgerBefore, "test-oauth2_authorization_code-server_push")
 			},
 		},
 		{
@@ -220,6 +268,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				}); err != nil {
 					env.T.Fatalf("connection: %v", err)
 				}
+				exportLedgerBefore = snapshotExportLedger(env, "test-oauth2_authorization_code-server_push")
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -229,6 +278,9 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.code", value: "reconnect_required"},
 				},
+			},
+			afterRequest: func(env testEnv) {
+				assertExportLedgerUnchanged(env, exportLedgerBefore, "test-oauth2_authorization_code-server_push")
 			},
 		},
 		{
@@ -682,6 +734,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				provider := registerOAuthExportFake(env, script, 1)
 				exportProvisionFake = provider.(carttest.Calls)
 				writeExpiredOAuthConnection(env, "access-401", "refresh-401")
+				exportLedgerBefore = snapshotExportLedger(env, "test-oauth2_authorization_code-server_push")
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -701,15 +754,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if conn.State != connection.StateReauthRequired {
 					env.T.Fatalf("connection state = %q, want reauth_required", conn.State)
 				}
-				ledger, err := cart.NewLedger(env.DB).ListForProvider(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push")
-				if err != nil {
-					env.T.Fatal(err)
-				}
-				for itemID, row := range ledger {
-					if row.Requested != 0 {
-						env.T.Fatalf("ledger[%q].Requested = %d, want 0", itemID, row.Requested)
-					}
-				}
+				assertExportLedgerUnchanged(env, exportLedgerBefore, "test-oauth2_authorization_code-server_push")
 			},
 		},
 		{
@@ -989,13 +1034,39 @@ func TestShoppingListExportResultEntryIDsUnique(t *testing.T) {
 
 func assertExportLedgerEmpty(env testEnv, providerID string) {
 	env.T.Helper()
+	assertExportLedgerUnchanged(env, nil, providerID)
+}
+
+func snapshotExportLedger(env testEnv, providerID string) map[string]cart.LedgerEntry {
+	env.T.Helper()
 	ledger, err := cart.NewLedger(env.DB).ListForProvider(context.Background(), primaryScope(env.T, env.DB), cart.ProviderID(providerID))
 	if err != nil {
 		env.T.Fatal(err)
 	}
-	for itemID, row := range ledger {
-		if row.Requested != 0 {
-			env.T.Fatalf("ledger[%q].Requested = %d, want 0 after nothing-sent failure", itemID, row.Requested)
+	return ledger
+}
+
+func assertExportLedgerUnchanged(env testEnv, before map[string]cart.LedgerEntry, providerID string) {
+	env.T.Helper()
+	after := snapshotExportLedger(env, providerID)
+	if before == nil {
+		for itemID, row := range after {
+			if row.Requested != 0 {
+				env.T.Fatalf("ledger[%q].Requested = %d, want 0 after nothing-sent failure", itemID, row.Requested)
+			}
+		}
+		return
+	}
+	if len(before) != len(after) {
+		env.T.Fatalf("ledger row count = %d, want %d", len(after), len(before))
+	}
+	for itemID, want := range before {
+		got, ok := after[itemID]
+		if !ok {
+			env.T.Fatalf("ledger missing item %q after export", itemID)
+		}
+		if got != want {
+			env.T.Fatalf("ledger[%q] = %+v, want %+v", itemID, got, want)
 		}
 	}
 }

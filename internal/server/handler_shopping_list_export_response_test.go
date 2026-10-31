@@ -67,7 +67,7 @@ func TestLegacyProvisionOutcomeReasonMatchesMasterEngine(t *testing.T) {
 		{"batch rejected", cart.OutcomeFailed, cart.ReasonBatchRejected, "provider_rejected"},
 		{"per-line not confirmed", cart.OutcomeFailed, cart.ReasonProviderRejected, "provider_rejected"},
 		{"per-line unavailable engine reason", cart.OutcomeFailed, cart.ReasonUnavailable, "provider_rejected"},
-		{"invalid line", cart.OutcomeFailed, cart.ReasonInvalidLine, "provider_rejected"},
+		{"rejected with client validation error", cart.OutcomeFailed, cart.ReasonInvalidLine, "request_incomplete"},
 		{"handoff no per-item result", cart.OutcomeUnknown, cart.ReasonNoPerItemResult, "no_per_item_result"},
 		{"confirm none", cart.OutcomeUnknown, cart.ReasonNoPerItemResult, "no_per_item_result"},
 		{"provider unavailable", cart.OutcomeFailed, cart.ReasonProviderUnavailable, "request_incomplete"},
@@ -82,6 +82,21 @@ func TestLegacyProvisionOutcomeReasonMatchesMasterEngine(t *testing.T) {
 			assert.Equal(t, tc.masterLegacy, got)
 		})
 	}
+}
+
+func TestLegacyRejectedValidationUsesMasterUnknownOutcome(t *testing.T) {
+	provisionEntries, results, failedItems, unknownItems, counts := buildProvisionExportViews([]cart.EntryOutcome{
+		{Name: "Bad qty", Outcome: cart.OutcomeFailed, Reason: cart.ReasonInvalidLine},
+	}, cart.ConfirmPerRequest)
+	require.Len(t, provisionEntries, 1)
+	assert.Equal(t, "unknown", provisionEntries[0].Outcome)
+	assert.Equal(t, "request_incomplete", provisionEntries[0].OutcomeReason)
+	assert.Equal(t, "failed", results[0].Status)
+	assert.Equal(t, "invalid_line", results[0].Reason)
+	assert.Empty(t, failedItems)
+	assert.Equal(t, []string{"Bad qty"}, unknownItems)
+	assert.Equal(t, 1, counts.FailedCount)
+	assert.Equal(t, 0, counts.UnknownCount)
 }
 
 func TestLegacyPerLineUnconfirmedMapsToMasterProviderRejected(t *testing.T) {
