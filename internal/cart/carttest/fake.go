@@ -11,14 +11,21 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 )
 
+// AddOutcome queues one ServerPush.Add result.
+type AddOutcome struct {
+	Result cart.ProvisionResult
+	Err    error
+}
+
 // Script queues per-request dispositions, per-line results for per_line,
-// identity lookups, and token-exchange outcomes, all in memory.
+// identity lookups, token-exchange outcomes, and optional Add outcomes.
 type Script struct {
 	mu              sync.Mutex
 	dispositions    []cart.ResultDisposition
 	lineResults     map[cart.ProductIdentity]bool
 	identityLookups map[string]cart.ProductIdentity
 	tokenExchanges  []TokenExchangeResult
+	addOutcomes     []AddOutcome
 }
 
 // TokenExchangeResult records the result of a token exchange.
@@ -73,6 +80,12 @@ func (s *Script) WithTokenExchangeError(err error) *Script {
 		TokenSet: cart.TokenSet{},
 		Err:      err,
 	})
+	return s
+}
+
+// WithAddOutcomes sets explicit Add results in order. When empty, Add uses dispositions as before.
+func (s *Script) WithAddOutcomes(outcomes ...AddOutcome) *Script {
+	s.addOutcomes = append(s.addOutcomes, outcomes...)
 	return s
 }
 
@@ -158,6 +171,12 @@ func (f serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Prov
 	f.core.recordCall("Add")
 	f.core.script.mu.Lock()
 	defer f.core.script.mu.Unlock()
+
+	if len(f.core.script.addOutcomes) > 0 {
+		outcome := f.core.script.addOutcomes[0]
+		f.core.script.addOutcomes = f.core.script.addOutcomes[1:]
+		return outcome.Result, outcome.Err
+	}
 
 	disposition := cart.DispositionAccepted
 	if len(f.core.script.dispositions) > 0 {
