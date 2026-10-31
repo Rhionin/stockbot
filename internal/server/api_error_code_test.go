@@ -173,6 +173,15 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		}
 	})
 
+	t.Run("reconnect_required", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		writeStatusError(nil, rec, http.StatusConflict, ReconnectRequired("Kroger"))
+		const want = `{"error":"Couldn't connect to your Kroger account. Nothing was sent.","code":"reconnect_required","provider":"Kroger"}`
+		if rec.Body.String() != want {
+			t.Fatalf("body = %s", rec.Body.String())
+		}
+	})
+
 	t.Run("rate_limited", func(t *testing.T) {
 		db := setupTestDB(t)
 		setupDir := t.TempDir()
@@ -565,7 +574,7 @@ func exprCarriesCode(expr ast.Expr) bool {
 			return false
 		}
 		switch ident.Name {
-		case "BadRequest", "NotFound", "Conflict", "ConfirmationMismatch", "ProviderUnavailable", "ConflictDetails", "ConflictSuggestions":
+		case "BadRequest", "NotFound", "Conflict", "ConfirmationMismatch", "ProviderUnavailable", "ReconnectRequired", "ConflictDetails", "ConflictSuggestions":
 			return true
 		}
 	}
@@ -578,7 +587,7 @@ func codeArg(expr ast.Expr) bool {
 		switch v.Name {
 		case "codeUnauthorized", "codeValidation", "codeConfirmationMismatch", "codeRateLimited",
 			"codePayloadTooLarge", "codeNotFound", "codeConflict", "codeMethodNotAllowed",
-			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "codeForbiddenOperator", "authNotConfiguredCode", "CodeInternal":
+			"codeInternal", "codeSyncReadOnly", "codeProviderUnavailable", "codeForbiddenOperator", "codeReconnectRequired", "authNotConfiguredCode", "CodeInternal":
 			return true
 		default:
 			return false
@@ -593,7 +602,7 @@ func codeArg(expr ast.Expr) bool {
 		switch s {
 		case "unauthorized", "validation", "confirmation_mismatch", "rate_limited", "payload_too_large",
 			"not_found", "conflict", "method_not_allowed", "internal", "sync_read_only",
-			"provider_unavailable", "forbidden_operator", "updating", "busy", "no_space", "auth_not_configured":
+			"provider_unavailable", "forbidden_operator", "reconnect_required", "updating", "busy", "no_space", "auth_not_configured":
 			return true
 		default:
 			return false

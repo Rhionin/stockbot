@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -38,6 +39,7 @@ const (
 	codeSyncReadOnly         = "sync_read_only"
 	codeProviderUnavailable  = "provider_unavailable"
 	codeForbiddenOperator    = auth.CodeForbiddenOperator
+	codeReconnectRequired    = "reconnect_required"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -95,6 +97,16 @@ func ProviderUnavailable(provider string) error {
 		Code:      http.StatusBadGateway,
 		Message:   provider + " isn't responding. Try again later.",
 		ErrorCode: codeProviderUnavailable,
+		Provider:  provider,
+	}
+}
+
+// ReconnectRequired is a 409 when the store connection must be renewed before sending.
+func ReconnectRequired(provider string) error {
+	return &HTTPError{
+		Code:      http.StatusConflict,
+		Message:   fmt.Sprintf("Couldn't connect to your %s account. Nothing was sent.", provider),
+		ErrorCode: codeReconnectRequired,
 		Provider:  provider,
 	}
 }
