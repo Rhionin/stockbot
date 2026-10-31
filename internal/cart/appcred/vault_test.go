@@ -2,6 +2,7 @@ package appcred
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ const (
 	householdBChannelKey = "abcdef0123456789abcdef0123456789"
 )
 
-func newTestVault(t *testing.T) (*Vault, context.Context, tenant.Scope, tenant.Scope) {
+func newTestVault(t *testing.T) (*Vault, *sql.DB, context.Context, tenant.Scope, tenant.Scope) {
 	db, err := app.OpenSQLite(":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -40,11 +41,11 @@ func newTestVault(t *testing.T) (*Vault, context.Context, tenant.Scope, tenant.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewVault(db), ctx, scopeA, scopeB
+	return NewVault(db), db, ctx, scopeA, scopeB
 }
 
 func TestVaultLoadAndPublicMissingProvider(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 	const provider = "kroger"
 
 	saved, ok, err := vault.Load(ctx, scope, provider)
@@ -65,7 +66,7 @@ func TestVaultLoadAndPublicMissingProvider(t *testing.T) {
 }
 
 func TestVaultSaveRequiresSecretOnFirstSave(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 
 	err := vault.Save(ctx, scope, Saved{
 		ProviderID:  "kroger",
@@ -94,7 +95,7 @@ func TestVaultSaveRequiresSecretOnFirstSave(t *testing.T) {
 }
 
 func TestVaultPublicAndLoadAfterSave(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 	const provider = "kroger"
 
 	if err := vault.Save(ctx, scope, Saved{
@@ -128,7 +129,7 @@ func TestVaultPublicAndLoadAfterSave(t *testing.T) {
 }
 
 func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 	if err := vault.Save(ctx, scope, Saved{
 		ProviderID:   "kroger",
 		ClientID:     "client",
@@ -163,7 +164,7 @@ func TestSaveKeepsSecretWhenOmitted(t *testing.T) {
 }
 
 func TestVaultClearRemovesSavedRow(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 	const provider = "kroger"
 
 	if err := vault.Save(ctx, scope, Saved{
@@ -190,7 +191,7 @@ func TestVaultClearRemovesSavedRow(t *testing.T) {
 }
 
 func TestVaultClearMissingProviderIsNoOp(t *testing.T) {
-	vault, ctx, scope, _ := newTestVault(t)
+	vault, _, ctx, scope, _ := newTestVault(t)
 	if err := vault.Clear(ctx, scope, "no-such-provider"); err != nil {
 		t.Fatalf("Clear missing provider: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestVaultClearMissingProviderIsNoOp(t *testing.T) {
 }
 
 func TestVaultHouseholdIsolation(t *testing.T) {
-	vault, ctx, scopeA, scopeB := newTestVault(t)
+	vault, _, ctx, scopeA, scopeB := newTestVault(t)
 	const provider = "kroger"
 
 	saveA := Saved{
@@ -293,6 +294,154 @@ func TestVaultHouseholdIsolation(t *testing.T) {
 	loadedA, ok, err = vault.Load(ctx, scopeA, provider)
 	if err != nil || !ok || loadedA.ClientID != "household-a-client-2" {
 		t.Fatalf("A Load after B clear ok=%v err=%v saved=%+v", ok, err, loadedA)
+	}
+}
+
+func TestVaultLoadServerProviderRules(t *testing.T) {
+	vault, db, ctx, scopeA, scopeB := newTestVault(t)
+	operatorID := "01909999-9999-7000-8000-0000000000op"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Op', 'op@pantry.test', 'hash', 'local', 1, '2026-02-02T00:00:00Z')`, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	var primaryID string
+	if err := db.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&primaryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'owner', '2026-02-02T00:00:00Z')`, operatorID, primaryID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := vault.Save(ctx, scopeB, Saved{
+		ProviderID:   "kroger",
+		ClientID:     "birch-only",
+		ClientSecret: "secret",
+		RedirectURI:  "https://birch.example/cb",
+		Modality:     "DELIVERY",
+		ActorUserID:  "member-user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || ok {
+		t.Fatalf("foreign row loaded ok=%v err=%v", ok, err)
+	}
+
+	if err := vault.Save(ctx, scopeA, Saved{
+		ProviderID:   "kroger",
+		ClientID:     "legacy-primary",
+		ClientSecret: "secret",
+		RedirectURI:  "https://primary.example/cb",
+		Modality:     "PICKUP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || !ok || saved.ClientID != "legacy-primary" {
+		t.Fatalf("primary legacy ok=%v err=%v saved=%+v", ok, err, saved)
+	}
+
+	memberID := "01908888-8888-7000-8000-0000000000mb"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Mem', 'mem@pantry.test', 'hash', 'local', 0, '2026-02-02T00:00:00Z')`, memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'member', '2026-02-02T00:00:00Z')`, memberID, primaryID); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Save(ctx, scopeA, Saved{
+		ProviderID:   "kroger",
+		ClientID:     "member-primary",
+		ClientSecret: "secret",
+		RedirectURI:  "https://member.example/cb",
+		Modality:     "PICKUP",
+		ActorUserID:  memberID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, ok, err = vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || ok {
+		t.Fatalf("member actor on primary should not configure server ok=%v err=%v saved=%+v", ok, err, saved)
+	}
+
+	if err := vault.Save(ctx, scopeA, Saved{
+		ProviderID:   "kroger",
+		ClientID:     "operator-primary",
+		ClientSecret: "secret",
+		RedirectURI:  "https://op.example/cb",
+		Modality:     "DELIVERY",
+		ActorUserID:  operatorID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, ok, err = vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || !ok || saved.ClientID != "operator-primary" {
+		t.Fatalf("operator row ok=%v err=%v saved=%+v", ok, err, saved)
+	}
+}
+
+func TestVaultLoadServerProviderLegacyMigrationActor(t *testing.T) {
+	vault, db, ctx, _, scopeB := newTestVault(t)
+	operatorID := "01909999-9999-7000-8000-0000000000op"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, name, email_norm, pw_hash, idp, operator, created_at)
+		VALUES (?, 'Op', 'op@pantry.test', 'hash', 'local', 1, '2026-02-02T00:00:00Z')`, operatorID); err != nil {
+		t.Fatal(err)
+	}
+	var primaryID, legacyID string
+	if err := db.QueryRow(`SELECT id, legacy_user_id FROM households WHERE is_primary = 1`).Scan(&primaryID, &legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memberships (user_id, household_id, role, created_at) VALUES (?, ?, 'owner', '2026-02-02T00:00:00Z')`, operatorID, primaryID); err != nil {
+		t.Fatal(err)
+	}
+	const now = "2026-02-02T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, ?, 'kroger', 'legacy-migrated', 'secret', 'https://legacy.example/cb', 'PICKUP', ?)`,
+		primaryID+":kroger", primaryID, primaryID, legacyID, now); err != nil {
+		t.Fatal(err)
+	}
+	saved, hid, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || !ok || saved.ClientID != "legacy-migrated" || hid != primaryID {
+		t.Fatalf("legacy actor on primary ok=%v err=%v hid=%q saved=%+v", ok, err, hid, saved)
+	}
+
+	if _, err := db.Exec(`UPDATE households SET legacy_user_id = ? WHERE id = ?`, "legacy-b", scopeB.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, 'legacy-b', 'kroger', 'birch-legacy-shape', 'secret', 'https://birch.example/cb', 'DELIVERY', ?)`,
+		scopeB.HouseholdID()+":kroger", scopeB.HouseholdID(), scopeB.HouseholdID(), now); err != nil {
+		t.Fatal(err)
+	}
+	got, hid, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || !ok || got.ClientID != "legacy-migrated" || hid != primaryID {
+		t.Fatalf("primary row must still win ok=%v err=%v got=%+v hid=%q", ok, err, got, hid)
+	}
+}
+
+func TestVaultLoadServerProviderForeignLegacyRowAlone(t *testing.T) {
+	vault, db, ctx, _, scopeB := newTestVault(t)
+	if _, err := db.Exec(`UPDATE households SET legacy_user_id = ? WHERE id = ?`, "legacy-b", scopeB.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	const now = "2026-02-02T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, 'legacy-b', 'kroger', 'birch-legacy-shape', 'secret', 'https://birch.example/cb', 'DELIVERY', ?)`,
+		scopeB.HouseholdID()+":kroger", scopeB.HouseholdID(), scopeB.HouseholdID(), now); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok, err := vault.LoadServerProvider(ctx, "kroger")
+	if err != nil || ok {
+		t.Fatalf("foreign legacy row alone must not load ok=%v err=%v", ok, err)
 	}
 }
 
