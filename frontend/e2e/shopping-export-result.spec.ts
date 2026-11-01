@@ -1,0 +1,672 @@
+import { expect, test, type Page, type Route } from '@playwright/test'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+const shotDir = process.env.PROVISION_EXPORT_SHOTS ?? join(tmpdir(), 'stockbot-provision-export-shots')
+mkdirSync(shotDir, { recursive: true })
+
+const householdName = 'Test Household'
+
+const krogerProvider = {
+  id: 'kroger',
+  displayName: 'Kroger',
+  capabilities: {
+    auth: 'oauth2_authorization_code',
+    delivery: 'server_push',
+    confirmation: 'per_request',
+    mutation: 'add_only',
+    identity: 'derived',
+  },
+  connectionState: 'connected',
+  credentialsConfigured: true,
+}
+
+const exampleProvider = {
+  ...krogerProvider,
+  id: 'example',
+  displayName: 'Example store',
+}
+
+const stagedEntry = {
+  id: 'sli-test-1',
+  itemId: 'item-test-1',
+  quantity: 2,
+  source: 'manual',
+  purchasedAt: null,
+}
+
+const longName = 'Organic extra virgin cold-pressed avocado oil with a name long enough to wrap at three hundred twenty pixels without horizontal scrolling'
+
+const viewports = [
+  { width: 390, height: 844, label: '390' },
+  { width: 1280, height: 800, label: '1280' },
+] as const
+
+type ExportCase =
+  | 'ideal'
+  | 'all-sent'
+  | 'all-unknown'
+  | 'mixed'
+  | 'unavailable'
+  | 'loading'
+  | 'many-skipped'
+  | 'nothing-added'
+  | 'batch-rejected'
+  | 'error-try-again'
+  | 'reconnect'
+  | 'partial-reconnect'
+  | 'legacy'
+  | 'legacy-200-error'
+  | 'overflow'
+
+interface MockOptions {
+  exportBody?: Record<string, unknown>
+  exportStatus?: number
+  delayExportMs?: number
+  sessionHousehold?: string
+  exportEnvelope?: { status: number; code: string; error?: string }
+  providers?: typeof krogerProvider[] | []
+}
+
+const idealExport = () => ({
+  provider: 'kroger',
+  exported: 2,
+  sentCount: 2,
+  skippedCount: 1,
+  failedCount: 1,
+  unknownCount: 1,
+  results: [
+    { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+    { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'sent' },
+    { entryId: 'c', itemId: '3', name: 'No barcode item', quantity: 1, status: 'skipped', reason: 'no_upc' },
+    { entryId: 'd', itemId: '4', name: 'Rejected soup', quantity: 1, status: 'failed', reason: 'batch_rejected' },
+    { entryId: 'e', itemId: '5', name: 'Oats', quantity: 1, status: 'unknown', reason: 'no_per_item_result' },
+  ],
+  entries: [{ entryId: 'e', itemId: '5', name: 'Oats', quantity: 1, outcome: 'unknown' }],
+})
+
+const spuriousUnknownResults = Array.from({ length: 5 }, (_, index) => ({
+  entryId: `spurious-${index}`,
+  itemId: `item-${index}`,
+  name: `Staged ${index}`,
+  quantity: 1,
+  status: 'unknown',
+  reason: 'request_incomplete',
+}))
+
+const exportBodies: Record<ExportCase, Record<string, unknown>> = {
+  ideal: idealExport(),
+  mixed: idealExport(),
+  'all-unknown': {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Oats', quantity: 1, status: 'unknown', reason: 'no_per_item_result' },
+      { entryId: 'b', itemId: '2', name: 'Rice', quantity: 1, status: 'unknown' },
+    ],
+  },
+  unavailable: {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Soup', quantity: 1, status: 'skipped', reason: 'unavailable' },
+    ],
+  },
+  'all-sent': {
+    provider: 'kroger',
+    exported: 2,
+    sentCount: 2,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+      { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'sent' },
+    ],
+    handoff: { url: 'https://example.test/kroger-cart' },
+  },
+  loading: idealExport(),
+  'many-skipped': {
+    provider: 'kroger',
+    exported: 0,
+    results: Array.from({ length: 12 }, (_, index) => ({
+      entryId: `s-${index}`,
+      itemId: `i-${index}`,
+      name: `Skipped ${index}`,
+      quantity: 1,
+      status: 'skipped',
+      reason: 'no_upc',
+    })),
+  },
+  'nothing-added': {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'skipped', reason: 'no_match' },
+    ],
+  },
+  'batch-rejected': {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Soup', quantity: 1, status: 'failed', reason: 'batch_rejected' },
+    ],
+  },
+  'error-try-again': {
+    error: 'Kroger is unreachable',
+    code: 'provider_unavailable',
+  },
+  reconnect: {
+    error: 'Token revoked',
+    code: 'reconnect_required',
+  },
+  'partial-reconnect': {
+    provider: 'kroger',
+    exported: 1,
+    sentCount: 1,
+    reconnectRequired: true,
+    results: [
+      { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+      { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+      { entryId: 'c', itemId: '3', name: 'Butter', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+    ],
+  },
+  'legacy-200-error': {
+    provider: 'kroger',
+    exported: 0,
+    error: 'provider_unavailable',
+    results: spuriousUnknownResults,
+  },
+  legacy: {
+    provider: 'kroger',
+    exported: 1,
+    failedItems: ['Jam'],
+    unknownItems: ['Oats'],
+    entries: [{ entryId: 'sli-oats', itemId: 'oats', name: 'Oats', quantity: 1, outcome: 'unknown' }],
+  },
+  overflow: {
+    provider: 'kroger',
+    exported: 0,
+    results: [
+      { entryId: 'long', itemId: 'long', name: longName, quantity: 1, status: 'skipped', reason: 'no_upc' },
+    ],
+  },
+}
+
+async function installShoppingMocks(page: Page, options: MockOptions) {
+  await page.route('**/api/auth/session', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        kind: 'account',
+        user: { id: 'user-1', email: 'admin@testhousehold.test', name: 'Admin User' },
+        memberships: [{ householdId: 'hh-test', name: options.sessionHousehold ?? householdName, role: 'owner', deletedAt: null }],
+        households: [{ id: 'hh-test', name: options.sessionHousehold ?? householdName, role: 'owner', deletedAt: null }],
+        activeHouseholdId: 'hh-test',
+        operator: false,
+      }),
+    })
+  })
+
+  await page.route('**/api/providers', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(options.providers ?? [krogerProvider]),
+    })
+  })
+
+  await page.route('**/api/shopping-list**', async (route: Route) => {
+    const url = route.request().url()
+    if (route.request().method() === 'GET' && !url.includes('/export')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([stagedEntry]),
+      })
+      return
+    }
+    if (route.request().method() === 'POST' && url.includes('/export')) {
+      if (options.delayExportMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayExportMs))
+      }
+      if (options.exportEnvelope) {
+        const { status, code, error } = options.exportEnvelope
+        await route.fulfill({
+          status,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: error ?? 'export failed', code }),
+        })
+        return
+      }
+      await route.fulfill({
+        status: options.exportStatus ?? 200,
+        contentType: 'application/json',
+        body: JSON.stringify(options.exportBody ?? idealExport()),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.route('**/api/inventory', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    })
+  })
+
+  await page.route('**/api/restock', async (route) => {
+    await route.fulfill({ status: 404, body: 'not found' })
+  })
+}
+
+async function openShoppingAndSend(page: Page, sendLabel = 'Send to Kroger') {
+  await page.goto('/shopping')
+  await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible()
+  await page.getByRole('button', { name: sendLabel }).click()
+}
+
+async function saveShot(page: Page, filename: string) {
+  await page.screenshot({ path: join(shotDir, filename), fullPage: true })
+}
+
+for (const viewport of viewports) {
+  test(`ideal mixed result panel at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await installShoppingMocks(page, { exportBody: exportBodies.ideal })
+    await openShoppingAndSend(page)
+    const panel = page.getByRole('status', { name: 'Cart send result' })
+    await expect(panel).toBeVisible()
+    await expect(panel).toHaveAttribute('aria-live', 'polite')
+    await expect(panel.getByText("Couldn't be sent (2)")).toBeVisible()
+    await expect(panel.getByText('Check these in your cart (1)')).toBeVisible()
+    if (viewport.label === '390') {
+      // ideal-390.png captured by dedicated screenshot test
+    } else {
+      await saveShot(page, 'ideal-1280.png')
+    }
+  })
+}
+
+const singleViewportCases: { case: ExportCase; file: string; role?: 'button'; expectText: RegExp | string }[] = [
+  { case: 'all-sent', file: 'all-sent-390.png', expectText: /2 items sent to your Kroger cart/ },
+  { case: 'many-skipped', file: 'many-skipped-390.png', expectText: 'Show all 12' },
+  { case: 'nothing-added', file: 'nothing-added-390.png', expectText: /Nothing was sent to your cart/ },
+  { case: 'batch-rejected', file: 'batch-rejected-390.png', expectText: /didn't accept this item/ },
+  { case: 'error-try-again', file: '502-unavailable-390.png', expectText: "Nothing was sent. Kroger isn't responding right now." },
+  { case: 'reconnect', file: 'reconnect-required-409-390.png', expectText: "Couldn't connect to your Kroger account. Nothing was sent." },
+  { case: 'partial-reconnect', file: 'c-partial-reconnect-390.png', expectText: 'Sent (1)' },
+  { case: 'legacy-200-error', file: 'legacy-502-body-390.png', expectText: "Nothing was sent. Kroger isn't responding right now." },
+  { case: 'legacy', file: 'legacy-390.png', role: 'button', expectText: "It's in my cart: Oats" },
+]
+
+const uxShots: { case: ExportCase; file: string; envelope?: MockOptions['exportEnvelope'] }[] = [
+  { case: 'ideal', file: 'ideal-390.png' },
+  { case: 'all-unknown', file: 'all-unknown-390.png' },
+  { case: 'mixed', file: 'mixed-390.png' },
+  { case: 'unavailable', file: 'unavailable-390.png' },
+  { case: 'error-try-again', file: '502-unavailable-390.png', envelope: { status: 502, code: 'provider_unavailable' } },
+  { case: 'reconnect', file: 'reconnect-required-409-390.png', envelope: { status: 409, code: 'reconnect_required' } },
+  { case: 'partial-reconnect', file: 'c-partial-reconnect-390.png' },
+]
+
+for (const shot of uxShots) {
+  test(`screenshot ${shot.file}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await installShoppingMocks(page, {
+      exportBody: exportBodies[shot.case],
+      exportEnvelope: shot.envelope,
+    })
+    await openShoppingAndSend(page)
+    await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
+    await saveShot(page, shot.file)
+  })
+}
+
+test('screenshot 502-unavailable-no-store-390.png', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, {
+    providers: [],
+    exportEnvelope: { status: 502, code: 'provider_unavailable' },
+  })
+  await openShoppingAndSend(page, 'Send to your store')
+  await expect(page.getByText("Sends these items to your store's cart.")).toBeVisible()
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await expect(panel.getByText("Nothing was sent. Your store isn't responding right now.")).toBeVisible()
+  await saveShot(page, '502-unavailable-no-store-390.png')
+})
+
+test('screenshot marked-undo at 320px and 125% text', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.style.fontSize = '125%'
+    })
+  })
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Undo: Oats' })).toBeVisible()
+  await saveShot(page, 'marked-undo-320-125.png')
+})
+
+test('screenshot mixed at 320px and 125% text', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.addInitScript(() => {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.style.fontSize = '125%'
+    })
+  })
+  await installShoppingMocks(page, { exportBody: exportBodies.mixed })
+  await openShoppingAndSend(page)
+  await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
+  await saveShot(page, 'mixed-320-125.png')
+})
+
+for (const scenario of singleViewportCases) {
+  test(`export ${scenario.case} at 390px`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    const envelope = scenario.case === 'error-try-again'
+      ? { status: 502, code: 'provider_unavailable' }
+      : scenario.case === 'reconnect'
+        ? { status: 409, code: 'reconnect_required' }
+        : undefined
+    await installShoppingMocks(page, {
+      exportBody: exportBodies[scenario.case],
+      exportEnvelope: envelope,
+    })
+    await openShoppingAndSend(page)
+    const panel = page.getByRole('status', { name: 'Cart send result' })
+    await expect(panel).toBeVisible()
+    if (scenario.role === 'button') {
+      await expect(panel.getByRole('button', { name: scenario.expectText })).toBeVisible()
+    } else {
+      await expect(panel.getByText(scenario.expectText)).toBeVisible()
+    }
+    if (scenario.case === 'reconnect') {
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+      await expect(panel.getByText(/might not have reached your cart/)).toHaveCount(0)
+      await expect(panel.getByText('Check these in your cart')).toHaveCount(0)
+    }
+    if (scenario.case === 'error-try-again' || scenario.case === 'legacy-200-error') {
+      await expect(panel.getByRole('button', { name: 'Try again' })).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toHaveCount(0)
+    }
+    if (scenario.case === 'partial-reconnect') {
+      await expect(panel.getByRole('button', { name: 'Reconnect Kroger' })).toBeVisible()
+      await expect(panel.getByText(/account disconnected before everything was sent/)).toBeVisible()
+    }
+    await saveShot(page, scenario.file)
+  })
+}
+
+test('loading clears the previous panel at 390px', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, {
+    exportBody: exportBodies['all-sent'],
+    delayExportMs: 600,
+  })
+  await page.goto('/shopping')
+  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await expect(page.getByRole('button', { name: 'Sending…' })).toBeVisible()
+  await expect(page.getByRole('status', { name: 'Cart send result' })).toHaveCount(0)
+  await saveShot(page, 'loading-390.png')
+  await expect(page.getByRole('status', { name: 'Cart send result' })).toBeVisible()
+})
+
+test('long names wrap without horizontal overflow at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 })
+  await installShoppingMocks(page, { exportBody: exportBodies.overflow })
+  await openShoppingAndSend(page)
+  const item = page.locator('.provision-result-item').first()
+  await expect(item).toBeVisible()
+  await expect.poll(() => item.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  await saveShot(page, 'overflow-320.png')
+})
+
+test('HTTP export errors show Try again at 390 and 1280', async ({ page }) => {
+  for (const viewport of viewports) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await installShoppingMocks(page, {
+      exportStatus: 409,
+      exportBody: { error: 'Kroger is not connected', code: 'conflict' },
+    })
+    await openShoppingAndSend(page)
+    const panel = page.getByRole('status', { name: 'Cart send result' })
+    await expect(panel.getByText('Kroger is not connected')).toBeVisible()
+    await expect(panel.getByRole('button', { name: 'Try again' })).toBeVisible()
+  }
+})
+
+test('blocked Send waits for resolve before export and shows hint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const order: string[] = []
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    order.push('resolve')
+    resolveCalls += 1
+    await route.fulfill({
+      status: resolveCalls === 1 ? 500 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(resolveCalls === 1 ? { error: 'boom', code: 'internal' } : { entryId: 'a' }),
+    })
+  })
+  await page.route('**/api/shopping-list/export**', async (route) => {
+    if (route.request().method() === 'POST') {
+      order.push('export')
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(exportBodies['all-unknown']) })
+      return
+    }
+    await route.continue()
+  })
+  await openShoppingAndSend(page)
+  await expect(page.getByText('Sends these items to your Kroger cart.')).toBeVisible()
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  const blockedResolve = page.waitForResponse(
+    (response) => response.url().includes('unknown-resolution') && response.status() === 500,
+  )
+  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await blockedResolve
+  await expect(page.locator('.provision-blocked-send-hint')).toHaveText("One item didn't save. Fix it below, then send again.")
+  await expect.poll(() => order).toEqual(['export', 'resolve'])
+  // The hint sits right under the Send hint, above the result panel, so it is on screen.
+  const sendHintBox = await page.locator('.shopping-send-hint').boundingBox()
+  const hintBox = await page.locator('.provision-blocked-send-hint').boundingBox()
+  const panelBox = await panel.boundingBox()
+  expect(hintBox!.y).toBeGreaterThanOrEqual(sendHintBox!.y + sendHintBox!.height - 1)
+  expect(hintBox!.y + hintBox!.height).toBeLessThanOrEqual(panelBox!.y + 1)
+  // Right-aligned under the Send hint, not auto-placed into a narrower column.
+  expect(Math.abs(hintBox!.x + hintBox!.width - (sendHintBox!.x + sendHintBox!.width))).toBeLessThanOrEqual(2)
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeFocused()
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeInViewport()
+  await saveShot(page, 'blocked-send-390.png')
+})
+
+test('dismiss keeps the panel when the pending save fails', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom', code: 'internal' }) })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await panel.getByRole('button', { name: 'Dismiss cart send result' }).click()
+  await expect(panel.getByText("Couldn't save that.")).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Try again: Oats' })).toBeVisible()
+})
+
+test('row Try again retries a failed check-row save', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    resolveCalls += 1
+    await route.fulfill({
+      status: resolveCalls === 1 ? 500 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(resolveCalls === 1 ? { error: 'boom', code: 'internal' } : { entryId: 'a' }),
+    })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  await page.getByRole('button', { name: 'Send to Kroger' }).click()
+  await panel.getByRole('button', { name: 'Try again: Oats' }).click()
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Undo: Oats' })).toHaveCount(0)
+})
+
+test('nothing-sent error Reconnect control is at least 44px tall', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installShoppingMocks(page, {
+    exportEnvelope: { status: 409, code: 'reconnect_required' },
+  })
+  await openShoppingAndSend(page)
+  const reconnect = page.getByRole('button', { name: 'Reconnect Kroger' })
+  await expect(reconnect).toBeVisible()
+  const box = await reconnect.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.width).toBeGreaterThanOrEqual(44)
+  expect(box!.height).toBeGreaterThanOrEqual(44)
+})
+
+for (const scenario of [
+  { width: 390, rootPercent: 100 },
+  { width: 320, rootPercent: 100 },
+  { width: 390, rootPercent: 125 },
+  { width: 320, rootPercent: 125 },
+]) {
+  for (const exportCase of ['ideal', 'all-sent', 'partial-reconnect', 'many-skipped'] as const) {
+    test(`every control is at least 44x44 for ${exportCase} at ${scenario.width}px and ${scenario.rootPercent}% text`, async ({ page }) => {
+      await page.setViewportSize({ width: scenario.width, height: 800 })
+      await page.addInitScript((percent) => {
+        document.addEventListener('DOMContentLoaded', () => {
+          document.documentElement.style.fontSize = `${percent}%`
+        })
+      }, scenario.rootPercent)
+      await installShoppingMocks(page, { exportBody: exportBodies[exportCase] })
+      await openShoppingAndSend(page)
+      const panel = page.getByRole('status', { name: 'Cart send result' })
+      await expect(panel).toBeVisible()
+      const controls = page.locator('.shopping-send, .provision-result-panel button, .provision-result-panel a')
+      const count = await controls.count()
+      expect(count).toBeGreaterThan(0)
+      for (let i = 0; i < count; i += 1) {
+        const box = await controls.nth(i).boundingBox()
+        const name = await controls.nth(i).innerText()
+        expect(box, name).not.toBeNull()
+        expect(box!.width, name).toBeGreaterThanOrEqual(44)
+        expect(box!.height, name).toBeGreaterThanOrEqual(44)
+      }
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    })
+  }
+}
+
+test('saving keeps the row height and focus in the row; Try again takes focus and works', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.setViewportSize({ width: 390, height: 844 })
+  let release: () => void = () => undefined
+  let resolveCalls = 0
+  await installShoppingMocks(page, { exportBody: exportBodies['all-unknown'] })
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    resolveCalls += 1
+    if (resolveCalls === 1) {
+      await new Promise<void>((done) => { release = done })
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom', code: 'internal' }) })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entryId: 'a' }) })
+  })
+  await openShoppingAndSend(page)
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await panel.getByRole('button', { name: "It's in my cart: Oats" }).click()
+  const row = panel.locator('.provision-check-row', { hasText: 'Oats' })
+  const undo = panel.getByRole('button', { name: 'Undo: Oats' })
+  await expect(undo).toBeFocused()
+  const before = (await row.boundingBox())?.height ?? 0
+  // Let the undo window end on its own while Undo has focus.
+  await page.waitForRequest((request) => request.url().includes('unknown-resolution'), { timeout: 20_000 })
+  await expect(row.locator('.provision-row-saving-spinner')).toBeVisible()
+  await expect(undo).toHaveCount(0)
+  expect(Math.abs(((await row.boundingBox())?.height ?? 0) - before)).toBeLessThan(1)
+  await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? '')).toContain('provision-check-row')
+  release()
+  const retry = panel.getByRole('button', { name: 'Try again: Oats' })
+  await expect(retry).toBeFocused()
+  expect((await retry.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+  await retry.press('Enter')
+  await expect(panel.getByText('Marked as in your cart')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Undo: Oats' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? '')).toContain('provision-check-row')
+})
+
+test('failed request_incomplete after 502 retry: couldnt-be-sent section, halt copy, no row Try again', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  let exportCalls = 0
+  const failedIncompleteBody = {
+    provider: 'example',
+    exported: 0,
+    results: [
+      {
+        entryId: 'e1',
+        itemId: 'i1',
+        name: 'Synthetic line A',
+        quantity: 1,
+        status: 'failed',
+        reason: 'request_incomplete',
+      },
+    ],
+  }
+  await installShoppingMocks(page, { providers: [exampleProvider] })
+  await page.route('**/api/shopping-list/export**', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    exportCalls += 1
+    if (exportCalls === 1) {
+      await route.fulfill({
+        status: 502,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Example store unreachable', code: 'provider_unavailable' }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(failedIncompleteBody),
+    })
+  })
+  await openShoppingAndSend(page, 'Send to Example store')
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  const envelopeTryAgain = panel.getByRole('button', { name: 'Try again' })
+  await expect(envelopeTryAgain).toBeVisible()
+  const tryAgainBox = await envelopeTryAgain.boundingBox()
+  expect(tryAgainBox!.width).toBeGreaterThanOrEqual(44)
+  expect(tryAgainBox!.height).toBeGreaterThanOrEqual(44)
+  await envelopeTryAgain.click()
+  await expect(panel.getByText("Couldn't be sent (1)")).toBeVisible()
+  await expect(panel.getByText('Synthetic line A: Not sent. Send again to finish.')).toBeVisible()
+  await expect(panel.getByRole('button', { name: /Try again:/ })).toHaveCount(0)
+  await expect(panel.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+  const send = page.getByRole('button', { name: 'Send to Example store' })
+  await expect(send).toBeVisible()
+  const sendBox = await send.boundingBox()
+  expect(sendBox!.width).toBeGreaterThanOrEqual(44)
+  expect(sendBox!.height).toBeGreaterThanOrEqual(44)
+})

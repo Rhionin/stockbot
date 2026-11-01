@@ -881,6 +881,8 @@ export type HostedErrorCode =
   | 'store_check_failed'
   | 'store_check_unavailable'
   | 'kroger_not_connected'
+  // Reserved for B11a (#489): not yet returned by the server. They ship early
+  // with the #518 contract, and PUT /api/households/{id}/kroger-app will return them.
   | 'store_app_keys_rejected'
   | 'store_app_unreachable'
   | 'reconnect_required'
@@ -1717,6 +1719,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   store_check_failed: "Couldn't reach the store right now. Try again later.",
   store_check_unavailable: "Checking isn't on for this store.",
   kroger_not_connected: 'Connect your store account first.',
+  // Reserved for B11a (#489): the server does not return these two yet.
   store_app_keys_rejected: "Those keys didn't work. Check that you copied both keys.",
   store_app_unreachable: "Couldn't reach the store. Try again in a few minutes.",
   reconnect_required: "Couldn't connect to your store account. Nothing was sent.",

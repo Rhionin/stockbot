@@ -539,7 +539,7 @@ export function markShoppingListItemPurchased(id: string): Promise<ShoppingListE
 export function exportShoppingList(provider?: string): Promise<ProvisionReport> {
   const body: { provider?: string } = {};
   if (provider) body.provider = provider;
-  return apiFetch('/api/shopping-list/export', {
+  return apiFetch<ProvisionReport>('/api/shopping-list/export', {
     method: 'POST',
     body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
   });
@@ -592,6 +592,8 @@ export function resolveUnknownProvision(entryId: string, provider: string, reach
   return apiFetch(`/api/shopping-list/items/${entryId}/unknown-resolution`, {
     method: 'POST',
     body: JSON.stringify({ provider, reachedProvider }),
+    // A choice committed on pagehide must survive the page unloading.
+    keepalive: true,
   });
 }
 
