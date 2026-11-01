@@ -1,4 +1,8 @@
+import { inlineFailure } from './contract';
+import { provisionCartTarget, provisionStoreLabel } from './provisionExportUX';
 import type { ProviderInfo } from './types';
+
+export const PROVIDER_DISCONNECT_FAILURE = "Couldn't disconnect. Try again.";
 
 export const PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE =
   'Only the server admin can change the Kroger app keys.';
@@ -23,15 +27,36 @@ export function providerAppCredentialsAccessDenied(error: unknown): boolean {
   return false;
 }
 
+/** Visible provider name in disconnect copy (falls back to "your store"). */
+export function providerDisconnectStoreLabel(displayName: string | undefined): string {
+  return provisionStoreLabel(displayName);
+}
+
 /** Title for the non-admin disconnect-only connection dialog. */
-export function providerDisconnectDialogTitle(displayName: string): string {
-  return `Disconnect ${displayName}?`;
+export function providerDisconnectDialogTitle(displayName: string | undefined): string {
+  return `Disconnect ${providerDisconnectStoreLabel(displayName)}?`;
 }
 
 /**
  * Body copy for the non-admin disconnect-only dialog.
  * OAuth provider connections are stored per household (see internal/cart/connection/connection.go).
  */
-export function providerDisconnectDialogBody(displayName: string): string {
-  return `This disconnects your ${displayName} account for everyone in your household. Nothing on your list is deleted. Sending to your ${displayName} cart stops until someone reconnects.`;
+export function providerDisconnectDialogBody(displayName: string | undefined): string {
+  const storeLabel = providerDisconnectStoreLabel(displayName);
+  const account = storeLabel === 'your store'
+    ? 'your store account'
+    : `your ${storeLabel} account`;
+  const cart = provisionCartTarget(storeLabel);
+  return `This disconnects ${account} for everyone in your household. Nothing on your list is deleted. Sending to ${cart} stops until someone reconnects.`;
+}
+
+/** Disconnect failure copy when the server gives no message. */
+export function providerDisconnectFailureMessage(error: unknown): string {
+  if (error !== null && typeof error === 'object' && 'error' in error) {
+    const body = (error as { error?: unknown }).error;
+    if (typeof body === 'string' && body.trim() !== '') return body.trim();
+  }
+  const message = inlineFailure(error, PROVIDER_DISCONNECT_FAILURE);
+  if (message === null || message.trim() === '') return PROVIDER_DISCONNECT_FAILURE;
+  return message;
 }

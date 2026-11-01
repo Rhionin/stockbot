@@ -7,9 +7,9 @@ import {
   type MantineColorsTuple,
   type MantineTheme,
 } from '@mantine/core';
-import { flatten, readableLightShade, readableShade, towardContrast } from '@stockbot/shared/contrast';
+import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio } from '@stockbot/shared/contrast';
 
-// Shade 6 is the filled brand teal from the locked mark (#0D9488).
+// Shade 6 is the locked mark teal (#0D9488); filled primary buttons use shade 7 (#0F766E).
 const teal: MantineColorsTuple = [
   '#f0fdfa',
   '#ccfbf1',
@@ -42,6 +42,13 @@ const primaryShadeIndex = (theme: MantineTheme, scheme: 'light' | 'dark') =>
 
 const colorScale = (value: MantineTheme['colors'][string]): readonly string[] | null =>
   Array.isArray(value) && value.length >= 10 && typeof value[0] === 'string' ? value : null;
+
+/** Error ink on light surfaces never goes above #E03131 (WCAG AA on white). */
+const RED_INK_FLOOR = '#e03131';
+
+const atLeastAsDarkAs = (candidate: string, floor: string): string => (
+  contrastRatio(candidate, '#ffffff') >= contrastRatio(floor, '#ffffff') ? candidate : floor
+);
 
 // A scale step when one clears AA, otherwise the same hue darkened or lightened
 // until it does. Yellow, lime, orange, and green run out of steps on a light wash.
@@ -109,6 +116,22 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
     resolved.dark['--mantine-color-dimmed'] = readableInk('dark', dark, darkPaper, 2, 'lighter');
   }
 
+  const resolveVarColor = (value: string | undefined): string => {
+    if (value?.startsWith('#')) return value;
+    const match = /^var\(--mantine-color-([a-z0-9]+)-(\d)\)$/.exec(value ?? '');
+    if (!match) return RED_INK_FLOOR;
+    const scale = colorScale(theme.colors[match[1]]);
+    return scale ? scale[Number(match[2])] : RED_INK_FLOOR;
+  };
+
+  for (const key of [
+    '--mantine-color-red-light-color',
+    '--mantine-color-red-text',
+    '--mantine-color-red-outline',
+  ] as const) {
+    resolved.light[key] = atLeastAsDarkAs(resolveVarColor(resolved.light[key]), RED_INK_FLOOR);
+  }
+
   return resolved;
 };
 
@@ -118,7 +141,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
 // that stay open when their target leaves the DOM.
 export const theme = createTheme({
   primaryColor: 'teal',
-  primaryShade: 6,
+  // Shade 7 is teal-700 (#0F766E). Filled primary buttons use it in both schemes (~5.5:1 with white).
+  primaryShade: { light: 7, dark: 7 },
   autoContrast: true,
   luminanceThreshold: 0.22,
   colors: {

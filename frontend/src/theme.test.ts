@@ -18,7 +18,13 @@ describe('theme', () => {
   it('uses the locked teal as the primary brand color', () => {
     expect(theme.primaryColor).toBe('teal');
     expect(theme.colors?.teal?.[6]).toBe('#0d9488');
+    expect(theme.colors?.teal?.[7]).toBe('#0f766e');
     expect(theme.colors?.amber?.[6]).toBe('#f59e0b');
+  });
+
+  it('uses teal-700 for filled primary buttons in light and dark mode', () => {
+    expect(theme.primaryShade).toEqual({ light: 7, dark: 7 });
+    expect(fullTheme.colors.teal[7]).toBe('#0f766e');
   });
 
   it('keeps dimmed text and light-variant ink at WCAG AA', () => {

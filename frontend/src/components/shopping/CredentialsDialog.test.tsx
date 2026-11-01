@@ -272,4 +272,40 @@ describe('CredentialsDialog', () => {
     expect(alert).toHaveTextContent('Sign in to continue.');
     expect(alert).not.toHaveTextContent(PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE);
   });
+
+  it('uses your store in the disconnect-only dialog when the provider name is empty', () => {
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ displayName: '   ', connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          onDisconnect={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.getByRole('dialog', { name: 'Disconnect your store?' })).toBeInTheDocument();
+    expect(screen.getByText(
+      'This disconnects your store account for everyone in your household. Nothing on your list is deleted. Sending to your store cart stops until someone reconnects.',
+    )).toBeInTheDocument();
+  });
+
+  it('shows the disconnect failure fallback when given an empty server message', () => {
+    render(
+      <MantineProvider>
+        <CredentialsDialog
+          provider={provider({ connectionState: 'connected', credentialsConfigured: true })}
+          opened
+          onClose={() => undefined}
+          onChanged={() => undefined}
+          showCredentialForm={false}
+          onDisconnect={() => undefined}
+          disconnectError={"Couldn't disconnect. Try again."}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't disconnect. Try again.");
+  });
 });

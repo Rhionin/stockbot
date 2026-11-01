@@ -493,6 +493,7 @@ export const ShoppingListPage = () => {
                             size="xs"
                             color="red"
                             variant="light"
+                            className="shopping-row-remove"
                             onClick={() => void updateEntry(entry, 'remove')}
                           >
                             Remove {productName}
