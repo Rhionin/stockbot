@@ -1,14 +1,27 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
+import {
+  PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE,
+  providerAppCredentialsAccessDenied,
+  providerDisconnectDialogBody,
+  providerDisconnectDialogTitle,
+} from '@stockbot/shared/providerCredentials';
+
+const touchTargetButton = { root: { minHeight: 44 } };
 
 export interface CredentialsDialogProps {
   provider: ProviderInfo | null;
   opened: boolean;
   onClose: () => void;
   onChanged: () => void;
+  onAccessDenied?: () => void;
+  /** False hides the app-keys form (non-admins get a disconnect-only dialog). */
+  showCredentialForm?: boolean;
+  /** True after the server refused an app-keys change: show why instead of the form. */
+  accessDenied?: boolean;
   onDisconnect?: () => void;
   disconnecting?: boolean;
   disconnectError?: string;
@@ -19,28 +32,76 @@ export const CredentialsDialog = ({
   opened,
   onClose,
   onChanged,
+  onAccessDenied,
+  showCredentialForm = true,
+  accessDenied = false,
   onDisconnect,
   disconnecting = false,
   disconnectError = '',
 }: CredentialsDialogProps) => {
   const saved = provider?.credentials;
+  const accessDeniedRef = useRef<HTMLParagraphElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const disconnectOnly = provider !== null
+    && onDisconnect !== undefined
+    && !showCredentialForm
+    && !accessDenied;
+
+  useEffect(() => {
+    if (accessDenied && opened && provider !== null) {
+      accessDeniedRef.current?.focus();
+    }
+  }, [accessDenied, opened, provider]);
+
+  useEffect(() => {
+    if (disconnectOnly && opened) {
+      window.requestAnimationFrame(() => {
+        cancelRef.current?.focus();
+      });
+    }
+  }, [disconnectOnly, opened, provider?.id]);
+
+  const modalTitle = provider === null
+    ? 'Connection'
+    : (disconnectOnly
+      ? providerDisconnectDialogTitle(provider.displayName)
+      : `${provider.displayName} connection`);
+
   return (
     <Modal
       opened={opened && provider !== null}
       onClose={onClose}
-      title={provider === null ? 'Connection' : `${provider.displayName} connection`}
+      title={modalTitle}
       size="sm"
+      closeButtonProps={disconnectOnly ? { 'aria-label': 'Close' } : undefined}
     >
       {opened && provider !== null && (
         <Stack gap="sm">
-          <CredentialForm
-            key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
-            provider={provider}
-            onChanged={onChanged}
-          />
-          {onDisconnect !== undefined && (
+          {accessDenied && (
+            <Text
+              ref={accessDeniedRef}
+              tabIndex={-1}
+              c="red"
+              size="sm"
+              role="alert"
+            >
+              {PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE}
+            </Text>
+          )}
+          {disconnectOnly && (
+            <Text size="sm">{providerDisconnectDialogBody(provider.displayName)}</Text>
+          )}
+          {!accessDenied && showCredentialForm && (
+            <CredentialForm
+              key={`${provider.id}:${saved?.source ?? ''}:${saved?.clientId ?? ''}:${saved?.redirectUri ?? ''}:${saved?.modality ?? ''}:${saved?.secretSet ? '1' : '0'}`}
+              provider={provider}
+              onChanged={onChanged}
+              onAccessDenied={onAccessDenied}
+            />
+          )}
+          {onDisconnect !== undefined && !disconnectOnly && (
             <Stack gap="xs">
-              <Divider />
+              {!accessDenied && showCredentialForm && <Divider />}
               <Button
                 size="xs"
                 type="button"
@@ -55,13 +116,56 @@ export const CredentialsDialog = ({
               )}
             </Stack>
           )}
+          {disconnectOnly && (
+            <Stack gap="xs">
+              <Group justify="flex-end" gap="sm">
+                <Button
+                  ref={cancelRef}
+                  type="button"
+                  variant="default"
+                  styles={touchTargetButton}
+                  data-autofocus
+                  onClick={onClose}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  color="red"
+                  styles={touchTargetButton}
+                  loading={disconnecting}
+                  onClick={onDisconnect}
+                >
+                  Disconnect
+                </Button>
+              </Group>
+              {disconnectError !== '' && (
+                <Text c="red" size="sm" role="alert">{disconnectError}</Text>
+              )}
+            </Stack>
+          )}
         </Stack>
       )}
     </Modal>
   );
 };
 
-const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onChanged: () => void }) => {
+const credentialFailure = (requestError: unknown, fallback: string): string => {
+  if (providerAppCredentialsAccessDenied(requestError)) {
+    return PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE;
+  }
+  return inlineFailure(requestError, fallback) ?? fallback;
+};
+
+const CredentialForm = ({
+  provider,
+  onChanged,
+  onAccessDenied,
+}: {
+  provider: ProviderInfo;
+  onChanged: () => void;
+  onAccessDenied?: () => void;
+}) => {
   const saved = provider.credentials;
   const [clientId, setClientId] = useState(saved?.clientId ?? '');
   const [clientSecret, setClientSecret] = useState('');
@@ -83,7 +187,10 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       setClientSecret('');
       onChanged();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to save credentials.') ?? '');
+      setError(credentialFailure(requestError, 'Unable to save credentials.'));
+      if (providerAppCredentialsAccessDenied(requestError)) {
+        onAccessDenied?.();
+      }
     } finally {
       setPending(false);
     }
@@ -96,7 +203,10 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
       await clearProviderCredentials(provider.id);
       onChanged();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to clear credentials.') ?? '');
+      setError(credentialFailure(requestError, 'Unable to clear credentials.'));
+      if (providerAppCredentialsAccessDenied(requestError)) {
+        onAccessDenied?.();
+      }
     } finally {
       setPending(false);
     }
@@ -155,7 +265,7 @@ const CredentialForm = ({ provider, onChanged }: { provider: ProviderInfo; onCha
           </Button>
         )}
       </Group>
-      {error !== '' && <Text c="red" size="sm">{error}</Text>}
+      {error !== '' && <Text c="red" size="sm" role="alert">{error}</Text>}
     </Stack>
   );
 };

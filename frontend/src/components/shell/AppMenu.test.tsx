@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuthSession } from '@stockbot/shared/contract';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { HouseholdSessionContext } from '../auth/householdSession';
 import { AppMenu } from './AppMenu';
@@ -18,6 +19,13 @@ const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
   },
   connectionState: 'disconnected',
   credentialsConfigured: true,
+  credentials: {
+    clientId: 'fixture-client',
+    redirectUri: 'https://test-household.example/cb',
+    modality: 'PICKUP',
+    secretSet: true,
+    source: 'saved',
+  },
   ...overrides,
 });
 
@@ -40,13 +48,15 @@ const renderMenu = (
   }));
   return render(
     <MantineProvider env="test">
-      <MemoryRouter initialEntries={['/shopping']}>
-        <Routes>
-          <Route path="/shopping" element={<AppMenu onCredentialsChanged={onCredentialsChanged} />} />
-          <Route path="/diagnostics" element={<h1>Diagnostics</h1>} />
-          <Route path="/inventory" element={<h1>Inventory</h1>} />
-        </Routes>
-      </MemoryRouter>
+      <HouseholdSessionContext.Provider value={adminAccountSession()}>
+        <MemoryRouter initialEntries={['/shopping']}>
+          <Routes>
+            <Route path="/shopping" element={<AppMenu onCredentialsChanged={onCredentialsChanged} />} />
+            <Route path="/diagnostics" element={<h1>Diagnostics</h1>} />
+            <Route path="/inventory" element={<h1>Inventory</h1>} />
+          </Routes>
+        </MemoryRouter>
+      </HouseholdSessionContext.Provider>
     </MantineProvider>,
   );
 };
@@ -55,6 +65,259 @@ const openMenu = async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
   return screen.findByRole('menuitem', { name: 'Manage Kroger connection' });
 };
+
+const renderMenuWithSession = (
+  rows: ProviderInfo[],
+  auth: AuthSession | null,
+  onCredentialsChanged: () => void = () => undefined,
+) => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/providers') return Promise.resolve(jsonResponse(rows));
+    if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+    if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
+  }));
+  return render(
+    <MantineProvider env="test">
+      <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth, replaceAuth: () => undefined }}>
+        <MemoryRouter initialEntries={['/shopping']}>
+          <AppMenu onCredentialsChanged={onCredentialsChanged} />
+        </MemoryRouter>
+      </HouseholdSessionContext.Provider>
+    </MantineProvider>,
+  );
+};
+
+const testHouseholdSession = (operator: boolean): AuthSession => ({
+  kind: 'account',
+  user: { id: 'user-1', email: 'member@test.example', name: 'Member' },
+  memberships: [{ householdId: 'hh-test', name: 'Test Household', role: 'member', deletedAt: null }],
+  households: [{ id: 'hh-test', name: 'Test Household', role: 'member', deletedAt: null }],
+  activeHouseholdId: 'hh-test',
+  operator,
+});
+
+// Most menu tests drive the app keys form, which only the server admin gets.
+const adminAccountSession = () => ({
+  required: false,
+  logout: () => undefined,
+  auth: testHouseholdSession(true),
+  replaceAuth: () => undefined,
+});
+
+const lanListenerSession = () => ({
+  required: false,
+  logout: () => undefined,
+  auth: null,
+  replaceAuth: () => undefined,
+});
+
+const noKeys = {
+  clientId: '',
+  redirectUri: '',
+  modality: 'PICKUP' as const,
+  secretSet: false,
+  source: 'none' as const,
+};
+
+describe('AppMenu Kroger app keys visibility', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shows Manage Kroger connection for the server admin', async () => {
+    renderMenuWithSession([provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'none',
+      },
+    })], testHouseholdSession(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    expect(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage Kroger connection' }));
+    expect(await screen.findByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+  });
+
+  it('hides Manage Kroger connection for Test Household when credential source is none', async () => {
+    renderMenuWithSession([provider({
+      credentials: {
+        clientId: '',
+        redirectUri: '',
+        modality: 'PICKUP',
+        secretSet: false,
+        source: 'none',
+      },
+    })], testHouseholdSession(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
+  it('hides app keys from a non-admin primary household member whose source is saved', async () => {
+    renderMenuWithSession([provider()], testHouseholdSession(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
+  it('lets a non-admin Test Household member disconnect Kroger without the app keys', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([provider({ connectionState: 'connected', credentials: noKeys })]));
+      }
+      if (url === '/api/providers/kroger/connection' && init?.method === 'DELETE') return Promise.resolve(jsonResponse({}));
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth: testHouseholdSession(false), replaceAuth: () => undefined }}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
+    expect(await screen.findByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith('/api/providers/kroger/connection', expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  it('keeps the disconnect-only dialog open with an alert when DELETE fails for a non-admin', async () => {
+    const onChanged = vi.fn();
+    const errorText = 'Kroger could not be disconnected';
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([provider({ connectionState: 'connected', credentials: noKeys })]));
+      }
+      if (url === '/api/providers/kroger/connection' && init?.method === 'DELETE') {
+        return Promise.resolve(jsonResponse({ error: errorText }, 500));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth: testHouseholdSession(false), replaceAuth: () => undefined }}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
+    expect(await screen.findByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(errorText);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    const deleteCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => String(input) === '/api/providers/kroger/connection' && init?.method === 'DELETE',
+    );
+    expect(deleteCalls).toHaveLength(1);
+  });
+
+  it('hides Kroger app keys when auth is null (LAN listener); HouseholdGate keeps that off the app shell', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={lanListenerSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    await screen.findByRole('menuitem', { name: 'Look for more groups' });
+    expect(screen.queryByRole('menuitem', { name: 'Manage Kroger connection' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the dialog open with the admin-only alert after a 403, then drops the app keys', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse({ error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    fireEvent.change(await screen.findByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Only the server admin can change the Kroger app keys\.$/);
+    expect(screen.getByRole('dialog', { name: 'Kroger connection' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
+  });
+
+  it('clears access denied when the dialog closes so reopening shows the app keys form again', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([provider()]));
+      if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse({ error: 'Only an admin can do this.', code: 'forbidden_operator' }, 403));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={() => undefined} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    fireEvent.change(await screen.findByLabelText('Client secret'), { target: { value: 'typed-once' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Only the server admin can change the Kroger app keys\.$/);
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Kroger connection' }), { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Kroger connection' })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage Kroger connection' }));
+    expect(await screen.findByLabelText('Client ID')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
 
 describe('AppMenu', () => {
   afterEach(() => {
@@ -115,9 +378,11 @@ describe('AppMenu', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(
       <MantineProvider env="test">
-        <MemoryRouter>
-          <AppMenu onCredentialsChanged={onChanged} />
-        </MemoryRouter>
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
       </MantineProvider>,
     );
 
@@ -144,9 +409,11 @@ describe('AppMenu', () => {
     }));
     render(
       <MantineProvider env="test">
-        <MemoryRouter>
-          <AppMenu onCredentialsChanged={onChanged} />
-        </MemoryRouter>
+        <HouseholdSessionContext.Provider value={adminAccountSession()}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
       </MantineProvider>,
     );
 
