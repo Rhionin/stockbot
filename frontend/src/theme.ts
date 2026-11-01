@@ -9,7 +9,7 @@ import {
 } from '@mantine/core';
 import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio } from '@stockbot/shared/contrast';
 
-// Shade 6 is the filled brand teal from the locked mark (#0D9488).
+// Shade 6 is the locked mark teal (#0D9488); filled primary buttons use shade 7 (#0F766E).
 const teal: MantineColorsTuple = [
   '#f0fdfa',
   '#ccfbf1',
@@ -141,8 +141,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
 // that stay open when their target leaves the DOM.
 export const theme = createTheme({
   primaryColor: 'teal',
-  // Shade 7 is teal-700 ink and filled buttons on light paper (#0F766E, ~5.5:1 with white text).
-  primaryShade: { light: 7, dark: 6 },
+  // Shade 7 is teal-700 (#0F766E). Filled primary buttons use it in both schemes (~5.5:1 with white).
+  primaryShade: { light: 7, dark: 7 },
   autoContrast: true,
   luminanceThreshold: 0.22,
   colors: {
