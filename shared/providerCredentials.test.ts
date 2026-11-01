@@ -5,6 +5,7 @@ import {
   providerAppCredentialsAccessDenied,
   providerDisconnectDialogBody,
   providerDisconnectDialogTitle,
+  providerDisconnectFailureMessage,
   PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE,
 } from './providerCredentials';
 
@@ -92,6 +93,26 @@ describe('providerDisconnectDialogCopy', () => {
       'This disconnects your Kroger account for everyone in your household. Nothing on your list is deleted. Sending to your Kroger cart stops until someone reconnects.',
     );
     expect(providerDisconnectDialogBody('Kroger')).not.toMatch(/\boperator\b/i);
+  });
+
+  it('falls back to your store when the provider name is missing', () => {
+    expect(providerDisconnectDialogTitle('')).toBe('Disconnect your store?');
+    expect(providerDisconnectDialogTitle(undefined)).toBe('Disconnect your store?');
+    expect(providerDisconnectDialogBody('')).toBe(
+      'This disconnects your store account for everyone in your household. Nothing on your list is deleted. Sending to your store cart stops until someone reconnects.',
+    );
+  });
+});
+
+describe('providerDisconnectFailureMessage', () => {
+  it('falls back when the server gives no message', () => {
+    expect(providerDisconnectFailureMessage(new Error(''))).toBe("Couldn't disconnect. Try again.");
+    expect(providerDisconnectFailureMessage({ error: '   ' })).toBe("Couldn't disconnect. Try again.");
+  });
+
+  it('keeps a server message when present', () => {
+    expect(providerDisconnectFailureMessage({ error: 'Kroger could not be disconnected' }))
+      .toBe('Kroger could not be disconnected');
   });
 });
 

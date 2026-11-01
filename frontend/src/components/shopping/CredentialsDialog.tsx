@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Divider, Group, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
+import { Button, Divider, Group, Loader, Modal, NativeSelect, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { clearProviderCredentials, saveProviderCredentials } from '../../api/client';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
@@ -68,13 +68,18 @@ export const CredentialsDialog = ({
       : `${provider.displayName} connection`);
 
   return (
-    <Modal
+    <Modal.Root
       opened={opened && provider !== null}
       onClose={onClose}
-      title={modalTitle}
       size="sm"
-      closeButtonProps={disconnectOnly ? { 'aria-label': 'Close' } : undefined}
     >
+      <Modal.Overlay />
+      <Modal.Content className="credentials-dialog">
+        <Modal.Header component="div">
+          <Modal.Title>{modalTitle}</Modal.Title>
+          <Modal.CloseButton aria-label="Close" className="credentials-dialog-close" />
+        </Modal.Header>
+        <Modal.Body>
       {opened && provider !== null && (
         <Stack gap="sm">
           {accessDenied && (
@@ -106,6 +111,7 @@ export const CredentialsDialog = ({
                 size="xs"
                 type="button"
                 variant="default"
+                styles={touchTargetButton}
                 loading={disconnecting}
                 onClick={onDisconnect}
               >
@@ -132,11 +138,21 @@ export const CredentialsDialog = ({
                 <Button
                   type="button"
                   color="red"
+                  className="credentials-disconnect"
                   styles={touchTargetButton}
-                  loading={disconnecting}
+                  data-loading={disconnecting || undefined}
+                  disabled={disconnecting}
                   onClick={onDisconnect}
                 >
-                  Disconnect
+                  <span className="credentials-disconnect-label-stack">
+                    <span className="credentials-disconnect-label-idle" aria-hidden={disconnecting}>Disconnect</span>
+                    {disconnecting && (
+                      <span className="credentials-disconnect-label-busy">
+                        <Loader size="xs" />
+                        Disconnect
+                      </span>
+                    )}
+                  </span>
                 </Button>
               </Group>
               {disconnectError !== '' && (
@@ -146,7 +162,9 @@ export const CredentialsDialog = ({
           )}
         </Stack>
       )}
-    </Modal>
+        </Modal.Body>
+      </Modal.Content>
+    </Modal.Root>
   );
 };
 
@@ -258,9 +276,9 @@ const CredentialForm = ({
         <Text size="sm" c="dimmed">A client secret is saved and is not shown.</Text>
       )}
       <Group gap="xs">
-        <Button size="xs" type="submit" loading={pending}>Save credentials</Button>
+        <Button size="xs" type="submit" styles={touchTargetButton} loading={pending}>Save credentials</Button>
         {saved?.source === 'saved' && (
-          <Button size="xs" type="button" variant="default" loading={pending} onClick={() => void clear()}>
+          <Button size="xs" type="button" variant="default" styles={touchTargetButton} loading={pending} onClick={() => void clear()}>
             Clear saved credentials
           </Button>
         )}

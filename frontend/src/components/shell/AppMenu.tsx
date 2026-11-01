@@ -7,7 +7,7 @@ import type { ProviderInfo } from '@stockbot/shared/types';
 import { BuildStamp } from '../build/BuildStamp';
 import { CredentialsDialog } from '../shopping/CredentialsDialog';
 import { inlineFailure } from '@stockbot/shared/contract';
-import { canManageProviderAppCredentials } from '@stockbot/shared/providerCredentials';
+import { canManageProviderAppCredentials, providerDisconnectFailureMessage } from '@stockbot/shared/providerCredentials';
 
 export interface AppMenuProps {
   onCredentialsChanged: () => void;
@@ -74,7 +74,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
       setEditingId(null);
       setOpened(false);
     } catch (requestError) {
-      setDisconnectError(inlineFailure(requestError, 'Unable to disconnect.') ?? '');
+      setDisconnectError(providerDisconnectFailureMessage(requestError));
     } finally {
       setDisconnectingId(null);
     }
@@ -105,6 +105,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
         }}
         position="bottom-end"
         width={320}
+        classNames={{ dropdown: 'app-menu-dropdown' }}
         shadow="md"
         withinPortal
       >
