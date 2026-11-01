@@ -125,10 +125,10 @@ describe('ShoppingListPage', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderPage();
 
-    expect(await screen.findByText('Build the list before sending it to Kroger.')).toBeInTheDocument();
-    expect(screen.getByText('Adds these items to your Kroger cart.')).toBeInTheDocument();
+    expect(await screen.findByText('Build the list before sending it to your store.')).toBeInTheDocument();
+    expect(screen.getByText("Sends these items to your store's cart.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build the list' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Send to Kroger' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send to your store' })).toBeDisabled();
     expect(screen.queryByLabelText('Pantry item')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Build the list' }));
     await screen.findByLabelText('Pantry item');
@@ -218,8 +218,8 @@ describe('ShoppingListPage', () => {
       expect.objectContaining({ method: 'PUT', body: JSON.stringify({ itemId: 'kr', priceCents: 89, label: 'Noted sale' }) }),
     ));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
-    expect(await screen.findByText('1 item sent to Kroger.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Send to your store' }));
+    expect(await screen.findByText('1 item sent to your store cart.')).toBeInTheDocument();
   });
 
   it('shows a group line with its rule and swap, and hides brand controls', async () => {
