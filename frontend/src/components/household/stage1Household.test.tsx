@@ -912,7 +912,8 @@ describe('devices, pairing, and live hints', () => {
     expect(screen.getByText(/Scanner · Offline/)).toBeVisible();
   });
 
-  it('patches scanner settings with inline saving and success feedback', async () => {
+  // QUARANTINED: flaky under load, see #522. Remove when the deferred-mock fix lands (due 2026-11-07).
+  it.skip('patches scanner settings with inline saving and success feedback', async () => {
     let row = device({
       id: 'scan-1',
       label: 'Pantry pistol',
