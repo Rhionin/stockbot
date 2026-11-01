@@ -195,6 +195,44 @@ describe('AppMenu Kroger app keys visibility', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/providers/kroger/connection', expect.objectContaining({ method: 'DELETE' }));
   });
 
+  it('keeps the disconnect-only dialog open with an alert when DELETE fails for a non-admin', async () => {
+    const onChanged = vi.fn();
+    const errorText = 'Kroger could not be disconnected';
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([provider({ connectionState: 'connected', credentials: noKeys })]));
+      }
+      if (url === '/api/providers/kroger/connection' && init?.method === 'DELETE') {
+        return Promise.resolve(jsonResponse({ error: errorText }, 500));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth: testHouseholdSession(false), replaceAuth: () => undefined }}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
+    expect(await screen.findByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(errorText);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Disconnect Kroger?' })).toBeInTheDocument();
+    const deleteCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => String(input) === '/api/providers/kroger/connection' && init?.method === 'DELETE',
+    );
+    expect(deleteCalls).toHaveLength(1);
+  });
+
   it('hides Kroger app keys when auth is null (LAN listener); HouseholdGate keeps that off the app shell', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);

@@ -134,6 +134,38 @@ test('Test Household non-admin in the primary household disconnects without app 
   await expect.poll(() => disconnected).toBe(true)
 })
 
+test('Test Household non-admin sees disconnect failure in the disconnect-only dialog', async ({ page }) => {
+  resetStage()
+  stage.kind = 'account'
+  stage.householdName = 'Test Household'
+  stage.operator = false
+  stage.role = 'member'
+  await install(page)
+  const errorText = 'Kroger could not be disconnected'
+  let deleteCount = 0
+  await page.route('**/api/providers/kroger/connection', (route) => {
+    if (route.request().method() === 'DELETE') {
+      deleteCount += 1
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: errorText }),
+      })
+    }
+    return route.continue()
+  })
+  await stubShoppingSurface(page, krogerProviders('saved', 'connected'))
+  await page.goto('/shopping')
+  await page.getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Disconnect Kroger' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Disconnect Kroger?' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Disconnect', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveText(errorText)
+  await expect(dialog).toBeVisible()
+  expect(deleteCount).toBe(1)
+})
+
 test('forbidden_operator keeps the admin alert visible and hides the app keys form', async ({ page }) => {
   resetStage()
   stage.kind = 'account'

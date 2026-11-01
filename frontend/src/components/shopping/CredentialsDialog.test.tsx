@@ -248,7 +248,7 @@ describe('CredentialsDialog', () => {
       const url = String(input);
       if (url === '/api/providers/kroger/credentials' && init?.method === 'PUT') {
         return Promise.resolve(new Response(JSON.stringify({
-          error: 'Sign in required.',
+          error: 'Sign in to continue.',
           code: 'unauthorized',
         }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
       }
@@ -269,7 +269,7 @@ describe('CredentialsDialog', () => {
     fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: 'https://pantry.example/cb' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('Sign in required.');
+    expect(alert).toHaveTextContent('Sign in to continue.');
     expect(alert).not.toHaveTextContent(PROVIDER_APP_CREDENTIALS_FORBIDDEN_MESSAGE);
   });
 });
