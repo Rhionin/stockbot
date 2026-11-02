@@ -163,17 +163,8 @@ func TestCLIBusyRetriesZero(t *testing.T) {
 	}
 	settings, recipients := cliRunFixture(t)
 	busySleeps := 0
-	cmdRunRunnerHook = func(r *Runner) {
-		r.Sleep = func(d time.Duration) {
-			if d == retryWait {
-				busySleeps++
-			}
-		}
-	}
-	t.Cleanup(func() { cmdRunRunnerHook = nil })
 	stderr := captureFD(t, &os.Stderr)
-	code := CLI([]string{
-		"run",
+	code := cmdRun([]string{
 		"-db", path,
 		"-stage", t.TempDir(),
 		"-tmpfs-limit", "1000000000",
@@ -182,6 +173,12 @@ func TestCLIBusyRetriesZero(t *testing.T) {
 		"-busy-timeout", "20ms",
 		"-busy-retries", "0",
 		"-busy-retry-wait", "7ms",
+	}, func(r *Runner) {
+		r.Sleep = func(d time.Duration) {
+			if d == retryWait {
+				busySleeps++
+			}
+		}
 	})
 	if code != ExitPreflight {
 		t.Fatalf("code = %d stderr=%q", code, stderr())
@@ -189,8 +186,12 @@ func TestCLIBusyRetriesZero(t *testing.T) {
 	if busySleeps != 0 {
 		t.Fatalf("busy sleeps = %d, want 0 for -busy-retries 0", busySleeps)
 	}
-	if !strings.Contains(stderr(), "class=preflight") {
-		t.Fatalf("stderr = %q", stderr())
+	errText := stderr()
+	if !strings.Contains(errText, "stayed busy") {
+		t.Fatalf("stderr missing stayed busy: %q", errText)
+	}
+	if !strings.Contains(errText, "class=preflight") {
+		t.Fatalf("stderr = %q", errText)
 	}
 }
 
@@ -209,7 +210,16 @@ func TestCLIBusyRetriesTwo(t *testing.T) {
 	settings, recipients := cliRunFixture(t)
 	busySleeps := 0
 	released := false
-	cmdRunRunnerHook = func(r *Runner) {
+	code := cmdRun([]string{
+		"-db", path,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "20ms",
+		"-busy-retries", "2",
+		"-busy-retry-wait", "7ms",
+	}, func(r *Runner) {
 		r.Sleep = func(d time.Duration) {
 			if d != retryWait {
 				return
@@ -220,18 +230,6 @@ func TestCLIBusyRetriesTwo(t *testing.T) {
 				released = true
 			}
 		}
-	}
-	t.Cleanup(func() { cmdRunRunnerHook = nil })
-	code := CLI([]string{
-		"run",
-		"-db", path,
-		"-stage", t.TempDir(),
-		"-tmpfs-limit", "1000000000",
-		"-secrets", settings,
-		"-recipients", recipients,
-		"-busy-timeout", "20ms",
-		"-busy-retries", "2",
-		"-busy-retry-wait", "7ms",
 	})
 	if code != ExitOK {
 		t.Fatalf("code = %d busySleeps=%d", code, busySleeps)

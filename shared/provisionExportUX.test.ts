@@ -210,6 +210,28 @@ describe('groupProvisionResults', () => {
     expect(groups.N).toBe(1);
     expect(groups.check[0]?.entryId).toBe('sli-oats');
   });
+
+  it('gives legacy failedItems rows the api_error fallback', () => {
+    const report = {
+      provider: 'kroger',
+      exported: 0,
+      failedItems: ['Invented Jam'],
+      reconnectRequired: true,
+    } as ProvisionReport;
+    const groups = groupProvisionResults(report);
+    expect(groups.notAdded).toHaveLength(1);
+    expect(groups.notAdded[0]?.status).toBe('failed');
+    expect(groups.notAdded[0]?.reason).toBe('api_error');
+    expect(
+      provisionItemReasonLine(
+        groups.notAdded[0]!.name,
+        'Kroger',
+        groups.notAdded[0]!.reason,
+        groups.notAdded[0]!,
+        true,
+      ),
+    ).toBe('Invented Jam: Something went wrong sending this item');
+  });
 });
 
 describe('provisionStatusGroup', () => {
@@ -528,7 +550,46 @@ describe('mapProvisionEntryResultRow', () => {
       name: 'Line B',
       quantity: 1,
       status: 'failed',
+      reason: 'api_error',
     });
+  });
+
+  it('maps the legacy provider_rejected alias to batch_rejected', () => {
+    const row = mapProvisionEntryResultRow({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Invented Line',
+      quantity: 1,
+      outcome: 'failed',
+      outcomeReason: 'provider_rejected',
+    });
+    expect(row).toEqual({
+      entryId: 'e1',
+      itemId: 'i1',
+      name: 'Invented Line',
+      quantity: 1,
+      detail: undefined,
+      status: 'failed',
+      reason: 'batch_rejected',
+    });
+    expect(provisionItemReasonLine(row.name, 'Kroger', row.reason, row)).toBe(
+      "Invented Line: Kroger didn't accept this item",
+    );
+  });
+
+  it('uses name-only copy for legacy unknown request_incomplete rows', () => {
+    const row = mapProvisionEntryResultRow({
+      entryId: 'e3',
+      itemId: 'i3',
+      name: 'Oats',
+      quantity: 1,
+      outcome: 'unknown',
+      outcomeReason: 'request_incomplete',
+    });
+    expect(row.status).toBe('unknown');
+    expect(row.reason).toBe('request_incomplete');
+    expect(provisionItemReasonLine(row.name, 'Example store', row.reason, row)).toBe('Oats');
+    expect(provisionCheckRowLabel(row)).toBe('Oats');
   });
 });
 
