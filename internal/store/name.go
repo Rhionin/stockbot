@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/cases"
 )
 
 const maxNameRunes = 40
 
 const settingDefaultStoreID = "default_store_id"
+
+var unicodeNameFold = cases.Fold()
 
 // NameKey is the case-folded trimmed name used for uniqueness.
 func NameKey(name string) (string, string, error) {
@@ -19,7 +23,7 @@ func NameKey(name string) (string, string, error) {
 	if utf8.RuneCountInString(trimmed) > maxNameRunes {
 		return "", "", invalid("Store names can be at most 40 characters.", "name")
 	}
-	return trimmed, strings.ToLower(trimmed), nil
+	return trimmed, unicodeNameFold.String(trimmed), nil
 }
 
 func validateKind(kind string) (string, error) {

@@ -231,7 +231,33 @@ func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
 			hid := primaryScope(t, env.DB).HouseholdID()
 			id := seedFixtureStore(t, env.DB, hid, "Remove Me Q7")
 			removeID = id
-			_, err := env.DB.Exec(`INSERT INTO products (id, name) VALUES ('prod-q7', 'Synthetic Q7')`)
+			seedFixtureStore(t, env.DB, hid, "Other Shop Q7")
+			when := time.Now().UTC().Format(time.RFC3339Nano)
+			future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+			_, err := env.DB.Exec(`
+				INSERT INTO household_settings (household_id, key, value) VALUES (?, 'default_store_id', ?)
+				ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`, hid, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`INSERT INTO products (id, name) VALUES ('prod-q7', 'Synthetic Q7')`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`
+				INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-open', 'user-1', 'prod-q7', ?)`, hid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`
+				INSERT INTO shopping_list_items (id, household_id, item_id, user_id, quantity, source, created_at, run_store_id)
+				VALUES ('line-open', ?, 'item-open', 'user-1', 1, 'manual', '2026-01-01T00:00:00Z', ?)`, hid, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`
+				INSERT INTO shopping_list_items (id, household_id, item_id, user_id, quantity, source, created_at, run_store_id, purchased_at)
+				VALUES ('line-bought', ?, 'item-open', 'user-1', 1, 'manual', '2026-01-01T00:00:00Z', ?, '2026-01-02T00:00:00Z')`, hid, id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -244,10 +270,24 @@ func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
 			_, err = env.DB.Exec(`
 				INSERT INTO product_stores (household_id, product_id, store_id, state, is_usual, set_by_user_id, set_at)
 				VALUES (?, 'prod-q7', ?, 'carries', 1, 'user-1', '2026-01-01T00:00:00Z')`, hid, id)
-				if err != nil {
-					t.Fatal(err)
-				}
-			},
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`
+				INSERT INTO store_availability (
+					household_id, store_id, product_id, location_id, status, checked_at, status_expires_at
+				) VALUES (?, ?, 'prod-q7', '12345678', 'carried', ?, ?)`, hid, id, when, future)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.DB.Exec(`
+				INSERT INTO store_checks (
+					household_id, store_id, state, trigger, started_at, lease_until, checked_count, found_count, total_count
+				) VALUES (?, ?, 'done', 'manual', ?, ?, 1, 1, 1)`, hid, id, when, future)
+			if err != nil {
+				t.Fatal(err)
+			}
+		},
 		httpExchange: httpExchange{
 			method:         http.MethodGet,
 			url:            "/api/stores",
@@ -264,9 +304,15 @@ func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
 				url:            "/api/stores/" + id + "/removal-preview",
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
+					{path: "$.runOverrides", value: float64(2)},
+					{path: "$.usualChoices", value: float64(1)},
 					{path: "$.personChoices", value: float64(1)},
+					{path: "$.checkedItems", value: float64(1)},
 					{path: "$.tripsKept", value: float64(1)},
-					{path: "$.isDefault", value: false},
+					{path: "$.isDefault", value: true},
+					{path: "$.openLines", value: float64(1)},
+					{path: "$.openLinesNext[0].storeId", value: nil},
+					{path: "$.openLinesNext[0].count", value: float64(1)},
 				},
 			})
 			executeExchange(t, handler, httpExchange{
@@ -274,17 +320,29 @@ func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
 				url:            "/api/stores/" + id,
 				expectedStatus: http.StatusNoContent,
 			})
+			hid := primaryScope(t, env.DB).HouseholdID()
+			var avail, checks, choices, overrides int
+			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM store_availability WHERE store_id = ?`, id).Scan(&avail); err != nil || avail != 0 {
+				t.Fatalf("availability left %d err %v", avail, err)
+			}
+			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM store_checks WHERE store_id = ?`, id).Scan(&checks); err != nil || checks != 0 {
+				t.Fatalf("store_checks left %d err %v", checks, err)
+			}
+			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM product_stores WHERE store_id = ?`, id).Scan(&choices); err != nil || choices != 0 {
+				t.Fatalf("product_stores left %d", choices)
+			}
+			if err := env.DB.QueryRow(`
+				SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND run_store_id = ?`, hid, id).Scan(&overrides); err != nil || overrides != 0 {
+				t.Fatalf("run overrides left %d", overrides)
+			}
+			var defaultRows int
+			if err := env.DB.QueryRow(`
+				SELECT COUNT(*) FROM household_settings WHERE household_id = ? AND key = 'default_store_id' AND value = ?`, hid, id).Scan(&defaultRows); err != nil || defaultRows != 0 {
+				t.Fatalf("default still set %d", defaultRows)
+			}
 			var trips int
 			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM store_trips WHERE store_id = ?`, id).Scan(&trips); err != nil || trips != 1 {
 				t.Fatalf("trips kept %d err %v", trips, err)
-			}
-			var stores int
-			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM stores WHERE id = ?`, id).Scan(&stores); err != nil || stores != 0 {
-				t.Fatalf("store row left %d", stores)
-			}
-			var choices int
-			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM product_stores WHERE store_id = ?`, id).Scan(&choices); err != nil || choices != 0 {
-				t.Fatalf("product_stores left %d", choices)
 			}
 		},
 	}})

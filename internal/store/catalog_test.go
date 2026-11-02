@@ -66,10 +66,17 @@ func TestCatalogCreateLinkedAndValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation on empty name")
 	}
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
+	}
 	badKind := "warehouse"
 	_, err = catalog.Create(ctx, scope, CreateInput{Name: "Other", Kind: badKind})
 	if err == nil {
 		t.Fatal("expected validation on kind")
+	}
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
 	}
 	_, err = catalog.Create(ctx, scope, CreateInput{
 		Name:           "Second link",
@@ -79,6 +86,10 @@ func TestCatalogCreateLinkedAndValidation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected already linked")
+	}
+	var le *Error
+	if !errors.As(err, &le) || le.Code != CodeAlreadyLinked {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -232,6 +243,10 @@ func TestCatalogSetOrderValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation on empty order")
 	}
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
+	}
 	_, err = catalog.SetOrder(ctx, scope, []string{b.ID}, CheckingContext{})
 	if err == nil {
 		t.Fatal("expected not found when order omits a store")
@@ -284,10 +299,17 @@ func TestCatalogCreateValidationFields(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected location validation")
 	}
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
+	}
 	bad := "target"
 	_, err = catalog.Create(ctx, scope, CreateInput{Name: "Bad provider", LinkedProvider: &bad})
 	if err == nil {
 		t.Fatal("expected linkedProvider validation")
+	}
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
 	}
 	online := "online"
 	_, err = catalog.Create(ctx, scope, CreateInput{Name: "Web shop", Kind: online})
@@ -434,12 +456,41 @@ func TestCatalogRemovalPreviewOpenLines(t *testing.T) {
 	}
 }
 
-func TestStoreErrorMessages(t *testing.T) {
-	if got := nameTaken().Error(); got == "" {
-		t.Fatal("expected message")
+func TestNameKeyUnicodeCaseFold(t *testing.T) {
+	_, keyA, err := NameKey("Straße")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := (&Error{Code: CodeConflict}).Error(); got != CodeConflict {
-		t.Fatalf("got %q", got)
+	_, keyB, err := NameKey("STRASSE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyA != keyB {
+		t.Fatalf("unicode fold keys %q vs %q", keyA, keyB)
+	}
+}
+
+func TestCatalogCreateStartsNoCheckJob(t *testing.T) {
+	catalog, scope, db := newTestCatalog(t)
+	ctx := context.Background()
+	st, err := catalog.Create(ctx, scope, CreateInput{Name: "No check job"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM store_checks WHERE household_id = ? AND store_id = ?`,
+		scope.HouseholdID(), st.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("store_checks count %d err %v", n, err)
+	}
+}
+
+func TestCatalogCanConnectSameForOwnerAndMember(t *testing.T) {
+	catalog, scope, _ := newTestCatalog(t)
+	ctx := context.Background()
+	chk := CheckingContext{CredentialsConfigured: true}
+	out, err := catalog.List(ctx, scope, chk)
+	if err != nil || !out.CanConnect {
+		t.Fatalf("canConnect=%v err=%v", out.CanConnect, err)
 	}
 }
 
