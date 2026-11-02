@@ -81,6 +81,20 @@ describe('theme', () => {
     expect(contrastRatio(darkLightColor!, redDarkWash)).toBeGreaterThanOrEqual(4.5);
   });
 
+  it('keeps keyboard focus ring at least 3:1 without lightening filled primary buttons', () => {
+    const variables = cssVariablesResolver(fullTheme);
+    const paper = fullTheme.colors.dark[7];
+    const lightRing = variables.light['--stock-focus-ring']!;
+    const darkRing = variables.dark['--stock-focus-ring']!;
+    expect(lightRing.startsWith('#')).toBe(true);
+    expect(darkRing.startsWith('#')).toBe(true);
+    expect(contrastRatio(lightRing, fullTheme.white)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(darkRing, paper)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(fullTheme.colors.teal[7], fullTheme.white)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(fullTheme.colors.teal[7], paper)).toBeLessThan(3);
+    expect(darkRing).not.toBe(fullTheme.colors.teal[7]);
+  });
+
   it('keeps every color scale readable on its light wash, dark wash, and page background', () => {
     const variables = cssVariablesResolver(fullTheme);
     const paper = fullTheme.colors.dark[7];

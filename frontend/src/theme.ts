@@ -9,7 +9,8 @@ import {
 } from '@mantine/core';
 import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio, parseHex } from '@stockbot/shared/contrast';
 
-// Shade 6 is the locked mark teal (#0D9488); filled primary buttons use shade 7 (#0F766E).
+const UI_FOCUS_MIN = 3;
+
 const teal: MantineColorsTuple = [
   '#f0fdfa',
   '#ccfbf1',
@@ -173,6 +174,25 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
   for (const key of ['--mantine-color-red-text', '--mantine-color-red-outline'] as const) {
     resolved.dark[key] = redInkOnDark(resolveVarColor(resolved.dark[key]), darkPaper);
   }
+
+  const focusRingInk = (
+    scale: readonly string[],
+    paper: string,
+    start: number,
+    direction: 'darker' | 'lighter',
+  ) => {
+    const index = direction === 'darker'
+      ? readableShade(scale, paper, start, UI_FOCUS_MIN)
+      : readableLightShade(scale, paper, start, UI_FOCUS_MIN);
+    return index >= 0 ? scale[index] : towardContrast(
+      scale[Math.min(start, scale.length - 1)],
+      paper === theme.white ? '#000000' : '#ffffff',
+      paper,
+      UI_FOCUS_MIN,
+    );
+  };
+  resolved.light['--stock-focus-ring'] = focusRingInk(teal, theme.white, 7, 'darker');
+  resolved.dark['--stock-focus-ring'] = focusRingInk(teal, darkPaper, 7, 'lighter');
 
   return resolved;
 };

@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { install, resetStage, stage } from './householdStageFixtures'
 
-const outDir = process.env.SCREENSHOT_DIR ?? join(process.cwd(), '487-screenshots')
+const outDir = process.env.SCREENSHOT_DIR ?? join(process.cwd(), 'test-results', '487-screenshots')
 
 const krogerProviders = () => ([
   {

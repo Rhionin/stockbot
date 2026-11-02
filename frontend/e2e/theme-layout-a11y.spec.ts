@@ -4,7 +4,13 @@ import { install, resetStage, stage } from './householdStageFixtures'
 import { resetSharedState } from './helpers'
 
 const MIN_TOUCH = 44
-const ROOT_FONT_PX_AT_100 = 16
+const ROOT_FONT_PX_AT_100 = 15
+
+function expectedRootFontPx(fontPercent: number) {
+  if (fontPercent === 100) return ROOT_FONT_PX_AT_100
+  if (fontPercent === 125) return 20
+  return (ROOT_FONT_PX_AT_100 * fontPercent) / 100
+}
 
 async function installRootFontPercent(page: Page, fontPercent: number) {
   if (fontPercent === 100) return
@@ -101,21 +107,73 @@ async function openShoppingToolbar(
   await page.goto('/shopping')
   await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
   if (fontPercent !== 100) {
-    await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * fontPercent) / 100)
+    await assertRootFontSizePx(page, expectedRootFontPx(fontPercent))
+  } else {
+    await assertRootFontSizePx(page, ROOT_FONT_PX_AT_100)
   }
 }
 
-async function seedBlockedSendHint(page: Page) {
-  await page.evaluate(() => {
-    const toolbar = document.querySelector('.shopping-toolbar')
-    if (toolbar === null) throw new Error('shopping toolbar missing')
-    if (toolbar.querySelector('.provision-blocked-send-hint') !== null) return
-    const hint = document.createElement('p')
-    hint.className = 'provision-blocked-send-hint'
-    hint.setAttribute('role', 'alert')
-    hint.textContent = "One item didn't save. Fix it below, then send again."
-    toolbar.appendChild(hint)
+async function stubShoppingWithBlockedSend(
+  page: Page,
+  displayName: string,
+  entries: unknown[] = [{
+    itemId: 'item-1',
+    quantity: 1,
+    item: { id: 'item-1', product: { name: 'Plain rice', category: 'Dry goods' } },
+    basis: { instanceCount: 1 },
+  }],
+) {
+  let resolveCalls = 0
+  await stubShopping(page, displayName, entries)
+  await page.route('**/api/shopping-list/items/**/unknown-resolution**', async (route) => {
+    resolveCalls += 1
+    await route.fulfill({
+      status: resolveCalls === 1 ? 500 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify(resolveCalls === 1 ? { error: 'boom', code: 'internal' } : { entryId: 'item-1' }),
+    })
   })
+  await page.route('**/api/shopping-list**', async (route) => {
+    const incoming = route.request()
+    const url = new URL(incoming.url())
+    if (incoming.method() === 'POST' && url.pathname === '/api/shopping-list/export') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          provider: 'kroger',
+          exported: 0,
+          results: [{
+            entryId: 'a',
+            itemId: 'item-1',
+            name: 'Plain rice',
+            quantity: 1,
+            status: 'unknown',
+            reason: 'no_per_item_result',
+          }],
+        }),
+      })
+      return
+    }
+    if (incoming.method() === 'GET' && url.pathname === '/api/shopping-list') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(entries),
+      })
+      return
+    }
+    await route.continue()
+  })
+}
+
+async function triggerRealBlockedSendHint(page: Page) {
+  await page.getByRole('button', { name: /Send to/ }).click()
+  const panel = page.getByRole('status', { name: 'Cart send result' })
+  await expect(panel).toBeVisible()
+  await panel.getByRole('button', { name: /in my cart/i }).click()
+  await page.getByRole('button', { name: /Send to/ }).click()
+  await expect(page.locator('.provision-blocked-send-hint')).toHaveText("One item didn't save. Fix it below, then send again.")
 }
 
 async function assertSingleHouseholdEllipsis(page: Page, fullName: string) {
@@ -170,7 +228,9 @@ async function openSingleHouseholdHeader(
   await page.goto('/shopping')
   await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
   if (fontPercent !== 100) {
-    await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * fontPercent) / 100)
+    await assertRootFontSizePx(page, expectedRootFontPx(fontPercent))
+  } else {
+    await assertRootFontSizePx(page, ROOT_FONT_PX_AT_100)
   }
 }
 
@@ -240,19 +300,49 @@ const toolbarLayoutCases = [
 for (const { viewportWidth, fontPercent, scheme } of toolbarLayoutCases) {
   for (const state of ['filled list', 'empty list notice', 'blocked send hint'] as const) {
     test(`shopping toolbar stacks (${state}) at ${viewportWidth}px ${fontPercent}% ${scheme}`, async ({ page }) => {
-      await stubShopping(page, 'Kroger', state === 'empty list notice' ? [] : undefined)
+      if (state === 'blocked send hint') {
+        await stubShoppingWithBlockedSend(page, 'Kroger')
+      } else {
+        await stubShopping(page, 'Kroger', state === 'empty list notice' ? [] : undefined)
+      }
       await openShoppingToolbar(page, viewportWidth, fontPercent, scheme)
       if (state === 'empty list notice') {
         await expect(page.getByText(/Build the list before sending/)).toBeVisible()
       }
       if (state === 'blocked send hint') {
-        await seedBlockedSendHint(page)
-        await expect(page.locator('.provision-blocked-send-hint')).toBeVisible()
+        await triggerRealBlockedSendHint(page)
       }
       await assertShoppingToolbarStacked(page, viewportWidth)
     })
   }
 }
+
+for (const scheme of ['light', 'dark'] as const) {
+  test(`shopping toolbar stacks blocked hint and notices at 320px 125% (${scheme})`, async ({ page }) => {
+    await stubShoppingWithBlockedSend(page, 'Kroger')
+    await openShoppingToolbar(page, 320, 125, scheme)
+    await triggerRealBlockedSendHint(page)
+    await expect(page.locator('.provision-notices')).toBeVisible()
+    await expect(page.locator('.provision-blocked-send-hint')).toBeVisible()
+    await assertShoppingToolbarStacked(page, 320)
+  })
+}
+
+test('account menu stays inside a 320px viewport at 125% text', async ({ page }) => {
+  await stubShopping(page, 'Kroger')
+  await installRootFontPercent(page, 125)
+  await page.setViewportSize({ width: 320, height: 844 })
+  await page.goto('/shopping')
+  await assertRootFontSizePx(page, expectedRootFontPx(125))
+  await page.getByRole('button', { name: 'Menu' }).click()
+  const menu = page.locator('.app-menu-dropdown')
+  await expect(menu).toBeVisible()
+  await expect.poll(async () => {
+    const box = await menu.boundingBox()
+    const innerWidth = await page.evaluate(() => window.innerWidth)
+    return box !== null && box.x >= 0 && box.x + box.width <= innerWidth + 0.5
+  }).toBe(true)
+})
 
 for (const scheme of ['light', 'dark'] as const) {
   test(`header menu fits the viewport at 320px (${scheme})`, async ({ page }) => {
