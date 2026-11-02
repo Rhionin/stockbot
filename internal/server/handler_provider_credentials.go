@@ -33,6 +33,9 @@ type ProviderCredentialDeleteHandler struct {
 }
 
 func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody, providerCredentialParams]) (*CredentialView, error) {
+	if req.PathParams.ProviderID == "kroger" {
+		return nil, NotFound("provider is not registered")
+	}
 	if err := h.requireServerOperator(req.Context); err != nil {
 		return nil, err
 	}
@@ -111,6 +114,9 @@ func (h *ProviderCredentialPutHandler) Handle(req Request[providerCredentialBody
 }
 
 func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerCredentialParams]) (*CredentialView, error) {
+	if req.PathParams.ProviderID == "kroger" {
+		return nil, NotFound("provider is not registered")
+	}
 	if err := h.requireServerOperator(req.Context); err != nil {
 		return nil, err
 	}

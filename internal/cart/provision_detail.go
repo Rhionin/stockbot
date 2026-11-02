@@ -4,14 +4,14 @@ import "strings"
 
 // Known safe provider/OAuth error codes that may appear in user-visible detail.
 var allowedProviderErrorCodes = map[string]struct{}{
-	"invalid_grant":         {},
-	"invalid_token":         {},
-	"access_denied":         {},
-	"unauthorized_client":   {},
-	"invalid_request":       {},
+	"invalid_grant":          {},
+	"invalid_token":          {},
+	"access_denied":          {},
+	"unauthorized_client":    {},
+	"invalid_request":        {},
 	"unsupported_grant_type": {},
-	"invalid_scope":         {},
-	"invalid_client":        {},
+	"invalid_scope":          {},
+	"invalid_client":         {},
 }
 
 // batchRejectedDetail returns a short, safe message for a rejected batch.

@@ -961,6 +961,15 @@ func TestShoppingListExportKrogerInvalidGrantFromTokenEndpoint(t *testing.T) {
 			}); err != nil {
 				env.T.Fatal(err)
 			}
+			when := time.Now().UTC().Format(time.RFC3339Nano)
+			hid := primaryScope(env.T, env.DB).HouseholdID()
+			if _, err := env.DB.Exec(`
+				INSERT INTO provider_app_credentials (
+					id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at
+				) VALUES (?, 'user-1', ?, 'kroger', 'client', 'secret', 'https://app/cb', ?)`,
+				hid+":kroger", hid, when); err != nil {
+				env.T.Fatal(err)
+			}
 		},
 		httpExchange: httpExchange{
 			method:         "POST",

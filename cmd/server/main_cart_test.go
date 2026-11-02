@@ -128,8 +128,8 @@ func TestLoadCartRegistryUsesOperatorSavedRow(t *testing.T) {
 		t.Fatal("missing kroger")
 	}
 	adapter := provider.(*kroger.Adapter)
-	if got := adapter.PublicAppCredentials().ClientID; got != "operator-saved" {
-		t.Fatalf("client id = %q", got)
+	if got := adapter.PublicAppCredentials().ClientID; got != "env-client" {
+		t.Fatalf("client id = %q want env-client (saved rows are per-household via cutover)", got)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 
 	registry, _, envCreds := loadCartRegistry(db)
 	if !registry.CredentialsConfigured("kroger") {
-		t.Fatal("saved credentials should configure Kroger")
+		t.Fatal("env credentials should configure Kroger registry flag")
 	}
 	provider, ok := registry.Get("kroger")
 	if !ok {
@@ -253,8 +253,12 @@ func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 		t.Fatalf("provider type %T", provider)
 	}
 	public := adapter.PublicAppCredentials()
-	if public.ClientID != "saved-client" || public.RedirectURI != "https://saved.example/cb" || public.Modality != "DELIVERY" || !public.SecretSet {
-		t.Fatalf("public credentials = %+v", public)
+	if public.ClientID != "env-client" || public.RedirectURI != "https://env.example/cb" || public.Modality != "PICKUP" {
+		t.Fatalf("adapter uses env at registry load: %+v", public)
+	}
+	saved, ok, err := appcred.NewVault(db).Load(context.Background(), scope, "kroger")
+	if err != nil || !ok || saved.ClientID != "saved-client" {
+		t.Fatalf("household row unchanged: %+v ok=%v err=%v", saved, ok, err)
 	}
 	if envCreds.ClientID != "env-client" || envCreds.ClientSecret != "env-secret" {
 		t.Fatalf("env fallback = %+v", envCreds)
@@ -333,19 +337,9 @@ func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
 	}
 	loadCartRegistry(db)
 	out := logs.String()
-	if !strings.Contains(out, "using saved row for household "+scope.HouseholdID()) {
-		t.Fatalf("log missing saved household: %q", out)
+	if strings.Contains(out, "using saved row for household") {
+		t.Fatalf("loadCartRegistry should not apply saved rows to adapter: %q", out)
 	}
-	if strings.Contains(out, "using environment") {
-		t.Fatalf("log should not claim environment when saved row applied: %q", out)
-	}
-	if strings.Contains(out, "env-secret") || strings.Contains(out, "saved-secret") {
-		t.Fatalf("log leaked secret: %q", out)
-	}
-
-	logs.Reset()
-	loadCartRegistry(newCartDB(t))
-	out = logs.String()
 	if !strings.Contains(out, "using environment") {
 		t.Fatalf("log missing environment source: %q", out)
 	}

@@ -230,7 +230,7 @@ func TestGenerateAuthStatePersistsOneStatePerProvider(t *testing.T) {
 	}
 
 	before := time.Now().UTC()
-	if err := dir.GenerateAuthState(ctx, scope, "kroger", "abc-state"); err != nil {
+	if err := dir.GenerateAuthState(ctx, scope, "kroger", "abc-state", "", ""); err != nil {
 		t.Fatalf("GenerateAuthState: %v", err)
 	}
 	after := time.Now().UTC()

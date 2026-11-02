@@ -40,6 +40,10 @@ const (
 	codeProviderUnavailable  = "provider_unavailable"
 	codeForbiddenOperator    = auth.CodeForbiddenOperator
 	codeReconnectRequired    = "reconnect_required"
+	codeKrogerNotConnected   = "kroger_not_connected"
+	codeStoreDisabled        = "store_disabled"
+	codeStoreAppKeysRejected = "store_app_keys_rejected"
+	codeStoreAppUnreachable  = "store_app_unreachable"
 )
 
 // HTTPError represents an error with an associated HTTP status code.
@@ -57,6 +61,7 @@ type HTTPError struct {
 	Suggestions any
 	ItemID      string
 	OnHand      *int
+	CheckReason string
 }
 
 func (e *HTTPError) Error() string {
@@ -109,6 +114,43 @@ func ReconnectRequired(provider string) error {
 		Message:   fmt.Sprintf("Couldn't connect to your %s account. Nothing was sent.", provider),
 		ErrorCode: codeReconnectRequired,
 		Provider:  provider,
+	}
+}
+
+// StoreDisabled is returned when DISABLE_KROGER turns off online store features.
+func StoreDisabled() error {
+	return &HTTPError{
+		Code:      http.StatusConflict,
+		Message:   "Online store features are turned off on this server.",
+		ErrorCode: codeStoreDisabled,
+	}
+}
+
+// KrogerNotConnected is a 409 when the household cannot reach Kroger yet.
+func KrogerNotConnected(checkReason string) error {
+	return &HTTPError{
+		Code:        http.StatusConflict,
+		Message:     "Connect your store account first.",
+		ErrorCode:   codeKrogerNotConnected,
+		CheckReason: checkReason,
+	}
+}
+
+// StoreAppKeysRejected is a 400 when test-and-save rejects the keys.
+func StoreAppKeysRejected() error {
+	return &HTTPError{
+		Code:      http.StatusBadRequest,
+		Message:   "Those keys didn't work. Check that you copied both keys.",
+		ErrorCode: codeStoreAppKeysRejected,
+	}
+}
+
+// StoreAppUnreachable is a 503 when Kroger cannot be reached during test-and-save.
+func StoreAppUnreachable() error {
+	return &HTTPError{
+		Code:      http.StatusServiceUnavailable,
+		Message:   "Couldn't reach the store. Try again in a few minutes.",
+		ErrorCode: codeStoreAppUnreachable,
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
-	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/group"
@@ -122,24 +121,15 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 
 	var savedHousehold string
 	if !disabled {
-		vault := appcred.NewVault(db)
-		saved, household, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
-		if err != nil {
-			log.Printf("read saved Kroger credentials: %v", err)
-		} else if ok {
-			if err := adapter.ApplyAppCredentials(saved.ClientID, saved.ClientSecret, saved.RedirectURI, saved.Modality); err != nil {
-				log.Printf("saved Kroger credentials were not applied: %v", err)
-			} else {
-				configured = true
-				savedHousehold = household
-				log.Printf("Kroger app credentials: using saved row for household %s", savedHousehold)
-			}
-		}
+		// Env keys are seeded into the primary household by RunKrogerAppCutover at startup.
+		_ = savedHousehold
 	}
 
 	opts := []cart.RegisterOption{
 		cart.WithBatchSize(krogerBatchSize()),
-		cart.WithCredentialsConfigured(configured),
+	}
+	if configured {
+		opts = append(opts, cart.WithCredentialsConfigured(true))
 	}
 	if err := registry.Register(adapter, opts...); err != nil {
 		log.Printf("failed to register Kroger: %v", err)
@@ -224,6 +214,18 @@ func start(stop <-chan struct{}) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	log.Println("migrations applied")
+	cutoverEnv := app.KrogerCutoverEnv{
+		ClientID:     strings.TrimSpace(os.Getenv("KROGER_CLIENT_ID")),
+		ClientSecret: strings.TrimSpace(os.Getenv("KROGER_CLIENT_SECRET")),
+		RedirectURI:  strings.TrimSpace(os.Getenv("KROGER_REDIRECT_URI")),
+		Modality:     strings.TrimSpace(os.Getenv("KROGER_MODALITY")),
+	}
+	if cutoverEnv.RedirectURI == "" && site.AppBaseURL != "" {
+		cutoverEnv.RedirectURI = site.AbsoluteURL("/api/providers/kroger/callback")
+	}
+	if err := app.RunKrogerAppCutover(context.Background(), sqlDB, cutoverEnv); err != nil {
+		return fmt.Errorf("kroger app cutover: %w", err)
+	}
 	setupDir := envOrDefault("SETUP_DIR", "/run/setup")
 	directory := auth.NewService(sqlDB, setupDir)
 	if err := directory.Boot(context.Background()); err != nil {

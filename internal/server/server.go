@@ -16,8 +16,10 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/deployhook"
+	"github.com/Rhionin/stockbot/internal/devicingest"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/history"
@@ -31,9 +33,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/suggestion"
 	"github.com/Rhionin/stockbot/internal/supply"
-	"github.com/Rhionin/stockbot/internal/devicingest"
-	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/telemetry"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/webui"
 )
 
@@ -573,6 +574,7 @@ func newAPIMux(
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
 	engine := cart.NewEngine(registry, ledger, tokenBroker)
+	engine.SetCredentialVault(credentialVault)
 	engine.SetShoppingList(*shoppingList)
 	engine.SetPantry(*pantry)
 	engine.SetConsumptionLog(*consumptionLog)
@@ -657,6 +659,7 @@ func newAPIMux(
 		Stores:   storeCatalog,
 		Registry: registry,
 		Env:      envFallback,
+		Vault:    credentialVault,
 	}
 	apiMux.HandleFunc("GET /api/stores", HandleJSON(storesHandler.HandleList))
 	apiMux.HandleFunc("POST /api/stores", HandleJSON(storesHandler.HandleCreate))
@@ -666,11 +669,16 @@ func newAPIMux(
 	apiMux.HandleFunc("PATCH /api/stores/{id}", HandleJSON(storesHandler.HandlePatch))
 	apiMux.HandleFunc("DELETE /api/stores/{id}", HandleJSON(storesHandler.HandleDelete))
 
+	var krogerAdapter *kroger.Adapter
+	if p, ok := registry.Get(cart.ProviderID("kroger")); ok {
+		krogerAdapter, _ = p.(*kroger.Adapter)
+	}
 	providersHandler := &ProvidersHandler{
 		Registry:      registry,
 		ConnectionDir: connDir,
 		Credentials:   credentialVault,
 		EnvFallback:   envFallback,
+		Kroger:        krogerAdapter,
 	}
 	if cfg != nil && cfg.stage1svc != nil {
 		providersHandler.Auth = cfg.stage1svc
@@ -722,11 +730,16 @@ func newAPIMux(
 	apiMux.HandleFunc("POST /api/push/subscriptions", HandleJSON(pushHandler.Save))
 	apiMux.HandleFunc("DELETE /api/push/subscriptions", HandleJSON(pushHandler.Delete))
 	if cfg != nil && cfg.stage1svc != nil {
+		krogerApp := &KrogerAppHandler{
+			DB: db, Vault: credentialVault, Auth: cfg.stage1svc,
+			Env: envFallback, Site: cfg.site, Kroger: krogerAdapter,
+		}
 		cfg.gate = &stage1{
-			svc:      cfg.stage1svc,
-			site:     cfg.site,
-			stockIn:  scannerConfig.StockInBarcode,
-			stockOut: scannerConfig.StockOutBarcode,
+			svc:       cfg.stage1svc,
+			site:      cfg.site,
+			stockIn:   scannerConfig.StockInBarcode,
+			stockOut:  scannerConfig.StockOutBarcode,
+			krogerApp: krogerApp,
 		}
 		cfg.stage1svc.SetHints(broadcaster)
 		cfg.stage1svc.SetLive(broadcaster)

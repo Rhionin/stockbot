@@ -35,6 +35,6 @@ func TestKrogerAuthorizeConflictWhenDisabledMatchesCanConnect(t *testing.T) {
 		method:         http.MethodGet,
 		url:            "/api/providers/kroger/authorize",
 		expectedStatus: http.StatusConflict,
-		bodyContains:   []string{`"code":"conflict"`},
+		bodyContains:   []string{`"code":"store_disabled"`},
 	})
 }

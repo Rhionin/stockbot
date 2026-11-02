@@ -44,6 +44,24 @@ func newTestVault(t *testing.T) (*Vault, *sql.DB, context.Context, tenant.Scope,
 	return NewVault(db), db, ctx, scopeA, scopeB
 }
 
+func TestVaultHasApp(t *testing.T) {
+	vault, _, ctx, scope, _ := newTestVault(t)
+	ok, err := vault.HasApp(ctx, scope, "kroger")
+	if err != nil || ok {
+		t.Fatalf("empty ok=%v err=%v", ok, err)
+	}
+	if err := vault.Save(ctx, scope, Saved{
+		ProviderID: "kroger", ClientID: "c", ClientSecret: "s",
+		RedirectURI: "https://cb", Modality: "PICKUP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = vault.HasApp(ctx, scope, "kroger")
+	if err != nil || !ok {
+		t.Fatalf("after save ok=%v err=%v", ok, err)
+	}
+}
+
 func TestVaultLoadAndPublicMissingProvider(t *testing.T) {
 	vault, _, ctx, scope, _ := newTestVault(t)
 	const provider = "kroger"

@@ -44,20 +44,20 @@ type ProvisionEntry struct {
 }
 
 type shoppingListExportResponse struct {
-	Provider           string                 `json:"provider,omitempty"`
-	Exported           int                    `json:"exported"`
-	AddedCount         int                    `json:"addedCount"`
-	SentCount          int                    `json:"sentCount"`
-	SkippedCount       int                    `json:"skippedCount"`
-	FailedCount        int                    `json:"failedCount"`
-	UnknownCount       int                    `json:"unknownCount"`
-	ReconnectRequired  bool                   `json:"reconnectRequired,omitempty"`
-	FailedItems        []string               `json:"failedItems,omitempty"`
-	UnknownItems       []string               `json:"unknownItems,omitempty"`
-	Entries            []ProvisionEntry       `json:"entries,omitempty"`
-	Results            []provisionResultEntry `json:"results"`
-	Handoff            *HandoffResponse       `json:"handoff,omitempty"`
-	Items              []exportedItemResponse `json:"items,omitempty"`
+	Provider          string                 `json:"provider,omitempty"`
+	Exported          int                    `json:"exported"`
+	AddedCount        int                    `json:"addedCount"`
+	SentCount         int                    `json:"sentCount"`
+	SkippedCount      int                    `json:"skippedCount"`
+	FailedCount       int                    `json:"failedCount"`
+	UnknownCount      int                    `json:"unknownCount"`
+	ReconnectRequired bool                   `json:"reconnectRequired,omitempty"`
+	FailedItems       []string               `json:"failedItems,omitempty"`
+	UnknownItems      []string               `json:"unknownItems,omitempty"`
+	Entries           []ProvisionEntry       `json:"entries,omitempty"`
+	Results           []provisionResultEntry `json:"results"`
+	Handoff           *HandoffResponse       `json:"handoff,omitempty"`
+	Items             []exportedItemResponse `json:"items,omitempty"`
 }
 
 type HandoffResponse struct {

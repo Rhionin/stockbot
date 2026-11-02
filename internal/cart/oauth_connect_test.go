@@ -35,7 +35,11 @@ func TestOAuthAuthorizeAllowedOwnerAndMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := cart.OAuthConnectInput{CredentialsConfigured: true}
+	if _, err := conn.Exec(`INSERT INTO provider_app_credentials (id, household_id, user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
+		VALUES (?, ?, ?, 'kroger', 'cid', 'sec', 'https://example.test/cb', 'PICKUP', datetime('now'))`, hid+":kroger", hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	in := cart.OAuthConnectInput{}
 	for _, tc := range []struct {
 		name  string
 		scope tenant.Scope
@@ -57,7 +61,7 @@ func TestOAuthAuthorizeAllowedOwnerAndMember(t *testing.T) {
 	if _, err := cart.OAuthAuthorizeAllowed(ctx, conn, tenant.Scope{}, in); err == nil {
 		t.Fatal("zero scope should fail Require")
 	}
-	disabled := cart.OAuthConnectInput{KrogerDisabled: true, CredentialsConfigured: true}
+	disabled := cart.OAuthConnectInput{KrogerDisabled: true}
 	allowed, err := cart.OAuthAuthorizeAllowed(ctx, conn, ownerScope, disabled)
 	if err != nil || allowed {
 		t.Fatalf("disabled: allowed=%v err=%v", allowed, err)

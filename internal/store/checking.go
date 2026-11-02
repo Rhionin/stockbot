@@ -40,6 +40,9 @@ func (c *Catalog) anyConnectedGrantIncludesProductCompact(ctx context.Context, h
 }
 
 func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
+	if lookupsEnabledTestErr != nil {
+		return false, lookupsEnabledTestErr
+	}
 	if chk.KrogerDisabled {
 		return false, nil
 	}
@@ -80,10 +83,12 @@ func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk Ch
 	return true, nil
 }
 
+// lookupsEnabledTestErr is set by store tests to exercise List error handling.
+var lookupsEnabledTestErr error
+
 func (c *Catalog) canConnect(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
 	return cart.OAuthAuthorizeAllowed(ctx, c.db, scope, cart.OAuthConnectInput{
-		KrogerDisabled:        chk.KrogerDisabled,
-		CredentialsConfigured: chk.CredentialsConfigured,
+		KrogerDisabled: chk.KrogerDisabled,
 	})
 }
 

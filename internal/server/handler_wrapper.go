@@ -51,6 +51,7 @@ type errorPayload struct {
 	Suggestions any    `json:"suggestions,omitempty"`
 	ItemID      string `json:"itemId,omitempty"`
 	OnHand      *int   `json:"onHand,omitempty"`
+	CheckReason string `json:"checkReason,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -221,6 +222,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var itemID string
 	var onHand *int
 	var field string
+	var checkReason string
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
@@ -232,6 +234,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		itemID = httpErr.ItemID
 		onHand = httpErr.OnHand
 		field = httpErr.Field
+		checkReason = httpErr.CheckReason
 	}
 	if status >= 500 {
 		// A preview copy that cannot be written keeps its own sentence.
@@ -293,6 +296,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		Suggestions: suggestions,
 		ItemID:      itemID,
 		OnHand:      onHand,
+		CheckReason: checkReason,
 	})
 }
 

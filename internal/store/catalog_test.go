@@ -197,12 +197,12 @@ func TestCatalogListDEP7Fields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := catalog.List(ctx, scope, CheckingContext{CredentialsConfigured: true})
+	out, err := catalog.List(ctx, scope, CheckingContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.CanConnect {
-		t.Fatal("expected canConnect when credentials configured")
+	if out.CanConnect {
+		t.Fatal("expected canConnect false before household app exists")
 	}
 	if len(out.Stores) != 1 || out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_configured" {
 		t.Fatalf("checkReason: %+v", out.Stores[0].CheckReason)
@@ -215,6 +215,13 @@ func TestCatalogListDEP7Fields(t *testing.T) {
 		scope.HouseholdID(), when, when)
 	if err != nil {
 		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil || !out.CanConnect {
+		t.Fatalf("canConnect want true after app err=%v got %v", err, out.CanConnect)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
+		t.Fatalf("checkReason: %+v", out.Stores[0].CheckReason)
 	}
 	_, err = db.Exec(`
 		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
@@ -598,12 +605,11 @@ func TestCatalogLookupsEnabledDBError(t *testing.T) {
 		VALUES ('conn-ok', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
+	lookupsEnabledTestErr = errors.New("lookups query failed")
+	t.Cleanup(func() { lookupsEnabledTestErr = nil })
 	_, err := catalog.List(ctx, scope, CheckingContext{})
 	if err == nil {
-		t.Fatal("expected list error when database is closed")
+		t.Fatal("expected list error when lookupsEnabled query fails")
 	}
 }
 
@@ -636,7 +642,7 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 		compactRow.when = newer
 		plainRow.when = older
 	}
-	for _, q := range []struct {
+	qs := []struct {
 		sql  string
 		args []any
 	}{
@@ -646,7 +652,11 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 			VALUES (?, 'user-1', ?, 'kroger', 'connected', ?, ?)`, []any{compactRow.id, scope.HouseholdID(), compactRow.scope, compactRow.when}},
 		{`INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
 			VALUES (?, 'user-2', ?, 'kroger', 'connected', ?, ?)`, []any{plainRow.id, scope.HouseholdID(), plainRow.scope, plainRow.when}},
-	} {
+	}
+	if !compactFirst {
+		qs[1], qs[2] = qs[2], qs[1]
+	}
+	for _, q := range qs {
 		if _, err := db.Exec(q.sql, q.args...); err != nil {
 			t.Fatal(err)
 		}
@@ -684,6 +694,41 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 		if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
 			t.Fatalf("scope %q must not grant compact: %v", scopeStr, out.Stores[0].CheckReason)
 		}
+	}
+}
+
+func TestCatalogProductCompactIgnoresOtherProviders(t *testing.T) {
+	catalog, scope, db := newTestCatalog(t)
+	ctx := context.Background()
+	kroger, loc, chain := "kroger", "12345678", "KROGER"
+	if _, err := catalog.Create(ctx, scope, CreateInput{Name: "K", LinkedProvider: &kroger, LocationID: &loc, LocationChain: &chain}); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials (id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, product_access, product_access_at, updated_at)
+		VALUES ('pac-m', 'user-1', ?, 'kroger', 'cid', 'sec', 'https://example.test/cb', 1, ?, ?)`, scope.HouseholdID(), when, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+		VALUES ('conn-other', 'user-1', ?, 'other-provider', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+		VALUES ('conn-k-plain', 'user-2', ?, 'kroger', 'connected', 'cart.basic:write', ?)`, scope.HouseholdID(), when); err != nil {
+		t.Fatal(err)
+	}
+	out, err := catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.LookupsEnabled {
+		t.Fatal("other provider compact must not enable lookups")
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+		t.Fatalf("checkReason=%v", out.Stores[0].CheckReason)
 	}
 }
 
@@ -795,10 +840,17 @@ func TestCatalogCreateStartsNoCheckJob(t *testing.T) {
 }
 
 func TestCatalogCanConnectSameForOwnerAndMember(t *testing.T) {
-	catalog, scope, _ := newTestCatalog(t)
+	catalog, scope, db := newTestCatalog(t)
 	ctx := context.Background()
-	chk := CheckingContext{CredentialsConfigured: true}
-	out, err := catalog.List(ctx, scope, chk)
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials (
+			id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at
+		) VALUES ('pac-cc', 'user-1', ?, 'kroger', 'cid', 'sec', 'https://example.test/cb', ?)`,
+		scope.HouseholdID(), when); err != nil {
+		t.Fatal(err)
+	}
+	out, err := catalog.List(ctx, scope, CheckingContext{})
 	if err != nil || !out.CanConnect {
 		t.Fatalf("canConnect=%v err=%v", out.CanConnect, err)
 	}

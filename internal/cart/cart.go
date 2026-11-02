@@ -179,6 +179,19 @@ type OAuthFlow interface {
 	RefreshAccessToken(ctx context.Context, refreshToken string) (TokenSet, error)
 }
 
+// HouseholdAppOAuth carries one household app's OAuth credentials for token refresh.
+type HouseholdAppOAuth struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURI  string
+	Modality     string
+}
+
+// AppBoundOAuthRefresh is implemented by providers that refresh tokens with per-household app credentials.
+type AppBoundOAuthRefresh interface {
+	RefreshAccessTokenForHouseholdApp(ctx context.Context, creds HouseholdAppOAuth, refreshToken string) (TokenSet, error)
+}
+
 // StaticCredential is required exactly when Auth == AuthAPIKey.
 type StaticCredential interface {
 	Credential() Credential
@@ -338,18 +351,18 @@ type OutcomeReason string
 
 const (
 	// ReasonNoProductIdentity is deprecated; prefer ReasonNoUPC or ReasonNoMatch.
-	ReasonNoProductIdentity OutcomeReason = "no_product_identity"
-	ReasonNoUPC             OutcomeReason = "no_upc"
-	ReasonNoMatch           OutcomeReason = "no_match"
-	ReasonUnavailable       OutcomeReason = "unavailable"
-	ReasonAPIError          OutcomeReason = "api_error"
-	ReasonBatchRejected     OutcomeReason = "batch_rejected"
-	ReasonInvalidLine       OutcomeReason = "invalid_line"
+	ReasonNoProductIdentity   OutcomeReason = "no_product_identity"
+	ReasonNoUPC               OutcomeReason = "no_upc"
+	ReasonNoMatch             OutcomeReason = "no_match"
+	ReasonUnavailable         OutcomeReason = "unavailable"
+	ReasonAPIError            OutcomeReason = "api_error"
+	ReasonBatchRejected       OutcomeReason = "batch_rejected"
+	ReasonInvalidLine         OutcomeReason = "invalid_line"
 	ReasonProviderUnavailable OutcomeReason = "provider_unavailable"
 	ReasonReconnectRequired   OutcomeReason = "reconnect_required"
-	ReasonProviderRejected  OutcomeReason = "provider_rejected"
-	ReasonRequestIncomplete OutcomeReason = "request_incomplete"
-	ReasonNoPerItemResult   OutcomeReason = "no_per_item_result"
+	ReasonProviderRejected    OutcomeReason = "provider_rejected"
+	ReasonRequestIncomplete   OutcomeReason = "request_incomplete"
+	ReasonNoPerItemResult     OutcomeReason = "no_per_item_result"
 )
 
 // EntryOutcome is the final classification of one entry.
@@ -371,11 +384,11 @@ type HandoffArtifact struct {
 
 // ProvisionReport is what a Provision operation returns.
 type ProvisionReport struct {
-	Provider           ProviderID
-	Confirmed          int
-	Entries            []EntryOutcome
-	Handoff            *HandoffArtifact
-	ReconnectRequired  bool
+	Provider          ProviderID
+	Confirmed         int
+	Entries           []EntryOutcome
+	Handoff           *HandoffArtifact
+	ReconnectRequired bool
 }
 
 // LedgerEntry is what Pantry believes it has already requested from one provider.
