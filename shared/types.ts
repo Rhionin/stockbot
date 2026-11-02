@@ -353,10 +353,7 @@ export type ProvisionFailReason = 'api_error' | 'batch_rejected' | 'invalid_line
 /** Reasons for `failed` lines that were never confirmed (halt after auth or indeterminate batch). */
 export type ProvisionHaltFailReason = 'reconnect_required' | 'request_incomplete';
 export type ProvisionFailedReason = ProvisionFailReason | ProvisionHaltFailReason;
-export type ProvisionUnknownReason =
-  | 'no_per_item_result'
-  | 'provider_unavailable'
-  | ProvisionHaltFailReason;
+export type ProvisionUnknownReason = 'no_per_item_result' | 'request_incomplete';
 export type ProvisionResultReason =
   | ProvisionSkipReason
   | ProvisionFailReason
@@ -377,7 +374,7 @@ type ShoppingListExportResultEntryBase = {
 export type ShoppingListExportResultEntry =
   | (ShoppingListExportResultEntryBase & { status: 'added' | 'sent'; reason?: undefined })
   | (ShoppingListExportResultEntryBase & { status: 'skipped'; reason: ProvisionSkipReason })
-  | (ShoppingListExportResultEntryBase & { status: 'failed'; reason?: ProvisionFailedReason })
+  | (ShoppingListExportResultEntryBase & { status: 'failed'; reason: ProvisionFailedReason })
   | (ShoppingListExportResultEntryBase & { status: 'unknown'; reason?: ProvisionUnknownReason });
 
 export interface ProvisionReport {

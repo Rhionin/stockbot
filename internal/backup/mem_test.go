@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -185,8 +184,9 @@ func (m *memStore) bodyForSuffix(suffix string) []byte {
 }
 
 func captureLog(b *strings.Builder) func() {
+	prev := log.Writer()
 	log.SetOutput(b)
-	return func() { log.SetOutput(os.Stderr) }
+	return func() { log.SetOutput(prev) }
 }
 
 type recordPinger struct {

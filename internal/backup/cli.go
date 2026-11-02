@@ -13,9 +13,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/buildinfo"
 )
 
-// cmdRunRunnerHook is set by tests to observe the Runner cmdRun builds before Run.
-var cmdRunRunnerHook func(*Runner)
-
 // CLI runs stockbot-backup. args are the arguments after the program name.
 func CLI(args []string) int {
 	if len(args) == 0 {
@@ -24,7 +21,7 @@ func CLI(args []string) int {
 	}
 	switch args[0] {
 	case "run":
-		return cmdRun(args[1:])
+		return cmdRun(args[1:], nil)
 	case "verify":
 		return cmdVerify(args[1:])
 	case "stale":
@@ -45,7 +42,7 @@ func CLI(args []string) int {
 	}
 }
 
-func cmdRun(args []string) int {
+func cmdRun(args []string, beforeRun func(*Runner)) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	db := fs.String("db", "", "pantry database path")
@@ -97,8 +94,8 @@ func cmdRun(args []string) int {
 		SecretsPaths:      cfg.SecretsPaths,
 		HealthURL:         cfg.HealthchecksURL,
 	}
-	if cmdRunRunnerHook != nil {
-		cmdRunRunnerHook(runner)
+	if beforeRun != nil {
+		beforeRun(runner)
 	}
 	if _, err := runner.Run(context.Background()); err != nil {
 		return fail(err)
@@ -212,6 +209,9 @@ func openStore(secretsPath, recipientsPath, recipientEnv, bucket, endpoint strin
 
 func fail(err error) int {
 	fmt.Fprintf(os.Stderr, "backup failed class=%s\n", AlertClass(err))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+	}
 	return ExitCode(err)
 }
 
