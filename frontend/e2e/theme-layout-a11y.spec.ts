@@ -111,23 +111,47 @@ test('320px with 125% text keeps the single-household name on one line', async (
   await assertSingleHouseholdEllipsis(page, 'Test Household Pantry Storage')
 })
 
-test('shopping toolbar labels do not clip below 360px with 125% text', async ({ page }) => {
-  await stubShopping(page, "Smith's")
-  await page.setViewportSize({ width: 320, height: 844 })
-  await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
-  await page.goto('/shopping')
-  const send = page.getByRole('button', { name: "Send to Smith's" })
+async function assertShoppingToolbarStacked(page: Page, viewportWidth: number) {
+  const toolbar = page.locator('.shopping-toolbar')
+  await expect(toolbar).toBeVisible()
+  const send = page.getByRole('button', { name: /Send to/ })
   const fill = page.getByRole('button', { name: /Update the list|Build the list/ })
   await expect(send).toBeVisible()
   await expect(fill).toBeVisible()
-  for (const button of [send, fill]) {
-    await expect(button.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
+
+  const toolbarBox = await toolbar.boundingBox()
+  expect(toolbarBox).not.toBeNull()
+  const areas = await toolbar.evaluate((el) => getComputedStyle(el).gridTemplateAreas)
+  expect(areas).not.toMatch(/fill send/)
+
+  const fillBox = await fill.boundingBox()
+  const sendBox = await send.boundingBox()
+  expect(fillBox).not.toBeNull()
+  expect(sendBox).not.toBeNull()
+  expect(fillBox!.width).toBeGreaterThanOrEqual(toolbarBox!.width - 4)
+  expect(sendBox!.width).toBeGreaterThanOrEqual(toolbarBox!.width - 4)
+  expect(sendBox!.y).toBeGreaterThan(fillBox!.y + fillBox!.height - 2)
+
+  for (const button of [fill, send]) {
+    const labels = button.locator('.mantine-Button-label')
+    await expect(labels).toHaveCount(1)
+    await expect(labels.first().evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).resolves.toBe(true)
     const box = await button.boundingBox()
     expect(box).not.toBeNull()
     expect(box!.x).toBeGreaterThanOrEqual(0)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(320.5)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth + 0.5)
   }
-})
+}
+
+for (const viewportWidth of [320, 359] as const) {
+  test(`shopping toolbar stacks full-width labels without clipping at ${viewportWidth}px with 125% text`, async ({ page }) => {
+    await stubShopping(page, 'Kroger')
+    await page.setViewportSize({ width: viewportWidth, height: 844 })
+    await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
+    await page.goto('/shopping')
+    await assertShoppingToolbarStacked(page, viewportWidth)
+  })
+}
 
 for (const scheme of ['light', 'dark'] as const) {
   test(`header menu fits the viewport at 320px (${scheme})`, async ({ page }) => {

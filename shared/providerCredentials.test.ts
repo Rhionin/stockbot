@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SERVER_ERROR_FALLBACK } from './contract';
 import type { ProviderInfo } from './types';
 import {
   canManageProviderAppCredentials,
@@ -108,6 +109,7 @@ describe('providerDisconnectFailureMessage', () => {
   it('falls back when the server gives no message', () => {
     expect(providerDisconnectFailureMessage(new Error(''))).toBe("Couldn't disconnect. Try again.");
     expect(providerDisconnectFailureMessage({ error: '   ' })).toBe("Couldn't disconnect. Try again.");
+    expect(providerDisconnectFailureMessage(new Error(SERVER_ERROR_FALLBACK))).toBe("Couldn't disconnect. Try again.");
   });
 
   it('keeps a server message when present', () => {

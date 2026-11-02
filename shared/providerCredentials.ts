@@ -1,4 +1,4 @@
-import { inlineFailure } from './contract';
+import { inlineFailure, SERVER_ERROR_FALLBACK } from './contract';
 import { provisionCartTarget, provisionStoreLabel } from './provisionExportUX';
 import type { ProviderInfo } from './types';
 
@@ -55,6 +55,11 @@ export function providerDisconnectFailureMessage(error: unknown): string {
   if (error !== null && typeof error === 'object' && 'error' in error) {
     const body = (error as { error?: unknown }).error;
     if (typeof body === 'string' && body.trim() !== '') return body.trim();
+  }
+  if (error instanceof Error) {
+    const trimmed = error.message.trim();
+    if (trimmed !== '' && trimmed !== SERVER_ERROR_FALLBACK) return trimmed;
+    return PROVIDER_DISCONNECT_FAILURE;
   }
   const message = inlineFailure(error, PROVIDER_DISCONNECT_FAILURE);
   if (message === null || message.trim() === '') return PROVIDER_DISCONNECT_FAILURE;
