@@ -108,6 +108,16 @@ func TestStoresHandlers(t *testing.T) {
 			},
 		},
 		{
+			name: "POST validation rejects empty name",
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				url:            "/api/stores",
+				body:           `{"name":""}`,
+				expectedStatus: http.StatusBadRequest,
+				bodyContains:   []string{`"field":"name"`},
+			},
+		},
+		{
 			name: "POST duplicate name case-insensitive",
 			setup: func(env testEnv) {
 				hid := primaryScope(t, env.DB).HouseholdID()
@@ -157,6 +167,56 @@ func TestStoresHandlers(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestStorePatchRenameAndUnlink(t *testing.T) {
+	var storeID string
+	runHandlerTests(t, []handlerTestCase{{
+		name: "PATCH rename and unlink",
+		setup: func(env testEnv) {
+			hid := primaryScope(t, env.DB).HouseholdID()
+			when := time.Now().UTC().Format(time.RFC3339Nano)
+			storeID = uuid.NewString()
+			_, err := env.DB.Exec(`
+				INSERT INTO stores (id, household_id, name, name_key, kind, linked_provider, location_id, location_chain, position, created_at, updated_at)
+				VALUES (?, ?, 'Linked Q7', 'linked q7', 'physical', 'kroger', '12345678', 'KROGER', 0, ?, ?)`, storeID, hid, when, when)
+			if err != nil {
+				t.Fatal(err)
+			}
+		},
+		httpExchange: httpExchange{
+			method:         http.MethodGet,
+			url:            "/api/stores",
+			expectedStatus: http.StatusOK,
+		},
+		afterRequest: func(env testEnv) {
+			handler := handlerFromEnv(env)
+			executeExchange(t, handler, httpExchange{
+				method:         http.MethodPatch,
+				url:            "/api/stores/" + storeID,
+				body:           `{"name":"Renamed Market Q7"}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.name", value: "Renamed Market Q7"},
+				},
+			})
+			executeExchange(t, handler, httpExchange{
+				method:         http.MethodPatch,
+				url:            "/api/stores/" + storeID,
+				body:           `{"linkedProvider":null}`,
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.linkedProvider", value: nil},
+				},
+			})
+			executeExchange(t, handler, httpExchange{
+				method:         http.MethodPatch,
+				url:            "/api/stores/" + storeID,
+				body:           `{"linkedProvider":123}`,
+				expectedStatus: http.StatusBadRequest,
+			})
+		},
+	}})
 }
 
 func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
