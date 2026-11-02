@@ -124,12 +124,12 @@ async function assertSingleHouseholdEllipsis(page: Page, fullName: string) {
   await expect(button).toHaveAttribute('title', fullName)
   const nameText = button.locator('.household-switch-name-text')
   await expect(nameText).toHaveText(fullName)
-  await expect(nameText.evaluate((el) => {
+  await expect.poll(async () => nameText.evaluate((el) => {
     const style = getComputedStyle(el)
     return el.scrollWidth > el.clientWidth + 0.5
       && style.textOverflow === 'ellipsis'
       && style.whiteSpace === 'nowrap'
-  })).resolves.toBe(true)
+  })).toBe(true)
   await expect(page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 0.5)).resolves.toBe(true)
 }
 
@@ -160,7 +160,7 @@ async function openSingleHouseholdHeader(
         operator: false,
       }),
     })
-  })
+  }, { times: Number.POSITIVE_INFINITY })
   await stubShopping(page, 'Kroger')
   await page.addInitScript((value) => {
     window.localStorage.setItem('mantine-color-scheme-value', value)

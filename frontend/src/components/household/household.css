@@ -38,6 +38,8 @@
 .household-switch-name-text {
   display: block;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -59,8 +61,7 @@
     min-width: 0;
   }
 
-  .app-header .household-switch-link,
-  .app-header .household-switch-name {
+  .app-header .household-switch-link {
     box-sizing: border-box;
     display: inline-flex;
     align-items: center;
@@ -70,13 +71,28 @@
     -webkit-tap-highlight-color: transparent;
     min-width: 0;
     max-width: 100%;
-    flex: 1;
+    overflow: hidden;
+  }
+
+  .app-header .household-switch-name {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 10px 6px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: 100%;
     overflow: hidden;
   }
 
   .app-header .household-switch-name-text {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
   }
 }
 
