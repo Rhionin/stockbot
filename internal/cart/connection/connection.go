@@ -43,6 +43,11 @@ func NewDirectory(db *sql.DB) *Directory {
 	return &Directory{db: db}
 }
 
+// DB returns the database handle backing this directory.
+func (d *Directory) DB() *sql.DB {
+	return d.db
+}
+
 // Read returns the connection record for one provider, or (nil, nil) if not found.
 func (d *Directory) Read(ctx context.Context, scope tenant.Scope, provider string) (*Connection, error) {
 	if err := scope.Require(); err != nil {

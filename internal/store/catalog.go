@@ -47,7 +47,14 @@ func (c *Catalog) List(ctx context.Context, scope tenant.Scope, chk CheckingCont
 	if err != nil {
 		return StoresResponse{}, err
 	}
-	if !lookups {
+	if chk.KrogerDisabled {
+		for i := range stores {
+			if stores[i].LinkedProvider != nil {
+				stores[i].CheckReason = nil
+				stores[i].Check = nil
+			}
+		}
+	} else if !lookups {
 		for i := range stores {
 			if stores[i].LinkedProvider != nil {
 				reason := c.checkReason(ctx, scope, chk, stores[i])

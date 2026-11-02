@@ -283,20 +283,27 @@ func TestCatalogCheckReasonVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
 		t.Fatalf("got %v", out.Stores[0].CheckReason)
+	}
+	_, err = db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+		VALUES ('conn-nc', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write', ?)`, scope.HouseholdID(), when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+		t.Fatalf("no_product_access without compact scope: %v", out.Stores[0].CheckReason)
 	}
 	_, err = db.Exec(`UPDATE provider_app_credentials SET product_access = 1 WHERE id = 'pac-2'`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err = catalog.List(ctx, scope, CheckingContext{})
-	if err != nil || out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
-		t.Fatalf("not_connected: %v", out.Stores[0].CheckReason)
-	}
-	_, err = db.Exec(`
-		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
-		VALUES ('conn-2', 'user-1', ?, 'kroger', 'connected', 'product.compact', ?)`, scope.HouseholdID(), when)
+	_, err = db.Exec(`UPDATE provider_connections SET granted_scope = 'cart.basic:write product.compact' WHERE id = 'conn-nc'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,6 +485,12 @@ func TestLookupsDisabledWhenKrogerOff(t *testing.T) {
 	}
 	if out.LookupsEnabled || out.CanConnect {
 		t.Fatalf("lookups=%v canConnect=%v", out.LookupsEnabled, out.CanConnect)
+	}
+	if len(out.Stores) != 1 {
+		t.Fatalf("stores: %+v", out.Stores)
+	}
+	if out.Stores[0].CheckReason != nil || out.Stores[0].Check != nil {
+		t.Fatalf("linked store should omit checking fields when Kroger disabled: %+v", out.Stores[0])
 	}
 }
 
