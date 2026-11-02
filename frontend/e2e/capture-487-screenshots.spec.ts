@@ -97,10 +97,24 @@ for (const shot of shots) {
     await page.addInitScript((scheme) => {
       window.localStorage.setItem('mantine-color-scheme-value', scheme)
     }, shot.scheme)
+    if (shot.font125) {
+      await page.addInitScript(() => {
+        const apply = () => {
+          document.documentElement.style.setProperty('font-size', '125%', 'important')
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', apply, { once: true })
+        }
+        apply()
+      })
+    }
     await page.setViewportSize({ width: shot.width, height: shot.height })
     await page.goto('/shopping')
     if (shot.font125) {
-      await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
+      await expect.poll(async () => {
+        const px = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))
+        return Math.abs(px - 20) <= 0.5
+      }).toBe(true)
     }
     await expect(page.getByRole('button', { name: /Send to Smith's/ })).toBeVisible()
     await page.screenshot({ path: join(outDir, shot.file), fullPage: false })

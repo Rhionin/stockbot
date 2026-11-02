@@ -4,6 +4,27 @@ import { install, resetStage, stage } from './householdStageFixtures'
 import { resetSharedState } from './helpers'
 
 const MIN_TOUCH = 44
+const ROOT_FONT_PX_AT_100 = 16
+
+async function installRootFontPercent(page: Page, fontPercent: number) {
+  if (fontPercent === 100) return
+  await page.addInitScript((percent) => {
+    const apply = () => {
+      document.documentElement.style.setProperty('font-size', `${percent}%`, 'important')
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', apply, { once: true })
+    }
+    apply()
+  }, fontPercent)
+}
+
+async function assertRootFontSizePx(page: Page, expectedPx: number) {
+  await expect.poll(async () => {
+    const px = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))
+    return Math.abs(px - expectedPx) <= 0.5
+  }).toBe(true)
+}
 
 const krogerProviders = (
   source: 'none' | 'saved',
@@ -75,12 +96,13 @@ async function openShoppingToolbar(
   await page.addInitScript((value) => {
     window.localStorage.setItem('mantine-color-scheme-value', value)
   }, scheme)
+  await installRootFontPercent(page, fontPercent)
   await page.setViewportSize({ width: viewportWidth, height: 844 })
-  if (fontPercent !== 100) {
-    await page.addStyleTag({ content: `html { font-size: ${fontPercent}% !important; }` })
-  }
   await page.goto('/shopping')
   await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+  if (fontPercent !== 100) {
+    await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * fontPercent) / 100)
+  }
 }
 
 async function seedBlockedSendHint(page: Page) {
@@ -135,9 +157,10 @@ test('320px with 125% text keeps the single-household name on one line', async (
     })
   })
   await stubShopping(page, 'Kroger')
+  await installRootFontPercent(page, 125)
   await page.setViewportSize({ width: 320, height: 844 })
-  await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
   await page.goto('/shopping')
+  await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * 125) / 100)
   await assertSingleHouseholdEllipsis(page, 'Test Household Pantry Storage')
 })
 
