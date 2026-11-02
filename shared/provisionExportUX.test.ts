@@ -528,6 +528,7 @@ describe('mapProvisionEntryResultRow', () => {
       name: 'Line B',
       quantity: 1,
       status: 'failed',
+      reason: 'api_error',
     });
   });
 });

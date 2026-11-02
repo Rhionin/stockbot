@@ -361,8 +361,6 @@ function isProvisionFailedReason(value: string): value is ProvisionFailedReason 
 function isProvisionUnknownReason(value: string): value is ProvisionUnknownReason {
   switch (value) {
     case 'no_per_item_result':
-    case 'provider_unavailable':
-    case 'reconnect_required':
     case 'request_incomplete':
       return true;
     default:
@@ -395,10 +393,14 @@ export function mapProvisionEntryResultRow(entry: ProvisionEntryResult): Shoppin
       ? { ...base, status: 'unknown' }
       : { ...base, status: 'unknown', reason };
   }
-  const reason = legacyFailedReason(entry.outcomeReason);
-  return reason === undefined
-    ? { ...base, status: 'failed' }
-    : { ...base, status: 'failed', reason };
+  const mapped = legacyFailedReason(entry.outcomeReason);
+  if (mapped !== undefined) {
+    return { ...base, status: 'failed', reason: mapped };
+  }
+  if (entry.outcomeReason === 'provider_rejected') {
+    return { ...base, status: 'failed', reason: 'batch_rejected' };
+  }
+  return { ...base, status: 'failed', reason: 'api_error' };
 }
 
 function entryRowToResult(entry: ProvisionEntryResult): ShoppingListExportResultEntry {

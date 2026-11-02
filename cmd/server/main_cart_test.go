@@ -336,6 +336,9 @@ func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
 	if !strings.Contains(out, "using saved row for household "+scope.HouseholdID()) {
 		t.Fatalf("log missing saved household: %q", out)
 	}
+	if strings.Contains(out, "using environment") {
+		t.Fatalf("log should not claim environment when saved row applied: %q", out)
+	}
 	if strings.Contains(out, "env-secret") || strings.Contains(out, "saved-secret") {
 		t.Fatalf("log leaked secret: %q", out)
 	}
@@ -345,5 +348,21 @@ func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
 	out = logs.String()
 	if !strings.Contains(out, "using environment") {
 		t.Fatalf("log missing environment source: %q", out)
+	}
+	if strings.Contains(out, "using saved row for household") {
+		t.Fatalf("log should not claim saved row when only env is set: %q", out)
+	}
+
+	logs.Reset()
+	t.Setenv("KROGER_CLIENT_ID", "")
+	t.Setenv("KROGER_CLIENT_SECRET", "")
+	t.Setenv("KROGER_REDIRECT_URI", "")
+	loadCartRegistry(newCartDB(t))
+	out = logs.String()
+	if !strings.Contains(out, "none configured") {
+		t.Fatalf("log missing none configured: %q", out)
+	}
+	if strings.Contains(out, "using environment") {
+		t.Fatalf("log should not claim environment when unset: %q", out)
 	}
 }

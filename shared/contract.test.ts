@@ -815,7 +815,36 @@ describe('ShoppingListExportResultEntry types', () => {
     expect(indeterminate.status).toBe('unknown');
   });
 
+  it('accepts canonical failed reasons from the API', () => {
+    const batchRejected: ShoppingListExportResultEntry = {
+      entryId: 'e5',
+      itemId: 'i5',
+      name: 'Spice',
+      quantity: 1,
+      status: 'failed',
+      reason: 'batch_rejected',
+    };
+    const apiError: ShoppingListExportResultEntry = {
+      entryId: 'e6',
+      itemId: 'i6',
+      name: 'Juice',
+      quantity: 1,
+      status: 'failed',
+      reason: 'api_error',
+    };
+    expect(batchRejected.reason).toBe('batch_rejected');
+    expect(apiError.reason).toBe('api_error');
+  });
+
   it('rejects invalid status and reason pairings at compile time', () => {
+    // @ts-expect-error failed rows require a reason
+    const failedMissingReason: ShoppingListExportResultEntry = {
+      entryId: 'e0',
+      itemId: 'i0',
+      name: 'Water',
+      quantity: 1,
+      status: 'failed',
+    };
     // @ts-expect-error no_per_item_result is only valid on unknown lines
     const failedUnknownReason: ShoppingListExportResultEntry = {
       entryId: 'e1',
@@ -843,9 +872,20 @@ describe('ShoppingListExportResultEntry types', () => {
       status: 'skipped',
       reason: 'batch_rejected',
     };
+    // @ts-expect-error provider_unavailable is not emitted on unknown result lines
+    const unknownProviderUnavailable: ShoppingListExportResultEntry = {
+      entryId: 'e4',
+      itemId: 'i4',
+      name: 'Tea',
+      quantity: 1,
+      status: 'unknown',
+      reason: 'provider_unavailable',
+    };
+    void failedMissingReason;
     void failedUnknownReason;
     void unknownInvalidLine;
     void skippedBatchRejected;
+    void unknownProviderUnavailable;
   });
 });
 
