@@ -320,13 +320,14 @@ function modernResults(report: ProvisionReport): ShoppingListExportResultEntry[]
 }
 
 function legacyNotAdded(report: ProvisionReport): ShoppingListExportResultEntry[] {
+  const reason: ProvisionFailedReason = report.reconnectRequired ? 'reconnect_required' : 'api_error';
   return (report.failedItems ?? []).map((name) => ({
     entryId: '',
     itemId: '',
     name,
     quantity: 1,
     status: 'failed',
-    reason: 'api_error',
+    reason,
   }));
 }
 
