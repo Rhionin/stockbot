@@ -45,6 +45,7 @@ type NoContent struct{}
 type errorPayload struct {
 	Error       string `json:"error"`
 	Code        string `json:"code,omitempty"`
+	Field       string `json:"field,omitempty"`
 	Provider    string `json:"provider,omitempty"`
 	Members     any    `json:"members,omitempty"`
 	Suggestions any    `json:"suggestions,omitempty"`
@@ -219,6 +220,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var suggestions any
 	var itemID string
 	var onHand *int
+	var field string
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
@@ -229,6 +231,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		suggestions = httpErr.Suggestions
 		itemID = httpErr.ItemID
 		onHand = httpErr.OnHand
+		field = httpErr.Field
 	}
 	if status >= 500 {
 		// A preview copy that cannot be written keeps its own sentence.
@@ -284,6 +287,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	writeJSON(w, status, errorPayload{
 		Error:       message,
 		Code:        code,
+		Field:       field,
 		Provider:    provider,
 		Members:     members,
 		Suggestions: suggestions,

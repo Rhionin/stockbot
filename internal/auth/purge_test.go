@@ -498,6 +498,44 @@ func mustSetup(t *testing.T, svc *Service) string {
 	return code
 }
 
+func TestPurgeDueRemovesMultiStoreTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pantry-stores.db")
+	db, reader := openPurgeDB(t, path)
+	defer reader.Close()
+	svc := NewService(db, t.TempDir())
+	when := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return when })
+	ctx := context.Background()
+
+	const dueID = "0190aaaa-bbbb-7000-8000-0000000000d3"
+	storeID := "store-due-q7"
+	stamp := "2026-01-01T00:00:00Z"
+	mustExec(t, db, `INSERT INTO households (id, name, restock_mode, created_at, deleted_at, purge_after, channel_key, is_primary)
+		VALUES (?, 'due-stores-q7', '', '2026-01-01T00:00:00Z', '2026-05-01T00:00:00Z', '2026-05-31T00:00:00Z', 'due-stores-ch', 0)`, dueID)
+	mustExec(t, db, `INSERT INTO stores (id, household_id, name, name_key, kind, position, created_at, updated_at)
+		VALUES (?, ?, 'Due Store Q7', 'due store q7', 'physical', 0, ?, ?)`, storeID, dueID, stamp, stamp)
+	mustExec(t, db, `INSERT INTO product_stores (household_id, product_id, store_id, state, is_usual, set_by_user_id, set_at)
+		VALUES (?, 'prod-due', ?, 'carries', 0, 'actor', ?)`, dueID, storeID, stamp)
+	mustExec(t, db, `INSERT INTO store_trips (id, household_id, product_id, store_id, store_name, store_name_key, kind, occurred_at)
+		VALUES ('trip-due', ?, 'prod-due', ?, 'Due Store Q7', 'due store q7', 'bought', ?)`, dueID, storeID, stamp)
+	mustExec(t, db, `INSERT INTO store_availability (household_id, store_id, product_id, location_id, status, checked_at, status_expires_at)
+		VALUES (?, ?, 'prod-due', '12345678', 'carried', ?, '2026-01-02T00:00:00Z')`, dueID, storeID, stamp)
+	mustExec(t, db, `INSERT INTO store_checks (household_id, store_id, state, trigger, started_at, lease_until)
+		VALUES (?, ?, 'done', 'manual', ?, '2026-01-01T01:00:00Z')`, dueID, storeID, stamp)
+	mustExec(t, db, `INSERT INTO kroger_household_usage (household_id, endpoint, app_key, window_started_at)
+		VALUES (?, 'products', 'abc', ?)`, dueID, stamp)
+
+	if _, err := svc.PurgeDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"stores", "product_stores", "store_trips", "store_availability", "store_checks", "kroger_household_usage"} {
+		var left int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE household_id = ?`, dueID).Scan(&left); err != nil || left != 0 {
+			t.Fatalf("table %s left %d err %v", table, left, err)
+		}
+	}
+}
+
 func openPurgeDB(t *testing.T, path string) (*sql.DB, *sql.DB) {
 	t.Helper()
 	db, reader, err := app.OpenPantry(path)

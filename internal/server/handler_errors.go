@@ -51,6 +51,7 @@ type HTTPError struct {
 	Message     string
 	Err         error
 	ErrorCode   string
+	Field       string
 	Provider    string
 	Members     any
 	Suggestions any
