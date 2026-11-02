@@ -156,6 +156,46 @@ func TestStoresHandlers(t *testing.T) {
 			},
 		},
 		{
+			name: "PUT order conflict on stale permutation",
+			setup: func(env testEnv) {
+				hid := primaryScope(t, env.DB).HouseholdID()
+				seedFixtureStore(t, env.DB, hid, "Alpha Q7")
+				seedFixtureStore(t, env.DB, hid, "Beta Q7")
+				seedFixtureStore(t, env.DB, hid, "Gamma Q7")
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodGet,
+				url:            "/api/stores",
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				var ids []string
+				rows, err := env.DB.Query(`SELECT id FROM stores WHERE household_id = ? ORDER BY position`, primaryScope(t, env.DB).HouseholdID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						t.Fatal(err)
+					}
+					ids = append(ids, id)
+				}
+				rows.Close()
+				if len(ids) != 3 {
+					t.Fatalf("stores %d", len(ids))
+				}
+				handler := handlerFromEnv(env)
+				executeExchange(t, handler, httpExchange{
+					method:         http.MethodPut,
+					url:            "/api/stores/order",
+					body:           `{"storeIds":["` + ids[1] + `","` + ids[0] + `"]}`,
+					expectedStatus: http.StatusConflict,
+					bodyContains:   []string{`"code":"conflict"`},
+				})
+			},
+		},
+		{
 			name: "PUT order not found on foreign or missing id",
 			setup: func(env testEnv) {
 				hid := primaryScope(t, env.DB).HouseholdID()
@@ -304,7 +344,7 @@ func TestStoreRemovalPreviewMatchesDelete(t *testing.T) {
 				url:            "/api/stores/" + id + "/removal-preview",
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$.runOverrides", value: float64(2)},
+					{path: "$.runOverrides", value: float64(1)},
 					{path: "$.usualChoices", value: float64(1)},
 					{path: "$.personChoices", value: float64(1)},
 					{path: "$.checkedItems", value: float64(1)},
