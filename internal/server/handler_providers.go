@@ -168,9 +168,6 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	if h.EnvFallback.Disabled {
-		return nil, StoreDisabled()
-	}
 	allowed, err := cart.OAuthAuthorizeAllowed(req.Context, h.ConnectionDir.DB(), scope, cart.OAuthConnectInput{
 		KrogerDisabled:        h.EnvFallback.Disabled,
 		CredentialsConfigured: h.Registry.CredentialsConfigured(providerID),

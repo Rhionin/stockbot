@@ -8,7 +8,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 )
 
-func TestKrogerAuthorizeStoreDisabledMatchesCanConnect(t *testing.T) {
+func TestKrogerAuthorizeConflictWhenDisabledMatchesCanConnect(t *testing.T) {
 	db := setupTestDB(t)
 	registry := cart.NewRegistry()
 	if err := registry.Register(kroger.NewUnconfigured(), cart.WithCredentialsConfigured(true)); err != nil {
@@ -35,6 +35,6 @@ func TestKrogerAuthorizeStoreDisabledMatchesCanConnect(t *testing.T) {
 		method:         http.MethodGet,
 		url:            "/api/providers/kroger/authorize",
 		expectedStatus: http.StatusConflict,
-		bodyContains:   []string{`"code":"store_disabled"`},
+		bodyContains:   []string{`"code":"conflict"`},
 	})
 }
