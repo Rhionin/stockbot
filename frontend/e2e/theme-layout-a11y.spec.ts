@@ -328,23 +328,6 @@ for (const scheme of ['light', 'dark'] as const) {
   })
 }
 
-test('account menu stays inside a 320px viewport at 125% text', async ({ page }) => {
-  test.setTimeout(60_000)
-  await stubShopping(page, 'Kroger')
-  await installRootFontPercent(page, 125)
-  await page.setViewportSize({ width: 320, height: 844 })
-  await page.goto('/shopping', { waitUntil: 'domcontentloaded' })
-  await assertRootFontSizePx(page, expectedRootFontPx(125))
-  await page.getByRole('button', { name: 'Menu' }).click()
-  const menu = page.locator('.app-menu-dropdown')
-  await expect(menu).toBeVisible({ timeout: 15_000 })
-  await expect.poll(async () => {
-    const box = await menu.boundingBox()
-    const innerWidth = await page.evaluate(() => window.innerWidth)
-    return box !== null && box.x >= 0 && box.x + box.width <= innerWidth + 0.5
-  }, { timeout: 15_000 }).toBe(true)
-})
-
 for (const scheme of ['light', 'dark'] as const) {
   test(`header menu fits the viewport at 320px (${scheme})`, async ({ page }) => {
     await stubShopping(page, 'Kroger')

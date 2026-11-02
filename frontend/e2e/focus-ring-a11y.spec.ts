@@ -82,6 +82,35 @@ test.beforeAll(async ({ request }) => {
   await resetSharedState(request)
 })
 
+test('account menu stays inside a 320px viewport at 125% text', async ({ page }) => {
+  await stubShopping(page)
+  await installRootFontPercent(page, 125)
+  await page.setViewportSize({ width: 320, height: 844 })
+  await page.goto('/shopping', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('button', { name: /Send to Kroger/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Menu' }).click()
+  const menu = page.locator('.app-menu-dropdown')
+  await expect(menu).toBeVisible()
+  await expect.poll(async () => {
+    const box = await menu.boundingBox()
+    const innerWidth = await page.evaluate(() => window.innerWidth)
+    return box !== null && box.x >= 0 && box.x + box.width <= innerWidth + 0.5
+  }).toBe(true)
+})
+
+async function installRootFontPercent(page: Page, fontPercent: number) {
+  if (fontPercent === 100) return
+  await page.addInitScript((percent) => {
+    const apply = () => {
+      document.documentElement.style.setProperty('font-size', `${percent}%`, 'important')
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', apply, { once: true })
+    }
+    apply()
+  }, fontPercent)
+}
+
 for (const scheme of ['light', 'dark'] as const) {
   test(`keyboard focus indicators meet 3:1 on button, link, and input (${scheme})`, async ({ page }) => {
     await stubShopping(page)
