@@ -932,15 +932,35 @@ func TestMigration030AdditiveUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	const user = "user-b9-fixture"
-	if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES ('prod-b9', 'Synthetic Item B9')`); err != nil {
-		t.Fatal(err)
+	when := "2026-01-01T00:00:00Z"
+	bought := "2026-01-02T00:00:00Z"
+	lines := []struct {
+		id, product, item, source string
+		purchased                  *string
+	}{
+		{"line-b9-manual", "prod-b9-manual", "item-b9-manual", "manual", nil},
+		{"line-b9-auto", "prod-b9-auto", "item-b9-auto", "auto", nil},
+		{"line-b9-bought", "prod-b9-bought", "item-b9-bought", "manual", &bought},
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES ('item-b9', ?, 'prod-b9', ?)`, user, household); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, user_id, item_id, household_id, actor_user_id, quantity, source, created_at)
-		VALUES ('line-b9', ?, 'item-b9', ?, ?, 1, 'manual', '2026-01-01T00:00:00Z')`, user, household, user); err != nil {
-		t.Fatal(err)
+	for _, line := range lines {
+		if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES (?, ?)`, line.product, "Synthetic "+line.product); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+			line.item, user, line.product, household); err != nil {
+			t.Fatal(err)
+		}
+		if line.purchased == nil {
+			if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, user_id, item_id, household_id, actor_user_id, quantity, source, created_at)
+				VALUES (?, ?, ?, ?, ?, 1, ?, ?)`, line.id, user, line.item, household, user, line.source, when); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, user_id, item_id, household_id, actor_user_id, quantity, source, created_at, purchased_at)
+			VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`, line.id, user, line.item, household, user, line.source, when, *line.purchased); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := conn.Exec(`INSERT INTO provider_connections (id, user_id, provider_id, state, household_id, actor_user_id)
 		VALUES ('conn-b9', ?, 'kroger', 'connected', ?, ?)`, user, household, user); err != nil {
