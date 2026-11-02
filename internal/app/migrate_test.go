@@ -1009,39 +1009,7 @@ func assertNullColumn(t *testing.T, conn *sql.DB, query string) {
 
 func applyMigrationsThrough028(t *testing.T, conn *sql.DB) {
 	t.Helper()
-	if _, err := conn.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-		filename TEXT PRIMARY KEY,
-		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-	)`); err != nil {
-		t.Fatalf("create schema_migrations: %v", err)
-	}
-	dir := filepath.Join("migrations")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
-			continue
-		}
-		if strings.HasPrefix(e.Name(), "029") || strings.HasPrefix(e.Name(), "030") {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		sqlBytes, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		body := string(sqlBytes)
-		if _, err := conn.Exec(body); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
-		if _, err := conn.Exec(`INSERT INTO schema_migrations (filename) VALUES (?)`, name); err != nil {
-			t.Fatalf("record %s: %v", name, err)
-		}
+	if err := app.RunMigrationsThrough(conn, "030_multi_store.sql"); err != nil {
+		t.Fatalf("RunMigrationsThrough 028: %v", err)
 	}
 }
