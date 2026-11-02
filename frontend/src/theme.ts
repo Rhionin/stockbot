@@ -7,7 +7,7 @@ import {
   type MantineColorsTuple,
   type MantineTheme,
 } from '@mantine/core';
-import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio } from '@stockbot/shared/contrast';
+import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio, parseHex } from '@stockbot/shared/contrast';
 
 // Shade 6 is the locked mark teal (#0D9488); filled primary buttons use shade 7 (#0F766E).
 const teal: MantineColorsTuple = [
@@ -46,9 +46,40 @@ const colorScale = (value: MantineTheme['colors'][string]): readonly string[] | 
 /** Error ink on light surfaces never goes above #E03131 (WCAG AA on white). */
 const RED_INK_FLOOR = '#e03131';
 
+/** Lightest error ink on dark surfaces (#ff8787 and lighter are too pale). */
+const RED_INK_DARK_CEILING = '#fa5252';
+
+const relativeLuminance = (color: string): number => {
+  const [red, green, blue] = parseHex(color);
+  const linear = (channel: number) => {
+    const unit = channel / 255;
+    return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
+};
+
 const atLeastAsDarkAs = (candidate: string, floor: string): string => (
   contrastRatio(candidate, '#ffffff') >= contrastRatio(floor, '#ffffff') ? candidate : floor
 );
+
+const atMostAsLightAs = (candidate: string, ceiling: string): string => (
+  relativeLuminance(candidate) > relativeLuminance(ceiling) ? ceiling : candidate
+);
+
+const redInkOnDark = (
+  candidate: string,
+  background: string,
+  ceiling: string = RED_INK_DARK_CEILING,
+): string => {
+  let ink = contrastRatio(candidate, background) >= 4.5
+    ? candidate
+    : towardContrast(candidate, '#ffffff', background);
+  ink = atMostAsLightAs(ink, ceiling);
+  if (contrastRatio(ink, background) < 4.5) {
+    ink = towardContrast(ink, '#ffffff', background);
+  }
+  return ink;
+};
 
 // A scale step when one clears AA, otherwise the same hue darkened or lightened
 // until it does. Yellow, lime, orange, and green run out of steps on a light wash.
@@ -130,6 +161,17 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
     '--mantine-color-red-outline',
   ] as const) {
     resolved.light[key] = atLeastAsDarkAs(resolveVarColor(resolved.light[key]), RED_INK_FLOOR);
+  }
+
+  const redScale = colorScale(theme.colors.red);
+  const redDarkWash = redScale ? flatten(redScale[Math.max(0, darkShade - 2)], 0.15, darkPaper) : darkPaper;
+  resolved.dark['--mantine-color-red-light-color'] = redInkOnDark(
+    resolveVarColor(resolved.dark['--mantine-color-red-light-color']),
+    redDarkWash,
+    '#ff8787',
+  );
+  for (const key of ['--mantine-color-red-text', '--mantine-color-red-outline'] as const) {
+    resolved.dark[key] = redInkOnDark(resolveVarColor(resolved.dark[key]), darkPaper);
   }
 
   return resolved;
