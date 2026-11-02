@@ -489,7 +489,11 @@ func (c *Catalog) loadStores(ctx context.Context, scope tenant.Scope) ([]Store, 
 		return nil, fmt.Errorf("could not list stores: %w", err)
 	}
 	for i := range out {
-		out[i].Check = loadCheck(ctx, c.db, scope, out[i].ID)
+		check, err := loadCheck(ctx, c.db, scope, out[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not list stores: %w", err)
+		}
+		out[i].Check = check
 	}
 	return out, nil
 }
@@ -567,7 +571,7 @@ func ptrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-func loadCheck(ctx context.Context, db *sql.DB, scope tenant.Scope, storeID string) *StoreCheck {
+func loadCheck(ctx context.Context, db *sql.DB, scope tenant.Scope, storeID string) (*StoreCheck, error) {
 	var st StoreCheck
 	var finished, failure sql.NullString
 	err := db.QueryRowContext(ctx, `
@@ -576,12 +580,12 @@ func loadCheck(ctx context.Context, db *sql.DB, scope tenant.Scope, storeID stri
 		scope.HouseholdID(), storeID).Scan(
 		&st.State, &st.StartedAt, &finished, &st.Checked, &st.Found, &st.Total, &failure)
 	if err == sql.ErrNoRows {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	st.FinishedAt = nullStr(finished)
 	st.Failure = nullStr(failure)
-	return &st
+	return &st, nil
 }
