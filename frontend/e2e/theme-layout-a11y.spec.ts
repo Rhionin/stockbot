@@ -122,24 +122,29 @@ async function assertSingleHouseholdEllipsis(page: Page, fullName: string) {
   const button = page.getByRole('button', { name: `Household: ${fullName}` })
   await expect(button).toBeVisible()
   await expect(button).toHaveAttribute('title', fullName)
-  await expect(button.evaluate((el) => {
+  const nameText = button.locator('.household-switch-name-text')
+  await expect(nameText).toHaveText(fullName)
+  await expect(nameText.evaluate((el) => {
     const style = getComputedStyle(el)
     return el.scrollWidth > el.clientWidth + 0.5
       && style.textOverflow === 'ellipsis'
       && style.whiteSpace === 'nowrap'
   })).resolves.toBe(true)
+  await expect(page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 0.5)).resolves.toBe(true)
 }
 
-test.beforeAll(async ({ request }) => {
-  await resetSharedState(request)
-})
-
-test('320px with 125% text keeps the single-household name on one line', async ({ page }) => {
+async function openSingleHouseholdHeader(
+  page: Page,
+  householdName: string,
+  viewportWidth: number,
+  fontPercent: number,
+  scheme: 'light' | 'dark',
+) {
   resetStage()
   stage.kind = 'account'
   stage.operator = false
   stage.role = 'owner'
-  stage.householdName = 'Test Household Pantry Storage'
+  stage.householdName = householdName
   await install(page)
   await page.route('**/api/auth/session', async (route) => {
     if (route.request().method() !== 'GET') return route.continue()
@@ -149,20 +154,47 @@ test('320px with 125% text keeps the single-household name on one line', async (
       body: JSON.stringify({
         user: { id: 'user-1', email: 'ada@example.com', name: 'Ada' },
         kind: 'account',
-        memberships: [{ householdId: 'hh-1', name: stage.householdName, role: 'owner', deletedAt: null }],
-        households: [{ id: 'hh-1', name: stage.householdName, role: 'owner', deletedAt: null }],
+        memberships: [{ householdId: 'hh-1', name: householdName, role: 'owner', deletedAt: null }],
+        households: [{ id: 'hh-1', name: householdName, role: 'owner', deletedAt: null }],
         activeHouseholdId: 'hh-1',
         operator: false,
       }),
     })
   })
   await stubShopping(page, 'Kroger')
-  await installRootFontPercent(page, 125)
-  await page.setViewportSize({ width: 320, height: 844 })
+  await page.addInitScript((value) => {
+    window.localStorage.setItem('mantine-color-scheme-value', value)
+  }, scheme)
+  await installRootFontPercent(page, fontPercent)
+  await page.setViewportSize({ width: viewportWidth, height: 844 })
   await page.goto('/shopping')
-  await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * 125) / 100)
-  await assertSingleHouseholdEllipsis(page, 'Test Household Pantry Storage')
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+  if (fontPercent !== 100) {
+    await assertRootFontSizePx(page, (ROOT_FONT_PX_AT_100 * fontPercent) / 100)
+  }
+}
+
+test.beforeAll(async ({ request }) => {
+  await resetSharedState(request)
 })
+
+test('320px with 125% text keeps the single-household name on one line', async ({ page }) => {
+  const householdName = 'Test Household Pantry Storage'
+  await openSingleHouseholdHeader(page, householdName, 320, 125, 'light')
+  await assertSingleHouseholdEllipsis(page, householdName)
+})
+
+const householdEllipsisCases = [
+  { viewportWidth: 390, fontPercent: 100, scheme: 'light' as const, householdName: 'Pantry Storage Room Long Name' },
+  { viewportWidth: 390, fontPercent: 100, scheme: 'dark' as const, householdName: 'Pantry Storage Room Long Name' },
+] as const
+
+for (const { viewportWidth, fontPercent, scheme, householdName } of householdEllipsisCases) {
+  test(`${viewportWidth}px with ${fontPercent}% text ellipsizes the single-household name (${scheme})`, async ({ page }) => {
+    await openSingleHouseholdHeader(page, householdName, viewportWidth, fontPercent, scheme)
+    await assertSingleHouseholdEllipsis(page, householdName)
+  })
+}
 
 async function assertShoppingToolbarStacked(page: Page, viewportWidth: number) {
   const toolbar = page.locator('.shopping-toolbar')

@@ -120,3 +120,45 @@ for (const shot of shots) {
     await page.screenshot({ path: join(outDir, shot.file), fullPage: false })
   })
 }
+
+const headerShots = [
+  { file: 'header-320-125-light.png', width: 320, height: 844, scheme: 'light' as const, font125: true },
+  { file: 'header-320-125-dark.png', width: 320, height: 844, scheme: 'dark' as const, font125: true },
+  { file: 'header-390-light.png', width: 390, height: 844, scheme: 'light' as const, font125: false },
+  { file: 'header-390-dark.png', width: 390, height: 844, scheme: 'dark' as const, font125: false },
+] as const
+
+for (const shot of headerShots) {
+  test(`capture header ${shot.file}`, async ({ page }) => {
+    resetStage()
+    stage.kind = 'account'
+    stage.householdName = 'Test Household Pantry Storage'
+    await install(page)
+    await singleHouseholdSession(page, stage.householdName)
+    await stubShopping(page)
+    await page.addInitScript((scheme) => {
+      window.localStorage.setItem('mantine-color-scheme-value', scheme)
+    }, shot.scheme)
+    if (shot.font125) {
+      await page.addInitScript(() => {
+        const apply = () => {
+          document.documentElement.style.setProperty('font-size', '125%', 'important')
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', apply, { once: true })
+        }
+        apply()
+      })
+    }
+    await page.setViewportSize({ width: shot.width, height: shot.height })
+    await page.goto('/shopping')
+    if (shot.font125) {
+      await expect.poll(async () => {
+        const px = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))
+        return Math.abs(px - 20) <= 0.5
+      }).toBe(true)
+    }
+    await expect(page.locator('.app-header .household-switch-name-text')).toBeVisible()
+    await page.locator('.app-header').screenshot({ path: join(outDir, shot.file) })
+  })
+}
