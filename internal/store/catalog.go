@@ -348,10 +348,6 @@ func (c *Catalog) Delete(ctx context.Context, scope tenant.Scope, id string) err
 	if err != nil {
 		return err
 	}
-	preview, err := c.buildRemovalPreview(ctx, scope, row)
-	if err != nil {
-		return err
-	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not remove the store: %w", err)
@@ -363,7 +359,6 @@ func (c *Catalog) Delete(ctx context.Context, scope tenant.Scope, id string) err
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("could not remove the store: %w", err)
 	}
-	_ = preview
 	return nil
 }
 

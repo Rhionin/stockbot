@@ -17,9 +17,11 @@ func (c *Catalog) buildRemovalPreview(ctx context.Context, scope tenant.Scope, r
 	isLinked := row.linked != nil
 
 	var runOverrides, usualChoices, personChoices, checkedItems, tripsKept int
+	// RunOverrides counts every list line pointing at this store (including purchased).
+	// Delete clears run_store_id on all of them; preview uses the same scope.
 	if err := c.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM shopping_list_items
-		WHERE household_id = ? AND run_store_id = ? AND purchased_at IS NULL`,
+		WHERE household_id = ? AND run_store_id = ?`,
 		scope.HouseholdID(), row.id).Scan(&runOverrides); err != nil {
 		return RemovalPreview{}, fmt.Errorf("could not preview store removal: %w", err)
 	}
@@ -35,8 +37,9 @@ func (c *Catalog) buildRemovalPreview(ctx context.Context, scope tenant.Scope, r
 		return RemovalPreview{}, fmt.Errorf("could not preview store removal: %w", err)
 	}
 	if err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM store_availability WHERE household_id = ? AND store_id = ?`,
-		scope.HouseholdID(), row.id).Scan(&checkedItems); err != nil {
+		SELECT COUNT(*) FROM store_availability
+		WHERE household_id = ? AND store_id = ? AND status_expires_at > ?`,
+		scope.HouseholdID(), row.id, c.now()).Scan(&checkedItems); err != nil {
 		return RemovalPreview{}, fmt.Errorf("could not preview store removal: %w", err)
 	}
 	if err := c.db.QueryRowContext(ctx, `
@@ -210,10 +213,9 @@ func effectiveStore(line openLine, stores []storeRow, usual map[string]string, e
 }
 
 func nextStoreAfterRemoval(line openLine, removed string, stores []storeRow, usual map[string]string, excluded map[string]map[string]bool, defaultID *string) string {
-	if line.runStoreID != nil && *line.runStoreID == removed {
-		return usualStore(line.productID, storesWithout(stores, removed), usual, excluded, defaultWithout(defaultID, removed))
-	}
-	return usualStore(line.productID, storesWithout(stores, removed), usual, excluded, defaultWithout(defaultID, removed))
+	st := storesWithout(stores, removed)
+	def := defaultWithout(defaultID, removed)
+	return usualStore(line.productID, st, usual, excluded, def)
 }
 
 func usualStore(productID string, stores []storeRow, usual map[string]string, excluded map[string]map[string]bool, defaultID *string) string {
@@ -222,11 +224,6 @@ func usualStore(productID string, stores []storeRow, usual map[string]string, ex
 	}
 	if defaultID != nil && !isExcluded(excluded, productID, *defaultID) && storeExists(stores, *defaultID) {
 		return *defaultID
-	}
-	for _, st := range stores {
-		if !isExcluded(excluded, productID, st.id) {
-			return st.id
-		}
 	}
 	return ""
 }
@@ -262,21 +259,6 @@ func storeExists(stores []storeRow, id string) bool {
 		}
 	}
 	return false
-}
-
-// VerifyDeletePreview recomputes preview after delete for tests.
-func (c *Catalog) VerifyDeletePreview(ctx context.Context, scope tenant.Scope, before RemovalPreview, id string) error {
-	row, err := c.getStoreRow(ctx, scope, id)
-	if err == nil {
-		after, err := c.buildRemovalPreview(ctx, scope, row)
-		if err != nil {
-			return err
-		}
-		if !previewEqual(before, after) {
-			return fmt.Errorf("removal preview drift")
-		}
-	}
-	return nil
 }
 
 func previewEqual(a, b RemovalPreview) bool {

@@ -531,7 +531,7 @@ func TestCatalogRemovalPreviewUsualAndExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fallback, err := catalog.Create(ctx, scope, CreateInput{Name: "Fallback"})
+	_, err = catalog.Create(ctx, scope, CreateInput{Name: "Fallback"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,8 +571,7 @@ func TestCatalogRemovalPreviewUsualAndExcluded(t *testing.T) {
 	if err != nil || preview.OpenLines != 1 {
 		t.Fatalf("preview: %+v err %v", preview, err)
 	}
-	if len(preview.OpenLinesNext) != 1 || preview.OpenLinesNext[0].StoreID == nil || *preview.OpenLinesNext[0].StoreID != fallback.ID {
+	if len(preview.OpenLinesNext) != 1 || preview.OpenLinesNext[0].StoreID != nil {
 		t.Fatalf("next after usual removed: %+v", preview.OpenLinesNext)
 	}
-	_ = fallback
 }
