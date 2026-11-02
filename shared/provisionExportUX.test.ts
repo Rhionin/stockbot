@@ -211,12 +211,32 @@ describe('groupProvisionResults', () => {
     expect(groups.check[0]?.entryId).toBe('sli-oats');
   });
 
-  it('gives legacy failedItems rows the api_error fallback', () => {
+  it('gives legacy failedItems rows reconnect copy when reconnectRequired is set', () => {
     const report = {
       provider: 'kroger',
       exported: 0,
       failedItems: ['Invented Jam'],
       reconnectRequired: true,
+    } as ProvisionReport;
+    const groups = groupProvisionResults(report);
+    expect(groups.notAdded).toHaveLength(1);
+    expect(groups.notAdded[0]?.status).toBe('failed');
+    expect(groups.notAdded[0]?.reason).toBe('reconnect_required');
+    expect(
+      provisionItemReasonLine(
+        groups.notAdded[0]!.name,
+        'Kroger',
+        groups.notAdded[0]!.reason,
+        groups.notAdded[0]!,
+      ),
+    ).toBe('Invented Jam: Reconnect Kroger to send this');
+  });
+
+  it('gives legacy failedItems rows the api_error fallback without reconnectRequired', () => {
+    const report = {
+      provider: 'kroger',
+      exported: 0,
+      failedItems: ['Invented Jam'],
     } as ProvisionReport;
     const groups = groupProvisionResults(report);
     expect(groups.notAdded).toHaveLength(1);
@@ -228,7 +248,6 @@ describe('groupProvisionResults', () => {
         'Kroger',
         groups.notAdded[0]!.reason,
         groups.notAdded[0]!,
-        true,
       ),
     ).toBe('Invented Jam: Something went wrong sending this item');
   });
