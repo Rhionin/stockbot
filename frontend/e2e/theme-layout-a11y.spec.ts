@@ -325,21 +325,16 @@ for (const scheme of ['light', 'dark'] as const) {
     await expect(page.locator('.provision-notices')).toBeVisible()
     await expect(page.locator('.provision-blocked-send-hint')).toBeVisible()
     await assertShoppingToolbarStacked(page, 320)
+    await page.getByRole('button', { name: 'Menu' }).click()
+    const menu = page.locator('.app-menu-dropdown')
+    await expect(menu).toBeVisible()
+    const box = await menu.boundingBox()
+    const innerWidth = await page.evaluate(() => window.innerWidth)
+    expect(box).not.toBeNull()
+    expect(box!.x).toBeGreaterThanOrEqual(-0.5)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(innerWidth + 0.5)
   })
 }
-
-test('header menu stays inside viewport at 320px with 125% text', async ({ page }) => {
-  await stubShopping(page, 'Kroger')
-  await openShoppingToolbar(page, 320, 125, 'light')
-  await page.getByRole('button', { name: 'Menu' }).click()
-  const menu = page.locator('.app-menu-dropdown')
-  await expect(menu).toBeVisible()
-  const box = await menu.boundingBox()
-  const innerWidth = await page.evaluate(() => window.innerWidth)
-  expect(box).not.toBeNull()
-  expect(box!.x).toBeGreaterThanOrEqual(-0.5)
-  expect(box!.x + box!.width).toBeLessThanOrEqual(innerWidth + 0.5)
-})
 
 for (const scheme of ['light', 'dark'] as const) {
   test(`header menu fits the viewport at 320px (${scheme})`, async ({ page }) => {
