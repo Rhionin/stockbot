@@ -86,8 +86,9 @@ func runIntegration(t *testing.T) {
 
 	mapPath := filepath.Join(t.TempDir(), "map.db")
 	var logs strings.Builder
+	prevLog := log.Writer()
 	log.SetOutput(io.MultiWriter(os.Stderr, &logs))
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(prevLog) })
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

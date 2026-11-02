@@ -876,16 +876,12 @@ describe('ShoppingListExportResultEntry types', () => {
     void failedUnknownReason;
     void unknownInvalidLine;
     void skippedBatchRejected;
-  });
-
-  it('does not allow provider_unavailable on unknown result lines', () => {
-    type UnknownProviderUnavailable = Extract<
-      ShoppingListExportResultEntry,
-      { status: 'unknown'; reason: 'provider_unavailable' }
-    >;
-    type AssertNever = UnknownProviderUnavailable extends never ? true : false;
-    const ok: AssertNever = true;
-    expect(ok).toBe(true);
+    // @ts-expect-error provider_unavailable is never a per-line unknown reason
+    const unknownProviderUnavailable: ShoppingListExportResultEntry = { entryId: 'e4', itemId: 'i4', name: 'Tea', quantity: 1, status: 'unknown', reason: 'provider_unavailable' };
+    // @ts-expect-error reconnect_required is failed-only per line
+    const unknownReconnectRequired: ShoppingListExportResultEntry = { entryId: 'e5', itemId: 'i5', name: 'Soup', quantity: 1, status: 'unknown', reason: 'reconnect_required' };
+    void unknownProviderUnavailable;
+    void unknownReconnectRequired;
   });
 });
 

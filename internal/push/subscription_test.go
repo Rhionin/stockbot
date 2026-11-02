@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
@@ -457,8 +456,9 @@ func TestNotifyLogsHostAndStatus(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
+	prevLog := log.Writer()
 	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(prevLog) })
 
 	sender := NewSender(subs, Config{
 		Post: func(_ context.Context, sub Subscription, _ []byte) (int, error) {

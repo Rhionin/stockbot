@@ -127,11 +127,11 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
-			savedHousehold = household
 			if err := adapter.ApplyAppCredentials(saved.ClientID, saved.ClientSecret, saved.RedirectURI, saved.Modality); err != nil {
 				log.Printf("saved Kroger credentials were not applied: %v", err)
 			} else {
 				configured = true
+				savedHousehold = household
 				log.Printf("Kroger app credentials: using saved row for household %s", savedHousehold)
 			}
 		}
