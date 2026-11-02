@@ -326,6 +326,7 @@ function legacyNotAdded(report: ProvisionReport): ShoppingListExportResultEntry[
     name,
     quantity: 1,
     status: 'failed',
+    reason: 'api_error',
   }));
 }
 

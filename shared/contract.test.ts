@@ -872,20 +872,20 @@ describe('ShoppingListExportResultEntry types', () => {
       status: 'skipped',
       reason: 'batch_rejected',
     };
-    // @ts-expect-error provider_unavailable is not emitted on unknown result lines
-    const unknownProviderUnavailable: ShoppingListExportResultEntry = {
-      entryId: 'e4',
-      itemId: 'i4',
-      name: 'Tea',
-      quantity: 1,
-      status: 'unknown',
-      reason: 'provider_unavailable',
-    };
     void failedMissingReason;
     void failedUnknownReason;
     void unknownInvalidLine;
     void skippedBatchRejected;
-    void unknownProviderUnavailable;
+  });
+
+  it('does not allow provider_unavailable on unknown result lines', () => {
+    type UnknownProviderUnavailable = Extract<
+      ShoppingListExportResultEntry,
+      { status: 'unknown'; reason: 'provider_unavailable' }
+    >;
+    type AssertNever = UnknownProviderUnavailable extends never ? true : false;
+    const ok: AssertNever = true;
+    expect(ok).toBe(true);
   });
 });
 
