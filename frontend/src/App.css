@@ -580,7 +580,7 @@ a.group-row {
       "fill"
       "send"
       "hint"
-      "notices notices";
+      "notices";
   }
 
   .shopping-toolbar:has(.provision-blocked-send-hint) {
@@ -589,7 +589,7 @@ a.group-row {
       "fill"
       "send"
       "hint"
-      "blocked blocked";
+      "blocked";
   }
 
   .shopping-toolbar:has(.provision-blocked-send-hint):has(.provision-notices) {
@@ -598,8 +598,8 @@ a.group-row {
       "fill"
       "send"
       "hint"
-      "blocked blocked"
-      "notices notices";
+      "blocked"
+      "notices";
   }
 
   .shopping-toolbar .shopping-send-hint,

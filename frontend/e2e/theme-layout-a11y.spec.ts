@@ -39,7 +39,12 @@ async function assertTouchTargetSize(locator: ReturnType<Page['locator']>) {
   expect(box!.height).toBeGreaterThanOrEqual(MIN_TOUCH - 0.01)
 }
 
-async function stubShopping(page: Page, displayName: string) {
+async function stubShopping(page: Page, displayName: string, entries: unknown[] = [{
+  itemId: 'item-1',
+  quantity: 1,
+  item: { id: 'item-1', product: { name: 'Plain rice', category: 'Dry goods' } },
+  basis: { instanceCount: 1 },
+}]) {
   await page.route('**/api/shopping-list**', async (route) => {
     const incoming = route.request()
     if (incoming.method() !== 'GET' || new URL(incoming.url()).pathname !== '/api/shopping-list') {
@@ -49,12 +54,7 @@ async function stubShopping(page: Page, displayName: string) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([{
-        itemId: 'item-1',
-        quantity: 1,
-        item: { id: 'item-1', product: { name: 'Plain rice', category: 'Dry goods' } },
-        basis: { instanceCount: 1 },
-      }]),
+      body: JSON.stringify(entries),
     })
   })
   await page.route('**/api/restock', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }))
@@ -64,6 +64,36 @@ async function stubShopping(page: Page, displayName: string) {
     contentType: 'application/json',
     body: JSON.stringify(krogerProviders('saved', 'connected', displayName)),
   }))
+}
+
+async function openShoppingToolbar(
+  page: Page,
+  viewportWidth: number,
+  fontPercent: number,
+  scheme: 'light' | 'dark',
+) {
+  await page.addInitScript((value) => {
+    window.localStorage.setItem('mantine-color-scheme-value', value)
+  }, scheme)
+  await page.setViewportSize({ width: viewportWidth, height: 844 })
+  if (fontPercent !== 100) {
+    await page.addStyleTag({ content: `html { font-size: ${fontPercent}% !important; }` })
+  }
+  await page.goto('/shopping')
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+}
+
+async function seedBlockedSendHint(page: Page) {
+  await page.evaluate(() => {
+    const toolbar = document.querySelector('.shopping-toolbar')
+    if (toolbar === null) throw new Error('shopping toolbar missing')
+    if (toolbar.querySelector('.provision-blocked-send-hint') !== null) return
+    const hint = document.createElement('p')
+    hint.className = 'provision-blocked-send-hint'
+    hint.setAttribute('role', 'alert')
+    hint.textContent = "One item didn't save. Fix it below, then send again."
+    toolbar.appendChild(hint)
+  })
 }
 
 async function assertSingleHouseholdEllipsis(page: Page, fullName: string) {
@@ -143,14 +173,30 @@ async function assertShoppingToolbarStacked(page: Page, viewportWidth: number) {
   }
 }
 
-for (const viewportWidth of [320, 359] as const) {
-  test(`shopping toolbar stacks full-width labels without clipping at ${viewportWidth}px with 125% text`, async ({ page }) => {
-    await stubShopping(page, 'Kroger')
-    await page.setViewportSize({ width: viewportWidth, height: 844 })
-    await page.addStyleTag({ content: 'html { font-size: 125% !important; }' })
-    await page.goto('/shopping')
-    await assertShoppingToolbarStacked(page, viewportWidth)
-  })
+const toolbarLayoutCases = [
+  { viewportWidth: 320, fontPercent: 125, scheme: 'light' },
+  { viewportWidth: 320, fontPercent: 125, scheme: 'dark' },
+  { viewportWidth: 359, fontPercent: 125, scheme: 'light' },
+  { viewportWidth: 359, fontPercent: 125, scheme: 'dark' },
+  { viewportWidth: 359, fontPercent: 100, scheme: 'light' },
+  { viewportWidth: 359, fontPercent: 100, scheme: 'dark' },
+] as const
+
+for (const { viewportWidth, fontPercent, scheme } of toolbarLayoutCases) {
+  for (const state of ['filled list', 'empty list notice', 'blocked send hint'] as const) {
+    test(`shopping toolbar stacks (${state}) at ${viewportWidth}px ${fontPercent}% ${scheme}`, async ({ page }) => {
+      await stubShopping(page, 'Kroger', state === 'empty list notice' ? [] : undefined)
+      await openShoppingToolbar(page, viewportWidth, fontPercent, scheme)
+      if (state === 'empty list notice') {
+        await expect(page.getByText(/Build the list before sending/)).toBeVisible()
+      }
+      if (state === 'blocked send hint') {
+        await seedBlockedSendHint(page)
+        await expect(page.locator('.provision-blocked-send-hint')).toBeVisible()
+      }
+      await assertShoppingToolbarStacked(page, viewportWidth)
+    })
+  }
 }
 
 for (const scheme of ['light', 'dark'] as const) {
