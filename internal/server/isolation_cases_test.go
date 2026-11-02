@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/google/uuid"
 )
 
 // maxQuarantined is the number of routes still waiting on per-household
@@ -117,6 +119,110 @@ var isolationCases = map[string]isolationCase{
 		reason: "another household's product id cannot be forced into this shelf",
 		check:  checkEnsureItemRejectsForeignProduct,
 	},
+	"GET /api/stores":                      {kind: kindListLeak, reason: "household-scoped store list", check: checkStoresListScoped},
+	"GET /api/stores/{id}/removal-preview": {kind: kindForeignID, reason: "another household's store id is 404", check: checkStoreForeignID},
+	"PATCH /api/stores/{id}":               {kind: kindForeignID, reason: "another household's store id is 404", check: checkStoreForeignID},
+	"DELETE /api/stores/{id}":              {kind: kindForeignID, reason: "another household's store id is 404", check: checkStoreForeignID},
+	"POST /api/stores":                     {kind: kindWriteScope, reason: "store create is household-scoped", check: checkStoreCreateScoped},
+	"PUT /api/stores/order":                {kind: kindWriteScope, reason: "store order is household-scoped", check: checkStoreOrderScoped},
+	"PUT /api/stores/default":              {kind: kindWriteScope, reason: "default store is household-scoped", check: checkStoreDefaultScoped},
+}
+
+func checkStoreCreateScoped(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	var birchBefore int
+	if err := fx.DB.QueryRow(`SELECT COUNT(*) FROM stores WHERE household_id = ?`, fx.Birch.ID).Scan(&birchBefore); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"name":"Alder Only Q7 ` + uuid.NewString()[:8] + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/stores", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	stampHousehold(t, req, fx.Alder)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/stores status %d", rec.Code)
+	}
+	var birchAfter int
+	if err := fx.DB.QueryRow(`SELECT COUNT(*) FROM stores WHERE household_id = ?`, fx.Birch.ID).Scan(&birchAfter); err != nil {
+		t.Fatal(err)
+	}
+	if birchAfter != birchBefore {
+		t.Fatalf("birch stores before %d after %d", birchBefore, birchAfter)
+	}
+}
+
+func checkStoreOrderScoped(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	birchStore := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Birch Order Q7")
+	alderStore := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Order Q7")
+	alderIDs, err := storeIDsForHousehold(t, fx.DB, fx.Alder.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := []string{alderStore}
+	for _, id := range alderIDs {
+		if id != alderStore {
+			order = append(order, id)
+		}
+	}
+	body := `{"storeIds":` + mustJSON(t, order) + `}`
+	req := httptest.NewRequest(http.MethodPut, "/api/stores/order", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	stampHousehold(t, req, fx.Alder)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT order status %d body %s", rec.Code, rec.Body.String())
+	}
+	var pos int
+	if err := fx.DB.QueryRow(`SELECT position FROM stores WHERE id = ?`, birchStore).Scan(&pos); err != nil || pos != 0 {
+		t.Fatalf("birch store moved %d err %v", pos, err)
+	}
+}
+
+func storeIDsForHousehold(t *testing.T, db *sql.DB, householdID string) ([]string, error) {
+	t.Helper()
+	rows, err := db.Query(`SELECT id FROM stores WHERE household_id = ? ORDER BY position`, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func checkStoreDefaultScoped(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	alderStore := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Default Q7")
+	req := httptest.NewRequest(http.MethodPut, "/api/stores/default", strings.NewReader(`{"storeId":"`+alderStore+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	stampHousehold(t, req, fx.Alder)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT default status %d", rec.Code)
+	}
+	var n int
+	if err := fx.DB.QueryRow(`SELECT COUNT(*) FROM household_settings WHERE household_id = ? AND key = 'default_store_id'`, fx.Birch.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("birch default set %d err %v", n, err)
+	}
 }
 
 func checkProductSearchHidesForeignTypedProducts(t *testing.T, fx *twoHouseholds) {

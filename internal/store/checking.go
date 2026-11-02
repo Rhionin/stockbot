@@ -1,0 +1,92 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"strings"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
+)
+
+func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
+	if chk.KrogerDisabled {
+		return false, nil
+	}
+	var productAccess sql.NullInt64
+	err := c.db.QueryRowContext(ctx, `
+		SELECT product_access FROM provider_app_credentials
+		WHERE household_id = ? AND provider_id = 'kroger'`, scope.HouseholdID()).Scan(&productAccess)
+	if err == sql.ErrNoRows || !productAccess.Valid || productAccess.Int64 != 1 {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var scopeText sql.NullString
+	err = c.db.QueryRowContext(ctx, `
+		SELECT granted_scope FROM provider_connections
+		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'
+		ORDER BY updated_at DESC LIMIT 1`, scope.HouseholdID()).Scan(&scopeText)
+	if err == sql.ErrNoRows || !scopeText.Valid || !strings.Contains(scopeText.String, "product.compact") {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var loc sql.NullString
+	err = c.db.QueryRowContext(ctx, `
+		SELECT location_id FROM stores
+		WHERE household_id = ? AND linked_provider = 'kroger' AND location_id IS NOT NULL AND location_id != ''
+		LIMIT 1`, scope.HouseholdID()).Scan(&loc)
+	if err == sql.ErrNoRows || !loc.Valid {
+		return false, nil
+	}
+	return err == nil, nil
+}
+
+func (c *Catalog) canConnect(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
+	if chk.KrogerDisabled {
+		return false, nil
+	}
+	if !chk.CredentialsConfigured {
+		return false, nil
+	}
+	_ = scope
+	_ = ctx
+	return true, nil
+}
+
+func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk CheckingContext, st Store) *string {
+	if st.LinkedProvider == nil {
+		return nil
+	}
+	var productAccess sql.NullInt64
+	err := c.db.QueryRowContext(ctx, `
+		SELECT product_access FROM provider_app_credentials
+		WHERE household_id = ? AND provider_id = 'kroger'`, scope.HouseholdID()).Scan(&productAccess)
+	if err == sql.ErrNoRows || !productAccess.Valid {
+		r := "not_configured"
+		return &r
+	}
+	if err != nil {
+		return nil
+	}
+	if productAccess.Int64 != 1 {
+		r := "no_product_access"
+		return &r
+	}
+	var connected int
+	err = c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM provider_connections
+		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'`, scope.HouseholdID()).Scan(&connected)
+	if err != nil || connected == 0 {
+		r := "not_connected"
+		return &r
+	}
+	if st.LocationID == nil || strings.TrimSpace(*st.LocationID) == "" {
+		r := "no_location"
+		return &r
+	}
+	_ = chk
+	return nil
+}
