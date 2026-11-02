@@ -267,13 +267,17 @@ func (c *Catalog) SetOrder(ctx context.Context, scope tenant.Scope, ids []string
 		}
 		return c.List(ctx, scope, chk)
 	}
-	if len(existing) != len(normalized) {
-		return StoresResponse{}, notFound()
-	}
+	existingSet := make(map[string]struct{}, len(existing))
 	for _, id := range existing {
-		if _, ok := seen[id]; !ok {
+		existingSet[id] = struct{}{}
+	}
+	for _, id := range normalized {
+		if _, ok := existingSet[id]; !ok {
 			return StoresResponse{}, notFound()
 		}
+	}
+	if len(existing) != len(normalized) {
+		return StoresResponse{}, conflict("Someone else just changed this. Refresh and try again.")
 	}
 	for pos, id := range normalized {
 		res, err := tx.ExecContext(ctx, `
@@ -420,14 +424,14 @@ func (c *Catalog) deleteStoreTx(ctx context.Context, tx *sql.Tx, scope tenant.Sc
 }
 
 type storeRow struct {
-	id           string
-	name         string
-	nameKey      string
-	kind         string
-	linked       *string
-	locationID   *string
+	id            string
+	name          string
+	nameKey       string
+	kind          string
+	linked        *string
+	locationID    *string
 	locationChain *string
-	position     int
+	position      int
 }
 
 func (c *Catalog) getStoreRow(ctx context.Context, scope tenant.Scope, id string) (storeRow, error) {

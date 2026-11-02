@@ -17,11 +17,11 @@ func (c *Catalog) buildRemovalPreview(ctx context.Context, scope tenant.Scope, r
 	isLinked := row.linked != nil
 
 	var runOverrides, usualChoices, personChoices, checkedItems, tripsKept int
-	// RunOverrides counts every list line pointing at this store (including purchased).
-	// Delete clears run_store_id on all of them; preview uses the same scope.
+	// RunOverrides counts open (unpurchased) lines with this run store only.
+	// Delete still clears run_store_id on purchased lines; preview does not count them.
 	if err := c.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM shopping_list_items
-		WHERE household_id = ? AND run_store_id = ?`,
+		WHERE household_id = ? AND run_store_id = ? AND purchased_at IS NULL`,
 		scope.HouseholdID(), row.id).Scan(&runOverrides); err != nil {
 		return RemovalPreview{}, fmt.Errorf("could not preview store removal: %w", err)
 	}
@@ -113,9 +113,9 @@ func (c *Catalog) buildRemovalPreview(ctx context.Context, scope tenant.Scope, r
 }
 
 type openLine struct {
-	id          string
-	productID   string
-	runStoreID  *string
+	id         string
+	productID  string
+	runStoreID *string
 }
 
 func (c *Catalog) loadOpenLines(ctx context.Context, scope tenant.Scope) ([]openLine, error) {

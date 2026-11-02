@@ -228,6 +228,51 @@ func TestCatalogListDEP7Fields(t *testing.T) {
 	}
 }
 
+func TestCatalogSetOrderStalePermutation(t *testing.T) {
+	catalog, scope, _ := newTestCatalog(t)
+	ctx := context.Background()
+	a, err := catalog.Create(ctx, scope, CreateInput{Name: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := catalog.Create(ctx, scope, CreateInput{Name: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := catalog.Create(ctx, scope, CreateInput{Name: "C"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = catalog.SetOrder(ctx, scope, []string{b.ID, a.ID}, CheckingContext{})
+	if err == nil {
+		t.Fatal("expected conflict on stale permutation")
+	}
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeConflict {
+		t.Fatalf("got %v", err)
+	}
+	_, err = catalog.SetOrder(ctx, scope, []string{c.ID, a.ID, b.ID}, CheckingContext{})
+	if err != nil {
+		t.Fatalf("valid reorder: %v", err)
+	}
+}
+
+func TestCatalogSetOrderForeignID(t *testing.T) {
+	catalog, scope, _ := newTestCatalog(t)
+	ctx := context.Background()
+	if _, err := catalog.Create(ctx, scope, CreateInput{Name: "Only"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := catalog.SetOrder(ctx, scope, []string{"00000000-0000-0000-0000-000000000099"}, CheckingContext{})
+	if err == nil {
+		t.Fatal("expected not found")
+	}
+	var nf *Error
+	if !errors.As(err, &nf) || nf.Code != CodeNotFound {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestCatalogSetOrderValidation(t *testing.T) {
 	catalog, scope, _ := newTestCatalog(t)
 	ctx := context.Background()
@@ -252,8 +297,8 @@ func TestCatalogSetOrderValidation(t *testing.T) {
 		t.Fatal("expected not found when order omits a store")
 	}
 	var orderNF *Error
-	if !errors.As(err, &orderNF) || orderNF.Code != CodeNotFound {
-		t.Fatalf("got %v", err)
+	if !errors.As(err, &orderNF) || orderNF.Code != CodeConflict {
+		t.Fatalf("stale partial order want conflict got %v", err)
 	}
 	out, err := catalog.SetOrder(ctx, scope, []string{b.ID, a.ID}, CheckingContext{})
 	if err != nil || len(out.Stores) != 2 || out.Stores[0].ID != b.ID {
@@ -373,6 +418,45 @@ func TestCatalogCheckReasonVariants(t *testing.T) {
 	}
 	if !out.LookupsEnabled {
 		t.Fatalf("lookupsEnabled want true got false")
+	}
+
+	// NULL product_access: not not_configured; follows connection then access.
+	if _, err := db.Exec(`DELETE FROM provider_connections WHERE id = 'conn-nc'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE provider_app_credentials SET product_access = NULL WHERE id = 'pac-2'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
+		t.Fatalf("NULL access without connection: %v", out.Stores[0].CheckReason)
+	}
+	_, err = db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+		VALUES ('conn-reauth', 'user-1', ?, 'kroger', 'reauth_required', 'cart.basic:write', ?)`, scope.HouseholdID(), when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
+		t.Fatalf("NULL access with reauth: %v", out.Stores[0].CheckReason)
+	}
+	_, err = db.Exec(`UPDATE provider_connections SET state = 'connected' WHERE id = 'conn-reauth'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+		t.Fatalf("NULL access when connected: %v", out.Stores[0].CheckReason)
 	}
 	_ = st
 }

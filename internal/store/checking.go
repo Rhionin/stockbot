@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log"
 	"strings"
 
 	"github.com/Rhionin/stockbot/internal/cart"
@@ -72,11 +73,12 @@ func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk Check
 	err := c.db.QueryRowContext(ctx, `
 		SELECT product_access FROM provider_app_credentials
 		WHERE household_id = ? AND provider_id = 'kroger'`, scope.HouseholdID()).Scan(&productAccess)
-	if err == sql.ErrNoRows || !productAccess.Valid {
+	if err == sql.ErrNoRows {
 		r := "not_configured"
 		return &r
 	}
 	if err != nil {
+		log.Printf("store checkReason: read product_access: %v", err)
 		return nil
 	}
 	var connected int
@@ -84,13 +86,14 @@ func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk Check
 		SELECT COUNT(*) FROM provider_connections
 		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'`, scope.HouseholdID()).Scan(&connected)
 	if err != nil {
+		log.Printf("store checkReason: count connected: %v", err)
 		return nil
 	}
 	if connected == 0 {
 		r := "not_connected"
 		return &r
 	}
-	if productAccess.Int64 != 1 {
+	if !productAccess.Valid || productAccess.Int64 != 1 {
 		r := "no_product_access"
 		return &r
 	}
@@ -100,6 +103,7 @@ func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk Check
 		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'
 		ORDER BY updated_at DESC LIMIT 1`, scope.HouseholdID()).Scan(&scopeText)
 	if err != nil && err != sql.ErrNoRows {
+		log.Printf("store checkReason: read granted_scope: %v", err)
 		return nil
 	}
 	if err == sql.ErrNoRows || !scopeText.Valid || !strings.Contains(scopeText.String, "product.compact") {

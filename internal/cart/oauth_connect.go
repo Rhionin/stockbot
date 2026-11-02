@@ -16,6 +16,9 @@ type OAuthConnectInput struct {
 // OAuthAuthorizeAllowed reports whether this household may start GET .../authorize.
 // Owners and members share the same rule (multi-store design case 14); role is not a gate.
 func OAuthAuthorizeAllowed(ctx context.Context, db *sql.DB, scope tenant.Scope, in OAuthConnectInput) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
 	if in.KrogerDisabled {
 		return false, nil
 	}
@@ -24,6 +27,5 @@ func OAuthAuthorizeAllowed(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 	}
 	_ = ctx
 	_ = db
-	_ = scope
 	return true, nil
 }

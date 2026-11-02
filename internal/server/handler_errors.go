@@ -83,6 +83,17 @@ func NotFound(message string) error {
 	return &HTTPError{Code: http.StatusNotFound, Message: message, ErrorCode: codeNotFound}
 }
 
+const codeStoreDisabled = "store_disabled"
+
+// StoreDisabled is a 409 when DISABLE_KROGER turns off online store features.
+func StoreDisabled() error {
+	return &HTTPError{
+		Code:      http.StatusConflict,
+		Message:   "Online store features are turned off on this server.",
+		ErrorCode: codeStoreDisabled,
+	}
+}
+
 func Conflict(message string) error {
 	return &HTTPError{Code: http.StatusConflict, Message: message, ErrorCode: codeConflict}
 }
