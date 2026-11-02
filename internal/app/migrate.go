@@ -137,8 +137,9 @@ func runMigrations(db *sql.DB, stopBefore string) error {
 		// transaction, so the snapshot above stays outside. Each of these
 		// files plus its schema_migrations row commit together, so a failure
 		// leaves neither the schema change nor a recorded migration.
-		// 030 adds nullable columns and new store tables; a partial failure must
-		// not leave duplicate ALTERs on the next boot.
+		// 030 adds nullable columns and new store tables. CJ approved B1 only when
+		// 030 runs in a single transaction (applyMigrationTx): every statement and
+		// the schema_migrations row commit together or roll back entirely.
 		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == multiStoreMigration {
 			if err := applyMigrationTx(db, name, sqlText); err != nil {
 				return fmt.Errorf("apply migration %q: %w", name, err)
