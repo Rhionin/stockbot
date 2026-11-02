@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +71,13 @@ func checkStoreForeignID(t *testing.T, fx *twoHouseholds) {
 
 func checkStoresListScoped(t *testing.T, fx *twoHouseholds) {
 	t.Helper()
-	seedFixtureStore(t, fx.DB, fx.Birch.ID, "Hidden Birch Q7")
+	var alderBefore int
+	if err := fx.DB.QueryRow(`SELECT COUNT(*) FROM stores WHERE household_id = ?`, fx.Alder.ID).Scan(&alderBefore); err != nil {
+		t.Fatal(err)
+	}
+	alderStoreID := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Visible Q7")
+	birchStoreID := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Hidden Birch Q7")
+	wantCount := alderBefore + 1
 	req := httptest.NewRequest(http.MethodGet, "/api/stores", nil)
 	stampHousehold(t, req, fx.Alder)
 	rec := httptest.NewRecorder()
@@ -80,6 +87,33 @@ func checkStoresListScoped(t *testing.T, fx *twoHouseholds) {
 		t.Fatalf("GET /api/stores status %d body %s", rec.Code, raw)
 	}
 	assertNoLeak(t, raw, fx.Birch)
+	if strings.Contains(string(raw), birchStoreID) {
+		t.Fatalf("response contains Birch store id %q", birchStoreID)
+	}
+	var parsed struct {
+		Stores []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"stores"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("decode stores list: %v", err)
+	}
+	if len(parsed.Stores) != wantCount {
+		t.Fatalf("stores count = %d, want %d for Alder only", len(parsed.Stores), wantCount)
+	}
+	foundAlder := false
+	for _, st := range parsed.Stores {
+		if st.ID == birchStoreID {
+			t.Fatalf("listed Birch store id %q", birchStoreID)
+		}
+		if st.ID == alderStoreID {
+			foundAlder = true
+		}
+	}
+	if !foundAlder {
+		t.Fatalf("Alder store %q missing from list", alderStoreID)
+	}
 }
 
 func TestStoresHandlers(t *testing.T) {
@@ -208,6 +242,33 @@ func TestStoresHandlers(t *testing.T) {
 				body:           `{"storeIds":["missing-id"]}`,
 				expectedStatus: http.StatusNotFound,
 				bodyContains:   []string{`"code":"not_found"`},
+			},
+		},
+		{
+			name: "PUT order duplicate store ids validation",
+			setup: func(env testEnv) {
+				hid := primaryScope(t, env.DB).HouseholdID()
+				seedFixtureStore(t, env.DB, hid, "Dup Order Q7")
+			},
+			afterRequest: func(env testEnv) {
+				var id string
+				err := env.DB.QueryRow(`SELECT id FROM stores WHERE household_id = ? LIMIT 1`, primaryScope(t, env.DB).HouseholdID()).Scan(&id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler := handlerFromEnv(env)
+				executeExchange(t, handler, httpExchange{
+					method:         http.MethodPut,
+					url:            "/api/stores/order",
+					body:           `{"storeIds":["` + id + `","` + id + `"]}`,
+					expectedStatus: http.StatusBadRequest,
+					bodyContains:   []string{`"code":"validation"`, `"field":"storeIds"`},
+				})
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodGet,
+				url:            "/api/stores",
+				expectedStatus: http.StatusOK,
 			},
 		},
 	})

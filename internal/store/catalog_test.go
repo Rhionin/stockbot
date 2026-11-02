@@ -304,6 +304,13 @@ func TestCatalogSetOrderValidation(t *testing.T) {
 	if err != nil || len(out.Stores) != 2 || out.Stores[0].ID != b.ID {
 		t.Fatalf("order: %v %+v", err, out.Stores)
 	}
+	_, err = catalog.SetOrder(ctx, scope, []string{a.ID, a.ID}, CheckingContext{})
+	if err == nil {
+		t.Fatal("expected validation on duplicate store ids")
+	}
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("duplicate ids want invalid got %v", err)
+	}
 }
 
 func TestCatalogSetOrderEmptyWhenNoStores(t *testing.T) {
@@ -404,6 +411,21 @@ func TestCatalogCheckReasonVariants(t *testing.T) {
 	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
 		t.Fatalf("no_product_access without compact scope: %v", out.Stores[0].CheckReason)
 	}
+	_, err = db.Exec(`UPDATE provider_connections SET granted_scope = 'cart.basic:write product.compact' WHERE id = 'conn-nc'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+		t.Fatalf("product_access=0 with compact scope: %v", out.Stores[0].CheckReason)
+	}
+	_, err = db.Exec(`UPDATE provider_connections SET granted_scope = 'cart.basic:write' WHERE id = 'conn-nc'`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = db.Exec(`UPDATE provider_app_credentials SET product_access = 1 WHERE id = 'pac-2'`)
 	if err != nil {
 		t.Fatal(err)
@@ -459,6 +481,66 @@ func TestCatalogCheckReasonVariants(t *testing.T) {
 		t.Fatalf("NULL access when connected: %v", out.Stores[0].CheckReason)
 	}
 	_ = st
+}
+
+func TestCatalogProductCompactAnyConnectedRow(t *testing.T) {
+	catalog, scope, db := newTestCatalog(t)
+	ctx := context.Background()
+	kroger, loc, chain := "kroger", "12345678", "KROGER"
+	if _, err := catalog.Create(ctx, scope, CreateInput{Name: "K", LinkedProvider: &kroger, LocationID: &loc, LocationChain: &chain}); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	newer := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO provider_app_credentials (id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, product_access, product_access_at, updated_at)
+			VALUES ('pac-m', 'user-1', ?, 'kroger', 'cid', 'sec', 'https://example.test/cb', 1, ?, ?)`, []any{scope.HouseholdID(), older, older}},
+		{`INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+			VALUES ('conn-old', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write product.compact', ?)`, []any{scope.HouseholdID(), older}},
+		{`INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+			VALUES ('conn-new', 'user-2', ?, 'kroger', 'connected', 'cart.basic:write', ?)`, []any{scope.HouseholdID(), newer}},
+	} {
+		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason != nil {
+		t.Fatalf("checkReason %q, want nil when any connected row has product.compact", *out.Stores[0].CheckReason)
+	}
+	if !out.LookupsEnabled {
+		t.Fatal("lookupsEnabled want true")
+	}
+
+	if _, err := db.Exec(`UPDATE provider_connections SET granted_scope = 'cart.basic:write' WHERE id = 'conn-old'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err = catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+		t.Fatalf("neither row has compact: %v", out.Stores[0].CheckReason)
+	}
+
+	for _, scopeStr := range []string{"cart.basic:write product.compactX", "cart.basic:write xproduct.compact"} {
+		if _, err := db.Exec(`UPDATE provider_connections SET granted_scope = ? WHERE id = 'conn-old'`, scopeStr); err != nil {
+			t.Fatal(err)
+		}
+		out, err = catalog.List(ctx, scope, CheckingContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
+			t.Fatalf("scope %q must not grant compact: %v", scopeStr, out.Stores[0].CheckReason)
+		}
+	}
 }
 
 func TestCatalogPatchLocationClearsAvailability(t *testing.T) {

@@ -936,7 +936,7 @@ func TestMigration030AdditiveUpgrade(t *testing.T) {
 	bought := "2026-01-02T00:00:00Z"
 	lines := []struct {
 		id, product, item, source string
-		purchased                  *string
+		purchased                 *string
 	}{
 		{"line-b9-manual", "prod-b9-manual", "item-b9-manual", "manual", nil},
 		{"line-b9-auto", "prod-b9-auto", "item-b9-auto", "auto", nil},
