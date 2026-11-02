@@ -177,6 +177,9 @@ func (c *Catalog) Patch(ctx context.Context, scope tenant.Scope, id string, in P
 		}
 	}
 	if in.SetLocation {
+		if linked == nil {
+			return Store{}, invalid("Choose a store location.", "locationId")
+		}
 		locID = trimPtr(in.LocationID)
 		locChain = trimPtr(in.LocationChain)
 	}
@@ -233,9 +236,7 @@ func (c *Catalog) SetOrder(ctx context.Context, scope tenant.Scope, ids []string
 	if err := scope.Require(); err != nil {
 		return StoresResponse{}, err
 	}
-	if len(ids) == 0 {
-		return StoresResponse{}, invalid("Choose at least one store.", "storeIds")
-	}
+	normalized := make([]string, 0, len(ids))
 	seen := map[string]struct{}{}
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
@@ -243,28 +244,38 @@ func (c *Catalog) SetOrder(ctx context.Context, scope tenant.Scope, ids []string
 			return StoresResponse{}, invalid("Check what you entered and try again.", "storeIds")
 		}
 		if _, ok := seen[id]; ok {
-			return StoresResponse{}, conflict("Someone else just changed this. Refresh and try again.")
+			return StoresResponse{}, invalid("Check what you entered and try again.", "storeIds")
 		}
 		seen[id] = struct{}{}
-	}
-	existing, err := c.loadStoreIDs(ctx, scope)
-	if err != nil {
-		return StoresResponse{}, err
-	}
-	if len(existing) != len(ids) {
-		return StoresResponse{}, conflict("Someone else just changed this. Refresh and try again.")
-	}
-	for _, id := range existing {
-		if _, ok := seen[id]; !ok {
-			return StoresResponse{}, conflict("Someone else just changed this. Refresh and try again.")
-		}
+		normalized = append(normalized, id)
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return StoresResponse{}, fmt.Errorf("could not reorder stores: %w", err)
 	}
 	defer tx.Rollback()
-	for pos, id := range ids {
+	existing, err := c.loadStoreIDsTx(ctx, tx, scope)
+	if err != nil {
+		return StoresResponse{}, err
+	}
+	if len(normalized) == 0 {
+		if len(existing) != 0 {
+			return StoresResponse{}, invalid("Choose at least one store.", "storeIds")
+		}
+		if err := tx.Commit(); err != nil {
+			return StoresResponse{}, fmt.Errorf("could not reorder stores: %w", err)
+		}
+		return c.List(ctx, scope, chk)
+	}
+	if len(existing) != len(normalized) {
+		return StoresResponse{}, notFound()
+	}
+	for _, id := range existing {
+		if _, ok := seen[id]; !ok {
+			return StoresResponse{}, notFound()
+		}
+	}
+	for pos, id := range normalized {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE stores SET position = ?, updated_at = ? WHERE id = ? AND household_id = ?`,
 			pos, c.now(), id, scope.HouseholdID())
@@ -307,7 +318,7 @@ func (c *Catalog) SetDefault(ctx context.Context, scope tenant.Scope, storeID *s
 		if err := tx.QueryRowContext(ctx, `
 			SELECT 1 FROM stores WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(&one); err != nil {
 			if err == sql.ErrNoRows {
-				return StoresResponse{}, invalid("Check what you entered and try again.", "storeId")
+				return StoresResponse{}, notFound()
 			}
 			return StoresResponse{}, fmt.Errorf("could not set the default store: %w", err)
 		}
@@ -483,8 +494,16 @@ func (c *Catalog) loadStores(ctx context.Context, scope tenant.Scope) ([]Store, 
 	return out, nil
 }
 
+type queryRower interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func (c *Catalog) loadStoreIDs(ctx context.Context, scope tenant.Scope) ([]string, error) {
-	rows, err := c.db.QueryContext(ctx, `
+	return c.loadStoreIDsTx(ctx, c.db, scope)
+}
+
+func (c *Catalog) loadStoreIDsTx(ctx context.Context, q queryRower, scope tenant.Scope) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT id FROM stores WHERE household_id = ? ORDER BY position`, scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not list stores: %w", err)

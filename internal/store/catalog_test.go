@@ -143,7 +143,11 @@ func TestCatalogSetDefaultValidationAndClear(t *testing.T) {
 	bad := "not-a-store"
 	_, err = catalog.SetDefault(ctx, scope, &bad, CheckingContext{})
 	if err == nil {
-		t.Fatal("expected validation for unknown store id")
+		t.Fatal("expected not found for unknown store id")
+	}
+	var nf *Error
+	if !errors.As(err, &nf) || nf.Code != CodeNotFound {
+		t.Fatalf("got %v", err)
 	}
 	_, err = catalog.SetDefault(ctx, scope, &st.ID, CheckingContext{})
 	if err != nil {
@@ -230,11 +234,45 @@ func TestCatalogSetOrderValidation(t *testing.T) {
 	}
 	_, err = catalog.SetOrder(ctx, scope, []string{b.ID}, CheckingContext{})
 	if err == nil {
-		t.Fatal("expected conflict when order omits a store")
+		t.Fatal("expected not found when order omits a store")
+	}
+	var orderNF *Error
+	if !errors.As(err, &orderNF) || orderNF.Code != CodeNotFound {
+		t.Fatalf("got %v", err)
 	}
 	out, err := catalog.SetOrder(ctx, scope, []string{b.ID, a.ID}, CheckingContext{})
 	if err != nil || len(out.Stores) != 2 || out.Stores[0].ID != b.ID {
 		t.Fatalf("order: %v %+v", err, out.Stores)
+	}
+}
+
+func TestCatalogSetOrderEmptyWhenNoStores(t *testing.T) {
+	catalog, scope, _ := newTestCatalog(t)
+	ctx := context.Background()
+	out, err := catalog.SetOrder(ctx, scope, []string{}, CheckingContext{})
+	if err != nil || len(out.Stores) != 0 {
+		t.Fatalf("empty order with no stores: err=%v stores=%d", err, len(out.Stores))
+	}
+}
+
+func TestCatalogPatchLocationRequiresLinkedStore(t *testing.T) {
+	catalog, scope, _ := newTestCatalog(t)
+	ctx := context.Background()
+	st, err := catalog.Create(ctx, scope, CreateInput{Name: "Plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := "12345678"
+	chain := "KROGER"
+	_, err = catalog.Patch(ctx, scope, st.ID, PatchInput{
+		SetLocation: true, LocationID: &loc, LocationChain: &chain,
+	})
+	if err == nil {
+		t.Fatal("expected validation when setting location on unlinked store")
+	}
+	var ve *Error
+	if !errors.As(err, &ve) || ve.Code != CodeInvalid {
+		t.Fatalf("got %v", err)
 	}
 }
 

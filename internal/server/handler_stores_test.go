@@ -28,9 +28,13 @@ func seedFixtureStoreExact(t *testing.T, db *sql.DB, householdID, display, nameK
 func insertFixtureStore(t *testing.T, db *sql.DB, householdID, id, display, key string) string {
 	t.Helper()
 	when := time.Now().UTC().Format(time.RFC3339Nano)
+	var pos int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM stores WHERE household_id = ?`, householdID).Scan(&pos); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.Exec(`
 		INSERT INTO stores (id, household_id, name, name_key, kind, position, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'physical', 0, ?, ?)`, id, householdID, display, key, when, when)
+		VALUES (?, ?, ?, ?, 'physical', ?, ?, ?)`, id, householdID, display, key, pos, when, when)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +156,7 @@ func TestStoresHandlers(t *testing.T) {
 			},
 		},
 		{
-			name: "PUT order conflict on bad permutation",
+			name: "PUT order not found on foreign or missing id",
 			setup: func(env testEnv) {
 				hid := primaryScope(t, env.DB).HouseholdID()
 				seedFixtureStore(t, env.DB, hid, "Alpha Q7")
@@ -162,8 +166,8 @@ func TestStoresHandlers(t *testing.T) {
 				method:         http.MethodPut,
 				url:            "/api/stores/order",
 				body:           `{"storeIds":["missing-id"]}`,
-				expectedStatus: http.StatusConflict,
-				bodyContains:   []string{`"code":"conflict"`},
+				expectedStatus: http.StatusNotFound,
+				bodyContains:   []string{`"code":"not_found"`},
 			},
 		},
 	})

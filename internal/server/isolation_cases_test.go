@@ -154,15 +154,30 @@ func checkStoreCreateScoped(t *testing.T, fx *twoHouseholds) {
 
 func checkStoreOrderScoped(t *testing.T, fx *twoHouseholds) {
 	t.Helper()
-	birchStore := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Birch Order Q7")
+	birchA := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Birch Order A Q7")
+	birchB := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Birch Order B Q7")
+	birchBefore, err := storePositionsForHousehold(t, fx.DB, fx.Birch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	alderStore := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Order Q7")
+	alderOther := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Order Other Q7")
+	bodyForeign := `{"storeIds":["` + birchA + `","` + alderStore + `"]}`
+	reqForeign := httptest.NewRequest(http.MethodPut, "/api/stores/order", strings.NewReader(bodyForeign))
+	reqForeign.Header.Set("Content-Type", "application/json")
+	stampHousehold(t, reqForeign, fx.Alder)
+	recForeign := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(recForeign, reqForeign)
+	if recForeign.Code != http.StatusNotFound {
+		t.Fatalf("foreign store in order status %d body %s", recForeign.Code, recForeign.Body.String())
+	}
 	alderIDs, err := storeIDsForHousehold(t, fx.DB, fx.Alder.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	order := []string{alderStore}
+	order := []string{alderOther, alderStore}
 	for _, id := range alderIDs {
-		if id != alderStore {
+		if id != alderStore && id != alderOther {
 			order = append(order, id)
 		}
 	}
@@ -175,10 +190,32 @@ func checkStoreOrderScoped(t *testing.T, fx *twoHouseholds) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT order status %d body %s", rec.Code, rec.Body.String())
 	}
-	var pos int
-	if err := fx.DB.QueryRow(`SELECT position FROM stores WHERE id = ?`, birchStore).Scan(&pos); err != nil || pos != 0 {
-		t.Fatalf("birch store moved %d err %v", pos, err)
+	birchAfter, err := storePositionsForHousehold(t, fx.DB, fx.Birch.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if birchBefore[birchA] != birchAfter[birchA] || birchBefore[birchB] != birchAfter[birchB] {
+		t.Fatalf("birch positions moved before %+v after %+v", birchBefore, birchAfter)
+	}
+}
+
+func storePositionsForHousehold(t *testing.T, db *sql.DB, householdID string) (map[string]int, error) {
+	t.Helper()
+	rows, err := db.Query(`SELECT id, position FROM stores WHERE household_id = ?`, householdID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var pos int
+		if err := rows.Scan(&id, &pos); err != nil {
+			return nil, err
+		}
+		out[id] = pos
+	}
+	return out, rows.Err()
 }
 
 func storeIDsForHousehold(t *testing.T, db *sql.DB, householdID string) ([]string, error) {
@@ -210,6 +247,15 @@ func mustJSON(t *testing.T, v any) string {
 
 func checkStoreDefaultScoped(t *testing.T, fx *twoHouseholds) {
 	t.Helper()
+	birchStore := seedFixtureStore(t, fx.DB, fx.Birch.ID, "Birch Default Q7")
+	reqForeign := httptest.NewRequest(http.MethodPut, "/api/stores/default", strings.NewReader(`{"storeId":"`+birchStore+`"}`))
+	reqForeign.Header.Set("Content-Type", "application/json")
+	stampHousehold(t, reqForeign, fx.Alder)
+	recForeign := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(recForeign, reqForeign)
+	if recForeign.Code != http.StatusNotFound {
+		t.Fatalf("foreign default status %d body %s", recForeign.Code, recForeign.Body.String())
+	}
 	alderStore := seedFixtureStore(t, fx.DB, fx.Alder.ID, "Alder Default Q7")
 	req := httptest.NewRequest(http.MethodPut, "/api/stores/default", strings.NewReader(`{"storeId":"`+alderStore+`"}`))
 	req.Header.Set("Content-Type", "application/json")
