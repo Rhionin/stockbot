@@ -123,7 +123,7 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	var savedHousehold string
 	if !disabled {
 		vault := appcred.NewVault(db)
-		saved, savedHousehold, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
+		saved, household, ok, err := vault.LoadServerProvider(context.Background(), "kroger")
 		if err != nil {
 			log.Printf("read saved Kroger credentials: %v", err)
 		} else if ok {
@@ -131,6 +131,7 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 				log.Printf("saved Kroger credentials were not applied: %v", err)
 			} else {
 				configured = true
+				savedHousehold = household
 				log.Printf("Kroger app credentials: using saved row for household %s", savedHousehold)
 			}
 		}

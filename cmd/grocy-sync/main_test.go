@@ -35,9 +35,10 @@ func TestProcessMainWaitsUntilTheProcessIsSignaled(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	var logs lockedBuffer
+	prevLog := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() {
-		log.SetOutput(os.Stderr)
+		log.SetOutput(prevLog)
 		signal.Reset(os.Interrupt, syscall.SIGTERM)
 	})
 

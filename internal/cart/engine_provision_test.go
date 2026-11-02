@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -733,8 +732,9 @@ func TestProvision_WholeRequest409WhenMarkReauthFails(t *testing.T) {
 	env := newProvisionEnv(t)
 	ctx := context.Background()
 	var logBuf bytes.Buffer
+	prevLog := log.Writer()
 	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(prevLog) })
 	ledgerBefore := snapshotProviderLedger(t, env, "fake-oauth")
 	if _, err := env.db.Exec(`
 		CREATE TRIGGER block_reauth_write409 BEFORE UPDATE ON provider_connections
