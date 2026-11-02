@@ -10,6 +10,35 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
+func grantedScopeIncludesProductCompact(grantedScope string) bool {
+	for _, tok := range strings.Fields(grantedScope) {
+		if tok == "product.compact" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Catalog) anyConnectedGrantIncludesProductCompact(ctx context.Context, householdID string) (bool, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT granted_scope FROM provider_connections
+		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'`, householdID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var scopeText sql.NullString
+		if err := rows.Scan(&scopeText); err != nil {
+			return false, err
+		}
+		if scopeText.Valid && grantedScopeIncludesProductCompact(scopeText.String) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
 	if chk.KrogerDisabled {
 		return false, nil
@@ -27,18 +56,11 @@ func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk Ch
 	if !productAccess.Valid || productAccess.Int64 != 1 {
 		return false, nil
 	}
-	var scopeText sql.NullString
-	err = c.db.QueryRowContext(ctx, `
-		SELECT granted_scope FROM provider_connections
-		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'
-		ORDER BY updated_at DESC LIMIT 1`, scope.HouseholdID()).Scan(&scopeText)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
+	hasCompact, err := c.anyConnectedGrantIncludesProductCompact(ctx, scope.HouseholdID())
 	if err != nil {
 		return false, err
 	}
-	if !scopeText.Valid || !strings.Contains(scopeText.String, "product.compact") {
+	if !hasCompact {
 		return false, nil
 	}
 	var loc sql.NullString
@@ -97,16 +119,12 @@ func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk Check
 		r := "no_product_access"
 		return &r
 	}
-	var scopeText sql.NullString
-	err = c.db.QueryRowContext(ctx, `
-		SELECT granted_scope FROM provider_connections
-		WHERE household_id = ? AND provider_id = 'kroger' AND state = 'connected'
-		ORDER BY updated_at DESC LIMIT 1`, scope.HouseholdID()).Scan(&scopeText)
-	if err != nil && err != sql.ErrNoRows {
+	hasCompact, err := c.anyConnectedGrantIncludesProductCompact(ctx, scope.HouseholdID())
+	if err != nil {
 		log.Printf("store checkReason: read granted_scope: %v", err)
 		return nil
 	}
-	if err == sql.ErrNoRows || !scopeText.Valid || !strings.Contains(scopeText.String, "product.compact") {
+	if !hasCompact {
 		r := "no_product_access"
 		return &r
 	}
