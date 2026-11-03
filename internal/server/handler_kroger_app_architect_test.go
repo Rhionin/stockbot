@@ -18,6 +18,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
+	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -210,6 +211,9 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 	if replace.Code != http.StatusInternalServerError {
 		t.Fatalf("replace %d %s", replace.Code, replace.Body.String())
 	}
+	if saveHookCalls != 2 {
+		t.Fatalf("save hook calls = %d, want 2 (initial save + failed replace)", saveHookCalls)
+	}
 	var clientID string
 	if err := db.QueryRow(`SELECT client_id FROM provider_app_credentials WHERE household_id = ? AND provider_id = 'kroger'`, primary).Scan(&clientID); err != nil || clientID != "first-app" {
 		t.Fatalf("client_id=%q err=%v", clientID, err)
@@ -218,10 +222,14 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 	if err := db.QueryRow(`SELECT state FROM provider_connections WHERE id = 'conn-replace'`).Scan(&state); err != nil || state != "connected" {
 		t.Fatalf("state=%q err=%v", state, err)
 	}
+	var reauthRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger' AND state = 'reauth_required'`, primary).Scan(&reauthRows); err != nil || reauthRows != 0 {
+		t.Fatalf("reauth_required rows=%d err=%v, want rollback with no reauth", reauthRows, err)
+	}
 }
 
 func TestKrogerAppTestRateLimitPerHousehold(t *testing.T) {
-	caller, db, primary, _ := setupKrogerAppOperator(t)
+	caller, _, primary, _ := setupKrogerAppOperator(t)
 	caller.house = primary
 	save := caller.authed(http.MethodPut, "/api/households/"+primary+"/kroger-app", map[string]string{
 		"clientId": "rate-app", "clientSecret": "rate-secret", "modality": "PICKUP",
@@ -239,6 +247,84 @@ func TestKrogerAppTestRateLimitPerHousehold(t *testing.T) {
 	blocked := caller.authed(http.MethodPost, path, nil)
 	if blocked.Code != http.StatusTooManyRequests || blocked.Header().Get("Retry-After") == "" || !strings.Contains(blocked.Body.String(), `"code":"rate_limited"`) {
 		t.Fatalf("11th test %d retry=%q %s", blocked.Code, blocked.Header().Get("Retry-After"), blocked.Body.String())
+	}
+}
+
+func TestKrogerAppTestRateLimitRetryAfterPinned(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "kroger-rate-retry.db")
+	setupDir := t.TempDir()
+	db := openMigratedDB(t, dbPath)
+	svc := auth.NewService(db, setupDir)
+	start := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc.SetClock(func() time.Time { return start })
+	site := stage1Site(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("env-client", "env-secret", site.AbsoluteURL("/api/providers/kroger/callback"), "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(krogerTestTokenTransport())
+	if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	handler, _ := setupOnDB(t, db, nil,
+		WithStage1(svc, site),
+		WithCartRegistry(registry, cart.NewLedger(db)),
+		WithProviderEnv(ProviderEnv{
+			ClientID: "env-client", ClientSecret: "env-secret",
+			RedirectURI: site.AbsoluteURL("/api/providers/kroger/callback"), Modality: "PICKUP",
+		}),
+	)
+	caller := krogerTestOwner(t, handler, setupDir, site, "rate-retry@test")
+	caller.house = caller.primary
+	save := caller.authed(http.MethodPut, "/api/households/"+caller.primary+"/kroger-app", map[string]string{
+		"clientId": "rate-app", "clientSecret": "rate-secret", "modality": "PICKUP",
+	})
+	if save.Code != http.StatusOK {
+		t.Fatal(save.Body.String())
+	}
+	path := "/api/households/" + caller.primary + "/kroger-app/test"
+	for i := 0; i < 9; i++ {
+		if rec := caller.authed(http.MethodPost, path, nil); rec.Code != http.StatusOK {
+			t.Fatalf("test %d: %d %s", i+2, rec.Code, rec.Body.String())
+		}
+	}
+	blocked := caller.authed(http.MethodPost, path, nil)
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th test %d %s", blocked.Code, blocked.Body.String())
+	}
+	if blocked.Header().Get("Retry-After") != "3600" {
+		t.Fatalf("first block Retry-After = %q, want 3600", blocked.Header().Get("Retry-After"))
+	}
+	svc.SetClock(func() time.Time { return start.Add(59*time.Minute + 59*time.Second) })
+	almost := caller.authed(http.MethodPost, path, nil)
+	if almost.Code != http.StatusTooManyRequests {
+		t.Fatalf("still limited at 59m59s %d %s", almost.Code, almost.Body.String())
+	}
+	if almost.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After at 59m59s = %q, want 1", almost.Header().Get("Retry-After"))
+	}
+}
+
+func TestKrogerAppTestRateLimitPerHouseholdOtherHouseholdUnblocked(t *testing.T) {
+	caller, db, primary, _ := setupKrogerAppOperator(t)
+	caller.house = primary
+	save := caller.authed(http.MethodPut, "/api/households/"+primary+"/kroger-app", map[string]string{
+		"clientId": "rate-app", "clientSecret": "rate-secret", "modality": "PICKUP",
+	})
+	if save.Code != http.StatusOK {
+		t.Fatal(save.Body.String())
+	}
+	path := "/api/households/" + primary + "/kroger-app/test"
+	for i := 0; i < 9; i++ {
+		rec := caller.authed(http.MethodPost, path, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("test %d: %d %s", i+2, rec.Code, rec.Body.String())
+		}
+	}
+	blocked := caller.authed(http.MethodPost, path, nil)
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th test %d %s", blocked.Code, blocked.Body.String())
 	}
 	birch := seedSecondHousehold(t, db, caller, "01909999-9999-7000-8000-0000000000c3")
 	caller2 := &stage1Caller{t: t, h: caller.h, cookie: caller.cookie, house: birch}
@@ -298,6 +384,123 @@ func TestKrogerAppTestRateLimitWindowResets(t *testing.T) {
 	svc.SetClock(func() time.Time { return start.Add(time.Hour + time.Minute) })
 	if rec := caller.authed(http.MethodPost, path, map[string]string{"clientId": "x", "clientSecret": "y"}); rec.Code != http.StatusOK {
 		t.Fatalf("after window %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportEmptyBodyMultipleRegistryConfigured(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	push := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmNone, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+	}, carttest.NewScript())
+	handoff := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthNone, Delivery: cart.DeliveryClientHandoff,
+		Confirmation: cart.ConfirmNone, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+	}, carttest.NewScript())
+	if err := env.Registry.Register(push, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Registry.Register(handoff, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultExportApp(t, env.DB, string(push.ID()))
+	seedDefaultExportApp(t, env.DB, string(handoff.ID()))
+	handler := handlerFromEnv(env)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/shopping-list/export", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	withRequestScope(t, env.DB, handler).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `provider \"\" is not registered`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportUnknownProviderRejected(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := postExportKroger(t, scoped, `{"provider":"not-registered"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `provider \"not-registered\" is not registered`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportEmptyBodySingleHouseholdAppNoOp(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/shopping-list/export", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	scoped.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"exported":0`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportKrogerSavedAppNotConnected(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSpy := &krogerHTTPCallCounter{}
+	adapter.WithTransport(httpSpy)
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	prov := &countingProvisioner{}
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+		Provisioner:  prov,
+		Connections:  connection.NewDirectory(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := postExportKroger(t, scoped, `{"provider":"kroger"}`)
+	if rec.Code != http.StatusConflict || (!strings.Contains(rec.Body.String(), "not connected") && !strings.Contains(rec.Body.String(), "reconnect_required")) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+	if prov.calls != 0 || httpSpy.calls != 0 {
+		t.Fatalf("Provision=%d HTTP=%d", prov.calls, httpSpy.calls)
 	}
 }
 
@@ -460,6 +663,38 @@ func TestShoppingListExportKrogerEnvOnlyNotConfigured(t *testing.T) {
 	}
 	if httpSpy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
+	}
+}
+
+func TestShoppingListExportVaultErrorWhenAppSaved(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	scope := primaryScope(t, env.DB)
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	if err := env.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tenant.WithScope(context.Background(), scope)
+	_, err = handler.Handle(Request[shoppingListExportRequest, struct{}]{
+		Context: ctx,
+		Body:    shoppingListExportRequest{Provider: "kroger"},
+	})
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Code != http.StatusInternalServerError {
+		t.Fatalf("Handle err=%v", err)
 	}
 }
 
