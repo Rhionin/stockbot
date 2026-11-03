@@ -205,9 +205,27 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 		VALUES ('conn-replace', 'user-1', ?, 'kroger', 'connected', ?)`, primary, when); err != nil {
 		t.Fatal(err)
 	}
-	replace := caller.authed(http.MethodPut, "/api/households/"+primary+"/kroger-app", map[string]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	replacePath := "/api/households/" + primary + "/kroger-app"
+	replaceBody := map[string]string{
 		"clientId": "second-app", "clientSecret": "second-secret", "modality": "PICKUP",
-	})
+	}
+	type replaceResult struct {
+		rec *httptest.ResponseRecorder
+	}
+	resultCh := make(chan replaceResult, 1)
+	go func() {
+		rec := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, replacePath, replaceBody)
+		resultCh <- replaceResult{rec: rec}
+	}()
+	var replace *httptest.ResponseRecorder
+	select {
+	case res := <-resultCh:
+		replace = res.rec
+	case <-ctx.Done():
+		t.Fatalf("replace hung past deadline: %v", ctx.Err())
+	}
 	if replace.Code != http.StatusInternalServerError {
 		t.Fatalf("replace %d %s", replace.Code, replace.Body.String())
 	}
@@ -496,7 +514,9 @@ func TestShoppingListExportKrogerSavedAppNotConnected(t *testing.T) {
 	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
 	scoped := withRequestScope(t, env.DB, mux)
 	rec := postExportKroger(t, scoped, `{"provider":"kroger"}`)
-	if rec.Code != http.StatusConflict || (!strings.Contains(rec.Body.String(), "not connected") && !strings.Contains(rec.Body.String(), "reconnect_required")) {
+	const wantMsg = "Couldn't connect to your Kroger account. Nothing was sent."
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"reconnect_required"`) ||
+		!strings.Contains(rec.Body.String(), wantMsg) {
 		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
 	}
 	if prov.calls != 0 || httpSpy.calls != 0 {
@@ -699,6 +719,16 @@ func TestShoppingListExportVaultErrorWhenAppSaved(t *testing.T) {
 }
 
 func TestShoppingListExportKrogerDisabledWithSavedApp(t *testing.T) {
+	t.Run("handlerEnvField", func(t *testing.T) {
+		testShoppingListExportKrogerDisabledWithSavedAppManualHandler(t)
+	})
+	t.Run("newHandlerProviderEnvWiring", func(t *testing.T) {
+		testShoppingListExportKrogerDisabledViaNewHandler(t)
+	})
+}
+
+func testShoppingListExportKrogerDisabledWithSavedAppManualHandler(t *testing.T) {
+	t.Helper()
 	_, env := setupTestWithDB(t)
 	registry := cart.NewRegistry()
 	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
@@ -729,6 +759,24 @@ func TestShoppingListExportKrogerDisabledWithSavedApp(t *testing.T) {
 	}
 	if prov.calls != 0 {
 		t.Fatalf("Provision calls=%d want 0", prov.calls)
+	}
+	if httpSpy.calls != 0 {
+		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
+	}
+}
+
+func testShoppingListExportKrogerDisabledViaNewHandler(t *testing.T) {
+	t.Helper()
+	httpSpy := &krogerHTTPCallCounter{}
+	caller, db, primary, adapter := setupKrogerAppOperator(t,
+		WithProviderEnv(ProviderEnv{Disabled: true}),
+	)
+	adapter.WithTransport(httpSpy)
+	caller.house = primary
+	seedKrogerHouseholdApp(t, db, "house-client", "house-secret", "https://app.example/cb")
+	rec := caller.authed(http.MethodPost, "/api/shopping-list/export", map[string]string{"provider": "kroger"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"store_disabled"`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
 	}
 	if httpSpy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
@@ -803,4 +851,17 @@ func krogerTestOwner(t *testing.T, handler http.Handler, setupDir string, site a
 	}
 	caller.house = *session.ActiveHouseholdID
 	return &krogerTestOwnerCaller{stage1Caller: caller, primary: *session.ActiveHouseholdID}
+}
+
+func serveAuthedWithContext(c *stage1Caller, timeout time.Duration, method, path string, body any) *httptest.ResponseRecorder {
+	req := stage1Request(method, path, c.cookie, body, app.EntryPublic, "")
+	if c.house != "" && req.Header.Get("X-Household-Id") == "" && strings.Contains(path, "/api/") {
+		req.Header.Set("X-Household-Id", c.house)
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	c.h.ServeHTTP(rec, req)
+	return rec
 }

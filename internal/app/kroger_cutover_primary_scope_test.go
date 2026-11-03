@@ -18,7 +18,7 @@ func TestKrogerCutoverNilDBIsNoOp(t *testing.T) {
 	}
 }
 
-func TestKrogerCutoverPrimaryHouseholdReadErrorRollsBack(t *testing.T) {
+func TestKrogerCutoverPrimaryKrogerAppReadErrorRollsBack(t *testing.T) {
 	db := openCutoverDB(t)
 	ctx := context.Background()
 	secondary := "01909999-9999-7000-8000-000000000088"
@@ -29,17 +29,23 @@ func TestKrogerCutoverPrimaryHouseholdReadErrorRollsBack(t *testing.T) {
 	}
 	seedHouseholdKrogerSideTables(t, db, secondary, "user-rb", "store-rb", "rb-app", when)
 	before := sideTableCounts(t, db, secondary)
-	if _, err := db.Exec(`ALTER TABLE households RENAME COLUMN is_primary TO is_primary_hidden`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE provider_app_credentials RENAME TO provider_app_credentials_fault`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = db.Exec(`ALTER TABLE households RENAME COLUMN is_primary_hidden TO is_primary`)
+		var faultName string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='provider_app_credentials_fault'`).Scan(&faultName); err == nil && faultName != "" {
+			_, _ = db.Exec(`ALTER TABLE provider_app_credentials_fault RENAME TO provider_app_credentials`)
+		}
 	})
 	err := RunKrogerAppCutover(ctx, db, KrogerCutoverEnv{ClientID: "a", ClientSecret: "b", RedirectURI: "https://cb.test/x"})
-	if err == nil {
-		t.Fatal("expected primary household read error")
+	if _, restoreErr := db.Exec(`ALTER TABLE provider_app_credentials_fault RENAME TO provider_app_credentials`); restoreErr != nil {
+		t.Fatal(restoreErr)
 	}
-	if !strings.Contains(err.Error(), "read primary household") {
+	if err == nil {
+		t.Fatal("expected read primary kroger app error")
+	}
+	if !strings.Contains(err.Error(), "read primary kroger app") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	after := sideTableCounts(t, db, secondary)

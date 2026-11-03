@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -143,6 +144,55 @@ func TestKrogerAppDisabledContract(t *testing.T) {
 	})
 	if put.Code != http.StatusConflict || !strings.Contains(put.Body.String(), `"code":"store_disabled"`) {
 		t.Fatalf("PUT disabled %d %s", put.Code, put.Body.String())
+	}
+}
+
+func TestKrogerAppGetForeignHouseholdWhenDisabledReturns404(t *testing.T) {
+	setupDir := t.TempDir()
+	db := openMigratedDB(t, filepath.Join(t.TempDir(), "kroger-disabled-foreign.db"))
+	svc := auth.NewService(db, setupDir)
+	if err := svc.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	code, err := auth.ReadSetupCode(setupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := stage1Site(t)
+	handler, _ := setupOnDB(t, db, nil, WithStage1(svc, site))
+	setup := stage1Do(handler, http.MethodPost, "/setup", "", map[string]string{
+		"setupCode": code, "name": "Op", "email": "op@test", "password": "correct horse",
+	}, app.EntryPublic, "")
+	if setup.Code != http.StatusOK {
+		t.Fatal(setup.Body.String())
+	}
+	primary, err := auth.PrimaryScope(t.Context(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := db.QueryRow(`SELECT user_id FROM memberships WHERE household_id = ?`, primary.HouseholdID()).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	birch := cedarHousehold(t, db)
+	krogerApp := &KrogerAppHandler{DB: db, Auth: svc, Env: ProviderEnv{Disabled: true}}
+	ctx := auth.WithPrincipal(t.Context(), auth.Principal{Kind: "account", UserID: userID})
+	_, err = krogerApp.Get(Request[struct{}, krogerHouseholdParams]{
+		Context: ctx, PathParams: krogerHouseholdParams{ID: birch},
+	})
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Code != http.StatusNotFound {
+		t.Fatalf("foreign GET with DISABLE_KROGER want 404 from requireMember before disabled, got err=%v", err)
+	}
+	view, err := krogerApp.Get(Request[struct{}, krogerHouseholdParams]{
+		Context: ctx, PathParams: krogerHouseholdParams{ID: primary.HouseholdID()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, ok := view.(KrogerAppDisabled)
+	if !ok || disabled.Status != "disabled" {
+		t.Fatalf("member GET want KrogerAppDisabled, got %#v", view)
 	}
 }
 
