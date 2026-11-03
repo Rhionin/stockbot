@@ -423,6 +423,35 @@ func TestServerPushAddLineValidation(t *testing.T) {
 	}
 }
 
+func TestAdapterOAuthFlowDelegates(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{"access_token":"legacy","refresh_token":"lr","expires_in":60}`)}
+	adapter, err := New("legacy-id", "legacy-secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	if adapter.AuthorizationScope() != "cart.basic:write" {
+		t.Fatal("scope")
+	}
+	url, err := adapter.AuthorizationURL("state-legacy")
+	if err != nil || !strings.Contains(url, "legacy-id") {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+	set, err := adapter.ExchangeCode(context.Background(), "code")
+	if err != nil || set.AccessToken != "legacy" {
+		t.Fatalf("exchange %+v err=%v", set, err)
+	}
+	rt.resp = jsonResponse(http.StatusOK, `{"access_token":"legacy","refresh_token":"lr","expires_in":60}`)
+	set, err = adapter.RefreshAccessToken(context.Background(), "lr")
+	if err != nil || set.AccessToken != "legacy" {
+		t.Fatalf("refresh %+v err=%v", set, err)
+	}
+	_, err = adapter.Add(context.Background(), cart.NewBearerCredential("tok"), provisionRequest(cart.ProvisionLine{Identity: "0001111072822", Quantity: 1}))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+}
+
 func TestRefreshAccessTokenParsesOAuthErrorBody(t *testing.T) {
 	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusUnauthorized, `{"error":"access_denied","error_description":"secret"}`)}
 	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
@@ -440,6 +469,62 @@ func TestRefreshAccessTokenParsesOAuthErrorBody(t *testing.T) {
 	}
 }
 
+func TestAuthorizationScopeForProductAccess(t *testing.T) {
+	if got := AuthorizationScopeForProductAccess(nil); got != "cart.basic:write" {
+		t.Fatalf("nil access: %q", got)
+	}
+	one := 1
+	if got := AuthorizationScopeForProductAccess(&one); !strings.Contains(got, "product.compact") {
+		t.Fatalf("with product: %q", got)
+	}
+	zero := 0
+	if got := AuthorizationScopeForProductAccess(&zero); strings.Contains(got, "product.compact") {
+		t.Fatalf("zero product: %q", got)
+	}
+}
+
+func TestAuthorizationURLForApp(t *testing.T) {
+	adapter, err := New("app-id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url, err := adapter.AuthorizationURLForApp(AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "app-id", RedirectURI: "https://house/cb"},
+		ClientSecret:   "secret",
+	}, "cart.basic:write", "state-1")
+	if err != nil || !strings.Contains(url, "client_id=app-id") || !strings.Contains(url, "state=state-1") {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+}
+
+func TestExchangeAndRefreshAccessTokenForApp(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{"access_token":"at","refresh_token":"rt","expires_in":3600,"scope":"cart.basic:write"}`)}
+	adapter, err := New("app-id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(rt)
+	creds := AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "app-id", RedirectURI: "https://app/cb", Modality: "PICKUP", SecretSet: true},
+		ClientSecret:   "secret",
+	}
+	set, err := adapter.ExchangeCodeForApp(context.Background(), creds, "auth-code")
+	if err != nil || set.AccessToken != "at" {
+		t.Fatalf("exchange: %+v err=%v", set, err)
+	}
+	rt.resp = jsonResponse(http.StatusOK, `{"access_token":"at2","refresh_token":"rt2","expires_in":60,"scope":"cart.basic:write"}`)
+	set, err = adapter.RefreshAccessTokenForApp(context.Background(), creds, "rt")
+	if err != nil || set.AccessToken != "at2" {
+		t.Fatalf("refresh: %+v err=%v", set, err)
+	}
+	rt.resp = jsonResponse(http.StatusOK, `{"access_token":"at3","refresh_token":"rt3","expires_in":60,"scope":"cart.basic:write"}`)
+	house := cart.HouseholdAppOAuth{ClientID: "app-id", ClientSecret: "secret", RedirectURI: "https://app/cb", Modality: "PICKUP"}
+	set, err = adapter.RefreshAccessTokenForHouseholdApp(context.Background(), house, "rt")
+	if err != nil || set.AccessToken != "at3" {
+		t.Fatalf("household refresh: %+v err=%v", set, err)
+	}
+}
+
 func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
 	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusForbidden, `{}`)}
 	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
@@ -453,5 +538,68 @@ func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
 	}
 	if !cart.CartResponseNeedsReconnect(result.Status) {
 		t.Fatalf("status = %d", result.Status)
+	}
+}
+
+func TestAuthorizationURLForAppUsesAdapterBase(t *testing.T) {
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.baseURL = "https://api.example"
+	url, err := adapter.AuthorizationURLForApp(AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "app-id", RedirectURI: "https://app/cb"},
+	}, "cart.basic:write", "state-1")
+	if err != nil || !strings.Contains(url, "https://api.example/v1/connect/oauth2/authorize") {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+	_, err = adapter.AuthorizationURLForApp(AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "", RedirectURI: "https://app/cb"},
+	}, "cart.basic:write", "state-1")
+	if err == nil {
+		t.Fatal("expected missing client id error")
+	}
+}
+
+func TestExchangeCodeForAppUsesAdapterBase(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{"access_token":"at","refresh_token":"rt","expires_in":60}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.baseURL = "https://api.example"
+	adapter.WithTransport(rt)
+	set, err := adapter.ExchangeCodeForApp(context.Background(), AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "id", RedirectURI: "https://app/cb", SecretSet: true},
+		ClientSecret:   "secret",
+	}, "code-1")
+	if err != nil || set.AccessToken != "at" {
+		t.Fatalf("set=%+v err=%v", set, err)
+	}
+	if rt.gotReq == nil || !strings.HasPrefix(rt.gotReq.URL.String(), "https://api.example/v1/connect/oauth2/token") {
+		t.Fatalf("req=%v", rt.gotReq)
+	}
+}
+
+func TestAdapterTestingHooks(t *testing.T) {
+	adapter := NewUnconfigured().WithTimeout(3 * time.Second).WithRand(bytes.NewReader([]byte{1, 2, 3}))
+	if adapter.timeout != 3*time.Second {
+		t.Fatalf("timeout = %v", adapter.timeout)
+	}
+	if adapter.PublicBaseURL() != BaseURL {
+		t.Fatalf("base = %q", adapter.PublicBaseURL())
+	}
+	custom, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom.baseURL = "https://api.example"
+	if custom.PublicBaseURL() != "https://api.example" {
+		t.Fatalf("base = %q", custom.PublicBaseURL())
+	}
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{}`)}
+	custom.WithTransport(rt)
+	if custom.PublicTransport() != rt {
+		t.Fatal("want configured transport")
 	}
 }

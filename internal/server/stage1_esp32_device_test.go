@@ -54,7 +54,7 @@ func TestStage1ESP32ScannerBackend(t *testing.T) {
 	}
 	complete := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": pairing.Code, "label": "Pantry pistol",
-		"hub":  map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-esp"},
+		"hub": map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-esp"},
 	}, app.EntryPublic)
 	if complete.Code != http.StatusCreated || !strings.Contains(complete.Body.String(), `"defaultDirection":"stock_out"`) ||
 		!strings.Contains(complete.Body.String(), `"commitMode":"queue"`) || !strings.Contains(complete.Body.String(), `"inactivityRevertSeconds":300`) {
@@ -132,7 +132,7 @@ func TestStage1ESP32ScannerBackend(t *testing.T) {
 	}
 	complete2 := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": code2.Code, "label": "Queue scanner",
-		"hub":  map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-q"},
+		"hub": map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-q"},
 	}, app.EntryPublic)
 	var paired2 struct {
 		DeviceID string `json:"deviceId"`

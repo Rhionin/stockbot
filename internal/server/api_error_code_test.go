@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/product"
@@ -159,17 +161,26 @@ func TestAppFacingErrorCodes(t *testing.T) {
 		if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 			t.Fatal(err)
 		}
-		if err := connection.NewDirectory(db).GenerateAuthState(t.Context(), primaryScope(t, db), "kroger", "state-1"); err != nil {
+		scope := primaryScope(t, db)
+		when := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := db.Exec(`
+			INSERT INTO provider_app_credentials (
+				id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at
+			) VALUES (?, 'user-1', ?, 'kroger', 'client', 'secret', 'https://pantry.example/api/providers/kroger/callback', ?)`,
+			scope.HouseholdID()+":kroger", scope.HouseholdID(), when); err != nil {
+			t.Fatal(err)
+		}
+		if err := connection.NewDirectory(db).GenerateAuthState(t.Context(), scope, "kroger", "state-1", appcred.AppKey("client"), ""); err != nil {
 			t.Fatal(err)
 		}
 		callbackHandler, _ := NewHandler(nil, nil, nil, db, WithCartRegistry(registry, cart.NewLedger(db)))
 		callback := callAPI(callbackHandler, http.MethodGet, "/api/providers/kroger/callback?code=abc&state=state-1", "")
-		if callback.Code != http.StatusBadGateway {
+		if callback.Code != http.StatusSeeOther {
 			t.Fatalf("callback = %d %s", callback.Code, callback.Body.String())
 		}
-		const callbackWant = `{"error":"Kroger isn't responding. Try again later.","code":"provider_unavailable","provider":"Kroger"}`
-		if callback.Body.String() != callbackWant {
-			t.Fatalf("callback = %s", callback.Body.String())
+		loc := callback.Header().Get("Location")
+		if !strings.Contains(loc, "kroger=failed") {
+			t.Fatalf("callback location = %q", loc)
 		}
 	})
 
@@ -602,7 +613,8 @@ func codeArg(expr ast.Expr) bool {
 		switch s {
 		case "unauthorized", "validation", "confirmation_mismatch", "rate_limited", "payload_too_large",
 			"not_found", "conflict", "method_not_allowed", "internal", "sync_read_only",
-			"provider_unavailable", "forbidden_operator", "reconnect_required", "updating", "busy", "no_space", "auth_not_configured":
+			"provider_unavailable", "forbidden_operator", "forbidden_role", "reconnect_required", "updating", "busy", "no_space", "auth_not_configured",
+			"store_disabled", "kroger_not_connected", "store_app_keys_rejected", "store_app_unreachable":
 			return true
 		default:
 			return false

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/go-json-experiment/json"
@@ -51,6 +52,7 @@ type errorPayload struct {
 	Suggestions any    `json:"suggestions,omitempty"`
 	ItemID      string `json:"itemId,omitempty"`
 	OnHand      *int   `json:"onHand,omitempty"`
+	CheckReason string `json:"checkReason,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -221,6 +223,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var itemID string
 	var onHand *int
 	var field string
+	var checkReason string
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
@@ -232,6 +235,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		itemID = httpErr.ItemID
 		onHand = httpErr.OnHand
 		field = httpErr.Field
+		checkReason = httpErr.CheckReason
 	}
 	if status >= 500 {
 		// A preview copy that cannot be written keeps its own sentence.
@@ -272,6 +276,11 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			suggestions = nil
 			itemID = ""
 			onHand = nil
+		case code == codeStoreAppUnreachable:
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
 		default:
 			message = clientmsg.Generic
 			code = codeInternal
@@ -284,6 +293,13 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	} else if code == "" {
 		code = defaultClientCode(status)
 	}
+	if status == http.StatusTooManyRequests && httpErr != nil && httpErr.Retry > 0 {
+		secs := int(httpErr.Retry.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+	}
 	writeJSON(w, status, errorPayload{
 		Error:       message,
 		Code:        code,
@@ -293,6 +309,7 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		Suggestions: suggestions,
 		ItemID:      itemID,
 		OnHand:      onHand,
+		CheckReason: checkReason,
 	})
 }
 

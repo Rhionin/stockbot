@@ -31,6 +31,10 @@ type Connection struct {
 	ExpiresAt    *time.Time
 	AuthState    string
 	AuthStateAt  *time.Time
+	AppKey       string
+	AuthAppKey   string
+	AuthReturn   string
+	GrantedScope string
 }
 
 // Directory is the data-access type for provider connections.
@@ -60,13 +64,19 @@ func (d *Directory) Read(ctx context.Context, scope tenant.Scope, provider strin
 		expiresAt    sql.NullTime
 		authState    sql.NullString
 		authStateAt  sql.NullTime
+		appKey       sql.NullString
+		authAppKey   sql.NullString
+		authReturn   sql.NullString
+		grantedScope sql.NullString
 	)
 
 	err := d.db.QueryRowContext(ctx,
-		`SELECT state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at
+		`SELECT state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at,
+		        app_key, auth_app_key, auth_return, granted_scope
 		 FROM provider_connections
 		 WHERE household_id = ? AND provider_id = ?`, scope.HouseholdID(), provider).Scan(
-		&state, &accessToken, &refreshToken, &expiresAt, &authState, &authStateAt)
+		&state, &accessToken, &refreshToken, &expiresAt, &authState, &authStateAt,
+		&appKey, &authAppKey, &authReturn, &grantedScope)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -101,6 +111,10 @@ func (d *Directory) Read(ctx context.Context, scope tenant.Scope, provider strin
 		ExpiresAt:    expiresAtPtr,
 		AuthState:    authState.String,
 		AuthStateAt:  authStateAtPtr,
+		AppKey:       appKey.String,
+		AuthAppKey:   authAppKey.String,
+		AuthReturn:   authReturn.String,
+		GrantedScope: grantedScope.String,
 	}, nil
 }
 
@@ -111,19 +125,24 @@ func (d *Directory) Write(ctx context.Context, scope tenant.Scope, conn *Connect
 	}
 	householdID := scope.HouseholdID()
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, provider_id) DO UPDATE SET
 		     state = excluded.state,
 		     access_token = excluded.access_token,
 		     refresh_token = excluded.refresh_token,
 		     access_token_expires_at = excluded.access_token_expires_at,
 		     auth_state = excluded.auth_state,
-		     auth_state_at = excluded.auth_state_at
+		     auth_state_at = excluded.auth_state_at,
+		     app_key = excluded.app_key,
+		     auth_app_key = excluded.auth_app_key,
+		     auth_return = excluded.auth_return,
+		     granted_scope = excluded.granted_scope
 		 WHERE provider_connections.household_id = excluded.household_id`,
 		householdID+":"+conn.Provider, householdID, householdID, conn.Provider,
 		string(conn.State), conn.AccessToken, conn.RefreshToken,
-		conn.ExpiresAt, conn.AuthState, conn.AuthStateAt)
+		conn.ExpiresAt, conn.AuthState, conn.AuthStateAt,
+		nullIfEmpty(conn.AppKey), nullIfEmpty(conn.AuthAppKey), nullIfEmpty(conn.AuthReturn), nullIfEmpty(conn.GrantedScope))
 	return err
 }
 
@@ -136,15 +155,23 @@ func (d *Directory) Disconnect(ctx context.Context, scope tenant.Scope, provider
 	_, err := d.db.ExecContext(ctx,
 		`UPDATE provider_connections SET
 		     state = ?, access_token = NULL, refresh_token = NULL,
-		     access_token_expires_at = NULL, auth_state = NULL, auth_state_at = NULL
+		     access_token_expires_at = NULL, auth_state = NULL, auth_state_at = NULL,
+		     auth_app_key = NULL, auth_return = NULL
 		 WHERE household_id = ? AND provider_id = ?`,
 		StateDisconnected, scope.HouseholdID(), provider)
 	return err
 }
 
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // GenerateAuthState creates a new authorization state for the provider.
-// Generate at least 32 characters from an injected io.Reader (crypto/rand in production).
-func (d *Directory) GenerateAuthState(ctx context.Context, scope tenant.Scope, provider, state string) error {
+// authAppKey and authReturn bind the pending sign-in to the household app.
+func (d *Directory) GenerateAuthState(ctx context.Context, scope tenant.Scope, provider, state, authAppKey, authReturn string) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}
@@ -154,13 +181,16 @@ func (d *Directory) GenerateAuthState(ctx context.Context, scope tenant.Scope, p
 	// and on conflict touch only the single-use state so a refresh token
 	// already stored for this provider is left in place.
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, auth_state, auth_state_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO provider_connections (id, household_id, user_id, provider_id, state, auth_state, auth_state_at, auth_app_key, auth_return)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, provider_id) DO UPDATE SET
 		     auth_state = excluded.auth_state,
-		     auth_state_at = excluded.auth_state_at
+		     auth_state_at = excluded.auth_state_at,
+		     auth_app_key = excluded.auth_app_key,
+		     auth_return = excluded.auth_return
 		 WHERE provider_connections.household_id = excluded.household_id`,
-		householdID+":"+provider, householdID, householdID, provider, StateDisconnected, state, now)
+		householdID+":"+provider, householdID, householdID, provider, StateDisconnected, state, now,
+		nullIfEmpty(authAppKey), nullIfEmpty(authReturn))
 	return err
 }
 
@@ -190,7 +220,7 @@ func (d *Directory) ConsumeAuthState(ctx context.Context, scope tenant.Scope, pr
 	// A single-use state is discarded whether accepted or rejected, so a mismatched
 	// or expired guess cannot be retried against the same stored value.
 	if _, err := d.db.ExecContext(ctx,
-		`UPDATE provider_connections SET auth_state = NULL, auth_state_at = NULL WHERE household_id = ? AND provider_id = ?`,
+		`UPDATE provider_connections SET auth_state = NULL, auth_state_at = NULL, auth_app_key = NULL, auth_return = NULL WHERE household_id = ? AND provider_id = ?`,
 		scope.HouseholdID(), provider); err != nil {
 		return false, err
 	}

@@ -5,6 +5,7 @@ package carttest
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type Script struct {
 	identityLookups map[string]cart.ProductIdentity
 	tokenExchanges  []TokenExchangeResult
 	addOutcomes     []AddOutcome
+	onAddAuth       func(authorization string) error
 }
 
 // TokenExchangeResult records the result of a token exchange.
@@ -86,6 +88,12 @@ func (s *Script) WithTokenExchangeError(err error) *Script {
 // WithAddOutcomes sets explicit Add results in order. When empty, Add uses dispositions as before.
 func (s *Script) WithAddOutcomes(outcomes ...AddOutcome) *Script {
 	s.addOutcomes = append(s.addOutcomes, outcomes...)
+	return s
+}
+
+// WithAddAuthCheck runs before each Add and can reject a mismatched Authorization header.
+func (s *Script) WithAddAuthCheck(fn func(authorization string) error) *Script {
+	s.onAddAuth = fn
 	return s
 }
 
@@ -169,6 +177,16 @@ type serverPush struct{ core *fakeCore }
 
 func (f serverPush) Add(ctx context.Context, cred cart.Credential, req cart.ProvisionRequest) (cart.ProvisionResult, error) {
 	f.core.recordCall("Add")
+	f.core.script.mu.Lock()
+	onAuth := f.core.script.onAddAuth
+	f.core.script.mu.Unlock()
+	if onAuth != nil {
+		r, _ := http.NewRequest(http.MethodPost, "https://example.test", nil)
+		cred.Apply(r)
+		if err := onAuth(r.Header.Get("Authorization")); err != nil {
+			return cart.ProvisionResult{}, err
+		}
+	}
 	f.core.script.mu.Lock()
 	defer f.core.script.mu.Unlock()
 

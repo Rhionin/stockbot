@@ -1,4 +1,11 @@
-import { provisionReasonUXCategory } from './contract';
+import {
+  CODE_CONFLICT,
+  CODE_PROVIDER_UNAVAILABLE,
+  CODE_RECONNECT_REQUIRED,
+  hostedErrorSentence,
+  provisionReasonUXCategory,
+} from './contract';
+import { krogerAppCopy } from './krogerAppCopy';
 import type {
   ProvisionEntryResult,
   ProvisionFailedReason,
@@ -154,7 +161,29 @@ export function provisionCheckRowLabel(row: Pick<ShoppingListExportResultEntry, 
   return row.name;
 }
 
-export type ProvisionWholeRequestError = 'provider_unavailable' | 'reconnect_required';
+export type ProvisionWholeRequestError =
+  | 'provider_unavailable'
+  | 'reconnect_required'
+  | 'store_disabled'
+  | 'not_configured';
+
+export interface ProvisionWholeRequestContext {
+  /** True when the signed-in person is a household admin (owner) for the active household. */
+  householdAdmin?: boolean;
+}
+
+const CODE_STORE_DISABLED = 'store_disabled';
+
+/** Maps POST /api/shopping-list/export envelope errors to send-panel codes (#485 / B11a). */
+export function exportWholeRequestErrorFromApi(error: unknown): ProvisionWholeRequestError | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const { code, message } = error as { code?: string; message?: string };
+  if (code === CODE_RECONNECT_REQUIRED) return 'reconnect_required';
+  if (code === CODE_PROVIDER_UNAVAILABLE) return 'provider_unavailable';
+  if (code === CODE_STORE_DISABLED) return 'store_disabled';
+  if (code === CODE_CONFLICT && /is not configured$/i.test(message ?? '')) return 'not_configured';
+  return undefined;
+}
 
 /** Summary when N and U are both zero (per-item failures only). */
 export const PROVISION_NOTHING_SENT_LINE = 'Nothing was sent to your cart.';
@@ -225,9 +254,18 @@ export function provisionLegacyNothingSentError(report: ProvisionReport): Provis
 export function provisionWholeRequestMessage(
   code: ProvisionWholeRequestError,
   storeLabel: string,
+  context: ProvisionWholeRequestContext = {},
 ): string {
   if (code === 'reconnect_required') {
     return `Couldn't connect to ${yourStore(storeLabel, 'account')}. Nothing was sent.`;
+  }
+  if (code === 'store_disabled') {
+    return hostedErrorSentence(CODE_STORE_DISABLED);
+  }
+  if (code === 'not_configured') {
+    return context.householdAdmin === true
+      ? krogerAppCopy.linkNeed
+      : krogerAppCopy.askAdmin;
   }
   return provisionProviderUnavailableEnvelope(storeLabel);
 }
@@ -235,9 +273,16 @@ export function provisionWholeRequestMessage(
 export function provisionWholeRequestActionLabel(
   code: ProvisionWholeRequestError,
   storeLabel: string,
-): string {
+  context: ProvisionWholeRequestContext = {},
+): string | undefined {
   if (code === 'reconnect_required') {
     return `Reconnect ${storeLabel}`;
+  }
+  if (code === 'not_configured') {
+    return context.householdAdmin === true ? krogerAppCopy.openSetup : undefined;
+  }
+  if (code === 'store_disabled') {
+    return undefined;
   }
   return 'Try again';
 }
@@ -312,7 +357,10 @@ export interface ProvisionResultGroups {
 }
 
 function isWholeRequestError(error: string | undefined): error is ProvisionWholeRequestError {
-  return error === 'provider_unavailable' || error === 'reconnect_required';
+  return error === 'provider_unavailable'
+    || error === 'reconnect_required'
+    || error === 'store_disabled'
+    || error === 'not_configured';
 }
 
 function modernResults(report: ProvisionReport): ShoppingListExportResultEntry[] | null {

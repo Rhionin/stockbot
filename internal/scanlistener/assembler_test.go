@@ -49,11 +49,11 @@ func TestLineAssembler(t *testing.T) {
 		{
 			name: "release events discarded",
 			events: []KeyEvent{
-				{Type: evKey, Code: 0x02, Value: valuePress},  // 1 press
-				{Type: evKey, Code: 0x02, Value: 0},           // 1 release
-				{Type: evKey, Code: 0x03, Value: valuePress},  // 2 press
-				{Type: evKey, Code: 0x03, Value: 0},           // 2 release
-				{Type: evKey, Code: 0x1c, Value: valuePress},  // Enter
+				{Type: evKey, Code: 0x02, Value: valuePress}, // 1 press
+				{Type: evKey, Code: 0x02, Value: 0},          // 1 release
+				{Type: evKey, Code: 0x03, Value: valuePress}, // 2 press
+				{Type: evKey, Code: 0x03, Value: 0},          // 2 release
+				{Type: evKey, Code: 0x1c, Value: valuePress}, // Enter
 			},
 			want: []string{"12"},
 		},
@@ -61,7 +61,7 @@ func TestLineAssembler(t *testing.T) {
 			name: "non-EV_KEY events discarded",
 			events: []KeyEvent{
 				{Type: evKey, Code: 0x02, Value: valuePress}, // 1
-				{Type: 0x00, Code: 0, Value: 0},             // SYN_REPORT
+				{Type: 0x00, Code: 0, Value: 0},              // SYN_REPORT
 				{Type: evKey, Code: 0x03, Value: valuePress}, // 2
 				{Type: evKey, Code: 0x1c, Value: valuePress}, // Enter
 			},
@@ -122,7 +122,7 @@ func TestLineAssembler(t *testing.T) {
 
 func TestLineAssembler_UnmappedCount(t *testing.T) {
 	a := &lineAssembler{}
-	a.feed(KeyEvent{Type: evKey, Code: 0x02, Value: valuePress}) // 1
+	a.feed(KeyEvent{Type: evKey, Code: 0x02, Value: valuePress})  // 1
 	a.feed(KeyEvent{Type: evKey, Code: 0xff, Value: valuePress})  // unmapped
 	a.feed(KeyEvent{Type: evKey, Code: 0x100, Value: valuePress}) // unmapped
 	a.feed(KeyEvent{Type: evKey, Code: 0x1c, Value: valuePress})  // Enter

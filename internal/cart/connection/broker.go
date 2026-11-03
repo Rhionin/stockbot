@@ -149,6 +149,10 @@ func (b *TokenBroker) runRefreshExchange(ctx context.Context, scope tenant.Scope
 		RefreshToken: call.refreshToken,
 		ExpiresAt:    &expiresAt,
 	}
+	if conn != nil {
+		newConn.AppKey = conn.AppKey
+		newConn.GrantedScope = conn.GrantedScope
+	}
 	if err := b.Directory.Write(ctx, scope, newConn); err != nil {
 		return "", fmt.Errorf("failed to write connection: %w", err)
 	}

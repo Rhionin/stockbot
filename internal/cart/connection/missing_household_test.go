@@ -28,7 +28,7 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
-		err := (*Directory)(nil).GenerateAuthState(context.Background(), tenant.Scope{}, "", "")
+		err := (*Directory)(nil).GenerateAuthState(context.Background(), tenant.Scope{}, "", "", "", "")
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("GenerateAuthState: %v", err)
 		}

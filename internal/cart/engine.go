@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
@@ -36,13 +37,14 @@ type Engine struct {
 	mu       sync.Mutex
 	inFlight map[ProviderID]struct{} // tracks in-flight provisioning operations per provider
 
-	registry       *Registry
-	ledger         *Ledger
-	tokenBroker    *connection.TokenBroker
-	shoppingList   shopping.Store
-	pantry         inventory.Pantry
-	consumptionLog suggestion.ConsumptionLog
-	catalog        product.Catalog
+	registry        *Registry
+	ledger          *Ledger
+	tokenBroker     *connection.TokenBroker
+	shoppingList    shopping.Store
+	pantry          inventory.Pantry
+	consumptionLog  suggestion.ConsumptionLog
+	catalog         product.Catalog
+	credentialVault *appcred.Vault
 }
 
 // NewEngine creates a new provisioning engine.
@@ -73,6 +75,11 @@ func (e *Engine) SetConsumptionLog(consumptionLog suggestion.ConsumptionLog) {
 // SetCatalog sets the product catalog.
 func (e *Engine) SetCatalog(catalog product.Catalog) {
 	e.catalog = catalog
+}
+
+// SetCredentialVault supplies per-household app credentials for OAuth refresh.
+func (e *Engine) SetCredentialVault(vault *appcred.Vault) {
+	e.credentialVault = vault
 }
 
 // Provision performs the complete provisioning operation for one provider.
@@ -169,7 +176,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		cred = NoCredential{}
 	} else if caps.Auth == AuthOAuth2 {
 		// For OAuth2, use the token broker to get an access token
-		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
+		token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, scope, provider))
 		if err != nil {
 			if OAuthFailureReason(err) == ReasonReconnectRequired {
 				_ = e.markConnectionReauthRequired(ctx, scope, providerID)
@@ -221,7 +228,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		if err != nil {
 			if batchFailureNeedsReconnect(result, err) && caps.Auth == AuthOAuth2 && cartAuthRefreshRemaining > 0 && confirmedCount == 0 {
 				cartAuthRefreshRemaining--
-				newToken, refreshErr := e.tokenBroker.ForceRefresh(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
+				newToken, refreshErr := e.tokenBroker.ForceRefresh(ctx, scope, string(providerID), e.exchangeRefresh(ctx, scope, provider))
 				if refreshErr == nil {
 					cred = NewBearerCredential(newToken)
 					goto retryBatch
@@ -398,11 +405,11 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	}
 
 	return ProvisionReport{
-		Provider:           providerID,
-		Confirmed:          confirmedCount,
-		Entries:            outcomes,
-		Handoff:            reportHandoff,
-		ReconnectRequired:  reconnectRequired,
+		Provider:          providerID,
+		Confirmed:         confirmedCount,
+		Entries:           outcomes,
+		Handoff:           reportHandoff,
+		ReconnectRequired: reconnectRequired,
 	}, nil
 }
 
@@ -541,8 +548,28 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 }
 
 // exchangeRefresh asks the provider's OAuth flow for a new access token.
-func (e *Engine) exchangeRefresh(ctx context.Context, provider Provider) func(refreshToken string) (string, string, time.Duration, error) {
+func (e *Engine) exchangeRefresh(ctx context.Context, scope tenant.Scope, provider Provider) func(refreshToken string) (string, string, time.Duration, error) {
 	return func(refreshToken string) (string, string, time.Duration, error) {
+		if appRefresh, ok := provider.(AppBoundOAuthRefresh); ok && e.credentialVault != nil {
+			conn, err := e.tokenBroker.Directory.Read(ctx, scope, string(provider.ID()))
+			if err != nil {
+				return "", "", 0, err
+			}
+			saved, _, err := connection.AppFor(ctx, e.credentialVault, scope, conn)
+			if err != nil {
+				return "", "", 0, err
+			}
+			tokenSet, err := appRefresh.RefreshAccessTokenForHouseholdApp(ctx, HouseholdAppOAuth{
+				ClientID:     saved.ClientID,
+				ClientSecret: saved.ClientSecret,
+				RedirectURI:  saved.RedirectURI,
+				Modality:     saved.Modality,
+			}, refreshToken)
+			if err != nil {
+				return "", "", 0, err
+			}
+			return tokenSet.AccessToken, tokenSet.RefreshToken, tokenSet.ExpiresIn, nil
+		}
 		flow, ok := provider.(OAuthFlow)
 		if !ok {
 			return "", "", 0, fmt.Errorf("this provider cannot refresh an access token")
@@ -604,7 +631,7 @@ func (e *Engine) resolveIdentities(ctx context.Context, scope tenant.Scope, prov
 			if caps.Auth == AuthNone {
 				cred = NoCredential{}
 			} else if caps.Auth == AuthOAuth2 {
-				token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, provider))
+				token, err := e.tokenBroker.AccessToken(ctx, scope, string(providerID), e.exchangeRefresh(ctx, scope, provider))
 				if err != nil {
 					unresolved = append(unresolved, entry)
 					continue

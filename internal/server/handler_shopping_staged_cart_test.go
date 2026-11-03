@@ -100,6 +100,7 @@ func TestStagedCart(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",

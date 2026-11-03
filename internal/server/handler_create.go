@@ -95,8 +95,8 @@ func (b *productWriteBody) UnmarshalJSON(data []byte) error {
 
 type productWriteResponse struct {
 	product.Product
-	ItemID       string                  `json:"itemId,omitempty"`
-	Contribution *product.ShareOutcome   `json:"contribution,omitempty"`
+	ItemID       string                `json:"itemId,omitempty"`
+	Contribution *product.ShareOutcome `json:"contribution,omitempty"`
 }
 
 func (h *CreateHandler) Handle(req Request[productWriteBody, struct{}]) (Created, error) {

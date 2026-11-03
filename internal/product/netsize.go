@@ -19,13 +19,13 @@ const (
 	OriginManual   = "manual"
 	OriginBackfill = "backfill"
 
-	gramsPerOunce       = 28.349523125
-	gramsPerPound       = 453.59237
-	gramsPerKilogram    = 1000.0
-	mlPerFluidOunce     = 29.5735295625
-	mlPerLiter          = 1000.0
-	mlPerGallon         = 128 * mlPerFluidOunce
-	mlPerHalfGallon     = 64 * mlPerFluidOunce
+	gramsPerOunce    = 28.349523125
+	gramsPerPound    = 453.59237
+	gramsPerKilogram = 1000.0
+	mlPerFluidOunce  = 29.5735295625
+	mlPerLiter       = 1000.0
+	mlPerGallon      = 128 * mlPerFluidOunce
+	mlPerHalfGallon  = 64 * mlPerFluidOunce
 )
 
 // inputError is a problem with a size or pack count the person typed.

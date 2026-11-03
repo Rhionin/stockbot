@@ -47,7 +47,7 @@ func TestRecordDeviceScanReceiptSetsApprox(t *testing.T) {
 	}
 	item := preparedItem(preparedScan{
 		item: ScanInput{ID: "approx-1", Barcode: "1234567890123", Direction: "stock_in", UnitCount: 1},
-		at: at, unit: 1, barcode: "1234567890123", approx: true,
+		at:   at, unit: 1, barcode: "1234567890123", approx: true,
 	})
 	if _, err := svc.db.Exec(`
 		INSERT INTO device_scan_receipts (household_id, device_id, client_scan_id, scan_entry_id, barcode, direction, unit_count, scanned_at)
@@ -68,7 +68,7 @@ func TestRecordDeviceScanReceiptRequiresClaimedRow(t *testing.T) {
 	principal, _ := pairESP32(t, ctx, svc, userID, house)
 	item := preparedItem(preparedScan{
 		item: ScanInput{ID: "unclaimed-1", Barcode: "1234567890123", Direction: "stock_in", UnitCount: 1},
-		at: time.Now().UTC(), unit: 1, barcode: "1234567890123",
+		at:   time.Now().UTC(), unit: 1, barcode: "1234567890123",
 	})
 	err := svc.RecordDeviceScanReceipt(ctx, svc.db, principal, item, "scan-missing-claim", DeviceLCD{ScanStatus: "queued", QueuedCount: 1})
 	if err == nil {

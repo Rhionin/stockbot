@@ -22,13 +22,13 @@ func preparedItem(item preparedScan) PreparedScanItem {
 	return PreparedScanItem{inner: item}
 }
 
-func (p PreparedScanItem) ClientID() string  { return p.inner.item.ID }
-func (p PreparedScanItem) Barcode() string   { return p.inner.barcode }
-func (p PreparedScanItem) Direction() string { return p.inner.item.Direction }
-func (p PreparedScanItem) Unit() int         { return p.inner.unit }
-func (p PreparedScanItem) At() time.Time     { return p.inner.at }
-func (p PreparedScanItem) Approx() bool      { return p.inner.approx }
-func (p PreparedScanItem) BootID() string    { return p.inner.item.BootID }
+func (p PreparedScanItem) ClientID() string          { return p.inner.item.ID }
+func (p PreparedScanItem) Barcode() string           { return p.inner.barcode }
+func (p PreparedScanItem) Direction() string         { return p.inner.item.Direction }
+func (p PreparedScanItem) Unit() int                 { return p.inner.unit }
+func (p PreparedScanItem) At() time.Time             { return p.inner.at }
+func (p PreparedScanItem) Approx() bool              { return p.inner.approx }
+func (p PreparedScanItem) BootID() string            { return p.inner.item.BootID }
 func (p PreparedScanItem) Match() DeviceProductMatch { return p.inner.match }
 
 // CreatedScan records one new scan row from device ingest.

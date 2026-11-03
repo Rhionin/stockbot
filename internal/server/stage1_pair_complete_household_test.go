@@ -53,7 +53,7 @@ func TestStage1PairCompleteReturnsHouseholdName(t *testing.T) {
 	}
 	complete := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": pairing.Code, "label": "Shelf scanner",
-		"hub":  map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-name"},
+		"hub": map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-name"},
 	}, app.EntryPublic)
 	if complete.Code != http.StatusCreated {
 		t.Fatalf("pair complete %d %s", complete.Code, complete.Body.String())
@@ -202,7 +202,7 @@ func TestStage1PairCompleteHouseholdNameTenantBoundary(t *testing.T) {
 	}
 	complete := c.anon(http.MethodPost, "/api/devices/pair/complete", map[string]any{
 		"code": pairing.Code, "label": "Scanner A",
-		"hub":  map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-tenant"},
+		"hub": map[string]string{"kind": "esp32_scanner", "version": "1.0.0", "bootId": "boot-tenant"},
 	}, app.EntryPublic)
 	if complete.Code != http.StatusCreated {
 		t.Fatalf("pair complete %d %s", complete.Code, complete.Body.String())

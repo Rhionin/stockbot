@@ -25,7 +25,7 @@ type inventoryStockOutRequest struct {
 }
 
 type inventoryStockOutResponse struct {
-	StockOutMoveID string        `json:"stockOutMoveId,omitempty"`
+	StockOutMoveID string         `json:"stockOutMoveId,omitempty"`
 	Backfill       *backfillMoves `json:"backfill,omitempty"`
 }
 

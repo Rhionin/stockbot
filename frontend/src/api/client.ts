@@ -31,7 +31,6 @@ import type {
   ScannerConfig,
   ScanStatus,
   ProvisionReport,
-  ProviderInfo,
   ShoppingListEntry,
   SupplyOverride,
   SupplySettings,
@@ -43,7 +42,13 @@ import type {
   HistoryLedger,
   PantryLinkSuggestion,
   TargetConflictMember,
+  KrogerApp,
+  KrogerAppGetResponse,
+  KrogerAppSaved,
+  KrogerAppTest,
+  StoresListResponse,
 } from '@stockbot/shared/types';
+import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import {
   BATCH_COMMIT_PATH,
   type BatchCommitInput,
@@ -545,26 +550,57 @@ export function exportShoppingList(provider?: string): Promise<ProvisionReport> 
   });
 }
 
-export function listProviders(): Promise<ProviderInfo[]> {
+export function listProviders(): Promise<ProviderListEntry[]> {
   return apiFetch('/api/providers');
 }
 
-export function saveProviderCredentials(
+export function listStores(): Promise<StoresListResponse> {
+  return apiFetch('/api/stores');
+}
+
+export function authorizeProvider(
   providerId: string,
-  credentials: { clientId: string; clientSecret: string; redirectUri: string; modality: string },
-): Promise<void> {
-  return apiFetch(`/api/providers/${providerId}/credentials`, {
+  returnTo?: 'household' | 'shopping',
+): Promise<{ authorizationUrl: string }> {
+  const query = returnTo ? toQueryString({ return: returnTo }) : '';
+  return apiFetch(`/api/providers/${providerId}/authorize${query}`);
+}
+
+export function getKrogerApp(householdId: string): Promise<KrogerAppGetResponse> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`);
+}
+
+export type KrogerAppPutRequest =
+  | { clientId: string; clientSecret: string; modality?: string }
+  | { modality: string };
+
+export function putKrogerApp(
+  householdId: string,
+  body: KrogerAppPutRequest,
+): Promise<KrogerAppSaved> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`, {
     method: 'PUT',
-    body: JSON.stringify(credentials),
+    body: JSON.stringify(body),
   });
 }
 
-export function clearProviderCredentials(providerId: string): Promise<void> {
-  return apiFetch(`/api/providers/${providerId}/credentials`, { method: 'DELETE' });
+export function deleteKrogerApp(householdId: string): Promise<KrogerApp> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`, {
+    method: 'DELETE',
+  });
 }
 
-export function authorizeProvider(providerId: string): Promise<{ authorizationUrl: string }> {
-  return apiFetch(`/api/providers/${providerId}/authorize`);
+export function postKrogerAppTest(
+  householdId: string,
+  body?: { clientId?: string; clientSecret?: string },
+): Promise<KrogerAppTest> {
+  const payload = body && (body.clientId !== undefined || body.clientSecret !== undefined)
+    ? JSON.stringify(body)
+    : undefined;
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app/test`, {
+    method: 'POST',
+    body: payload,
+  });
 }
 
 export function disconnectProvider(providerId: string): Promise<void> {
