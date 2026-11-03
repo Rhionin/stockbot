@@ -291,7 +291,7 @@ test.describe('text contrast on each page', () => {
   }
 })
 
-async function stubStoreAppHousehold(page: Page, householdId: string) {
+async function stubStoreAppHousehold(page: Page) {
   const appBody = {
     configured: true,
     clientIdLast4: '1234',
@@ -301,43 +301,18 @@ async function stubStoreAppHousehold(page: Page, householdId: string) {
     status: 'ready_to_connect',
     canManage: true,
   }
-  await page.route(`**/api/households/${householdId}/kroger-app`, (route) => {
+  await page.route('**/api/households/*/kroger-app', (route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
     }
     return route.continue()
   })
-  await page.route(`**/api/households/${householdId}`, (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ id: householdId, name: 'Test Household', role: 'owner', deletedAt: null, purgeAt: null }),
-  }))
-  await page.route('**/api/household/settings', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ restockMode: 'auto' }),
-  }))
-  await page.route('**/api/invites', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ invites: [] }),
-  }))
-  await page.route(`**/api/households/${householdId}/members`, (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ members: [{ userId: 'user-1', email: 'owner@test.example', role: 'owner' }] }),
-  }))
-  await page.route('**/api/devices', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ devices: [] }),
-  }))
 }
 
 test.describe('text contrast in the store app setup modal', () => {
   for (const { width, mode } of dialogCases) {
     test(`store app row ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
-      await stubStoreAppHousehold(page, 'hh-1')
+      await stubStoreAppHousehold(page)
       await openThemed(page, '/household', mode.app, mode.os, width)
       const row = page.getByRole('heading', { name: 'Store app' })
       await expect(row).toBeVisible()
