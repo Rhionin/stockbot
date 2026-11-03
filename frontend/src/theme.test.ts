@@ -24,10 +24,6 @@ const token = (value: string | undefined, colors: typeof fullTheme.colors) => {
 };
 
 describe('theme', () => {
-  it('sets modal header role to group for landmark checks', () => {
-    expect(theme.components?.ModalHeader?.defaultProps?.role).toBe('group');
-  });
-
   it('uses the locked teal as the primary brand color', () => {
     expect(theme.primaryColor).toBe('teal');
     expect(theme.colors?.teal?.[6]).toBe('#0d9488');
@@ -59,8 +55,8 @@ describe('theme', () => {
     const paper = fullTheme.colors.dark[7];
     const lightError = variables.light['--mantine-color-error']!;
     const darkError = variables.dark['--mantine-color-error']!;
-    expect(lightError.toLowerCase()).toBe('#e03131');
-    expect(contrastRatio(lightError, fullTheme.white)).toBeGreaterThanOrEqual(4.5);
+    expect(lightError.toLowerCase()).toBe('#dc2626');
+    expect(contrastRatio(lightError, fullTheme.white)).toBeGreaterThanOrEqual(4.6);
     expect(darkError?.startsWith('#')).toBe(true);
     expect(contrastRatio(darkError!, paper)).toBeGreaterThanOrEqual(4.5);
     expect(relativeLuminance(darkError!)).toBeLessThanOrEqual(relativeLuminance('#fa5252') + 1e-6);
@@ -79,8 +75,8 @@ describe('theme', () => {
     for (const key of redKeys) {
       const lightInk = variables.light[key];
       expect(lightInk?.startsWith('#')).toBe(true);
-      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(4.5);
-      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(contrastRatio('#e03131', fullTheme.white));
+      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(4.6);
+      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(contrastRatio('#dc2626', fullTheme.white));
     }
 
     const darkTextKeys = ['--mantine-color-red-text', '--mantine-color-red-outline'] as const;

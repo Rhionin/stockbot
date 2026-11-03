@@ -9,16 +9,16 @@ async function expectMinTargetSize(locator: ReturnType<Page['getByRole']>) {
   expect(box!.height).toBeGreaterThanOrEqual(43.99)
 }
 
-async function waitForStoreAppDialogSettled(page: Page, dialog: ReturnType<Page['getByRole']>) {
+async function waitForStoreAppDialogSettled(page: Page, dialog: ReturnType<Page['getByRole']>, modalClass: 'store-app-setup-modal' | 'store-app-remove-modal' = 'store-app-setup-modal') {
   await expect(dialog).toBeVisible()
-  await page.waitForFunction(() => {
-    const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
+  await page.waitForFunction((className) => {
+    const content = document.querySelector(`.${className} .mantine-Modal-content`)
     if (!(content instanceof HTMLElement)) return false
-    const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
+    const header = document.querySelector(`.${className} .mantine-Modal-header`)
     return getComputedStyle(content).opacity === '1'
       && header instanceof HTMLElement
       && header.getAttribute('role') === 'group'
-  })
+  }, modalClass)
 }
 
 const krogerApp = (status: string, overrides: Record<string, unknown> = {}) => ({
@@ -188,7 +188,7 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
   await expectMinTargetSize(page.getByRole('menuitem', { name: krogerAppCopy.menuRemove }))
   await page.getByRole('menuitem', { name: krogerAppCopy.menuRemove }).click()
   const removeDialog = page.getByRole('dialog', { name: krogerAppCopy.rmTitle })
-  await expect(removeDialog).toBeVisible()
+  await waitForStoreAppDialogSettled(page, removeDialog, 'store-app-remove-modal')
   await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
   await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.rmCancel }))
 

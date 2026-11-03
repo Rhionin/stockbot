@@ -187,6 +187,14 @@ export function KrogerAppSetupModal({
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [opened, householdId, householdName, initialStep, replaceMode, app.configured, app.modality]);
 
+  useEffect(() => {
+    if (!opened) return undefined;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector('.store-app-setup-modal .mantine-Modal-header')?.setAttribute('role', 'group');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [opened]);
+
   const focusRemovedRecovery = useCallback(() => {
     requestAnimationFrame(() => removedStartAgainRef.current?.focus());
   }, []);

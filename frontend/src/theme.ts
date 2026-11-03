@@ -1,6 +1,5 @@
 import {
   createTheme,
-  ModalHeader,
   Popover,
   Switch,
   v8CssVariablesResolver,
@@ -46,7 +45,7 @@ const colorScale = (value: MantineTheme['colors'][string]): readonly string[] | 
   Array.isArray(value) && value.length >= 10 && typeof value[0] === 'string' ? value : null;
 
 /** Error ink on light surfaces never goes above #E03131 (WCAG AA on white). */
-const RED_INK_FLOOR = '#e03131';
+const RED_INK_FLOOR = '#dc2626';
 
 /** Lightest error ink on dark surfaces (#ff8787 and lighter are too pale). */
 const RED_INK_DARK_CEILING = '#fa5252';
@@ -220,11 +219,6 @@ export const theme = createTheme({
   },
   defaultRadius: 'sm',
   components: {
-    ModalHeader: ModalHeader.extend({
-      defaultProps: {
-        role: 'group',
-      },
-    }),
     Switch: Switch.extend({
       defaultProps: {
         withThumbIndicator: false,

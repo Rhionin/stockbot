@@ -35,7 +35,7 @@ function stubPut() {
   }));
 }
 
-const tree = (opened: boolean, a: KrogerApp) => (
+const tree = (opened: boolean, a: KrogerApp, replaceMode = false) => (
   <MantineProvider env="test">
     <KrogerAppSetupModal
       opened={opened}
@@ -43,11 +43,14 @@ const tree = (opened: boolean, a: KrogerApp) => (
       householdId="hh-s"
       householdName="Pantry"
       app={a}
+      replaceMode={replaceMode}
       initialStep={opened && !a.configured ? 6 : undefined}
       onSaved={() => undefined}
     />
   </MantineProvider>
 );
+
+const replaceTree = (opened: boolean, replaceMode: boolean) => tree(opened, saved, replaceMode);
 
 async function saveKeys() {
   fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'fake-client-id-1234' } });
@@ -65,26 +68,35 @@ async function backToStep6() {
   return screen.findByLabelText(/App secret/i);
 }
 
-describe('store app secret is not retained after save', () => {
+describe('store app secret clearing', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.unstubAllGlobals();
     stubPut();
   });
 
-  it('step nav back to step 6 after save shows an empty secret field', async () => {
+  it('S1: save clears the secret before step 6 back navigation shows an empty field', async () => {
     render(tree(true, app()));
     await saveKeys();
+    expect(screen.queryByDisplayValue(SECRET)).not.toBeInTheDocument();
     const secret = (await backToStep6()) as HTMLInputElement;
     expect(secret.value).toBe('');
     expect(document.body.innerHTML).not.toContain(SECRET);
   });
 
-  it('close and reopen after save does not bring the secret back', async () => {
-    const view = render(tree(true, app()));
-    await saveKeys();
-    view.rerender(tree(false, saved));
-    view.rerender(tree(true, saved));
+  it('S2: returning to step 6 via step nav clears a typed secret without save', async () => {
+    render(replaceTree(true, true));
+    fireEvent.change(await screen.findByLabelText(/App secret/i), { target: { value: SECRET } });
+    const secret = (await backToStep6()) as HTMLInputElement;
+    expect(secret.value).toBe('');
+    expect(document.body.innerHTML).not.toContain(SECRET);
+  });
+
+  it('S3: type secret in Replace keys, close unsaved, reopen at step 7, nav to 6: field empty', async () => {
+    const view = render(replaceTree(true, true));
+    fireEvent.change(await screen.findByLabelText(/App secret/i), { target: { value: SECRET } });
+    view.rerender(replaceTree(false, true));
+    view.rerender(replaceTree(true, false));
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     const secret = (await backToStep6()) as HTMLInputElement;
     expect(secret.value).toBe('');

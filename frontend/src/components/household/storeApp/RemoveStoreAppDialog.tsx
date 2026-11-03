@@ -27,7 +27,10 @@ export function RemoveStoreAppDialog({
 
   useEffect(() => {
     if (opened) {
-      window.requestAnimationFrame(() => cancelRef.current?.focus());
+      window.requestAnimationFrame(() => {
+        document.querySelector('.store-app-remove-modal .mantine-Modal-header')?.setAttribute('role', 'group');
+        cancelRef.current?.focus();
+      });
     }
   }, [opened]);
 
