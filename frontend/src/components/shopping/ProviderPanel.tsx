@@ -107,6 +107,7 @@ const ProviderRow = ({
               <Button
                 size="xs"
                 variant="light"
+                className="provider-start-new-cart"
                 loading={pending === `${provider.id}-ledger`}
                 onClick={onResetLedger}
               >

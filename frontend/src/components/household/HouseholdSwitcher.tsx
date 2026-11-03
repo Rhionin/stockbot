@@ -31,7 +31,7 @@ export function HouseholdSwitcher() {
         title={householdName}
         onClick={() => navigate('/households')}
       >
-        {householdName}
+        <span className="household-switch-name-text">{householdName}</span>
       </button>
     );
   }

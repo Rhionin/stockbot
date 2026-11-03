@@ -7,9 +7,10 @@ import {
   type MantineColorsTuple,
   type MantineTheme,
 } from '@mantine/core';
-import { flatten, readableLightShade, readableShade, towardContrast } from '@stockbot/shared/contrast';
+import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio, parseHex } from '@stockbot/shared/contrast';
 
-// Shade 6 is the filled brand teal from the locked mark (#0D9488).
+const UI_FOCUS_MIN = 3;
+
 const teal: MantineColorsTuple = [
   '#f0fdfa',
   '#ccfbf1',
@@ -42,6 +43,44 @@ const primaryShadeIndex = (theme: MantineTheme, scheme: 'light' | 'dark') =>
 
 const colorScale = (value: MantineTheme['colors'][string]): readonly string[] | null =>
   Array.isArray(value) && value.length >= 10 && typeof value[0] === 'string' ? value : null;
+
+/** Error ink on light surfaces never goes above #E03131 (WCAG AA on white). */
+const RED_INK_FLOOR = '#e03131';
+
+/** Lightest error ink on dark surfaces (#ff8787 and lighter are too pale). */
+const RED_INK_DARK_CEILING = '#fa5252';
+
+const relativeLuminance = (color: string): number => {
+  const [red, green, blue] = parseHex(color);
+  const linear = (channel: number) => {
+    const unit = channel / 255;
+    return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
+};
+
+const atLeastAsDarkAs = (candidate: string, floor: string): string => (
+  contrastRatio(candidate, '#ffffff') >= contrastRatio(floor, '#ffffff') ? candidate : floor
+);
+
+const atMostAsLightAs = (candidate: string, ceiling: string): string => (
+  relativeLuminance(candidate) > relativeLuminance(ceiling) ? ceiling : candidate
+);
+
+const redInkOnDark = (
+  candidate: string,
+  background: string,
+  ceiling: string = RED_INK_DARK_CEILING,
+): string => {
+  let ink = contrastRatio(candidate, background) >= 4.5
+    ? candidate
+    : towardContrast(candidate, '#ffffff', background);
+  ink = atMostAsLightAs(ink, ceiling);
+  if (contrastRatio(ink, background) < 4.5) {
+    ink = towardContrast(ink, '#ffffff', background);
+  }
+  return ink;
+};
 
 // A scale step when one clears AA, otherwise the same hue darkened or lightened
 // until it does. Yellow, lime, orange, and green run out of steps on a light wash.
@@ -109,6 +148,52 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
     resolved.dark['--mantine-color-dimmed'] = readableInk('dark', dark, darkPaper, 2, 'lighter');
   }
 
+  const resolveVarColor = (value: string | undefined): string => {
+    if (value?.startsWith('#')) return value;
+    const match = /^var\(--mantine-color-([a-z0-9]+)-(\d)\)$/.exec(value ?? '');
+    if (!match) return RED_INK_FLOOR;
+    const scale = colorScale(theme.colors[match[1]]);
+    return scale ? scale[Number(match[2])] : RED_INK_FLOOR;
+  };
+
+  for (const key of [
+    '--mantine-color-red-light-color',
+    '--mantine-color-red-text',
+    '--mantine-color-red-outline',
+  ] as const) {
+    resolved.light[key] = atLeastAsDarkAs(resolveVarColor(resolved.light[key]), RED_INK_FLOOR);
+  }
+
+  const redScale = colorScale(theme.colors.red);
+  const redDarkWash = redScale ? flatten(redScale[Math.max(0, darkShade - 2)], 0.15, darkPaper) : darkPaper;
+  resolved.dark['--mantine-color-red-light-color'] = redInkOnDark(
+    resolveVarColor(resolved.dark['--mantine-color-red-light-color']),
+    redDarkWash,
+    '#ff8787',
+  );
+  for (const key of ['--mantine-color-red-text', '--mantine-color-red-outline'] as const) {
+    resolved.dark[key] = redInkOnDark(resolveVarColor(resolved.dark[key]), darkPaper);
+  }
+
+  const focusRingInk = (
+    scale: readonly string[],
+    paper: string,
+    start: number,
+    direction: 'darker' | 'lighter',
+  ) => {
+    const index = direction === 'darker'
+      ? readableShade(scale, paper, start, UI_FOCUS_MIN)
+      : readableLightShade(scale, paper, start, UI_FOCUS_MIN);
+    return index >= 0 ? scale[index] : towardContrast(
+      scale[Math.min(start, scale.length - 1)],
+      paper === theme.white ? '#000000' : '#ffffff',
+      paper,
+      UI_FOCUS_MIN,
+    );
+  };
+  resolved.light['--stock-focus-ring'] = focusRingInk(teal, theme.white, 7, 'darker');
+  resolved.dark['--stock-focus-ring'] = focusRingInk(teal, darkPaper, 7, 'lighter');
+
   return resolved;
 };
 
@@ -118,7 +203,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
 // that stay open when their target leaves the DOM.
 export const theme = createTheme({
   primaryColor: 'teal',
-  primaryShade: 6,
+  // Shade 7 is teal-700 (#0F766E). Filled primary buttons use it in both schemes (~5.5:1 with white).
+  primaryShade: { light: 7, dark: 7 },
   autoContrast: true,
   luminanceThreshold: 0.22,
   colors: {

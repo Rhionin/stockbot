@@ -233,6 +233,37 @@ describe('AppMenu Kroger app keys visibility', () => {
     expect(deleteCalls).toHaveLength(1);
   });
 
+  it('shows the disconnect fallback when DELETE returns an empty body for a non-admin', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([provider({ connectionState: 'connected', credentials: noKeys })]));
+      }
+      if (url === '/api/providers/kroger/connection' && init?.method === 'DELETE') {
+        return Promise.resolve(jsonResponse({}, 500));
+      }
+      if (url === '/api/build') return Promise.resolve(jsonResponse({ commit: 'abc123def456' }));
+      if (url === '/api/group-suggestions') return Promise.resolve(jsonResponse([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <HouseholdSessionContext.Provider value={{ required: true, logout: () => undefined, auth: testHouseholdSession(false), replaceAuth: () => undefined }}>
+          <MemoryRouter>
+            <AppMenu onCredentialsChanged={onChanged} />
+          </MemoryRouter>
+        </HouseholdSessionContext.Provider>
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Disconnect Kroger' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't disconnect. Try again.");
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
   it('hides Kroger app keys when auth is null (LAN listener); HouseholdGate keeps that off the app shell', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
