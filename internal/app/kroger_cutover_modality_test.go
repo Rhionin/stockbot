@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 )
 
 func TestKrogerCutoverEmptyModalityDefaultsPickup(t *testing.T) {
@@ -49,7 +50,7 @@ func TestKrogerCutoverBackfillsPrimaryConnectionAppKey(t *testing.T) {
 	if err := RunKrogerAppCutover(ctx, db, KrogerCutoverEnv{}); err != nil {
 		t.Fatal(err)
 	}
-	wantKey := krogerAppKey("primary-client")
+	wantKey := appcred.AppKey("primary-client")
 	var gotKey sql.NullString
 	if err := db.QueryRow(`SELECT app_key FROM provider_connections WHERE id = 'conn-no-key'`).Scan(&gotKey); err != nil || !gotKey.Valid || gotKey.String != wantKey {
 		t.Fatalf("app_key=%v want %q err=%v", gotKey, wantKey, err)

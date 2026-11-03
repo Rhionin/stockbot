@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 
 	"github.com/Rhionin/stockbot/internal/clientmsg"
 	"github.com/go-json-experiment/json"
@@ -291,6 +292,13 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		}
 	} else if code == "" {
 		code = defaultClientCode(status)
+	}
+	if status == http.StatusTooManyRequests && httpErr != nil && httpErr.Retry > 0 {
+		secs := int(httpErr.Retry.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
 	}
 	writeJSON(w, status, errorPayload{
 		Error:       message,

@@ -80,8 +80,8 @@ func TestListProvidersKrogerDisabledOmitsCredentials(t *testing.T) {
 			method:         http.MethodGet,
 			path:           "/api/providers",
 			expectedStatus: http.StatusOK,
-			bodyContains:   []string{`"connectionState":"disabled"`},
-			bodyExcludes:   []string{`"credentials"`},
+			bodyContains:   []string{`"status":"disabled"`},
+			bodyExcludes:   []string{`"credentials"`, `"connectionState"`, `"credentialsConfigured"`},
 		},
 	}})
 }

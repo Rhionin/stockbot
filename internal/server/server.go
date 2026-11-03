@@ -628,6 +628,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Connections:  connDir,
+		Credentials:  credentialVault,
 	}
 	shoppingDealPutHandler := &ShoppingDealPutHandler{
 		ShoppingList: shoppingList,

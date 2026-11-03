@@ -25,6 +25,8 @@ const (
 	inviteIPWindow = 15 * time.Minute
 	pairIPMax      = 10
 	pairIPWindow   = 10 * time.Minute
+	krogerAppTestMax    = 10
+	krogerAppTestWindow = time.Hour
 )
 
 // Blocked reports a cap that was already reached. It does not record a hit.
@@ -109,6 +111,18 @@ func InviteIPKey(ip string) string { return "invite-ip:" + ip }
 func ResetIPKey(ip string) string { return "reset-ip:" + ip }
 
 func PairIPKey(ip string) string { return "pair-ip:" + ip }
+
+func KrogerAppTestKey(householdID string) string { return "kroger-app-test:" + householdID }
+
+// BlockKrogerAppTest reports the per-household store-app test cap without recording another hit.
+func (s *Service) BlockKrogerAppTest(householdID string) error {
+	return s.blockKey(KrogerAppTestKey(householdID), krogerAppTestMax, krogerAppTestWindow)
+}
+
+// NoteKrogerAppTest records one store-app key test for the household.
+func (s *Service) NoteKrogerAppTest(householdID string) error {
+	return s.hitKey(KrogerAppTestKey(householdID), krogerAppTestMax, krogerAppTestWindow)
+}
 
 func (s *Service) blockKey(key string, max int, window time.Duration) error {
 	if s == nil {

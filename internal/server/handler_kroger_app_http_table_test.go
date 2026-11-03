@@ -39,8 +39,10 @@ func TestKrogerAppHTTPRetiredCredentialsAndAuthorize(t *testing.T) {
 				path:           "/api/providers",
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$[0].connectionState", value: "disabled"},
+					{path: "$[0].status", value: "disabled"},
+					{path: "$[0].id", value: "kroger"},
 				},
+				bodyExcludes: []string{`"connectionState"`, `"credentialsConfigured"`, `"credentials"`},
 			},
 		},
 	})

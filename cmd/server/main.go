@@ -119,12 +119,6 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 		adapter = kroger.NewUnconfigured()
 	}
 
-	var savedHousehold string
-	if !disabled {
-		// Env keys are seeded into the primary household by RunKrogerAppCutover at startup.
-		_ = savedHousehold
-	}
-
 	opts := []cart.RegisterOption{
 		cart.WithBatchSize(krogerBatchSize()),
 	}
@@ -136,7 +130,7 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	}
 	if !configured && !disabled {
 		log.Println("Kroger app credentials: none configured; set them in the shopping list or with KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, and KROGER_REDIRECT_URI")
-	} else if configured && !disabled && savedHousehold == "" {
+	} else if configured && !disabled {
 		log.Println("Kroger app credentials: using environment")
 	}
 	return registry, ledger, envCreds

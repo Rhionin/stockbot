@@ -29,10 +29,10 @@ func TestListProvidersKrogerDisabledOmitsCredentialsFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || out[0].ID != "kroger" || out[0].ConnectionState != "disabled" {
+	if len(out) != 1 || out[0].ID != "kroger" || out[0].Status != "disabled" {
 		t.Fatalf("out=%+v", out)
 	}
-	if out[0].CredentialsConfigured || out[0].Credentials != nil {
+	if out[0].ConnectionState != "" || out[0].CredentialsConfigured || out[0].Credentials != nil || out[0].Capabilities != nil {
 		t.Fatalf("disabled kroger leaked cred fields: %+v", out[0])
 	}
 }
