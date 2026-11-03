@@ -133,10 +133,9 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
   await page.getByRole('dialog', { name: krogerAppCopy.menuReplace }).waitFor()
   const modalityControl = page.locator('.store-app-modality-control')
   await expect(modalityControl).toBeVisible()
-  const pickupSegment = modalityControl.getByText(krogerAppCopy.modalityOptionPickup, { exact: true })
-  await expectMinTargetSize(pickupSegment)
-  const deliverySegment = modalityControl.getByText(krogerAppCopy.modalityOptionDelivery, { exact: true })
-  await expectMinTargetSize(deliverySegment)
+  const segmentControls = modalityControl.locator('.mantine-SegmentedControl-control')
+  await expectMinTargetSize(segmentControls.first())
+  await expectMinTargetSize(segmentControls.last())
 
   await page.getByRole('button', { name: krogerAppCopy.s6Show }).click()
 

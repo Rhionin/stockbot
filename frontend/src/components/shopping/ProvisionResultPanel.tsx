@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { Anchor, Button, CloseButton, Group, Loader, Stack, Text } from '@mantine/core';
+import { Link } from 'react-router-dom';
 import type { ProviderInfo, ProvisionReport } from '@stockbot/shared/types';
 import {
   PROVISION_CHECK_IN_CART,
@@ -39,6 +40,7 @@ export type CheckResolution = 'in' | 'not';
 export interface ProvisionResultPanelProps {
   report: ProvisionReport | null;
   envelopeError?: ProvisionWholeRequestError;
+  householdAdmin?: boolean;
   provider: ProviderInfo | null;
   cartUrl?: string;
   onDismiss: () => void;
@@ -58,19 +60,22 @@ export interface ProvisionResultPanelProps {
 const NothingSentEnvelope = ({
   code,
   storeLabel,
+  householdAdmin,
   onDismiss,
   onTryAgain,
   onReconnect,
 }: {
   code: ProvisionWholeRequestError;
   storeLabel: string;
+  householdAdmin?: boolean;
   onDismiss: () => void;
   onTryAgain: () => void;
   onReconnect: () => void;
 }) => {
-  const message = provisionWholeRequestMessage(code, storeLabel);
-  const actionLabel = provisionWholeRequestActionLabel(code, storeLabel);
+  const message = provisionWholeRequestMessage(code, storeLabel, { householdAdmin });
+  const actionLabel = provisionWholeRequestActionLabel(code, storeLabel, { householdAdmin });
   const reconnect = code === 'reconnect_required';
+  const setupPath = code === 'not_configured' && householdAdmin === true;
 
   return (
     <Stack
@@ -91,13 +96,27 @@ const NothingSentEnvelope = ({
         />
       </Group>
       <Text size="sm">{message}</Text>
-      <Button
-        className="provision-result-action"
-        variant="light"
-        onClick={reconnect ? onReconnect : onTryAgain}
-      >
-        {actionLabel}
-      </Button>
+      {actionLabel !== undefined && (
+        setupPath ? (
+          <Button
+            className="provision-result-action"
+            variant="light"
+            component={Link}
+            to="/household"
+            onClick={onDismiss}
+          >
+            {actionLabel}
+          </Button>
+        ) : (
+          <Button
+            className="provision-result-action"
+            variant="light"
+            onClick={reconnect ? onReconnect : onTryAgain}
+          >
+            {actionLabel}
+          </Button>
+        )
+      )}
     </Stack>
   );
 };
@@ -105,6 +124,7 @@ const NothingSentEnvelope = ({
 export const ProvisionResultPanel = ({
   report,
   envelopeError,
+  householdAdmin,
   provider,
   cartUrl,
   onDismiss,
@@ -371,6 +391,7 @@ export const ProvisionResultPanel = ({
       <NothingSentEnvelope
         code={blockingCode}
         storeLabel={storeLabel}
+        householdAdmin={householdAdmin}
         onDismiss={onDismiss}
         onTryAgain={onTryAgain}
         onReconnect={onReconnect}

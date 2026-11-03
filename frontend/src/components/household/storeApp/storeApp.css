@@ -72,6 +72,10 @@
   justify-content: center;
 }
 
+.store-app-modality-control .mantine-SegmentedControl-control {
+  min-height: 44px;
+}
+
 .store-app-modality-error {
   color: var(--mantine-color-red-text);
 }

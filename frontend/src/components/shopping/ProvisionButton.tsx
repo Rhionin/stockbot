@@ -1,13 +1,10 @@
 import { useRef, useState } from 'react';
 import { Button, Loader, Stack, Text } from '@mantine/core';
-import { authorizeProvider, exportShoppingList, resolveUnknownProvision, ApiError } from '../../api/client';
+import { authorizeProvider, exportShoppingList, resolveUnknownProvision, currentAuthSession } from '../../api/client';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
+import { inlineFailure } from '@stockbot/shared/contract';
 import {
-  CODE_PROVIDER_UNAVAILABLE,
-  CODE_RECONNECT_REQUIRED,
-  inlineFailure,
-} from '@stockbot/shared/contract';
-import {
+  exportWholeRequestErrorFromApi,
   provisionBlockedSendHint,
   provisionEmptyListNote,
   provisionSendButtonLabel,
@@ -23,6 +20,8 @@ export interface ProvisionButtonProps {
   entries: ShoppingListEntry[];
   explainEmpty?: boolean;
   onFinished: () => void;
+  /** Overrides session role in tests; defaults from the active household membership. */
+  householdAdmin?: boolean;
 }
 
 const storeIsReady = (provider: ProviderInfo | null) => (
@@ -39,13 +38,23 @@ const canProvision = (provider: ProviderInfo | null, entries: ShoppingListEntry[
 };
 
 function exportEnvelopeError(error: unknown): ProvisionWholeRequestError | undefined {
-  if (!(error instanceof ApiError)) return undefined;
-  if (error.code === CODE_RECONNECT_REQUIRED) return 'reconnect_required';
-  if (error.code === CODE_PROVIDER_UNAVAILABLE) return 'provider_unavailable';
-  return undefined;
+  return exportWholeRequestErrorFromApi(error);
 }
 
-export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFinished }: ProvisionButtonProps) => {
+const activeHouseholdAdmin = (): boolean => {
+  const session = currentAuthSession();
+  const householdId = session?.activeHouseholdId;
+  if (householdId === null || householdId === undefined || householdId === '') return false;
+  return session?.memberships.find((m) => m.householdId === householdId)?.role === 'owner';
+};
+
+export const ProvisionButton = ({
+  provider,
+  entries,
+  explainEmpty = false,
+  onFinished,
+  householdAdmin,
+}: ProvisionButtonProps) => {
   const [inFlight, setInFlight] = useState(false);
   const [report, setReport] = useState<ProvisionReport | null>(null);
   const [envelopeError, setEnvelopeError] = useState<ProvisionWholeRequestError | undefined>();
@@ -58,6 +67,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
   const enabled = canProvision(provider, entries, inFlight);
   const storeLabel = provisionStoreLabel(provider?.displayName);
   const sendLabel = provisionSendButtonLabel(storeLabel);
+  const admin = householdAdmin ?? activeHouseholdAdmin();
 
   const provision = async () => {
     setInFlight(true);
@@ -163,6 +173,7 @@ export const ProvisionButton = ({ provider, entries, explainEmpty = false, onFin
             <ProvisionResultPanel
               report={report}
               envelopeError={envelopeError}
+              householdAdmin={admin}
               provider={provider}
               cartUrl={cartUrl}
               onDismiss={() => {

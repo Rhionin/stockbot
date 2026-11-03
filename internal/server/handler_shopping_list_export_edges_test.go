@@ -25,6 +25,27 @@ func (s stubProvisioner) Provision(context.Context, tenant.Scope, cart.ProviderI
 	return cart.ProvisionReport{}, s.err
 }
 
+func TestRegistryConfiguredCount(t *testing.T) {
+	registry := cart.NewRegistry()
+	provider := carttest.NewFake(cart.Capabilities{
+		Auth:         cart.AuthNone,
+		Delivery:     cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmNone,
+		Mutation:     cart.MutateAddOnly,
+		Identity:     cart.IdentityDerived,
+	}, carttest.NewScript())
+	if err := registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	handler := &ShoppingListExportHandler{Registry: registry}
+	if got := handler.registryConfiguredCount(); got != 1 {
+		t.Fatalf("count = %d", got)
+	}
+	if empty := (&ShoppingListExportHandler{}).registryConfiguredCount(); empty != 0 {
+		t.Fatalf("empty registry count = %d", empty)
+	}
+}
+
 func TestExportMapsAProvisionRefusal(t *testing.T) {
 	_, env := setupTestWithDB(t)
 	registry := cart.NewRegistry()

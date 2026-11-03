@@ -541,6 +541,46 @@ func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
 	}
 }
 
+func TestAuthorizationURLForAppUsesAdapterBase(t *testing.T) {
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.baseURL = "https://api.example"
+	url, err := adapter.AuthorizationURLForApp(AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "app-id", RedirectURI: "https://app/cb"},
+	}, "cart.basic:write", "state-1")
+	if err != nil || !strings.Contains(url, "https://api.example/v1/connect/oauth2/authorize") {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+	_, err = adapter.AuthorizationURLForApp(AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "", RedirectURI: "https://app/cb"},
+	}, "cart.basic:write", "state-1")
+	if err == nil {
+		t.Fatal("expected missing client id error")
+	}
+}
+
+func TestExchangeCodeForAppUsesAdapterBase(t *testing.T) {
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{"access_token":"at","refresh_token":"rt","expires_in":60}`)}
+	adapter, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.baseURL = "https://api.example"
+	adapter.WithTransport(rt)
+	set, err := adapter.ExchangeCodeForApp(context.Background(), AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: "id", RedirectURI: "https://app/cb", SecretSet: true},
+		ClientSecret:   "secret",
+	}, "code-1")
+	if err != nil || set.AccessToken != "at" {
+		t.Fatalf("set=%+v err=%v", set, err)
+	}
+	if rt.gotReq == nil || !strings.HasPrefix(rt.gotReq.URL.String(), "https://api.example/v1/connect/oauth2/token") {
+		t.Fatalf("req=%v", rt.gotReq)
+	}
+}
+
 func TestAdapterTestingHooks(t *testing.T) {
 	adapter := NewUnconfigured().WithTimeout(3 * time.Second).WithRand(bytes.NewReader([]byte{1, 2, 3}))
 	if adapter.timeout != 3*time.Second {

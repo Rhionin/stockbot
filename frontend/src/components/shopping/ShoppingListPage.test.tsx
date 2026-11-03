@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import { ShoppingListPage } from './ShoppingListPage';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
@@ -147,6 +148,16 @@ describe('ShoppingListPage', () => {
     const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/auth/session') {
+        return Promise.resolve(jsonResponse({
+          user: { id: 'user-1', email: 'admin@testhousehold.test', name: 'Admin' },
+          kind: 'account',
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
       if (url === '/api/providers') {
         return Promise.resolve(jsonResponse([{
           id: 'kroger',
@@ -159,11 +170,12 @@ describe('ShoppingListPage', () => {
       if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([entry]));
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
       if (url === '/api/shopping-list/export') {
-        return Promise.resolve(jsonResponse({ error: 'Kroger is not connected' }, 409));
+        return Promise.resolve(jsonResponse({ error: 'Kroger is not configured', code: 'conflict' }, 409));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
+    await getSession();
     renderPage();
 
     const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
@@ -178,7 +190,7 @@ describe('ShoppingListPage', () => {
     expect(screen.queryByRole('button', { name: /setup/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
 
-    expect(await screen.findByText('Kroger is not connected')).toBeInTheDocument();
+    expect(await screen.findByText(krogerAppCopy.linkNeed)).toBeInTheDocument();
     expect(screen.queryByText(/sent to Kroger/)).not.toBeInTheDocument();
     expect(within(table).getByText('Green Tea')).toBeInTheDocument();
   });
