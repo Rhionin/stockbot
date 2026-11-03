@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { KrogerProviderDisabled } from './contract';
 import type { ProviderInfo } from './types';
 import {
   isKrogerProviderDisabled,
   krogerDisabledOnProviderList,
   providerListEntries,
+  type ProviderListEntry,
 } from './providerList';
 
 const krogerProvider = (): ProviderInfo => ({
@@ -35,7 +37,8 @@ describe('B11 KrogerProviderDisabled on GET /api/providers', () => {
   });
 
   it('filters disabled Kroger out of active provider entries', () => {
-    const list = [krogerProvider(), { id: 'kroger', displayName: 'Kroger', status: 'disabled' as const }];
+    const disabled: KrogerProviderDisabled = { id: 'kroger', displayName: 'Kroger', status: 'disabled' };
+    const list: ProviderListEntry[] = [krogerProvider(), disabled];
     expect(krogerDisabledOnProviderList(list)).toBe(true);
     expect(providerListEntries(list)).toHaveLength(1);
     expect(providerListEntries(list)[0]?.credentialsConfigured).toBe(true);
