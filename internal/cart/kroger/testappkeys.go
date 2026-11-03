@@ -61,13 +61,6 @@ func TestAppKeys(ctx context.Context, baseURL string, transport http.RoundTrippe
 		return true, "no_product_access", &zero
 	case resp.StatusCode >= 500:
 		return false, "kroger_unreachable", nil
-	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		if oauthErr == "invalid_scope" {
-			zero := 0
-			return true, "no_product_access", &zero
-		}
-		zero := 0
-		return true, "no_product_access", &zero
 	default:
 		return false, "wrong_keys", nil
 	}

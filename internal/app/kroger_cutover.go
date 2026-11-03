@@ -13,6 +13,11 @@ import (
 
 const krogerAppCutoverKey = "kroger_app_cutover_v1"
 
+func krogerAppKeyFromClientID(clientID string) string {
+	sum := sha256.Sum256([]byte(clientID))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // KrogerCutoverEnv carries deploy-time Kroger app values used once at cutover.
 type KrogerCutoverEnv struct {
 	ClientID     string
@@ -61,10 +66,13 @@ func RunKrogerAppCutover(ctx context.Context, db *sql.DB, env KrogerCutoverEnv) 
 
 	if primaryID != "" {
 		var existing int
-		_ = tx.QueryRowContext(ctx, `
+		rowErr := tx.QueryRowContext(ctx, `
 			SELECT 1 FROM provider_app_credentials
 			WHERE household_id = ? AND provider_id = 'kroger' LIMIT 1`, primaryID).Scan(&existing)
-		if existing == 0 && envComplete {
+		if rowErr != nil && rowErr != sql.ErrNoRows {
+			return fmt.Errorf("read primary kroger app: %w", rowErr)
+		}
+		if rowErr == sql.ErrNoRows && envComplete {
 			now := time.Now().UTC().Format(time.RFC3339)
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO provider_app_credentials
@@ -76,11 +84,11 @@ func RunKrogerAppCutover(ctx context.Context, db *sql.DB, env KrogerCutoverEnv) 
 			}
 		}
 		var keySource string
-		rowErr := tx.QueryRowContext(ctx, `
+		rowErr = tx.QueryRowContext(ctx, `
 			SELECT client_id FROM provider_app_credentials
 			WHERE household_id = ? AND provider_id = 'kroger'`, primaryID).Scan(&keySource)
 		if rowErr == nil && keySource != "" {
-			appKey := krogerAppKey(keySource)
+			appKey := krogerAppKeyFromClientID(keySource)
 			if _, err = tx.ExecContext(ctx, `
 				UPDATE provider_connections
 				SET app_key = ?
@@ -125,6 +133,11 @@ func RunKrogerAppCutover(ctx context.Context, db *sql.DB, env KrogerCutoverEnv) 
 	}
 	credsRemoved, _ := res.RowsAffected()
 
+	var nonPrimaryHouseholds int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM households WHERE is_primary = 0`).Scan(&nonPrimaryHouseholds); err != nil {
+		return fmt.Errorf("count non-primary households: %w", err)
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO app_settings (key, value) VALUES (?, '1')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, krogerAppCutoverKey); err != nil {
@@ -133,12 +146,7 @@ func RunKrogerAppCutover(ctx context.Context, db *sql.DB, env KrogerCutoverEnv) 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	log.Printf("kroger app cutover: connections removed=%d availability removed=%d store_checks removed=%d app rows removed=%d",
-		connRemoved, availRemoved, checksRemoved, credsRemoved)
+	log.Printf("kroger app cutover: households=%d connections removed=%d availability removed=%d store_checks removed=%d app rows removed=%d",
+		nonPrimaryHouseholds, connRemoved, availRemoved, checksRemoved, credsRemoved)
 	return nil
-}
-
-func krogerAppKey(clientID string) string {
-	sum := sha256.Sum256([]byte(clientID))
-	return hex.EncodeToString(sum[:])[:16]
 }

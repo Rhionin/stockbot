@@ -59,10 +59,19 @@ func (v *Vault) Load(ctx context.Context, scope tenant.Scope, providerID string)
 	if v == nil || v.db == nil {
 		return Saved{}, false, nil
 	}
+	return v.loadRow(ctx, v.db, scope, providerID)
+}
+
+type queryExec interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (v *Vault) loadRow(ctx context.Context, q queryExec, scope tenant.Scope, providerID string) (Saved, bool, error) {
 	var saved Saved
 	var productAccess sql.NullInt64
 	var productAccessAt sql.NullString
-	err := v.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		SELECT provider_id, client_id, client_secret, redirect_uri, modality,
 		       product_access, product_access_at, COALESCE(actor_user_id, '')
 		FROM provider_app_credentials
@@ -139,7 +148,20 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 	if v == nil || v.db == nil {
 		return fmt.Errorf("credential store is not available")
 	}
-	existing, ok, err := v.Load(ctx, scope, saved.ProviderID)
+	return v.save(ctx, v.db, scope, saved)
+}
+func (v *Vault) SaveTx(ctx context.Context, tx *sql.Tx, scope tenant.Scope, saved Saved) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if v == nil || v.db == nil {
+		return fmt.Errorf("credential store is not available")
+	}
+	return v.save(ctx, tx, scope, saved)
+}
+
+func (v *Vault) save(ctx context.Context, q queryExec, scope tenant.Scope, saved Saved) error {
+	existing, ok, err := v.loadRow(ctx, q, scope, saved.ProviderID)
 	if err != nil {
 		return err
 	}
@@ -164,7 +186,7 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 			productAccessAt = now
 		}
 	}
-	_, err = v.db.ExecContext(ctx, `
+	_, err = q.ExecContext(ctx, `
 		INSERT INTO provider_app_credentials
 			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality,
 			 product_access, product_access_at, updated_at)

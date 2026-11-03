@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -58,12 +59,26 @@ func (e ProviderEnv) Complete() bool {
 
 // ProviderInfo represents information about a registered provider.
 type ProviderInfo struct {
-	ID                    string               `json:"id"`
-	DisplayName           string               `json:"displayName"`
-	Capabilities          ProviderCapabilities `json:"capabilities"`
-	ConnectionState       string               `json:"connectionState"`
-	CredentialsConfigured bool                 `json:"credentialsConfigured"`
-	Credentials           *CredentialView      `json:"credentials,omitempty"`
+	ID                    string                `json:"id"`
+	DisplayName           string                `json:"displayName"`
+	Status                string                `json:"status,omitempty"`
+	Capabilities          *ProviderCapabilities `json:"capabilities,omitempty"`
+	ConnectionState       string                `json:"connectionState"`
+	CredentialsConfigured bool                  `json:"credentialsConfigured"`
+	Credentials           *CredentialView       `json:"credentials,omitempty"`
+}
+
+// MarshalJSON omits Kroger's disabled list entry down to id, displayName, and status.
+func (p ProviderInfo) MarshalJSON() ([]byte, error) {
+	if p.Status == "disabled" {
+		return json.Marshal(struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"displayName"`
+			Status      string `json:"status"`
+		}{ID: p.ID, DisplayName: p.DisplayName, Status: p.Status})
+	}
+	type alias ProviderInfo
+	return json.Marshal(alias(p))
 }
 
 // CredentialView is safe to return from GET. It never includes a client secret.
@@ -107,21 +122,25 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 			continue
 		}
 		caps := provider.Capabilities()
+		capsView := ProviderCapabilities{
+			Auth:         string(caps.Auth),
+			Delivery:     string(caps.Delivery),
+			Confirmation: string(caps.Confirmation),
+			Mutation:     string(caps.Mutation),
+			Identity:     string(caps.Identity),
+		}
+		if string(id) == "kroger" && h.EnvFallback.Disabled {
+			infos = append(infos, ProviderInfo{
+				ID:          string(id),
+				DisplayName: provider.DisplayName(),
+				Status:      "disabled",
+			})
+			continue
+		}
 		info := ProviderInfo{
 			ID:          string(id),
 			DisplayName: provider.DisplayName(),
-			Capabilities: ProviderCapabilities{
-				Auth:         string(caps.Auth),
-				Delivery:     string(caps.Delivery),
-				Confirmation: string(caps.Confirmation),
-				Mutation:     string(caps.Mutation),
-				Identity:     string(caps.Identity),
-			},
-		}
-		if string(id) == "kroger" && h.EnvFallback.Disabled {
-			info.ConnectionState = "disabled"
-			infos = append(infos, info)
-			continue
+			Capabilities: &capsView,
 		}
 		state, err := providerConnectionState(req.Context, scope, h.ConnectionDir, string(id), caps.Auth)
 		if err != nil {

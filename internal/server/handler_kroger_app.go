@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,10 @@ import (
 )
 
 const krogerProviderID = "kroger"
+
+// krogerAppTestFailAfterCredentialSave is set by tests to inject a failure after
+// credentials are written inside saveApp's transaction.
+var krogerAppTestFailAfterCredentialSave func() error
 
 // KrogerAppHandler serves /api/households/{id}/kroger-app routes.
 type KrogerAppHandler struct {
@@ -131,7 +136,7 @@ func (h *KrogerAppHandler) buildView(ctx context.Context, scope tenant.Scope, ca
 		Status:        "not_set_up",
 		CanManage:     canManage,
 	}
-	saved, ok, err := h.Vault.LoadFull(ctx, scope, krogerProviderID)
+	saved, ok, err := h.Vault.Load(ctx, scope, krogerProviderID)
 	if err != nil {
 		return KrogerApp{}, InternalError(err)
 	}
@@ -175,20 +180,21 @@ func (h *KrogerAppHandler) deriveStatus(ctx context.Context, scope tenant.Scope)
 	if !ok {
 		return "not_set_up", nil
 	}
-	_ = saved
-	var connected, reauth int
+	appKey := appcred.AppKey(saved.ClientID)
+	var connected, reauth, stale int
 	if err := h.DB.QueryRowContext(ctx, `
 		SELECT
-		  COALESCE(SUM(CASE WHEN state = 'connected' THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN state = 'reauth_required' THEN 1 ELSE 0 END), 0)
+		  COALESCE(SUM(CASE WHEN state = 'connected' AND (app_key IS NULL OR app_key = ?) THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN state = 'reauth_required' THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN state = 'connected' AND app_key IS NOT NULL AND app_key != ? THEN 1 ELSE 0 END), 0)
 		FROM provider_connections
-		WHERE household_id = ? AND provider_id = 'kroger'`, scope.HouseholdID()).Scan(&connected, &reauth); err != nil {
+		WHERE household_id = ? AND provider_id = 'kroger'`, appKey, appKey, scope.HouseholdID()).Scan(&connected, &reauth, &stale); err != nil {
 		return "", err
 	}
 	if connected > 0 {
 		return "connected", nil
 	}
-	if reauth > 0 {
+	if reauth > 0 || stale > 0 {
 		return "needs_reconnect", nil
 	}
 	return "ready_to_connect", nil
@@ -204,6 +210,34 @@ func (h *KrogerAppHandler) Get(req Request[struct{}, krogerHouseholdParams]) (an
 		return nil, err
 	}
 	return h.buildView(req.Context, scope, p.Role == "owner")
+}
+
+func (h *KrogerAppHandler) blockKrogerTest(householdID string) error {
+	if h.Auth == nil || householdID == "" {
+		return nil
+	}
+	if err := h.Auth.BlockKrogerAppTest(householdID); err != nil {
+		var ae *auth.Error
+		if errors.As(err, &ae) && ae.Code == auth.CodeRateLimited {
+			return RateLimited(ae.Retry)
+		}
+		return InternalError(err)
+	}
+	return nil
+}
+
+func (h *KrogerAppHandler) noteKrogerTest(householdID string) error {
+	if h.Auth == nil || householdID == "" {
+		return nil
+	}
+	if err := h.Auth.NoteKrogerAppTest(householdID); err != nil {
+		var ae *auth.Error
+		if errors.As(err, &ae) && ae.Code == auth.CodeRateLimited {
+			return RateLimited(ae.Retry)
+		}
+		return InternalError(err)
+	}
+	return nil
 }
 
 func (h *KrogerAppHandler) runTest(ctx context.Context, clientID, secret, redirectURI string) KrogerAppTest {
@@ -228,12 +262,12 @@ func (h *KrogerAppHandler) runTest(ctx context.Context, clientID, secret, redire
 
 // Put handles PUT /api/households/{id}/kroger-app.
 func (h *KrogerAppHandler) Put(req Request[krogerAppPutBody, krogerHouseholdParams]) (KrogerAppSaved, error) {
-	if h.Env.Disabled {
-		return KrogerAppSaved{}, StoreDisabled()
-	}
 	scope, p, err := h.requireOwner(req.Context, req.PathParams.ID)
 	if err != nil {
 		return KrogerAppSaved{}, err
+	}
+	if h.Env.Disabled {
+		return KrogerAppSaved{}, StoreDisabled()
 	}
 	existing, hadApp, err := h.Vault.Load(req.Context, scope, krogerProviderID)
 	if err != nil {
@@ -272,6 +306,12 @@ func (h *KrogerAppHandler) Put(req Request[krogerAppPutBody, krogerHouseholdPara
 	if clientID == "" || secret == "" {
 		return KrogerAppSaved{}, BadRequest("Client ID and client secret are required.")
 	}
+	if err := h.blockKrogerTest(scope.HouseholdID()); err != nil {
+		return KrogerAppSaved{}, err
+	}
+	if err := h.noteKrogerTest(scope.HouseholdID()); err != nil {
+		return KrogerAppSaved{}, err
+	}
 	redirectURI := h.serverRedirectURI()
 	if redirectURI == "" {
 		return KrogerAppSaved{}, BadRequest("This server has no public callback URL configured.")
@@ -308,21 +348,29 @@ func (h *KrogerAppHandler) Put(req Request[krogerAppPutBody, krogerHouseholdPara
 
 func (h *KrogerAppHandler) saveApp(ctx context.Context, scope tenant.Scope, actor, clientID, secret, redirectURI, modality string, productAccess *int, hadApp bool, oldClientID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	if err := h.Vault.Save(ctx, scope, appcred.Saved{
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+	defer tx.Rollback()
+	if err := h.Vault.SaveTx(ctx, tx, scope, appcred.Saved{
 		ProviderID: krogerProviderID, ClientID: clientID, ClientSecret: secret,
 		RedirectURI: redirectURI, Modality: modality, ActorUserID: actor,
 		ProductAccess: productAccess, ProductAccessAt: now,
 	}); err != nil {
 		return InternalError(err)
 	}
+	if krogerAppTestFailAfterCredentialSave != nil {
+		if err := krogerAppTestFailAfterCredentialSave(); err != nil {
+			return InternalError(err)
+		}
+	}
 	if !hadApp || oldClientID == clientID {
+		if err := tx.Commit(); err != nil {
+			return InternalError(err)
+		}
 		return nil
 	}
-	tx, err := h.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return InternalError(err)
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE provider_connections SET state = 'reauth_required', access_token = NULL, refresh_token = NULL,
 			access_token_expires_at = NULL, app_key = NULL, granted_scope = NULL
@@ -335,17 +383,20 @@ func (h *KrogerAppHandler) saveApp(ctx context.Context, scope tenant.Scope, acto
 	if _, err := tx.ExecContext(ctx, `DELETE FROM store_checks WHERE household_id = ?`, scope.HouseholdID()); err != nil {
 		return InternalError(err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return InternalError(err)
+	}
+	return nil
 }
 
 // Delete handles DELETE /api/households/{id}/kroger-app.
 func (h *KrogerAppHandler) Delete(req Request[struct{}, krogerHouseholdParams]) (KrogerApp, error) {
-	if h.Env.Disabled {
-		return KrogerApp{}, StoreDisabled()
-	}
 	scope, p, err := h.requireOwner(req.Context, req.PathParams.ID)
 	if err != nil {
 		return KrogerApp{}, err
+	}
+	if h.Env.Disabled {
+		return KrogerApp{}, StoreDisabled()
 	}
 	tx, err := h.DB.BeginTx(req.Context, nil)
 	if err != nil {
@@ -374,12 +425,12 @@ func (h *KrogerAppHandler) Delete(req Request[struct{}, krogerHouseholdParams]) 
 
 // Test handles POST /api/households/{id}/kroger-app/test.
 func (h *KrogerAppHandler) Test(req Request[krogerAppTestBody, krogerHouseholdParams]) (KrogerAppTest, error) {
-	if h.Env.Disabled {
-		return KrogerAppTest{}, StoreDisabled()
-	}
 	scope, _, err := h.requireOwner(req.Context, req.PathParams.ID)
 	if err != nil {
 		return KrogerAppTest{}, err
+	}
+	if h.Env.Disabled {
+		return KrogerAppTest{}, StoreDisabled()
 	}
 	clientID := strings.TrimSpace(req.Body.ClientID)
 	secret := strings.TrimSpace(req.Body.ClientSecret)
@@ -390,6 +441,12 @@ func (h *KrogerAppHandler) Test(req Request[krogerAppTestBody, krogerHouseholdPa
 		}
 		if !ok {
 			return KrogerAppTest{}, KrogerNotConnected("not_configured")
+		}
+		if err := h.blockKrogerTest(scope.HouseholdID()); err != nil {
+			return KrogerAppTest{}, err
+		}
+		if err := h.noteKrogerTest(scope.HouseholdID()); err != nil {
+			return KrogerAppTest{}, err
 		}
 		clientID, secret = saved.ClientID, saved.ClientSecret
 		redirectURI := saved.RedirectURI
@@ -419,6 +476,12 @@ func (h *KrogerAppHandler) Test(req Request[krogerAppTestBody, krogerHouseholdPa
 	}
 	if clientID == "" || secret == "" {
 		return KrogerAppTest{}, BadRequest("Client ID and client secret are required.")
+	}
+	if err := h.blockKrogerTest(scope.HouseholdID()); err != nil {
+		return KrogerAppTest{}, err
+	}
+	if err := h.noteKrogerTest(scope.HouseholdID()); err != nil {
+		return KrogerAppTest{}, err
 	}
 	return h.runTest(req.Context, clientID, secret, h.serverRedirectURI()), nil
 }

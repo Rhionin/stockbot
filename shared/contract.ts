@@ -162,6 +162,18 @@ export const INVALID_REPORT_SENTENCE = 'invalid report';
 export const CODE_CONFIRMATION_MISMATCH = 'confirmation_mismatch';
 
 export const CODE_RATE_LIMITED = 'rate_limited';
+
+/** GET /api/households/{id}/kroger-app when DISABLE_KROGER is set. */
+export interface KrogerAppDisabled {
+  status: 'disabled';
+}
+
+/** GET /api/providers Kroger row when DISABLE_KROGER is set. */
+export interface KrogerProviderDisabled {
+  id: 'kroger';
+  displayName: string;
+  status: 'disabled';
+}
 export const RATE_LIMITED_SENTENCE = 'Too many sign-in attempts. Try again later.';
 
 export const CODE_PAYLOAD_TOO_LARGE = 'payload_too_large';
@@ -881,8 +893,6 @@ export type HostedErrorCode =
   | 'store_check_failed'
   | 'store_check_unavailable'
   | 'kroger_not_connected'
-  // Reserved for B11a (#489): not yet returned by the server. They ship early
-  // with the #518 contract, and PUT /api/households/{id}/kroger-app will return them.
   | 'store_app_keys_rejected'
   | 'store_app_unreachable'
   | 'store_disabled'
@@ -1720,7 +1730,6 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   store_check_failed: "Couldn't reach the store right now. Try again later.",
   store_check_unavailable: "Checking isn't on for this store.",
   kroger_not_connected: 'Connect your store account first.',
-  // Reserved for B11a (#489): the server does not return these two yet.
   store_app_keys_rejected: "Those keys didn't work. Check that you copied both keys.",
   store_app_unreachable: "Couldn't reach the store. Try again in a few minutes.",
   store_disabled: 'Online store features are turned off on this server.',

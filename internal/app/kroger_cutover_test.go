@@ -149,7 +149,7 @@ func TestKrogerCutoverSetsPrimaryAppKey(t *testing.T) {
 	if err := RunKrogerAppCutover(ctx, db, KrogerCutoverEnv{}); err != nil {
 		t.Fatal(err)
 	}
-	wantKey := krogerAppKey("client-for-key")
+	wantKey := appcred.AppKey("client-for-key")
 	var got sql.NullString
 	if err := db.QueryRow(`SELECT app_key FROM provider_connections WHERE id = 'conn-p'`).Scan(&got); err != nil {
 		t.Fatal(err)

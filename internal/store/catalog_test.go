@@ -608,8 +608,8 @@ func TestCatalogLookupsEnabledDBError(t *testing.T) {
 	lookupsEnabledTestErr = errors.New("lookups query failed")
 	t.Cleanup(func() { lookupsEnabledTestErr = nil })
 	_, err := catalog.List(ctx, scope, CheckingContext{})
-	if err == nil {
-		t.Fatal("expected list error when lookupsEnabled query fails")
+	if !errors.Is(err, lookupsEnabledTestErr) {
+		t.Fatalf("expected lookupsEnabledTestErr, got %v", err)
 	}
 }
 
@@ -658,6 +658,11 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 	}
 	for _, q := range qs {
 		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !compactFirst {
+		if _, err := db.Exec(`UPDATE provider_connections SET state = 'disconnected' WHERE id = ?`, plainRow.id); err != nil {
 			t.Fatal(err)
 		}
 	}

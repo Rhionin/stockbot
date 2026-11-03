@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/clientmsg"
@@ -62,6 +63,7 @@ type HTTPError struct {
 	ItemID      string
 	OnHand      *int
 	CheckReason string
+	Retry       time.Duration
 }
 
 func (e *HTTPError) Error() string {
@@ -123,6 +125,19 @@ func StoreDisabled() error {
 		Code:      http.StatusConflict,
 		Message:   "Online store features are turned off on this server.",
 		ErrorCode: codeStoreDisabled,
+	}
+}
+
+// RateLimited is a 429 with Retry-After for attempt caps.
+func RateLimited(retry time.Duration) error {
+	if retry < time.Second {
+		retry = time.Second
+	}
+	return &HTTPError{
+		Code:      http.StatusTooManyRequests,
+		Message:   auth.SentenceRate,
+		ErrorCode: codeRateLimited,
+		Retry:     retry,
 	}
 }
 

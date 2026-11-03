@@ -507,3 +507,27 @@ func TestVaultNotConfigured(t *testing.T) {
 		})
 	}
 }
+
+func TestVaultSaveTx(t *testing.T) {
+	vault, db, ctx, scope, _ := newTestVault(t)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.SaveTx(ctx, tx, scope, Saved{
+		ProviderID:   "kroger",
+		ClientID:     "tx-client",
+		ClientSecret: "tx-secret",
+		RedirectURI:  "https://example/cb",
+		Modality:     "PICKUP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := vault.Load(ctx, scope, "kroger")
+	if err != nil || !ok || got.ClientID != "tx-client" {
+		t.Fatalf("Load ok=%v err=%v id=%q", ok, err, got.ClientID)
+	}
+}
