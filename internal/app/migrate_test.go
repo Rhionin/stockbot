@@ -104,6 +104,13 @@ func TestMigrationApplies(t *testing.T) {
 		"staged_cart_skips",
 		"stock_in_events",
 		"stock_moves",
+		"store_availability",
+		"store_checks",
+		"store_trips",
+		"stores",
+		"product_stores",
+		"kroger_household_usage",
+		"kroger_api_window",
 		"supply_overrides",
 		"users",
 	}
@@ -143,8 +150,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 37 {
-		t.Errorf("schema_migrations should have 37 rows after two runs, got %d", count)
+	if count != 38 {
+		t.Errorf("schema_migrations should have 38 rows after two runs, got %d", count)
 	}
 }
 
@@ -907,4 +914,122 @@ func targetQuantityEqual(a, b *int) bool {
 		return false
 	}
 	return *a == *b
+}
+
+// TestMigration030AdditiveUpgrade applies 030 to a 028-era database and keeps
+// pre-existing rows intact with new nullable columns unset.
+func TestMigration030AdditiveUpgrade(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer conn.Close()
+
+	applyMigrationsThrough028(t, conn)
+
+	var household string
+	if err := conn.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	const user = "user-b9-fixture"
+	when := "2026-01-01T00:00:00Z"
+	bought := "2026-01-02T00:00:00Z"
+	lines := []struct {
+		id, product, item, source string
+		purchased                 *string
+	}{
+		{"line-b9-manual", "prod-b9-manual", "item-b9-manual", "manual", nil},
+		{"line-b9-auto", "prod-b9-auto", "item-b9-auto", "auto", nil},
+		{"line-b9-bought", "prod-b9-bought", "item-b9-bought", "manual", &bought},
+	}
+	for _, line := range lines {
+		if _, err := conn.Exec(`INSERT INTO products (id, name) VALUES (?, ?)`, line.product, "Synthetic "+line.product); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`INSERT INTO items (id, user_id, product_id, household_id) VALUES (?, ?, ?, ?)`,
+			line.item, user, line.product, household); err != nil {
+			t.Fatal(err)
+		}
+		if line.purchased == nil {
+			if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, user_id, item_id, household_id, actor_user_id, quantity, source, created_at)
+				VALUES (?, ?, ?, ?, ?, 1, ?, ?)`, line.id, user, line.item, household, user, line.source, when); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, user_id, item_id, household_id, actor_user_id, quantity, source, created_at, purchased_at)
+			VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`, line.id, user, line.item, household, user, line.source, when, *line.purchased); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec(`INSERT INTO provider_connections (id, user_id, provider_id, state, household_id, actor_user_id)
+		VALUES ('conn-b9', ?, 'kroger', 'connected', ?, ?)`, user, household, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO provider_app_credentials (id, user_id, provider_id, client_id, client_secret, redirect_uri, modality, household_id, actor_user_id, updated_at)
+		VALUES (?, ?, 'kroger', 'client-b9', 'secret-b9', 'https://example.test/cb', 'PICKUP', ?, ?, '2026-01-01T00:00:00Z')`,
+		household+":kroger", user, household, user); err != nil {
+		t.Fatal(err)
+	}
+
+	countsBefore := map[string]int{}
+	for _, table := range []string{"products", "items", "shopping_list_items", "provider_connections", "provider_app_credentials"} {
+		var n int
+		if err := conn.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		countsBefore[table] = n
+	}
+
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatalf("RunMigrations 030: %v", err)
+	}
+
+	for table, want := range countsBefore {
+		var got int
+		if err := conn.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("table %s row count changed: before %d after %d", table, want, got)
+		}
+	}
+
+	var stores int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM stores`).Scan(&stores); err != nil || stores != 0 {
+		t.Fatalf("stores after upgrade: %d %v", stores, err)
+	}
+
+	assertNullColumn(t, conn, `SELECT run_store_id FROM shopping_list_items`)
+	assertNullColumn(t, conn, `SELECT granted_scope FROM provider_connections`)
+	assertNullColumn(t, conn, `SELECT app_key FROM provider_connections`)
+	assertNullColumn(t, conn, `SELECT auth_app_key FROM provider_connections`)
+	assertNullColumn(t, conn, `SELECT auth_return FROM provider_connections`)
+	assertNullColumn(t, conn, `SELECT product_access FROM provider_app_credentials`)
+	assertNullColumn(t, conn, `SELECT product_access_at FROM provider_app_credentials`)
+}
+
+func assertNullColumn(t *testing.T, conn *sql.DB, query string) {
+	t.Helper()
+	rows, err := conn.Query(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw sql.NullString
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if raw.Valid {
+			t.Fatalf("%s: want NULL, got %q", query, raw.String)
+		}
+	}
+}
+
+func applyMigrationsThrough028(t *testing.T, conn *sql.DB) {
+	t.Helper()
+	if err := app.RunMigrationsThrough(conn, "030_multi_store.sql"); err != nil {
+		t.Fatalf("RunMigrationsThrough 028: %v", err)
+	}
 }

@@ -35,6 +35,16 @@ func migrationProgressOn() bool {
 // directory, in lexicographic order, skipping any that have already been
 // recorded in the schema_migrations table. It is idempotent.
 func RunMigrations(db *sql.DB) error {
+	return runMigrations(db, "")
+}
+
+// RunMigrationsThrough applies pending migrations with filename strictly less
+// than stopBefore. An empty stopBefore applies every pending migration.
+func RunMigrationsThrough(db *sql.DB, stopBefore string) error {
+	return runMigrations(db, stopBefore)
+}
+
+func runMigrations(db *sql.DB, stopBefore string) error {
 	// Ensure the tracking table exists.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		filename TEXT PRIMARY KEY,
@@ -68,6 +78,9 @@ func RunMigrations(db *sql.DB) error {
 	applied := 0
 	householdDone := false
 	for _, name := range files {
+		if stopBefore != "" && name >= stopBefore {
+			break
+		}
 		// 022a–022f commit together. They do not copy the pantry file.
 		if isHouseholdMigration(name) {
 			if !householdDone {
@@ -124,7 +137,10 @@ func RunMigrations(db *sql.DB) error {
 		// transaction, so the snapshot above stays outside. Each of these
 		// files plus its schema_migrations row commit together, so a failure
 		// leaves neither the schema change nor a recorded migration.
-		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration {
+		// 030 adds nullable columns and new store tables. CJ approved B1 only when
+		// 030 runs in a single transaction (applyMigrationTx): every statement and
+		// the schema_migrations row commit together or roll back entirely.
+		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == multiStoreMigration {
 			if err := applyMigrationTx(db, name, sqlText); err != nil {
 				return fmt.Errorf("apply migration %q: %w", name, err)
 			}
@@ -151,6 +167,9 @@ const householdKeyMigration = "024_household_keys.sql"
 
 // pushUserMigration lets a household-password subscription store a NULL user.
 const pushUserMigration = "027_push_user_nullable.sql"
+
+// multiStoreMigration adds store tables and nullable Kroger/list columns (B1).
+const multiStoreMigration = "030_multi_store.sql"
 
 // fillPrimaryHousehold writes the seeded household id into {{household}}.
 // Later migrations keep that id as the column default household 1 already had.

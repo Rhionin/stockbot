@@ -28,6 +28,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/scanlistener"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/suggestion"
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/devicingest"
@@ -644,12 +645,27 @@ func newAPIMux(
 	apiMux.HandleFunc("DELETE /api/shopping-list/deals/{itemId}", HandleJSON(shoppingDealDeleteHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/export", HandleJSON(shoppingListExportHandler.Handle))
 
+	storeCatalog := store.NewCatalog(db)
+
 	// Cart integration handlers. connDir is created with the shopping list
 	// above so the provisioner and these routes share one directory.
 	var envFallback ProviderEnv
 	if cfg != nil {
 		envFallback = cfg.providerEnv
 	}
+	storesHandler := &StoresHandler{
+		Stores:   storeCatalog,
+		Registry: registry,
+		Env:      envFallback,
+	}
+	apiMux.HandleFunc("GET /api/stores", HandleJSON(storesHandler.HandleList))
+	apiMux.HandleFunc("POST /api/stores", HandleJSON(storesHandler.HandleCreate))
+	apiMux.HandleFunc("PUT /api/stores/order", HandleJSON(storesHandler.HandleOrder))
+	apiMux.HandleFunc("PUT /api/stores/default", HandleJSON(storesHandler.HandleDefault))
+	apiMux.HandleFunc("GET /api/stores/{id}/removal-preview", HandleJSON(storesHandler.HandleRemovalPreview))
+	apiMux.HandleFunc("PATCH /api/stores/{id}", HandleJSON(storesHandler.HandlePatch))
+	apiMux.HandleFunc("DELETE /api/stores/{id}", HandleJSON(storesHandler.HandleDelete))
+
 	providersHandler := &ProvidersHandler{
 		Registry:      registry,
 		ConnectionDir: connDir,

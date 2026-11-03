@@ -5,7 +5,76 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Rhionin/stockbot/internal/app"
 )
+
+func TestHouseholdSchemaTablesRegistered(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	registered := make(map[string]bool, len(HouseholdTables))
+	for _, name := range HouseholdTables {
+		registered[name] = true
+	}
+	rows, err := conn.Query(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range tables {
+		if GlobalTables[table] != "" {
+			continue
+		}
+		info, err := conn.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasHousehold := false
+		for info.Next() {
+			var cid int
+			var name, colType string
+			var notnull, pk int
+			var dflt any
+			if err := info.Scan(&cid, &name, &colType, &notnull, &dflt, &pk); err != nil {
+				info.Close()
+				t.Fatal(err)
+			}
+			if strings.EqualFold(name, "household_id") {
+				hasHousehold = true
+				break
+			}
+		}
+		info.Close()
+		if err := info.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if hasHousehold && !registered[table] {
+			t.Fatalf("table %q has household_id but is missing from tenant.HouseholdTables", table)
+		}
+	}
+}
 
 func TestUnscopedSQLLintPassesOnRepo(t *testing.T) {
 	root := moduleRoot(t)

@@ -164,7 +164,18 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if caps.Auth != cart.AuthOAuth2 {
 		return nil, BadRequest(fmt.Sprintf("%s does not use an authorization-code connection", provider.DisplayName()))
 	}
-	if !h.Registry.CredentialsConfigured(providerID) {
+	scope, err := requestScope(req.Context)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	allowed, err := cart.OAuthAuthorizeAllowed(req.Context, h.ConnectionDir.DB(), scope, cart.OAuthConnectInput{
+		KrogerDisabled:        h.EnvFallback.Disabled,
+		CredentialsConfigured: h.Registry.CredentialsConfigured(providerID),
+	})
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if !allowed {
 		return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 	}
 	flow, ok := provider.(cart.OAuthFlow)
@@ -173,10 +184,6 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	}
 
 	state, err := newAuthState()
-	if err != nil {
-		return nil, InternalError(err)
-	}
-	scope, err := requestScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
 	}

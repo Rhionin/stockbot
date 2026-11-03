@@ -1685,8 +1685,8 @@ interface KrogerNotConnectedBody {       // 409 kroger_not_connected
 | `PATCH /api/stores/{id}` | any of the same fields | `200 Store`. A location change deletes the store's availability rows and starts a check; unlinking clears location and rows. | `validation`, `store_name_taken`, `store_already_linked` |
 | `GET /api/stores/{id}/removal-preview` | | `200 StoreRemovalPreview` (DEP-4) | |
 | `DELETE /api/stores/{id}` | | `204` (DEP-4) | |
-| `PUT /api/stores/order` | `{storeIds}`, exact permutation | `200 StoresResponse` | `validation`, `conflict` |
-| `PUT /api/stores/default` | `{storeId \| null}` | `200 StoresResponse` | `validation` |
+| `PUT /api/stores/order` | `{storeIds}`, exact permutation | `200 StoresResponse` | `validation`, `conflict`, `not_found` |
+| `PUT /api/stores/default` | `{storeId \| null}` | `200 StoresResponse` | `validation`, `not_found` |
 | `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited` |
 | `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited` |
 
