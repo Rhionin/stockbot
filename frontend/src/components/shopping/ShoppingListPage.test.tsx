@@ -321,23 +321,7 @@ describe('ShoppingListPage', () => {
     filterSpy.mockRestore();
   });
 
-  it('remounts provision quantity input when server quantity changes after reload', async () => {
-    class FakeEventSource {
-      static instances: FakeEventSource[] = [];
-      closed = false;
-      readonly url: string;
-      constructor(url: string) {
-        this.url = url;
-        FakeEventSource.instances.push(this);
-      }
-      addEventListener() {}
-      close() {
-        this.closed = true;
-      }
-    }
-    FakeEventSource.instances = [];
-    vi.stubGlobal('EventSource', FakeEventSource);
-
+  it('remounts provision quantity input when server quantity changes after Update the list', async () => {
     let quantity = 2;
     const entry = (): ShoppingListEntry => ({
       id: 'manual-1',
@@ -369,6 +353,10 @@ describe('ShoppingListPage', () => {
       }
       if (url === '/api/providers') return Promise.resolve(jsonResponse(krogerProvider));
       if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([entry()]));
+      if (url === '/api/shopping-list/fill' && method === 'POST') {
+        quantity = 3;
+        return Promise.resolve(jsonResponse([entry()]));
+      }
       if (url === '/api/inventory') {
         return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
       }
@@ -386,13 +374,14 @@ describe('ShoppingListPage', () => {
 
     const input = await screen.findByLabelText('Provision quantity for Green Tea');
     expect(input).toHaveValue('2');
+    expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('2 boxes')).toBeInTheDocument();
 
-    quantity = 5;
-    window.dispatchEvent(new Event(HOUSEHOLD_SWITCH_EVENT));
-    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('5'));
+    fireEvent.click(screen.getByRole('button', { name: 'Update the list' }));
+    await waitFor(() => expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('3 boxes')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('3'));
 
     fireEvent.blur(screen.getByLabelText('Provision quantity for Green Tea'));
-    await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 5 })));
+    await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 3 })));
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });
 

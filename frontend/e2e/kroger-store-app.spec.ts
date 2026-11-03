@@ -233,3 +233,55 @@ test('store app credential fields meet 44px at 1280', async ({ page }) => {
   await expectMinTargetSize(page.getByLabel(/App ID/i))
   await expectMinTargetSize(page.getByLabel(/App secret/i))
 })
+
+async function assertSetupBodyNoHorizontalScroll(page: Page) {
+  await expect.poll(async () => page.evaluate(() => {
+    const body = document.querySelector('.store-app-setup-body')
+    if (!(body instanceof HTMLElement)) return false
+    return body.scrollWidth <= body.clientWidth + 0.5
+  })).toBe(true)
+}
+
+for (const viewport of [
+  { width: 390, height: 844 },
+  { width: 320, height: 568, deviceScaleFactor: 1.25 },
+] as const) {
+  test(`store app step 6 setup body has no horizontal scroll at ${viewport.width}`, async ({ page }) => {
+    resetStage()
+    stage.kind = 'account'
+    stage.householdName = 'Test Household'
+    stage.role = 'owner'
+    await install(page)
+    await page.setViewportSize({
+      width: viewport.width,
+      height: viewport.height,
+      ...(viewport.deviceScaleFactor ? { deviceScaleFactor: viewport.deviceScaleFactor } : {}),
+    })
+    await stubHousehold(page, krogerApp('connected', { configured: true, clientIdLast4: '1234' }))
+    await page.route('**/api/households/hh-1/kroger-app', (route) => {
+      if (route.request().method() === 'PUT') {
+        return route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 'kroger_not_connected',
+            error: 'not configured',
+            checkReason: 'not_configured',
+          }),
+        })
+      }
+      return route.continue()
+    })
+    await page.goto('/household')
+    await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+    await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
+    const dialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })
+    await waitForStoreAppDialogSettled(page, dialog)
+    await assertSetupBodyNoHorizontalScroll(page)
+    await page.getByRole('button', { name: krogerAppCopy.s6Show }).click()
+    await assertSetupBodyNoHorizontalScroll(page)
+    await page.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery }).click()
+    await expect(page.getByText(krogerAppCopy.errRemoved)).toBeVisible()
+    await assertSetupBodyNoHorizontalScroll(page)
+  })
+}

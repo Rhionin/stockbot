@@ -75,6 +75,8 @@ export function KrogerAppSetupModal({
   const compact = useMediaQuery('(max-width: 600px)');
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
+  const removedStartAgainRef = useRef<HTMLButtonElement>(null);
+  const focusRemovedOnNoticeRef = useRef(false);
   const clientIdRef = useRef<HTMLInputElement>(null);
   const clientSecretRef = useRef<HTMLInputElement>(null);
   const preservePassStatusRef = useRef(false);
@@ -185,14 +187,37 @@ export function KrogerAppSetupModal({
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [opened, householdId, householdName, initialStep, replaceMode, app.configured, app.modality]);
 
+  const focusRemovedRecovery = useCallback(() => {
+    requestAnimationFrame(() => removedStartAgainRef.current?.focus());
+  }, []);
+
+  const showRemovedNotice = useCallback((moveFocus: boolean) => {
+    if (moveFocus) focusRemovedOnNoticeRef.current = true;
+    setRemovedNotice(true);
+    setError('');
+    setAmberNotice('');
+    setStatus('');
+    setAccessNote('');
+    setConnectError('');
+    setModalityError('');
+    setModalitySaved('');
+  }, []);
+
+  useEffect(() => {
+    if (!removedNotice || !focusRemovedOnNoticeRef.current) return;
+    focusRemovedOnNoticeRef.current = false;
+    focusRemovedRecovery();
+  }, [removedNotice, focusRemovedRecovery]);
+
   useEffect(() => {
     if (!opened) return;
+    if (removedNotice) return;
     if (step === 7 && status !== '') {
       requestAnimationFrame(() => statusRef.current?.focus());
       return;
     }
     stepHeadingRef.current?.focus();
-  }, [opened, step, status]);
+  }, [opened, step, status, removedNotice]);
 
   useEffect(() => {
     if (status !== '' && step === 6) {
@@ -270,11 +295,7 @@ export function KrogerAppSetupModal({
     }
     if (mapped.kind === 'not_configured') {
       onNotConfigured?.();
-      setRemovedNotice(true);
-      setError('');
-      setAmberNotice('');
-      setStatus('');
-      setAccessNote('');
+      showRemovedNotice(true);
       return;
     }
     if (mapped.kind === 'rate_limited') {
@@ -307,11 +328,11 @@ export function KrogerAppSetupModal({
     }
     if (mapped.kind === 'not_configured') {
       onNotConfigured?.();
-      setRemovedNotice(true);
-      setModalityError('');
-      setModalitySaved('');
-      setStatus('');
-      setAccessNote('');
+      showRemovedNotice(false);
+      requestAnimationFrame(() => {
+        const delivery = document.querySelector('.store-app-modality-control input[value="DELIVERY"]');
+        if (delivery instanceof HTMLElement) delivery.focus();
+      });
       return;
     }
     if (mapped.kind === 'rate_limited') {
@@ -399,10 +420,7 @@ export function KrogerAppSetupModal({
       return;
     }
     if (result.kind === 'not_configured') {
-      setRemovedNotice(true);
-      setConnectError('');
-      setStatus('');
-      setAccessNote('');
+      showRemovedNotice(true);
       return;
     }
     setConnectError(result.message ?? krogerAppCopy.errConnectFailedFallback);
@@ -457,8 +475,9 @@ export function KrogerAppSetupModal({
 
   const removedBlock = removedNotice && (
     <Stack gap="xs">
-      <Text size="sm">{krogerAppCopy.errRemoved}</Text>
+      <Text role="status" size="sm">{krogerAppCopy.errRemoved}</Text>
       <Button
+        ref={removedStartAgainRef}
         variant="subtle"
         className="store-app-touch-target store-app-touch-target-wide"
         onClick={() => {
@@ -633,8 +652,8 @@ export function KrogerAppSetupModal({
                   id="store-app-client-secret"
                   classNames={{ input: 'store-app-credential-input', innerInput: 'store-app-credential-input' }}
                   styles={{
-                    input: { minHeight: 44, height: 44, boxSizing: 'border-box' },
-                    innerInput: { minHeight: 44, height: 44, boxSizing: 'border-box' },
+                    input: { minHeight: 48, height: 48, boxSizing: 'border-box' },
+                    innerInput: { minHeight: 48, height: 48, boxSizing: 'border-box' },
                   }}
                   label={krogerLabels.fSecret}
                   description={app.configured ? krogerAppCopy.s6SavedSecret : krogerLabels.fSecretHint}

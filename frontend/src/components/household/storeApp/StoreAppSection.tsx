@@ -77,6 +77,12 @@ export function StoreAppSection({
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState('');
   const [rowRemovedNotice, setRowRemovedNotice] = useState(false);
+  const rowStartAgainRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!rowRemovedNotice) return;
+    requestAnimationFrame(() => rowStartAgainRef.current?.focus());
+  }, [rowRemovedNotice]);
 
   const ctx = storeNameContext(linkedStoreName);
   const canManage = !forcedMember && (app?.canManage ?? isAdmin);
@@ -380,8 +386,9 @@ export function StoreAppSection({
             )}
             {rowRemovedNotice && (
               <Stack gap="xs">
-                <Text size="sm">{krogerAppCopy.errRemoved}</Text>
+                <Text role="status" size="sm">{krogerAppCopy.errRemoved}</Text>
                 <Button
+                  ref={rowStartAgainRef}
                   variant="subtle"
                   className="store-app-touch-target store-app-touch-target-wide"
                   onClick={() => {

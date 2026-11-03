@@ -254,7 +254,7 @@ export function krogerAppConnectLabel(ctx: StoreNameContext, again = false): str
 
 /** UX spec G7 + T50 banned jargon for c.app.* source strings. */
 export const KROGER_APP_COPY_BANNED =
-  /\b(stockbot|oauth|client|scope|credentials|redirect uri|developer app|operator|api|provider|sync|sku|token|lookup|auto|upc)\b/i;
+  /\b(stockbot|oauth|client|scope|credentials|redirect uri|developer app|operator|api|provider|sync|sku|token|lookup|auto|upc|modality)\b/i;
 
 export function collectKrogerAppCopyStrings(): string[] {
   const values: string[] = [];

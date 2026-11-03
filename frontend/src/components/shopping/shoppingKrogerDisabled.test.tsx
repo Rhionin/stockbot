@@ -86,6 +86,6 @@ describe('shopping list with Kroger disabled on providers', () => {
     expect(screen.queryByText(/unconfigured|not configured|set up/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^disabled$/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Send to /i })).not.toBeInTheDocument();
-    // "Link to online cart" is not implemented on the shopping list yet; do not assert it here.
+    expect(screen.queryByRole('link', { name: /online cart/i })).not.toBeInTheDocument();
   });
 });

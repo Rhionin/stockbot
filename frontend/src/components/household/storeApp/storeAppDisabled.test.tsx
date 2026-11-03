@@ -301,5 +301,31 @@ describe('store_disabled in setup modal', () => {
     fireEvent.click(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery }));
     await screen.findByText(krogerAppCopy.errRemoved);
     expect(screen.getByRole('button', { name: krogerAppCopy.startAgain })).toBeInTheDocument();
+    expect(screen.getAllByRole('status').some((node) => node.textContent?.includes(krogerAppCopy.errRemoved))).toBe(true);
+    await waitFor(() => expect(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery })).toHaveFocus());
+  });
+});
+
+describe('not_configured removed recovery', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('row Connect moves focus to Start again and announces the removed message', async () => {
+    renderSection({
+      getApp: { ...configuredApp, status: 'ready_to_connect' },
+      onAuthorize: () => json({
+        code: 'kroger_not_connected',
+        error: 'not configured',
+        checkReason: 'not_configured',
+      }, 409),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.rowConnect }));
+    await screen.findByText(krogerAppCopy.errRemoved);
+    const startAgain = screen.getByRole('button', { name: krogerAppCopy.startAgain });
+    await waitFor(() => expect(startAgain).toHaveFocus());
+    expect(screen.getAllByRole('status').some((node) => node.textContent?.includes(krogerAppCopy.errRemoved))).toBe(true);
+    expect(screen.queryByRole('button', { name: krogerAppCopy.rowConnect })).not.toBeInTheDocument();
   });
 });

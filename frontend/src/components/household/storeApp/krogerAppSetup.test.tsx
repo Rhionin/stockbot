@@ -1269,6 +1269,8 @@ describe('UX v5.3 GO blockers', () => {
     await screen.findByText(krogerAppCopy.errRemoved);
     expect(screen.getByRole('button', { name: krogerAppCopy.startAgain })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Connect your Kroger account/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: krogerAppCopy.startAgain })).toHaveFocus());
+    expect(screen.getAllByRole('status').some((node) => node.textContent?.includes(krogerAppCopy.errRemoved))).toBe(true);
   });
 
   it('shows connect-failed under the step 7 button for other authorize errors', async () => {
