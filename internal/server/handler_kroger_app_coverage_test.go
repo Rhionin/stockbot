@@ -43,7 +43,14 @@ func TestKrogerAppGetDerivesConnectionStatuses(t *testing.T) {
 	}
 	reconnect := caller.authed(http.MethodGet, "/api/households/"+primary+"/kroger-app", nil)
 	if reconnect.Code != http.StatusOK || !strings.Contains(reconnect.Body.String(), `"status":"needs_reconnect"`) {
-		t.Fatalf("needs_reconnect %d %s", reconnect.Code, reconnect.Body.String())
+		t.Fatalf("needs_reconnect after reauth_required %d %s", reconnect.Code, reconnect.Body.String())
+	}
+	if _, err := db.Exec(`UPDATE provider_connections SET state = 'connected', app_key = 'stale-wrong-key' WHERE id = 'st-connected'`); err != nil {
+		t.Fatal(err)
+	}
+	stale := caller.authed(http.MethodGet, "/api/households/"+primary+"/kroger-app", nil)
+	if stale.Code != http.StatusOK || !strings.Contains(stale.Body.String(), `"status":"needs_reconnect"`) {
+		t.Fatalf("needs_reconnect after stale app_key %d %s", stale.Code, stale.Body.String())
 	}
 }
 

@@ -596,22 +596,45 @@ func TestCatalogProductCompactIgnoresForeignHousehold(t *testing.T) {
 }
 
 func TestCatalogLookupsEnabledDBError(t *testing.T) {
-	catalog, scope, db := newTestCatalog(t)
-	ctx := context.Background()
-	seedKrogerStoreWithCredentials(t, catalog, scope, db)
-	when := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`
-		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
-		VALUES ('conn-ok', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
-		t.Fatal(err)
+	seedLookupsEnabledList := func(t *testing.T) (*Catalog, tenant.Scope, *sql.DB, context.Context) {
+		t.Helper()
+		catalog, scope, db := newTestCatalog(t)
+		ctx := context.Background()
+		seedKrogerStoreWithCredentials(t, catalog, scope, db)
+		when := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := db.Exec(`
+			INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+			VALUES ('conn-ok', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
+			t.Fatal(err)
+		}
+		return catalog, scope, db, ctx
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_, err := catalog.List(ctx, scope, CheckingContext{})
-	if err == nil {
-		t.Fatal("expected error after closing db")
-	}
+	t.Run("productAccessQuery", func(t *testing.T) {
+		catalog, scope, db, ctx := seedLookupsEnabledList(t)
+		if _, err := db.Exec(`ALTER TABLE provider_app_credentials RENAME COLUMN product_access TO product_access_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.Exec(`ALTER TABLE provider_app_credentials RENAME COLUMN product_access_hidden TO product_access`)
+		})
+		_, err := catalog.List(ctx, scope, CheckingContext{})
+		if err == nil {
+			t.Fatal("expected lookupsEnabled product_access query error")
+		}
+	})
+	t.Run("compactGrantQuery", func(t *testing.T) {
+		catalog, scope, db, ctx := seedLookupsEnabledList(t)
+		if _, err := db.Exec(`ALTER TABLE provider_connections RENAME COLUMN granted_scope TO granted_scope_hidden`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.Exec(`ALTER TABLE provider_connections RENAME COLUMN granted_scope_hidden TO granted_scope`)
+		})
+		_, err := catalog.List(ctx, scope, CheckingContext{})
+		if err == nil {
+			t.Fatal("expected lookupsEnabled granted_scope query error")
+		}
+	})
 }
 
 func TestCatalogProductCompactAnyConnectedRow(t *testing.T) {
@@ -659,6 +682,11 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 	}
 	for _, q := range qs {
 		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !compactFirst {
+		if _, err := db.Exec(`UPDATE provider_connections SET state = 'disconnected' WHERE id = ?`, plainRow.id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -730,6 +758,33 @@ func TestCatalogProductCompactIgnoresOtherProviders(t *testing.T) {
 	}
 	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
 		t.Fatalf("checkReason=%v", out.Stores[0].CheckReason)
+	}
+}
+
+func TestCatalogCheckReasonIgnoresNonKrogerConnected(t *testing.T) {
+	catalog, scope, db := newTestCatalog(t)
+	ctx := context.Background()
+	kroger, loc, chain := "kroger", "12345678", "KROGER"
+	if _, err := catalog.Create(ctx, scope, CreateInput{Name: "K", LinkedProvider: &kroger, LocationID: &loc, LocationChain: &chain}); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials (id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, product_access, product_access_at, updated_at)
+		VALUES ('pac-m', 'user-1', ?, 'kroger', 'cid', 'sec', 'https://example.test/cb', 1, ?, ?)`, scope.HouseholdID(), when, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
+		VALUES ('conn-other-only', 'user-1', ?, 'other-provider', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
+		t.Fatal(err)
+	}
+	out, err := catalog.List(ctx, scope, CheckingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "not_connected" {
+		t.Fatalf("non-kroger connected row must not count: %v", out.Stores[0].CheckReason)
 	}
 }
 
