@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -121,6 +122,55 @@ func TestStartServesTheListener(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("server did not shut down")
+	}
+}
+
+func TestStartSeedsKrogerCutoverFromEnv(t *testing.T) {
+	quietSite(t)
+	lan := freeAddr(t)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pantry.db")
+	t.Setenv("DB_PATH", dbPath)
+	t.Setenv("SETUP_DIR", dir)
+	t.Setenv("LAN_LISTEN_ADDR", lan)
+	t.Setenv("PUBLIC_LISTEN_ADDR", "off")
+	t.Setenv("DISABLE_EXTERNAL_PRODUCT_LOOKUP", "true")
+	t.Setenv("APP_BASE_URL", "https://pantry.example.test")
+	t.Setenv("APP_NAME", "Pantry Test")
+	t.Setenv("PANTRY_SESSION_SECRET", "sample-session-secret-0123456789abcd")
+	t.Setenv("KROGER_CLIENT_ID", "boot-cut-id")
+	t.Setenv("KROGER_CLIENT_SECRET", "boot-cut-secret")
+	t.Setenv("KROGER_MODALITY", "DELIVERY")
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- start(stop) }()
+	waitHealth(t, lan, done)
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("server did not shut down")
+	}
+
+	db, err := app.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var flag string
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'kroger_app_cutover_v1'`).Scan(&flag); err != nil || flag != "1" {
+		t.Fatalf("cutover flag = %q err=%v", flag, err)
+	}
+	var clientID, modality string
+	if err := db.QueryRow(`SELECT client_id, modality FROM provider_app_credentials WHERE provider_id = 'kroger' LIMIT 1`).Scan(&clientID, &modality); err != nil {
+		t.Fatal(err)
+	}
+	if clientID != "boot-cut-id" || modality != "DELIVERY" {
+		t.Fatalf("saved app client=%q modality=%q", clientID, modality)
 	}
 }
 

@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,7 +75,76 @@ func TestServerCredentialScopeUsesPrimary(t *testing.T) {
 }
 
 func TestKrogerCredentialsRequireOperator(t *testing.T) {
-	t.Skip("covered by TestKrogerAppOperatorHouseholdRegression and TestKrogerAppTwoHouseholdRoleIsolation")
+	db := openMigratedDB(t, filepath.Join(t.TempDir(), "kroger-retired-creds.db"))
+	setupDir := t.TempDir()
+	svc := auth.NewService(db, setupDir)
+	site := stage1Site(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("env-client", "env-secret", site.AbsoluteURL("/api/providers/kroger/callback"), "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.WithTransport(krogerTestTokenTransport())
+	if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	handler, _ := setupOnDB(t, db, nil,
+		WithStage1(svc, site),
+		WithCartRegistry(registry, cart.NewLedger(db)),
+		WithProviderEnv(ProviderEnv{
+			ClientID: "env-client", ClientSecret: "env-secret",
+			RedirectURI: site.AbsoluteURL("/api/providers/kroger/callback"), Modality: "PICKUP",
+		}),
+	)
+	operator := &stage1Caller{t: t, h: handler}
+	if rec := operator.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	code, err := auth.ReadSetupCode(setupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator.call(http.MethodPost, "/setup", map[string]string{
+		"setupCode": code, "name": "Ada Admin", "email": "ada@pantry.test", "password": "correct horse",
+	}, app.EntryPublic, nil)
+	login := operator.call(http.MethodPost, "/api/auth/login", map[string]string{
+		"email": "ada@pantry.test", "password": "correct horse",
+	}, app.EntryPublic, nil)
+	operator.cookie = cookieFrom(t, login, site.SessionCookie().Name)
+	var opSession auth.SessionView
+	if err := json.Unmarshal(login.Body.Bytes(), &opSession); err != nil || opSession.ActiveHouseholdID == nil {
+		t.Fatal(login.Body.String())
+	}
+	primaryHouse := *opSession.ActiveHouseholdID
+	operator.house = primaryHouse
+	if rec := operator.authed(http.MethodPut, "/api/households/"+primaryHouse+"/kroger-app", map[string]string{
+		"clientId": "seed-admin", "clientSecret": "seed-secret", "modality": "DELIVERY",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("seed household app %d %s", rec.Code, rec.Body.String())
+	}
+	snapDB := credentialsDBSnap(t, db)
+	body := map[string]string{
+		"clientId": "evil", "clientSecret": "evil", "redirectUri": "https://evil.example/cb", "modality": "PICKUP",
+	}
+	assertRetired := func(t *testing.T, label string, c *stage1Caller, method string, payload any) {
+		t.Helper()
+		var rec *httptest.ResponseRecorder
+		if c.cookie == "" {
+			rec = c.call(method, "/api/providers/kroger/credentials", payload, app.EntryPublic, nil)
+		} else {
+			rec = c.authed(method, "/api/providers/kroger/credentials", payload)
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s code=%d body=%s", label, method, rec.Code, rec.Body.String())
+		}
+		if credentialsDBSnap(t, db) != snapDB {
+			t.Fatalf("%s changed DB", label)
+		}
+	}
+	assertRetired(t, "operator-put", operator, http.MethodPut, body)
+	assertRetired(t, "operator-delete", operator, http.MethodDelete, nil)
+	anon := &stage1Caller{t: t, h: handler}
+	assertRetired(t, "anon-put", anon, http.MethodPut, body)
 }
 
 func TestCredentialViewNonPrimaryIgnoresLeftoverSavedRow(t *testing.T) {

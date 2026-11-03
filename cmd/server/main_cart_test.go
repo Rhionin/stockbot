@@ -28,6 +28,20 @@ func newCartDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func TestLoadCartRegistryInvalidModalityDefaultsPickup(t *testing.T) {
+	t.Setenv("DISABLE_KROGER", "")
+	t.Setenv("KROGER_CLIENT_ID", "client")
+	t.Setenv("KROGER_CLIENT_SECRET", "secret")
+	t.Setenv("KROGER_REDIRECT_URI", "https://example.test/cb")
+	t.Setenv("KROGER_MODALITY", "BOAT")
+	t.Setenv("KROGER_BATCH_SIZE", "")
+
+	_, _, env := loadCartRegistry(newCartDB(t))
+	if env.Modality != "PICKUP" {
+		t.Fatalf("modality = %q", env.Modality)
+	}
+}
+
 func TestLoadCartRegistryUnconfiguredStillListsKroger(t *testing.T) {
 	t.Setenv("DISABLE_KROGER", "")
 	t.Setenv("KROGER_CLIENT_ID", "  ")

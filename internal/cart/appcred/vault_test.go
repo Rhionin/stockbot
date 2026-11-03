@@ -50,6 +50,11 @@ func TestVaultHasApp(t *testing.T) {
 	if err != nil || ok {
 		t.Fatalf("empty ok=%v err=%v", ok, err)
 	}
+	var nilVault *Vault
+	ok, err = nilVault.HasApp(ctx, scope, "kroger")
+	if err != nil || ok {
+		t.Fatalf("nil vault ok=%v err=%v", ok, err)
+	}
 	if err := vault.Save(ctx, scope, Saved{
 		ProviderID: "kroger", ClientID: "c", ClientSecret: "s",
 		RedirectURI: "https://cb", Modality: "PICKUP",

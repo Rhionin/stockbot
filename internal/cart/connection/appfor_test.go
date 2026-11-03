@@ -59,3 +59,11 @@ func TestAppForRequiresVaultAndApp(t *testing.T) {
 		t.Fatalf("matching key: %v", err)
 	}
 }
+
+func TestAppForRejectsEmptyScope(t *testing.T) {
+	vault, ctx, _ := testVaultScope(t)
+	_, _, err := AppFor(ctx, vault, tenant.Scope{}, nil)
+	if err == nil {
+		t.Fatal("expected scope error")
+	}
+}

@@ -1,12 +1,16 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 )
 
@@ -78,6 +82,77 @@ func TestListProvidersKrogerDisabledOmitsCredentials(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			bodyContains:   []string{`"connectionState":"disabled"`},
 			bodyExcludes:   []string{`"credentials"`},
+		},
+	}})
+}
+
+func TestKrogerCallbackTokenExchangeFailure(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{{
+		name: "callback maps token exchange failure to failed",
+		setup: func(env testEnv) {
+			adapter, err := kroger.New("my-client", "secret", "https://app.example/cb", "PICKUP")
+			if err != nil {
+				env.T.Fatal(err)
+			}
+			adapter.WithTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return nil, io.ErrUnexpectedEOF
+			}))
+			if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+				env.T.Fatal(err)
+			}
+			seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
+		},
+		httpExchange: httpExchange{
+			method:         http.MethodGet,
+			path:           "/api/providers/kroger/authorize",
+			expectedStatus: http.StatusOK,
+		},
+		afterRequest: func(env testEnv) {
+			var body struct {
+				AuthorizationURL string `json:"authorizationUrl"`
+			}
+			raw, _ := io.ReadAll(env.Res.Body)
+			if err := json.Unmarshal(raw, &body); err != nil {
+				env.T.Fatal(err)
+			}
+			parsed, _ := url.Parse(body.AuthorizationURL)
+			state := parsed.Query().Get("state")
+			executeExchange(env.T, handlerFromEnv(env), httpExchange{
+				method:         http.MethodGet,
+				path:           "/api/providers/kroger/callback",
+				query:          map[string]string{"code": "bad-code", "state": state},
+				expectedStatus: http.StatusSeeOther,
+				bodyContains:   []string{"kroger=failed"},
+			})
+		},
+	}})
+}
+
+func TestKrogerCallbackWhenDisabledRedirectsWithoutOutcome(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{{
+		name:    "disabled server callback consumes state and omits kroger query",
+		options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
+		setup: func(env testEnv) {
+			if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
+				env.T.Fatal(err)
+			}
+			scope := primaryScope(env.T, env.DB)
+			if err := connection.NewDirectory(env.DB).GenerateAuthState(
+				context.Background(), scope, "kroger", "disabled-state", "app-key", "household"); err != nil {
+				env.T.Fatal(err)
+			}
+		},
+		httpExchange: httpExchange{
+			method:         http.MethodGet,
+			path:           "/api/providers/kroger/callback",
+			query:          map[string]string{"code": "ignored", "state": "disabled-state"},
+			expectedStatus: http.StatusSeeOther,
+		},
+		afterRequest: func(env testEnv) {
+			loc := env.Res.Header.Get("Location")
+			if !strings.Contains(loc, "/household") || strings.Contains(loc, "kroger=") {
+				env.T.Fatalf("Location = %q", loc)
+			}
 		},
 	}})
 }
