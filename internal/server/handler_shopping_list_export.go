@@ -24,6 +24,7 @@ type ShoppingListExportHandler struct {
 	Registry     *cart.Registry
 	Connections  *connection.Directory
 	Credentials  *appcred.Vault
+	Env          ProviderEnv
 }
 
 func (h *ShoppingListExportHandler) householdCredentialsConfigured(ctx context.Context, scope tenant.Scope, providerID cart.ProviderID) (bool, error) {
@@ -38,9 +39,6 @@ func (h *ShoppingListExportHandler) householdCredentialsConfigured(ctx context.C
 		if has {
 			return true, nil
 		}
-	}
-	if h.Registry != nil && h.Registry.CredentialsConfigured(providerID) {
-		return true, nil
 	}
 	return false, nil
 }
@@ -137,6 +135,9 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if id, ok := h.Registry.SoleConfigured(); ok {
 			providerID = id
 		}
+	}
+	if providerID == "kroger" && h.Env.Disabled {
+		return nil, StoreDisabled()
 	}
 
 	// No configured provider: the historical no-op report. Naming an unknown

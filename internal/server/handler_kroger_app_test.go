@@ -24,7 +24,7 @@ func krogerTestTokenTransport() http.RoundTripper {
 	})
 }
 
-func setupKrogerAppOperator(t *testing.T) (*stage1Caller, *sql.DB, string, *kroger.Adapter) {
+func setupKrogerAppOperator(t *testing.T, extra ...Option) (*stage1Caller, *sql.DB, string, *kroger.Adapter) {
 	t.Helper()
 	setupDir := t.TempDir()
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "kroger-app.db"))
@@ -39,14 +39,16 @@ func setupKrogerAppOperator(t *testing.T) (*stage1Caller, *sql.DB, string, *krog
 	if err := registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
-	handler, _ := setupOnDB(t, db, nil,
+	opts := []Option{
 		WithStage1(svc, site),
 		WithCartRegistry(registry, cart.NewLedger(db)),
 		WithProviderEnv(ProviderEnv{
 			ClientID: "env-client", ClientSecret: "env-secret",
 			RedirectURI: site.AbsoluteURL("/api/providers/kroger/callback"), Modality: "PICKUP",
 		}),
-	)
+	}
+	opts = append(opts, extra...)
+	handler, _ := setupOnDB(t, db, nil, opts...)
 	caller := &stage1Caller{t: t, h: handler}
 	if rec := caller.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil); rec.Code != http.StatusOK {
 		t.Fatalf("setup page %d", rec.Code)

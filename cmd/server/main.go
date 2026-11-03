@@ -122,16 +122,13 @@ func loadCartRegistry(db *sql.DB) (*cart.Registry, *cart.Ledger, server.Provider
 	opts := []cart.RegisterOption{
 		cart.WithBatchSize(krogerBatchSize()),
 	}
-	if configured {
-		opts = append(opts, cart.WithCredentialsConfigured(true))
-	}
 	if err := registry.Register(adapter, opts...); err != nil {
 		log.Printf("failed to register Kroger: %v", err)
 	}
 	if !configured && !disabled {
-		log.Println("Kroger app credentials: none configured; set them in the shopping list or with KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, and KROGER_REDIRECT_URI")
+		log.Println("Kroger provider registered without deploy-time app credentials; households configure their own store app in settings")
 	} else if configured && !disabled {
-		log.Println("Kroger app credentials: using environment")
+		log.Println("Kroger deploy-time app credentials loaded for cutover seeding only")
 	}
 	return registry, ledger, envCreds
 }

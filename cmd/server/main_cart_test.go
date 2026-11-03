@@ -75,15 +75,14 @@ func TestLoadCartRegistryConfigured(t *testing.T) {
 	t.Setenv("KROGER_BATCH_SIZE", "10")
 
 	registry, _, _ := loadCartRegistry(newCartDB(t))
-	if !registry.CredentialsConfigured("kroger") {
-		t.Fatal("kroger should be credentials-configured")
+	if registry.CredentialsConfigured("kroger") {
+		t.Fatal("env credentials must not set registry credentials-configured (household apps only)")
 	}
 	if got := registry.BatchSize("kroger"); got != 10 {
 		t.Fatalf("batch size %d, want 10", got)
 	}
-	id, ok := registry.SoleConfigured()
-	if !ok || id != "kroger" {
-		t.Fatalf("sole configured = %q, %v", id, ok)
+	if id, ok := registry.SoleConfigured(); ok {
+		t.Fatalf("sole configured = %q, want none at registry load", id)
 	}
 }
 
@@ -96,8 +95,8 @@ func TestLoadCartRegistryInvalidModalityStaysConfigured(t *testing.T) {
 	t.Setenv("KROGER_BATCH_SIZE", "nope")
 
 	registry, _, _ := loadCartRegistry(newCartDB(t))
-	if !registry.CredentialsConfigured("kroger") {
-		t.Fatal("invalid modality should still leave Kroger configured")
+	if registry.CredentialsConfigured("kroger") {
+		t.Fatal("registry credentials-configured must stay false without a household app")
 	}
 	if got := registry.BatchSize("kroger"); got != 50 {
 		t.Fatalf("batch size %d, want default 50", got)
@@ -255,8 +254,8 @@ func TestLoadCartRegistrySavedCredentialsOverrideEnv(t *testing.T) {
 	}
 
 	registry, _, envCreds := loadCartRegistry(db)
-	if !registry.CredentialsConfigured("kroger") {
-		t.Fatal("env credentials should configure Kroger registry flag")
+	if registry.CredentialsConfigured("kroger") {
+		t.Fatal("saved/env rows must not set registry credentials-configured")
 	}
 	provider, ok := registry.Get("kroger")
 	if !ok {
@@ -354,8 +353,8 @@ func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
 	if strings.Contains(out, "using saved row for household") {
 		t.Fatalf("loadCartRegistry should not apply saved rows to adapter: %q", out)
 	}
-	if !strings.Contains(out, "using environment") {
-		t.Fatalf("log missing environment source: %q", out)
+	if !strings.Contains(out, "cutover seeding only") {
+		t.Fatalf("log missing cutover seeding message: %q", out)
 	}
 	if strings.Contains(out, "using saved row for household") {
 		t.Fatalf("log should not claim saved row when only env is set: %q", out)
@@ -367,11 +366,11 @@ func TestLoadCartRegistryLogsCredentialSource(t *testing.T) {
 	t.Setenv("KROGER_REDIRECT_URI", "")
 	loadCartRegistry(newCartDB(t))
 	out = logs.String()
-	if !strings.Contains(out, "none configured") {
+	if !strings.Contains(out, "without deploy-time app credentials") {
 		t.Fatalf("log missing none configured: %q", out)
 	}
-	if strings.Contains(out, "using environment") {
-		t.Fatalf("log should not claim environment when unset: %q", out)
+	if strings.Contains(out, "cutover seeding only") {
+		t.Fatalf("log should not claim env when unset: %q", out)
 	}
 }
 
@@ -403,11 +402,11 @@ func TestLoadCartRegistryUnusableSavedRowLogsEnvironment(t *testing.T) {
 	}
 	registry, _, _ := loadCartRegistry(db)
 	out := logs.String()
-	if !registry.CredentialsConfigured("kroger") {
-		t.Fatalf("env keys should still configure kroger: %q", out)
+	if registry.CredentialsConfigured("kroger") {
+		t.Fatalf("registry flag must stay false: %q", out)
 	}
-	if !strings.Contains(out, "using environment") {
-		t.Fatalf("log missing environment source when saved row was not applied: %q", out)
+	if !strings.Contains(out, "cutover seeding only") {
+		t.Fatalf("log missing cutover seeding when saved row was not applied: %q", out)
 	}
 	if strings.Contains(out, "using saved row") {
 		t.Fatalf("log claims saved row that was not applied: %q", out)

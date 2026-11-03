@@ -133,18 +133,9 @@ func (h *ProviderCredentialDeleteHandler) Handle(req Request[struct{}, providerC
 			return nil, InternalError(err)
 		}
 	}
-	if h.EnvFallback.Complete() {
-		if err := sink.ApplyAppCredentials(h.EnvFallback.ClientID, h.EnvFallback.ClientSecret, h.EnvFallback.RedirectURI, h.EnvFallback.Modality); err != nil {
-			return nil, InternalError(err)
-		}
-		if h.Registry != nil {
-			h.Registry.SetCredentialsConfigured(provider.ID(), true)
-		}
-	} else {
-		sink.ClearAppCredentials()
-		if h.Registry != nil {
-			h.Registry.SetCredentialsConfigured(provider.ID(), false)
-		}
+	sink.ClearAppCredentials()
+	if h.Registry != nil {
+		h.Registry.SetCredentialsConfigured(provider.ID(), false)
 	}
 	view, err := h.credentialView(req.Context, scope, provider)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -37,10 +38,12 @@ func TestExportMapsAProvisionRefusal(t *testing.T) {
 	if err := registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
+	seedDefaultExportApp(t, env.DB, string(provider.ID()))
 	handler := &ShoppingListExportHandler{
 		ShoppingList: shopping.NewStore(env.DB),
 		Pantry:       inventory.NewPantry(env.DB),
 		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
 		Provisioner:  stubProvisioner{err: &cart.ProvisionConflict{Reason: "already sending this cart"}},
 	}
 	mux := http.NewServeMux()
@@ -69,7 +72,9 @@ func TestExportMapsAProvisionRefusal(t *testing.T) {
 	if err := oauth.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
+	seedKrogerHouseholdApp(t, env.DB, "client", "secret", "https://pantry.example/cb")
 	handler.Registry = oauth
+	handler.Credentials = appcred.NewVault(env.DB)
 	handler.Connections = nil
 	missing := httptest.NewRecorder()
 	missingReq := httptest.NewRequest(http.MethodPost, "/api/shopping-list/export", strings.NewReader(`{"provider":"kroger"}`))

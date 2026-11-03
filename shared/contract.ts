@@ -162,18 +162,6 @@ export const INVALID_REPORT_SENTENCE = 'invalid report';
 export const CODE_CONFIRMATION_MISMATCH = 'confirmation_mismatch';
 
 export const CODE_RATE_LIMITED = 'rate_limited';
-
-/** GET /api/households/{id}/kroger-app when DISABLE_KROGER is set. */
-export interface KrogerAppDisabled {
-  status: 'disabled';
-}
-
-/** GET /api/providers Kroger row when DISABLE_KROGER is set. */
-export interface KrogerProviderDisabled {
-  id: 'kroger';
-  displayName: string;
-  status: 'disabled';
-}
 export const RATE_LIMITED_SENTENCE = 'Too many sign-in attempts. Try again later.';
 
 export const CODE_PAYLOAD_TOO_LARGE = 'payload_too_large';
@@ -854,6 +842,18 @@ export function subscribeOfflineBanner(listener: () => void): () => void {
 export type HouseholdHeaderName = 'X-Household-Id';
 
 export type HouseholdRole = 'owner' | 'member';
+
+/** GET /api/households/{id}/kroger-app when DISABLE_KROGER is set. */
+export interface KrogerAppDisabled {
+  status: 'disabled';
+}
+
+/** GET /api/providers Kroger row when DISABLE_KROGER is set. */
+export interface KrogerProviderDisabled {
+  id: 'kroger';
+  displayName: string;
+  status: 'disabled';
+}
 
 export type HostedErrorCode =
   | 'busy'

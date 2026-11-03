@@ -139,6 +139,7 @@ func TestCartExportWorksOnDatabaseWith030(t *testing.T) {
 	if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
+	seedDefaultExportApp(t, env.DB, string(provider.ID()))
 	executeExchange(t, handler, httpExchange{
 		method:         http.MethodPost,
 		path:           "/api/shopping-list/export",
@@ -194,6 +195,7 @@ func TestCartExportB9RejectsWrongBearerToken(t *testing.T) {
 	if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
+	seedDefaultExportApp(t, env.DB, string(provider.ID()))
 	executeExchange(t, handler, httpExchange{
 		method: http.MethodPost, path: "/api/shopping-list/export",
 		body:           `{"provider":"test-oauth2_authorization_code-server_push"}`,
