@@ -463,6 +463,15 @@ export function KrogerAppSetupModal({
     <Text role="status" size="sm" className="store-app-note-unknown">{accessNote}</Text>
   );
 
+  useEffect(() => {
+    if (!opened && !closeConfirm) return;
+    queueMicrotask(() => {
+      document.querySelectorAll('.store-app-setup-modal .mantine-Modal-header').forEach((node) => {
+        node.setAttribute('role', 'group');
+      });
+    });
+  }, [opened, closeConfirm, step]);
+
   return (
     <>
       <Modal
@@ -470,7 +479,6 @@ export function KrogerAppSetupModal({
         opened={opened}
         onClose={requestClose}
         title={replaceMode ? krogerAppCopy.menuReplace : krogerAppCopy.title}
-        headerProps={{ role: 'group' }}
         size="lg"
         fullScreen={compact ?? false}
         closeButtonProps={{
@@ -755,7 +763,6 @@ export function KrogerAppSetupModal({
         opened={closeConfirm}
         onClose={() => setCloseConfirm(false)}
         title={krogerAppCopy.closeConfirmTitle}
-        headerProps={{ role: 'group' }}
         size="sm"
         withCloseButton={false}
         closeButtonProps={{

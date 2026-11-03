@@ -31,6 +31,15 @@ export function RemoveStoreAppDialog({
     }
   }, [opened]);
 
+  useEffect(() => {
+    if (!opened) return;
+    queueMicrotask(() => {
+      document.querySelectorAll('.store-app-remove-modal .mantine-Modal-header').forEach((node) => {
+        node.setAttribute('role', 'group');
+      });
+    });
+  }, [opened]);
+
   const confirm = async () => {
     setBusy(true);
     setError('');
@@ -46,10 +55,10 @@ export function RemoveStoreAppDialog({
 
   return (
     <Modal
+      className="store-app-remove-modal"
       opened={opened}
       onClose={onClose}
       title={krogerAppCopy.rmTitle}
-      headerProps={{ role: 'group' }}
       size="sm"
       closeButtonProps={{
         'aria-label': krogerAppCopy.closeLabel,
