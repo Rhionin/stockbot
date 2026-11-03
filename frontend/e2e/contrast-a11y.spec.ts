@@ -2,6 +2,7 @@ import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { resetSharedState } from './helpers'
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 
 const minimumContrast = 4.5
 
@@ -352,7 +353,7 @@ test.describe('text contrast in the store app setup modal', () => {
       await page.getByRole('button', { name: 'Set up' }).click()
       const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
       await waitForStoreAppDialogSettled(page, dialog)
-      const bodySample = dialog.getByText(/register a developer app/i).first()
+      const bodySample = dialog.getByText(krogerAppCopy.s1BodyFallback).first()
       await expect(bodySample).toBeVisible()
       await expectContrast(bodySample)
       const dialogAxe = await dialogColorContrast(page).analyze()
