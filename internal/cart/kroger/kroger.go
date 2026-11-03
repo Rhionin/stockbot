@@ -22,6 +22,138 @@ const (
 	CertificationURL = "https://api-ce.kroger.com"
 )
 
+// AppCreds carries one household app's OAuth credentials for a single call.
+type AppCreds struct {
+	cart.AppCredentials
+	ClientSecret string
+}
+
+// AuthorizationScopeForProductAccess returns the OAuth scope for sign-in.
+func AuthorizationScopeForProductAccess(productAccess *int) string {
+	scope := "cart.basic:write"
+	if productAccess != nil && *productAccess == 1 {
+		scope += " product.compact"
+	}
+	return scope
+}
+
+// AuthorizationURLForApp builds the authorize URL for the given app credentials.
+func (a *Adapter) AuthorizationURLForApp(creds AppCreds, scope, state string) (string, error) {
+	if creds.ClientID == "" || creds.RedirectURI == "" {
+		return "", fmt.Errorf("client_id and redirect_uri are required")
+	}
+	base := a.baseURL
+	if base == "" {
+		base = BaseURL
+	}
+	url := fmt.Sprintf("%s/v1/connect/oauth2/authorize", base)
+	params := fmt.Sprintf(
+		"client_id=%s&redirect_uri=%s&scope=%s&response_type=code&state=%s",
+		creds.ClientID,
+		urlQueryEscape(creds.RedirectURI),
+		urlQueryEscape(scope),
+		urlQueryEscape(state),
+	)
+	return url + "?" + params, nil
+}
+
+// ExchangeCodeForApp exchanges an authorization code using explicit app credentials.
+func (a *Adapter) ExchangeCodeForApp(ctx context.Context, creds AppCreds, code string) (cart.TokenSet, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	base := a.baseURL
+	if base == "" {
+		base = BaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/v1/connect/oauth2/token", base),
+		strings.NewReader(fmt.Sprintf("code=%s&grant_type=authorization_code&client_id=%s&redirect_uri=%s",
+			urlQueryEscape(code), creds.ClientID, urlQueryEscape(creds.RedirectURI))))
+	if err != nil {
+		return cart.TokenSet{}, fmt.Errorf("failed to create exchange request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(creds.ClientID, creds.ClientSecret)
+	return a.roundTripToken(req)
+}
+
+// RefreshAccessTokenForHouseholdApp implements cart.AppBoundOAuthRefresh.
+func (a *Adapter) RefreshAccessTokenForHouseholdApp(ctx context.Context, creds cart.HouseholdAppOAuth, refreshToken string) (cart.TokenSet, error) {
+	return a.RefreshAccessTokenForApp(ctx, AppCreds{
+		AppCredentials: cart.AppCredentials{
+			ClientID:    creds.ClientID,
+			RedirectURI: creds.RedirectURI,
+			Modality:    creds.Modality,
+			SecretSet:   creds.ClientSecret != "",
+		},
+		ClientSecret: creds.ClientSecret,
+	}, refreshToken)
+}
+
+// RefreshAccessTokenForApp refreshes tokens using explicit app credentials.
+func (a *Adapter) RefreshAccessTokenForApp(ctx context.Context, creds AppCreds, refreshToken string) (cart.TokenSet, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	base := a.baseURL
+	if base == "" {
+		base = BaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/v1/connect/oauth2/token", base),
+		strings.NewReader(fmt.Sprintf("grant_type=refresh_token&refresh_token=%s&client_id=%s",
+			urlQueryEscape(refreshToken), creds.ClientID)))
+	if err != nil {
+		return cart.TokenSet{}, fmt.Errorf("failed to create refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(creds.ClientID, creds.ClientSecret)
+	tokenSet, err := a.roundTripToken(req)
+	if err != nil {
+		return cart.TokenSet{}, &cart.OAuthTokenError{Err: err}
+	}
+	return tokenSet, nil
+}
+
+func (a *Adapter) roundTripToken(req *http.Request) (cart.TokenSet, error) {
+	transport := a.transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		return cart.TokenSet{}, fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		oauthErr := parseOAuthErrorBody(body)
+		if oauthErr != "" {
+			return cart.TokenSet{}, &cart.OAuthTokenError{
+				StatusCode: resp.StatusCode,
+				OAuthError: oauthErr,
+				Err:        fmt.Errorf("token request returned status %d", resp.StatusCode),
+			}
+		}
+		return cart.TokenSet{}, fmt.Errorf("token request returned status %d", resp.StatusCode)
+	}
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		Scope        string `json:"scope"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return cart.TokenSet{}, fmt.Errorf("failed to decode token response: %w", err)
+	}
+	_ = tokenResp.Scope
+	return cart.TokenSet{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresIn:    time.Duration(tokenResp.ExpiresIn) * time.Second,
+		ReceiptAt:    time.Now().UTC(),
+	}, nil
+}
+
 // Adapter implements Kroger's Cart API.
 type Adapter struct {
 	mu           sync.RWMutex
@@ -128,6 +260,19 @@ func (a *Adapter) WithBaseURL(url string) *Adapter {
 func (a *Adapter) WithTransport(transport http.RoundTripper) *Adapter {
 	a.transport = transport
 	return a
+}
+
+// PublicBaseURL returns the API base URL configured on the adapter.
+func (a *Adapter) PublicBaseURL() string {
+	if a.baseURL == "" {
+		return BaseURL
+	}
+	return a.baseURL
+}
+
+// PublicTransport returns the HTTP transport used for API calls.
+func (a *Adapter) PublicTransport() http.RoundTripper {
+	return a.transport
 }
 
 // WithTimeout sets the request timeout (for testing).

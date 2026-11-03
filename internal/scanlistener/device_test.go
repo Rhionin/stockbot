@@ -32,10 +32,10 @@ func TestIsKeyPress(t *testing.T) {
 func TestReadKeyEvent(t *testing.T) {
 	// Build a valid input_event record manually
 	var buf bytes.Buffer
-	buf.Write(make([]byte, 16))                 // padding for timeval (unused)
-	binary.Write(&buf, binary.NativeEndian, uint16(evKey))   // type
-	binary.Write(&buf, binary.NativeEndian, uint16(0x02))    // code
-	binary.Write(&buf, binary.NativeEndian, int32(1))        // value
+	buf.Write(make([]byte, 16))                            // padding for timeval (unused)
+	binary.Write(&buf, binary.NativeEndian, uint16(evKey)) // type
+	binary.Write(&buf, binary.NativeEndian, uint16(0x02))  // code
+	binary.Write(&buf, binary.NativeEndian, int32(1))      // value
 
 	// Test successful decode
 	reader := bytes.NewReader(buf.Bytes())

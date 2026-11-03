@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   HOUSEHOLD_DELETE_SENTENCE,
   classifyImportDocument,
@@ -25,6 +25,7 @@ import {
   getSession,
   listInvites,
   listMembers,
+  listStores,
   removeMember,
   renameHousehold,
   restoreHousehold,
@@ -35,6 +36,9 @@ import {
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 import { ScannersSection } from './ScannersSection';
+import { StoreAppSection } from './storeApp/StoreAppSection';
+import { krogerCallbackIsError, krogerCallbackMessage, linkedCartStoreName, storeNameCtx } from './storeApp/krogerAppMessages';
+import './storeApp/storeApp.css';
 
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
@@ -63,6 +67,7 @@ function memberActionError(error: unknown): string {
 
 export function HouseholdPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { auth, logout, replaceAuth } = useHouseholdSession();
   const active = auth?.households.find((row) => row.id === auth.activeHouseholdId) ?? null;
   const isOwner = active?.role === 'owner';
@@ -93,22 +98,47 @@ export function HouseholdPage() {
   const [renameLoading, setRenameLoading] = useState(false);
   const [renameError, setRenameError] = useState('');
   const [renameNotice, setRenameNotice] = useState('');
+  const [krogerNotice, setKrogerNotice] = useState('');
+  const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
+  const [linkedStoreName, setLinkedStoreName] = useState<string | null>(null);
+  const [storeCanConnect, setStoreCanConnect] = useState(true);
+  const [setupStepOnOpen, setSetupStepOnOpen] = useState<number | undefined>();
+
+  useEffect(() => {
+    const outcome = searchParams.get('kroger');
+    if (outcome === null) return;
+    const message = krogerCallbackMessage(outcome, storeNameCtx(linkedStoreName), isOwner);
+    if (message !== '') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot OAuth return handling
+      setKrogerNotice(message);
+      setKrogerNoticeIsError(krogerCallbackIsError(outcome));
+    }
+    if (krogerCallbackIsError(outcome) && isOwner) {
+      setSetupStepOnOpen(7);
+    }
+    const params = new URLSearchParams(searchParams);
+    params.delete('kroger');
+    navigate({ pathname: '/household', search: params.toString() }, { replace: true });
+  }, [searchParams, navigate, isOwner, linkedStoreName]);
 
   const displayedHouseholdName = nameDraft ?? household?.name ?? active?.name ?? '';
 
   const load = useCallback(async () => {
     if (householdId === '') return;
     try {
-      const [people, pending, nextSettings, detail] = await Promise.all([
+      const [people, pending, nextSettings, detail, stores] = await Promise.all([
         listMembers(householdId),
         listInvites(),
         getHouseholdSettings(),
         getHousehold(householdId),
+        listStores().catch(() => ({ stores: [], defaultStoreId: null, lookupsEnabled: false, canConnect: false })),
       ]);
       setMembers(people);
       setInvites(pending);
       setSettings(nextSettings);
       setHousehold(detail);
+      setLinkedStoreName(linkedCartStoreName(stores.stores));
+      setStoreCanConnect(stores.canConnect);
       setNameDraft(null);
       setLoadError('');
     } catch (requestError) {
@@ -410,6 +440,26 @@ export function HouseholdPage() {
           ))}
         </ul>
       </section>
+
+      {krogerNotice !== '' && (
+        <Alert
+          color={krogerNoticeIsError ? 'red' : 'teal'}
+          variant="light"
+          role={krogerNoticeIsError ? 'alert' : 'status'}
+        >
+          {krogerNotice}
+        </Alert>
+      )}
+
+      <StoreAppSection
+        householdId={householdId}
+        householdName={household?.name ?? active?.name ?? 'Household'}
+        isAdmin={isOwner}
+        linkedStoreName={linkedStoreName}
+        canConnect={storeCanConnect}
+        setupStepOnOpen={setupStepOnOpen}
+        onSetupOpened={() => setSetupStepOnOpen(undefined)}
+      />
 
       <ScannersSection householdName={household?.name ?? active?.name ?? 'Household'} isOwner={isOwner} />
 

@@ -22,11 +22,12 @@ const (
 )
 
 type stage1 struct {
-	svc      *auth.Service
-	site     app.RuntimeConfig
-	stockIn  string
-	stockOut string
-	exports  exportJobs
+	svc       *auth.Service
+	site      app.RuntimeConfig
+	stockIn   string
+	stockOut  string
+	exports   exportJobs
+	krogerApp *KrogerAppHandler
 }
 
 func (s *stage1) Middleware(next http.Handler) http.Handler {
@@ -111,6 +112,12 @@ func (s *stage1) anonymousOpen(r *http.Request) bool {
 	}
 	if r.URL.Path == sentryTunnelPath {
 		return true
+	}
+	if reqPath := r.URL.Path; reqPath == "/api/providers/kroger/credentials" {
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete:
+			return true
+		}
 	}
 	return false
 }

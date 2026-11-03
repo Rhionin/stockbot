@@ -2,7 +2,12 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +16,19 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 )
+
+func seedKrogerHouseholdApp(t *testing.T, db *sql.DB, clientID, secret, redirect string) {
+	t.Helper()
+	scope := primaryScope(t, db)
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`
+		INSERT INTO provider_app_credentials (
+			id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at
+		) VALUES (?, 'user-1', ?, 'kroger', ?, ?, ?, ?)`,
+		scope.HouseholdID()+":kroger", scope.HouseholdID(), clientID, secret, redirect, when); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestCartHTTP(t *testing.T) {
 	tests := []handlerTestCase{
@@ -57,7 +75,25 @@ func TestCartHTTP(t *testing.T) {
 				method:         "GET",
 				path:           "/api/providers/kroger/authorize",
 				expectedStatus: http.StatusConflict,
-				bodyContains:   []string{"not configured"},
+				bodyContains:   []string{"kroger_not_connected"},
+			},
+		},
+		{
+			name: "list providers reflects household kroger app in vault",
+			setup: func(env testEnv) {
+				if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+				seedKrogerHouseholdApp(env.T, env.DB, "listed-client", "secret", "https://app.example/cb")
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/providers",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0].credentialsConfigured", value: true},
+					{path: "$[0].credentials", absent: true},
+				},
 			},
 		},
 		{
@@ -70,6 +106,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
@@ -81,6 +118,67 @@ func TestCartHTTP(t *testing.T) {
 					"response_type=code",
 					"cart.basic:write",
 				},
+			},
+		},
+		{
+			name: "kroger oauth authorize and callback connect with household app",
+			setup: func(env testEnv) {
+				adapter, err := kroger.New("my-client", "secret", "https://app.example/cb", "PICKUP")
+				if err != nil {
+					env.T.Fatalf("kroger.New: %v", err)
+				}
+				adapter.WithTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if strings.Contains(req.URL.Path, "/oauth2/token") {
+						body := `{"access_token":"oauth-access","refresh_token":"oauth-refresh","expires_in":3600}`
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Body:       io.NopCloser(strings.NewReader(body)),
+							Header:     http.Header{"Content-Type": []string{"application/json"}},
+						}, nil
+					}
+					return nil, io.ErrUnexpectedEOF
+				}))
+				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
+					env.T.Fatalf("register: %v", err)
+				}
+				seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/providers/kroger/authorize",
+				query:          map[string]string{"return": "household"},
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				var body struct {
+					AuthorizationURL string `json:"authorizationUrl"`
+				}
+				raw, _ := io.ReadAll(env.Res.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					env.T.Fatal(err)
+				}
+				parsed, err := url.Parse(body.AuthorizationURL)
+				if err != nil {
+					env.T.Fatal(err)
+				}
+				state := parsed.Query().Get("state")
+				if state == "" {
+					env.T.Fatalf("missing state in %q", body.AuthorizationURL)
+				}
+				handler := handlerFromEnv(env)
+				executeExchange(env.T, handler, httpExchange{
+					method:         http.MethodGet,
+					path:           "/api/providers/kroger/callback",
+					query:          map[string]string{"code": "auth-code", "state": state},
+					expectedStatus: http.StatusSeeOther,
+					bodyContains:   []string{"kroger=connected", "/household"},
+				})
+				executeExchange(env.T, handler, httpExchange{
+					method:         http.MethodGet,
+					path:           "/api/providers",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$[0].connectionState", value: "connected"}},
+				})
 			},
 		},
 		{
@@ -189,6 +287,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:    "kroger",
 					State:       connection.StateConnected,
@@ -234,6 +333,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -290,6 +390,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -307,7 +408,7 @@ func TestCartHTTP(t *testing.T) {
 			}),
 		},
 		{
-			name: "saving credentials does not echo the client secret",
+			name: "kroger credentials routes are retired",
 			setup: func(env testEnv) {
 				if err := env.Registry.Register(kroger.NewUnconfigured()); err != nil {
 					env.T.Fatalf("register: %v", err)
@@ -317,58 +418,16 @@ func TestCartHTTP(t *testing.T) {
 				method:         "PUT",
 				path:           "/api/providers/kroger/credentials",
 				body:           `{"clientId":"ui-client","clientSecret":"super-secret-value","redirectUri":"https://pantry.example/api/providers/kroger/callback","modality":"PICKUP"}`,
-				expectedStatus: http.StatusOK,
-				assertions: []assertion{
-					{path: "$.clientId", value: "ui-client"},
-					{path: "$.secretSet", value: true},
-					{path: "$.source", value: "saved"},
-					{path: "$.clientSecret", absent: true},
-				},
-				bodyExcludes: []string{"super-secret-value"},
+				expectedStatus: http.StatusNotFound,
+				assertions:     []assertion{{path: "$.code", value: "not_found"}},
+				bodyExcludes:   []string{"super-secret-value"},
 			},
 			afterRequest: exchanges(
 				httpExchange{
-					method:         "GET",
-					path:           "/api/providers",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$[0].credentialsConfigured", value: true},
-						{path: "$[0].credentials.clientId", value: "ui-client"},
-						{path: "$[0].credentials.secretSet", value: true},
-						{path: "$[0].credentials.clientSecret", absent: true},
-					},
-					bodyExcludes: []string{"super-secret-value"},
-				},
-				httpExchange{
-					method:         "PUT",
+					method:         http.MethodDelete,
 					path:           "/api/providers/kroger/credentials",
-					body:           `{"clientId":"ui-client","clientSecret":"","redirectUri":"https://pantry.example/cb2","modality":"DELIVERY"}`,
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$.redirectUri", value: "https://pantry.example/cb2"},
-						{path: "$.modality", value: "DELIVERY"},
-						{path: "$.secretSet", value: true},
-						{path: "$.clientSecret", absent: true},
-					},
-					bodyExcludes: []string{"super-secret-value"},
-				},
-				httpExchange{
-					method:         "GET",
-					path:           "/api/providers/kroger/authorize",
-					expectedStatus: http.StatusOK,
-					bodyContains:   []string{"client_id=ui-client"},
-					bodyExcludes:   []string{"super-secret-value"},
-				},
-				httpExchange{
-					method:         "DELETE",
-					path:           "/api/providers/kroger/credentials",
-					expectedStatus: http.StatusOK,
-					assertions: []assertion{
-						{path: "$.source", value: "none"},
-						{path: "$.secretSet", value: false},
-						{path: "$.clientSecret", absent: true},
-					},
-					bodyExcludes: []string{"super-secret-value"},
+					expectedStatus: http.StatusNotFound,
+					assertions:     []assertion{{path: "$.code", value: "not_found"}},
 				},
 			),
 		},
@@ -395,6 +454,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -438,6 +498,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -475,6 +536,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatal(err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
 					State:        connection.StateReauthRequired,
@@ -482,7 +544,7 @@ func TestCartHTTP(t *testing.T) {
 				}); err != nil {
 					env.T.Fatal(err)
 				}
-				if err := connection.NewDirectory(env.DB).GenerateAuthState(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push", "cb-state-recon"); err != nil {
+				if err := connection.NewDirectory(env.DB).GenerateAuthState(context.Background(), primaryScope(env.T, env.DB), "test-oauth2_authorization_code-server_push", "cb-state-recon", "", ""); err != nil {
 					env.T.Fatal(err)
 				}
 			},
@@ -528,6 +590,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -564,6 +627,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -586,6 +650,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -629,8 +694,10 @@ func TestCartHTTP(t *testing.T) {
 				method:         "POST",
 				path:           "/api/shopping-list/export",
 				body:           `{}`,
-				expectedStatus: http.StatusBadRequest,
-				bodyContains:   []string{"not registered"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+				},
 			},
 			afterRequest: exchanges(
 				httpExchange{
@@ -660,30 +727,27 @@ func TestCartHTTP(t *testing.T) {
 				method:         "PUT",
 				path:           "/api/providers/kroger/credentials",
 				body:           `{"clientId":"  ","clientSecret":"secret","redirectUri":"https://pantry.example/cb","modality":"PICKUP"}`,
-				expectedStatus: http.StatusUnprocessableEntity,
-				bodyContains:   []string{"Client ID is required."},
+				expectedStatus: http.StatusNotFound,
+				assertions:     []assertion{{path: "$.code", value: "not_found"}},
 			},
 			afterRequest: exchanges(
 				httpExchange{
 					method:         "PUT",
 					path:           "/api/providers/kroger/credentials",
 					body:           `{"clientId":"ui","clientSecret":"secret","redirectUri":"https://pantry.example/cb","modality":"CURBSIDE"}`,
-					expectedStatus: http.StatusUnprocessableEntity,
-					bodyContains:   []string{"PICKUP or DELIVERY"},
+					expectedStatus: http.StatusNotFound,
 				},
 				httpExchange{
 					method:         "PUT",
 					path:           "/api/providers/kroger/credentials",
 					body:           `{"clientId":"ui","clientSecret":"secret","redirectUri":"not a url","modality":"PICKUP"}`,
-					expectedStatus: http.StatusUnprocessableEntity,
-					bodyContains:   []string{"http or https"},
+					expectedStatus: http.StatusNotFound,
 				},
 				httpExchange{
 					method:         "PUT",
 					path:           "/api/providers/kroger/credentials",
 					body:           `{"clientId":"ui","clientSecret":"","redirectUri":"https://pantry.example/cb"}`,
-					expectedStatus: http.StatusUnprocessableEntity,
-					bodyContains:   []string{"Client secret is required."},
+					expectedStatus: http.StatusNotFound,
 				},
 				httpExchange{
 					method:         "PUT",
@@ -701,15 +765,15 @@ func TestCartHTTP(t *testing.T) {
 					method:         "GET",
 					path:           "/api/providers/kroger/callback",
 					query:          map[string]string{"error": "access_denied", "state": "nope"},
-					expectedStatus: http.StatusBadRequest,
-					bodyContains:   []string{"declined the connection"},
+					expectedStatus: http.StatusSeeOther,
+					bodyContains:   []string{"kroger=cancelled"},
 				},
 				httpExchange{
 					method:         "GET",
 					path:           "/api/providers/kroger/callback",
 					query:          map[string]string{"code": "abc", "state": "never-issued"},
-					expectedStatus: http.StatusBadRequest,
-					bodyContains:   []string{"invalid or expired"},
+					expectedStatus: http.StatusSeeOther,
+					bodyContains:   []string{"kroger=failed"},
 				},
 			),
 		},

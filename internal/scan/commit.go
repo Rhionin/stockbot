@@ -1368,4 +1368,3 @@ func (r *Queue) publishLinkedScan(ctx context.Context, scope tenant.Scope, id st
 	}
 	return linkErr
 }
-

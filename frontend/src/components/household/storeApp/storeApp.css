@@ -1,0 +1,204 @@
+.store-app-section {
+  margin-top: var(--mantine-spacing-md);
+}
+
+.store-app-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-sm) 0;
+}
+
+.store-app-row-title {
+  font-weight: 600;
+}
+
+.store-app-touch-target {
+  min-height: 44px;
+}
+
+.store-app-touch-target-wide {
+  min-width: 44px;
+}
+
+.store-app-menu-trigger {
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+  color: var(--mantine-color-text);
+}
+
+.store-app-modal-close {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.store-app-secret-toggle {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.store-app-external-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding-block: var(--mantine-spacing-xs);
+  color: var(--mantine-color-teal-9);
+  text-decoration: underline;
+}
+
+[data-mantine-color-scheme='dark'] .store-app-external-link {
+  color: var(--mantine-color-teal-4);
+}
+
+.store-app-note-unknown {
+  color: var(--mantine-color-amber-text);
+}
+
+.store-app-menu-item {
+  min-height: 44px;
+}
+
+.store-app-modality-control {
+  width: 100%;
+}
+
+.store-app-modality-control.mantine-SegmentedControl-root {
+  min-height: 44px;
+}
+
+.store-app-modality-control .mantine-SegmentedControl-label {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--mantine-spacing-sm);
+}
+
+.store-app-modality-control .mantine-SegmentedControl-control {
+  min-height: 44px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.store-app-modality-error {
+  color: var(--mantine-color-red-text);
+}
+
+.store-app-rm-body {
+  color: var(--mantine-color-text);
+}
+
+.store-app-setup-modal {
+  --input-height: 44px;
+}
+
+.store-app-setup-modal .store-app-credential-input {
+  min-height: 48px;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+.store-app-setup-modal .mantine-InputWrapper-error {
+  color: var(--mantine-color-red-text);
+}
+
+.store-app-setup-modal .mantine-Modal-body {
+  padding-bottom: 0;
+}
+
+.store-app-setup-body {
+  max-height: min(70vh, 640px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: var(--mantine-spacing-md);
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.store-app-setup-modal .mantine-Modal-content,
+.store-app-setup-modal .mantine-Modal-body {
+  overflow-x: clip;
+  max-width: 100%;
+}
+
+.store-app-setup-modal .mantine-PasswordInput-root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.store-app-setup-modal .mantine-PasswordInput-wrapper {
+  max-width: 100%;
+}
+
+.store-app-setup-modal .mantine-PasswordInput-input {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+}
+
+.store-app-setup-modal .mantine-PasswordInput-section {
+  box-sizing: border-box;
+}
+
+.store-app-setup-modal .mantine-TextInput-root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.store-app-setup-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: var(--mantine-spacing-md) 0 var(--mantine-spacing-xs);
+  background: var(--mantine-color-body);
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.store-app-copy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--mantine-spacing-xs);
+  align-items: start;
+  padding: var(--mantine-spacing-xs) 0;
+}
+
+@media (max-width: 20em) {
+  .store-app-copy-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.store-app-copy-row + .store-app-copy-row {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.store-app-copy-value {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  word-break: break-all;
+}
+
+.store-app-checklist {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.store-app-checklist li {
+  margin-bottom: var(--mantine-spacing-xs);
+}
+
+.store-app-step-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+}
+
+.store-app-busy-button[data-loading='true'] {
+  min-width: max(var(--button-width, 8rem), 44px);
+}

@@ -27,7 +27,7 @@ type OperatorHouseholdSummary struct {
 	// in the window, plus device_scan_receipts that have no linked scan_entries row
 	// (for example a failed ingest before a card is written).
 	ScansThisWeek  int    `json:"scansThisWeek"`
-	LastActivityAt   string `json:"lastActivityAt,omitempty"`
+	LastActivityAt string `json:"lastActivityAt,omitempty"`
 }
 
 // ListAllHouseholdsForOperator returns every household in the product for the operator account.

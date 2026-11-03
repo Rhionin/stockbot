@@ -89,6 +89,10 @@ func registerStage1(apiMux *http.ServeMux, cfg *config) {
 	apiMux.HandleFunc("GET /api/household/exports/{id}", gate.serveExportStatus)
 	apiMux.HandleFunc("GET /api/household/exports/{id}/download", gate.serveExportZip)
 	apiMux.HandleFunc("GET /api/households/{id}/export", gate.serveHouseholdExport)
+	apiMux.HandleFunc("GET /api/households/{id}/kroger-app", gate.serveGetKrogerApp)
+	apiMux.HandleFunc("PUT /api/households/{id}/kroger-app", gate.servePutKrogerApp)
+	apiMux.HandleFunc("DELETE /api/households/{id}/kroger-app", gate.serveDeleteKrogerApp)
+	apiMux.HandleFunc("POST /api/households/{id}/kroger-app/test", gate.serveTestKrogerApp)
 	apiMux.HandleFunc("POST /api/household/import/uploads", gate.serveStage3)
 	apiMux.HandleFunc("POST /api/import", gate.serveStage3)
 	apiMux.HandleFunc("GET /api/import/{id}", gate.serveStage3)
@@ -1080,7 +1084,7 @@ func (s *stage1) serveDeviceScans(w http.ResponseWriter, r *http.Request) {
 			results = []auth.ScanResult{}
 		}
 		writeJSON(w, http.StatusOK, struct {
-			Results []auth.ScanResult   `json:"results"`
+			Results []auth.ScanResult    `json:"results"`
 			Config  auth.DeviceHubConfig `json:"config"`
 		}{Results: results, Config: s.deviceHubConfig(r.Context(), p.HouseholdID, p.DeviceID)})
 		return

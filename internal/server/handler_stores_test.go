@@ -245,6 +245,51 @@ func TestStoresHandlers(t *testing.T) {
 			},
 		},
 		{
+			name: "PUT order not found when list includes deleted store id",
+			setup: func(env testEnv) {
+				hid := primaryScope(t, env.DB).HouseholdID()
+				seedFixtureStore(t, env.DB, hid, "Keep Q7")
+				seedFixtureStore(t, env.DB, hid, "Remove Q7")
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodGet,
+				url:            "/api/stores",
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				hid := primaryScope(t, env.DB).HouseholdID()
+				var ids []string
+				rows, err := env.DB.Query(`SELECT id FROM stores WHERE household_id = ? ORDER BY position`, hid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						t.Fatal(err)
+					}
+					ids = append(ids, id)
+				}
+				rows.Close()
+				if len(ids) != 2 {
+					t.Fatalf("stores %d", len(ids))
+				}
+				removed := ids[1]
+				keep := ids[0]
+				if _, err := env.DB.Exec(`DELETE FROM stores WHERE id = ?`, removed); err != nil {
+					t.Fatal(err)
+				}
+				handler := handlerFromEnv(env)
+				executeExchange(t, handler, httpExchange{
+					method:         http.MethodPut,
+					url:            "/api/stores/order",
+					body:           `{"storeIds":["` + keep + `","` + removed + `"]}`,
+					expectedStatus: http.StatusNotFound,
+					bodyContains:   []string{`"code":"not_found"`},
+				})
+			},
+		},
+		{
 			name: "PUT order duplicate store ids validation",
 			setup: func(env testEnv) {
 				hid := primaryScope(t, env.DB).HouseholdID()

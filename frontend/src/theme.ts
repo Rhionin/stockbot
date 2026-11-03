@@ -45,7 +45,7 @@ const colorScale = (value: MantineTheme['colors'][string]): readonly string[] | 
   Array.isArray(value) && value.length >= 10 && typeof value[0] === 'string' ? value : null;
 
 /** Error ink on light surfaces never goes above #E03131 (WCAG AA on white). */
-const RED_INK_FLOOR = '#e03131';
+const RED_INK_FLOOR = '#dc2626';
 
 /** Lightest error ink on dark surfaces (#ff8787 and lighter are too pale). */
 const RED_INK_DARK_CEILING = '#fa5252';
@@ -174,6 +174,12 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
   for (const key of ['--mantine-color-red-text', '--mantine-color-red-outline'] as const) {
     resolved.dark[key] = redInkOnDark(resolveVarColor(resolved.dark[key]), darkPaper);
   }
+
+  resolved.light['--mantine-color-error'] = RED_INK_FLOOR;
+  resolved.dark['--mantine-color-error'] = redInkOnDark(
+    resolveVarColor(resolved.dark['--mantine-color-error']),
+    darkPaper,
+  );
 
   const focusRingInk = (
     scale: readonly string[],

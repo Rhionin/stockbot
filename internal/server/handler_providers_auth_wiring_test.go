@@ -30,7 +30,7 @@ func TestNewHandlerWiresAuthIntoProviderCredentials(t *testing.T) {
 	rec := c.anon(http.MethodPut, "/api/providers/kroger/credentials", map[string]string{
 		"clientId": "x", "clientSecret": "y", "redirectUri": "https://x.example/cb",
 	}, app.EntryPublic)
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.CodeUnauthorized) {
-		t.Fatalf("anon PUT %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
+		t.Fatalf("retired kroger credentials PUT %d %s", rec.Code, rec.Body.String())
 	}
 }

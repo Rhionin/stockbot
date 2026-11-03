@@ -11,4 +11,3 @@ func isPublicPath(r *http.Request) bool {
 		return false
 	}
 }
-

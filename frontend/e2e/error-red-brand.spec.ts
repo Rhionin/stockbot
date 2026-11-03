@@ -77,21 +77,20 @@ async function openThemed(page: Page, scheme: 'light' | 'dark') {
   await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
 }
 
-async function showDisconnectError(page: Page) {
-  await page.route('**/api/providers/kroger/connection', async (route) => {
-    if (route.request().method() !== 'DELETE') return route.continue()
+async function showProviderPanelError(page: Page) {
+  await page.route('**/api/providers/kroger/ledger/reset', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
     await route.fulfill({
       status: 500,
       contentType: 'application/json',
-      body: JSON.stringify({ error: 'Kroger could not be disconnected' }),
+      body: JSON.stringify({ error: 'Unable to forget what was already sent.', code: 'internal' }),
     })
   })
-  await page.getByRole('button', { name: 'Menu' }).click()
-  await page.getByRole('menuitem', { name: 'Disconnect Kroger' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Disconnect Kroger?' })
-  await dialog.getByRole('button', { name: 'Disconnect', exact: true }).click()
-  const alert = dialog.getByRole('alert')
-  await expect(alert).toHaveText('Kroger could not be disconnected')
+  await expect(page.getByRole('button', { name: 'Start a new cart' })).toBeVisible()
+  await page.getByRole('button', { name: 'Start a new cart' }).click()
+  const alert = page.getByRole('alert')
+  await expect(alert).toBeVisible()
+  await expect(alert).toHaveText('Unable to forget what was already sent.')
   return alert
 }
 
@@ -119,7 +118,7 @@ async function expectErrorInk(alert: ReturnType<Page['getByRole']>, scheme: 'lig
 }
 
 for (const scheme of ['light', 'dark'] as const) {
-  test(`Kroger disconnect error ink stays readable in ${scheme} mode`, async ({ page }) => {
+  test(`provider panel error ink stays readable in ${scheme} mode`, async ({ page }) => {
     resetStage()
     stage.kind = 'account'
     stage.householdName = 'Test Household'
@@ -128,7 +127,7 @@ for (const scheme of ['light', 'dark'] as const) {
     await install(page)
     await stubShopping(page)
     await openThemed(page, scheme)
-    const alert = await showDisconnectError(page)
+    const alert = await showProviderPanelError(page)
     await expectErrorInk(alert, scheme)
   })
 }

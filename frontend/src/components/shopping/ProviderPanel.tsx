@@ -4,11 +4,13 @@ import {
   authorizeProvider,
   resetProviderLedger,
 } from '../../api/client';
+import type { ProviderListEntry } from '@stockbot/shared/providerList';
+import { providerListEntries } from '@stockbot/shared/providerList';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ProviderPanelProps {
-  providers: ProviderInfo[];
+  providers: ProviderListEntry[];
   onChanged: () => void;
 }
 
@@ -22,8 +24,9 @@ const stateLabel: Record<ProviderInfo['connectionState'], string> = {
 export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
+  const rows = providerListEntries(providers);
 
-  if (providers.length === 0) {
+  if (rows.length === 0) {
     return null;
   }
 
@@ -54,7 +57,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
 
   return (
     <Stack className="page-cluster" gap="xs" aria-label="Grocery providers">
-      {providers.map((provider) => (
+      {rows.map((provider) => (
         <ProviderRow
           key={provider.id}
           provider={provider}
@@ -63,7 +66,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
           onResetLedger={() => void resetLedger(provider)}
         />
       ))}
-      {error !== '' && <Text c="red" size="sm">{error}</Text>}
+      {error !== '' && <Text role="alert" c="red" size="sm">{error}</Text>}
     </Stack>
   );
 };

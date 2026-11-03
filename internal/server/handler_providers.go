@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -22,6 +24,22 @@ type ProvidersHandler struct {
 	Credentials   *appcred.Vault
 	EnvFallback   ProviderEnv
 	Auth          *auth.Service
+	Kroger        *kroger.Adapter
+}
+
+func (h *ProvidersHandler) krogerAdapter() *kroger.Adapter {
+	if h.Kroger != nil {
+		return h.Kroger
+	}
+	if h.Registry == nil {
+		return nil
+	}
+	if p, ok := h.Registry.Get("kroger"); ok {
+		if a, ok := p.(*kroger.Adapter); ok {
+			return a
+		}
+	}
+	return nil
 }
 
 // ProviderEnv is the deploy-time credential fallback. It is never written to a
@@ -41,12 +59,26 @@ func (e ProviderEnv) Complete() bool {
 
 // ProviderInfo represents information about a registered provider.
 type ProviderInfo struct {
-	ID                    string               `json:"id"`
-	DisplayName           string               `json:"displayName"`
-	Capabilities          ProviderCapabilities `json:"capabilities"`
-	ConnectionState       string               `json:"connectionState"`
-	CredentialsConfigured bool                 `json:"credentialsConfigured"`
-	Credentials           *CredentialView      `json:"credentials,omitempty"`
+	ID                    string                `json:"id"`
+	DisplayName           string                `json:"displayName"`
+	Status                string                `json:"status,omitempty"`
+	Capabilities          *ProviderCapabilities `json:"capabilities,omitempty"`
+	ConnectionState       string                `json:"connectionState"`
+	CredentialsConfigured bool                  `json:"credentialsConfigured"`
+	Credentials           *CredentialView       `json:"credentials,omitempty"`
+}
+
+// MarshalJSON omits Kroger's disabled list entry down to id, displayName, and status.
+func (p ProviderInfo) MarshalJSON() ([]byte, error) {
+	if p.Status == "disabled" {
+		return json.Marshal(struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"displayName"`
+			Status      string `json:"status"`
+		}{ID: p.ID, DisplayName: p.DisplayName, Status: p.Status})
+	}
+	type alias ProviderInfo
+	return json.Marshal(alias(p))
 }
 
 // CredentialView is safe to return from GET. It never includes a client secret.
@@ -90,24 +122,37 @@ func (h *ListProvidersHandler) Handle(req Request[struct{}, struct{}]) ([]Provid
 			continue
 		}
 		caps := provider.Capabilities()
-		state, err := providerConnectionState(req.Context, scope, h.ConnectionDir, string(id), caps.Auth)
-		if err != nil {
-			return nil, InternalError(err)
+		capsView := ProviderCapabilities{
+			Auth:         string(caps.Auth),
+			Delivery:     string(caps.Delivery),
+			Confirmation: string(caps.Confirmation),
+			Mutation:     string(caps.Mutation),
+			Identity:     string(caps.Identity),
+		}
+		if string(id) == "kroger" && h.EnvFallback.Disabled {
+			infos = append(infos, ProviderInfo{
+				ID:          string(id),
+				DisplayName: provider.DisplayName(),
+				Status:      "disabled",
+			})
+			continue
 		}
 		info := ProviderInfo{
 			ID:          string(id),
 			DisplayName: provider.DisplayName(),
-			Capabilities: ProviderCapabilities{
-				Auth:         string(caps.Auth),
-				Delivery:     string(caps.Delivery),
-				Confirmation: string(caps.Confirmation),
-				Mutation:     string(caps.Mutation),
-				Identity:     string(caps.Identity),
-			},
-			ConnectionState:       state,
-			CredentialsConfigured: h.Registry.CredentialsConfigured(id),
+			Capabilities: &capsView,
 		}
-		if _, ok := provider.(cart.AppCredentialSink); ok {
+		state, err := providerConnectionState(req.Context, scope, h.ConnectionDir, string(id), caps.Auth)
+		if err != nil {
+			return nil, InternalError(err)
+		}
+		info.ConnectionState = state
+		hasApp, err := h.Credentials.HasApp(req.Context, scope, string(id))
+		if err != nil {
+			return nil, InternalError(err)
+		}
+		info.CredentialsConfigured = hasApp
+		if _, ok := provider.(cart.AppCredentialSink); ok && string(id) != "kroger" {
 			view, viewErr := h.credentialView(req.Context, scope, provider)
 			if viewErr != nil {
 				return nil, InternalError(viewErr)
@@ -164,13 +209,18 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if caps.Auth != cart.AuthOAuth2 {
 		return nil, BadRequest(fmt.Sprintf("%s does not use an authorization-code connection", provider.DisplayName()))
 	}
+	if string(providerID) == "kroger" && h.EnvFallback.Disabled {
+		return nil, StoreDisabled()
+	}
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
 	}
+	if string(providerID) == "kroger" {
+		return h.authorizeKroger(req, scope, provider)
+	}
 	allowed, err := cart.OAuthAuthorizeAllowed(req.Context, h.ConnectionDir.DB(), scope, cart.OAuthConnectInput{
-		KrogerDisabled:        h.EnvFallback.Disabled,
-		CredentialsConfigured: h.Registry.CredentialsConfigured(providerID),
+		KrogerDisabled: h.EnvFallback.Disabled,
 	})
 	if err != nil {
 		return nil, InternalError(err)
@@ -187,7 +237,7 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	if err := h.ConnectionDir.GenerateAuthState(req.Context, scope, string(providerID), state); err != nil {
+	if err := h.ConnectionDir.GenerateAuthState(req.Context, scope, string(providerID), state, "", ""); err != nil {
 		return nil, InternalError(err)
 	}
 	authorizationURL, err := flow.AuthorizationURL(state)
@@ -240,6 +290,10 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 	}
 
 	query := req.RawRequest.URL.Query()
+	if string(providerID) == "kroger" {
+		return h.callbackKroger(req.Context, scope, query)
+	}
+
 	if query.Get("error") != "" {
 		_, _ = h.ConnectionDir.ConsumeAuthState(req.Context, scope, string(providerID), query.Get("state"))
 		return SeeOther{}, BadRequest("the provider declined the connection")
@@ -452,4 +506,107 @@ func (h *ProviderLedgerResetHandler) Handle(req Request[struct{}, ProviderLedger
 	}
 
 	return Created{Value: struct{}{}}, nil
+}
+
+func (h *ProvidersHandler) authorizeKroger(req Request[struct{}, ProviderAuthorizeRequest], scope tenant.Scope, provider cart.Provider) (*ProviderAuthorizeResponse, error) {
+	hasApp, err := h.Credentials.HasApp(req.Context, scope, "kroger")
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if !hasApp {
+		return nil, KrogerNotConnected("not_configured")
+	}
+	saved, appKey, err := connection.AppFor(req.Context, h.Credentials, scope, nil)
+	if err != nil {
+		return nil, KrogerNotConnected("not_configured")
+	}
+	authReturn := "shopping"
+	if req.RawRequest != nil && req.RawRequest.URL.Query().Get("return") == "household" {
+		authReturn = "household"
+	}
+	state, err := newAuthState()
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if err := h.ConnectionDir.GenerateAuthState(req.Context, scope, "kroger", state, appKey, authReturn); err != nil {
+		return nil, InternalError(err)
+	}
+	if h.krogerAdapter() == nil {
+		return nil, InternalError(fmt.Errorf("kroger is not configured"))
+	}
+	scopeStr := kroger.AuthorizationScopeForProductAccess(saved.ProductAccess)
+	creds := kroger.AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: saved.ClientID, RedirectURI: saved.RedirectURI, Modality: saved.Modality, SecretSet: true},
+		ClientSecret:   saved.ClientSecret,
+	}
+	authURL, err := h.krogerAdapter().AuthorizationURLForApp(creds, scopeStr, state)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	_ = provider
+	return &ProviderAuthorizeResponse{AuthorizationURL: authURL}, nil
+}
+
+func (h *ProvidersHandler) callbackKroger(ctx context.Context, scope tenant.Scope, query url.Values) (SeeOther, error) {
+	returnPath := "/shopping"
+	pending, _ := h.ConnectionDir.Read(ctx, scope, "kroger")
+	if pending != nil && pending.AuthReturn == "household" {
+		returnPath = "/household"
+	}
+	if h.EnvFallback.Disabled {
+		if pending != nil {
+			_, _ = h.ConnectionDir.ConsumeAuthState(ctx, scope, "kroger", query.Get("state"))
+		}
+		return SeeOther{Location: returnPath}, nil
+	}
+	if query.Get("error") != "" {
+		_, _ = h.ConnectionDir.ConsumeAuthState(ctx, scope, "kroger", query.Get("state"))
+		outcome := "failed"
+		if query.Get("error") == "access_denied" {
+			outcome = "cancelled"
+		}
+		return SeeOther{Location: returnPath + "?kroger=" + url.QueryEscape(outcome)}, nil
+	}
+	authAppKey := ""
+	if pending != nil {
+		authAppKey = pending.AuthAppKey
+	}
+	valid, err := h.ConnectionDir.ConsumeAuthState(ctx, scope, "kroger", query.Get("state"))
+	if err != nil {
+		return SeeOther{}, InternalError(err)
+	}
+	if !valid {
+		return SeeOther{Location: returnPath + "?kroger=failed"}, nil
+	}
+	saved, appKey, err := connection.AppFor(ctx, h.Credentials, scope, nil)
+	if err != nil || authAppKey == "" || authAppKey != appKey {
+		return SeeOther{Location: returnPath + "?kroger=failed"}, nil
+	}
+	if h.krogerAdapter() == nil {
+		return SeeOther{Location: returnPath + "?kroger=failed"}, nil
+	}
+	creds := kroger.AppCreds{
+		AppCredentials: cart.AppCredentials{ClientID: saved.ClientID, RedirectURI: saved.RedirectURI, Modality: saved.Modality, SecretSet: true},
+		ClientSecret:   saved.ClientSecret,
+	}
+	tokenSet, err := h.krogerAdapter().ExchangeCodeForApp(ctx, creds, query.Get("code"))
+	if err != nil {
+		log.Printf("provider kroger authorization code exchange failed")
+		return SeeOther{Location: returnPath + "?kroger=failed"}, nil
+	}
+	expiresAt := tokenSet.ReceiptAt.Add(tokenSet.ExpiresIn)
+	granted := kroger.AuthorizationScopeForProductAccess(saved.ProductAccess)
+	conn := &connection.Connection{
+		Provider:     "kroger",
+		State:        connection.StateConnected,
+		AccessToken:  tokenSet.AccessToken,
+		RefreshToken: tokenSet.RefreshToken,
+		ExpiresAt:    &expiresAt,
+		AppKey:       appKey,
+		GrantedScope: granted,
+	}
+	if err := h.ConnectionDir.Write(ctx, scope, conn); err != nil {
+		return SeeOther{}, InternalError(err)
+	}
+	return SeeOther{Location: returnPath + "?kroger=connected"}, nil
 }

@@ -13,10 +13,11 @@ import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppMenu } from './components/shell/AppMenu';
 import { ServerNoticeBanner } from './components/shell/ServerNoticeBanner';
-import { CredentialsDialog } from './components/shopping/CredentialsDialog';
+import { KrogerAppSetupModal } from './components/household/storeApp/KrogerAppSetupModal';
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import { ProvisionButton } from './components/shopping/ProvisionButton';
 import { ShoppingListPage } from './components/shopping/ShoppingListPage';
-import type { ProviderInfo, ScanEntry, ShoppingListEntry } from '@stockbot/shared/types';
+import type { ScanEntry, ShoppingListEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {
   readonly url: string;
@@ -43,20 +44,6 @@ const scan = (id: string, barcode: string): ScanEntry => ({
   product: { id: `prod-${id}`, name: 'Milk', category: 'Grocery', unitOfMeasure: 'carton' },
   committedAt: null,
   createdAt: '2026-03-20T16:02:00Z',
-});
-
-const provider = (): ProviderInfo => ({
-  id: 'kroger',
-  displayName: 'Kroger',
-  capabilities: {
-    auth: 'oauth2_authorization_code',
-    delivery: 'server_push',
-    confirmation: 'per_request',
-    mutation: 'add_only',
-    identity: 'derived',
-  },
-  connectionState: 'disconnected',
-  credentialsConfigured: false,
 });
 
 const shoppingEntry = (): ShoppingListEntry => ({
@@ -180,15 +167,33 @@ describe('offline sentence appears once on each page', () => {
       },
     },
     {
-      name: 'CredentialsDialog',
+      name: 'KrogerAppSetupModal',
       run: async () => {
         vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
         shell(
-          <CredentialsDialog provider={provider()} opened onClose={() => undefined} onChanged={() => undefined} />,
+          <KrogerAppSetupModal
+            opened
+            onClose={() => undefined}
+            householdId="hh-1"
+            householdName="Pantry"
+            app={{
+              configured: false,
+              clientIdLast4: null,
+              redirectUri: 'https://app.example/cb',
+              modality: 'PICKUP',
+              productAccess: 'unknown',
+              status: 'not_set_up',
+              canManage: true,
+            }}
+            onSaved={() => undefined}
+            initialStep={6}
+          />,
         );
-        fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
-        expect(await screen.findByText(OFFLINE_SENTENCE)).toBeInTheDocument();
-        expectOnce();
+        fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'client-id' } });
+        fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
+        const dialog = await screen.findByRole('dialog');
+        expect(within(dialog).getByText(OFFLINE_SENTENCE)).toBeInTheDocument();
       },
     },
     {

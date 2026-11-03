@@ -216,15 +216,15 @@ DELETE /api/stores/{id}
 GET /api/stores/{id}/removal-preview
 PUT /api/stores/order
 PUT /api/stores/default
-GET /api/stores/kroger-locations
-POST /api/stores/{id}/check
+GET /api/stores/kroger-locations  ; planned B4 #502 — not served yet
+POST /api/stores/{id}/check  ; planned B7 #503 — not served yet
 GET /api/households/{id}/kroger-app
 PUT /api/households/{id}/kroger-app
 DELETE /api/households/{id}/kroger-app
 POST /api/households/{id}/kroger-app/test
 GET /api/products/{id}/stores
 PUT /api/products/{id}/stores
-POST /api/products/{id}/stores/check
+POST /api/products/{id}/stores/check  ; planned B7 #503 — not served yet
 PUT /api/shopping-list/items/{id}/store
 PATCH /api/shopping-list/items/{id}
 POST /api/shopping-list/export
@@ -1613,7 +1613,7 @@ Kroger product and location lookups run only through the calling household's own
 - `PUT` and `DELETE /api/providers/kroger/credentials` are retired in B11a and return `404` `not_found`. `GET /api/providers` no longer returns `credentials` for Kroger; its `credentialsConfigured` is true when the caller's household has a store app.
 - `GET /api/providers/kroger/authorize` uses the household's store app; with none it returns `409` `kroger_not_connected` with `checkReason:"not_configured"` (was `409` `conflict`), so the setup screen can tell the app was removed. The callback exchanges the code with the app the sign-in started with. The scope adds `product.compact` only when the app's `productAccess` is `true`.
 
-**`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the household has no store app; `DISABLE_KROGER` reports the same), `not_connected` (a store app exists but no member has a live connection through it, including one marked `reauth_required`), `no_product_access` (the store app's `productAccess` isn't `true`, or the connection lacks `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line).
+**`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the household has no store app), `not_connected` (a store app exists but no member has a live connection through it, including one marked `reauth_required`), `no_product_access` (the store app's `productAccess` isn't `true`, or the connection lacks `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line). When `DISABLE_KROGER` is set, the Kroger-linked store omits checking fields entirely (§4.6.9); it is never reported as `not_configured` or `not_connected`.
 
 **`lookupsEnabled`** (household) is true only when the household's store app has `productAccess` `true`, the household is connected through it with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `GET /api/providers/kroger/authorize` today, which includes "this household has a store app".
 
@@ -1670,6 +1670,8 @@ interface KrogerAppTest {
   code?: KrogerAppTestCode;              // absent = every check passed
 }
 interface KrogerAppSaved extends KrogerApp { test: KrogerAppTest; }
+interface KrogerAppDisabled { status: 'disabled'; }                   // GET .../kroger-app when DISABLE_KROGER is set
+interface KrogerProviderDisabled { id: 'kroger'; displayName: string; status: 'disabled'; } // GET /api/providers when DISABLE_KROGER is set
 interface KrogerNotConnectedBody {       // 409 kroger_not_connected
   error: string; code: 'kroger_not_connected';
   checkReason: 'not_configured' | 'not_connected';
@@ -1687,8 +1689,8 @@ interface KrogerNotConnectedBody {       // 409 kroger_not_connected
 | `DELETE /api/stores/{id}` | | `204` (DEP-4) | |
 | `PUT /api/stores/order` | `{storeIds}`, exact permutation | `200 StoresResponse` | `validation`, `conflict`, `not_found` |
 | `PUT /api/stores/default` | `{storeId \| null}` | `200 StoresResponse` | `validation`, `not_found` |
-| `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited` |
-| `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited` |
+| `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) — **planned B4 [#502](https://github.com/Rhionin/stockbot/issues/502); not served on master yet** |
+| `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited`, `store_disabled` (§4.6.9) — **planned B7 [#503](https://github.com/Rhionin/stockbot/issues/503); not served on master yet** |
 
 ```ts
 interface StoreRemovalPreview {
@@ -1707,10 +1709,16 @@ interface StoreRemovalPreview {
 
 | Route | Request | Response | Errors (besides the common ones) |
 |---|---|---|---|
-| `GET /api/households/{id}/kroger-app` | | `200 KrogerApp` | |
-| `PUT /api/households/{id}/kroger-app` | `{clientId, clientSecret, modality?}`, or `{modality}` alone on a saved app | `200 KrogerAppSaved`. Runs the test first. `wrong_keys` and `kroger_unreachable` save nothing (as errors below), so a replace keeps the old keys. `no_product_access` saves with `productAccess:"false"`; `redirect_mismatch` saves too; both come back in `test`. A different client ID marks every household connection `reauth_required` and deletes the household's check results; the same client ID with a new secret keeps connections. | `validation`, `forbidden_role`, `store_app_keys_rejected`, `store_app_unreachable` |
-| `POST /api/households/{id}/kroger-app/test` | `{clientId, clientSecret}` (nothing saved), or `{}` (re-test the saved keys and record `productAccess`) | `200 KrogerAppTest`. `ok:false`: `wrong_keys` or `kroger_unreachable`. `ok:true` with `no_product_access` (can't check products) or `redirect_mismatch` (the redirect URL registered at Kroger doesn't match `redirectUri`); `redirect_mismatch` wins when both apply. | `validation`, `forbidden_role`, `rate_limited` (10 per hour per household), `kroger_not_connected` with `checkReason:"not_configured"` for `{}` with no saved app |
-| `DELETE /api/households/{id}/kroger-app` | | `200 KrogerApp` with `configured:false`, `status:"not_set_up"`. In one transaction, removes the app, every member's Kroger connection and the household's check results. Idempotent. | `forbidden_role` |
+| `GET /api/households/{id}/kroger-app` | | `200 KrogerApp`, or `200 KrogerAppDisabled` when `DISABLE_KROGER` is set | |
+| `PUT /api/households/{id}/kroger-app` | `{clientId, clientSecret, modality?}`, or `{modality}` alone on a saved app | `200 KrogerAppSaved`. Runs the test first. `wrong_keys` and `kroger_unreachable` save nothing (as errors below), so a replace keeps the old keys. `no_product_access` saves with `productAccess:"false"`. A different client ID marks every household connection `reauth_required` and deletes the household's check results; the same client ID with a new secret keeps connections. The `redirect_mismatch` test code and redirect pre-check land with T1 (h); until then PUT does not return `redirect_mismatch` in `test`. | `validation`, `forbidden_role`, `store_app_keys_rejected`, `store_app_unreachable`, `store_disabled`, `rate_limited` (10 key tests per hour per household, counting PUT test-and-save and `POST .../test`; cap is in memory and resets on process restart) |
+| `POST /api/households/{id}/kroger-app/test` | `{clientId, clientSecret}` (nothing saved), or `{}` (re-test the saved keys and record `productAccess`) | `200 KrogerAppTest`. `ok:false`: `wrong_keys` or `kroger_unreachable`. `ok:true` with `no_product_access` (can't check products). The `redirect_mismatch` code lands with T1 (h); until then POST test does not return it. | `validation`, `forbidden_role`, `rate_limited` (10 per hour per household, shared with PUT key tests; in memory, resets on restart), `store_disabled`, `kroger_not_connected` with `checkReason:"not_configured"` for `{}` with no saved app |
+| `DELETE /api/households/{id}/kroger-app` | | `200 KrogerApp` with `configured:false`, `status:"not_set_up"`. In one transaction, removes the app, every member's Kroger connection and the household's check results. Idempotent. | `forbidden_role`, `store_disabled` |
+
+`GET /api/providers` lists each provider as today, except when `DISABLE_KROGER` is set the Kroger entry is only `KrogerProviderDisabled` (`{id, displayName, status:"disabled"}`).
+
+| Route | Request | Response | Errors (besides the common ones) |
+|---|---|---|---|
+| `GET /api/providers` | | `200 ProviderInfo[]`; Kroger with `DISABLE_KROGER` is `KrogerProviderDisabled` only | |
 
 The key test is one token request with `client_credentials` and `product.compact`. Its token is discarded unread, never stored and never used for a lookup. When the keys pass, a redirect check makes one `GET` to the provider's authorize URL with `redirectUri` (no cookies, no redirects followed) and reports `redirect_mismatch` only on the exact mismatch response the T1 spike recorded; anything unrecognized reports nothing. If T1 finds no detectable response, `redirect_mismatch` comes only from the callback.
 
@@ -1722,7 +1730,7 @@ The key test is one token request with `client_credentials` and `product.compact
 |---|---|---|---|
 | `GET /api/products/{id}/stores` | | `200 ProductStores` | |
 | `PUT /api/products/{id}/stores` | `{stores: [{storeId, state:'carries'\|'excluded'}], usualStoreId}`; `{stores:[], usualStoreId:null}` = "Let the app decide" | `200 ProductStores` | `validation` |
-| `POST /api/products/{id}/stores/check` | | `200 ProductStores` after one synchronous batched call | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `store_check_failed`, `rate_limited` |
+| `POST /api/products/{id}/stores/check` | | `200 ProductStores` after one synchronous batched call | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) — **planned B7 [#503](https://github.com/Rhionin/stockbot/issues/503); not served on master yet** |
 
 ```ts
 interface ProductStores {
@@ -1750,7 +1758,7 @@ interface ProductStores {
 | `GET /api/shopping-list` (already indexed) | Entries gain the fields below. The body gains `lookupsEnabled` and `storeChecks: {storeId, check}[]`. (The reconnect line lives on `/household`, so `checkReason` per store and `canConnect` are on `GET /api/stores` only.) With zero stores the new fields are absent or null and existing fields are unchanged. |
 | `PUT /api/shopping-list/items/{id}/store` (new) | `{storeId \| null}`; null = "Move back to {usual}". `200 ShoppingListEntry`. Errors `validation`, `conflict` (already bought). |
 | `PATCH /api/shopping-list/items/{id}` (newly indexed) | `{purchased}`; `false` un-marks (DEP-1), or `not_found` after "Start a new cart". |
-| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`. |
+| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
 
 ```ts
 interface ShoppingListEntryStoreFields {
@@ -1850,7 +1858,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `last_owner` | 409 | You're the only owner. Make someone else an owner first, or delete the household. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `household_not_empty` | 409 | You can only import into an empty household. This one already has items. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
 | `confirmation_mismatch` | 400 | That doesn't match. Check the spelling and try again. | Rewritten by PM. Not a code design §6 names. Architect confirmed it stays a stable code. |
-| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. Store search and manual store checks use it when the household's store app's daily budget is used up, and the store app test after 10 tests in an hour, with `Retry-After` ([multi-store sourcing](multi-store-sourcing.md)). |
+| `rate_limited` | 429 | Too many tries. Wait a moment and try again. | Attempt limit on login, reset, invite preview, invite accept, pairing complete, stage-1 `POST /api/households`, and `POST /setup`. `POST /setup` (first setup and recover) uses the same per-IP limit as login, keyed on `RemoteAddr` on `:8080`. Every `rate_limited` response sends `Retry-After` in seconds, `POST /setup` included. `POST /api/device/scans` uses it at 600 scans per minute per device, with `Retry-After`, and writes nothing. The 11th `GET /api/events` stream is `rate_limited` per principal, and per source IP for the LAN principal, and includes `Retry-After` in seconds, like the other `rate_limited` responses. Store search and manual store checks use it when the household's store app's daily budget is used up. `PUT` and `POST .../kroger-app/test` share a per-household cap of 10 key tests per hour (counts both test-and-save and re-test), with `Retry-After`; the counter is kept in memory and resets when the server process restarts ([multi-store sourcing](multi-store-sourcing.md)). |
 | `payload_too_large` | 413 | That file is too large to import. | Import object over the documented max of 32 MiB. Also a `POST /api/device/scans` body over 64 KB. |
 | `invite_required` | 403 | You need an invite to start a household. | Stage 1 `POST /api/households` with no `inviteCode`. Later stages may omit the code. |
 | `device_revoked` | 401 | This device was disconnected. Pair it again to keep using it. | A paired device calls after an owner revoked it. An unknown device token stays `unauthorized`. |
@@ -1863,6 +1871,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `kroger_not_connected` | 409 | Connect your store account first. | Store search and check routes when the household has no working connection. Body `{error, code, checkReason}`: `not_configured` (no store app) or `not_connected`. Zero provider calls. The web sends an owner to store app setup or the connect step, and a member to "Ask a household admin", with no error text. |
 | `store_app_keys_rejected` | 400 | Those keys didn't work. Check that you copied both keys. | `PUT /api/households/{id}/kroger-app` when the key test fails as wrong keys. Nothing is saved. |
 | `store_app_unreachable` | 503 | Couldn't reach the store. Try again in a few minutes. | `PUT /api/households/{id}/kroger-app` when the key test can't reach the provider. Nothing is saved. |
+| `store_disabled` | 409 | Online store features are turned off on this server. | `PUT`, `DELETE`, and `POST .../test` on `/api/households/{id}/kroger-app` when `DISABLE_KROGER` is set (§4.6.9). Nothing is saved or deleted; zero provider calls. A member still gets `403` `forbidden_role` first. Also `GET /api/providers/kroger/authorize`, store search and check routes (**planned** B4/B7), and **`POST /api/shopping-list/export`** when the send targets Kroger (`provider:"kroger"`). Multi-store export by Kroger-linked `storeId` is **planned** with B4/B7. |
 | `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
 | `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
 
@@ -1906,6 +1915,8 @@ Stage-1 rulings on the plan-vs-#374 differences, decided by PM:
 - **Telemetry.** `GET /api/telemetry` is operator-only on the public entry. Nothing public may reveal household activity, including process-wide counts. On the LAN, `GET /api/telemetry` is open only while the household password is on. After retirement it follows the LAN `401` rule, and the operator reads it on the public entry. The LAN response never includes the changeover counts. The route stays exempt from the version gate. `POST /api/telemetry/client` stays a public write, stays open on the LAN, and returns no such counts.
 
 ## Decided by Architect
+
+- **2026-11-03, B11a #532 architect round 2:** Export with `provider:"kroger"` (or the Kroger-linked `storeId`) returns `409 store_disabled` when `DISABLE_KROGER` is set, with zero Provision/Add calls even when a household store app exists. Export credentials are household-scoped only (no registry/env fallback). `GET /api/stores/kroger-locations`, store check routes, and product check route are documented as planned (B4 [#502](https://github.com/Rhionin/stockbot/issues/502), B7 [#503](https://github.com/Rhionin/stockbot/issues/503)); authorize guard aligns with B11 [#501](https://github.com/Rhionin/stockbot/issues/501). `redirect_mismatch` on kroger-app PUT/POST test is deferred to T1 (h). Kroger-app key-test rate limit is in-memory and resets on restart.
 
 Numbers are the open-question numbers from the `e584250` contract, which is the text the Architect reviewed. Where one of these refines a PM ruling, the text in the body is this decision.
 

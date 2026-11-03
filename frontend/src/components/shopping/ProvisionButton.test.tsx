@@ -3,9 +3,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderInfo, ProvisionReport, ShoppingListEntry } from '@stockbot/shared/types';
-import { CODE_PROVIDER_UNAVAILABLE, CODE_RECONNECT_REQUIRED } from '@stockbot/shared/contract';
+import { CODE_CONFLICT, CODE_PROVIDER_UNAVAILABLE, CODE_RECONNECT_REQUIRED, hostedErrorSentence } from '@stockbot/shared/contract';
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
+import { MemoryRouter } from 'react-router-dom';
 import { PROVISION_RESOLVE_UNDO_MS } from '@stockbot/shared/provisionExportUX';
-import { ProvisionButton } from './ProvisionButton';
 
 const provider = (overrides: Partial<ProviderInfo> = {}): ProviderInfo => ({
   id: 'kroger',
@@ -31,15 +32,20 @@ const entry = (overrides: Partial<ShoppingListEntry> = {}): ShoppingListEntry =>
   ...overrides,
 });
 
+import { ProvisionButton } from './ProvisionButton';
+
 const renderButton = (props: Partial<ComponentProps<typeof ProvisionButton>> = {}) => render(
-  <MantineProvider>
-    <ProvisionButton
-      provider={props.provider === undefined ? provider() : props.provider}
-      entries={props.entries ?? [entry()]}
-      explainEmpty={props.explainEmpty}
-      onFinished={props.onFinished ?? (() => undefined)}
-    />
-  </MantineProvider>,
+  <MemoryRouter>
+    <MantineProvider>
+      <ProvisionButton
+        provider={props.provider === undefined ? provider() : props.provider}
+        entries={props.entries ?? [entry()]}
+        explainEmpty={props.explainEmpty}
+        onFinished={props.onFinished ?? (() => undefined)}
+        householdAdmin={props.householdAdmin}
+      />
+    </MantineProvider>
+  </MemoryRouter>,
 );
 
 const mockExport = (body: ProvisionReport | Record<string, unknown>, status = 200) => {
@@ -51,7 +57,7 @@ const mockExport = (body: ProvisionReport | Record<string, unknown>, status = 20
 
 const mockExportEnvelope = (
   status: number,
-  code: typeof CODE_RECONNECT_REQUIRED | typeof CODE_PROVIDER_UNAVAILABLE,
+  code: string,
   message = 'export failed',
 ) => {
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
@@ -263,6 +269,36 @@ describe('ProvisionButton export envelopes (409/502)', () => {
     expect(within(panel).getByText("Nothing was sent. Kroger isn't responding right now.")).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
+  });
+
+  it('409 store_disabled (T58) shows no result panel and no Try again', async () => {
+    mockExportEnvelope(409, 'store_disabled', 'RAW DISABLED');
+    const onFinished = vi.fn();
+    renderButton({ onFinished });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    await waitFor(() => expect(onFinished).toHaveBeenCalled());
+    expect(screen.queryByRole('status', { name: 'Cart send result' })).not.toBeInTheDocument();
+    expect(screen.queryByText(hostedErrorSentence('store_disabled'))).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  it('409 conflict not configured maps F9 copy for a household admin', async () => {
+    mockExportEnvelope(409, CODE_CONFLICT, 'Kroger is not configured');
+    renderButton({ householdAdmin: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText(krogerAppCopy.linkNeed)).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: krogerAppCopy.openSetup })).toBeInTheDocument();
+    expect(within(panel).queryByText('Kroger is not configured')).not.toBeInTheDocument();
+  });
+
+  it('409 conflict not configured maps member copy without a setup action', async () => {
+    mockExportEnvelope(409, CODE_CONFLICT, 'Kroger is not configured');
+    renderButton({ householdAdmin: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).getByText(krogerAppCopy.askAdmin)).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
   it('Try again on 502 retries export', async () => {

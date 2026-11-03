@@ -73,8 +73,7 @@ type PatchInput struct {
 	LocationChain  *string
 }
 
-// CheckingContext carries deployment and cart state for DEP-7 fields.
+// CheckingContext carries deployment state for DEP-7 fields.
 type CheckingContext struct {
-	KrogerDisabled        bool
-	CredentialsConfigured bool
+	KrogerDisabled bool
 }
