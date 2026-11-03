@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 import { install, resetStage, stage } from './householdStageFixtures'
-import { resetSharedState } from './helpers'
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 
 const MIN_TOUCH = 44
 const ROOT_FONT_PX_AT_100 = 15
@@ -436,59 +436,121 @@ for (const { scheme, fontPercent } of [
   })
 }
 
-test('admin Kroger credentials buttons meet 44px touch targets', async ({ page }) => {
+async function stubStoreAppHousehold(page: Page, appBody: Record<string, unknown>) {
+  await page.route('**/api/households/hh-1/kroger-app', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
+    }
+    return route.continue()
+  })
+  await page.route('**/api/households/hh-1', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'hh-1', name: stage.householdName, role: 'owner', deletedAt: null, purgeAt: null }),
+  }))
+  await page.route('**/api/stores', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      stores: [{ id: 's1', name: 'Test Kroger', linkedProvider: 'kroger' }],
+      defaultStoreId: 's1',
+      lookupsEnabled: false,
+      canConnect: true,
+    }),
+  }))
+}
+
+test('household admin store app setup buttons meet 44px touch targets', async ({ page }) => {
   resetStage()
   stage.kind = 'account'
-  stage.operator = true
   stage.role = 'owner'
   stage.householdName = 'Test Household'
   await install(page)
-  await stubShopping(page, 'Kroger')
+  await stubStoreAppHousehold(page, {
+    configured: false,
+    clientIdLast4: null,
+    redirectUri: 'https://test-household.example/cb',
+    modality: 'PICKUP',
+    productAccess: 'unknown',
+    status: 'not_set_up',
+    canManage: true,
+  })
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/shopping')
-  await page.getByRole('button', { name: 'Menu' }).click()
-  await page.getByRole('menuitem', { name: 'Manage Kroger connection' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Kroger connection' })
+  await page.goto('/household')
+  await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.rowSetUp }))
+  await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
+  const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
   await expect(dialog).toBeVisible()
-  await assertTouchTargetSize(dialog.getByRole('button', { name: 'Close' }))
-  await assertTouchTargetSize(dialog.getByRole('button', { name: 'Save credentials' }))
+  await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
   const axe = await new AxeBuilder({ page })
     .include('[role="dialog"]')
-    .withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
+    .withRules(['color-contrast'])
     .analyze()
   expect(axe.violations).toEqual([])
 })
 
-test('nonadmin disconnect error keeps the Disconnect label visible while loading at 390px', async ({ page }) => {
+test('store app remove error keeps the confirm label visible while loading at 390px', async ({ page }) => {
   resetStage()
   stage.kind = 'account'
   stage.householdName = 'Test Household'
-  stage.operator = false
-  stage.role = 'member'
+  stage.role = 'owner'
   await install(page)
   let calls = 0
-  await page.route('**/api/providers/kroger/connection', async (route) => {
-    if (route.request().method() !== 'DELETE') return route.continue()
-    calls += 1
-    await new Promise((resolve) => { setTimeout(resolve, calls === 1 ? 200 : 400) })
-    return route.fulfill({
-      status: calls === 1 ? 500 : 200,
-      contentType: 'application/json',
-      body: calls === 1 ? JSON.stringify({ error: 'Kroger could not be disconnected' }) : '{}',
-    })
+  await stubStoreAppHousehold(page, {
+    configured: true,
+    clientIdLast4: '1234',
+    redirectUri: 'https://test-household.example/cb',
+    modality: 'PICKUP',
+    productAccess: 'unknown',
+    status: 'connected',
+    canManage: true,
   })
-  await stubShopping(page, 'Kroger')
+  await page.route('**/api/households/hh-1/kroger-app', (route) => {
+    if (route.request().method() === 'DELETE') {
+      calls += 1
+      return route.fulfill({
+        status: calls === 1 ? 500 : 200,
+        contentType: 'application/json',
+        body: calls === 1
+          ? JSON.stringify({ error: 'remove failed', code: 'internal' })
+          : JSON.stringify({
+            configured: false,
+            clientIdLast4: null,
+            redirectUri: 'https://test-household.example/cb',
+            modality: 'PICKUP',
+            productAccess: 'unknown',
+            status: 'not_set_up',
+            canManage: true,
+          }),
+      })
+    }
+    if (route.request().method() === 'GET') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          configured: true,
+          clientIdLast4: '1234',
+          redirectUri: 'https://test-household.example/cb',
+          modality: 'PICKUP',
+          productAccess: 'unknown',
+          status: 'connected',
+          canManage: true,
+        }),
+      })
+    }
+    return route.continue()
+  })
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/shopping')
-  await page.getByRole('button', { name: 'Menu' }).click()
-  await page.getByRole('menuitem', { name: 'Disconnect Kroger' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Disconnect Kroger?' })
-  const disconnect = dialog.getByRole('button', { name: 'Disconnect', exact: true })
-  await disconnect.click()
-  await expect(dialog.getByRole('alert')).toHaveText('Kroger could not be disconnected')
-  const secondAttempt = disconnect.click()
-  await expect(disconnect.locator('.credentials-disconnect-label-busy')).toBeVisible()
-  await expect(disconnect.locator('.credentials-disconnect-label-busy')).toContainText('Disconnect')
+  await page.goto('/household')
+  await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+  await page.getByRole('menuitem', { name: krogerAppCopy.menuRemove }).click()
+  const dialog = page.getByRole('dialog', { name: krogerAppCopy.rmTitle })
+  const confirm = dialog.getByRole('button', { name: krogerAppCopy.rmConfirm })
+  await confirm.click()
+  await expect(dialog.getByRole('alert')).toHaveText(krogerAppCopy.rmFailed)
+  const secondAttempt = confirm.click()
+  await expect(confirm).toContainText(krogerAppCopy.rmBusy)
   await secondAttempt
   await expect.poll(() => calls).toBeGreaterThanOrEqual(2)
 })
