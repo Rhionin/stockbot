@@ -115,9 +115,13 @@ export const krogerAppCopy = {
   s6Next: "We'll check them with Kroger, then save them.",
   s6Test: 'Test and save',
   s6Testing: 'Testing…',
-  s6SendAs: 'When we send your list, use',
-  s6OptionPickup: 'Pickup',
-  s6OptionDelivery: 'Delivery',
+  modalityLabel: 'How you get your order',
+  modalityOptionPickup: 'Pickup',
+  modalityOptionDelivery: 'Delivery',
+  modalityHelp:
+    'Items are added to your {store} cart for this. Change it anytime here.',
+  modalityHelpFallback:
+    'Items are added to your store cart for this. Change it anytime here.',
   s6Ok: 'Your keys work.',
   s6SavedId: (last4: string) => `Saved app ends in ${last4}.`,
   s6SavedSecret: 'Saved. Paste a new one to replace it.',
@@ -227,6 +231,12 @@ export function krogerAppErrMismatchSaved(
   let text = withKrogerLabel(krogerAppCopy.errMismatchSaved, kRedirect);
   if (replaceMode) text += krogerAppCopy.errMismatchSavedReplaceSuffix;
   return text;
+}
+
+export function krogerAppModalityHelp(ctx: StoreNameContext): string {
+  return ctx.store === 'your store'
+    ? krogerAppCopy.modalityHelpFallback
+    : withStore(krogerAppCopy.modalityHelp, ctx);
 }
 
 export function krogerAppConnectLabel(ctx: StoreNameContext, again = false): string {

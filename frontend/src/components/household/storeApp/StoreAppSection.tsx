@@ -71,7 +71,7 @@ export function StoreAppSection({
   const [testBusy, setTestBusy] = useState(false);
   const [testNotice, setTestNotice] = useState('');
   const [testNoticeAlert, setTestNoticeAlert] = useState(false);
-  const [testRateLimited, setTestRateLimited] = useState(false);
+  const [testNoticeAmber, setTestNoticeAmber] = useState(false);
   const [forcedMember, setForcedMember] = useState(false);
 
   const ctx = storeNameContext(linkedStoreName);
@@ -133,16 +133,16 @@ export function StoreAppSection({
   };
 
   const runTestAgain = async () => {
-    if (testRateLimited) return;
     setTestBusy(true);
     setTestNotice('');
     setTestNoticeAlert(false);
+    setTestNoticeAmber(false);
     try {
       const result = await postKrogerAppTest(householdId);
-      setTestRateLimited(false);
       const mapped = mapTestAgainResult(result, ctx);
       setTestNotice(mapped.message);
       setTestNoticeAlert(mapped.alert);
+      setTestNoticeAmber(mapped.amber ?? false);
       if (result.ok) await reload();
     } catch (requestError) {
       const mapped = mapKrogerAppApiError(requestError);
@@ -162,14 +162,15 @@ export function StoreAppSection({
         return;
       }
       if (mapped.kind === 'rate_limited') {
-        setTestRateLimited(true);
         setTestNotice(krogerAppCopy.errTooMany);
         setTestNoticeAlert(false);
+        setTestNoticeAmber(true);
         return;
       }
       if (mapped.kind === 'message') {
         setTestNotice(mapped.message);
         setTestNoticeAlert(mapped.alert);
+        setTestNoticeAmber(mapped.amber ?? false);
       }
     } finally {
       setTestBusy(false);
@@ -269,11 +270,11 @@ export function StoreAppSection({
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown>
-              <Menu.Item onClick={() => openSetup(true, 6)}>{krogerAppCopy.menuReplace}</Menu.Item>
-              <Menu.Item onClick={() => { void runTestAgain(); }} disabled={testBusy || testRateLimited}>
+              <Menu.Item className="store-app-menu-item" onClick={() => openSetup(true, 6)}>{krogerAppCopy.menuReplace}</Menu.Item>
+              <Menu.Item className="store-app-menu-item" onClick={() => { void runTestAgain(); }} disabled={testBusy}>
                 {testBusy ? krogerAppCopy.testBusy : krogerAppCopy.menuTest}
               </Menu.Item>
-              <Menu.Item color="red" onClick={() => setRemoveOpen(true)}>{krogerAppCopy.menuRemove}</Menu.Item>
+              <Menu.Item className="store-app-menu-item" color="red" onClick={() => setRemoveOpen(true)}>{krogerAppCopy.menuRemove}</Menu.Item>
             </Menu.Dropdown>
           </Menu>
         )}
@@ -309,7 +310,6 @@ export function StoreAppSection({
                   size="compact-sm"
                   className="store-app-touch-target store-app-touch-target-wide"
                   loading={testBusy}
-                  disabled={testRateLimited}
                   aria-busy={testBusy}
                   onClick={() => { void runTestAgain(); }}
                 >
@@ -326,7 +326,12 @@ export function StoreAppSection({
               </Group>
             )}
             {testNotice !== '' && (
-              <Text role={testNoticeAlert ? 'alert' : 'status'} c={testNoticeAlert ? 'red' : undefined} size="sm">
+              <Text
+                role={testNoticeAlert ? 'alert' : 'status'}
+                c={testNoticeAlert ? 'red' : undefined}
+                size="sm"
+                className={testNoticeAmber ? 'store-app-note-unknown' : undefined}
+              >
                 {testNotice}
               </Text>
             )}

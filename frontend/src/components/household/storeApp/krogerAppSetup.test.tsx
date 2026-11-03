@@ -442,6 +442,47 @@ describe('kroger app vitest mutants', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(krogerAppCopy.errWrongKeys);
   });
 
+  it('M4 marks Test and save busy and keeps key fields read-only while saving', async () => {
+    const householdId = 'hh-m4-busy';
+    let resolvePut: (value: Response) => void = () => undefined;
+    const putPending = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === `/api/households/${householdId}/kroger-app` && init?.method === 'PUT') {
+        return putPending;
+      }
+      if (url === `/api/households/${householdId}/kroger-app`) return Promise.resolve(json(baseApp()));
+      return Promise.reject(new Error(url));
+    }));
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          app={baseApp()}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'abc' } });
+    fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'def' } });
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: krogerAppCopy.s6Testing })).toHaveAttribute('aria-busy', 'true');
+    });
+    expect(screen.getByLabelText(/App ID/i)).toHaveAttribute('readonly');
+    resolvePut(json({
+      ...baseApp({ configured: true, status: 'ready_to_connect' }),
+      test: { ok: true },
+    }));
+    await waitFor(() => expect(screen.getByText(krogerAppCopy.s6Ok)).toBeInTheDocument());
+  });
+
   it('M4 shows a loading skeleton while the row loads', async () => {
     const householdId = 'hh-m4';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -531,6 +572,16 @@ describe('kroger app vitest mutants', () => {
     fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: ' trimmed-secret ' } });
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const putCall = fetchMock.mock.calls.find((call) => {
+      const init = call[1] as RequestInit | undefined;
+      return apiPath(call[0] as string) === `/api/households/${householdId}/kroger-app` && init?.method === 'PUT';
+    });
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String((putCall?.[1] as RequestInit).body))).toEqual({
+      clientId: 'trimmed-id',
+      clientSecret: 'trimmed-secret',
+      modality: 'PICKUP',
+    });
   });
 
   it('M8 does not treat a failed test as success', async () => {
@@ -701,7 +752,7 @@ describe('B11 kroger-app contract (merged #532)', () => {
     expect(screen.queryByText(/Online store features are turned off/i)).not.toBeInTheDocument();
   });
 
-  it('(3) rate_limited on test again shows spec copy and disables Test again', async () => {
+  it('(3) rate_limited on test again shows spec copy and keeps Test again enabled', async () => {
     const householdId = 'hh-b11-3';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = apiPath(input);
@@ -732,10 +783,9 @@ describe('B11 kroger-app contract (merged #532)', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.menuMore }));
     fireEvent.click(screen.getByRole('menuitem', { name: krogerAppCopy.menuTest }));
-    expect(await screen.findByText(krogerAppCopy.errTooMany)).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: krogerAppCopy.menuTest })).toBeDisabled();
-    });
+    const notice = await screen.findByText(krogerAppCopy.errTooMany);
+    expect(notice).toHaveClass('store-app-note-unknown');
+    expect(screen.getByRole('button', { name: krogerAppCopy.menuTest })).not.toBeDisabled();
   });
 
   it('(3) rate_limited on save shows spec copy in the setup modal', async () => {
@@ -767,6 +817,132 @@ describe('B11 kroger-app contract (merged #532)', () => {
     fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'abc' } });
     fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'def' } });
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
-    expect(await screen.findByText(krogerAppCopy.errTooMany)).toBeInTheDocument();
+    const notice = await screen.findByText(krogerAppCopy.errTooMany);
+    expect(notice).toHaveClass('store-app-note-unknown');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('modality picker (c.app.modality)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  function renderStep6(app: KrogerApp, options: { replaceMode?: boolean } = {}) {
+    const householdId = 'hh-modality';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(app));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          linkedStoreName="Kroger"
+          app={app}
+          replaceMode={options.replaceMode}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+  }
+
+  it('defaults to Pickup on first setup', () => {
+    renderStep6(baseApp());
+    expect(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionPickup })).toBeChecked();
+  });
+
+  it('preselects saved modality on Replace keys', () => {
+    renderStep6(baseApp({ configured: true, modality: 'DELIVERY', clientIdLast4: '1234' }), { replaceMode: true });
+    expect(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery })).toBeChecked();
+  });
+
+  it('never shows raw enum values to the user', () => {
+    renderStep6(baseApp());
+    expect(screen.queryByText('PICKUP')).not.toBeInTheDocument();
+    expect(screen.queryByText('DELIVERY')).not.toBeInTheDocument();
+    expect(screen.queryByText(/modality/i)).not.toBeInTheDocument();
+  });
+
+  it('saves modality-only without re-testing keys when the app is already configured', async () => {
+    const householdId = 'hh-modality-save';
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
+        const body = JSON.parse(String(init?.body)) as Record<string, string>;
+        expect(body).toEqual({ modality: 'DELIVERY' });
+        return Promise.resolve(json({
+          ...baseApp({ configured: true, modality: 'DELIVERY' }),
+          test: { ok: true },
+        }));
+      }
+      if (url === `/api/households/${householdId}/kroger-app/test` && method === 'POST') {
+        throw new Error('modality-only save must not call test');
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, modality: 'PICKUP', clientIdLast4: '1234' })));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          app={baseApp({ configured: true, modality: 'PICKUP', clientIdLast4: '1234' })}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/households/${householdId}/kroger-app`,
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+  });
+
+  it('keeps the selected option and shows an inline error when modality save fails', async () => {
+    const householdId = 'hh-modality-fail';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
+        return Promise.resolve(json({ code: 'validation', error: 'bad' }, 400));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, modality: 'PICKUP', clientIdLast4: '1234' })));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          app={baseApp({ configured: true, modality: 'PICKUP', clientIdLast4: '1234' })}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(krogerAppCopy.vInvalid);
+    expect(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery })).toBeChecked();
   });
 });

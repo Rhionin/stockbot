@@ -95,6 +95,15 @@ function colorContrast(page: Page) {
   return new AxeBuilder({ page }).withRules(['color-contrast'])
 }
 
+async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
+  await expect(dialog).toBeVisible()
+  await page.waitForFunction(() => {
+    const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
+    if (!(content instanceof HTMLElement)) return false
+    return getComputedStyle(content).opacity === '1'
+  })
+}
+
 async function expectAxe(page: Page, where: string) {
   const result = await colorContrast(page).analyze()
   expect(result.violations, `${where}\n${violationText(result.violations)}`).toEqual([])
@@ -335,7 +344,7 @@ test.describe('text contrast in the store app setup modal', () => {
       await openThemed(page, '/household', mode.app, mode.os, width)
       await page.getByRole('button', { name: 'Set up' }).click()
       const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
-      await expect(dialog).toBeVisible()
+      await waitForStoreAppDialogSettled(page, dialog)
       await expectAxe(page, `store app setup modal ${mode.app}/${mode.os} ${width}`)
     })
   }

@@ -570,9 +570,13 @@ export function getKrogerApp(householdId: string): Promise<KrogerAppGetResponse>
   return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`);
 }
 
+export type KrogerAppPutRequest =
+  | { clientId: string; clientSecret: string; modality?: string }
+  | { modality: string };
+
 export function putKrogerApp(
   householdId: string,
-  body: { clientId: string; clientSecret: string; modality?: string },
+  body: KrogerAppPutRequest,
 ): Promise<KrogerAppSaved> {
   return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`, {
     method: 'PUT',

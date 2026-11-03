@@ -57,6 +57,25 @@
   color: var(--mantine-color-amber-text);
 }
 
+.store-app-menu-item {
+  min-height: 44px;
+}
+
+.store-app-modality-control {
+  width: 100%;
+}
+
+.store-app-modality-control .mantine-SegmentedControl-label {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.store-app-modality-error {
+  color: var(--mantine-color-red-text);
+}
+
 .store-app-rm-body {
   color: var(--mantine-color-text);
 }
