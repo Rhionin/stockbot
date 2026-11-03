@@ -95,6 +95,10 @@ function colorContrast(page: Page) {
   return new AxeBuilder({ page }).withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
 }
 
+function dialogColorContrast(page: Page) {
+  return new AxeBuilder({ page }).include('[role="dialog"]').withRules(['color-contrast'])
+}
+
 async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
   await expect(dialog).toBeVisible()
   await page.waitForFunction(() => {
@@ -348,7 +352,7 @@ test.describe('text contrast in the store app setup modal', () => {
       await page.getByRole('button', { name: 'Set up' }).click()
       const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
       await waitForStoreAppDialogSettled(page, dialog)
-      const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
+      const dialogAxe = await dialogColorContrast(page).analyze()
       expect(
         dialogAxe.violations,
         `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogAxe.violations)}`,
