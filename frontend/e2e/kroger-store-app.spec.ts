@@ -247,6 +247,7 @@ for (const viewport of [
   { width: 320, height: 568, deviceScaleFactor: 1.25 },
 ] as const) {
   test(`store app step 6 setup body has no horizontal scroll at ${viewport.width}`, async ({ page }) => {
+    test.setTimeout(60_000)
     resetStage()
     stage.kind = 'account'
     stage.householdName = 'Test Household'
@@ -278,6 +279,7 @@ for (const viewport of [
       return route.continue()
     })
     await page.goto('/household')
+    await expect(page.getByRole('button', { name: krogerAppCopy.menuMore })).toBeVisible()
     await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
     await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
     const dialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })

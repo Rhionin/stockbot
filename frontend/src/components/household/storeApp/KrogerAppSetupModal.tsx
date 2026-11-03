@@ -639,6 +639,7 @@ export function KrogerAppSetupModal({
                 <Text size="sm">{krogerAppCopy.s6Body}</Text>
                 <TextInput
                   ref={clientIdRef}
+                  w="100%"
                   classNames={{ input: 'store-app-credential-input' }}
                   styles={{ input: { minHeight: 48, height: 48, boxSizing: 'border-box' } }}
                   label={krogerLabels.fId}
@@ -657,6 +658,7 @@ export function KrogerAppSetupModal({
                 />
                 <PasswordInput
                   ref={clientSecretRef}
+                  w="100%"
                   id="store-app-client-secret"
                   classNames={{ input: 'store-app-credential-input', innerInput: 'store-app-credential-input' }}
                   styles={{

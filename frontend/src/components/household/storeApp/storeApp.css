@@ -110,22 +110,44 @@
 
 .store-app-setup-body {
   max-height: min(70vh, 640px);
-  overflow-x: clip;
+  overflow-x: hidden;
   overflow-y: auto;
   padding-bottom: var(--mantine-spacing-md);
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.store-app-setup-modal .mantine-Modal-content,
+.store-app-setup-modal .mantine-Modal-body {
+  overflow-x: clip;
+  max-width: 100%;
 }
 
 .store-app-setup-modal .mantine-PasswordInput-root {
   width: 100%;
   max-width: 100%;
+  min-width: 0;
+}
+
+.store-app-setup-modal .mantine-PasswordInput-wrapper {
+  max-width: 100%;
 }
 
 .store-app-setup-modal .mantine-PasswordInput-input {
   box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
 }
 
 .store-app-setup-modal .mantine-PasswordInput-section {
   box-sizing: border-box;
+}
+
+.store-app-setup-modal .mantine-TextInput-root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .store-app-setup-footer {
