@@ -94,9 +94,10 @@
   --input-height: 44px;
 }
 
-.store-app-setup-modal .mantine-TextInput-input,
-.store-app-setup-modal .mantine-PasswordInput-input {
+.store-app-setup-modal .store-app-credential-input {
   min-height: 44px;
+  height: 44px;
+  box-sizing: border-box;
 }
 
 .store-app-setup-modal .mantine-InputWrapper-error {

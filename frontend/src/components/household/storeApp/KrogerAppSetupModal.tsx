@@ -612,6 +612,7 @@ export function KrogerAppSetupModal({
                 <Text size="sm">{krogerAppCopy.s6Body}</Text>
                 <TextInput
                   ref={clientIdRef}
+                  classNames={{ input: 'store-app-credential-input' }}
                   label={krogerLabels.fId}
                   description={app.clientIdLast4 ? krogerAppCopy.s6SavedId(app.clientIdLast4) : krogerLabels.fIdHint}
                   value={clientId}
