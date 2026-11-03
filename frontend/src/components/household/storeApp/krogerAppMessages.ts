@@ -31,16 +31,32 @@ export function normalizeKrogerCredential(value: string): string {
   return value.trim().replace(/\s+/g, '');
 }
 
+function apiErrorCode(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return '';
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code.trim() : '';
+}
+
 export function mapKrogerAppApiError(error: unknown): KrogerAppErrorHandling {
   if (error instanceof ServerNoticeError || error instanceof UnreachableError) {
     return { kind: 'message', message: OFFLINE_SENTENCE, alert: true };
+  }
+  const code = apiErrorCode(error);
+  if (code === 'store_disabled') {
+    return { kind: 'store_disabled' };
+  }
+  if (code === 'forbidden_role') {
+    return { kind: 'forbidden_role' };
+  }
+  if (code === 'kroger_not_connected') {
+    return { kind: 'not_configured' };
   }
   if (!(error instanceof ApiError)) {
     return { kind: 'message', message: krogerAppCopy.errSaveFailed, alert: true };
   }
   switch (error.code) {
     case 'store_disabled':
-      return { kind: 'message', message: 'broken', alert: true };
+      return { kind: 'store_disabled' };
     case 'forbidden_role':
       return { kind: 'forbidden_role' };
     case 'kroger_not_connected':

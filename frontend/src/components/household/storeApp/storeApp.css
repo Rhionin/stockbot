@@ -65,7 +65,7 @@
   width: 100%;
 }
 
-.store-app-modality-control .mantine-SegmentedControl-root {
+.store-app-modality-control.mantine-SegmentedControl-root {
   min-height: 44px;
 }
 

@@ -122,6 +122,8 @@ export const krogerAppCopy = {
     'Items are added to your {store} cart for this. Change it anytime here.',
   modalityHelpFallback:
     'Items are added to your store cart for this. Change it anytime here.',
+  modalitySaveFailed: "Couldn't save that choice. Try again.",
+  modalitySaved: 'Saved.',
   s6Ok: 'Your keys work.',
   s6SavedId: (last4: string) => `Saved app ends in ${last4}.`,
   s6SavedSecret: 'Saved. Paste a new one to replace it.',

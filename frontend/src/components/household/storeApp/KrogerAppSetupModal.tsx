@@ -28,7 +28,7 @@ import { suggestedKrogerAppName } from '@stockbot/shared/krogerAppSuggestedName'
 import type { KrogerApp, KrogerAppSaved } from '@stockbot/shared/types';
 import { putKrogerApp } from '../../../api/client';
 import { KrogerAppCopyRow } from './KrogerAppCopyRow';
-import { startKrogerConnect } from './krogerConnect';
+import { connectKrogerAccount } from './krogerConnect';
 import {
   mapKrogerAppApiError,
   normalizeKrogerCredential,
@@ -76,6 +76,8 @@ export function KrogerAppSetupModal({
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
   const clientIdRef = useRef<HTMLInputElement>(null);
+  const clientSecretRef = useRef<HTMLInputElement>(null);
+  const preservePassStatusRef = useRef(false);
   const [step, setStep] = useState(1);
   const [done, setDone] = useState<number[]>([]);
   const [suggestedName, setSuggestedName] = useState('');
@@ -86,12 +88,16 @@ export function KrogerAppSetupModal({
   const [stepsOpen, setStepsOpen] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
-  const [fieldError, setFieldError] = useState('');
+  const [idFieldError, setIdFieldError] = useState('');
+  const [secretFieldError, setSecretFieldError] = useState('');
   const [modalityError, setModalityError] = useState('');
+  const [modalitySaved, setModalitySaved] = useState('');
   const [accessNote, setAccessNote] = useState('');
   const [amberNotice, setAmberNotice] = useState('');
   const [removedNotice, setRemovedNotice] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectError, setConnectError] = useState('');
   const [savedOk, setSavedOk] = useState(false);
   const [closeConfirm, setCloseConfirm] = useState(false);
   const [resumeNotice, setResumeNotice] = useState('');
@@ -120,8 +126,11 @@ export function KrogerAppSetupModal({
     setSavedOk(false);
     setStatus('');
     setError('');
-    setFieldError('');
+    setIdFieldError('');
+    setSecretFieldError('');
     setModalityError('');
+    setModalitySaved('');
+    setConnectError('');
     setAccessNote('');
     setAmberNotice('');
     setRemovedNotice(false);
@@ -130,6 +139,15 @@ export function KrogerAppSetupModal({
 
   const focusClientId = () => {
     queueMicrotask(() => clientIdRef.current?.focus());
+  };
+
+  const focusClientSecret = () => {
+    queueMicrotask(() => {
+      clientSecretRef.current?.focus();
+      if (document.activeElement?.id !== 'store-app-client-secret') {
+        document.getElementById('store-app-client-secret')?.focus();
+      }
+    });
   };
 
   useEffect(() => {
@@ -152,7 +170,10 @@ export function KrogerAppSetupModal({
     setModality(app.modality ?? 'PICKUP');
     if (configuredStep === 7) {
       setSavedOk(true);
-      setStatus('');
+      if (!preservePassStatusRef.current) {
+        setStatus('');
+      }
+      preservePassStatusRef.current = false;
     } else {
       resetFields();
     }
@@ -162,11 +183,15 @@ export function KrogerAppSetupModal({
 
   useEffect(() => {
     if (!opened) return;
+    if (step === 7 && status !== '') {
+      requestAnimationFrame(() => statusRef.current?.focus());
+      return;
+    }
     stepHeadingRef.current?.focus();
-  }, [opened, step]);
+  }, [opened, step, status]);
 
   useEffect(() => {
-    if (status !== '' && (step === 6 || step === 7)) {
+    if (status !== '' && step === 6) {
       statusRef.current?.focus();
     }
   }, [status, step]);
@@ -180,7 +205,8 @@ export function KrogerAppSetupModal({
     setStep(clamped);
     persistProgress({ step: clamped });
     setError('');
-    setFieldError('');
+    setIdFieldError('');
+    setSecretFieldError('');
     setModalityError('');
     setAmberNotice('');
   };
@@ -202,18 +228,21 @@ export function KrogerAppSetupModal({
     const id = normalizeKrogerCredential(clientId);
     const secret = normalizeKrogerCredential(clientSecret);
     if (id === '') {
-      setFieldError(krogerAppCopy.vIdEmpty);
+      setIdFieldError(krogerAppCopy.vIdEmpty);
+      setSecretFieldError('');
       focusClientId();
       return false;
     }
     if (secret === '') {
-      setFieldError(krogerAppCopy.vSecretEmpty);
-      focusClientId();
+      setIdFieldError('');
+      setSecretFieldError(krogerAppCopy.vSecretEmpty);
+      focusClientSecret();
       return false;
     }
     setClientId(id);
     setClientSecret(secret);
-    setFieldError('');
+    setIdFieldError('');
+    setSecretFieldError('');
     return true;
   };
 
@@ -269,16 +298,18 @@ export function KrogerAppSetupModal({
       return;
     }
     if (mapped.kind === 'message') {
-      setModalityError(mapped.message);
+      setModalityError(krogerAppCopy.modalitySaveFailed);
     }
   };
 
   const saveModalityOnly = async (value: string) => {
     setModality(value);
     setModalityError('');
+    setModalitySaved('');
     if (!app.configured) return;
     try {
       const saved = await putKrogerApp(householdId, { modality: value });
+      setModalitySaved(krogerAppCopy.modalitySaved);
       onSaved(saved);
     } catch (requestError) {
       applyModalityError(requestError);
@@ -316,6 +347,7 @@ export function KrogerAppSetupModal({
         setAccessNote(testCodeMessage('no_product_access', ctx, replaceMode));
       }
       setSavedOk(true);
+      preservePassStatusRef.current = true;
       setClientId('');
       setClientSecret('');
       setShowSecret(false);
@@ -331,9 +363,26 @@ export function KrogerAppSetupModal({
     }
   };
 
-  const connect = () => {
+  const connect = async () => {
+    setConnectError('');
+    setConnectBusy(true);
     const authReturn = returnTo.startsWith('link:') ? 'shopping' : (returnTo === 'household' ? 'household' : 'shopping');
-    void startKrogerConnect(authReturn);
+    const result = await connectKrogerAccount(authReturn, linkedStoreName);
+    if (result.ok) {
+      return;
+    }
+    setConnectBusy(false);
+    if (result.kind === 'store_disabled') {
+      onStoreDisabled?.();
+      onClose();
+      return;
+    }
+    if (result.kind === 'not_configured') {
+      setRemovedNotice(true);
+      setConnectError('');
+      return;
+    }
+    setConnectError(result.message ?? krogerAppCopy.errConnectFailedFallback);
   };
 
   const stepTitle = useMemo(() => {
@@ -543,6 +592,7 @@ export function KrogerAppSetupModal({
                   label={krogerLabels.fId}
                   description={app.clientIdLast4 ? krogerAppCopy.s6SavedId(app.clientIdLast4) : krogerLabels.fIdHint}
                   value={clientId}
+                  error={idFieldError || undefined}
                   autoComplete="off"
                   spellCheck={false}
                   autoCapitalize="off"
@@ -554,8 +604,11 @@ export function KrogerAppSetupModal({
                   onBlur={() => setClientId((v) => normalizeKrogerCredential(v))}
                 />
                 <PasswordInput
+                  ref={clientSecretRef}
+                  id="store-app-client-secret"
                   label={krogerLabels.fSecret}
                   description={app.configured ? krogerAppCopy.s6SavedSecret : krogerLabels.fSecretHint}
+                  error={secretFieldError || undefined}
                   visible={showSecret}
                   onVisibilityChange={setShowSecret}
                   visibilityToggleButtonProps={{
@@ -574,12 +627,13 @@ export function KrogerAppSetupModal({
                   onBlur={() => setClientSecret((v) => normalizeKrogerCredential(v))}
                 />
                 <Stack gap={4}>
-                  <Text size="sm" fw={500} component="label" id="store-app-modality-label">
+                  <Text size="sm" fw={500} component="div" id="store-app-modality-label">
                     {krogerAppCopy.modalityLabel}
                   </Text>
                   <SegmentedControl
                     className="store-app-modality-control store-app-touch-target-wide"
                     aria-labelledby="store-app-modality-label"
+                    role="radiogroup"
                     value={modality}
                     onChange={(value) => { void saveModalityOnly(value); }}
                     fullWidth
@@ -589,6 +643,9 @@ export function KrogerAppSetupModal({
                     ]}
                   />
                   <Text size="xs" c="dimmed">{krogerAppModalityHelp(ctx)}</Text>
+                  {modalitySaved !== '' && (
+                    <Text role="status" size="sm">{modalitySaved}</Text>
+                  )}
                   {modalityError !== '' && (
                     <Text
                       role={modalityError === krogerAppCopy.errTooMany ? 'status' : 'alert'}
@@ -599,7 +656,6 @@ export function KrogerAppSetupModal({
                     </Text>
                   )}
                 </Stack>
-                {fieldError !== '' && <Text role="alert" c="red" size="sm">{fieldError}</Text>}
                 {removedBlock}
                 {errorBlock}
                 {amberBlock}
@@ -609,12 +665,25 @@ export function KrogerAppSetupModal({
 
             {step === 7 && (
               <Stack gap="sm" mt="sm">
-                <Text size="sm">{s7Body}</Text>
-                <Text size="sm">{krogerAppCopy.s7Hint}</Text>
-                {errorBlock}
-                {amberBlock}
                 {statusBlock}
                 {accessNoteBlock}
+                {accessNote !== '' && (
+                  <Button
+                    variant="subtle"
+                    className="store-app-touch-target store-app-touch-target-wide"
+                    onClick={() => goStep(2)}
+                  >
+                    {krogerAppCopy.noteNoProductsFix}
+                  </Button>
+                )}
+                <Text size="sm">{s7Body}</Text>
+                <Text size="sm">{krogerAppCopy.s7Hint}</Text>
+                {removedBlock}
+                {errorBlock}
+                {amberBlock}
+                {connectError !== '' && (
+                  <Text role="alert" c="red" size="sm">{connectError}</Text>
+                )}
               </Stack>
             )}
           </div>
@@ -656,7 +725,12 @@ export function KrogerAppSetupModal({
                   </Button>
                 )}
                 {step === 7 && canConnect && (
-                  <Button className="store-app-touch-target store-app-touch-target-wide" onClick={connect}>
+                  <Button
+                    className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
+                    loading={connectBusy}
+                    aria-busy={connectBusy || undefined}
+                    onClick={() => { void connect(); }}
+                  >
                     {connectLabel}
                   </Button>
                 )}
@@ -671,6 +745,7 @@ export function KrogerAppSetupModal({
         onClose={() => setCloseConfirm(false)}
         title={krogerAppCopy.closeConfirmTitle}
         size="sm"
+        withCloseButton={false}
         closeButtonProps={{
           'aria-label': krogerAppCopy.closeLabel,
           className: 'store-app-modal-close',

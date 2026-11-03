@@ -381,6 +381,7 @@ describe('provisionWholeRequestMessage (store send guards)', () => {
   it('offers setup navigation only for admins', () => {
     expect(provisionWholeRequestActionLabel('not_configured', 'Kroger', { householdAdmin: true })).toBe(krogerAppCopy.openSetup);
     expect(provisionWholeRequestActionLabel('not_configured', 'Kroger', { householdAdmin: false })).toBeUndefined();
+    expect(provisionWholeRequestActionLabel('store_disabled', 'Kroger')).toBeUndefined();
   });
 });
 

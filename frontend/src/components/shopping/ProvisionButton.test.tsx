@@ -271,14 +271,15 @@ describe('ProvisionButton export envelopes (409/502)', () => {
     expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
   });
 
-  it('409 store_disabled shows hosted copy, not raw server text', async () => {
+  it('409 store_disabled (T58) shows no result panel and no Try again', async () => {
     mockExportEnvelope(409, 'store_disabled', 'RAW DISABLED');
-    renderButton();
+    const onFinished = vi.fn();
+    renderButton({ onFinished });
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
-    const panel = await screen.findByRole('status', { name: 'Cart send result' });
-    expect(within(panel).getByText(hostedErrorSentence('store_disabled'))).toBeInTheDocument();
-    expect(within(panel).queryByText('RAW DISABLED')).not.toBeInTheDocument();
-    expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    await waitFor(() => expect(onFinished).toHaveBeenCalled());
+    expect(screen.queryByRole('status', { name: 'Cart send result' })).not.toBeInTheDocument();
+    expect(screen.queryByText(hostedErrorSentence('store_disabled'))).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
   it('409 conflict not configured maps F9 copy for a household admin', async () => {

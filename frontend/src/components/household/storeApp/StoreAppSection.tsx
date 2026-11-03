@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActionIcon,
   Button,
@@ -28,7 +28,7 @@ import {
 } from '../../../api/client';
 import { KrogerAppSetupModal } from './KrogerAppSetupModal';
 import { RemoveStoreAppDialog } from './RemoveStoreAppDialog';
-import { startKrogerConnect } from './krogerConnect';
+import { connectKrogerAccount } from './krogerConnect';
 import {
   mapKrogerAppApiError,
   mapTestAgainResult,
@@ -75,12 +75,20 @@ export function StoreAppSection({
   const [testNoticeAmber, setTestNoticeAmber] = useState(false);
   const [forcedMember, setForcedMember] = useState(false);
   const [disabledNotice, setDisabledNotice] = useState('');
+  const clientStoreDisabledRef = useRef(false);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectError, setConnectError] = useState('');
+  const [rowRemovedNotice, setRowRemovedNotice] = useState(false);
 
   const ctx = storeNameContext(linkedStoreName);
   const canManage = !forcedMember && (app?.canManage ?? isAdmin);
 
   const reload = useCallback(async () => {
     if (householdId === '') return;
+    if (clientStoreDisabledRef.current) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setLoadError('');
     try {
@@ -88,7 +96,11 @@ export function StoreAppSection({
         getKrogerApp(householdId),
         listProviders().catch(() => [] as Awaited<ReturnType<typeof listProviders>>),
       ]);
+      if (clientStoreDisabledRef.current) {
+        return;
+      }
       if (isDisabled(response) || krogerDisabledOnProviderList(providers)) {
+        clientStoreDisabledRef.current = true;
         setDisabled(true);
         setApp(null);
         setSetupOpen(false);
@@ -156,6 +168,7 @@ export function StoreAppSection({
     } catch (requestError) {
       const mapped = mapKrogerAppApiError(requestError);
       if (mapped.kind === 'store_disabled') {
+        clientStoreDisabledRef.current = true;
         setDisabledNotice(storeDisabledUserMessage());
         setDisabled(true);
         setApp(null);
@@ -195,6 +208,7 @@ export function StoreAppSection({
     } catch (requestError) {
       const mapped = mapKrogerAppApiError(requestError);
       if (mapped.kind === 'store_disabled') {
+        clientStoreDisabledRef.current = true;
         setDisabledNotice(storeDisabledUserMessage());
         setDisabled(true);
         setApp(null);
@@ -207,6 +221,31 @@ export function StoreAppSection({
 
   const onSaved = () => {
     void reload();
+  };
+
+  const runConnect = async () => {
+    setConnectError('');
+    setRowRemovedNotice(false);
+    setConnectBusy(true);
+    const result = await connectKrogerAccount('household', linkedStoreName);
+    if (result.ok) {
+      return;
+    }
+    setConnectBusy(false);
+    if (result.kind === 'store_disabled') {
+      clientStoreDisabledRef.current = true;
+      setDisabledNotice(storeDisabledUserMessage());
+      setDisabled(true);
+      setApp(null);
+      return;
+    }
+    if (result.kind === 'not_configured') {
+      setRowRemovedNotice(true);
+      setConnectError('');
+      await reload();
+      return;
+    }
+    setConnectError(result.message ?? krogerAppCopy.errConnectFailedFallback);
   };
 
   const status = app?.status ?? 'not_set_up';
@@ -226,14 +265,24 @@ export function StoreAppSection({
       case 'ready_to_connect':
         if (!canConnect) return null;
         return (
-          <Button className="store-app-touch-target store-app-touch-target-wide" onClick={() => { void startKrogerConnect('household'); }}>
+          <Button
+            className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
+            loading={connectBusy}
+            aria-busy={connectBusy || undefined}
+            onClick={() => { void runConnect(); }}
+          >
             {krogerAppCopy.rowConnect}
           </Button>
         );
       case 'needs_reconnect':
         if (!canConnect) return null;
         return (
-          <Button className="store-app-touch-target store-app-touch-target-wide" onClick={() => { void startKrogerConnect('household'); }}>
+          <Button
+            className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
+            loading={connectBusy}
+            aria-busy={connectBusy || undefined}
+            onClick={() => { void runConnect(); }}
+          >
             {krogerAppConnectLabel(ctx, true)}
           </Button>
         );
@@ -339,13 +388,23 @@ export function StoreAppSection({
                 </Button>
               </Group>
             )}
-            {showProductAccessNotes && app.productAccess === 'unknown' && !canManage && (
-              <Group gap="xs" align="flex-start" wrap="wrap" role="status">
-                <Text size="sm" className="store-app-note-unknown" aria-hidden>
-                  ⚠
-                </Text>
-                <Text size="sm" className="store-app-note-unknown">{krogerAppNoteUnknown(ctx)}</Text>
-              </Group>
+            {rowRemovedNotice && (
+              <Stack gap="xs">
+                <Text size="sm">{krogerAppCopy.errRemoved}</Text>
+                <Button
+                  variant="subtle"
+                  className="store-app-touch-target store-app-touch-target-wide"
+                  onClick={() => {
+                    setRowRemovedNotice(false);
+                    openSetup(false, 1);
+                  }}
+                >
+                  {krogerAppCopy.startAgain}
+                </Button>
+              </Stack>
+            )}
+            {connectError !== '' && (
+              <Text role="alert" c="red" size="sm">{connectError}</Text>
             )}
             {testNotice !== '' && (
               <Text
@@ -378,6 +437,7 @@ export function StoreAppSection({
           initialStep={setupInitialStep}
           onSaved={onSaved}
           onStoreDisabled={() => {
+            clientStoreDisabledRef.current = true;
             setDisabledNotice(storeDisabledUserMessage());
             setDisabled(true);
             setApp(null);

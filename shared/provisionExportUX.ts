@@ -278,6 +278,9 @@ export function provisionWholeRequestActionLabel(
   if (code === 'not_configured') {
     return context.householdAdmin === true ? krogerAppCopy.openSetup : undefined;
   }
+  if (code === 'store_disabled') {
+    return undefined;
+  }
   return 'Try again';
 }
 

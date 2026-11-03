@@ -95,6 +95,11 @@ export const ProvisionButton = ({
     } catch (requestError) {
       setReport(null);
       const envelope = exportEnvelopeError(requestError);
+      if (envelope === 'store_disabled') {
+        setEnvelopeError(undefined);
+        onFinished();
+        return;
+      }
       if (envelope !== undefined) {
         setEnvelopeError(envelope);
       } else {
