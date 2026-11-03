@@ -562,7 +562,7 @@ export const ProvisionResultPanel = ({
 
       {report.reconnectRequired === true && (
         <Stack gap="xs">
-          <Text size="sm">{provisionPartialReconnectPrompt(storeLabel)}</Text>
+          <Text size="sm">{provisionPartialReconnectPrompt(storeLabel, groups.N)}</Text>
           <Button
             className="provision-result-action"
             variant="light"
