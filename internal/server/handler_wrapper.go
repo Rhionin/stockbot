@@ -275,6 +275,11 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 			suggestions = nil
 			itemID = ""
 			onHand = nil
+		case code == codeStoreAppUnreachable:
+			members = nil
+			suggestions = nil
+			itemID = ""
+			onHand = nil
 		default:
 			message = clientmsg.Generic
 			code = codeInternal

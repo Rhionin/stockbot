@@ -94,7 +94,7 @@ func TestKrogerAppTwoHouseholdRoleIsolation(t *testing.T) {
 
 	member := &stage1Caller{t: t, h: handler}
 	accept := member.call(http.MethodPost, "/api/invites/accept", map[string]any{
-		"code": joinInvite.Code,
+		"code":    joinInvite.Code,
 		"account": map[string]string{"name": "Bea", "email": "bea@pantry.test", "password": "correct horse"},
 	}, app.EntryPublic, nil)
 	if accept.Code != http.StatusOK {

@@ -1,110 +1,266 @@
 package server
 
 import (
+	"context"
 	"net/http"
-	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 )
 
-type sinkTestProvider struct {
-	id      cart.ProviderID
-	client  string
-	secret  string
-	uri     string
-	modality string
+type testAppCredProvider struct {
+	id cart.ProviderID
 }
 
-func (s *sinkTestProvider) ID() cart.ProviderID      { return s.id }
-func (s *sinkTestProvider) DisplayName() string      { return "Sink Test" }
-func (s *sinkTestProvider) Capabilities() cart.Capabilities {
-	return cart.Capabilities{
-		Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
-		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
-	}
+func (p testAppCredProvider) ID() cart.ProviderID { return p.id }
+func (p testAppCredProvider) DisplayName() string { return "Test app cred" }
+func (p testAppCredProvider) Capabilities() cart.Capabilities {
+	return cart.Capabilities{Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}
 }
-func (s *sinkTestProvider) ApplyAppCredentials(clientID, clientSecret, redirectURI, modality string) error {
-	s.client, s.secret, s.uri, s.modality = clientID, clientSecret, redirectURI, modality
+func (p testAppCredProvider) ApplyAppCredentials(clientID, clientSecret, redirectURI, modality string) error {
 	return nil
 }
-func (s *sinkTestProvider) ClearAppCredentials() {
-	s.client, s.secret, s.uri, s.modality = "", "", "", "PICKUP"
-}
-func (s *sinkTestProvider) PublicAppCredentials() cart.AppCredentials {
-	return cart.AppCredentials{
-		ClientID: s.client, RedirectURI: s.uri, Modality: s.modality, SecretSet: s.secret != "",
-	}
+func (p testAppCredProvider) ClearAppCredentials() {}
+func (p testAppCredProvider) PublicAppCredentials() cart.AppCredentials {
+	return cart.AppCredentials{ClientID: "test-client", RedirectURI: "https://test.example/cb", Modality: "PICKUP", SecretSet: true}
 }
 
-func TestNonKrogerProviderCredentialsOperatorPutDelete(t *testing.T) {
-	db := openMigratedDB(t, filepath.Join(t.TempDir(), "sink-creds.db"))
-	setupDir := t.TempDir()
-	svc := auth.NewService(db, setupDir)
-	site := stage1Site(t)
+func TestNonKrogerProviderCredentialPutAndDelete(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
 	registry := cart.NewRegistry()
-	sink := &sinkTestProvider{id: "sinktest"}
-	if err := registry.Register(sink); err != nil {
+	provider := testAppCredProvider{id: "test-appcred"}
+	if err := registry.Register(provider, cart.WithCredentialsConfigured(false)); err != nil {
 		t.Fatal(err)
 	}
-	handler, _ := setupOnDB(t, db, nil,
-		WithStage1(svc, site),
-		WithCartRegistry(registry, cart.NewLedger(db)),
-	)
-	c := &stage1Caller{t: t, h: handler}
-	c.call(http.MethodGet, "/setup", nil, app.EntryPublic, nil)
-	code, _ := auth.ReadSetupCode(setupDir)
-	c.call(http.MethodPost, "/setup", map[string]string{
-		"setupCode": code, "name": "Op", "email": "op@test", "password": "correct horse",
-	}, app.EntryPublic, nil)
-	login := c.call(http.MethodPost, "/api/auth/login", map[string]string{
-		"email": "op@test", "password": "correct horse",
-	}, app.EntryPublic, nil)
-	c.cookie = cookieFrom(t, login, site.SessionCookie().Name)
+	vault := appcred.NewVault(db)
+	h := &ProvidersHandler{
+		Registry:    registry,
+		Credentials: vault,
+		Auth:        svc,
+		EnvFallback: ProviderEnv{ClientID: "env", ClientSecret: "env", RedirectURI: "https://env.example/cb", Modality: "PICKUP"},
+	}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+	put := &ProviderCredentialPutHandler{ProvidersHandler: *h}
+	view, err := put.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context: ctx,
+		Body: providerCredentialBody{
+			ClientID: "cid", ClientSecret: "sec", RedirectURI: "https://example.test/cb", Modality: "PICKUP",
+		},
+		PathParams: providerCredentialParams{ProviderID: "test-appcred"},
+	})
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	if view.ClientID != "cid" || view.Source != "saved" {
+		t.Fatalf("view = %+v", view)
+	}
+	if !registry.CredentialsConfigured("test-appcred") {
+		t.Fatal("registry not configured after PUT")
+	}
+	del := &ProviderCredentialDeleteHandler{ProvidersHandler: *h}
+	out, err := del.Handle(Request[struct{}, providerCredentialParams]{
+		Context:    ctx,
+		PathParams: providerCredentialParams{ProviderID: "test-appcred"},
+	})
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if out.Source != "environment" {
+		t.Fatalf("after delete view = %+v", out)
+	}
+	scope, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := vault.Load(ctx, scope, "test-appcred"); err != nil || ok {
+		t.Fatalf("row should be cleared ok=%v err=%v", ok, err)
+	}
+}
 
-	put := c.authed(http.MethodPut, "/api/providers/sinktest/credentials", map[string]string{
-		"clientId": "sink-client", "clientSecret": "sink-secret",
-		"redirectUri": "https://sink.example/cb", "modality": "PICKUP",
+type plainProvider struct {
+	id cart.ProviderID
+}
+
+func (p plainProvider) ID() cart.ProviderID { return p.id }
+func (p plainProvider) DisplayName() string { return "Plain" }
+func (p plainProvider) Capabilities() cart.Capabilities {
+	return cart.Capabilities{Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}
+}
+
+func TestProviderCredentialPutKrogerRetired(t *testing.T) {
+	h := &ProviderCredentialPutHandler{ProvidersHandler: ProvidersHandler{Auth: auth.NewService(openMigratedDB(t, ":memory:"), t.TempDir())}}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+	_, err := h.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context:    ctx,
+		Body:       providerCredentialBody{ClientID: "x", ClientSecret: "y", RedirectURI: "https://x.example/cb"},
+		PathParams: providerCredentialParams{ProviderID: "kroger"},
 	})
-	if put.Code != http.StatusOK || !strings.Contains(put.Body.String(), `"source":"saved"`) {
-		t.Fatalf("PUT %d %s", put.Code, put.Body.String())
+	var httpErr *HTTPError
+	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != http.StatusNotFound {
+		t.Fatalf("err = %v", err)
 	}
-	badMod := c.authed(http.MethodPut, "/api/providers/sinktest/credentials", map[string]string{
-		"clientId": "x", "clientSecret": "y", "redirectUri": "https://sink.example/cb", "modality": "CURBSIDE",
+}
+
+func TestProviderCredentialPutValidationAndSinkErrors(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
+	registry := cart.NewRegistry()
+	if err := registry.Register(testAppCredProvider{id: "test-appcred"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(plainProvider{id: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+	h := &ProviderCredentialPutHandler{ProvidersHandler: ProvidersHandler{
+		Registry: registry, Credentials: appcred.NewVault(db), Auth: svc,
+	}}
+	op := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+
+	try := func(body providerCredentialBody, providerID string, wantCode int) {
+		t.Helper()
+		_, err := h.Handle(Request[providerCredentialBody, providerCredentialParams]{
+			Context: op, Body: body, PathParams: providerCredentialParams{ProviderID: providerID},
+		})
+		var httpErr *HTTPError
+		if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != wantCode {
+			t.Fatalf("provider=%s body=%+v err=%v", providerID, body, err)
+		}
+	}
+
+	try(providerCredentialBody{ClientSecret: "s", RedirectURI: "https://x.example/cb"}, "test-appcred", http.StatusUnprocessableEntity)
+	try(providerCredentialBody{ClientID: "c", ClientSecret: "s", RedirectURI: "not-a-url", Modality: "PICKUP"}, "test-appcred", http.StatusUnprocessableEntity)
+	try(providerCredentialBody{ClientID: "c", ClientSecret: "s", RedirectURI: "https://x.example/cb", Modality: "SHIP"}, "test-appcred", http.StatusUnprocessableEntity)
+	try(providerCredentialBody{ClientID: "c", ClientSecret: "s", RedirectURI: "https://x.example/cb"}, "missing", http.StatusNotFound)
+	try(providerCredentialBody{ClientID: "c", ClientSecret: "s", RedirectURI: "https://x.example/cb"}, "plain", http.StatusUnprocessableEntity)
+	h.EnvFallback = ProviderEnv{Disabled: true}
+	try(providerCredentialBody{ClientID: "c", ClientSecret: "s", RedirectURI: "https://x.example/cb"}, "test-appcred", http.StatusConflict)
+}
+
+func TestProviderCredentialPutSecretReuseAndApplyFailure(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
+	registry := cart.NewRegistry()
+	badSink := testAppCredProvider{id: "bad-apply"}
+	if err := registry.Register(badSink); err != nil {
+		t.Fatal(err)
+	}
+	vault := appcred.NewVault(db)
+	h := &ProviderCredentialPutHandler{ProvidersHandler: ProvidersHandler{
+		Registry: registry, Credentials: vault, Auth: svc,
+	}}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+	scope, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Save(ctx, scope, appcred.Saved{
+		ProviderID: "bad-apply", ClientID: "saved", ClientSecret: "stored-secret",
+		RedirectURI: "https://saved.example/cb", Modality: "PICKUP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context: ctx,
+		Body: providerCredentialBody{
+			ClientID: "saved", RedirectURI: "https://saved.example/cb", Modality: "DELIVERY",
+		},
+		PathParams: providerCredentialParams{ProviderID: "bad-apply"},
 	})
-	if badMod.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("bad modality %d", badMod.Code)
+	if err != nil {
+		t.Fatalf("modality-only update: %v", err)
 	}
-	badURL := c.authed(http.MethodPut, "/api/providers/sinktest/credentials", map[string]string{
-		"clientId": "x", "clientSecret": "y", "redirectUri": "not-a-url", "modality": "PICKUP",
+	failSink := failingApplyProvider{id: "fail-apply"}
+	if err := registry.Register(failSink); err != nil {
+		t.Fatal(err)
+	}
+	h.Registry = registry
+	_, err = h.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context: ctx,
+		Body: providerCredentialBody{
+			ClientID: "x", ClientSecret: "y", RedirectURI: "https://x.example/cb",
+		},
+		PathParams: providerCredentialParams{ProviderID: "fail-apply"},
 	})
-	if badURL.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("bad url %d", badURL.Code)
+	var httpErr *HTTPError
+	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("apply failure err=%v", err)
 	}
-	if sink.client != "sink-client" {
-		t.Fatalf("apply client %q", sink.client)
+}
+
+type failingApplyProvider struct {
+	id cart.ProviderID
+}
+
+func (p failingApplyProvider) ID() cart.ProviderID { return p.id }
+func (p failingApplyProvider) DisplayName() string { return "Fail apply" }
+func (p failingApplyProvider) Capabilities() cart.Capabilities {
+	return cart.Capabilities{Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}
+}
+func (p failingApplyProvider) ApplyAppCredentials(string, string, string, string) error {
+	return errCredentialStore
+}
+func (p failingApplyProvider) ClearAppCredentials() {}
+func (p failingApplyProvider) PublicAppCredentials() cart.AppCredentials {
+	return cart.AppCredentials{}
+}
+
+func TestProviderCredentialDeleteClearsRegistryWhenNoEnv(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
+	registry := cart.NewRegistry()
+	provider := testAppCredProvider{id: "test-appcred"}
+	if err := registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
 	}
-	list := c.authed(http.MethodGet, "/api/providers", nil)
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"clientId":"sink-client"`) {
-		t.Fatalf("list %d %s", list.Code, list.Body.String())
+	vault := appcred.NewVault(db)
+	h := &ProvidersHandler{Registry: registry, Credentials: vault, Auth: svc}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+	scope, err := svc.Primary(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	keepSecret := c.authed(http.MethodPut, "/api/providers/sinktest/credentials", map[string]string{
-		"clientId": "sink-client", "clientSecret": "", "redirectUri": "https://sink2.example/cb", "modality": "DELIVERY",
+	if err := vault.Save(ctx, scope, appcred.Saved{
+		ProviderID: "test-appcred", ClientID: "cid", ClientSecret: "sec",
+		RedirectURI: "https://example.test/cb", Modality: "PICKUP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	del := &ProviderCredentialDeleteHandler{ProvidersHandler: *h}
+	out, err := del.Handle(Request[struct{}, providerCredentialParams]{
+		Context: ctx, PathParams: providerCredentialParams{ProviderID: "test-appcred"},
 	})
-	if keepSecret.Code != http.StatusOK || !strings.Contains(keepSecret.Body.String(), `"redirectUri":"https://sink2.example/cb"`) {
-		t.Fatalf("keep secret PUT %d %s", keepSecret.Code, keepSecret.Body.String())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if sink.secret != "sink-secret" {
-		t.Fatalf("secret cleared")
+	if out.Source != "none" || registry.CredentialsConfigured("test-appcred") {
+		t.Fatalf("view=%+v configured=%v", out, registry.CredentialsConfigured("test-appcred"))
 	}
-	del := c.authed(http.MethodDelete, "/api/providers/sinktest/credentials", nil)
-	if del.Code != http.StatusOK {
-		t.Fatalf("DELETE %d %s", del.Code, del.Body.String())
+}
+
+func TestProviderCredentialPutRejectsNonOperator(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
+	registry := cart.NewRegistry()
+	if err := registry.Register(testAppCredProvider{id: "test-appcred"}); err != nil {
+		t.Fatal(err)
 	}
-	if sink.client != "" {
-		t.Fatal("expected cleared sink")
+	h := &ProviderCredentialPutHandler{ProvidersHandler: ProvidersHandler{
+		Registry: registry, Credentials: appcred.NewVault(db), Auth: svc,
+	}}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "user-1"})
+	_, err := h.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context:    ctx,
+		Body:       providerCredentialBody{ClientID: "x", ClientSecret: "y", RedirectURI: "https://x.example/cb"},
+		PathParams: providerCredentialParams{ProviderID: "test-appcred"},
+	})
+	var httpErr *HTTPError
+	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != http.StatusForbidden {
+		t.Fatalf("err = %v", err)
 	}
 }

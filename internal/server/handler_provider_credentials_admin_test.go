@@ -73,7 +73,7 @@ func TestServerCredentialScopeUsesPrimary(t *testing.T) {
 }
 
 func TestKrogerCredentialsRequireOperator(t *testing.T) {
-	t.Skip("covered by TestKrogerAppTwoHouseholdRoleIsolation")
+	t.Skip("covered by TestKrogerAppOperatorHouseholdRegression and TestKrogerAppTwoHouseholdRoleIsolation")
 }
 
 func TestCredentialViewNonPrimaryIgnoresLeftoverSavedRow(t *testing.T) {
