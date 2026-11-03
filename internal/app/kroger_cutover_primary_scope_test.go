@@ -18,6 +18,41 @@ func TestKrogerCutoverNilDBIsNoOp(t *testing.T) {
 	}
 }
 
+func TestKrogerCutoverPrimaryHouseholdReadErrorRollsBack(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	secondary := "01909999-9999-7000-8000-000000000088"
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, 'Rollback sec', '', '2026-01-01T00:00:00Z', 'abcdef0123456789abcdef0123456789', 0)`, secondary); err != nil {
+		t.Fatal(err)
+	}
+	seedHouseholdKrogerSideTables(t, db, secondary, "user-rb", "store-rb", "rb-app", when)
+	before := sideTableCounts(t, db, secondary)
+	if _, err := db.Exec(`ALTER TABLE households RENAME COLUMN is_primary TO is_primary_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`ALTER TABLE households RENAME COLUMN is_primary_hidden TO is_primary`)
+	})
+	err := RunKrogerAppCutover(ctx, db, KrogerCutoverEnv{ClientID: "a", ClientSecret: "b", RedirectURI: "https://cb.test/x"})
+	if err == nil {
+		t.Fatal("expected primary household read error")
+	}
+	if !strings.Contains(err.Error(), "read primary household") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	after := sideTableCounts(t, db, secondary)
+	if after != before {
+		t.Fatalf("cutover changed secondary state: before %+v after %+v", before, after)
+	}
+	var flag string
+	rowErr := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'kroger_app_cutover_v1'`).Scan(&flag)
+	if rowErr != sql.ErrNoRows {
+		t.Fatalf("cutover flag should be absent, got %v err=%v", flag, rowErr)
+	}
+}
+
 func TestKrogerCutoverPrimaryKrogerAppReadErrorRollsBack(t *testing.T) {
 	db := openCutoverDB(t)
 	ctx := context.Background()
