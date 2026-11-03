@@ -39,7 +39,6 @@ frontend/yarn-error.log*
 frontend/pnpm-debug.log*
 
 # Local screenshot captures from optional e2e capture specs
-frontend/487-screenshots/
 frontend/test-results/487-screenshots/
 
 # Playwright
