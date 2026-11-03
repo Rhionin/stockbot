@@ -291,33 +291,53 @@ test.describe('text contrast on each page', () => {
   }
 })
 
+async function stubStoreAppHousehold(page: Page, householdId: string) {
+  const appBody = {
+    configured: true,
+    clientIdLast4: '1234',
+    redirectUri: 'https://test-household.example/cb',
+    modality: 'PICKUP',
+    productAccess: 'unknown',
+    status: 'ready_to_connect',
+    canManage: true,
+  }
+  await page.route(`**/api/households/${householdId}/kroger-app`, (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
+    }
+    return route.continue()
+  })
+  await page.route(`**/api/households/${householdId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: householdId, name: 'Test Household', role: 'owner', deletedAt: null, purgeAt: null }),
+  }))
+  await page.route('**/api/household/settings', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ restockMode: 'auto' }),
+  }))
+  await page.route('**/api/invites', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ invites: [] }),
+  }))
+  await page.route(`**/api/households/${householdId}/members`, (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ members: [{ userId: 'user-1', email: 'owner@test.example', role: 'owner' }] }),
+  }))
+  await page.route('**/api/devices', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ devices: [] }),
+  }))
+}
+
 test.describe('text contrast in the store app setup modal', () => {
-  test.beforeAll(async ({ request }) => {
-    await resetSharedState(request)
-    await seedShopping(request)
-    const session = await request.get('/api/auth/session')
-    const body = await session.json() as { activeHouseholdId?: string }
-    const householdId = body.activeHouseholdId ?? 'hh-1'
-    const saved = await request.put(`/api/households/${householdId}/kroger-app`, {
-      data: {
-        clientId: 'contrast-client-id',
-        clientSecret: 'contrast-client-secret',
-        modality: 'PICKUP',
-      },
-    })
-    expect(saved.ok()).toBe(true)
-  })
-
-  test.afterAll(async ({ request }) => {
-    const session = await request.get('/api/auth/session')
-    const body = await session.json() as { activeHouseholdId?: string }
-    const householdId = body.activeHouseholdId ?? 'hh-1'
-    await request.delete(`/api/households/${householdId}/kroger-app`)
-    await resetSharedState(request)
-  })
-
   for (const { width, mode } of dialogCases) {
     test(`store app row ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
+      await stubStoreAppHousehold(page, 'hh-1')
       await openThemed(page, '/household', mode.app, mode.os, width)
       const row = page.getByRole('heading', { name: 'Store app' })
       await expect(row).toBeVisible()
