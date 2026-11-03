@@ -285,6 +285,45 @@ export interface ProviderCredentials {
   source: 'saved' | 'environment' | 'none';
 }
 
+export type KrogerAppStatus =
+  | 'not_set_up'
+  | 'ready_to_connect'
+  | 'connected'
+  | 'needs_reconnect';
+
+export type KrogerAppProductAccess = 'true' | 'false' | 'unknown';
+
+export type KrogerAppTestCode =
+  | 'wrong_keys'
+  | 'redirect_mismatch'
+  | 'kroger_unreachable'
+  | 'no_product_access';
+
+export interface KrogerApp {
+  configured: boolean;
+  clientIdLast4: string | null;
+  redirectUri: string | null;
+  modality: string | null;
+  productAccess: KrogerAppProductAccess;
+  status: KrogerAppStatus;
+  canManage: boolean;
+}
+
+export interface KrogerAppDisabled {
+  status: 'disabled';
+}
+
+export type KrogerAppGetResponse = KrogerApp | KrogerAppDisabled;
+
+export interface KrogerAppTest {
+  ok: boolean;
+  code?: KrogerAppTestCode;
+}
+
+export interface KrogerAppSaved extends KrogerApp {
+  test: KrogerAppTest;
+}
+
 export interface SupplySettings {
   months: number;
   opening: boolean;

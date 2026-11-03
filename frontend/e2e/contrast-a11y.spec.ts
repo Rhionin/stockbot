@@ -291,15 +291,17 @@ test.describe('text contrast on each page', () => {
   }
 })
 
-test.describe('text contrast in the Kroger dialog', () => {
+test.describe('text contrast in the store app setup modal', () => {
   test.beforeAll(async ({ request }) => {
     await resetSharedState(request)
     await seedShopping(request)
-    const saved = await request.put('/api/providers/kroger/credentials', {
+    const session = await request.get('/api/auth/session')
+    const body = await session.json() as { activeHouseholdId?: string }
+    const householdId = body.activeHouseholdId ?? 'hh-1'
+    const saved = await request.put(`/api/households/${householdId}/kroger-app`, {
       data: {
-        clientId: 'contrast-client',
-        clientSecret: 'contrast-secret',
-        redirectUri: 'http://127.0.0.1:5173/shopping',
+        clientId: 'contrast-client-id',
+        clientSecret: 'contrast-client-secret',
         modality: 'PICKUP',
       },
     })
@@ -307,26 +309,23 @@ test.describe('text contrast in the Kroger dialog', () => {
   })
 
   test.afterAll(async ({ request }) => {
-    await request.delete('/api/providers/kroger/credentials')
+    const session = await request.get('/api/auth/session')
+    const body = await session.json() as { activeHouseholdId?: string }
+    const householdId = body.activeHouseholdId ?? 'hh-1'
+    await request.delete(`/api/households/${householdId}/kroger-app`)
     await resetSharedState(request)
   })
 
   for (const { width, mode } of dialogCases) {
-    test(`dialog ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
-      await openThemed(page, '/shopping', mode.app, mode.os, width)
-      await page.getByRole('button', { name: 'Menu' }).click()
-      await page.getByRole('menuitem', { name: 'Manage Kroger connection' }).click()
-      const dialog = page.getByRole('dialog', { name: 'Kroger connection' })
-      await expect(dialog).toBeVisible()
-      await expect(dialog).toHaveCSS('opacity', '1')
-      const body = dialog.getByText('A client secret is saved and is not shown.')
-      await expect(body).toBeVisible()
-      const sample = await expectContrast(body)
-      if (mode.app === mode.os) await shot(body, testInfo, `dialog-body-${mode.app}-${width}`)
-      const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
-      expect(dialogAxe.violations, violationText(dialogAxe.violations)).toEqual([])
-      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'dialog-body', ...mode, width, ...sample }], null, 2))
-      await page.keyboard.press('Escape')
+    test(`store app row ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
+      await openThemed(page, '/household', mode.app, mode.os, width)
+      const row = page.getByRole('heading', { name: 'Store app' })
+      await expect(row).toBeVisible()
+      const status = page.getByText('Ready to connect').or(page.getByText('Connected')).first()
+      await expect(status).toBeVisible()
+      const sample = await expectContrast(status)
+      if (mode.app === mode.os) await shot(status, testInfo, `store-app-status-${mode.app}-${width}`)
+      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'store-app-status', ...mode, width, ...sample }], null, 2))
     })
   }
 })

@@ -1,0 +1,72 @@
+.store-app-section {
+  margin-top: var(--mantine-spacing-md);
+}
+
+.store-app-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-sm) 0;
+}
+
+.store-app-row-title {
+  font-weight: 600;
+}
+
+.store-app-touch-target {
+  min-height: 44px;
+}
+
+.store-app-setup-modal .mantine-Modal-body {
+  padding-bottom: 0;
+}
+
+.store-app-setup-body {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  padding-bottom: var(--mantine-spacing-md);
+}
+
+.store-app-setup-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: var(--mantine-spacing-md) 0 var(--mantine-spacing-xs);
+  background: var(--mantine-color-body);
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.store-app-copy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--mantine-spacing-xs);
+  align-items: start;
+  padding: var(--mantine-spacing-xs) 0;
+}
+
+.store-app-copy-row + .store-app-copy-row {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.store-app-copy-value {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  word-break: break-all;
+}
+
+.store-app-checklist {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.store-app-checklist li {
+  margin-bottom: var(--mantine-spacing-xs);
+}
+
+.store-app-step-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+}

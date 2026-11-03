@@ -43,6 +43,10 @@ import type {
   HistoryLedger,
   PantryLinkSuggestion,
   TargetConflictMember,
+  KrogerApp,
+  KrogerAppGetResponse,
+  KrogerAppSaved,
+  KrogerAppTest,
 } from '@stockbot/shared/types';
 import {
   BATCH_COMMIT_PATH,
@@ -563,8 +567,42 @@ export function clearProviderCredentials(providerId: string): Promise<void> {
   return apiFetch(`/api/providers/${providerId}/credentials`, { method: 'DELETE' });
 }
 
-export function authorizeProvider(providerId: string): Promise<{ authorizationUrl: string }> {
-  return apiFetch(`/api/providers/${providerId}/authorize`);
+export function authorizeProvider(
+  providerId: string,
+  returnTo?: 'household' | 'shopping',
+): Promise<{ authorizationUrl: string }> {
+  const query = returnTo ? toQueryString({ return: returnTo }) : '';
+  return apiFetch(`/api/providers/${providerId}/authorize${query}`);
+}
+
+export function getKrogerApp(householdId: string): Promise<KrogerAppGetResponse> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`);
+}
+
+export function putKrogerApp(
+  householdId: string,
+  body: { clientId: string; clientSecret: string; modality?: string },
+): Promise<KrogerAppSaved> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteKrogerApp(householdId: string): Promise<KrogerApp> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app`, {
+    method: 'DELETE',
+  });
+}
+
+export function postKrogerAppTest(
+  householdId: string,
+  body: { clientId?: string; clientSecret?: string } = {},
+): Promise<KrogerAppTest> {
+  return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app/test`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 export function disconnectProvider(providerId: string): Promise<void> {

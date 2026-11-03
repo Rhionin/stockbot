@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
@@ -32,7 +33,9 @@ const jsonResponse = (body: unknown, status = 200) =>
 const renderPage = () => render(
   <MantineProvider>
     <Notifications />
-    <ShoppingListPage />
+    <MemoryRouter>
+      <ShoppingListPage />
+    </MemoryRouter>
   </MantineProvider>,
 );
 

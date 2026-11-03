@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ActionIcon,
   Alert,
@@ -50,11 +50,13 @@ import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
 import { inlineFailure } from '@stockbot/shared/contract';
+import { krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
 
 export const ShoppingListPage = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [entries, setEntries] = useState<ShoppingListEntry[]>([]);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -71,6 +73,32 @@ export const ShoppingListPage = () => {
   const [filling, setFilling] = useState(false);
   const [decisionsOpen, setDecisionsOpen] = useState(false);
   const [error, setError] = useState('');
+  const [krogerNotice, setKrogerNotice] = useState('');
+
+  useEffect(() => {
+    const legacy = searchParams.get('connected');
+    if (legacy === 'kroger') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot OAuth return handling
+      setKrogerNotice(shoppingKrogerLegacyMessage());
+      const next = new URLSearchParams(searchParams);
+      next.delete('connected');
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    const outcome = searchParams.get('kroger');
+    if (outcome === null) return;
+    const message = krogerCallbackMessage(outcome, storeNameCtx(null), true);
+    if (outcome === 'redirect_mismatch') {
+      setKrogerNotice(shoppingRedirectMismatchMessage());
+    } else if (message !== '') {
+      setKrogerNotice(message);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('kroger');
+    setSearchParams(next, { replace: true });
+    // OAuth return params are read once on landing; clearing them should not re-run this logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally omits searchParams after first pass
+  }, []);
 
   const refresh = useCallback(async () => {
     const providerRows = await listProviders();
@@ -364,6 +392,9 @@ export const ShoppingListPage = () => {
         </Group>
       </Stack>}
       {loading && <Loader aria-label="Loading shopping plan" />}
+      {krogerNotice !== '' && (
+        <Alert color="teal" variant="light" role="status">{krogerNotice}</Alert>
+      )}
       {error !== '' && (
         <Alert color="red" py="xs">
           {error}

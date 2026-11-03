@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Alert, Button, Group, Radio, Stack, Text, TextInput, Title } from '@mantine/core';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   HOUSEHOLD_DELETE_SENTENCE,
   classifyImportDocument,
@@ -35,6 +35,9 @@ import {
 } from '../../api/client';
 import { useHouseholdSession } from '../auth/householdSession';
 import { ScannersSection } from './ScannersSection';
+import { StoreAppSection } from './storeApp/StoreAppSection';
+import { krogerCallbackMessage, storeNameCtx } from './storeApp/krogerAppMessages';
+import './storeApp/storeApp.css';
 
 function hosted(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code !== '') return hostedErrorSentence(error.code);
@@ -63,6 +66,7 @@ function memberActionError(error: unknown): string {
 
 export function HouseholdPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { auth, logout, replaceAuth } = useHouseholdSession();
   const active = auth?.households.find((row) => row.id === auth.activeHouseholdId) ?? null;
   const isOwner = active?.role === 'owner';
@@ -93,6 +97,20 @@ export function HouseholdPage() {
   const [renameLoading, setRenameLoading] = useState(false);
   const [renameError, setRenameError] = useState('');
   const [renameNotice, setRenameNotice] = useState('');
+  const [krogerNotice, setKrogerNotice] = useState('');
+
+  useEffect(() => {
+    const outcome = searchParams.get('kroger');
+    if (outcome === null) return;
+    const message = krogerCallbackMessage(outcome, storeNameCtx(null), isOwner);
+    if (message !== '') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot OAuth return handling
+      setKrogerNotice(message);
+    }
+    const params = new URLSearchParams(searchParams);
+    params.delete('kroger');
+    navigate({ pathname: '/household', search: params.toString() }, { replace: true });
+  }, [searchParams, navigate, isOwner]);
 
   const displayedHouseholdName = nameDraft ?? household?.name ?? active?.name ?? '';
 
@@ -410,6 +428,17 @@ export function HouseholdPage() {
           ))}
         </ul>
       </section>
+
+      {krogerNotice !== '' && (
+        <Alert color="teal" variant="light" role="status">{krogerNotice}</Alert>
+      )}
+
+      <StoreAppSection
+        householdId={householdId}
+        householdName={household?.name ?? active?.name ?? 'Household'}
+        isAdmin={isOwner}
+        linkedStoreName={null}
+      />
 
       <ScannersSection householdName={household?.name ?? active?.name ?? 'Household'} isOwner={isOwner} />
 
