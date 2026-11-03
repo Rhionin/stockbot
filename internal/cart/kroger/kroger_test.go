@@ -540,3 +540,26 @@ func TestServerPushAddForbiddenIsReconnectClass(t *testing.T) {
 		t.Fatalf("status = %d", result.Status)
 	}
 }
+
+func TestAdapterTestingHooks(t *testing.T) {
+	adapter := NewUnconfigured().WithTimeout(3 * time.Second).WithRand(bytes.NewReader([]byte{1, 2, 3}))
+	if adapter.timeout != 3*time.Second {
+		t.Fatalf("timeout = %v", adapter.timeout)
+	}
+	if adapter.PublicBaseURL() != BaseURL {
+		t.Fatalf("base = %q", adapter.PublicBaseURL())
+	}
+	custom, err := New("id", "secret", "https://app/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom.baseURL = "https://api.example"
+	if custom.PublicBaseURL() != "https://api.example" {
+		t.Fatalf("base = %q", custom.PublicBaseURL())
+	}
+	rt := &fakeRoundTripper{resp: jsonResponse(http.StatusOK, `{}`)}
+	custom.WithTransport(rt)
+	if custom.PublicTransport() != rt {
+		t.Fatal("want configured transport")
+	}
+}
