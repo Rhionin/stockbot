@@ -45,6 +45,12 @@
   align-items: center;
   min-height: 44px;
   padding-block: var(--mantine-spacing-xs);
+  color: var(--mantine-color-teal-9);
+  text-decoration: underline;
+}
+
+[data-mantine-color-scheme='dark'] .store-app-external-link {
+  color: var(--mantine-color-teal-4);
 }
 
 .store-app-note-unknown {
