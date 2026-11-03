@@ -305,6 +305,15 @@ export function KrogerAppSetupModal({
       onClose();
       return;
     }
+    if (mapped.kind === 'not_configured') {
+      onNotConfigured?.();
+      setRemovedNotice(true);
+      setModalityError('');
+      setModalitySaved('');
+      setStatus('');
+      setAccessNote('');
+      return;
+    }
     if (mapped.kind === 'rate_limited') {
       setModalityError(krogerAppCopy.errTooMany);
       return;
@@ -466,15 +475,6 @@ export function KrogerAppSetupModal({
   const accessNoteBlock = accessNote !== '' && (
     <Text role="status" size="sm" className="store-app-note-unknown">{accessNote}</Text>
   );
-
-  useEffect(() => {
-    if (!opened && !closeConfirm) return;
-    queueMicrotask(() => {
-      document.querySelectorAll('.store-app-setup-modal .mantine-Modal-header').forEach((node) => {
-        node.setAttribute('role', 'group');
-      });
-    });
-  }, [opened, closeConfirm, step]);
 
   return (
     <>

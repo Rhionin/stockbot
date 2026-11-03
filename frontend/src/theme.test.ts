@@ -24,6 +24,10 @@ const token = (value: string | undefined, colors: typeof fullTheme.colors) => {
 };
 
 describe('theme', () => {
+  it('sets modal header role to group for landmark checks', () => {
+    expect(theme.components?.ModalHeader?.defaultProps?.role).toBe('group');
+  });
+
   it('uses the locked teal as the primary brand color', () => {
     expect(theme.primaryColor).toBe('teal');
     expect(theme.colors?.teal?.[6]).toBe('#0d9488');

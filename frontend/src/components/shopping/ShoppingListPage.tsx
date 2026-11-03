@@ -473,7 +473,6 @@ export const ShoppingListPage = () => {
                             step={1}
                             allowDecimal={false}
                             defaultValue={entry.quantity}
-                            key={`${entry.id}-${entry.quantity}`}
                             onBlur={(event) => void changeAdjustment(entry, event.currentTarget.value)}
                             w={120}
                           />

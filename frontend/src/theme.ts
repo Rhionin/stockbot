@@ -1,5 +1,6 @@
 import {
   createTheme,
+  ModalHeader,
   Popover,
   Switch,
   v8CssVariablesResolver,
@@ -219,6 +220,11 @@ export const theme = createTheme({
   },
   defaultRadius: 'sm',
   components: {
+    ModalHeader: ModalHeader.extend({
+      defaultProps: {
+        role: 'group',
+      },
+    }),
     Switch: Switch.extend({
       defaultProps: {
         withThumbIndicator: false,

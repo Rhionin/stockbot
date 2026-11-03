@@ -90,6 +90,19 @@
   color: var(--mantine-color-text);
 }
 
+.store-app-setup-modal {
+  --input-height: 44px;
+}
+
+.store-app-setup-modal .mantine-TextInput-input,
+.store-app-setup-modal .mantine-PasswordInput-input {
+  min-height: 44px;
+}
+
+.store-app-setup-modal .mantine-InputWrapper-error {
+  color: var(--mantine-color-red-text);
+}
+
 .store-app-setup-modal .mantine-Modal-body {
   padding-bottom: 0;
 }

@@ -96,8 +96,8 @@ function colorContrast(page: Page) {
   return new AxeBuilder({ page }).withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
 }
 
-function dialogColorContrast(page: Page) {
-  return new AxeBuilder({ page }).include('[role="dialog"]').withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
+function axeOnDialog(page: Page) {
+  return new AxeBuilder({ page }).include('[role="dialog"]')
 }
 
 async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
@@ -106,9 +106,6 @@ async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
     const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
     if (!(content instanceof HTMLElement)) return false
     const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
-    if (header instanceof HTMLElement) {
-      header.setAttribute('role', 'group')
-    }
     return getComputedStyle(content).opacity === '1'
       && header instanceof HTMLElement
       && header.getAttribute('role') === 'group'
@@ -362,10 +359,10 @@ test.describe('text contrast in the store app setup modal', () => {
       const bodySample = dialog.getByText(krogerAppCopy.s1BodyFallback).first()
       await expect(bodySample).toBeVisible()
       await expectContrast(bodySample)
-      const dialogAxe = await dialogColorContrast(page).analyze()
+      const dialogResult = await axeOnDialog(page).analyze()
       expect(
-        dialogAxe.violations,
-        `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogAxe.violations)}`,
+        dialogResult.violations,
+        `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogResult.violations)}`,
       ).toEqual([])
     })
   }
