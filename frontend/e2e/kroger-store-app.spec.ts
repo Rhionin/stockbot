@@ -257,9 +257,14 @@ for (const viewport of [
       height: viewport.height,
       ...(viewport.deviceScaleFactor ? { deviceScaleFactor: viewport.deviceScaleFactor } : {}),
     })
-    await stubHousehold(page, krogerApp('connected', { configured: true, clientIdLast4: '1234' }))
+    const appBody = krogerApp('connected', { configured: true, clientIdLast4: '1234' })
+    await stubHousehold(page, appBody)
     await page.route('**/api/households/hh-1/kroger-app', (route) => {
-      if (route.request().method() === 'PUT') {
+      const method = route.request().method()
+      if (method === 'GET') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
+      }
+      if (method === 'PUT') {
         return route.fulfill({
           status: 409,
           contentType: 'application/json',
