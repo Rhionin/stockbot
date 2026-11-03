@@ -53,6 +53,7 @@ export const AppMenu = ({ onCredentialsChanged }: AppMenuProps) => {
       }}
       position="bottom-end"
       width={320}
+      classNames={{ dropdown: 'app-menu-dropdown' }}
       shadow="md"
       withinPortal
     >
