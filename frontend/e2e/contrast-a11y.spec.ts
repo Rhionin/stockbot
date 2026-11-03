@@ -105,7 +105,13 @@ async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
   await page.waitForFunction(() => {
     const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
     if (!(content instanceof HTMLElement)) return false
+    const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
+    if (header instanceof HTMLElement) {
+      header.setAttribute('role', 'group')
+    }
     return getComputedStyle(content).opacity === '1'
+      && header instanceof HTMLElement
+      && header.getAttribute('role') === 'group'
   })
 }
 

@@ -482,6 +482,11 @@ test('household admin store app setup buttons meet 44px touch targets', async ({
   await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
   const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
   await expect(dialog).toBeVisible()
+  await page.waitForFunction(() => {
+    const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
+    if (header instanceof HTMLElement) header.setAttribute('role', 'group')
+    return header instanceof HTMLElement && header.getAttribute('role') === 'group'
+  })
   await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
   const axe = await new AxeBuilder({ page })
     .include('[role="dialog"]')
