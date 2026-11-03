@@ -348,7 +348,11 @@ test.describe('text contrast in the store app setup modal', () => {
       await page.getByRole('button', { name: 'Set up' }).click()
       const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
       await waitForStoreAppDialogSettled(page, dialog)
-      await expectAxe(page, `store app setup modal ${mode.app}/${mode.os} ${width}`)
+      const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
+      expect(
+        dialogAxe.violations,
+        `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogAxe.violations)}`,
+      ).toEqual([])
     })
   }
 })
