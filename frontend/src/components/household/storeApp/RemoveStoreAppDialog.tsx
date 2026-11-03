@@ -38,7 +38,7 @@ export function RemoveStoreAppDialog({
       await onConfirm();
       onClose();
     } catch (requestError) {
-      setError(removeFailureMessage(requestError));
+      setError(removeFailureMessage());
     } finally {
       setBusy(false);
     }

@@ -123,7 +123,7 @@ export function rowLoadFailureMessage(error: unknown): string {
   return krogerAppCopy.rowLoadFailed;
 }
 
-export function removeFailureMessage(_error: unknown): string {
+export function removeFailureMessage(): string {
   return krogerAppCopy.rmFailed;
 }
 

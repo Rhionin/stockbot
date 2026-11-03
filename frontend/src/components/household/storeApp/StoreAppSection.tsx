@@ -101,9 +101,11 @@ export function StoreAppSection({
 
   useEffect(() => {
     if (setupStepOnOpen === undefined) return;
+    /* eslint-disable react-hooks/set-state-in-effect -- open setup once when OAuth returns */
     setSetupInitialStep(setupStepOnOpen);
     setSetupOpen(true);
     onSetupOpened?.();
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [setupStepOnOpen, onSetupOpened]);
 
   if (disabled) return null;
