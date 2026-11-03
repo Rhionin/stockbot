@@ -12,6 +12,7 @@
   --stock-low: #f59e0b;
   --stock-out: #ef4444;
   --stock-full-ink: #0f766e;
+  --stock-focus-ring: #0f766e;
   --stock-low-ink: #b45309;
   --stock-out-ink: #b91c1c;
   --social-bg: rgba(244, 243, 236, 0.5);
@@ -700,7 +701,7 @@ code {
 }
 
 .scan-session-toggle:focus-visible {
-  outline: 2px solid var(--mantine-primary-color-filled);
+  outline: 2px solid var(--stock-focus-ring);
   outline-offset: -2px;
 }
 
@@ -831,7 +832,7 @@ code {
 }
 
 .scan-entry-stepper-btn:focus-visible {
-  outline: 2px solid var(--mantine-primary-color-filled);
+  outline: 2px solid var(--stock-focus-ring);
   outline-offset: 2px;
 }
 
@@ -902,7 +903,7 @@ code {
 .scan-entry-add-expiry:focus-visible,
 .scan-entry-expiry-action:focus-visible,
 .scan-entry-more:focus-visible {
-  outline: 2px solid var(--mantine-primary-color-filled);
+  outline: 2px solid var(--stock-focus-ring);
   outline-offset: 2px;
 }
 
@@ -1251,4 +1252,14 @@ code {
   .processing-scan-card--just-captured {
     animation: none;
   }
+}
+
+.mantine-focus-auto:focus-visible,
+.mantine-focus-always:focus-visible {
+  outline-color: var(--stock-focus-ring);
+}
+
+[data-mantine-color-scheme='dark'] .mantine-Input-input:focus,
+[data-mantine-color-scheme='dark'] .mantine-NumberInput-input:focus {
+  border-color: var(--stock-focus-ring);
 }

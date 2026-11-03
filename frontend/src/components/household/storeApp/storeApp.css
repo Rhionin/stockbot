@@ -65,15 +65,21 @@
   width: 100%;
 }
 
+.store-app-modality-control .mantine-SegmentedControl-root {
+  min-height: 44px;
+}
+
 .store-app-modality-control .mantine-SegmentedControl-label {
   min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding-inline: var(--mantine-spacing-sm);
 }
 
 .store-app-modality-control .mantine-SegmentedControl-control {
   min-height: 44px;
+  min-width: 44px;
 }
 
 .store-app-modality-error {

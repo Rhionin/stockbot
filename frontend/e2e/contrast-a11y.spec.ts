@@ -92,7 +92,7 @@ async function shot(locator: Locator, testInfo: TestInfo, name: string) {
 }
 
 function colorContrast(page: Page) {
-  return new AxeBuilder({ page }).withRules(['color-contrast'])
+  return new AxeBuilder({ page }).withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
 }
 
 async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
@@ -156,7 +156,7 @@ const modes = [
   { app: 'dark', os: 'dark' },
 ] as const
 
-const widths = [390, 1440] as const
+const widths = [390, 1280, 1440] as const
 
 const routes = [
   { path: '/', name: 'scan queue', ready: 'Scans add to stock' },
@@ -183,7 +183,7 @@ test.describe.configure({ mode: 'serial' })
 
 test.beforeEach(() => {
   axePrototype.exclude = () => {
-    throw new Error('color-contrast checks must not exclude selectors')
+    throw new Error('a11y checks must not exclude selectors')
   }
 })
 
@@ -241,8 +241,8 @@ test.describe('text contrast on each page', () => {
       '/inventory',
     ])
     expect(modes).toHaveLength(4)
-    expect(widths).toHaveLength(2)
-    expect(pageCases).toHaveLength(56)
+    expect(widths).toHaveLength(3)
+    expect(pageCases).toHaveLength(84)
   })
 
   for (const { width, mode, route } of pageCases) {
@@ -269,9 +269,12 @@ test.describe('text contrast on each page', () => {
         const kroger = page.getByText('Kroger is unconfigured.')
         const remove = page.getByRole('button', { name: 'Remove Plain rice' })
         const note = page.getByText(/\d+ on hand/).first()
+        const send = page.getByRole('button', { name: /Send to/ })
+        await expect(send).toBeVisible()
         measured.push({ name: 'kroger-unconfigured', ...mode, width, ...await expectContrast(kroger) })
         measured.push({ name: 'remove-plain-rice', ...mode, width, ...await expectContrast(remove) })
         measured.push({ name: 'stock-note', ...mode, width, ...await expectContrast(note) })
+        measured.push({ name: 'shopping-send', ...mode, width, ...await expectContrast(send) })
         if (mode.app === mode.os) {
           await shot(kroger, testInfo, `kroger-unconfigured-${mode.app}-${width}`)
           await shot(remove, testInfo, `remove-plain-rice-${mode.app}-${width}`)
