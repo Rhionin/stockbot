@@ -613,13 +613,47 @@ describe('mapProvisionEntryResultRow', () => {
 });
 
 describe('provisionPartialReconnectPrompt', () => {
-  it('names the store account in the lead sentence', () => {
+  it('(a) uses nothing-sent disconnected copy for Kroger when zero items were sent', () => {
+    const line = provisionPartialReconnectPrompt('Kroger', 0);
+    expect(line).toBe('Your Kroger account disconnected. Reconnect, then send again.');
+    expect(line).not.toContain('before everything');
+  });
+
+  it('(b) uses store-account fallback when zero sent and the store name is unknown', () => {
+    expect(provisionPartialReconnectPrompt(provisionStoreLabel(undefined), 0)).toBe(
+      'Your store account disconnected. Reconnect, then send again.',
+    );
+  });
+
+  it('(c) keeps partial-send copy unchanged when at least one item was sent', () => {
+    expect(provisionPartialReconnectPrompt('Kroger', 1)).toBe(
+      'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.',
+    );
+  });
+
+  it('treats omitted sent count like partial send for callers that only pass the store label', () => {
     expect(provisionPartialReconnectPrompt('Kroger')).toBe(
       'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.',
     );
     expect(provisionPartialReconnectPrompt(provisionStoreLabel(undefined))).toBe(
       'Your store account disconnected before everything was sent. Reconnect, then send again to finish.',
     );
+  });
+});
+
+describe('provision account disconnected summary model', () => {
+  it('(d) includes nothing-sent header, disconnected line, and reconnect action when zero sent', () => {
+    const store = 'Kroger';
+    const counts = { N: 0, M: 1, U: 0 };
+    const summary = provisionSummaryCopy(counts, store);
+    expect(summary.lines).toEqual([
+      PROVISION_NOTHING_SENT_LINE,
+      "1 couldn't be sent.",
+    ]);
+    expect(provisionPartialReconnectPrompt(store, counts.N)).toBe(
+      'Your Kroger account disconnected. Reconnect, then send again.',
+    );
+    expect(provisionNothingSentReconnectLabel(store)).toBe('Reconnect Kroger');
   });
 });
 

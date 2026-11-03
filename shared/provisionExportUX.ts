@@ -168,11 +168,14 @@ export function provisionProviderUnavailableEnvelope(storeLabel: string): string
   return `Nothing was sent. ${responder} isn't responding right now.`;
 }
 
-/** Partial send after reconnect-class failure, above the Reconnect control. */
-export function provisionPartialReconnectPrompt(storeLabel: string): string {
+/** Account-disconnected summary above the Reconnect control when `reconnectRequired` is set. */
+export function provisionPartialReconnectPrompt(storeLabel: string, sentCount?: number): string {
   const accountLead = storeLabel === UNKNOWN_STORE
     ? 'Your store account'
     : `Your ${storeLabel} account`;
+  if (sentCount === 0) {
+    return `${accountLead} disconnected. Reconnect, then send again.`;
+  }
   return `${accountLead} disconnected before everything was sent. Reconnect, then send again to finish.`;
 }
 
