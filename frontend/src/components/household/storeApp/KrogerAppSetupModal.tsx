@@ -470,6 +470,7 @@ export function KrogerAppSetupModal({
         opened={opened}
         onClose={requestClose}
         title={replaceMode ? krogerAppCopy.menuReplace : krogerAppCopy.title}
+        headerProps={{ role: 'group' }}
         size="lg"
         fullScreen={compact ?? false}
         closeButtonProps={{
@@ -754,6 +755,7 @@ export function KrogerAppSetupModal({
         opened={closeConfirm}
         onClose={() => setCloseConfirm(false)}
         title={krogerAppCopy.closeConfirmTitle}
+        headerProps={{ role: 'group' }}
         size="sm"
         withCloseButton={false}
         closeButtonProps={{

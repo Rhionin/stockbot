@@ -49,6 +49,7 @@ export function RemoveStoreAppDialog({
       opened={opened}
       onClose={onClose}
       title={krogerAppCopy.rmTitle}
+      headerProps={{ role: 'group' }}
       size="sm"
       closeButtonProps={{
         'aria-label': krogerAppCopy.closeLabel,
