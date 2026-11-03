@@ -195,6 +195,14 @@ export function KrogerAppSetupModal({
     return () => cancelAnimationFrame(frame);
   }, [opened]);
 
+  useEffect(() => {
+    if (!closeConfirm) return undefined;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector('.store-app-close-confirm-modal .mantine-Modal-header')?.setAttribute('role', 'group');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [closeConfirm]);
+
   const focusRemovedRecovery = useCallback(() => {
     requestAnimationFrame(() => removedStartAgainRef.current?.focus());
   }, []);
@@ -336,11 +344,7 @@ export function KrogerAppSetupModal({
     }
     if (mapped.kind === 'not_configured') {
       onNotConfigured?.();
-      showRemovedNotice(false);
-      requestAnimationFrame(() => {
-        const delivery = document.querySelector('.store-app-modality-control input[value="DELIVERY"]');
-        if (delivery instanceof HTMLElement) delivery.focus();
-      });
+      showRemovedNotice(true);
       return;
     }
     if (mapped.kind === 'rate_limited') {
@@ -804,6 +808,7 @@ export function KrogerAppSetupModal({
       </Modal>
 
       <Modal
+        className="store-app-close-confirm-modal"
         opened={closeConfirm}
         onClose={() => setCloseConfirm(false)}
         title={krogerAppCopy.closeConfirmTitle}

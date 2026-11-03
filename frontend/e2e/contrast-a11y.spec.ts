@@ -2,9 +2,11 @@ import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { resetSharedState } from './helpers'
+import { install, resetStage, stage } from './householdStageFixtures'
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 
 const minimumContrast = 4.5
+const storeAppFieldErrorMinimumContrast = 4.6
 
 // Deliberately separate from src/contrast.ts, so a wrong gamma there cannot
 // also satisfy this check.
@@ -85,6 +87,13 @@ async function expectContrast(locator: Locator) {
   const sample = await paint(locator)
   const ratio = contrast(sample.foreground, sample.background)
   expect(ratio, JSON.stringify(sample)).toBeGreaterThanOrEqual(minimumContrast)
+  return { ...sample, ratio: Math.round(ratio * 100) / 100 }
+}
+
+async function expectRenderedContrast(locator: Locator, required: number) {
+  const sample = await paint(locator)
+  const ratio = contrast(sample.foreground, sample.background)
+  expect(ratio, JSON.stringify(sample)).toBeGreaterThanOrEqual(required)
   return { ...sample, ratio: Math.round(ratio * 100) / 100 }
 }
 
@@ -364,6 +373,36 @@ test.describe('text contrast in the store app setup modal', () => {
         dialogResult.violations,
         `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogResult.violations)}`,
       ).toEqual([])
+    })
+  }
+})
+
+test.describe('store app step 6 field error contrast on modal paper', () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`rendered under-field error is at least ${storeAppFieldErrorMinimumContrast}:1 in ${scheme} mode`, async ({ page }) => {
+      resetStage()
+      stage.kind = 'account'
+      stage.householdName = 'Test Household'
+      stage.role = 'owner'
+      await install(page)
+      await stubStoreAppHousehold(page, {
+        configured: true,
+        clientIdLast4: '1234',
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'connected',
+        canManage: true,
+      })
+      await openThemed(page, '/household', scheme, scheme, 390)
+      await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+      await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
+      const dialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })
+      await waitForStoreAppDialogSettled(page, dialog)
+      await page.getByRole('button', { name: krogerAppCopy.s6Test }).click()
+      const fieldError = dialog.locator('.mantine-InputWrapper-error').first()
+      await expect(fieldError).toBeVisible()
+      await expectRenderedContrast(fieldError, storeAppFieldErrorMinimumContrast)
     })
   }
 })

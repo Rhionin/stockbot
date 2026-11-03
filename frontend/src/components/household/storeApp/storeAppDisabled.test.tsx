@@ -302,7 +302,8 @@ describe('store_disabled in setup modal', () => {
     await screen.findByText(krogerAppCopy.errRemoved);
     expect(screen.getByRole('button', { name: krogerAppCopy.startAgain })).toBeInTheDocument();
     expect(screen.getAllByRole('status').some((node) => node.textContent?.includes(krogerAppCopy.errRemoved))).toBe(true);
-    await waitFor(() => expect(screen.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery })).toHaveFocus());
+    const startAgain = screen.getByRole('button', { name: krogerAppCopy.startAgain });
+    await waitFor(() => expect(startAgain).toHaveFocus());
   });
 });
 
