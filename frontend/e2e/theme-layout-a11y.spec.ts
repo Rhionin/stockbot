@@ -506,23 +506,29 @@ test('store app remove error keeps the confirm label visible while loading at 39
     status: 'connected',
     canManage: true,
   })
-  await page.route('**/api/households/hh-1/kroger-app', (route) => {
+  await page.route('**/api/households/hh-1/kroger-app', async (route) => {
     if (route.request().method() === 'DELETE') {
       calls += 1
+      if (calls === 1) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'remove failed', code: 'internal' }),
+        })
+      }
+      await new Promise((resolve) => { setTimeout(resolve, 400) })
       return route.fulfill({
-        status: calls === 1 ? 500 : 200,
+        status: 200,
         contentType: 'application/json',
-        body: calls === 1
-          ? JSON.stringify({ error: 'remove failed', code: 'internal' })
-          : JSON.stringify({
-            configured: false,
-            clientIdLast4: null,
-            redirectUri: 'https://test-household.example/cb',
-            modality: 'PICKUP',
-            productAccess: 'unknown',
-            status: 'not_set_up',
-            canManage: true,
-          }),
+        body: JSON.stringify({
+          configured: false,
+          clientIdLast4: null,
+          redirectUri: 'https://test-household.example/cb',
+          modality: 'PICKUP',
+          productAccess: 'unknown',
+          status: 'not_set_up',
+          canManage: true,
+        }),
       })
     }
     if (route.request().method() === 'GET') {
@@ -551,7 +557,7 @@ test('store app remove error keeps the confirm label visible while loading at 39
   await confirm.click()
   await expect(dialog.getByRole('alert')).toHaveText(krogerAppCopy.rmFailed)
   const secondAttempt = confirm.click()
-  await expect(confirm).toContainText(krogerAppCopy.rmBusy)
+  await expect(dialog.getByRole('button', { name: krogerAppCopy.rmBusy })).toBeVisible()
   await secondAttempt
   await expect.poll(() => calls).toBeGreaterThanOrEqual(2)
 })
