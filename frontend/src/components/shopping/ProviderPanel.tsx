@@ -4,11 +4,13 @@ import {
   authorizeProvider,
   resetProviderLedger,
 } from '../../api/client';
+import type { ProviderListEntry } from '@stockbot/shared/providerList';
+import { isKrogerProviderDisabled } from '@stockbot/shared/providerList';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ProviderPanelProps {
-  providers: ProviderInfo[];
+  providers: ProviderListEntry[];
   onChanged: () => void;
 }
 
@@ -55,6 +57,14 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
   return (
     <Stack className="page-cluster" gap="xs" aria-label="Grocery providers">
       {providers.map((provider) => (
+        isKrogerProviderDisabled(provider) ? (
+          <Stack key={provider.id} gap="xs">
+            <Group gap="xs">
+              <Text fw={600}>{provider.displayName}</Text>
+              <Badge color="gray">disabled</Badge>
+            </Group>
+          </Stack>
+        ) : (
         <ProviderRow
           key={provider.id}
           provider={provider}
@@ -62,6 +72,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
           onConnect={() => void connect(provider)}
           onResetLedger={() => void resetLedger(provider)}
         />
+        )
       ))}
       {error !== '' && <Text c="red" size="sm">{error}</Text>}
     </Stack>

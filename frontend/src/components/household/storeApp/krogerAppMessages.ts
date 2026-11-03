@@ -18,6 +18,7 @@ export type KrogerAppErrorHandling =
   | { kind: 'store_disabled' }
   | { kind: 'forbidden_role' }
   | { kind: 'not_configured' }
+  | { kind: 'rate_limited' }
   | {
     kind: 'message';
     message: string;
@@ -53,7 +54,7 @@ export function mapKrogerAppApiError(error: unknown): KrogerAppErrorHandling {
     case 'store_app_unreachable':
       return { kind: 'message', message: krogerAppCopy.errUnreachable, alert: true };
     case 'rate_limited':
-      return { kind: 'message', message: krogerAppCopy.errTooMany, alert: false, amber: true };
+      return { kind: 'rate_limited' };
     case 'validation':
       return { kind: 'message', message: krogerAppCopy.vInvalid, alert: true };
     default:

@@ -217,8 +217,14 @@ export function KrogerAppSetupModal({
       setError(krogerAppCopy.errRemoved);
       return;
     }
-    setError(mapped.message);
-    if (mapped.goStep) goStep(mapped.goStep);
+    if (mapped.kind === 'rate_limited') {
+      setError(krogerAppCopy.errTooMany);
+      return;
+    }
+    if (mapped.kind === 'message') {
+      setError(mapped.message);
+      if (mapped.goStep) goStep(mapped.goStep);
+    }
   };
 
   const testAndSave = async () => {

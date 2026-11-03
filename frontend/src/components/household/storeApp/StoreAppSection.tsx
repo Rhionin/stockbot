@@ -19,9 +19,11 @@ import {
   storeNameContext,
 } from '@stockbot/shared/krogerAppCopy';
 import type { KrogerApp, KrogerAppGetResponse } from '@stockbot/shared/types';
+import { krogerDisabledOnProviderList } from '@stockbot/shared/providerList';
 import {
   deleteKrogerApp,
   getKrogerApp,
+  listProviders,
   postKrogerAppTest,
 } from '../../../api/client';
 import { KrogerAppSetupModal } from './KrogerAppSetupModal';
@@ -69,6 +71,7 @@ export function StoreAppSection({
   const [testBusy, setTestBusy] = useState(false);
   const [testNotice, setTestNotice] = useState('');
   const [testNoticeAlert, setTestNoticeAlert] = useState(false);
+  const [testRateLimited, setTestRateLimited] = useState(false);
   const [forcedMember, setForcedMember] = useState(false);
 
   const ctx = storeNameContext(linkedStoreName);
@@ -79,8 +82,11 @@ export function StoreAppSection({
     setLoading(true);
     setLoadError('');
     try {
-      const response = await getKrogerApp(householdId);
-      if (isDisabled(response)) {
+      const [response, providers] = await Promise.all([
+        getKrogerApp(householdId),
+        listProviders().catch(() => [] as Awaited<ReturnType<typeof listProviders>>),
+      ]);
+      if (isDisabled(response) || krogerDisabledOnProviderList(providers)) {
         setDisabled(true);
         setApp(null);
         setSetupOpen(false);
@@ -127,11 +133,13 @@ export function StoreAppSection({
   };
 
   const runTestAgain = async () => {
+    if (testRateLimited) return;
     setTestBusy(true);
     setTestNotice('');
     setTestNoticeAlert(false);
     try {
       const result = await postKrogerAppTest(householdId);
+      setTestRateLimited(false);
       const mapped = mapTestAgainResult(result, ctx);
       setTestNotice(mapped.message);
       setTestNoticeAlert(mapped.alert);
@@ -151,6 +159,12 @@ export function StoreAppSection({
       }
       if (mapped.kind === 'not_configured') {
         await reload();
+        return;
+      }
+      if (mapped.kind === 'rate_limited') {
+        setTestRateLimited(true);
+        setTestNotice(krogerAppCopy.errTooMany);
+        setTestNoticeAlert(false);
         return;
       }
       if (mapped.kind === 'message') {
@@ -256,7 +270,7 @@ export function StoreAppSection({
             </Menu.Target>
             <Menu.Dropdown>
               <Menu.Item onClick={() => openSetup(true, 6)}>{krogerAppCopy.menuReplace}</Menu.Item>
-              <Menu.Item onClick={() => { void runTestAgain(); }} disabled={testBusy}>
+              <Menu.Item onClick={() => { void runTestAgain(); }} disabled={testBusy || testRateLimited}>
                 {testBusy ? krogerAppCopy.testBusy : krogerAppCopy.menuTest}
               </Menu.Item>
               <Menu.Item color="red" onClick={() => setRemoveOpen(true)}>{krogerAppCopy.menuRemove}</Menu.Item>
@@ -295,6 +309,7 @@ export function StoreAppSection({
                   size="compact-sm"
                   className="store-app-touch-target store-app-touch-target-wide"
                   loading={testBusy}
+                  disabled={testRateLimited}
                   aria-busy={testBusy}
                   onClick={() => { void runTestAgain(); }}
                 >

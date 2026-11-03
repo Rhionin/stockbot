@@ -37,7 +37,9 @@ import {
   saveItemDeal,
   setShoppingListAdjustment,
 } from '../../api/client';
-import type { InventoryItem, ProviderInfo, ShoppingListEntry } from '@stockbot/shared/types';
+import type { ProviderListEntry } from '@stockbot/shared/providerList';
+import { providerListEntries } from '@stockbot/shared/providerList';
+import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from '../restock/StopDialog';
@@ -58,7 +60,7 @@ const requestErrorMessage = (error: unknown, fallback: string) =>
 export const ShoppingListPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [entries, setEntries] = useState<ShoppingListEntry[]>([]);
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providers, setProviders] = useState<ProviderListEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [restock, setRestock] = useState<RestockSnapshot | null>(null);
   const [editorId, setEditorId] = useState('');
@@ -104,7 +106,7 @@ export const ShoppingListPage = () => {
   }, []);
 
   const refresh = useCallback(async () => {
-    const providerRows = await listProviders();
+    const providerRows = providerListEntries(await listProviders());
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
     const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
       getShoppingList(target?.id),
@@ -190,7 +192,8 @@ export const ShoppingListPage = () => {
     void Promise.resolve().then(loadShoppingList);
   }, [credentialsRevision, loadShoppingList]);
 
-  const targetProvider = providers.find((row) => row.credentialsConfigured) ?? providers[0] ?? null;
+  const activeProviders = providerListEntries(providers);
+  const targetProvider = activeProviders.find((row) => row.credentialsConfigured) ?? activeProviders[0] ?? null;
 
   const changeAdjustment = async (entry: ShoppingListEntry, value: number | string) => {
     if (entry.id === '' || targetProvider === null) return;

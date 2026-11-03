@@ -31,7 +31,6 @@ import type {
   ScannerConfig,
   ScanStatus,
   ProvisionReport,
-  ProviderInfo,
   ShoppingListEntry,
   SupplyOverride,
   SupplySettings,
@@ -49,6 +48,7 @@ import type {
   KrogerAppTest,
   StoresListResponse,
 } from '@stockbot/shared/types';
+import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import {
   BATCH_COMMIT_PATH,
   type BatchCommitInput,
@@ -550,7 +550,7 @@ export function exportShoppingList(provider?: string): Promise<ProvisionReport> 
   });
 }
 
-export function listProviders(): Promise<ProviderInfo[]> {
+export function listProviders(): Promise<ProviderListEntry[]> {
   return apiFetch('/api/providers');
 }
 

@@ -57,6 +57,21 @@ function renderSection(
     if (url.startsWith('/api/providers/kroger/authorize')) {
       return Promise.resolve(json({ authorizationUrl: 'https://kroger.example/oauth' }));
     }
+    if (url === '/api/providers' && method === 'GET') {
+      return Promise.resolve(json([{
+        id: 'kroger',
+        displayName: 'Kroger',
+        capabilities: {
+          auth: 'oauth2_authorization_code',
+          delivery: 'server_push',
+          confirmation: 'per_request',
+          mutation: 'add_only',
+          identity: 'derived',
+        },
+        connectionState: 'disconnected',
+        credentialsConfigured: true,
+      }]));
+    }
     return Promise.reject(new Error(`${method} ${url}`));
   }));
   return render(
@@ -617,5 +632,141 @@ describe('kroger app vitest mutants', () => {
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await screen.findByText(krogerAppCopy.askAdmin);
+  });
+});
+
+describe('B11 kroger-app contract (merged #532)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('(1) hides the store app row when GET /api/providers lists Kroger as disabled only', async () => {
+    const householdId = 'hh-b11-1';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234' })));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([{ id: 'kroger', displayName: 'Kroger', status: 'disabled' }]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    await waitFor(() => expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument());
+  });
+
+  it('(2) maps forbidden_role on test again to the member view without store_disabled copy', async () => {
+    const householdId = 'hh-b11-2';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app/test` && method === 'POST') {
+        return Promise.resolve(json({ code: 'forbidden_role', error: 'Only an owner can do that.' }, 403));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234' })));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.menuMore }));
+    fireEvent.click(screen.getByRole('menuitem', { name: krogerAppCopy.menuTest }));
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: krogerAppCopy.menuMore })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Online store features are turned off/i)).not.toBeInTheDocument();
+  });
+
+  it('(3) rate_limited on test again shows spec copy and disables Test again', async () => {
+    const householdId = 'hh-b11-3';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app/test` && method === 'POST') {
+        return Promise.resolve(json({ code: 'rate_limited', error: 'Too many tries.' }, 429));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234', productAccess: 'unknown' })));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.menuMore }));
+    fireEvent.click(screen.getByRole('menuitem', { name: krogerAppCopy.menuTest }));
+    expect(await screen.findByText(krogerAppCopy.errTooMany)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: krogerAppCopy.menuTest })).toBeDisabled();
+    });
+  });
+
+  it('(3) rate_limited on save shows spec copy in the setup modal', async () => {
+    const householdId = 'hh-b11-4';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
+        return Promise.resolve(json({ code: 'rate_limited', error: 'Too many tries.' }, 429));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp()));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          app={baseApp()}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'abc' } });
+    fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'def' } });
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
+    expect(await screen.findByText(krogerAppCopy.errTooMany)).toBeInTheDocument();
   });
 });
