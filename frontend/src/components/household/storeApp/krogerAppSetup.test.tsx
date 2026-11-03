@@ -1215,8 +1215,8 @@ describe('UX v5.3 GO blockers', () => {
     fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'filled-id' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
-      await new Promise((resolve) => { queueMicrotask(resolve); });
-      await new Promise((resolve) => { queueMicrotask(resolve); });
+      await new Promise<void>((resolve) => { queueMicrotask(() => resolve()); });
+      await new Promise<void>((resolve) => { queueMicrotask(() => resolve()); });
     });
     expect(await screen.findByText(krogerAppCopy.vSecretEmpty)).toBeInTheDocument();
     const secretWrapper = secretInput?.closest('.mantine-InputWrapper-root') ?? secretInput?.parentElement;
