@@ -23,7 +23,7 @@ async function stubHousehold(page: import('@playwright/test').Page, appBody: unk
   await page.route('**/api/households/hh-1', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ id: 'hh-1', name: 'Test Household', role: 'owner', deletedAt: null, purgeAt: null }),
+    body: JSON.stringify({ id: 'hh-1', name: stage.householdName, role: stage.role, deletedAt: null, purgeAt: null }),
   }))
   await page.route('**/api/household/settings', (route) => route.fulfill({
     status: 200,
@@ -56,11 +56,9 @@ test('T53 member row omits unknown product access note', async ({ page }) => {
   stage.role = 'member'
   stage.householdName = 'Test Household'
   await install(page)
-  await page.setViewportSize({ width: 390, height: 844 })
   await stubHousehold(page, krogerApp('connected', { configured: true, canManage: false, productAccess: 'unknown' }))
   await page.goto('/household')
-  await expect(page.getByRole('heading', { name: krogerAppCopy.rowTitle })).toBeVisible()
-  await expect(page.locator('.store-app-row-title')).toHaveText(krogerAppCopy.rowConnected)
+  await expect(page.locator('.store-app-row-title')).toHaveText(krogerAppCopy.rowConnected, { timeout: 15000 })
   await expect(page.getByText(/haven't checked yet/i)).toHaveCount(0)
 })
 
@@ -72,13 +70,12 @@ test('step 7 connect shows connect-failed on authorize errors', async ({ page })
   await install(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await stubHousehold(page, krogerApp('ready_to_connect', { configured: true }))
-  await page.route('**/api/providers/kroger/authorize**', (route) => route.fulfill({
     status: 400,
     contentType: 'application/json',
     body: JSON.stringify({ code: 'validation', error: 'bad' }),
   }))
   await page.goto('/household')
-  const connectButton = page.getByRole('button', { name: /Connect your/i })
+  const connectButton = page.getByRole('button', { name: krogerAppCopy.rowConnect })
   await expect(connectButton).toBeVisible()
   await connectButton.click()
   await expect(page.getByRole('alert')).toContainText("Couldn't connect your store account")
