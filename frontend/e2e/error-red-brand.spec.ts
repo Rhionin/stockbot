@@ -86,8 +86,9 @@ async function showProviderPanelError(page: Page) {
       body: JSON.stringify({ error: 'Unable to forget what was already sent.', code: 'internal' }),
     })
   })
+  await expect(page.getByRole('button', { name: 'Start a new cart' })).toBeVisible()
   await page.getByRole('button', { name: 'Start a new cart' }).click()
-  const alert = page.getByText('Unable to forget what was already sent.')
+  const alert = page.getByRole('alert').filter({ hasText: 'Unable to forget what was already sent.' })
   await expect(alert).toBeVisible()
   return alert
 }

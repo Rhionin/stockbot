@@ -74,7 +74,7 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
         />
         )
       ))}
-      {error !== '' && <Text c="red" size="sm">{error}</Text>}
+      {error !== '' && <Text role="alert" c="red" size="sm">{error}</Text>}
     </Stack>
   );
 };
