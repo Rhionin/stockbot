@@ -216,6 +216,12 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 		rec *httptest.ResponseRecorder
 	}
 	resultCh := make(chan replaceResult, 1)
+	t.Cleanup(func() {
+		select {
+		case <-resultCh:
+		case <-time.After(3 * time.Second):
+		}
+	})
 	go func() {
 		rec := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, savePath, replaceBody)
 		resultCh <- replaceResult{rec: rec}
