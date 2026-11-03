@@ -17,10 +17,6 @@ import (
 
 const krogerProviderID = "kroger"
 
-// krogerAppTestFailAfterCredentialSave is set by tests to inject a failure after
-// credentials are written inside saveApp's transaction.
-var krogerAppTestFailAfterCredentialSave func() error
-
 // KrogerAppHandler serves /api/households/{id}/kroger-app routes.
 type KrogerAppHandler struct {
 	DB     *sql.DB
@@ -29,6 +25,8 @@ type KrogerAppHandler struct {
 	Env    ProviderEnv
 	Site   app.RuntimeConfig
 	Kroger *kroger.Adapter
+	// AfterCredentialSaveTestHook runs after Vault.SaveTx inside saveApp; tests only.
+	AfterCredentialSaveTestHook func() error
 }
 
 type krogerHouseholdParams struct {
@@ -202,12 +200,12 @@ func (h *KrogerAppHandler) deriveStatus(ctx context.Context, scope tenant.Scope)
 
 // Get handles GET /api/households/{id}/kroger-app.
 func (h *KrogerAppHandler) Get(req Request[struct{}, krogerHouseholdParams]) (any, error) {
-	if h.Env.Disabled {
-		return KrogerAppDisabled{Status: "disabled"}, nil
-	}
 	scope, p, err := h.requireMember(req.Context, req.PathParams.ID)
 	if err != nil {
 		return nil, err
+	}
+	if h.Env.Disabled {
+		return KrogerAppDisabled{Status: "disabled"}, nil
 	}
 	return h.buildView(req.Context, scope, p.Role == "owner")
 }
@@ -360,8 +358,8 @@ func (h *KrogerAppHandler) saveApp(ctx context.Context, scope tenant.Scope, acto
 	}); err != nil {
 		return InternalError(err)
 	}
-	if krogerAppTestFailAfterCredentialSave != nil {
-		if err := krogerAppTestFailAfterCredentialSave(); err != nil {
+	if h.AfterCredentialSaveTestHook != nil {
+		if err := h.AfterCredentialSaveTestHook(); err != nil {
 			return InternalError(err)
 		}
 	}

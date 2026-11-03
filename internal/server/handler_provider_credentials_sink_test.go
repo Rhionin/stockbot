@@ -69,7 +69,7 @@ func TestNonKrogerProviderCredentialPutAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
 	}
-	if out.Source != "environment" {
+	if out.Source != "none" {
 		t.Fatalf("after delete view = %+v", out)
 	}
 	scope, err := svc.Primary(ctx)

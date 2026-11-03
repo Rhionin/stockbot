@@ -13,6 +13,8 @@ import (
 
 const krogerAppCutoverKey = "kroger_app_cutover_v1"
 
+// krogerAppKeyFromClientID matches appcred.AppKey; duplicated here to avoid
+// import cycle (internal/app → appcred → tenant tests → app).
 func krogerAppKeyFromClientID(clientID string) string {
 	sum := sha256.Sum256([]byte(clientID))
 	return hex.EncodeToString(sum[:])[:16]

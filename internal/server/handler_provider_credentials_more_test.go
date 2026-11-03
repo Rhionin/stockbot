@@ -9,12 +9,12 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 )
 
-func TestProviderCredentialDeleteEnvApplyFailure(t *testing.T) {
+func TestProviderCredentialDeleteClearsSavedWithoutEnvReapply(t *testing.T) {
 	db := openMigratedDB(t, ":memory:")
 	svc := auth.NewService(db, t.TempDir())
 	registry := cart.NewRegistry()
-	failSink := failingApplyProvider{id: "fail-apply-del"}
-	if err := registry.Register(failSink); err != nil {
+	provider := testAppCredProvider{id: "test-appcred"}
+	if err := registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
 	vault := appcred.NewVault(db)
@@ -30,17 +30,26 @@ func TestProviderCredentialDeleteEnvApplyFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := vault.Save(ctx, scope, appcred.Saved{
-		ProviderID: "fail-apply-del", ClientID: "saved", ClientSecret: "stored",
+		ProviderID: "test-appcred", ClientID: "saved", ClientSecret: "stored",
 		RedirectURI: "https://saved.example/cb", Modality: "PICKUP",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.Handle(Request[struct{}, providerCredentialParams]{
-		Context: ctx, PathParams: providerCredentialParams{ProviderID: "fail-apply-del"},
+	view, err := h.Handle(Request[struct{}, providerCredentialParams]{
+		Context: ctx, PathParams: providerCredentialParams{ProviderID: "test-appcred"},
 	})
-	var httpErr *HTTPError
-	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != 500 {
-		t.Fatalf("err=%v", err)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if view.Source != "none" || view.ClientID != "test-client" {
+		t.Fatalf("view=%+v", view)
+	}
+	if registry.CredentialsConfigured("test-appcred") {
+		t.Fatal("delete should clear credentials-configured")
+	}
+	has, err := vault.HasApp(ctx, scope, "test-appcred")
+	if err != nil || has {
+		t.Fatalf("saved row cleared: has=%v err=%v", has, err)
 	}
 }
 

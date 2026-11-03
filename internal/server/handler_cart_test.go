@@ -333,6 +333,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -389,6 +390,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -452,6 +454,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -495,6 +498,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -532,6 +536,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatal(err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
 					State:        connection.StateReauthRequired,
@@ -585,6 +590,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -621,6 +627,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -643,6 +650,7 @@ func TestCartHTTP(t *testing.T) {
 				if err := env.Registry.Register(adapter, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedKrogerHouseholdApp(env.T, env.DB, "my-client", "secret", "https://app.example/cb")
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -686,8 +694,10 @@ func TestCartHTTP(t *testing.T) {
 				method:         "POST",
 				path:           "/api/shopping-list/export",
 				body:           `{}`,
-				expectedStatus: http.StatusBadRequest,
-				bodyContains:   []string{"not registered"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.exported", value: float64(0)},
+				},
 			},
 			afterRequest: exchanges(
 				httpExchange{
