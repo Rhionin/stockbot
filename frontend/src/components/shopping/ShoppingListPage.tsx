@@ -38,7 +38,7 @@ import {
   setShoppingListAdjustment,
 } from '../../api/client';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
-import { providerListEntries } from '@stockbot/shared/providerList';
+import { krogerDisabledOnProviderList, providerListEntries } from '@stockbot/shared/providerList';
 import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
@@ -106,14 +106,15 @@ export const ShoppingListPage = () => {
   }, []);
 
   const refresh = useCallback(async () => {
-    const providerRows = providerListEntries(await listProviders());
+    const providerList = await listProviders();
+    const providerRows = providerListEntries(providerList);
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
     const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
     ]);
-    setProviders(providerRows);
+    setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
@@ -194,6 +195,7 @@ export const ShoppingListPage = () => {
 
   const activeProviders = providerListEntries(providers);
   const targetProvider = activeProviders.find((row) => row.credentialsConfigured) ?? activeProviders[0] ?? null;
+  const hideOnlineStoreControls = krogerDisabledOnProviderList(providers);
 
   const changeAdjustment = async (entry: ShoppingListEntry, value: number | string) => {
     if (entry.id === '' || targetProvider === null) return;
@@ -315,12 +317,14 @@ export const ShoppingListPage = () => {
           >
             {listAction}
           </Button>
-          <ProvisionButton
-            provider={targetProvider}
-            entries={entries}
-            explainEmpty={!loading}
-            onFinished={() => void loadShoppingList()}
-          />
+          {!hideOnlineStoreControls && (
+            <ProvisionButton
+              provider={targetProvider}
+              entries={entries}
+              explainEmpty={!loading}
+              onFinished={() => void loadShoppingList()}
+            />
+          )}
         </div>
       </div>
       <ProviderPanel providers={providers} onChanged={() => void loadShoppingList()} />

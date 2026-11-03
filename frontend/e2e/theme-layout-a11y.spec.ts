@@ -485,7 +485,7 @@ test('household admin store app setup buttons meet 44px touch targets', async ({
   await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
   const axe = await new AxeBuilder({ page })
     .include('[role="dialog"]')
-    .withRules(['color-contrast'])
+    .withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
     .analyze()
   expect(axe.violations).toEqual([])
 })

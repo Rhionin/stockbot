@@ -313,7 +313,8 @@ describe('ShoppingListPage', () => {
     expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start a new cart' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /online cart/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Send to your store' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send to your store' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Send to /i })).not.toBeInTheDocument();
     expect(
       filterSpy.mock.calls.some((args) => args[0]?.some((row) => providerList.isKrogerProviderDisabled(row))),
     ).toBe(true);

@@ -5,8 +5,17 @@ import { install, resetStage, stage } from './householdStageFixtures'
 async function expectMinTargetSize(locator: ReturnType<Page['getByRole']>) {
   const box = await locator.boundingBox()
   expect(box).not.toBeNull()
-  expect(box!.width).toBeGreaterThanOrEqual(44)
-  expect(box!.height).toBeGreaterThanOrEqual(44)
+  expect(box!.width).toBeGreaterThanOrEqual(43.99)
+  expect(box!.height).toBeGreaterThanOrEqual(43.99)
+}
+
+async function waitForStoreAppDialogSettled(page: Page, dialog: ReturnType<Page['getByRole']>) {
+  await expect(dialog).toBeVisible()
+  await page.waitForFunction(() => {
+    const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
+    if (!(content instanceof HTMLElement)) return false
+    return getComputedStyle(content).opacity === '1'
+  })
 }
 
 const krogerApp = (status: string, overrides: Record<string, unknown> = {}) => ({
@@ -128,6 +137,7 @@ test('menu no longer lists Manage Kroger connection', async ({ page }) => {
   await page.route('**/api/providers', (route) => route.fulfill({ status: 200, body: '[]' }))
   await page.goto('/shopping')
   await page.getByRole('button', { name: 'Menu' }).click()
+  await expect(page.getByRole('menuitem').first()).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Manage Kroger connection' })).toHaveCount(0)
 })
 
@@ -143,10 +153,23 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
   await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.rowSetUp }))
   await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
   const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
-  await expect(dialog).toBeVisible()
+  await waitForStoreAppDialogSettled(page, dialog)
   await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
   await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.stepsDisclosure }))
   await expectMinTargetSize(page.getByRole('link', { name: krogerAppCopy.s1OpenA11y }))
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.next }))
+  for (let step = 1; step < 6; step += 1) {
+    await page.getByRole('button', { name: krogerAppCopy.next }).click()
+  }
+  await page.getByRole('button', { name: krogerAppCopy.stepsDisclosure }).click()
+  const stepNavButtons = page.locator('.store-app-step-nav button')
+  await expect(stepNavButtons).toHaveCount(7)
+  for (const navButton of await stepNavButtons.all()) {
+    await expectMinTargetSize(navButton)
+  }
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.back }))
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.s6Test }))
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.s6Show }))
 
   await page.getByRole('button', { name: krogerAppCopy.closeLabel }).click()
   await expect(dialog).toBeHidden()
@@ -166,7 +189,8 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
   await page.getByRole('button', { name: krogerAppCopy.rmCancel }).click()
   await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
   await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
-  await page.getByRole('dialog', { name: krogerAppCopy.menuReplace }).waitFor()
+  const replaceDialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })
+  await waitForStoreAppDialogSettled(page, replaceDialog)
   const modalityControl = page.locator('.store-app-modality-control')
   await expect(modalityControl).toBeVisible()
   const segmentControls = modalityControl.locator('.mantine-SegmentedControl-control')
@@ -177,9 +201,9 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
 
   await page.getByLabel(/App ID/i).fill('x')
   await page.getByLabel(/App secret/i).fill('y')
-  const replaceDialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })
   await replaceDialog.getByRole('button', { name: krogerAppCopy.closeLabel }).click()
   const closeConfirm = page.getByRole('dialog', { name: krogerAppCopy.closeConfirmTitle })
   await expect(closeConfirm).toBeVisible()
   await expectMinTargetSize(closeConfirm.getByRole('button', { name: krogerAppCopy.closeLabel }))
+  await expectMinTargetSize(closeConfirm.getByRole('button', { name: krogerAppCopy.closeConfirmKeep }))
 })

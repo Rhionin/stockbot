@@ -174,6 +174,10 @@ export function KrogerAppSetupModal({
         setStatus('');
       }
       preservePassStatusRef.current = false;
+      setClientId('');
+      setClientSecret('');
+      setShowSecret(false);
+      typedSecrets.current = false;
     } else {
       resetFields();
     }
@@ -209,6 +213,12 @@ export function KrogerAppSetupModal({
     setSecretFieldError('');
     setModalityError('');
     setAmberNotice('');
+    if (clamped === 6) {
+      setClientId('');
+      setClientSecret('');
+      setShowSecret(false);
+      typedSecrets.current = false;
+    }
   };
 
   const requestClose = () => {
