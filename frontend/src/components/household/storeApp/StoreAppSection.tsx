@@ -33,7 +33,6 @@ import {
   mapKrogerAppApiError,
   mapTestAgainResult,
   rowLoadFailureMessage,
-  storeDisabledUserMessage,
 } from './krogerAppMessages';
 import './storeApp.css';
 
@@ -74,7 +73,6 @@ export function StoreAppSection({
   const [testNoticeAlert, setTestNoticeAlert] = useState(false);
   const [testNoticeAmber, setTestNoticeAmber] = useState(false);
   const [forcedMember, setForcedMember] = useState(false);
-  const [disabledNotice, setDisabledNotice] = useState('');
   const clientStoreDisabledRef = useRef(false);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState('');
@@ -129,12 +127,7 @@ export function StoreAppSection({
   }, [setupStepOnOpen, onSetupOpened]);
 
   if (disabled) {
-    if (disabledNotice === '') return null;
-    return (
-      <section className="store-app-section" aria-live="polite">
-        <Text role="status" size="sm">{disabledNotice}</Text>
-      </section>
-    );
+    return null;
   }
 
   if (loading && app === null && loadError === '') {
@@ -169,7 +162,6 @@ export function StoreAppSection({
       const mapped = mapKrogerAppApiError(requestError);
       if (mapped.kind === 'store_disabled') {
         clientStoreDisabledRef.current = true;
-        setDisabledNotice(storeDisabledUserMessage());
         setDisabled(true);
         setApp(null);
         setSetupOpen(false);
@@ -209,7 +201,6 @@ export function StoreAppSection({
       const mapped = mapKrogerAppApiError(requestError);
       if (mapped.kind === 'store_disabled') {
         clientStoreDisabledRef.current = true;
-        setDisabledNotice(storeDisabledUserMessage());
         setDisabled(true);
         setApp(null);
         setRemoveOpen(false);
@@ -234,7 +225,6 @@ export function StoreAppSection({
     setConnectBusy(false);
     if (result.kind === 'store_disabled') {
       clientStoreDisabledRef.current = true;
-      setDisabledNotice(storeDisabledUserMessage());
       setDisabled(true);
       setApp(null);
       return;
@@ -263,7 +253,7 @@ export function StoreAppSection({
           </Button>
         );
       case 'ready_to_connect':
-        if (!canConnect) return null;
+        if (!canConnect || rowRemovedNotice) return null;
         return (
           <Button
             className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
@@ -275,7 +265,7 @@ export function StoreAppSection({
           </Button>
         );
       case 'needs_reconnect':
-        if (!canConnect) return null;
+        if (!canConnect || rowRemovedNotice) return null;
         return (
           <Button
             className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
@@ -438,7 +428,6 @@ export function StoreAppSection({
           onSaved={onSaved}
           onStoreDisabled={() => {
             clientStoreDisabledRef.current = true;
-            setDisabledNotice(storeDisabledUserMessage());
             setDisabled(true);
             setApp(null);
           }}

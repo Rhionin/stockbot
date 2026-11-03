@@ -273,6 +273,8 @@ export function KrogerAppSetupModal({
       setRemovedNotice(true);
       setError('');
       setAmberNotice('');
+      setStatus('');
+      setAccessNote('');
       return;
     }
     if (mapped.kind === 'rate_limited') {
@@ -390,6 +392,8 @@ export function KrogerAppSetupModal({
     if (result.kind === 'not_configured') {
       setRemovedNotice(true);
       setConnectError('');
+      setStatus('');
+      setAccessNote('');
       return;
     }
     setConnectError(result.message ?? krogerAppCopy.errConnectFailedFallback);
@@ -628,6 +632,7 @@ export function KrogerAppSetupModal({
                   label={krogerLabels.fSecret}
                   description={app.configured ? krogerAppCopy.s6SavedSecret : krogerLabels.fSecretHint}
                   error={secretFieldError || undefined}
+                  aria-invalid={secretFieldError ? true : undefined}
                   visible={showSecret}
                   onVisibilityChange={setShowSecret}
                   visibilityToggleButtonProps={{
@@ -743,7 +748,7 @@ export function KrogerAppSetupModal({
                     {testing ? krogerAppCopy.s6Testing : krogerAppCopy.s6Test}
                   </Button>
                 )}
-                {step === 7 && canConnect && (
+                {step === 7 && canConnect && !removedNotice && (
                   <Button
                     className="store-app-touch-target store-app-touch-target-wide store-app-busy-button"
                     loading={connectBusy}

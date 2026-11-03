@@ -68,6 +68,8 @@ async function expectRowHidden() {
   expect(screen.queryByRole('button', { name: krogerAppCopy.menuMore })).not.toBeInTheDocument();
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(document.body.textContent).not.toContain('RAW-SERVER-DISABLED');
+  expect(screen.queryByText(/Online store features are turned off/i)).not.toBeInTheDocument();
+  expect(document.querySelector('.store-app-section')).toBeNull();
 }
 
 describe('store_disabled hides the store app row', () => {

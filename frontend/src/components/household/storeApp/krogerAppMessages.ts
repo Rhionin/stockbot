@@ -8,7 +8,7 @@ import {
 } from '@stockbot/shared/krogerAppCopy';
 import { krogerLabels } from '@stockbot/shared/krogerLabels';
 import type { KrogerAppTest, KrogerAppTestCode } from '@stockbot/shared/types';
-import { hostedErrorSentence, OFFLINE_SENTENCE, ServerNoticeError, UnreachableError } from '@stockbot/shared/contract';
+import { OFFLINE_SENTENCE, ServerNoticeError, UnreachableError } from '@stockbot/shared/contract';
 import { ApiError } from '../../../api/client';
 
 export const redirectMismatchSaveEnabled =
@@ -136,10 +136,6 @@ export function testCodeMessage(
 export function rowLoadFailureMessage(error: unknown): string {
   void error;
   return krogerAppCopy.rowLoadFailed;
-}
-
-export function storeDisabledUserMessage(): string {
-  return hostedErrorSentence('store_disabled');
 }
 
 export function removeFailureMessage(): string {

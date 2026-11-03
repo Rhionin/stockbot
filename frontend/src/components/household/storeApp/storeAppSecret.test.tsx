@@ -90,4 +90,26 @@ describe('store app secret is not retained after save', () => {
     expect(secret.value).toBe('');
     expect(document.body.innerHTML).not.toContain(SECRET);
   });
+
+  it('opening a configured app at step 7 keeps the secret empty when navigating to step 6', async () => {
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId="hh-s"
+          householdName="Pantry"
+          app={saved}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.stepsDisclosure }));
+    const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.store-app-step-nav button'));
+    fireEvent.click(navButtons[5]!);
+    const secret = (await screen.findByLabelText(/App secret/i)) as HTMLInputElement;
+    expect(secret.value).toBe('');
+    expect(document.body.innerHTML).not.toContain(SECRET);
+  });
 });

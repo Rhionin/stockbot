@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { hostedErrorSentence } from '@stockbot/shared/contract';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import { ApiError } from '../../../api/client';
 import {
   mapKrogerAppApiError,
   rowLoadFailureMessage,
-  storeDisabledUserMessage,
 } from './krogerAppMessages';
 
 describe('mapKrogerAppApiError', () => {
@@ -17,12 +15,6 @@ describe('mapKrogerAppApiError', () => {
     expect(mapKrogerAppApiError(new ApiError(403, 'Only an owner can do that.', 'forbidden_role'))).toEqual({
       kind: 'forbidden_role',
     });
-  });
-});
-
-describe('storeDisabledUserMessage', () => {
-  it('uses hosted store_disabled copy', () => {
-    expect(storeDisabledUserMessage()).toBe(hostedErrorSentence('store_disabled'));
   });
 });
 

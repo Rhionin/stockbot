@@ -10,7 +10,6 @@ import {
   writeKrogerAppSetupProgress,
 } from '@stockbot/shared/krogerAppSetupProgress';
 import type { KrogerApp, KrogerAppGetResponse } from '@stockbot/shared/types';
-import { hostedErrorSentence } from '@stockbot/shared/contract';
 import { ApiError, deleteKrogerApp } from '../../../api/client';
 import { KrogerAppSetupModal } from './KrogerAppSetupModal';
 import { StoreAppSection } from './StoreAppSection';
@@ -39,6 +38,8 @@ const baseApp = (overrides: Partial<KrogerApp> = {}): KrogerApp => ({
   canManage: true,
   ...overrides,
 });
+
+const storeDisabledSentence = /Online store features are turned off/i;
 
 function renderSection(
   app: KrogerAppGetResponse,
@@ -825,7 +826,7 @@ describe('B11 kroger-app contract (merged #532)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('store_disabled on Test and save hides the row and shows hosted copy, not save failed', async () => {
+  it('store_disabled on Test and save hides the row without store_disabled copy', async () => {
     const householdId = 'hh-b11-store-disabled-save';
     writeKrogerAppSetupProgress(householdId, {
       step: 6,
@@ -834,7 +835,7 @@ describe('B11 kroger-app contract (merged #532)', () => {
       returnTo: 'household',
       updatedAt: new Date().toISOString(),
     });
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = apiPath(input);
       const method = init?.method ?? 'GET';
       if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
@@ -847,7 +848,8 @@ describe('B11 kroger-app contract (merged #532)', () => {
         return Promise.resolve(json([]));
       }
       return Promise.reject(new Error(`${method} ${url}`));
-    }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
     render(
       <MantineProvider env="test">
         <MemoryRouter>
@@ -861,12 +863,21 @@ describe('B11 kroger-app contract (merged #532)', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
     });
-    await screen.findByText(hostedErrorSentence('store_disabled'));
-    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/households/${householdId}/kroger-app`),
+        expect.objectContaining({ method: 'PUT' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(storeDisabledSentence)).not.toBeInTheDocument();
+    expect(document.querySelector('.store-app-section')).toBeNull();
     expect(screen.queryByText(krogerAppCopy.errSaveFailed)).not.toBeInTheDocument();
   });
 
-  it('store_disabled on test again hides the row and shows hosted copy, not save failed', async () => {
+  it('store_disabled on test again hides the row without store_disabled copy', async () => {
     const householdId = 'hh-b11-store-disabled-test';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = apiPath(input);
@@ -900,12 +911,15 @@ describe('B11 kroger-app contract (merged #532)', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    await screen.findByText(hostedErrorSentence('store_disabled'));
-    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(storeDisabledSentence)).not.toBeInTheDocument();
+    expect(document.querySelector('.store-app-section')).toBeNull();
     expect(screen.queryByText(krogerAppCopy.errSaveFailed)).not.toBeInTheDocument();
   });
 
-  it('store_disabled on remove hides the row and shows hosted copy, not remove failed', async () => {
+  it('store_disabled on remove hides the row without store_disabled copy', async () => {
     const householdId = 'hh-b11-store-disabled-remove';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = apiPath(input);
@@ -942,8 +956,11 @@ describe('B11 kroger-app contract (merged #532)', () => {
     await act(async () => {
       fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.rmConfirm }));
     });
-    await screen.findByText(hostedErrorSentence('store_disabled'));
-    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(storeDisabledSentence)).not.toBeInTheDocument();
+    expect(document.querySelector('.store-app-section')).toBeNull();
     expect(screen.queryByText(krogerAppCopy.rmFailed)).not.toBeInTheDocument();
   });
 });
@@ -1221,6 +1238,7 @@ describe('UX v5.3 GO blockers', () => {
     expect(await screen.findByText(krogerAppCopy.vSecretEmpty)).toBeInTheDocument();
     const secretWrapper = secretInput?.closest('.mantine-InputWrapper-root') ?? secretInput?.parentElement;
     expect(within(secretWrapper as HTMLElement).getByText(krogerAppCopy.vSecretEmpty)).toBeInTheDocument();
+    expect(secretInput).toHaveAttribute('aria-invalid', 'true');
     expect(focusSpy).toHaveBeenCalled();
   });
 
@@ -1250,6 +1268,7 @@ describe('UX v5.3 GO blockers', () => {
     fireEvent.click(screen.getByRole('button', { name: /Connect your Kroger account/i }));
     await screen.findByText(krogerAppCopy.errRemoved);
     expect(screen.getByRole('button', { name: krogerAppCopy.startAgain })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Connect your Kroger account/i })).not.toBeInTheDocument();
   });
 
   it('shows connect-failed under the step 7 button for other authorize errors', async () => {

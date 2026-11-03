@@ -175,6 +175,12 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => {
     resolved.dark[key] = redInkOnDark(resolveVarColor(resolved.dark[key]), darkPaper);
   }
 
+  resolved.light['--mantine-color-error'] = RED_INK_FLOOR;
+  resolved.dark['--mantine-color-error'] = redInkOnDark(
+    resolveVarColor(resolved.dark['--mantine-color-error']),
+    darkPaper,
+  );
+
   const focusRingInk = (
     scale: readonly string[],
     paper: string,
