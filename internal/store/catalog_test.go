@@ -643,9 +643,12 @@ func TestCatalogLookupsEnabledDBError(t *testing.T) {
 		t.Cleanup(func() {
 			_, _ = db.Exec(`ALTER TABLE stores RENAME COLUMN location_id_hidden TO location_id`)
 		})
-		_, err := catalog.List(ctx, scope, CheckingContext{})
+		_, err := catalog.lookupsEnabled(ctx, scope, CheckingContext{})
 		if err == nil {
 			t.Fatal("expected lookupsEnabled store location_id query error")
+		}
+		if !strings.Contains(err.Error(), "location_id") {
+			t.Fatalf("expected error from store location query, got %v", err)
 		}
 	})
 }
