@@ -325,33 +325,45 @@ for (const scheme of ['light', 'dark'] as const) {
     await expect(page.locator('.provision-notices')).toBeVisible()
     await expect(page.locator('.provision-blocked-send-hint')).toBeVisible()
     await assertShoppingToolbarStacked(page, 320)
-    await page.getByRole('button', { name: 'Menu' }).click()
-    const menu = page.locator('.app-menu-dropdown')
-    await expect(menu).toBeVisible()
-    const box = await menu.boundingBox()
-    const innerWidth = await page.evaluate(() => window.innerWidth)
-    expect(box).not.toBeNull()
-    expect(box!.x).toBeGreaterThanOrEqual(-0.5)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(innerWidth + 0.5)
   })
 }
 
-for (const scheme of ['light', 'dark'] as const) {
-  test(`header menu fits the viewport at 320px (${scheme})`, async ({ page }) => {
+for (const { scheme, fontPercent } of [
+  { scheme: 'light' as const, fontPercent: 100 },
+  { scheme: 'dark' as const, fontPercent: 100 },
+  { scheme: 'light' as const, fontPercent: 125 },
+  { scheme: 'dark' as const, fontPercent: 125 },
+]) {
+  test(`header menu fits the viewport at 320px ${fontPercent}% (${scheme})`, async ({ page }) => {
+    if (fontPercent === 125) {
+      test.setTimeout(60_000)
+    }
     await stubShopping(page, 'Kroger')
-    await page.addInitScript((value) => {
-      window.localStorage.setItem('mantine-color-scheme-value', value)
-    }, scheme)
-    await page.setViewportSize({ width: 320, height: 844 })
-    await page.goto('/shopping')
-    await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+    if (fontPercent === 100) {
+      await page.addInitScript((value) => {
+        window.localStorage.setItem('mantine-color-scheme-value', value)
+      }, scheme)
+      await page.setViewportSize({ width: 320, height: 844 })
+      await page.goto('/shopping')
+      await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+      await assertRootFontSizePx(page, ROOT_FONT_PX_AT_100)
+    } else {
+      await openShoppingToolbar(page, 320, fontPercent, scheme)
+    }
+    await page.keyboard.press('Escape')
     await page.getByRole('button', { name: 'Menu' }).click()
     const menu = page.locator('.app-menu-dropdown')
     await expect(menu).toBeVisible()
     const box = await menu.boundingBox()
     expect(box).not.toBeNull()
-    expect(box!.width).toBeLessThanOrEqual(320.5)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(320.5)
+    if (fontPercent === 125) {
+      const innerWidth = await page.evaluate(() => window.innerWidth)
+      expect(box!.x).toBeGreaterThanOrEqual(-0.5)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(innerWidth + 0.5)
+    } else {
+      expect(box!.width).toBeLessThanOrEqual(320.5)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(320.5)
+    }
     const axe = await new AxeBuilder({ page })
       .include('.app-menu-dropdown')
       .withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
