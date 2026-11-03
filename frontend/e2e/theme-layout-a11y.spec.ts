@@ -200,6 +200,43 @@ async function assertSingleHouseholdEllipsis(page: Page, fullName: string) {
   await expect(page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 0.5)).resolves.toBe(true)
 }
 
+async function assertShortHouseholdHugsText(page: Page, householdName: string) {
+  const button = page.getByRole('button', { name: `Household: ${householdName}` })
+  await expect(button).toBeVisible()
+  await expect(button).toHaveAttribute('title', householdName)
+  const nameText = button.locator('.household-switch-name-text')
+  await expect(nameText).toHaveText(householdName)
+  const metrics = await page.evaluate(() => {
+    const switchButton = document.querySelector('.app-header .household-switch-name') as HTMLElement | null
+    const text = document.querySelector('.app-header .household-switch-name-text') as HTMLElement | null
+    const wordmark = document.querySelector('.app-header-wordmark') as HTMLElement | null
+    if (!switchButton || !text || !wordmark) return null
+    const buttonStyle = getComputedStyle(switchButton)
+    const textStyle = getComputedStyle(text)
+    const buttonBox = switchButton.getBoundingClientRect()
+    const wordmarkBox = wordmark.getBoundingClientRect()
+    const paddingX = parseFloat(buttonStyle.paddingLeft) + parseFloat(buttonStyle.paddingRight)
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    const intrinsicTextWidth = ctx
+      ? (ctx.font = textStyle.font, ctx.measureText(text.textContent ?? '').width)
+      : text.scrollWidth
+    return {
+      buttonWidth: buttonBox.width,
+      intrinsicTextWidth,
+      paddingX,
+      gapToWordmark: buttonBox.left - wordmarkBox.right,
+      hasEllipsis: text.scrollWidth > text.clientWidth + 0.5,
+    }
+  })
+  expect(metrics).not.toBeNull()
+  expect(metrics!.hasEllipsis).toBe(false)
+  const maxContentWidth = metrics!.intrinsicTextWidth + metrics!.paddingX + 2
+  expect(metrics!.buttonWidth).toBeLessThanOrEqual(maxContentWidth)
+  expect(metrics!.gapToWordmark).toBeGreaterThanOrEqual(-0.5)
+  expect(metrics!.gapToWordmark).toBeLessThanOrEqual(12)
+}
+
 async function openSingleHouseholdHeader(
   page: Page,
   householdName: string,
@@ -262,6 +299,19 @@ for (const { viewportWidth, fontPercent, scheme, householdName } of householdEll
   test(`${viewportWidth}px with ${fontPercent}% text ellipsizes the single-household name (${scheme})`, async ({ page }) => {
     await openSingleHouseholdHeader(page, householdName, viewportWidth, fontPercent, scheme)
     await assertSingleHouseholdEllipsis(page, householdName)
+  })
+}
+
+const shortHouseholdNameCases = [
+  { viewportWidth: 320, fontPercent: 125, scheme: 'light' as const },
+  { viewportWidth: 390, fontPercent: 100, scheme: 'light' as const },
+  { viewportWidth: 767, fontPercent: 100, scheme: 'light' as const },
+] as const
+
+for (const { viewportWidth, fontPercent, scheme } of shortHouseholdNameCases) {
+  test(`${viewportWidth}px with ${fontPercent}% text keeps a short household name hugging the wordmark (${scheme})`, async ({ page }) => {
+    await openSingleHouseholdHeader(page, 'Pantry', viewportWidth, fontPercent, scheme)
+    await assertShortHouseholdHugsText(page, 'Pantry')
   })
 }
 
