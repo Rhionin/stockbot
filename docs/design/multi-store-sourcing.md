@@ -552,8 +552,8 @@ interface Availability {                 // only while fresh
 | `DELETE /api/stores/{id}` | | `204` (DEP-4) | |
 | `PUT /api/stores/order` | `{storeIds}`, exact permutation | `200 StoresResponse` | `validation`, `conflict`, `not_found` |
 | `PUT /api/stores/default` | `{storeId \| null}` | `200 StoresResponse` | `validation`, `not_found` |
-| `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) |
-| `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited`, `store_disabled` (§4.6.9) |
+| `GET /api/stores/kroger-locations?zip=&chain=` | 5-digit zip; optional exact chain name | `200 {locations: [{locationId, chain, name, address:{line1, city, state, zipCode}}]}`, at most 10, not stored | `validation` (`field:"zip"`), `kroger_not_connected`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) — **planned** (B4) |
+| `POST /api/stores/{id}/check` | | `202 Store` with `check.state:"running"` (or current state) | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `rate_limited`, `store_disabled` (§4.6.9) — **planned** (B7) |
 | `GET /api/households/{id}/kroger-app` | | `200 KrogerApp`, or `200 {"status":"disabled"}` with `DISABLE_KROGER` (§4.6.2, §4.6.9) | |
 | `PUT /api/households/{id}/kroger-app` (Owner) | `{clientId, clientSecret, modality?}` or `{modality}` | `200 KrogerAppSaved`; tests first, saves nothing on failure, or on `redirect_mismatch` during a replace (§4.6.6) | `validation`, `forbidden_role`, `store_app_keys_rejected`, `store_app_unreachable`, `store_disabled`, `rate_limited` (10 key tests per hour per household) |
 | `POST /api/households/{id}/kroger-app/test` (Owner) | `{clientId, clientSecret}` or `{}` | `200 KrogerAppTest` | `validation`, `forbidden_role`, `rate_limited`, `store_disabled` |
@@ -576,7 +576,7 @@ interface StoreRemovalPreview {
 |---|---|---|---|
 | `GET /api/products/{id}/stores` | | `200 ProductStores` | |
 | `PUT /api/products/{id}/stores` | `{stores: [{storeId, state:'carries'\|'excluded'}], usualStoreId}`; `{stores:[], usualStoreId:null}` = "Let the app decide" | `200 ProductStores` | `validation` |
-| `POST /api/products/{id}/stores/check` | | `200 ProductStores` after one synchronous batched call | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) |
+| `POST /api/products/{id}/stores/check` | | `200 ProductStores` after one synchronous batched call | `store_not_linked`, `kroger_not_connected`, `store_check_unavailable`, `store_check_failed`, `rate_limited`, `store_disabled` (§4.6.9) — **planned** (B7) |
 
 ```ts
 interface ProductStores {

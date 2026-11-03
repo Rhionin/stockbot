@@ -719,6 +719,16 @@ func TestShoppingListExportVaultErrorWhenAppSaved(t *testing.T) {
 }
 
 func TestShoppingListExportKrogerDisabledWithSavedApp(t *testing.T) {
+	t.Run("handlerEnvField", func(t *testing.T) {
+		testShoppingListExportKrogerDisabledWithSavedAppManualHandler(t)
+	})
+	t.Run("newHandlerProviderEnvWiring", func(t *testing.T) {
+		testShoppingListExportKrogerDisabledViaNewHandler(t)
+	})
+}
+
+func testShoppingListExportKrogerDisabledWithSavedAppManualHandler(t *testing.T) {
+	t.Helper()
 	_, env := setupTestWithDB(t)
 	registry := cart.NewRegistry()
 	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
@@ -749,6 +759,24 @@ func TestShoppingListExportKrogerDisabledWithSavedApp(t *testing.T) {
 	}
 	if prov.calls != 0 {
 		t.Fatalf("Provision calls=%d want 0", prov.calls)
+	}
+	if httpSpy.calls != 0 {
+		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
+	}
+}
+
+func testShoppingListExportKrogerDisabledViaNewHandler(t *testing.T) {
+	t.Helper()
+	httpSpy := &krogerHTTPCallCounter{}
+	caller, db, primary, adapter := setupKrogerAppOperator(t,
+		WithProviderEnv(ProviderEnv{Disabled: true}),
+	)
+	adapter.WithTransport(httpSpy)
+	caller.house = primary
+	seedKrogerHouseholdApp(t, db, "house-client", "house-secret", "https://app.example/cb")
+	rec := caller.authed(http.MethodPost, "/api/shopping-list/export", map[string]string{"provider": "kroger"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"store_disabled"`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
 	}
 	if httpSpy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
