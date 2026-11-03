@@ -635,10 +635,10 @@ func assertProductCompactAnyConnected(t *testing.T, compactFirst bool) {
 	newer := time.Now().UTC().Format(time.RFC3339Nano)
 	compactRow := struct {
 		id, scope, when string
-	}{"conn-compact", "cart.basic:write product.compact", older}
+	}{"conn-1-compact", "cart.basic:write product.compact", older}
 	plainRow := struct {
 		id, scope, when string
-	}{"conn-plain", "cart.basic:write", newer}
+	}{"conn-0-plain", "cart.basic:write", newer}
 	if !compactFirst {
 		compactRow.when = newer
 		plainRow.when = older

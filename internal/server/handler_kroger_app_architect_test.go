@@ -18,6 +18,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
+	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -301,6 +302,123 @@ func TestKrogerAppTestRateLimitWindowResets(t *testing.T) {
 	}
 }
 
+func TestShoppingListExportEmptyBodyMultipleRegistryConfigured(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	push := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmNone, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+	}, carttest.NewScript())
+	handoff := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthNone, Delivery: cart.DeliveryClientHandoff,
+		Confirmation: cart.ConfirmNone, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+	}, carttest.NewScript())
+	if err := env.Registry.Register(push, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Registry.Register(handoff, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultExportApp(t, env.DB, string(push.ID()))
+	seedDefaultExportApp(t, env.DB, string(handoff.ID()))
+	handler := handlerFromEnv(env)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/shopping-list/export", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	withRequestScope(t, env.DB, handler).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `provider \"\" is not registered`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportUnknownProviderRejected(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := postExportKroger(t, scoped, `{"provider":"not-registered"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `provider \"not-registered\" is not registered`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportEmptyBodySingleHouseholdAppNoOp(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/shopping-list/export", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	scoped.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"exported":0`) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShoppingListExportKrogerSavedAppNotConnected(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSpy := &krogerHTTPCallCounter{}
+	adapter.WithTransport(httpSpy)
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	prov := &countingProvisioner{}
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+		Provisioner:  prov,
+		Connections:  connection.NewDirectory(env.DB),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/shopping-list/export", HandleJSON(handler.Handle))
+	scoped := withRequestScope(t, env.DB, mux)
+	rec := postExportKroger(t, scoped, `{"provider":"kroger"}`)
+	if rec.Code != http.StatusConflict || (!strings.Contains(rec.Body.String(), "not connected") && !strings.Contains(rec.Body.String(), "reconnect_required")) {
+		t.Fatalf("export %d %s", rec.Code, rec.Body.String())
+	}
+	if prov.calls != 0 || httpSpy.calls != 0 {
+		t.Fatalf("Provision=%d HTTP=%d", prov.calls, httpSpy.calls)
+	}
+}
+
 func TestKrogerCallbackRejectsMismatchedAuthAppKey(t *testing.T) {
 	runHandlerTests(t, []handlerTestCase{{
 		name: "callback fails when saved app no longer matches auth_app_key",
@@ -460,6 +578,38 @@ func TestShoppingListExportKrogerEnvOnlyNotConfigured(t *testing.T) {
 	}
 	if httpSpy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0", httpSpy.calls)
+	}
+}
+
+func TestShoppingListExportVaultErrorWhenAppSaved(t *testing.T) {
+	_, env := setupTestWithDB(t)
+	registry := cart.NewRegistry()
+	adapter, err := kroger.New("house-client", "house-secret", "https://app.example/cb", "PICKUP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		t.Fatal(err)
+	}
+	seedKrogerHouseholdApp(t, env.DB, "house-client", "house-secret", "https://app.example/cb")
+	scope := primaryScope(t, env.DB)
+	handler := &ShoppingListExportHandler{
+		ShoppingList: shopping.NewStore(env.DB),
+		Pantry:       inventory.NewPantry(env.DB),
+		Registry:     registry,
+		Credentials:  appcred.NewVault(env.DB),
+	}
+	if err := env.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tenant.WithScope(context.Background(), scope)
+	_, err = handler.Handle(Request[shoppingListExportRequest, struct{}]{
+		Context: ctx,
+		Body:    shoppingListExportRequest{Provider: "kroger"},
+	})
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Code != http.StatusInternalServerError {
+		t.Fatalf("Handle err=%v", err)
 	}
 }
 

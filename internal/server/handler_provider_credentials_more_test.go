@@ -96,3 +96,29 @@ func TestProviderCredentialDeleteNonOperatorForbidden(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestOperatorProviderCredentialKrogerNotRegistered(t *testing.T) {
+	db := openMigratedDB(t, ":memory:")
+	svc := auth.NewService(db, t.TempDir())
+	base := ProvidersHandler{Registry: cart.NewRegistry(), Auth: svc}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "op-1", Operator: true})
+	put := &ProviderCredentialPutHandler{ProvidersHandler: base}
+	_, err := put.Handle(Request[providerCredentialBody, providerCredentialParams]{
+		Context: ctx,
+		Body: providerCredentialBody{
+			ClientID: "c", ClientSecret: "s", RedirectURI: "https://x.example/cb", Modality: "PICKUP",
+		},
+		PathParams: providerCredentialParams{ProviderID: "kroger"},
+	})
+	var httpErr *HTTPError
+	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != 404 {
+		t.Fatalf("put err=%v", err)
+	}
+	del := &ProviderCredentialDeleteHandler{ProvidersHandler: base}
+	_, err = del.Handle(Request[struct{}, providerCredentialParams]{
+		Context: ctx, PathParams: providerCredentialParams{ProviderID: "kroger"},
+	})
+	if err == nil || !errorsAsHTTP(err, &httpErr) || httpErr.Code != 404 {
+		t.Fatalf("delete err=%v", err)
+	}
+}
