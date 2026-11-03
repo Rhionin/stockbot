@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
 import { install, resetStage, stage } from './householdStageFixtures'
+import { resetSharedState } from './helpers'
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 
 const MIN_TOUCH = 44

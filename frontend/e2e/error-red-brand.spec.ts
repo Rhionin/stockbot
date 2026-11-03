@@ -83,7 +83,7 @@ async function showProviderPanelError(page: Page) {
     await route.fulfill({
       status: 500,
       contentType: 'application/json',
-      body: JSON.stringify({ error: 'Ledger reset failed', code: 'internal' }),
+      body: JSON.stringify({ error: 'Unable to forget what was already sent.', code: 'internal' }),
     })
   })
   await page.getByRole('button', { name: 'Start a new cart' }).click()
