@@ -47,6 +47,7 @@ import type {
   KrogerAppGetResponse,
   KrogerAppSaved,
   KrogerAppTest,
+  StoresListResponse,
 } from '@stockbot/shared/types';
 import {
   BATCH_COMMIT_PATH,
@@ -553,18 +554,8 @@ export function listProviders(): Promise<ProviderInfo[]> {
   return apiFetch('/api/providers');
 }
 
-export function saveProviderCredentials(
-  providerId: string,
-  credentials: { clientId: string; clientSecret: string; redirectUri: string; modality: string },
-): Promise<void> {
-  return apiFetch(`/api/providers/${providerId}/credentials`, {
-    method: 'PUT',
-    body: JSON.stringify(credentials),
-  });
-}
-
-export function clearProviderCredentials(providerId: string): Promise<void> {
-  return apiFetch(`/api/providers/${providerId}/credentials`, { method: 'DELETE' });
+export function listStores(): Promise<StoresListResponse> {
+  return apiFetch('/api/stores');
 }
 
 export function authorizeProvider(
@@ -597,11 +588,14 @@ export function deleteKrogerApp(householdId: string): Promise<KrogerApp> {
 
 export function postKrogerAppTest(
   householdId: string,
-  body: { clientId?: string; clientSecret?: string } = {},
+  body?: { clientId?: string; clientSecret?: string },
 ): Promise<KrogerAppTest> {
+  const payload = body && (body.clientId !== undefined || body.clientSecret !== undefined)
+    ? JSON.stringify(body)
+    : undefined;
   return apiFetch(`/api/households/${encodeURIComponent(householdId)}/kroger-app/test`, {
     method: 'POST',
-    body: JSON.stringify(body),
+    body: payload,
   });
 }
 

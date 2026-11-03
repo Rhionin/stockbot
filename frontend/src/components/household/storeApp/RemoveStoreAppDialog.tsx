@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import { krogerAppCopy, storeNameContext } from '@stockbot/shared/krogerAppCopy';
-import { inlineFailure } from '@stockbot/shared/contract';
+import { removeFailureMessage } from './krogerAppMessages';
 
 export interface RemoveStoreAppDialogProps {
   opened: boolean;
@@ -18,11 +18,18 @@ export function RemoveStoreAppDialog({
 }: RemoveStoreAppDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const ctx = storeNameContext(linkedStoreName);
   const body = ctx.store === 'your store'
     ? krogerAppCopy.rmBodyFallback
     : krogerAppCopy.rmBody
       .replaceAll('{store}', ctx.store);
+
+  useEffect(() => {
+    if (opened) {
+      window.requestAnimationFrame(() => cancelRef.current?.focus());
+    }
+  }, [opened]);
 
   const confirm = async () => {
     setBusy(true);
@@ -31,25 +38,42 @@ export function RemoveStoreAppDialog({
       await onConfirm();
       onClose();
     } catch (requestError) {
-      setError(inlineFailure(requestError, krogerAppCopy.rmFailed) ?? krogerAppCopy.rmFailed);
+      setError(removeFailureMessage(requestError));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Modal opened={opened} onClose={onClose} title={krogerAppCopy.rmTitle} size="sm">
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={krogerAppCopy.rmTitle}
+      size="sm"
+      closeButtonProps={{
+        'aria-label': krogerAppCopy.closeLabel,
+        className: 'store-app-modal-close',
+      }}
+    >
       <Stack gap="md">
-        <Text size="sm">{body}</Text>
+        <Text size="sm" className="store-app-rm-body">{body}</Text>
         {error !== '' && <Text role="alert" c="red" size="sm">{error}</Text>}
         <Group justify="flex-end" gap="sm">
-          <Button className="store-app-touch-target" variant="default" onClick={onClose} disabled={busy}>
+          <Button
+            ref={cancelRef}
+            className="store-app-touch-target store-app-touch-target-wide"
+            variant="default"
+            onClick={onClose}
+            disabled={busy}
+            data-autofocus
+          >
             {krogerAppCopy.rmCancel}
           </Button>
           <Button
-            className="store-app-touch-target"
+            className="store-app-touch-target store-app-touch-target-wide"
             color="red"
             loading={busy}
+            aria-busy={busy}
             onClick={() => { void confirm(); }}
           >
             {busy ? krogerAppCopy.rmBusy : krogerAppCopy.rmConfirm}

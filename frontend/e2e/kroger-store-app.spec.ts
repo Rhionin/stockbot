@@ -1,5 +1,13 @@
 import { expect, test, type Page } from '@playwright/test'
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 import { install, resetStage, stage } from './householdStageFixtures'
+
+async function expectMinTargetSize(locator: ReturnType<Page['getByRole']>) {
+  const box = await locator.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.width).toBeGreaterThanOrEqual(44)
+  expect(box!.height).toBeGreaterThanOrEqual(44)
+}
 
 const krogerApp = (status: string, overrides: Record<string, unknown> = {}) => ({
   configured: status !== 'not_set_up',
@@ -44,6 +52,16 @@ const stubHousehold = async (page: Page, appBody: unknown) => {
     contentType: 'application/json',
     body: JSON.stringify({ devices: [] }),
   }))
+  await page.route('**/api/stores', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      stores: [{ id: 's1', name: 'Test Kroger', linkedProvider: 'kroger' }],
+      defaultStoreId: 's1',
+      lookupsEnabled: false,
+      canConnect: true,
+    }),
+  }))
 }
 
 for (const viewport of [
@@ -75,4 +93,40 @@ test('menu no longer lists Manage Kroger connection', async ({ page }) => {
   await page.goto('/shopping')
   await page.getByRole('button', { name: 'Menu' }).click()
   await expect(page.getByRole('menuitem', { name: 'Manage Kroger connection' })).toHaveCount(0)
+})
+
+test('store app touch targets meet 44px minimum', async ({ page }) => {
+  resetStage()
+  stage.kind = 'account'
+  stage.householdName = 'Test Household'
+  stage.role = 'owner'
+  await install(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stubHousehold(page, krogerApp('not_set_up'))
+  await page.goto('/household')
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.rowSetUp }))
+  await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
+  const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
+  await expect(dialog).toBeVisible()
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.stepsDisclosure }))
+  await expectMinTargetSize(page.getByRole('link', { name: krogerAppCopy.s1OpenA11y }))
+
+  await page.getByRole('button', { name: krogerAppCopy.closeLabel }).click()
+  await expect(dialog).toBeHidden()
+
+  await stubHousehold(page, krogerApp('connected', { configured: true, clientIdLast4: '1234' }))
+  await page.reload()
+  await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+  await page.getByRole('menuitem', { name: krogerAppCopy.menuRemove }).click()
+  const removeDialog = page.getByRole('dialog', { name: krogerAppCopy.rmTitle })
+  await expect(removeDialog).toBeVisible()
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
+
+  await page.getByRole('button', { name: krogerAppCopy.rmCancel }).click()
+  await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+  await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
+  await page.getByRole('dialog', { name: krogerAppCopy.menuReplace }).waitFor()
+  await page.getByLabel(krogerAppCopy.s6SendAs).click()
+  await expectMinTargetSize(page.getByRole('button', { name: krogerAppCopy.s6Show }))
 })

@@ -291,16 +291,7 @@ test.describe('text contrast on each page', () => {
   }
 })
 
-async function stubStoreAppHousehold(page: Page) {
-  const appBody = {
-    configured: true,
-    clientIdLast4: '1234',
-    redirectUri: 'https://test-household.example/cb',
-    modality: 'PICKUP',
-    productAccess: 'unknown',
-    status: 'ready_to_connect',
-    canManage: true,
-  }
+async function stubStoreAppHousehold(page: Page, appBody: Record<string, unknown>) {
   await page.route('**/api/households/*/kroger-app', (route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
@@ -312,7 +303,15 @@ async function stubStoreAppHousehold(page: Page) {
 test.describe('text contrast in the store app setup modal', () => {
   for (const { width, mode } of dialogCases) {
     test(`store app row ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
-      await stubStoreAppHousehold(page)
+      await stubStoreAppHousehold(page, {
+        configured: true,
+        clientIdLast4: '1234',
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'ready_to_connect',
+        canManage: true,
+      })
       await openThemed(page, '/household', mode.app, mode.os, width)
       const row = page.getByRole('heading', { name: 'Store app' })
       await expect(row).toBeVisible()
@@ -321,6 +320,23 @@ test.describe('text contrast in the store app setup modal', () => {
       const sample = await expectContrast(status)
       if (mode.app === mode.os) await shot(status, testInfo, `store-app-status-${mode.app}-${width}`)
       writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'store-app-status', ...mode, width, ...sample }], null, 2))
+    })
+
+    test(`store app setup dialog axe ${mode.app}/${mode.os} ${width}`, async ({ page }) => {
+      await stubStoreAppHousehold(page, {
+        configured: false,
+        clientIdLast4: null,
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'not_set_up',
+        canManage: true,
+      })
+      await openThemed(page, '/household', mode.app, mode.os, width)
+      await page.getByRole('button', { name: 'Set up' }).click()
+      const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
+      await expect(dialog).toBeVisible()
+      await expectAxe(page, `store app setup modal ${mode.app}/${mode.os} ${width}`)
     })
   }
 })

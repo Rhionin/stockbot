@@ -324,6 +324,19 @@ export interface KrogerAppSaved extends KrogerApp {
   test: KrogerAppTest;
 }
 
+export interface HouseholdStore {
+  id: string;
+  name: string;
+  linkedProvider: string | null;
+}
+
+export interface StoresListResponse {
+  stores: HouseholdStore[];
+  defaultStoreId: string | null;
+  lookupsEnabled: boolean;
+  canConnect: boolean;
+}
+
 export interface SupplySettings {
   months: number;
   opening: boolean;

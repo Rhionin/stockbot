@@ -50,7 +50,7 @@ import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
 import { inlineFailure } from '@stockbot/shared/contract';
-import { krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
+import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
@@ -74,6 +74,7 @@ export const ShoppingListPage = () => {
   const [decisionsOpen, setDecisionsOpen] = useState(false);
   const [error, setError] = useState('');
   const [krogerNotice, setKrogerNotice] = useState('');
+  const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -90,8 +91,10 @@ export const ShoppingListPage = () => {
     const message = krogerCallbackMessage(outcome, storeNameCtx(null), true);
     if (outcome === 'redirect_mismatch') {
       setKrogerNotice(shoppingRedirectMismatchMessage());
+      setKrogerNoticeIsError(true);
     } else if (message !== '') {
       setKrogerNotice(message);
+      setKrogerNoticeIsError(krogerCallbackIsError(outcome));
     }
     const next = new URLSearchParams(searchParams);
     next.delete('kroger');
@@ -393,7 +396,13 @@ export const ShoppingListPage = () => {
       </Stack>}
       {loading && <Loader aria-label="Loading shopping plan" />}
       {krogerNotice !== '' && (
-        <Alert color="teal" variant="light" role="status">{krogerNotice}</Alert>
+        <Alert
+          color={krogerNoticeIsError ? 'red' : 'teal'}
+          variant="light"
+          role={krogerNoticeIsError ? 'alert' : 'status'}
+        >
+          {krogerNotice}
+        </Alert>
       )}
       {error !== '' && (
         <Alert color="red" py="xs">
