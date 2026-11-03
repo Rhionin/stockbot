@@ -133,7 +133,8 @@ export function testCodeMessage(
   }
 }
 
-export function rowLoadFailureMessage(_error: unknown): string {
+export function rowLoadFailureMessage(error: unknown): string {
+  void error;
   return krogerAppCopy.rowLoadFailed;
 }
 
