@@ -662,8 +662,11 @@ export function KrogerAppSetupModal({
                   id="store-app-client-secret"
                   classNames={{ input: 'store-app-credential-input', innerInput: 'store-app-credential-input' }}
                   styles={{
-                    input: { minHeight: 48, height: 48, boxSizing: 'border-box' },
-                    innerInput: { minHeight: 48, height: 48, boxSizing: 'border-box' },
+                    root: { maxWidth: '100%' },
+                    wrapper: { maxWidth: '100%' },
+                    input: { minHeight: 48, height: 48, boxSizing: 'border-box', overflow: 'hidden' },
+                    innerInput: { minWidth: 0, minHeight: 48, height: 48, boxSizing: 'border-box' },
+                    section: { width: 44, maxWidth: 44, minWidth: 44 },
                   }}
                   label={krogerLabels.fSecret}
                   description={app.configured ? krogerAppCopy.s6SavedSecret : krogerLabels.fSecretHint}

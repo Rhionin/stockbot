@@ -79,7 +79,8 @@
 
 .store-app-modality-control .mantine-SegmentedControl-control {
   min-height: 44px;
-  min-width: 44px;
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 .store-app-modality-error {

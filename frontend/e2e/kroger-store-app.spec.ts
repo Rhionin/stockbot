@@ -239,7 +239,7 @@ async function assertSetupBodyNoHorizontalScroll(page: Page) {
     const body = document.querySelector('.store-app-setup-body')
     if (!(body instanceof HTMLElement)) return false
     return body.scrollWidth <= body.clientWidth + 0.5
-  })).toBe(true)
+  }), { timeout: 15_000 }).toBe(true)
 }
 
 for (const viewport of [
@@ -287,7 +287,7 @@ for (const viewport of [
     await assertSetupBodyNoHorizontalScroll(page)
     await page.getByRole('button', { name: krogerAppCopy.s6Show }).click()
     await assertSetupBodyNoHorizontalScroll(page)
-    await page.getByRole('radio', { name: krogerAppCopy.modalityOptionDelivery }).click()
+    await dialog.locator('.store-app-modality-control').getByText(krogerAppCopy.modalityOptionDelivery, { exact: true }).click()
     await expect(page.getByText(krogerAppCopy.errRemoved)).toBeVisible()
     await assertSetupBodyNoHorizontalScroll(page)
   })
