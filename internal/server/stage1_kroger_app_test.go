@@ -4,13 +4,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 )
 
-func TestStage1KrogerAppRoutesNilHandlerNotFound(t *testing.T) {
+func TestStage1KrogerAppRoutesNilHandlerReturns404(t *testing.T) {
 	db := openMigratedDB(t, filepath.Join(t.TempDir(), "stage1-kroger-nil.db"))
 	setupDir := t.TempDir()
 	svc := auth.NewService(db, setupDir)
@@ -52,7 +53,7 @@ func TestStage1KrogerAppRoutesNilHandlerNotFound(t *testing.T) {
 			if rec.Code == http.StatusUnauthorized {
 				t.Fatalf("%s unauthorized %s", tc.method, rec.Body.String())
 			}
-			if rec.Code != http.StatusInternalServerError {
+			if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
 				t.Fatalf("%s %d %s", tc.method, rec.Code, rec.Body.String())
 			}
 		})
