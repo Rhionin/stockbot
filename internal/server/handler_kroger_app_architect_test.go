@@ -193,11 +193,13 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 		return nil
 	}))
 	caller.house = primary
-	save := caller.authed(http.MethodPut, "/api/households/"+primary+"/kroger-app", map[string]string{
+	savePath := "/api/households/" + primary + "/kroger-app"
+	saveBody := map[string]string{
 		"clientId": "first-app", "clientSecret": "first-secret", "modality": "PICKUP",
-	})
+	}
+	save := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, savePath, saveBody)
 	if save.Code != http.StatusOK {
-		t.Fatal(save.Body.String())
+		t.Fatalf("initial save %d %s", save.Code, save.Body.String())
 	}
 	when := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
@@ -205,18 +207,17 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 		VALUES ('conn-replace', 'user-1', ?, 'kroger', 'connected', ?)`, primary, when); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	replacePath := "/api/households/" + primary + "/kroger-app"
 	replaceBody := map[string]string{
 		"clientId": "second-app", "clientSecret": "second-secret", "modality": "PICKUP",
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	type replaceResult struct {
 		rec *httptest.ResponseRecorder
 	}
 	resultCh := make(chan replaceResult, 1)
 	go func() {
-		rec := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, replacePath, replaceBody)
+		rec := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, savePath, replaceBody)
 		resultCh <- replaceResult{rec: rec}
 	}()
 	var replace *httptest.ResponseRecorder

@@ -647,8 +647,12 @@ func TestCatalogLookupsEnabledDBError(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected lookupsEnabled store location_id query error")
 		}
-		if !strings.Contains(err.Error(), "location_id") {
+		msg := err.Error()
+		if !strings.Contains(msg, "location_id") {
 			t.Fatalf("expected error from store location query, got %v", err)
+		}
+		if !strings.Contains(msg, "no such column") {
+			t.Fatalf("expected SQL fault on stores.location_id, got %v", err)
 		}
 	})
 }
@@ -680,22 +684,22 @@ func assertProductCompactPlainRowDisconnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
-		VALUES ('conn-plain', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write', ?)`, scope.HouseholdID(), when); err != nil {
+		VALUES ('conn-compact', 'user-1', ?, 'kroger', 'connected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, granted_scope, updated_at)
-		VALUES ('conn-disconnected-compact', 'user-2', ?, 'kroger', 'disconnected', 'cart.basic:write product.compact', ?)`, scope.HouseholdID(), when); err != nil {
+		VALUES ('conn-plain-disconnected', 'user-2', ?, 'kroger', 'disconnected', 'cart.basic:write', ?)`, scope.HouseholdID(), when); err != nil {
 		t.Fatal(err)
 	}
 	out, err := catalog.List(ctx, scope, CheckingContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Stores[0].CheckReason == nil || *out.Stores[0].CheckReason != "no_product_access" {
-		t.Fatalf("disconnected compact grant must not enable lookups: %v", out.Stores[0].CheckReason)
+	if out.Stores[0].CheckReason != nil {
+		t.Fatalf("connected compact row should grant access when plain row is disconnected: %v", out.Stores[0].CheckReason)
 	}
-	if out.LookupsEnabled {
-		t.Fatal("lookupsEnabled want false when only disconnected row has product.compact")
+	if !out.LookupsEnabled {
+		t.Fatal("lookupsEnabled want true when a connected row has product.compact")
 	}
 }
 
