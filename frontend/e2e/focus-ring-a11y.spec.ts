@@ -56,6 +56,15 @@ async function stubShopping(page: Page) {
       },
     }]),
   }))
+  await page.route('**/api/group-suggestions**', async (route) => {
+    const incoming = route.request()
+    const url = new URL(incoming.url())
+    if (incoming.method() === 'GET' && url.pathname === '/api/group-suggestions') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+      return
+    }
+    await route.continue()
+  })
 }
 
 async function focusContrast(page: Page, target: ReturnType<Page['locator']>) {

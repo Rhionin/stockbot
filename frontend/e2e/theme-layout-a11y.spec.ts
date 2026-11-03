@@ -91,6 +91,15 @@ async function stubShopping(page: Page, displayName: string, entries: unknown[] 
     contentType: 'application/json',
     body: JSON.stringify(krogerProviders('saved', 'connected', displayName)),
   }))
+  await page.route('**/api/group-suggestions**', async (route) => {
+    const incoming = route.request()
+    const url = new URL(incoming.url())
+    if (incoming.method() === 'GET' && url.pathname === '/api/group-suggestions') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+      return
+    }
+    await route.continue()
+  })
 }
 
 async function openShoppingToolbar(
@@ -351,7 +360,7 @@ for (const { scheme, fontPercent } of [
       await openShoppingToolbar(page, 320, fontPercent, scheme)
     }
     await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: 'Menu' }).click()
+    await page.locator('.app-menu-button').click()
     const menu = page.locator('.app-menu-dropdown')
     await expect(menu).toBeVisible()
     const box = await menu.boundingBox()
