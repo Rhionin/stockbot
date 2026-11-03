@@ -885,6 +885,7 @@ export type HostedErrorCode =
   // with the #518 contract, and PUT /api/households/{id}/kroger-app will return them.
   | 'store_app_keys_rejected'
   | 'store_app_unreachable'
+  | 'store_disabled'
   | 'reconnect_required'
   | 'provider_unavailable'
   ;
@@ -1722,6 +1723,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   // Reserved for B11a (#489): the server does not return these two yet.
   store_app_keys_rejected: "Those keys didn't work. Check that you copied both keys.",
   store_app_unreachable: "Couldn't reach the store. Try again in a few minutes.",
+  store_disabled: 'Online store features are turned off on this server.',
   reconnect_required: "Couldn't connect to your store account. Nothing was sent.",
   provider_unavailable: "Your store isn't responding. Try again later.",
 };
