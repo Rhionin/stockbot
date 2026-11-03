@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectKrogerAppCopyStrings, KROGER_APP_COPY_BANNED } from '@stockbot/shared/krogerAppCopy';
+import { collectKrogerAppCopyStrings, KROGER_APP_COPY_BANNED } from './krogerAppCopy';
 
 describe('T50 kroger app copy jargon', () => {
   it('T50 keeps banned jargon out of c.app source strings', () => {
