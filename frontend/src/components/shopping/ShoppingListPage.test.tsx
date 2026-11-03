@@ -321,6 +321,81 @@ describe('ShoppingListPage', () => {
     filterSpy.mockRestore();
   });
 
+  it('remounts provision quantity input when server quantity changes after reload', async () => {
+    class FakeEventSource {
+      static instances: FakeEventSource[] = [];
+      closed = false;
+      readonly url: string;
+      constructor(url: string) {
+        this.url = url;
+        FakeEventSource.instances.push(this);
+      }
+      addEventListener() {}
+      close() {
+        this.closed = true;
+      }
+    }
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+
+    let quantity = 2;
+    const entry = (): ShoppingListEntry => ({
+      id: 'manual-1',
+      itemId: 'tea',
+      quantity,
+      source: 'manual',
+      purchasedAt: null,
+    });
+    const krogerProvider = [{
+      id: 'kroger',
+      displayName: 'Kroger',
+      capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+      connectionState: 'connected',
+      credentialsConfigured: true,
+    }];
+    let adjustmentBody: string | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/auth/session') {
+        return Promise.resolve(jsonResponse({
+          user: { id: 'user-1', email: 'admin@testhousehold.test', name: 'Admin' },
+          kind: 'account',
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
+      if (url === '/api/providers') return Promise.resolve(jsonResponse(krogerProvider));
+      if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([entry()]));
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/manual-1/adjustment?provider=kroger' && method === 'PUT') {
+        adjustmentBody = init?.body as string;
+        return Promise.resolve(jsonResponse({ adjustment: JSON.parse(adjustmentBody!).adjustment }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    resetStage1Client();
+    await getSession();
+    renderPage();
+
+    const input = await screen.findByLabelText('Provision quantity for Green Tea');
+    expect(input).toHaveValue('2');
+
+    quantity = 5;
+    window.dispatchEvent(new Event(HOUSEHOLD_SWITCH_EVENT));
+    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('5'));
+
+    fireEvent.blur(screen.getByLabelText('Provision quantity for Green Tea'));
+    await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 5 })));
+    expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
+  });
+
   it('reconnects the event stream when the household changes', async () => {
     class FakeEventSource {
       static instances: FakeEventSource[] = [];
