@@ -657,6 +657,52 @@ describe('provision account disconnected summary model', () => {
   });
 });
 
+const nothingSentDisconnectLine = 'Your Kroger account disconnected. Reconnect, then send again.';
+const partialDisconnectLine =
+  'Your Kroger account disconnected before everything was sent. Reconnect, then send again to finish.';
+
+describe('provisionPartialReconnectPrompt panel wiring mutants (C3, C5, C6)', () => {
+  it('C6: uses N not N+U when nothing was sent but check rows exist', () => {
+    const report: ProvisionReport = {
+      provider: 'kroger',
+      exported: 0,
+      reconnectRequired: true,
+      results: [
+        {
+          entryId: 'c',
+          itemId: '3',
+          name: 'Butter',
+          quantity: 1,
+          status: 'unknown',
+          reason: 'request_incomplete',
+        },
+      ],
+    };
+    const groups = groupProvisionResults(report);
+    expect(groups.N).toBe(0);
+    expect(groups.U).toBe(1);
+    expect(provisionPartialReconnectPrompt('Kroger', groups.N)).toBe(nothingSentDisconnectLine);
+    expect(provisionPartialReconnectPrompt('Kroger', groups.N + groups.U)).toBe(partialDisconnectLine);
+  });
+
+  it('C3/C5: legacy reconnect uses groups.N while sentRows.length and exported disagree', () => {
+    const report = {
+      provider: 'kroger',
+      exported: 0,
+      sentCount: 1,
+      reconnectRequired: true,
+      failedItems: ['Invented Jam'],
+    } as ProvisionReport;
+    const groups = groupProvisionResults(report);
+    expect(groups.N).toBe(1);
+    expect(groups.sentRows).toHaveLength(0);
+    expect(report.exported).toBe(0);
+    expect(provisionPartialReconnectPrompt('Kroger', groups.N)).toBe(partialDisconnectLine);
+    expect(provisionPartialReconnectPrompt('Kroger', groups.sentRows.length)).toBe(nothingSentDisconnectLine);
+    expect(provisionPartialReconnectPrompt('Kroger', report.exported ?? 0)).toBe(nothingSentDisconnectLine);
+  });
+});
+
 describe('PROVISION_RESOLVE_UNDO_MS', () => {
   it('is a ten-second undo window', () => {
     expect(PROVISION_RESOLVE_UNDO_MS).toBe(10_000);
