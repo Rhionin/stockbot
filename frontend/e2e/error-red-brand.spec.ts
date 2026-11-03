@@ -88,8 +88,9 @@ async function showProviderPanelError(page: Page) {
   })
   await expect(page.getByRole('button', { name: 'Start a new cart' })).toBeVisible()
   await page.getByRole('button', { name: 'Start a new cart' }).click()
-  const alert = page.getByRole('alert', { name: 'Unable to forget what was already sent.' })
+  const alert = page.getByRole('alert')
   await expect(alert).toBeVisible()
+  await expect(alert).toHaveText('Unable to forget what was already sent.')
   return alert
 }
 

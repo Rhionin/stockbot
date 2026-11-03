@@ -210,6 +210,6 @@ test('store app touch targets meet 44px minimum', async ({ page }) => {
   await replaceDialog.getByRole('button', { name: krogerAppCopy.closeLabel }).click()
   const closeConfirm = page.getByRole('dialog', { name: krogerAppCopy.closeConfirmTitle })
   await expect(closeConfirm).toBeVisible()
-  await expectMinTargetSize(closeConfirm.getByRole('button', { name: krogerAppCopy.closeLabel }))
   await expectMinTargetSize(closeConfirm.getByRole('button', { name: krogerAppCopy.closeConfirmKeep }))
+  await expectMinTargetSize(closeConfirm.getByRole('button', { name: krogerAppCopy.closeConfirmClose }))
 })

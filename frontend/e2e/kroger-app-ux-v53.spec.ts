@@ -38,15 +38,26 @@ async function stubHousehold(page: import('@playwright/test').Page, appBody: unk
   }))
   await page.route('**/api/devices', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
   await page.route('**/api/providers', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
+  await page.route('**/api/stores', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      stores: [{ id: 's1', name: 'Test Kroger', linkedProvider: 'kroger' }],
+      defaultStoreId: 's1',
+      lookupsEnabled: false,
+      canConnect: true,
+    }),
+  }))
 }
 
 test('T53 member row omits unknown product access note', async ({ page }) => {
   resetStage()
   stage.kind = 'account'
   stage.role = 'member'
+  stage.householdName = 'Test Household'
   await install(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await stubHousehold(page, krogerApp('connected', { canManage: false, productAccess: 'unknown' }))
+  await stubHousehold(page, krogerApp('connected', { configured: true, canManage: false, productAccess: 'unknown' }))
   await page.goto('/household')
   await expect(page.getByText(krogerAppCopy.rowConnected)).toBeVisible()
   await expect(page.getByText(/haven't checked yet/i)).toHaveCount(0)
@@ -56,19 +67,16 @@ test('step 7 connect shows connect-failed on authorize errors', async ({ page })
   resetStage()
   stage.kind = 'account'
   stage.role = 'owner'
+  stage.householdName = 'Test Household'
   await install(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await stubHousehold(page, krogerApp('ready_to_connect'))
+  await stubHousehold(page, krogerApp('ready_to_connect', { configured: true }))
   await page.route('**/api/providers/kroger/authorize**', (route) => route.fulfill({
     status: 400,
     contentType: 'application/json',
     body: JSON.stringify({ code: 'validation', error: 'bad' }),
   }))
   await page.goto('/household')
-  await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
-  await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
-  await page.getByRole('button', { name: krogerAppCopy.stepsDisclosure }).click()
-  await page.getByRole('button', { name: krogerAppCopy.goStep(7) }).click()
-  await page.getByRole('button', { name: /Connect your store account/i }).click()
+  await page.getByRole('button', { name: /Connect your Kroger account/i }).click()
   await expect(page.getByRole('alert')).toContainText("Couldn't connect your store account")
 })
