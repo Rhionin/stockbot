@@ -38,6 +38,7 @@ export interface Stage {
   invites: { id: string; status: 'open' | 'revoked'; role: 'member' | 'owner' }[]
   deletedAt: string | null
   pairingExpired: boolean
+  krogerAppGetBody: unknown | null
 }
 
 export const stage: Stage = {
@@ -50,6 +51,7 @@ export const stage: Stage = {
   invites: [{ id: 'inv-1', status: 'open', role: 'member' }],
   deletedAt: null,
   pairingExpired: false,
+  krogerAppGetBody: null,
 }
 
 const sessionBody = () => ({
@@ -100,6 +102,7 @@ export const resetStage = () => {
   stage.invites = [{ id: 'inv-1', status: 'open', role: 'member' }]
   stage.deletedAt = null
   stage.pairingExpired = false
+  stage.krogerAppGetBody = null
 }
 
 export const install = async (page: Page) => {
@@ -250,6 +253,17 @@ export const install = async (page: Page) => {
     }
     if (path === '/api/devices/shed' && method === 'DELETE') return fulfillJson(route, {})
     if (path === '/api/devices/hub' && method === 'PATCH') return fulfillJson(route, devices()[0])
+    if (path === '/api/households/hh-1/kroger-app' && method === 'GET' && stage.krogerAppGetBody !== null) {
+      return fulfillJson(route, stage.krogerAppGetBody)
+    }
+    if (path === '/api/stores' && method === 'GET' && stage.krogerAppGetBody !== null) {
+      return fulfillJson(route, {
+        stores: [{ id: 's1', name: 'Test Kroger', linkedProvider: 'kroger' }],
+        defaultStoreId: 's1',
+        lookupsEnabled: false,
+        canConnect: true,
+      })
+    }
     return fulfillJson(route, {})
   })
 }
