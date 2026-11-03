@@ -83,6 +83,42 @@ for (const viewport of [
   })
 }
 
+test('shopping hides Kroger controls when GET /api/providers marks Kroger disabled', async ({ page }) => {
+  resetStage()
+  stage.kind = 'account'
+  await install(page)
+  await page.route('**/api/shopping-list**', async (route) => {
+    const incoming = route.request()
+    if (incoming.method() === 'GET' && new URL(incoming.url()).pathname === '/api/shopping-list') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: 'manual-1',
+          itemId: 'item-1',
+          quantity: 1,
+          source: 'manual',
+          purchasedAt: null,
+        }]),
+      })
+      return
+    }
+    await route.continue()
+  })
+  await page.route('**/api/inventory', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
+  await page.route('**/api/restock', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }))
+  await page.route('**/api/providers', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{ id: 'kroger', displayName: 'Kroger', status: 'disabled' }]),
+  }))
+  await page.goto('/shopping')
+  await expect(page.getByLabel('Grocery providers')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Send to Kroger' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Connect' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Start a new cart' })).toHaveCount(0)
+})
+
 test('menu no longer lists Manage Kroger connection', async ({ page }) => {
   resetStage()
   stage.kind = 'account'

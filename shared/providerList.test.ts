@@ -43,4 +43,9 @@ describe('B11 KrogerProviderDisabled on GET /api/providers', () => {
     expect(providerListEntries(list)).toHaveLength(1);
     expect(providerListEntries(list)[0]?.credentialsConfigured).toBe(true);
   });
+
+  it('returns no active providers when Kroger is the only row and disabled', () => {
+    const disabled: KrogerProviderDisabled = { id: 'kroger', displayName: 'Kroger', status: 'disabled' };
+    expect(providerListEntries([disabled])).toEqual([]);
+  });
 });

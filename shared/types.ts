@@ -2,7 +2,9 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
-import type { ScanListEntry } from './contract';
+import type { KrogerAppDisabled, ScanListEntry } from './contract';
+
+export type { KrogerAppDisabled };
 
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 
@@ -307,10 +309,6 @@ export interface KrogerApp {
   productAccess: KrogerAppProductAccess;
   status: KrogerAppStatus;
   canManage: boolean;
-}
-
-export interface KrogerAppDisabled {
-  status: 'disabled';
 }
 
 export type KrogerAppGetResponse = KrogerApp | KrogerAppDisabled;

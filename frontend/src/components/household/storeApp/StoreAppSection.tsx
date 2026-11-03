@@ -33,6 +33,7 @@ import {
   mapKrogerAppApiError,
   mapTestAgainResult,
   rowLoadFailureMessage,
+  storeDisabledUserMessage,
 } from './krogerAppMessages';
 import './storeApp.css';
 
@@ -73,6 +74,7 @@ export function StoreAppSection({
   const [testNoticeAlert, setTestNoticeAlert] = useState(false);
   const [testNoticeAmber, setTestNoticeAmber] = useState(false);
   const [forcedMember, setForcedMember] = useState(false);
+  const [disabledNotice, setDisabledNotice] = useState('');
 
   const ctx = storeNameContext(linkedStoreName);
   const canManage = !forcedMember && (app?.canManage ?? isAdmin);
@@ -114,7 +116,14 @@ export function StoreAppSection({
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [setupStepOnOpen, onSetupOpened]);
 
-  if (disabled) return null;
+  if (disabled) {
+    if (disabledNotice === '') return null;
+    return (
+      <section className="store-app-section" aria-live="polite">
+        <Text role="status" size="sm">{disabledNotice}</Text>
+      </section>
+    );
+  }
 
   if (loading && app === null && loadError === '') {
     return (
@@ -147,6 +156,7 @@ export function StoreAppSection({
     } catch (requestError) {
       const mapped = mapKrogerAppApiError(requestError);
       if (mapped.kind === 'store_disabled') {
+        setDisabledNotice(storeDisabledUserMessage());
         setDisabled(true);
         setApp(null);
         setSetupOpen(false);
@@ -178,9 +188,21 @@ export function StoreAppSection({
   };
 
   const removeApp = async () => {
-    await deleteKrogerApp(householdId);
-    setBanner(krogerAppCopy.rmDone);
-    await reload();
+    try {
+      await deleteKrogerApp(householdId);
+      setBanner(krogerAppCopy.rmDone);
+      await reload();
+    } catch (requestError) {
+      const mapped = mapKrogerAppApiError(requestError);
+      if (mapped.kind === 'store_disabled') {
+        setDisabledNotice(storeDisabledUserMessage());
+        setDisabled(true);
+        setApp(null);
+        setRemoveOpen(false);
+        return;
+      }
+      throw requestError;
+    }
   };
 
   const onSaved = () => {
@@ -356,6 +378,7 @@ export function StoreAppSection({
           initialStep={setupInitialStep}
           onSaved={onSaved}
           onStoreDisabled={() => {
+            setDisabledNotice(storeDisabledUserMessage());
             setDisabled(true);
             setApp(null);
           }}

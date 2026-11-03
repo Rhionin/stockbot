@@ -9,6 +9,7 @@ import {
   writeKrogerAppSetupProgress,
 } from '@stockbot/shared/krogerAppSetupProgress';
 import type { KrogerApp, KrogerAppGetResponse } from '@stockbot/shared/types';
+import { hostedErrorSentence } from '@stockbot/shared/contract';
 import { ApiError } from '../../../api/client';
 import { KrogerAppSetupModal } from './KrogerAppSetupModal';
 import { StoreAppSection } from './StoreAppSection';
@@ -820,6 +821,169 @@ describe('B11 kroger-app contract (merged #532)', () => {
     const notice = await screen.findByText(krogerAppCopy.errTooMany);
     expect(notice).toHaveClass('store-app-note-unknown');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('store_disabled on Test and save hides the row and shows hosted copy, not save failed', async () => {
+    const householdId = 'hh-b11-store-disabled-save';
+    writeKrogerAppSetupProgress(householdId, {
+      step: 6,
+      done: [1, 2, 3, 4, 5],
+      suggestedName: 'Pantry',
+      returnTo: 'household',
+      updatedAt: new Date().toISOString(),
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
+        return Promise.resolve(json({ code: 'store_disabled', error: 'RAW DISABLED' }, 409));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp()));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.rowSetUp }));
+    fireEvent.change(await screen.findByLabelText(/App ID/i), { target: { value: 'a' } });
+    fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'b' } });
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
+    await screen.findByText(hostedErrorSentence('store_disabled'));
+    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.errSaveFailed)).not.toBeInTheDocument();
+  });
+
+  it('store_disabled on test again hides the row and shows hosted copy, not save failed', async () => {
+    const householdId = 'hh-b11-store-disabled-test';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app/test` && method === 'POST') {
+        return Promise.resolve(json({ code: 'store_disabled', error: 'RAW DISABLED' }, 409));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234' })));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.menuMore }));
+    fireEvent.click(screen.getByRole('menuitem', { name: krogerAppCopy.menuTest }));
+    await screen.findByText(hostedErrorSentence('store_disabled'));
+    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.errSaveFailed)).not.toBeInTheDocument();
+  });
+
+  it('store_disabled on remove hides the row and shows hosted copy, not remove failed', async () => {
+    const householdId = 'hh-b11-store-disabled-remove';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'DELETE') {
+        return Promise.resolve(json({ code: 'store_disabled', error: 'RAW DISABLED' }, 409));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234' })));
+      }
+      if (url === '/api/providers' && method === 'GET') {
+        return Promise.resolve(json([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <MemoryRouter>
+          <StoreAppSection householdId={householdId} householdName="Pantry" isAdmin linkedStoreName="Kroger" />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.menuMore }));
+    fireEvent.click(screen.getByRole('menuitem', { name: krogerAppCopy.menuRemove }));
+    fireEvent.click(await screen.findByRole('button', { name: krogerAppCopy.rmConfirm }));
+    await screen.findByText(hostedErrorSentence('store_disabled'));
+    expect(screen.queryByRole('heading', { name: krogerAppCopy.rowTitle })).not.toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.rmFailed)).not.toBeInTheDocument();
+  });
+});
+
+describe('Kroger app setup credential hygiene', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('clears App ID and secret after successful Test and save on step 7 and when returning to step 6', async () => {
+    const householdId = 'hh-secret-clear';
+    const saved = {
+      ...baseApp({ configured: true, clientIdLast4: '1234', status: 'ready_to_connect' }),
+      test: { ok: true as const },
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = apiPath(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'PUT') {
+        return Promise.resolve(json(saved));
+      }
+      if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
+        return Promise.resolve(json(baseApp()));
+      }
+      return Promise.reject(new Error(`${method} ${url}`));
+    }));
+    render(
+      <MantineProvider env="test">
+        <KrogerAppSetupModal
+          opened
+          onClose={() => undefined}
+          householdId={householdId}
+          householdName="Pantry"
+          linkedStoreName="Kroger"
+          app={baseApp()}
+          initialStep={6}
+          onSaved={() => undefined}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.change(screen.getByLabelText(/App ID/i), { target: { value: 'client-id-secret' } });
+    fireEvent.change(screen.getByLabelText(/App secret/i), { target: { value: 'client-secret-value' } });
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Test }));
+    await screen.findByRole('button', { name: /Connect your Kroger account/i });
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.stepsDisclosure }));
+    await waitFor(() => expect(screen.getByRole('button', { name: krogerAppCopy.stepDone })).toBeVisible());
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.stepDone }));
+    expect(screen.getByLabelText(/App ID/i)).toHaveValue('');
+    expect(screen.getByLabelText(/App secret/i)).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Show }));
+    expect(screen.getByLabelText(/App secret/i)).toHaveValue('');
   });
 });
 

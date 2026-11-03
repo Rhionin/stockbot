@@ -316,6 +316,10 @@ export function KrogerAppSetupModal({
         setAccessNote(testCodeMessage('no_product_access', ctx, replaceMode));
       }
       setSavedOk(true);
+      setClientId('');
+      setClientSecret('');
+      setShowSecret(false);
+      typedSecrets.current = false;
       markDone(6);
       goStep(7);
       clearKrogerAppSetupProgress(householdId);

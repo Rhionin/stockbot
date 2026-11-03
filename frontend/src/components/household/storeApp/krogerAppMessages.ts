@@ -8,7 +8,7 @@ import {
 } from '@stockbot/shared/krogerAppCopy';
 import { krogerLabels } from '@stockbot/shared/krogerLabels';
 import type { KrogerAppTest, KrogerAppTestCode } from '@stockbot/shared/types';
-import { OFFLINE_SENTENCE, ServerNoticeError, UnreachableError } from '@stockbot/shared/contract';
+import { hostedErrorSentence, OFFLINE_SENTENCE, ServerNoticeError, UnreachableError } from '@stockbot/shared/contract';
 import { ApiError } from '../../../api/client';
 
 export const redirectMismatchSaveEnabled =
@@ -40,7 +40,7 @@ export function mapKrogerAppApiError(error: unknown): KrogerAppErrorHandling {
   }
   switch (error.code) {
     case 'store_disabled':
-      return { kind: 'store_disabled' };
+      return { kind: 'message', message: 'broken', alert: true };
     case 'forbidden_role':
       return { kind: 'forbidden_role' };
     case 'kroger_not_connected':
@@ -117,11 +117,12 @@ export function testCodeMessage(
   }
 }
 
-export function rowLoadFailureMessage(error: unknown): string {
-  if (error instanceof ApiError && error.code === 'not_found') {
-    return krogerAppCopy.rowLoadFailed;
-  }
+export function rowLoadFailureMessage(_error: unknown): string {
   return krogerAppCopy.rowLoadFailed;
+}
+
+export function storeDisabledUserMessage(): string {
+  return hostedErrorSentence('store_disabled');
 }
 
 export function removeFailureMessage(): string {

@@ -7,6 +7,7 @@ import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
+import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
@@ -289,6 +290,34 @@ describe('ShoppingListPage', () => {
       '/api/shopping-list/items/line-1/swap',
       expect.objectContaining({ method: 'POST' }),
     ));
+  });
+
+  it('omits disabled Kroger from the provider row and Kroger send target', async () => {
+    const disabledKroger = { id: 'kroger' as const, displayName: 'Kroger', status: 'disabled' as const };
+    const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([disabledKroger]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const filterSpy = vi.spyOn(providerList, 'providerListEntries');
+    renderPage();
+
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.queryByLabelText('Grocery providers')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send to Kroger' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start a new cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /online cart/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send to your store' })).toBeInTheDocument();
+    expect(
+      filterSpy.mock.calls.some((args) => args[0]?.some((row) => providerList.isKrogerProviderDisabled(row))),
+    ).toBe(true);
+    filterSpy.mockRestore();
   });
 
   it('reconnects the event stream when the household changes', async () => {
