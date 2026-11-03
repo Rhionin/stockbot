@@ -613,6 +613,7 @@ export function KrogerAppSetupModal({
                 <TextInput
                   ref={clientIdRef}
                   classNames={{ input: 'store-app-credential-input' }}
+                  styles={{ input: { minHeight: 44, height: 44, boxSizing: 'border-box' } }}
                   label={krogerLabels.fId}
                   description={app.clientIdLast4 ? krogerAppCopy.s6SavedId(app.clientIdLast4) : krogerLabels.fIdHint}
                   value={clientId}
@@ -630,6 +631,7 @@ export function KrogerAppSetupModal({
                 <PasswordInput
                   ref={clientSecretRef}
                   id="store-app-client-secret"
+                  classNames={{ input: 'store-app-credential-input' }}
                   label={krogerLabels.fSecret}
                   description={app.configured ? krogerAppCopy.s6SavedSecret : krogerLabels.fSecretHint}
                   error={secretFieldError || undefined}
