@@ -1386,7 +1386,7 @@ prepare_pantry "$cloud_down"
 write_images "$cloud_down/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_down/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_down/images.tsv"
 printf '%s\n' $'cloudflared\texited\t0' > "$cloud_down/status.tsv"
 STUB_STATUS_TSV="$cloud_down/status.tsv"
 STUB_HEALTH_BODY='{"status":"ok"}'
@@ -1408,7 +1408,7 @@ prepare_pantry "$cloud_stale"
 write_images "$cloud_stale/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_stale/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$cloud_stale/images.tsv"
 printf '%s\n' $'pantry\tsha256:newpantry' > "$cloud_stale/live.tsv"
 STUB_LIVE_IMAGE_TSV="$cloud_stale/live.tsv"
 STUB_UP_RC=1
@@ -1429,7 +1429,7 @@ prepare_pantry "$cloud_warn"
 write_images "$cloud_warn/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$cloud_warn/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$cloud_warn/images.tsv"
 printf '%s\n' $'cloudflared\trestarting\t4' > "$cloud_warn/status.tsv"
 STUB_STATUS_TSV="$cloud_warn/status.tsv"
 STUB_HEALTH_BODY='{"status":"ok"}'
@@ -2131,7 +2131,7 @@ prepare_pantry "$marker_cr"
 write_images "$marker_cr/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_cr/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_cr/images.tsv"
 printf '%s\r\n' cloudflared > "$marker_cr/.update-sidecar-warn"
 run_update "$marker_cr"
 [[ "$LAST_RC" -eq 0 ]] || fail "crlf marker exited $LAST_RC: $LAST_OUT"
@@ -2144,7 +2144,7 @@ prepare_pantry "$marker_clear"
 write_images "$marker_clear/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_clear/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_clear/images.tsv"
 printf '%s\n' cloudflared > "$marker_clear/.update-sidecar-warn"
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
@@ -2160,7 +2160,7 @@ prepare_pantry "$marker_park"
 write_images "$marker_park/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_park/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_park/images.tsv"
 printf '%s\n' $'pantry\tghcr.io/rhionin/pantry@sha256:newpantry' > "$marker_park/.update-rejected-digest"
 printf '%s\n' cloudflared > "$marker_park/.update-sidecar-warn"
 run_update "$marker_park"
@@ -2175,7 +2175,7 @@ public_env "$proxy_grocy"
 write_images "$proxy_grocy/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:oldpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$proxy_grocy/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:newcloud\tcloudflare/cloudflared@sha256:newcloud\t' >> "$proxy_grocy/images.tsv"
 printf '%s\n' $'cloudflared\tsha256:newcloud' > "$proxy_grocy/live.tsv"
 STUB_LIVE_IMAGE_TSV="$proxy_grocy/live.tsv"
 STUB_CADDY_OLD_RC=0
@@ -2359,7 +2359,7 @@ public_env "$marker_deploy_clear"
 write_images "$marker_deploy_clear/images.tsv" \
   sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
-printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.3\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_deploy_clear/images.tsv"
+printf '%s\n' $'cloudflared\tcloudflare/cloudflared:2026.10.7\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\tsha256:runcloud\tcloudflare/cloudflared@sha256:oldcloud\t' >> "$marker_deploy_clear/images.tsv"
 printf '%s\n' caddy cloudflared > "$marker_deploy_clear/.update-sidecar-warn"
 printf '%s\n' $'cloudflared\texited\t0' > "$marker_deploy_clear/status.tsv"
 STUB_STATUS_TSV="$marker_deploy_clear/status.tsv"
