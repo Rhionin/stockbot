@@ -217,6 +217,9 @@ func start(stop <-chan struct{}) error {
 	if err := app.RunKrogerAppCutover(context.Background(), sqlDB, cutoverEnv); err != nil {
 		return fmt.Errorf("kroger app cutover: %w", err)
 	}
+	if err := app.RunKrogerLegacyConnectionCleanup(context.Background(), sqlDB); err != nil {
+		return fmt.Errorf("kroger legacy connection cleanup: %w", err)
+	}
 	setupDir := envOrDefault("SETUP_DIR", "/run/setup")
 	directory := auth.NewService(sqlDB, setupDir)
 	if err := directory.Boot(context.Background()); err != nil {

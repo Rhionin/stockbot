@@ -165,6 +165,10 @@ func TestStartSeedsKrogerCutoverFromEnv(t *testing.T) {
 	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'kroger_app_cutover_v1'`).Scan(&flag); err != nil || flag != "1" {
 		t.Fatalf("cutover flag = %q err=%v", flag, err)
 	}
+	var legacyCleanup string
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'kroger_legacy_connection_cleanup_v1'`).Scan(&legacyCleanup); err != nil || legacyCleanup != "1" {
+		t.Fatalf("legacy kroger connection cleanup flag = %q err=%v", legacyCleanup, err)
+	}
 	var clientID, modality string
 	if err := db.QueryRow(`SELECT client_id, modality FROM provider_app_credentials WHERE provider_id = 'kroger' LIMIT 1`).Scan(&clientID, &modality); err != nil {
 		t.Fatal(err)
