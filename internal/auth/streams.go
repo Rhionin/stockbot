@@ -138,4 +138,3 @@ func SessionStreamKey(sessionID string) string {
 	}
 	return "session:" + sessionID
 }
-

@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
 )
 
 func TestDirectoryEdges(t *testing.T) {

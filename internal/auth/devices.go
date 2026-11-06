@@ -200,21 +200,21 @@ type ScanInput struct {
 
 // ScanResult is one item outcome.
 type ScanResult struct {
-	ID           string  `json:"id"`
-	Status       string  `json:"status"`
-	Code         string  `json:"code,omitempty"`
-	Cursor       string  `json:"cursor,omitempty"`
-	ScanID       string  `json:"scanId,omitempty"`
-	Message      string  `json:"-"`
-	ScanStatus   string  `json:"scanStatus,omitempty"`
-	Known        *bool   `json:"known,omitempty"`
-	ProductName  *string `json:"productName,omitempty"`
-	Barcode      string  `json:"barcode,omitempty"`
-	Direction    string  `json:"direction,omitempty"`
-	QueuedCount  *int    `json:"queuedCount,omitempty"`
-	OnHand       *int    `json:"onHand,omitempty"`
-	Delta        *int    `json:"delta,omitempty"`
-	Backfilled   *bool   `json:"backfilled,omitempty"`
+	ID          string  `json:"id"`
+	Status      string  `json:"status"`
+	Code        string  `json:"code,omitempty"`
+	Cursor      string  `json:"cursor,omitempty"`
+	ScanID      string  `json:"scanId,omitempty"`
+	Message     string  `json:"-"`
+	ScanStatus  string  `json:"scanStatus,omitempty"`
+	Known       *bool   `json:"known,omitempty"`
+	ProductName *string `json:"productName,omitempty"`
+	Barcode     string  `json:"barcode,omitempty"`
+	Direction   string  `json:"direction,omitempty"`
+	QueuedCount *int    `json:"queuedCount,omitempty"`
+	OnHand      *int    `json:"onHand,omitempty"`
+	Delta       *int    `json:"delta,omitempty"`
+	Backfilled  *bool   `json:"backfilled,omitempty"`
 }
 
 // Heartbeat is one hub check-in.

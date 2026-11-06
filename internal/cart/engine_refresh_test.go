@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 type plainProvider struct{}
@@ -36,13 +38,14 @@ func (p refreshProvider) RefreshAccessToken(context.Context, string) (TokenSet, 
 
 func TestExchangeRefreshUsesTheProviderFlow(t *testing.T) {
 	engine := NewEngine(NewRegistry(), nil, nil)
-	refresh := engine.exchangeRefresh(context.Background(), plainProvider{})
+	scope, _ := tenant.New("household-test")
+	refresh := engine.exchangeRefresh(context.Background(), scope, plainProvider{})
 	if _, _, _, err := refresh("old"); err == nil {
 		t.Fatal("a provider without a refresh flow was accepted")
 	}
 
 	want := TokenSet{AccessToken: "access", RefreshToken: "next", ExpiresIn: time.Minute}
-	refresh = engine.exchangeRefresh(context.Background(), refreshProvider{set: want})
+	refresh = engine.exchangeRefresh(context.Background(), scope, refreshProvider{set: want})
 	access, next, expires, err := refresh("old")
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +54,7 @@ func TestExchangeRefreshUsesTheProviderFlow(t *testing.T) {
 		t.Fatalf("tokens = %s %s %s", access, next, expires)
 	}
 
-	refresh = engine.exchangeRefresh(context.Background(), refreshProvider{err: errors.New("the store declined the refresh")})
+	refresh = engine.exchangeRefresh(context.Background(), scope, refreshProvider{err: errors.New("the store declined the refresh")})
 	if _, _, _, err := refresh("old"); err == nil || err.Error() != "the store declined the refresh" {
 		t.Fatalf("refresh error = %v", err)
 	}

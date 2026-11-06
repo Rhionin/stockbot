@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListExportHandler handles POST /api/shopping-list/export.
@@ -20,6 +23,53 @@ type ShoppingListExportHandler struct {
 	Ledger       *cart.Ledger
 	Registry     *cart.Registry
 	Connections  *connection.Directory
+	Credentials  *appcred.Vault
+	Env          ProviderEnv
+}
+
+func (h *ShoppingListExportHandler) householdCredentialsConfigured(ctx context.Context, scope tenant.Scope, providerID cart.ProviderID) (bool, error) {
+	if providerID == "" {
+		return false, nil
+	}
+	if h.Credentials != nil {
+		has, err := h.Credentials.HasApp(ctx, scope, string(providerID))
+		if err != nil {
+			return false, err
+		}
+		if has {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *ShoppingListExportHandler) anyExportCredentials(ctx context.Context, scope tenant.Scope) (bool, error) {
+	if h.Registry == nil {
+		return false, nil
+	}
+	for _, id := range h.Registry.List() {
+		ok, err := h.householdCredentialsConfigured(ctx, scope, id)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *ShoppingListExportHandler) registryConfiguredCount() int {
+	if h.Registry == nil {
+		return 0
+	}
+	n := 0
+	for _, id := range h.Registry.List() {
+		if h.Registry.CredentialsConfigured(id) {
+			n++
+		}
+	}
+	return n
 }
 
 type shoppingListExportRequest struct {
@@ -44,20 +94,20 @@ type ProvisionEntry struct {
 }
 
 type shoppingListExportResponse struct {
-	Provider           string                 `json:"provider,omitempty"`
-	Exported           int                    `json:"exported"`
-	AddedCount         int                    `json:"addedCount"`
-	SentCount          int                    `json:"sentCount"`
-	SkippedCount       int                    `json:"skippedCount"`
-	FailedCount        int                    `json:"failedCount"`
-	UnknownCount       int                    `json:"unknownCount"`
-	ReconnectRequired  bool                   `json:"reconnectRequired,omitempty"`
-	FailedItems        []string               `json:"failedItems,omitempty"`
-	UnknownItems       []string               `json:"unknownItems,omitempty"`
-	Entries            []ProvisionEntry       `json:"entries,omitempty"`
-	Results            []provisionResultEntry `json:"results"`
-	Handoff            *HandoffResponse       `json:"handoff,omitempty"`
-	Items              []exportedItemResponse `json:"items,omitempty"`
+	Provider          string                 `json:"provider,omitempty"`
+	Exported          int                    `json:"exported"`
+	AddedCount        int                    `json:"addedCount"`
+	SentCount         int                    `json:"sentCount"`
+	SkippedCount      int                    `json:"skippedCount"`
+	FailedCount       int                    `json:"failedCount"`
+	UnknownCount      int                    `json:"unknownCount"`
+	ReconnectRequired bool                   `json:"reconnectRequired,omitempty"`
+	FailedItems       []string               `json:"failedItems,omitempty"`
+	UnknownItems      []string               `json:"unknownItems,omitempty"`
+	Entries           []ProvisionEntry       `json:"entries,omitempty"`
+	Results           []provisionResultEntry `json:"results"`
+	Handoff           *HandoffResponse       `json:"handoff,omitempty"`
+	Items             []exportedItemResponse `json:"items,omitempty"`
 }
 
 type HandoffResponse struct {
@@ -86,25 +136,45 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 			providerID = id
 		}
 	}
+	if providerID == "kroger" && h.Env.Disabled {
+		return nil, StoreDisabled()
+	}
 
 	// No configured provider: the historical no-op report. Naming an unknown
 	// or unconfigured provider is still an error, so a client can tell those
 	// apart from "nothing was sent". The planned lines stay on the response
 	// so the cart can be checked before a retailer is connected.
-	if h.Registry == nil || !h.Registry.AnyCredentialsConfigured() {
+	if h.Registry == nil {
 		if req.Body.Provider != "" {
-			if h.Registry == nil {
-				return nil, BadRequest(fmt.Sprintf("provider %q is not registered", req.Body.Provider))
-			}
+			return nil, BadRequest(fmt.Sprintf("provider %q is not registered", req.Body.Provider))
+		}
+		return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
+	}
+	anyConfigured, err := h.anyExportCredentials(req.Context, scope)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if !anyConfigured {
+		if req.Body.Provider != "" {
 			provider, ok := h.Registry.Get(providerID)
 			if !ok {
 				return nil, BadRequest(fmt.Sprintf("provider %q is not registered", providerID))
 			}
-			if !h.Registry.CredentialsConfigured(providerID) {
+			hasApp, err := h.householdCredentialsConfigured(req.Context, scope, providerID)
+			if err != nil {
+				return nil, InternalError(err)
+			}
+			if !hasApp {
 				return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 			}
 		}
 		return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
+	}
+	if providerID == "" && req.Body.Provider == "" {
+		if h.Registry != nil && h.registryConfiguredCount() > 1 {
+			return nil, BadRequest(`provider "" is not registered`)
+		}
+		return &shoppingListExportResponse{Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
 	}
 
 	provider, ok := h.Registry.Get(providerID)
@@ -115,7 +185,11 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		}
 		return nil, BadRequest(fmt.Sprintf("provider %q is not registered", named))
 	}
-	if !h.Registry.CredentialsConfigured(providerID) {
+	configured, err := h.householdCredentialsConfigured(req.Context, scope, providerID)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	if !configured {
 		return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 	}
 	caps := provider.Capabilities()

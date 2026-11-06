@@ -1,10 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
+import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
@@ -32,7 +35,9 @@ const jsonResponse = (body: unknown, status = 200) =>
 const renderPage = () => render(
   <MantineProvider>
     <Notifications />
-    <ShoppingListPage />
+    <MemoryRouter>
+      <ShoppingListPage />
+    </MemoryRouter>
   </MantineProvider>,
 );
 
@@ -144,6 +149,16 @@ describe('ShoppingListPage', () => {
     const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/auth/session') {
+        return Promise.resolve(jsonResponse({
+          user: { id: 'user-1', email: 'admin@testhousehold.test', name: 'Admin' },
+          kind: 'account',
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
       if (url === '/api/providers') {
         return Promise.resolve(jsonResponse([{
           id: 'kroger',
@@ -156,11 +171,12 @@ describe('ShoppingListPage', () => {
       if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([entry]));
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
       if (url === '/api/shopping-list/export') {
-        return Promise.resolve(jsonResponse({ error: 'Kroger is not connected' }, 409));
+        return Promise.resolve(jsonResponse({ error: 'Kroger is not configured', code: 'conflict' }, 409));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
+    await getSession();
     renderPage();
 
     const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
@@ -175,7 +191,7 @@ describe('ShoppingListPage', () => {
     expect(screen.queryByRole('button', { name: /setup/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
 
-    expect(await screen.findByText('Kroger is not connected')).toBeInTheDocument();
+    expect(await screen.findByText(krogerAppCopy.linkNeed)).toBeInTheDocument();
     expect(screen.queryByText(/sent to Kroger/)).not.toBeInTheDocument();
     expect(within(table).getByText('Green Tea')).toBeInTheDocument();
   });
@@ -274,6 +290,99 @@ describe('ShoppingListPage', () => {
       '/api/shopping-list/items/line-1/swap',
       expect.objectContaining({ method: 'POST' }),
     ));
+  });
+
+  it('omits disabled Kroger from the provider row and Kroger send target', async () => {
+    const disabledKroger = { id: 'kroger' as const, displayName: 'Kroger', status: 'disabled' as const };
+    const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([disabledKroger]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const filterSpy = vi.spyOn(providerList, 'providerListEntries');
+    renderPage();
+
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.queryByLabelText('Grocery providers')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send to Kroger' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start a new cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /online cart/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send to your store' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Send to /i })).not.toBeInTheDocument();
+    expect(
+      filterSpy.mock.calls.some((args) => args[0]?.some((row) => providerList.isKrogerProviderDisabled(row))),
+    ).toBe(true);
+    filterSpy.mockRestore();
+  });
+
+  it('remounts provision quantity input when server quantity changes after Update the list', async () => {
+    let quantity = 2;
+    const entry = (): ShoppingListEntry => ({
+      id: 'manual-1',
+      itemId: 'tea',
+      quantity,
+      source: 'manual',
+      purchasedAt: null,
+    });
+    const krogerProvider = [{
+      id: 'kroger',
+      displayName: 'Kroger',
+      capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+      connectionState: 'connected',
+      credentialsConfigured: true,
+    }];
+    let adjustmentBody: string | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/auth/session') {
+        return Promise.resolve(jsonResponse({
+          user: { id: 'user-1', email: 'admin@testhousehold.test', name: 'Admin' },
+          kind: 'account',
+          memberships: [{ householdId: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          households: [{ id: 'hh-1', name: 'Pantry', role: 'owner', deletedAt: null }],
+          activeHouseholdId: 'hh-1',
+          operator: false,
+        }));
+      }
+      if (url === '/api/providers') return Promise.resolve(jsonResponse(krogerProvider));
+      if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([entry()]));
+      if (url === '/api/shopping-list/fill' && method === 'POST') {
+        quantity = 3;
+        return Promise.resolve(jsonResponse([entry()]));
+      }
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/manual-1/adjustment?provider=kroger' && method === 'PUT') {
+        adjustmentBody = init?.body as string;
+        return Promise.resolve(jsonResponse({ adjustment: JSON.parse(adjustmentBody!).adjustment }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    resetStage1Client();
+    await getSession();
+    renderPage();
+
+    const input = await screen.findByLabelText('Provision quantity for Green Tea');
+    expect(input).toHaveValue('2');
+    expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('2 boxes')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update the list' }));
+    await waitFor(() => expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('3 boxes')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('3'));
+
+    fireEvent.blur(screen.getByLabelText('Provision quantity for Green Tea'));
+    await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 3 })));
+    expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });
 
   it('reconnects the event stream when the household changes', async () => {

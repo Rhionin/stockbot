@@ -181,7 +181,7 @@ func TestOperatorScansThisWeekIsolatedAcrossHouseholdsWithDecoys(t *testing.T) {
 				seedOperatorHouseholdScanUnits(t, ctx, db, p.DeviceID, h.id, h.units, now.Add(-2*time.Hour))
 			}
 			want := map[string]int{
-				primary:      0,
+				primary:        0,
 				decoyBefore.id: decoyBefore.units,
 				target.id:      target.units,
 				decoyAfter.id:  decoyAfter.units,

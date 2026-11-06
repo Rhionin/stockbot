@@ -16,8 +16,10 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/deployhook"
+	"github.com/Rhionin/stockbot/internal/devicingest"
 	"github.com/Rhionin/stockbot/internal/events"
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/history"
@@ -31,9 +33,8 @@ import (
 	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/suggestion"
 	"github.com/Rhionin/stockbot/internal/supply"
-	"github.com/Rhionin/stockbot/internal/devicingest"
-	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/telemetry"
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/webui"
 )
 
@@ -67,6 +68,7 @@ type config struct {
 	stage1svc        *auth.Service
 	site             app.RuntimeConfig
 	gate             *stage1
+	krogerAppAfterSaveTestHook func() error
 }
 
 // Option is a functional option for NewHandler.
@@ -88,6 +90,13 @@ func WithCartRegistry(registry *cart.Registry, ledger *cart.Ledger) Option {
 func WithProviderEnv(env ProviderEnv) Option {
 	return func(c *config) {
 		c.providerEnv = env
+	}
+}
+
+// WithKrogerAppAfterSaveTestHook injects a failure after saveApp writes credentials; tests only.
+func WithKrogerAppAfterSaveTestHook(fn func() error) Option {
+	return func(c *config) {
+		c.krogerAppAfterSaveTestHook = fn
 	}
 }
 
@@ -573,6 +582,7 @@ func newAPIMux(
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
 	engine := cart.NewEngine(registry, ledger, tokenBroker)
+	engine.SetCredentialVault(credentialVault)
 	engine.SetShoppingList(*shoppingList)
 	engine.SetPantry(*pantry)
 	engine.SetConsumptionLog(*consumptionLog)
@@ -619,6 +629,10 @@ func newAPIMux(
 	shoppingListItemUpdateHandler := &ShoppingListItemUpdateHandler{
 		ShoppingList: shoppingList,
 	}
+	var envFallback ProviderEnv
+	if cfg != nil {
+		envFallback = cfg.providerEnv
+	}
 	shoppingListExportHandler := &ShoppingListExportHandler{
 		ShoppingList: shoppingList,
 		Pantry:       pantry,
@@ -626,6 +640,8 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Connections:  connDir,
+		Credentials:  credentialVault,
+		Env:          envFallback,
 	}
 	shoppingDealPutHandler := &ShoppingDealPutHandler{
 		ShoppingList: shoppingList,
@@ -649,14 +665,11 @@ func newAPIMux(
 
 	// Cart integration handlers. connDir is created with the shopping list
 	// above so the provisioner and these routes share one directory.
-	var envFallback ProviderEnv
-	if cfg != nil {
-		envFallback = cfg.providerEnv
-	}
 	storesHandler := &StoresHandler{
 		Stores:   storeCatalog,
 		Registry: registry,
 		Env:      envFallback,
+		Vault:    credentialVault,
 	}
 	apiMux.HandleFunc("GET /api/stores", HandleJSON(storesHandler.HandleList))
 	apiMux.HandleFunc("POST /api/stores", HandleJSON(storesHandler.HandleCreate))
@@ -666,11 +679,16 @@ func newAPIMux(
 	apiMux.HandleFunc("PATCH /api/stores/{id}", HandleJSON(storesHandler.HandlePatch))
 	apiMux.HandleFunc("DELETE /api/stores/{id}", HandleJSON(storesHandler.HandleDelete))
 
+	var krogerAdapter *kroger.Adapter
+	if p, ok := registry.Get(cart.ProviderID("kroger")); ok {
+		krogerAdapter, _ = p.(*kroger.Adapter)
+	}
 	providersHandler := &ProvidersHandler{
 		Registry:      registry,
 		ConnectionDir: connDir,
 		Credentials:   credentialVault,
 		EnvFallback:   envFallback,
+		Kroger:        krogerAdapter,
 	}
 	if cfg != nil && cfg.stage1svc != nil {
 		providersHandler.Auth = cfg.stage1svc
@@ -722,11 +740,21 @@ func newAPIMux(
 	apiMux.HandleFunc("POST /api/push/subscriptions", HandleJSON(pushHandler.Save))
 	apiMux.HandleFunc("DELETE /api/push/subscriptions", HandleJSON(pushHandler.Delete))
 	if cfg != nil && cfg.stage1svc != nil {
+		var afterSaveHook func() error
+		if cfg != nil {
+			afterSaveHook = cfg.krogerAppAfterSaveTestHook
+		}
+		krogerApp := &KrogerAppHandler{
+			DB: db, Vault: credentialVault, Auth: cfg.stage1svc,
+			Env: envFallback, Site: cfg.site, Kroger: krogerAdapter,
+			AfterCredentialSaveTestHook: afterSaveHook,
+		}
 		cfg.gate = &stage1{
-			svc:      cfg.stage1svc,
-			site:     cfg.site,
-			stockIn:  scannerConfig.StockInBarcode,
-			stockOut: scannerConfig.StockOutBarcode,
+			svc:       cfg.stage1svc,
+			site:      cfg.site,
+			stockIn:   scannerConfig.StockInBarcode,
+			stockOut:  scannerConfig.StockOutBarcode,
+			krogerApp: krogerApp,
 		}
 		cfg.stage1svc.SetHints(broadcaster)
 		cfg.stage1svc.SetLive(broadcaster)

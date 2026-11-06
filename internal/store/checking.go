@@ -82,8 +82,7 @@ func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk Ch
 
 func (c *Catalog) canConnect(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
 	return cart.OAuthAuthorizeAllowed(ctx, c.db, scope, cart.OAuthConnectInput{
-		KrogerDisabled:        chk.KrogerDisabled,
-		CredentialsConfigured: chk.CredentialsConfigured,
+		KrogerDisabled: chk.KrogerDisabled,
 	})
 }
 

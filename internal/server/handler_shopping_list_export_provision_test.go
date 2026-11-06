@@ -55,6 +55,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true), cart.WithBatchSize(1)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -105,6 +106,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -144,6 +146,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true), cart.WithBatchSize(1)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				exportLedgerBefore = snapshotExportLedger(env, "test-none-server_push")
 			},
 			httpExchange: httpExchange{
@@ -188,6 +191,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -258,6 +262,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -305,6 +310,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -372,6 +378,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -425,6 +432,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -471,6 +479,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatalf("register: %v", err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 				expired := time.Now().UTC().Add(-time.Hour)
 				if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(env.T, env.DB), &connection.Connection{
 					Provider:     "test-oauth2_authorization_code-server_push",
@@ -908,6 +917,7 @@ func registerOAuthExportFake(env testEnv, script *carttest.Script, batchSize int
 	if err := env.Registry.Register(provider, opts...); err != nil {
 		env.T.Fatalf("register: %v", err)
 	}
+	seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 	return provider
 }
 
@@ -959,6 +969,15 @@ func TestShoppingListExportKrogerInvalidGrantFromTokenEndpoint(t *testing.T) {
 				RefreshToken: "refresh-kroger",
 				ExpiresAt:    &expired,
 			}); err != nil {
+				env.T.Fatal(err)
+			}
+			when := time.Now().UTC().Format(time.RFC3339Nano)
+			hid := primaryScope(env.T, env.DB).HouseholdID()
+			if _, err := env.DB.Exec(`
+				INSERT INTO provider_app_credentials (
+					id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at
+				) VALUES (?, 'user-1', ?, 'kroger', 'client', 'secret', 'https://app/cb', ?)`,
+				hid+":kroger", hid, when); err != nil {
 				env.T.Fatal(err)
 			}
 		},
@@ -1015,6 +1034,7 @@ func TestShoppingListExportResultEntryIDsUnique(t *testing.T) {
 				if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 					env.T.Fatal(err)
 				}
+				seedDefaultExportApp(env.T, env.DB, string(provider.ID()))
 			},
 			httpExchange: httpExchange{
 				method:         "POST",

@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/store"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // StoresHandler serves household store CRUD and ordering.
@@ -13,6 +16,7 @@ type StoresHandler struct {
 	Stores   *store.Catalog
 	Registry *cart.Registry
 	Env      ProviderEnv
+	Vault    *appcred.Vault
 }
 
 type storePathParams struct {
@@ -43,12 +47,8 @@ type defaultStoreBody struct {
 	StoreID *string `json:"storeId"`
 }
 
-func (h *StoresHandler) checkingCtx() store.CheckingContext {
-	chk := store.CheckingContext{KrogerDisabled: h.Env.Disabled}
-	if h.Registry != nil {
-		chk.CredentialsConfigured = h.Registry.CredentialsConfigured(cart.ProviderID("kroger"))
-	}
-	return chk
+func (h *StoresHandler) checkingCtx(ctx context.Context, scope tenant.Scope) store.CheckingContext {
+	return store.CheckingContext{KrogerDisabled: h.Env.Disabled}
 }
 
 func (h *StoresHandler) HandleList(req Request[struct{}, struct{}]) (store.StoresResponse, error) {
@@ -56,7 +56,7 @@ func (h *StoresHandler) HandleList(req Request[struct{}, struct{}]) (store.Store
 	if err != nil {
 		return store.StoresResponse{}, InternalError(err)
 	}
-	out, err := h.Stores.List(req.Context, scope, h.checkingCtx())
+	out, err := h.Stores.List(req.Context, scope, h.checkingCtx(req.Context, scope))
 	if err != nil {
 		return store.StoresResponse{}, storeErr(err)
 	}
@@ -125,7 +125,7 @@ func (h *StoresHandler) HandleOrder(req Request[orderStoresBody, struct{}]) (sto
 	if err != nil {
 		return store.StoresResponse{}, InternalError(err)
 	}
-	out, err := h.Stores.SetOrder(req.Context, scope, req.Body.StoreIDs, h.checkingCtx())
+	out, err := h.Stores.SetOrder(req.Context, scope, req.Body.StoreIDs, h.checkingCtx(req.Context, scope))
 	if err != nil {
 		return store.StoresResponse{}, storeErr(err)
 	}
@@ -137,7 +137,7 @@ func (h *StoresHandler) HandleDefault(req Request[defaultStoreBody, struct{}]) (
 	if err != nil {
 		return store.StoresResponse{}, InternalError(err)
 	}
-	out, err := h.Stores.SetDefault(req.Context, scope, req.Body.StoreID, h.checkingCtx())
+	out, err := h.Stores.SetDefault(req.Context, scope, req.Body.StoreID, h.checkingCtx(req.Context, scope))
 	if err != nil {
 		return store.StoresResponse{}, storeErr(err)
 	}

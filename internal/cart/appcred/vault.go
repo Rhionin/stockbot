@@ -21,6 +21,9 @@ type Saved struct {
 	ClientSecret string
 	RedirectURI  string
 	Modality     string
+	// ProductAccess is nil when unknown, 0 when the app cannot use Products, 1 when it can.
+	ProductAccess   *int
+	ProductAccessAt string
 	// ActorUserID is who saved the row. Only operator actors configure the
 	// server-wide adapter at startup.
 	ActorUserID string
@@ -56,20 +59,68 @@ func (v *Vault) Load(ctx context.Context, scope tenant.Scope, providerID string)
 	if v == nil || v.db == nil {
 		return Saved{}, false, nil
 	}
+	return v.loadRow(ctx, v.db, scope, providerID)
+}
+
+type queryExec interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (v *Vault) loadRow(ctx context.Context, q queryExec, scope tenant.Scope, providerID string) (Saved, bool, error) {
 	var saved Saved
-	err := v.db.QueryRowContext(ctx, `
-		SELECT provider_id, client_id, client_secret, redirect_uri, modality
+	var productAccess sql.NullInt64
+	var productAccessAt sql.NullString
+	err := q.QueryRowContext(ctx, `
+		SELECT provider_id, client_id, client_secret, redirect_uri, modality,
+		       product_access, product_access_at, COALESCE(actor_user_id, '')
 		FROM provider_app_credentials
 		WHERE household_id = ? AND provider_id = ?`,
 		scope.HouseholdID(), providerID,
-	).Scan(&saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality)
+	).Scan(&saved.ProviderID, &saved.ClientID, &saved.ClientSecret, &saved.RedirectURI, &saved.Modality,
+		&productAccess, &productAccessAt, &saved.ActorUserID)
 	if err == sql.ErrNoRows {
 		return Saved{}, false, nil
 	}
 	if err != nil {
 		return Saved{}, false, fmt.Errorf("read provider credentials: %w", err)
 	}
+	if productAccess.Valid {
+		n := int(productAccess.Int64)
+		saved.ProductAccess = &n
+	}
+	if productAccessAt.Valid {
+		saved.ProductAccessAt = productAccessAt.String
+	}
 	return saved, true, nil
+}
+
+// LoadFull is an alias for Load that includes actor_user_id and product_access fields.
+func (v *Vault) LoadFull(ctx context.Context, scope tenant.Scope, providerID string) (Saved, bool, error) {
+	return v.Load(ctx, scope, providerID)
+}
+
+// HasApp reports whether the household has a saved row for the provider.
+func (v *Vault) HasApp(ctx context.Context, scope tenant.Scope, providerID string) (bool, error) {
+	if err := scope.Require(); err != nil {
+		return false, err
+	}
+	if v == nil || v.db == nil {
+		return false, nil
+	}
+	var n int
+	err := v.db.QueryRowContext(ctx, `
+		SELECT 1 FROM provider_app_credentials
+		WHERE household_id = ? AND provider_id = ? LIMIT 1`,
+		scope.HouseholdID(), providerID,
+	).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read provider credentials: %w", err)
+	}
+	return true, nil
 }
 
 // Public returns the non-secret view of a saved row. ok is false when nothing
@@ -97,7 +148,20 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 	if v == nil || v.db == nil {
 		return fmt.Errorf("credential store is not available")
 	}
-	existing, ok, err := v.Load(ctx, scope, saved.ProviderID)
+	return v.save(ctx, v.db, scope, saved)
+}
+func (v *Vault) SaveTx(ctx context.Context, tx *sql.Tx, scope tenant.Scope, saved Saved) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if v == nil || v.db == nil {
+		return fmt.Errorf("credential store is not available")
+	}
+	return v.save(ctx, tx, scope, saved)
+}
+
+func (v *Vault) save(ctx context.Context, q queryExec, scope tenant.Scope, saved Saved) error {
+	existing, ok, err := v.loadRow(ctx, q, scope, saved.ProviderID)
 	if err != nil {
 		return err
 	}
@@ -111,19 +175,34 @@ func (v *Vault) Save(ctx context.Context, scope tenant.Scope, saved Saved) error
 	householdID := scope.HouseholdID()
 	id := householdID + ":" + saved.ProviderID
 	actor := strings.TrimSpace(saved.ActorUserID)
-	_, err = v.db.ExecContext(ctx, `
+	now := time.Now().UTC().Format(time.RFC3339)
+	var productAccess any
+	var productAccessAt any
+	if saved.ProductAccess != nil {
+		productAccess = *saved.ProductAccess
+		if saved.ProductAccessAt != "" {
+			productAccessAt = saved.ProductAccessAt
+		} else {
+			productAccessAt = now
+		}
+	}
+	_, err = q.ExecContext(ctx, `
 		INSERT INTO provider_app_credentials
-			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, household_id, user_id, actor_user_id, provider_id, client_id, client_secret, redirect_uri, modality,
+			 product_access, product_access_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (user_id, provider_id) DO UPDATE SET
 			client_id = excluded.client_id,
 			client_secret = excluded.client_secret,
 			redirect_uri = excluded.redirect_uri,
 			modality = excluded.modality,
 			actor_user_id = excluded.actor_user_id,
+			product_access = COALESCE(excluded.product_access, provider_app_credentials.product_access),
+			product_access_at = COALESCE(excluded.product_access_at, provider_app_credentials.product_access_at),
 			updated_at = excluded.updated_at
 		WHERE provider_app_credentials.household_id = excluded.household_id`,
-		id, householdID, householdID, actor, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality, time.Now().UTC().Format(time.RFC3339),
+		id, householdID, householdID, actor, saved.ProviderID, saved.ClientID, secret, saved.RedirectURI, saved.Modality,
+		productAccess, productAccessAt, now,
 	)
 	if err != nil {
 		return fmt.Errorf("save provider credentials: %w", err)

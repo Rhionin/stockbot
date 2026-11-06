@@ -40,7 +40,6 @@ test('the menu keeps the build id and diagnostics reachable', async ({ page }) =
   await expectNoFooterBar(page, viewport.height)
 
   await page.getByRole('button', { name: 'Menu' }).click()
-  await expect(page.getByRole('menuitem', { name: 'Manage Kroger connection' })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Diagnostics' })).toBeVisible()
   await expect(page.getByText('Build', { exact: true })).toBeVisible()
   const note = page.getByRole('note')

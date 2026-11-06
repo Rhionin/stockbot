@@ -36,6 +36,18 @@ const PAIRING = formatPairingCode('23456789');
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+const krogerAppNotSetUp = (canManage = true) => json({
+  configured: false,
+  clientIdLast4: null,
+  redirectUri: 'https://app.example/cb',
+  modality: null,
+  productAccess: 'unknown',
+  status: 'not_set_up',
+  canManage,
+});
+
+const matchKrogerApp = (url: string) => /\/api\/households\/[^/]+\/kroger-app$/.test(url);
+
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   onerror: ((event: Event) => void) | null = null;
@@ -142,6 +154,7 @@ describe('household management', () => {
     ];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       calls.push(`${init?.method ?? 'GET'} ${url}`);
       if (url.includes('/members') && (init?.method === undefined)) {
         return Promise.resolve(json({ members: [
@@ -172,6 +185,7 @@ describe('household management', () => {
 
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
       }
@@ -231,6 +245,7 @@ describe('household management', () => {
     const replaceAuth = vi.fn();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
       }
@@ -262,6 +277,7 @@ describe('household management', () => {
   it('shows rename errors inline and hides rename controls from members', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'member' }] }));
       }
@@ -278,6 +294,7 @@ describe('household management', () => {
 
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
       }
@@ -302,6 +319,7 @@ describe('household management', () => {
     const operatorList = vi.fn();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/operator/households') {
         operatorList();
         return Promise.resolve(json({
@@ -346,6 +364,7 @@ describe('household management', () => {
     next.activeHouseholdId = 'hh-2';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/auth/session/household' && init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ householdId: 'hh-2' });
         return Promise.resolve(json(next));
@@ -409,6 +428,7 @@ describe('household management', () => {
   it('shows invite errors inline in the Invites section', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
       }
@@ -430,6 +450,7 @@ describe('household management', () => {
   it('opens other households from the app menu', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/providers') return Promise.resolve(json([]));
       if (url === '/api/group-suggestions') return Promise.resolve(json([]));
       if (url === '/api/build') return Promise.resolve(json({}));
@@ -457,6 +478,7 @@ describe('household management', () => {
     const auth = session('owner');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/auth/session') return Promise.resolve(json(auth));
       if (url === '/api/config') return Promise.resolve(json({ live: 'sse', minClientVersion: { expo: '1.0.0' }, entry: 'public' }));
       if (url === '/api/providers' || url === '/api/group-suggestions') return Promise.resolve(json([]));
@@ -479,6 +501,7 @@ describe('household management', () => {
   it('links to other households instead of starting another household inline', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members')) return Promise.resolve(json({ members: [] }));
       if (url === '/api/invites') return Promise.resolve(json({ invites: [] }));
       if (url === '/api/household/settings') return Promise.resolve(json({ restockMode: 'auto' }));
@@ -494,6 +517,7 @@ describe('household management', () => {
   it('renders reset links inline in Members', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
       }
@@ -513,6 +537,7 @@ describe('household management', () => {
   it('surfaces reset link errors inline in Members', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-2', email: 'bea@example.com', role: 'member' }] }));
       }
@@ -537,6 +562,7 @@ describe('household management', () => {
     next.activeHouseholdId = 'hh-2';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/auth/session/household' && init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ householdId: 'hh-2' });
         return Promise.resolve(json(next));
@@ -557,6 +583,7 @@ describe('household management', () => {
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       calls.push(`${init?.method ?? 'GET'} ${url}`);
       if (url === '/api/operator/household-invites' && init?.method === 'POST') {
         return Promise.resolve(json({ id: 'op-1', code: 'AUTO-CODE', url: 'https://app.example/invite/AUTO-CODE', email: null, role: 'owner', expiresAt: '2026-06-01T00:00:00Z' }));
@@ -584,6 +611,7 @@ describe('household management', () => {
     expect(extractInviteCode('https://stockbot.rhionin.com/invite/START-9999')).toBe('START-9999');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/households' && init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ name: 'Lake', restockMode: 'auto', inviteCode: 'START-9999' });
         return Promise.resolve(json({ id: 'hh-9', name: 'Lake', role: 'owner' }));
@@ -604,6 +632,7 @@ describe('household management', () => {
   it('shows an inline invite-not-found error when creating a household', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/households' && init?.method === 'POST') {
         return Promise.resolve(json({ error: 'missing', code: 'not_found' }, 404));
       }
@@ -626,6 +655,7 @@ describe('household management', () => {
     auth.operator = true;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/operator/household-invites' && init?.method === 'POST') {
         return Promise.resolve(json({ id: 'op-2', code: 'OP-CODE', url: 'https://app.example/invite/OP-CODE', email: null, role: 'owner', expiresAt: '2026-06-01T00:00:00Z' }));
       }
@@ -641,6 +671,7 @@ describe('household management', () => {
     auth.operator = true;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/operator/household-invites' && init?.method === 'POST') {
         return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
       }
@@ -669,6 +700,7 @@ describe('devices, pairing, and live hints', () => {
     ];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/devices' && init?.method === undefined) return Promise.resolve(json({ devices }));
       if (url === '/api/devices/hub' && init?.method === 'PATCH') {
         devices = devices.map((row) => row.id === 'hub' ? { ...row, label: 'Porch hub' } : row);
@@ -773,6 +805,7 @@ describe('devices, pairing, and live hints', () => {
   it('says when a pairing code has expired', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/devices') return Promise.resolve(json({ devices: [] }));
       if (url === '/api/devices/pair' && init?.method === 'POST') {
         return Promise.resolve(json({
@@ -825,6 +858,7 @@ describe('devices, pairing, and live hints', () => {
     let pendingLoads = 0;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/auth/session') return Promise.resolve(json(auth));
       if (url.includes('/api/scans') && url.includes('pending')) {
         pendingLoads += 1;
@@ -854,6 +888,7 @@ describe('devices, pairing, and live hints', () => {
   it('renders household scanners without breaking unmocked device fetches', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'member' }] }));
       }
@@ -875,6 +910,7 @@ describe('devices, pairing, and live hints', () => {
   it('shows scanner telemetry on the household scanners section', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url.includes('/members') && init?.method === undefined) {
         return Promise.resolve(json({ members: [{ userId: 'user-1', email: 'ada@example.com', role: 'owner' }] }));
       }
@@ -925,6 +961,7 @@ describe('devices, pairing, and live hints', () => {
     const patches: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/devices' && init?.method === undefined) return Promise.resolve(json({ devices: [row] }));
       if (url === '/api/devices/scan-1' && init?.method === 'PATCH') {
         const body = JSON.parse(String(init.body));
@@ -965,6 +1002,7 @@ describe('devices, pairing, and live hints', () => {
     });
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/devices' && init?.method === undefined) return Promise.resolve(json({ devices: [row] }));
       if (url === '/api/devices/scan-1' && init?.method === 'PATCH') {
         return Promise.resolve(json({ error: 'nope', code: 'forbidden_role' }, 403));
@@ -983,6 +1021,7 @@ describe('devices, pairing, and live hints', () => {
   it('shows pairing wifi help and opens the wall barcode sheet', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
       if (url === '/api/devices') return Promise.resolve(json({ devices: [] }));
       if (url.includes('/api/devices/pair/pair-1')) {
         return Promise.resolve(json({ pairingId: 'pair-1', status: 'pending', expiresAt: '2099-01-01T00:00:00Z' }));

@@ -433,17 +433,18 @@ test('long names wrap without horizontal overflow at 320px', async ({ page }) =>
   await saveShot(page, 'overflow-320.png')
 })
 
-test('HTTP export errors show Try again at 390 and 1280', async ({ page }) => {
+test('HTTP export errors show mapped not-configured copy at 390 and 1280', async ({ page }) => {
   for (const viewport of viewports) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await installShoppingMocks(page, {
       exportStatus: 409,
-      exportBody: { error: 'Kroger is not connected', code: 'conflict' },
+      exportBody: { error: 'Kroger is not configured', code: 'conflict' },
     })
     await openShoppingAndSend(page)
     const panel = page.getByRole('status', { name: 'Cart send result' })
-    await expect(panel.getByText('Kroger is not connected')).toBeVisible()
-    await expect(panel.getByRole('button', { name: 'Try again' })).toBeVisible()
+    await expect(panel.getByText('First, set up your store app. It takes about 10 minutes.')).toBeVisible()
+    await expect(panel.getByRole('link', { name: 'Open store app setup' })).toBeVisible()
+    await expect(panel.getByText('Kroger is not configured')).toHaveCount(0)
   }
 })
 

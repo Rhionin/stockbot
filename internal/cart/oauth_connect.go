@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-// OAuthConnectInput carries deployment and registry state for starting Kroger OAuth.
+// OAuthConnectInput carries deployment state for starting Kroger OAuth.
 type OAuthConnectInput struct {
-	KrogerDisabled        bool
-	CredentialsConfigured bool
+	KrogerDisabled bool
 }
 
 // OAuthAuthorizeAllowed reports whether this household may start GET .../authorize.
@@ -22,10 +22,8 @@ func OAuthAuthorizeAllowed(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 	if in.KrogerDisabled {
 		return false, nil
 	}
-	if !in.CredentialsConfigured {
+	if db == nil {
 		return false, nil
 	}
-	_ = ctx
-	_ = db
-	return true, nil
+	return appcred.NewVault(db).HasApp(ctx, scope, "kroger")
 }

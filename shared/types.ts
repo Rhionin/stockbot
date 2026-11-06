@@ -2,7 +2,9 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
-import type { ScanListEntry } from './contract';
+import type { KrogerAppDisabled, ScanListEntry } from './contract';
+
+export type { KrogerAppDisabled };
 
 export type ExternalSource = 'openfoodfacts' | 'openproductsfacts' | 'openbeautyfacts' | 'openpetfoodfacts';
 
@@ -283,6 +285,54 @@ export interface ProviderCredentials {
   modality: string;
   secretSet: boolean;
   source: 'saved' | 'environment' | 'none';
+}
+
+export type KrogerAppStatus =
+  | 'not_set_up'
+  | 'ready_to_connect'
+  | 'connected'
+  | 'needs_reconnect';
+
+export type KrogerAppProductAccess = 'true' | 'false' | 'unknown';
+
+export type KrogerAppTestCode =
+  | 'wrong_keys'
+  | 'redirect_mismatch'
+  | 'kroger_unreachable'
+  | 'no_product_access';
+
+export interface KrogerApp {
+  configured: boolean;
+  clientIdLast4: string | null;
+  redirectUri: string | null;
+  modality: string | null;
+  productAccess: KrogerAppProductAccess;
+  status: KrogerAppStatus;
+  canManage: boolean;
+}
+
+export type KrogerAppGetResponse = KrogerApp | KrogerAppDisabled;
+
+export interface KrogerAppTest {
+  ok: boolean;
+  code?: KrogerAppTestCode;
+}
+
+export interface KrogerAppSaved extends KrogerApp {
+  test: KrogerAppTest;
+}
+
+export interface HouseholdStore {
+  id: string;
+  name: string;
+  linkedProvider: string | null;
+}
+
+export interface StoresListResponse {
+  stores: HouseholdStore[];
+  defaultStoreId: string | null;
+  lookupsEnabled: boolean;
+  canConnect: boolean;
 }
 
 export interface SupplySettings {

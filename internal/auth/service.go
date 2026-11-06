@@ -27,11 +27,11 @@ type Service struct {
 	healthMu    sync.Mutex
 	setupHealth string
 
-	hints         HintBus
-	live          liveKicker
-	operatorPush  OperatorPush
-	barcodeLookup func(ctx context.Context, householdID, scanID, barcode string)
-	productLookup     DeviceProductResolver
+	hints               HintBus
+	live                liveKicker
+	operatorPush        OperatorPush
+	barcodeLookup       func(ctx context.Context, householdID, scanID, barcode string)
+	productLookup       DeviceProductResolver
 	deviceScanProcessor DeviceScanProcessor
 	deviceIngestEvents  DeviceIngestEventPublisher
 }

@@ -2,8 +2,11 @@ import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
 import { resetSharedState } from './helpers'
+import { install, resetStage, stage } from './householdStageFixtures'
+import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
 
 const minimumContrast = 4.5
+const storeAppFieldErrorMinimumContrast = 4.6
 
 // Deliberately separate from src/contrast.ts, so a wrong gamma there cannot
 // also satisfy this check.
@@ -87,12 +90,35 @@ async function expectContrast(locator: Locator) {
   return { ...sample, ratio: Math.round(ratio * 100) / 100 }
 }
 
+async function expectRenderedContrast(locator: Locator, required: number) {
+  const sample = await paint(locator)
+  const ratio = contrast(sample.foreground, sample.background)
+  expect(ratio, JSON.stringify(sample)).toBeGreaterThanOrEqual(required)
+  return { ...sample, ratio: Math.round(ratio * 100) / 100 }
+}
+
 async function shot(locator: Locator, testInfo: TestInfo, name: string) {
   await locator.screenshot({ path: testInfo.outputPath(`${name}.png`) })
 }
 
 function colorContrast(page: Page) {
   return new AxeBuilder({ page }).withRules(['color-contrast', 'button-name', 'landmark-no-duplicate-banner'])
+}
+
+function axeOnDialog(page: Page) {
+  return new AxeBuilder({ page }).include('[role="dialog"]')
+}
+
+async function waitForStoreAppDialogSettled(page: Page, dialog: Locator) {
+  await expect(dialog).toBeVisible()
+  await page.waitForFunction(() => {
+    const content = document.querySelector('.store-app-setup-modal .mantine-Modal-content')
+    if (!(content instanceof HTMLElement)) return false
+    const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
+    return getComputedStyle(content).opacity === '1'
+      && header instanceof HTMLElement
+      && header.getAttribute('role') === 'group'
+  })
 }
 
 async function expectAxe(page: Page, where: string) {
@@ -294,42 +320,89 @@ test.describe('text contrast on each page', () => {
   }
 })
 
-test.describe('text contrast in the Kroger dialog', () => {
-  test.beforeAll(async ({ request }) => {
-    await resetSharedState(request)
-    await seedShopping(request)
-    const saved = await request.put('/api/providers/kroger/credentials', {
-      data: {
-        clientId: 'contrast-client',
-        clientSecret: 'contrast-secret',
-        redirectUri: 'http://127.0.0.1:5173/shopping',
-        modality: 'PICKUP',
-      },
-    })
-    expect(saved.ok()).toBe(true)
+async function stubStoreAppHousehold(page: Page, appBody: Record<string, unknown>) {
+  await page.route('**/api/households/*/kroger-app', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(appBody) })
+    }
+    return route.continue()
   })
+}
 
-  test.afterAll(async ({ request }) => {
-    await request.delete('/api/providers/kroger/credentials')
-    await resetSharedState(request)
-  })
-
+test.describe('text contrast in the store app setup modal', () => {
   for (const { width, mode } of dialogCases) {
-    test(`dialog ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
-      await openThemed(page, '/shopping', mode.app, mode.os, width)
-      await page.getByRole('button', { name: 'Menu' }).click()
-      await page.getByRole('menuitem', { name: 'Manage Kroger connection' }).click()
-      const dialog = page.getByRole('dialog', { name: 'Kroger connection' })
-      await expect(dialog).toBeVisible()
-      await expect(dialog).toHaveCSS('opacity', '1')
-      const body = dialog.getByText('A client secret is saved and is not shown.')
-      await expect(body).toBeVisible()
-      const sample = await expectContrast(body)
-      if (mode.app === mode.os) await shot(body, testInfo, `dialog-body-${mode.app}-${width}`)
-      const dialogAxe = await colorContrast(page).include('[role="dialog"]').analyze()
-      expect(dialogAxe.violations, violationText(dialogAxe.violations)).toEqual([])
-      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'dialog-body', ...mode, width, ...sample }], null, 2))
-      await page.getByRole('button', { name: 'Close' }).click()
+    test(`store app row ${mode.app}/${mode.os} ${width}`, async ({ page }, testInfo) => {
+      await stubStoreAppHousehold(page, {
+        configured: true,
+        clientIdLast4: '1234',
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'ready_to_connect',
+        canManage: true,
+      })
+      await openThemed(page, '/household', mode.app, mode.os, width)
+      const row = page.getByRole('heading', { name: 'Store app' })
+      await expect(row).toBeVisible()
+      const status = page.getByText('Ready to connect').or(page.getByText('Connected')).first()
+      await expect(status).toBeVisible()
+      const sample = await expectContrast(status)
+      if (mode.app === mode.os) await shot(status, testInfo, `store-app-status-${mode.app}-${width}`)
+      writeFileSync(testInfo.outputPath('ratios.json'), JSON.stringify([{ name: 'store-app-status', ...mode, width, ...sample }], null, 2))
+    })
+
+    test(`store app setup dialog axe ${mode.app}/${mode.os} ${width}`, async ({ page }) => {
+      await stubStoreAppHousehold(page, {
+        configured: false,
+        clientIdLast4: null,
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'not_set_up',
+        canManage: true,
+      })
+      await openThemed(page, '/household', mode.app, mode.os, width)
+      await page.getByRole('button', { name: 'Set up' }).click()
+      const dialog = page.getByRole('dialog', { name: 'Set up your store app' })
+      await waitForStoreAppDialogSettled(page, dialog)
+      const bodySample = dialog.getByText(krogerAppCopy.s1BodyFallback).first()
+      await expect(bodySample).toBeVisible()
+      await expectContrast(bodySample)
+      const dialogResult = await axeOnDialog(page).analyze()
+      expect(
+        dialogResult.violations,
+        `store app setup modal ${mode.app}/${mode.os} ${width}\n${violationText(dialogResult.violations)}`,
+      ).toEqual([])
+    })
+  }
+})
+
+test.describe('store app step 6 field error contrast on modal paper', () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`rendered under-field error is at least ${storeAppFieldErrorMinimumContrast}:1 in ${scheme} mode`, async ({ page }) => {
+      resetStage()
+      stage.kind = 'account'
+      stage.householdName = 'Test Household'
+      stage.role = 'owner'
+      await install(page)
+      await stubStoreAppHousehold(page, {
+        configured: true,
+        clientIdLast4: '1234',
+        redirectUri: 'https://test-household.example/cb',
+        modality: 'PICKUP',
+        productAccess: 'unknown',
+        status: 'connected',
+        canManage: true,
+      })
+      await openThemed(page, '/household', scheme, scheme, 390)
+      await page.getByRole('button', { name: krogerAppCopy.menuMore }).click()
+      await page.getByRole('menuitem', { name: krogerAppCopy.menuReplace }).click()
+      const dialog = page.getByRole('dialog', { name: krogerAppCopy.menuReplace })
+      await waitForStoreAppDialogSettled(page, dialog)
+      await page.getByRole('button', { name: krogerAppCopy.s6Test }).click()
+      const fieldError = dialog.locator('.mantine-InputWrapper-error').first()
+      await expect(fieldError).toBeVisible()
+      await expectRenderedContrast(fieldError, storeAppFieldErrorMinimumContrast)
     })
   }
 })

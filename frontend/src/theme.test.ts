@@ -50,6 +50,18 @@ describe('theme', () => {
     expect(token(variables.light['--mantine-color-red-light-color'], fullTheme.colors)).toBe('#c92a2a');
   });
 
+  it('pins --mantine-color-error for under-field errors at WCAG AA on page backgrounds', () => {
+    const variables = cssVariablesResolver(fullTheme);
+    const paper = fullTheme.colors.dark[7];
+    const lightError = variables.light['--mantine-color-error']!;
+    const darkError = variables.dark['--mantine-color-error']!;
+    expect(lightError.toLowerCase()).toBe('#dc2626');
+    expect(contrastRatio(lightError, fullTheme.white)).toBeGreaterThanOrEqual(4.6);
+    expect(darkError?.startsWith('#')).toBe(true);
+    expect(contrastRatio(darkError!, paper)).toBeGreaterThanOrEqual(4.5);
+    expect(relativeLuminance(darkError!)).toBeLessThanOrEqual(relativeLuminance('#fa5252') + 1e-6);
+  });
+
   it('pins error red ink to #E03131 or darker in light mode and readable ink on dark paper', () => {
     const variables = cssVariablesResolver(fullTheme);
     const paper = fullTheme.colors.dark[7];
@@ -63,8 +75,8 @@ describe('theme', () => {
     for (const key of redKeys) {
       const lightInk = variables.light[key];
       expect(lightInk?.startsWith('#')).toBe(true);
-      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(4.5);
-      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(contrastRatio('#e03131', fullTheme.white));
+      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(4.6);
+      expect(contrastRatio(lightInk!, fullTheme.white)).toBeGreaterThanOrEqual(contrastRatio('#dc2626', fullTheme.white));
     }
 
     const darkTextKeys = ['--mantine-color-red-text', '--mantine-color-red-outline'] as const;

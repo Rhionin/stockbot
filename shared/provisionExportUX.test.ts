@@ -26,7 +26,10 @@ import {
   provisionSummaryCopy,
   provisionWholeRequestActionLabel,
   provisionWholeRequestMessage,
+  exportWholeRequestErrorFromApi,
 } from './provisionExportUX';
+import { CODE_CONFLICT, CODE_PROVIDER_UNAVAILABLE, CODE_RECONNECT_REQUIRED, hostedErrorSentence } from './contract';
+import { krogerAppCopy } from './krogerAppCopy';
 
 // The #484 ProvisionReport type no longer declares the legacy top-level `error`; old servers can still send it.
 const legacyError = (error: string) => ({ error }) as unknown as Partial<ProvisionReport>;
@@ -337,6 +340,48 @@ describe('provisionNothingSent copy (#486)', () => {
 describe('check button aria labels', () => {
   it('starts with the visible phrase', () => {
     expect(provisionCheckInCartAria('Oats')).toBe("It's in my cart: Oats");
+  });
+});
+
+describe('exportWholeRequestErrorFromApi (B11a send)', () => {
+  it('(a) maps store_disabled by code', () => {
+    expect(exportWholeRequestErrorFromApi({ code: 'store_disabled', message: 'ignored' })).toBe('store_disabled');
+  });
+
+  it('(b) maps conflict when the household has no store app', () => {
+    expect(exportWholeRequestErrorFromApi({
+      code: CODE_CONFLICT,
+      message: 'Kroger is not configured',
+    })).toBe('not_configured');
+  });
+
+  it('leaves other conflict sentences unmapped', () => {
+    expect(exportWholeRequestErrorFromApi({
+      code: CODE_CONFLICT,
+      message: 'Kroger is not connected',
+    })).toBeUndefined();
+  });
+
+  it('still maps reconnect and provider_unavailable', () => {
+    expect(exportWholeRequestErrorFromApi({ code: CODE_RECONNECT_REQUIRED, message: 'x' })).toBe('reconnect_required');
+    expect(exportWholeRequestErrorFromApi({ code: CODE_PROVIDER_UNAVAILABLE, message: 'x' })).toBe('provider_unavailable');
+  });
+});
+
+describe('provisionWholeRequestMessage (store send guards)', () => {
+  it('(a) uses the hosted store_disabled sentence', () => {
+    expect(provisionWholeRequestMessage('store_disabled', 'Kroger')).toBe(hostedErrorSentence('store_disabled'));
+  });
+
+  it('(b) uses F9 copy for not_configured admin vs member', () => {
+    expect(provisionWholeRequestMessage('not_configured', 'Kroger', { householdAdmin: true })).toBe(krogerAppCopy.linkNeed);
+    expect(provisionWholeRequestMessage('not_configured', 'Kroger', { householdAdmin: false })).toBe(krogerAppCopy.askAdmin);
+  });
+
+  it('offers setup navigation only for admins', () => {
+    expect(provisionWholeRequestActionLabel('not_configured', 'Kroger', { householdAdmin: true })).toBe(krogerAppCopy.openSetup);
+    expect(provisionWholeRequestActionLabel('not_configured', 'Kroger', { householdAdmin: false })).toBeUndefined();
+    expect(provisionWholeRequestActionLabel('store_disabled', 'Kroger')).toBeUndefined();
   });
 });
 
