@@ -16,6 +16,15 @@ const krogerLegacyConnectionCleanupKey = "kroger_legacy_connection_cleanup_v1"
 
 const legacyKrogerConnectionID = "user-1:kroger"
 
+const expectedLegacyKrogerUserID = "user-1"
+
+// krogerLegacyCleanupCommit isolates Commit for tests that inject a commit-stage failure.
+var krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
+
+// krogerLegacyCleanupLogSuccess records successful duplicate removal or rekey (after commit).
+// Tests may replace this to assert logging is not invoked on rollback.
+var krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
+
 // RunKrogerLegacyConnectionCleanup removes duplicate legacy Kroger connection rows
 // (PRIMARY KEY id user-1:kroger) when a household-scoped row already exists, or
 // re-keys a lone legacy row to the canonical id and user_id (householdID:kroger
@@ -43,16 +52,15 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 	var legacyHousehold, legacyUser string
 	rowErr := tx.QueryRowContext(ctx, `
 		SELECT pc.household_id, pc.user_id FROM provider_connections pc
-		WHERE pc.id = ? AND pc.provider_id = 'kroger'
-		  AND pc.household_id = pc.household_id`, legacyKrogerConnectionID).Scan(&legacyHousehold, &legacyUser)
+		WHERE pc.id = ? AND pc.provider_id = 'kroger'`, legacyKrogerConnectionID).Scan(&legacyHousehold, &legacyUser)
 	if rowErr == sql.ErrNoRows {
 		if err := insertCleanupFlag(ctx, tx); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
+		if err := krogerLegacyCleanupCommit(tx); err != nil {
 			return err
 		}
-		log.Println("kroger legacy connection cleanup: no legacy row; marked complete")
+		krogerLegacyCleanupLogSuccess("kroger legacy connection cleanup: no legacy row; marked complete")
 		return nil
 	}
 	if rowErr != nil {
@@ -73,6 +81,10 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("kroger legacy connection cleanup: %w", err)
 	}
 
+	if legacyUser != expectedLegacyKrogerUserID {
+		return fmt.Errorf("kroger legacy connection cleanup: legacy row user_id is not the expected identity")
+	}
+
 	var canonCount int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM provider_connections
@@ -84,17 +96,19 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("kroger legacy connection cleanup: multiple kroger rows for one household; manual review required")
 	}
 
+	wantCanonID := legacyHousehold + ":kroger"
+	var successMsg string
+
 	if canonCount == 1 {
-		var canonID, canonHousehold string
+		var canonID, canonHousehold, canonUser, canonProvider string
 		if err := tx.QueryRowContext(ctx, `
-			SELECT id, household_id FROM provider_connections
+			SELECT id, household_id, user_id, provider_id FROM provider_connections
 			WHERE provider_id = 'kroger' AND household_id = ? AND id != ?`,
-			legacyHousehold, legacyKrogerConnectionID).Scan(&canonID, &canonHousehold); err != nil {
+			legacyHousehold, legacyKrogerConnectionID).Scan(&canonID, &canonHousehold, &canonUser, &canonProvider); err != nil {
 			return fmt.Errorf("kroger legacy connection cleanup: read canonical row: %w", err)
 		}
-		wantID := legacyHousehold + ":kroger"
-		if canonID != wantID || canonHousehold != legacyHousehold {
-			return fmt.Errorf("kroger legacy connection cleanup: canonical row id or household does not match expected form")
+		if canonProvider != "kroger" || canonHousehold != legacyHousehold || canonUser != legacyHousehold || canonID != wantCanonID {
+			return fmt.Errorf("kroger legacy connection cleanup: canonical row identity does not match expected form")
 		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM provider_connections
@@ -102,16 +116,13 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 			legacyKrogerConnectionID, legacyHousehold); err != nil {
 			return fmt.Errorf("kroger legacy connection cleanup: delete duplicate legacy row: %w", err)
 		}
-		log.Printf("kroger legacy connection cleanup: removed duplicate legacy row for household %s", legacyHousehold)
+		successMsg = fmt.Sprintf("kroger legacy connection cleanup: removed duplicate legacy row for household %s", legacyHousehold)
 	} else {
-		if legacyUser != "user-1" {
-			return fmt.Errorf("kroger legacy connection cleanup: lone legacy row has unexpected user_id")
-		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE provider_connections
 			SET id = ?, user_id = ?
 			WHERE id = ? AND provider_id = 'kroger' AND household_id = ?`,
-			legacyHousehold+":kroger", legacyHousehold, legacyKrogerConnectionID, legacyHousehold)
+			wantCanonID, legacyHousehold, legacyKrogerConnectionID, legacyHousehold)
 		if err != nil {
 			return fmt.Errorf("kroger legacy connection cleanup: rekey legacy row: %w", err)
 		}
@@ -119,7 +130,7 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 		if n != 1 {
 			return fmt.Errorf("kroger legacy connection cleanup: rekey expected 1 row, got %d", n)
 		}
-		log.Printf("kroger legacy connection cleanup: rekeyed lone legacy row for household %s", legacyHousehold)
+		successMsg = fmt.Sprintf("kroger legacy connection cleanup: rekeyed lone legacy row for household %s", legacyHousehold)
 	}
 
 	var badHouseholds int
@@ -148,8 +159,11 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 	if err := insertCleanupFlag(ctx, tx); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := krogerLegacyCleanupCommit(tx); err != nil {
 		return err
+	}
+	if successMsg != "" {
+		krogerLegacyCleanupLogSuccess(successMsg)
 	}
 	return nil
 }

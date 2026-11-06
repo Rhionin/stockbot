@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,20 +74,102 @@ func TestKrogerLegacyCleanupReadErrorSurfaces(t *testing.T) {
 	}
 }
 
-func TestKrogerLegacyCleanupCommitFailureNoFlag(t *testing.T) {
+func TestKrogerLegacyCleanupCommitHookFailureNoFlagNoLegacyPath(t *testing.T) {
+	t.Cleanup(func() {
+		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
+		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
+	})
+	var successCalls []string
+	krogerLegacyCleanupLogSuccess = func(msg string) { successCalls = append(successCalls, msg) }
 	db := openCutoverDB(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`PRAGMA query_only = ON`); err != nil {
+	krogerLegacyCleanupCommit = func(*sql.Tx) error { return fmt.Errorf("inject commit failure") }
+	err := RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "inject commit failure") {
+		t.Fatalf("err = %v", err)
+	}
+	var flag sql.NullString
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag); err != sql.ErrNoRows {
+		if err == nil && flag.Valid {
+			t.Fatalf("flag should be absent, got %q", flag.String)
+		}
+		if err != nil && err != sql.ErrNoRows {
+			t.Fatal(err)
+		}
+	}
+	if len(successCalls) != 0 {
+		t.Fatalf("expected no success logs before commit, got %v", successCalls)
+	}
+}
+
+func TestKrogerLegacyCleanupCommitHookFailureNoFlagDuplicatePathRetrySucceeds(t *testing.T) {
+	t.Cleanup(func() {
+		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
+		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
+	})
+	var successCalls []string
+	var mu sync.Mutex
+	krogerLegacyCleanupLogSuccess = func(msg string) {
+		mu.Lock()
+		successCalls = append(successCalls, msg)
+		mu.Unlock()
+	}
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := RunKrogerLegacyConnectionCleanup(ctx, db)
-	if err == nil {
-		t.Fatal("expected error when commit cannot write (query_only)")
+	hid := primary.HouseholdID()
+	when := "2026-04-01T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES (?, ?, ?, 'kroger', 'connected', 'canon', ?)`, hid+":kroger", hid, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	var commitCalls int
+	krogerLegacyCleanupCommit = func(tx *sql.Tx) error {
+		commitCalls++
+		if commitCalls == 1 {
+			return fmt.Errorf("inject commit failure at cleanup commit")
+		}
+		return tx.Commit()
+	}
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "inject commit failure") {
+		t.Fatalf("first run err = %v", err)
+	}
+	mu.Lock()
+	logN := len(successCalls)
+	mu.Unlock()
+	if logN != 0 {
+		t.Fatalf("expected no success logs on rolled-back commit, got %v", successCalls)
 	}
 	var flag sql.NullString
 	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
 	if flag.Valid {
 		t.Fatal("flag must not be set when commit fails")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger'`, hid).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("expected 2 rows after failed commit, got %d err=%v", n, err)
+	}
+	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyCleanupFlag(t, db)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger'`, hid).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("after retry want 1 row, got %d err=%v", n, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(successCalls) != 1 || !strings.Contains(successCalls[0], "removed duplicate") {
+		t.Fatalf("expected one post-commit success log, got %v", successCalls)
 	}
 }
 
@@ -131,6 +216,7 @@ func TestKrogerLegacyCleanupDuplicateDeletesLegacyPreservesCanonical(t *testing.
 		legacyKrogerConnectionID, hid, legacyAccess, wantScope, when); err != nil {
 		t.Fatal(err)
 	}
+	canonBefore := connectionSnapshot(t, db, canonID)
 
 	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
 		t.Fatal(err)
@@ -141,13 +227,8 @@ func TestKrogerLegacyCleanupDuplicateDeletesLegacyPreservesCanonical(t *testing.
 	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE provider_id = 'kroger' AND household_id = ?`, hid).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("want 1 kroger row, got n=%d err=%v", n, err)
 	}
-	var gotAccess, gotRefresh string
-	if err := db.QueryRow(`
-		SELECT access_token, refresh_token FROM provider_connections WHERE id = ?`, canonID).Scan(&gotAccess, &gotRefresh); err != nil {
-		t.Fatal(err)
-	}
-	if gotAccess != wantAccess || gotRefresh != wantRefresh {
-		t.Fatalf("canonical tokens overwritten: access=%q refresh=%q", gotAccess, gotRefresh)
+	if connectionSnapshot(t, db, canonID) != canonBefore {
+		t.Fatal("canonical row payload changed when deleting duplicate legacy")
 	}
 }
 
@@ -175,6 +256,7 @@ func TestKrogerLegacyCleanupLegacyOnlyRekeysPreservesPayload(t *testing.T) {
 		legacyKrogerConnectionID, hid, wantState, wantAccess, wantRefresh, when, when, wantKey, wantScope, when); err != nil {
 		t.Fatal(err)
 	}
+	legacyBefore := connectionSnapshot(t, db, legacyKrogerConnectionID)
 
 	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
 		t.Fatal(err)
@@ -199,12 +281,9 @@ func TestKrogerLegacyCleanupLegacyOnlyRekeysPreservesPayload(t *testing.T) {
 	if conn.AppKey != wantKey || conn.AuthAppKey != "ak1" || conn.AuthReturn != "ret-shop" || conn.GrantedScope != wantScope {
 		t.Fatalf("auth fields mismatch after rekey")
 	}
-	var rowID, rowUser string
-	if err := db.QueryRow(`SELECT id, user_id FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger'`, hid).Scan(&rowID, &rowUser); err != nil {
-		t.Fatal(err)
-	}
-	if rowID != hid+":kroger" || rowUser != hid {
-		t.Fatalf("id/user_id not canonical: id=%q user_id=%q", rowID, rowUser)
+	rowAfter := connectionSnapshot(t, db, hid+":kroger")
+	if connectionPayloadOnly(legacyBefore) != connectionPayloadOnly(rowAfter) {
+		t.Fatalf("rekey changed non-id columns: before=\n%s\nafter=\n%s", legacyBefore, rowAfter)
 	}
 }
 
@@ -247,6 +326,8 @@ func TestKrogerLegacyCleanupDoesNotTouchOtherHouseholdsOrProviders(t *testing.T)
 		VALUES (?, ?, ?, 'instacart', 'connected', 'inst-1', ?)`, secondary+":instacart", secondary, secondary, when); err != nil {
 		t.Fatal(err)
 	}
+	secKRSnap := connectionSnapshot(t, db, secondary+":kroger")
+	secInstSnap := connectionSnapshot(t, db, secondary+":instacart")
 
 	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
 		t.Fatal(err)
@@ -259,9 +340,11 @@ func TestKrogerLegacyCleanupDoesNotTouchOtherHouseholdsOrProviders(t *testing.T)
 	if pCount != 1 || sKR != 1 || sInst != 1 {
 		t.Fatalf("counts primary_kroger=%d secondary_kroger=%d instacart=%d", pCount, sKR, sInst)
 	}
-	var gotSec string
-	if err := db.QueryRow(`SELECT access_token FROM provider_connections WHERE id = ?`, secondary+":kroger").Scan(&gotSec); err != nil || gotSec != secKR {
-		t.Fatalf("secondary kroger token changed: %q err=%v", gotSec, err)
+	if connectionSnapshot(t, db, secondary+":kroger") != secKRSnap {
+		t.Fatal("secondary kroger row changed")
+	}
+	if connectionSnapshot(t, db, secondary+":instacart") != secInstSnap {
+		t.Fatal("secondary instacart row changed")
 	}
 }
 
@@ -398,6 +481,53 @@ func TestKrogerLegacyCleanupFailureAtFlagRollsBack(t *testing.T) {
 	}
 }
 
+func TestKrogerLegacyCleanupPostCheckDuplicateHouseholdsFails(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	when := "2026-04-01T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES (?, ?, ?, 'kroger', 'connected', 'canon', ?)`, hid+":kroger", hid, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	injectedUser := "01907777-7777-7000-8000-000000000088"
+	triggerSQL := fmt.Sprintf(`
+		CREATE TRIGGER kroger_cleanup_inject_dup AFTER DELETE ON provider_connections
+		WHEN OLD.id = 'user-1:kroger' AND OLD.provider_id = 'kroger'
+		BEGIN
+			INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
+			VALUES ('inj-krog', '%s', OLD.household_id, 'kroger', 'connected', '%s');
+		END`, injectedUser, when)
+	if _, err := db.Exec(triggerSQL); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DROP TRIGGER IF EXISTS kroger_cleanup_inject_dup`) })
+
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "post-check found multiple kroger rows for a household") {
+		t.Fatalf("err = %v", err)
+	}
+	var flag sql.NullString
+	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
+	if flag.Valid {
+		t.Fatal("flag must not be set when post-check fails")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger'`, hid).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("expected transaction rollback preserving 2 rows, got %d err=%v", n, err)
+	}
+}
+
 func TestKrogerLegacyCleanupFailureOnDeleteRollsBack(t *testing.T) {
 	db := openCutoverDB(t)
 	ctx := context.Background()
@@ -516,12 +646,192 @@ func TestKrogerLegacyCleanupLoneLegacyUnexpectedUserFails(t *testing.T) {
 	when := "2026-04-01T00:00:00Z"
 	if _, err := db.Exec(`
 		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
-		VALUES (?, ?, ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, "user-wrong", hid, when); err != nil {
+		VALUES (?, 'user-wrong', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
 		t.Fatal(err)
 	}
 	err = RunKrogerLegacyConnectionCleanup(ctx, db)
 	if err == nil {
 		t.Fatal("expected failure when lone legacy row user_id is not user-1")
+	}
+}
+
+func TestKrogerLegacyCleanupDuplicateRejectsMismatchedLegacyUser(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	when := "2026-04-01T00:00:00Z"
+	canonID := hid + ":kroger"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES (?, ?, ?, 'kroger', 'connected', 'canon', ?)`, canonID, hid, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES (?, 'user-wrong', ?, 'kroger', 'connected', 'legacy', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	legacySnap := connectionSnapshot(t, db, legacyKrogerConnectionID)
+	canonSnap := connectionSnapshot(t, db, canonID)
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil {
+		t.Fatal("expected failure when legacy user_id is not user-1 on duplicate path")
+	}
+	if connectionSnapshot(t, db, legacyKrogerConnectionID) != legacySnap {
+		t.Fatal("legacy row mutated on rejection")
+	}
+	if connectionSnapshot(t, db, canonID) != canonSnap {
+		t.Fatal("canonical row mutated on rejection")
+	}
+	var flag sql.NullString
+	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
+	if flag.Valid {
+		t.Fatal("flag must not be set on failure")
+	}
+}
+
+func TestKrogerLegacyCleanupDuplicateRejectsBadCanonicalIdentity(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	when := "2026-04-01T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES ('wrong-id', ?, ?, 'kroger', 'connected', 'tok', ?)`, hid, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	beforeLegacy := connectionSnapshot(t, db, legacyKrogerConnectionID)
+	beforeNonLegacy := connectionSnapshot(t, db, "wrong-id")
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil {
+		t.Fatal("expected failure when canonical id is not household:kroger")
+	}
+	if connectionSnapshot(t, db, legacyKrogerConnectionID) != beforeLegacy {
+		t.Fatal("legacy row changed")
+	}
+	if connectionSnapshot(t, db, "wrong-id") != beforeNonLegacy {
+		t.Fatal("non-legacy row changed")
+	}
+	var flag sql.NullString
+	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
+	if flag.Valid {
+		t.Fatal("flag must not be set")
+	}
+}
+
+func TestKrogerLegacyCleanupFailsClosedThreeKrogerRowsSameHousehold(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	// Third row must use a different user_id — UNIQUE(user_id, provider_id).
+	otherUser := "01907777-7777-7000-8000-000000000099"
+	when := "2026-04-01T00:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES (?, ?, ?, 'kroger', 'connected', 'a', ?)`, hid+":kroger", hid, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, access_token, updated_at)
+		VALUES ('extra-kroger-2', ?, ?, 'kroger', 'connected', 'b', ?)`, otherUser, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
+		t.Fatal(err)
+	}
+	snaps := map[string]string{
+		legacyKrogerConnectionID: connectionSnapshot(t, db, legacyKrogerConnectionID),
+		hid + ":kroger":          connectionSnapshot(t, db, hid+":kroger"),
+		"extra-kroger-2":         connectionSnapshot(t, db, "extra-kroger-2"),
+	}
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil {
+		t.Fatal("expected error with three kroger rows for one household")
+	}
+	for id, want := range snaps {
+		if connectionSnapshot(t, db, id) != want {
+			t.Fatalf("row %q mutated on failure", id)
+		}
+	}
+	var flag sql.NullString
+	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
+	if flag.Valid {
+		t.Fatal("flag must not be set")
+	}
+}
+
+func TestKrogerLegacyCleanupCommitHookFailureRekeyRollsBackAllColumns(t *testing.T) {
+	t.Cleanup(func() {
+		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
+		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
+	})
+	var successCalls []string
+	krogerLegacyCleanupLogSuccess = func(msg string) { successCalls = append(successCalls, msg) }
+	var commitCalls int
+	krogerLegacyCleanupCommit = func(tx *sql.Tx) error {
+		commitCalls++
+		if commitCalls == 1 {
+			return fmt.Errorf("inject commit failure rekey")
+		}
+		return tx.Commit()
+	}
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	when := "2026-03-02T15:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections
+			(id, user_id, household_id, provider_id, state, access_token, refresh_token,
+			 access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', 'acc', 'ref', ?, 'pend', ?, 'apk', 'aak', 'ret', 'scope', ?)`,
+		legacyKrogerConnectionID, hid, when, when, when); err != nil {
+		t.Fatal(err)
+	}
+	wantSnap := connectionSnapshot(t, db, legacyKrogerConnectionID)
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "inject commit failure rekey") {
+		t.Fatalf("err = %v", err)
+	}
+	if connectionSnapshot(t, db, legacyKrogerConnectionID) != wantSnap {
+		t.Fatal("legacy row changed after failed commit (expected full rollback)")
+	}
+	if len(successCalls) != 0 {
+		t.Fatalf("unexpected success logs: %v", successCalls)
+	}
+	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyCleanupFlag(t, db)
+	if connectionSnapshot(t, db, hid+":kroger") == wantSnap {
+		t.Fatal("rekey should have changed id/user_id after success")
+	}
+	wantPayload := connectionPayloadOnly(wantSnap)
+	gotPayload := connectionPayloadOnly(connectionSnapshot(t, db, hid+":kroger"))
+	if wantPayload != gotPayload {
+		t.Fatalf("payload not preserved after successful rekey retry: want %q got %q", wantPayload, gotPayload)
 	}
 }
 
@@ -621,6 +931,16 @@ func nullable(ns sql.NullString) string {
 		return "\\N"
 	}
 	return ns.String
+}
+
+// connectionPayloadOnly returns the pipe-delimited snapshot with id and user_id removed
+// (first two fields), so rekey can be checked without hand-editing strings.
+func connectionPayloadOnly(snapshot string) string {
+	parts := strings.Split(snapshot, "|")
+	if len(parts) < 3 {
+		return snapshot
+	}
+	return strings.Join(parts[2:], "|")
 }
 
 func assertLegacyCleanupFlag(t *testing.T, db *sql.DB) {
