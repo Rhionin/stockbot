@@ -16,13 +16,13 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@mantine/core": "^9.7.3",
-    "@mantine/notifications": "^9.7.3",
+    "@mantine/core": "^9.7.4",
+    "@mantine/notifications": "^9.7.4",
     "@zxing/library": "^0.23.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.4"
+    "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
@@ -37,7 +37,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "fast-check": "4.10.2",
@@ -46,7 +46,7 @@
     "pdfjs-dist": "^6.4.299",
     "pngjs": "^7.0.0",
     "typescript": "~6.0.2",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vite": "^8.3.5",
     "vitest": "5.0.5"
   }
