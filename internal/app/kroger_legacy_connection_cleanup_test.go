@@ -785,6 +785,64 @@ func TestKrogerLegacyCleanupDuplicateRejectsBadCanonicalIdentity(t *testing.T) {
 	}
 }
 
+// TestKrogerLegacyCleanupDuplicateRejectsWrongCanonicalUserID guards the duplicate-path check that
+// canonical user_id must equal household_id (expected form). If only canonUser is removed from that
+// condition in RunKrogerLegacyConnectionCleanup, cleanup would incorrectly delete the legacy row while
+// leaving a malformed canonical row; this test fails closed and requires both full snapshots unchanged.
+func TestKrogerLegacyCleanupDuplicateRejectsWrongCanonicalUserID(t *testing.T) {
+	db := openCutoverDB(t)
+	ctx := context.Background()
+	primary, err := auth.PrimaryScope(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := primary.HouseholdID()
+	when := "2026-05-01T12:00:00Z"
+	canonID := hid + ":kroger"
+	const (
+		wantActorCanon  = "actor-audit-canon-wrong-user-1"
+		wantActorLegacy = "actor-audit-legacy-user-1"
+	)
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections
+			(id, user_id, household_id, provider_id, state, access_token, refresh_token,
+			 access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, actor_user_id, updated_at)
+		VALUES (?, 'wrong-canonical-user', ?, 'kroger', 'connected', 'CANON-ACC', 'CANON-REF', ?,
+		        'canon-auth', ?, 'CANON-APK', 'CANON-AAK', 'CANON-RET', 'canon.scope', ?, ?)`,
+		canonID, hid, when, when, wantActorCanon, when); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO provider_connections
+			(id, user_id, household_id, provider_id, state, access_token, refresh_token,
+			 access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, actor_user_id, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', 'LEG-ACC', 'LEG-REF', ?,
+		        'leg-auth', ?, 'LEG-APK', 'LEG-AAK', 'LEG-RET', 'leg.scope', ?, ?)`,
+		legacyKrogerConnectionID, hid, when, when, wantActorLegacy, when); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy := connectionSnapshot(t, db, legacyKrogerConnectionID)
+	wantCanon := connectionSnapshot(t, db, canonID)
+	err = RunKrogerLegacyConnectionCleanup(ctx, db)
+	if err == nil {
+		t.Fatal("expected failure when canonical user_id is not household id (fail-closed guard)")
+	}
+	if !strings.Contains(err.Error(), "canonical row identity") {
+		t.Fatalf("want canonical identity error, got: %v", err)
+	}
+	if connectionSnapshot(t, db, legacyKrogerConnectionID) != wantLegacy {
+		t.Fatal("legacy row must be unchanged on rejection (full snapshot including actor_user_id)")
+	}
+	if connectionSnapshot(t, db, canonID) != wantCanon {
+		t.Fatal("canonical row must be unchanged on rejection (full snapshot including actor_user_id)")
+	}
+	var flag sql.NullString
+	_ = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag)
+	if flag.Valid {
+		t.Fatal("completion flag must not be set when cleanup rejects canonical identity")
+	}
+}
+
 func TestKrogerLegacyCleanupFailsClosedThreeKrogerRowsSameHousehold(t *testing.T) {
 	db := openCutoverDB(t)
 	ctx := context.Background()
@@ -849,8 +907,8 @@ func TestKrogerLegacyCleanupCommitHookFailureRekeyRollsBackAllColumns(t *testing
 	if _, err := db.Exec(`
 		INSERT INTO provider_connections
 			(id, user_id, household_id, provider_id, state, access_token, refresh_token,
-			 access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, updated_at)
-		VALUES (?, 'user-1', ?, 'kroger', 'connected', 'acc', 'ref', ?, 'pend', ?, 'apk', 'aak', 'ret', 'scope', ?)`,
+			 access_token_expires_at, auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, actor_user_id, updated_at)
+		VALUES (?, 'user-1', ?, 'kroger', 'connected', 'acc', 'ref', ?, 'pend', ?, 'apk', 'aak', 'ret', 'scope', 'actor-audit-rekey-rollback', ?)`,
 		legacyKrogerConnectionID, hid, when, when, when); err != nil {
 		t.Fatal(err)
 	}
@@ -970,23 +1028,24 @@ func connectionSnapshot(t *testing.T, db *sql.DB, id string) string {
 		authState, authStateAt                 sql.NullString
 		appKey, authAppKey, authReturn         sql.NullString
 		grantedScope                           sql.NullString
+		actorUserID                            sql.NullString
 		updatedAt                              string
 	)
 	err := db.QueryRow(`
 		SELECT user_id, household_id, provider_id, state, access_token, refresh_token, access_token_expires_at,
-		       auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, updated_at
+		       auth_state, auth_state_at, app_key, auth_app_key, auth_return, granted_scope, actor_user_id, updated_at
 		FROM provider_connections WHERE id = ?`, id).Scan(
 		&userID, &householdID, &providerID, &state, &accessToken, &refreshToken, &expiresAt,
-		&authState, &authStateAt, &appKey, &authAppKey, &authReturn, &grantedScope, &updatedAt)
+		&authState, &authStateAt, &appKey, &authAppKey, &authReturn, &grantedScope, &actorUserID, &updatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
 		userID, householdID, providerID, state,
 		nullable(accessToken), nullable(refreshToken), nullable(expiresAt),
 		nullable(authState), nullable(authStateAt),
 		nullable(appKey), nullable(authAppKey), nullable(authReturn), nullable(grantedScope),
-		updatedAt)
+		nullable(actorUserID), updatedAt)
 }
 
 func nullable(ns sql.NullString) string {
@@ -996,8 +1055,8 @@ func nullable(ns sql.NullString) string {
 	return ns.String
 }
 
-// connectionPayloadOnly returns the pipe-delimited snapshot with id and user_id removed
-// (first two fields), so rekey can be checked without hand-editing strings.
+// connectionPayloadOnly returns the pipe-delimited snapshot with user_id and household_id removed
+// (first two fields), so rekey can be checked without hand-editing strings. actor_user_id stays in the payload.
 func connectionPayloadOnly(snapshot string) string {
 	parts := strings.Split(snapshot, "|")
 	if len(parts) < 3 {
