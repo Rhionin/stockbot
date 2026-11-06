@@ -326,7 +326,7 @@ lack "$public_cfg" 'Caddyfile.tunnel' "certificate mode must not mount the tunne
 
 lack "$tunnel_cfg" 'published: "80"' "tunnel mode must not publish port 80"
 lack "$tunnel_cfg" 'published: "443"' "tunnel mode must not publish port 443"
-have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.3' "tunnel mode pins cloudflared"
+have "$tunnel_cfg" 'cloudflare/cloudflared:2026.10.7' "tunnel mode pins cloudflared"
 lack "$grocy_default" 'container_name: pantry-grocy-sync' "default compose must not start grocy-sync"
 lack "$grocy_profile" 'container_name: pantry-grocy-sync' "grocy profile must not start grocy-sync"
 have "$grocy_sync_profile" 'container_name: pantry-grocy-sync' "grocy-sync profile names the sidecar"
@@ -342,7 +342,7 @@ lack "$tunnel_cfg" 'Caddyfile.tunnel.legacy' "tunnel mode must not mount a legac
 have "$tunnel_cfg" 'target: /etc/caddy/Caddyfile' "tunnel Caddyfile is what Caddy loads"
 have "$tunnel_cfg" 'container_name: pantry-cloudflared' "cloudflared container name"
 lack "$tunnel_cfg" 'CLOUDFLARE_TUNNEL_TOKEN: null' "token env must be the empty string when unset, not null"
-# Command is tunnel run. The image entrypoint supplies cloudflared --no-autoupdate.
+# Command is tunnel run. Autoupdate is off via the image (NO_AUTOUPDATE=true), not a CLI flag.
 have "$tunnel_cfg" $'- tunnel\n      - run' "cloudflared runs tunnel run"
 
 adapt_dir=$(mktemp -d)
