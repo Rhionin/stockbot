@@ -461,37 +461,59 @@ async function stubStoreAppHousehold(page: Page, appBody: Record<string, unknown
   }))
 }
 
-test('household admin store app setup buttons meet 44px touch targets', async ({ page }) => {
-  resetStage()
-  stage.kind = 'account'
-  stage.role = 'owner'
-  stage.householdName = 'Test Household'
-  await install(page)
-  await stubStoreAppHousehold(page, {
-    configured: false,
-    clientIdLast4: null,
-    redirectUri: 'https://test-household.example/cb',
-    modality: 'PICKUP',
-    productAccess: 'unknown',
-    status: 'not_set_up',
-    canManage: true,
-  })
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/household')
-  await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.rowSetUp }))
-  await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
-  const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
+/** Mantine modals fade the overlay and content; axe during the transition composites text with the scrim and reports false contrast failures. */
+async function waitForStoreAppSetupModalSettled(page: Page, dialog: ReturnType<Page['getByRole']>) {
   await expect(dialog).toBeVisible()
   await page.waitForFunction(() => {
-    const header = document.querySelector('.store-app-setup-modal .mantine-Modal-header')
-    return header instanceof HTMLElement && header.getAttribute('role') === 'group'
+    const root = document.querySelector('.store-app-setup-modal')
+    if (!(root instanceof HTMLElement)) return false
+    const content = root.querySelector('.mantine-Modal-content')
+    const overlay = root.querySelector('.mantine-Modal-overlay')
+    const header = root.querySelector('.mantine-Modal-header')
+    if (!(content instanceof HTMLElement) || !(overlay instanceof HTMLElement)) return false
+    if (!(header instanceof HTMLElement) || header.getAttribute('role') !== 'group') return false
+    if (getComputedStyle(content).opacity !== '1' || getComputedStyle(overlay).opacity !== '1') return false
+    const running = [
+      ...content.getAnimations({ subtree: true }),
+      ...overlay.getAnimations({ subtree: true }),
+    ].some((animation) => animation.playState === 'running')
+    return !running
   })
-  await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
-  const axe = await new AxeBuilder({ page })
-    .include('[role="dialog"]')
-    .analyze()
-  expect(axe.violations).toEqual([])
-})
+}
+
+for (const scheme of ['light', 'dark'] as const) {
+  test(`household admin store app setup buttons meet 44px touch targets (${scheme})`, async ({ page }) => {
+    resetStage()
+    stage.kind = 'account'
+    stage.role = 'owner'
+    stage.householdName = 'Test Household'
+    await install(page)
+    await stubStoreAppHousehold(page, {
+      configured: false,
+      clientIdLast4: null,
+      redirectUri: 'https://test-household.example/cb',
+      modality: 'PICKUP',
+      productAccess: 'unknown',
+      status: 'not_set_up',
+      canManage: true,
+    })
+    await page.addInitScript((value) => {
+      window.localStorage.setItem('mantine-color-scheme-value', value)
+    }, scheme)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/household')
+    await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-mantine-color-scheme'))).toBe(scheme)
+    await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.rowSetUp }))
+    await page.getByRole('button', { name: krogerAppCopy.rowSetUp }).click()
+    const dialog = page.getByRole('dialog', { name: krogerAppCopy.title })
+    await waitForStoreAppSetupModalSettled(page, dialog)
+    await assertTouchTargetSize(page.getByRole('button', { name: krogerAppCopy.closeLabel }))
+    const axe = await new AxeBuilder({ page })
+      .include('[role="dialog"]')
+      .analyze()
+    expect(axe.violations).toEqual([])
+  })
+}
 
 test('store app remove error keeps the confirm label visible while loading at 390px', async ({ page }) => {
   resetStage()
