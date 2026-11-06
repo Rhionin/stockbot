@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +15,41 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	modernc "modernc.org/sqlite"
 )
+
+// moderncCommitHookRegisterer matches modernc *conn RegisterCommitHook without importing unexported types.
+type moderncCommitHookRegisterer interface {
+	RegisterCommitHook(modernc.CommitHookFn)
+}
+
+// moderncRegisterCommitHook installs hook on one pooled connection (MaxOpenConns=1) via sql.Conn.Raw,
+// then closes the sql.Conn so later BeginTx reuses the same physical connection with the hook armed.
+// Call the returned cleanup to RegisterCommitHook(nil) on that connection and prevent cross-test leakage.
+func moderncRegisterCommitHook(t *testing.T, db *sql.DB, hook modernc.CommitHookFn) (cleanup func()) {
+	t.Helper()
+	ctx := context.Background()
+	register := func(h modernc.CommitHookFn) {
+		sc, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = sc.Raw(func(dc any) error {
+			hreg, ok := dc.(moderncCommitHookRegisterer)
+			if !ok {
+				return fmt.Errorf("driver conn %T lacks RegisterCommitHook", dc)
+			}
+			hreg.RegisterCommitHook(h)
+			return nil
+		})
+		_ = sc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	register(hook)
+	return func() { register(nil) }
+}
 
 func TestKrogerLegacyCleanupNilDBIsNoOp(t *testing.T) {
 	if err := RunKrogerLegacyConnectionCleanup(context.Background(), nil); err != nil {
@@ -74,37 +109,49 @@ func TestKrogerLegacyCleanupReadErrorSurfaces(t *testing.T) {
 	}
 }
 
-func TestKrogerLegacyCleanupCommitHookFailureNoFlagNoLegacyPath(t *testing.T) {
+func TestKrogerLegacyCleanupCommitHookFailureNoLegacyRowRetrySucceeds(t *testing.T) {
 	t.Cleanup(func() {
-		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
 		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
 	})
 	var successCalls []string
 	krogerLegacyCleanupLogSuccess = func(msg string) { successCalls = append(successCalls, msg) }
 	db := openCutoverDB(t)
 	ctx := context.Background()
-	krogerLegacyCleanupCommit = func(*sql.Tx) error { return fmt.Errorf("inject commit failure") }
-	err := RunKrogerLegacyConnectionCleanup(ctx, db)
-	if err == nil || !strings.Contains(err.Error(), "inject commit failure") {
-		t.Fatalf("err = %v", err)
+	var hookInvocations atomic.Int32
+	rejectNext := true
+	cleanupHook := moderncRegisterCommitHook(t, db, func() int32 {
+		hookInvocations.Add(1)
+		if rejectNext {
+			rejectNext = false
+			return 1
+		}
+		return 0
+	})
+	t.Cleanup(cleanupHook)
+	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err == nil || !strings.Contains(err.Error(), "constraint failed") {
+		t.Fatalf("want commit-hook constraint error on empty legacy path, err = %v", err)
 	}
-	var flag sql.NullString
-	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flag); err != sql.ErrNoRows {
-		if err == nil && flag.Valid {
-			t.Fatalf("flag should be absent, got %q", flag.String)
-		}
-		if err != nil && err != sql.ErrNoRows {
-			t.Fatal(err)
-		}
+	if hookInvocations.Load() < 1 {
+		t.Fatal("expected sqlite commit hook on tx.Commit")
 	}
 	if len(successCalls) != 0 {
-		t.Fatalf("expected no success logs before commit, got %v", successCalls)
+		t.Fatalf("expected no success logs when commit rolls back, got %v", successCalls)
+	}
+	var flagN int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flagN); err != nil || flagN != 0 {
+		t.Fatalf("flag row count want 0, got %d err=%v", flagN, err)
+	}
+	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyCleanupFlag(t, db)
+	if len(successCalls) != 1 || !strings.Contains(successCalls[0], "no legacy row") {
+		t.Fatalf("expected one post-commit success log for empty table path, got %v", successCalls)
 	}
 }
 
 func TestKrogerLegacyCleanupCommitHookFailureNoFlagDuplicatePathRetrySucceeds(t *testing.T) {
 	t.Cleanup(func() {
-		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
 		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
 	})
 	var successCalls []string
@@ -132,17 +179,23 @@ func TestKrogerLegacyCleanupCommitHookFailureNoFlagDuplicatePathRetrySucceeds(t 
 		VALUES (?, 'user-1', ?, 'kroger', 'connected', ?)`, legacyKrogerConnectionID, hid, when); err != nil {
 		t.Fatal(err)
 	}
-	var commitCalls int
-	krogerLegacyCleanupCommit = func(tx *sql.Tx) error {
-		commitCalls++
-		if commitCalls == 1 {
-			return fmt.Errorf("inject commit failure at cleanup commit")
+	var hookInvocations atomic.Int32
+	rejectNext := true
+	cleanupHook := moderncRegisterCommitHook(t, db, func() int32 {
+		hookInvocations.Add(1)
+		if rejectNext {
+			rejectNext = false
+			return 1
 		}
-		return tx.Commit()
-	}
+		return 0
+	})
+	t.Cleanup(cleanupHook)
 	err = RunKrogerLegacyConnectionCleanup(ctx, db)
-	if err == nil || !strings.Contains(err.Error(), "inject commit failure") {
+	if err == nil || !strings.Contains(err.Error(), "constraint failed") {
 		t.Fatalf("first run err = %v", err)
+	}
+	if hookInvocations.Load() < 1 {
+		t.Fatal("expected commit hook invoked on failed commit")
 	}
 	mu.Lock()
 	logN := len(successCalls)
@@ -781,19 +834,10 @@ func TestKrogerLegacyCleanupFailsClosedThreeKrogerRowsSameHousehold(t *testing.T
 
 func TestKrogerLegacyCleanupCommitHookFailureRekeyRollsBackAllColumns(t *testing.T) {
 	t.Cleanup(func() {
-		krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
 		krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
 	})
 	var successCalls []string
 	krogerLegacyCleanupLogSuccess = func(msg string) { successCalls = append(successCalls, msg) }
-	var commitCalls int
-	krogerLegacyCleanupCommit = func(tx *sql.Tx) error {
-		commitCalls++
-		if commitCalls == 1 {
-			return fmt.Errorf("inject commit failure rekey")
-		}
-		return tx.Commit()
-	}
 	db := openCutoverDB(t)
 	ctx := context.Background()
 	primary, err := auth.PrimaryScope(ctx, db)
@@ -811,15 +855,34 @@ func TestKrogerLegacyCleanupCommitHookFailureRekeyRollsBackAllColumns(t *testing
 		t.Fatal(err)
 	}
 	wantSnap := connectionSnapshot(t, db, legacyKrogerConnectionID)
+	var hookInvocations atomic.Int32
+	rejectNext := true
+	cleanupHook := moderncRegisterCommitHook(t, db, func() int32 {
+		hookInvocations.Add(1)
+		if rejectNext {
+			rejectNext = false
+			return 1
+		}
+		return 0
+	})
+	t.Cleanup(cleanupHook)
 	err = RunKrogerLegacyConnectionCleanup(ctx, db)
-	if err == nil || !strings.Contains(err.Error(), "inject commit failure rekey") {
+	if err == nil || !strings.Contains(err.Error(), "constraint failed") {
 		t.Fatalf("err = %v", err)
+	}
+	if hookInvocations.Load() < 1 {
+		t.Fatal("expected commit hook invoked on failed commit")
 	}
 	if connectionSnapshot(t, db, legacyKrogerConnectionID) != wantSnap {
 		t.Fatal("legacy row changed after failed commit (expected full rollback)")
 	}
 	if len(successCalls) != 0 {
 		t.Fatalf("unexpected success logs: %v", successCalls)
+	}
+	var flagN int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM app_settings WHERE key = ?`, krogerLegacyConnectionCleanupKey).Scan(&flagN)
+	if flagN != 0 {
+		t.Fatal("cleanup flag must stay unset after rolled-back commit")
 	}
 	if err := RunKrogerLegacyConnectionCleanup(ctx, db); err != nil {
 		t.Fatal(err)

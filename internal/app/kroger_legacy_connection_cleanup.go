@@ -18,9 +18,6 @@ const legacyKrogerConnectionID = "user-1:kroger"
 
 const expectedLegacyKrogerUserID = "user-1"
 
-// krogerLegacyCleanupCommit isolates Commit for tests that inject a commit-stage failure.
-var krogerLegacyCleanupCommit = func(tx *sql.Tx) error { return tx.Commit() }
-
 // krogerLegacyCleanupLogSuccess records successful duplicate removal or rekey (after commit).
 // Tests may replace this to assert logging is not invoked on rollback.
 var krogerLegacyCleanupLogSuccess = func(msg string) { log.Print(msg) }
@@ -57,7 +54,7 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 		if err := insertCleanupFlag(ctx, tx); err != nil {
 			return err
 		}
-		if err := krogerLegacyCleanupCommit(tx); err != nil {
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 		krogerLegacyCleanupLogSuccess("kroger legacy connection cleanup: no legacy row; marked complete")
@@ -159,7 +156,7 @@ func RunKrogerLegacyConnectionCleanup(ctx context.Context, db *sql.DB) error {
 	if err := insertCleanupFlag(ctx, tx); err != nil {
 		return err
 	}
-	if err := krogerLegacyCleanupCommit(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	if successMsg != "" {

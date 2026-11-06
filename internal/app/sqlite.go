@@ -44,6 +44,10 @@ const sqliteBusyTimeoutMS = 2000
 var memorySeq atomic.Uint64
 
 func OpenSQLite(dsn string) (*sql.DB, error) {
+	return openSQLiteWithDriver("sqlite", dsn)
+}
+
+func openSQLiteWithDriver(driverName, dsn string) (*sql.DB, error) {
 	dsn = withUTCTimezone(withSQLiteDurability(withSQLiteLocking(dsn)))
 	mem := memoryDSN(dsn)
 	if mem {
@@ -52,7 +56,7 @@ func OpenSQLite(dsn string) (*sql.DB, error) {
 		// after a cancelled transaction reports missing tables.
 		dsn = sharedMemoryDSN(dsn)
 	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}

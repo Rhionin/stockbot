@@ -22,28 +22,33 @@ Failures surface as `kroger legacy connection cleanup: …` and stop startup bef
 
 ## Pre-deploy backup (Backend / Manager)
 
-**Goal:** one WAL-consistent snapshot suitable for restore, with proof, **without** trusting a raw filesystem copy of an open database.
+**Goal:** a single **online** copy of the live pantry DB that is consistent for both rollback journal **and** WAL (not a raw `cp` of the main file while writers may extend the WAL).
 
-**Documented SQLite commands** (see [SQLite CLI: `.backup`](https://sqlite.org/cli.html) and [Online Backup API](https://sqlite.org/backup.html)):
+**Supported procedure in this repo:** `stockbot-backup` / `internal/backup.Snapshot` runs **`VACUUM INTO ?`** against the live database path using the same `modernc.org/sqlite` stack as the server (`internal/backup/snapshot.go`, CLI `cmd/backup`). SQLite documents that **`VACUUM INTO` produces a **complete**, **consistent** copy of the database**, independent of journal mode, including from a WAL-mode database ([SQLite `VACUUM INTO`](https://sqlite.org/lang_vacuum.html)). The implementation sets a busy timeout and retries when the DB is busy.
 
-1. **Stop the server** so no process holds the main DB file or `-wal` / `-shm` sidecars for that path. If the deployment cannot stop the process, stop here and have **CJ / Network Engineering** confirm an approved online-backup procedure (`sqlite3` interactive `.backup DESTINATION` uses the Backup API under the hood; alternatives must be explicitly approved).
-2. **Quiesce / freshness:** note UTC time and image/version **after** the process exit you rely on, so the snapshot is known not to predate concurrent writers.
-3. **Snapshot (offline DB + no WAL readers):** from a shell, run a backup into a new file (example path only):
+**Operator prerequisites (known Pi / pantrybot constraints):**
 
-   `sqlite3 /path/to/pantry.db ".backup '/secure/path/pantry-pre-kroger-legacy-cleanup-<UTC>.db'"`
+| Need | Why |
+| --- | --- |
+| A runnable **`stockbot-backup`** (or other build) that links this codebase’s backup path | The pantry **container** is distroless (no `sqlite3` shell). The **Pi host** may lack `sqlite3` and the operator has **no sudo** for ad-hoc installs. |
+| Brief **write quiescence** or acceptance of busy-timeout retries | `VACUUM INTO` needs a read of the committed state; a continuously writing process may delay the snapshot until busy handling succeeds. Coordinate with **CJ / Network Engineering** if an auto-updater can restart services during the window. |
+| Private output path + checksum | Snapshot files contain secrets; treat like production data. |
 
-   Optional: `VACUUM INTO '…';` is valid SQL run inside `sqlite3` for an offline file; it produces a compact copy (see [SQLite VACUUM](https://sqlite.org/lang_vacuum.html)). Pick **one** standard method per environment and record which.
-4. **Private storage:** keep the snapshot and checksum on storage restricted to the backend/manager role (no world-readable paths).
-5. **Integrity:** on the snapshot file only:
+**Typical flow (adapt paths and flags to your deploy):**
 
-   `sqlite3 /secure/path/pantry-pre-kroger-legacy-cleanup-<UTC>.db "PRAGMA integrity_check;"`
+1. **Coordinate** a deploy hold or low-write window if needed so the snapshot is “fresh” for the change and not racing an unplanned restart.
+2. Run **`stockbot-backup run`** with `-db` set to the **live pantry file path**, `-reason pre-deploy`, and the usual secrets/R2 flags (see `internal/backup/cli.go`). The runner snapshots via **`VACUUM INTO`** to a private stage dir, then verifies (`PRAGMA integrity_check` → single `ok`), encrypts, and uploads per existing backup policy.
+3. Record **checksum** and manifest line from backup output in the deploy ticket.
 
-   Require a **single** result row exactly `ok` ([`PRAGMA integrity_check`](https://sqlite.org/pragma.html#pragma_integrity_check)).
-6. **Checksum:** record a cryptographic hash of the snapshot file (e.g. `sha256sum`) in the deploy ticket.
-7. **Non-secret inventory (read-only):** record counts for escalation if the DB shape is not one the cleanup is designed for (any non-zero count below means **stop** and engage Architect — do not deploy this change until resolved):
-   - `SELECT COUNT(*) FROM provider_connections WHERE id = 'user-1:kroger';`
-   - `SELECT household_id, COUNT(*) AS n FROM provider_connections WHERE provider_id = 'kroger' GROUP BY household_id HAVING n > 2;` (must be empty: more than two Kroger rows per household is out of spec for this cleanup)
-   - `SELECT household_id, COUNT(*) AS n FROM provider_connections WHERE provider_id = 'kroger' GROUP BY household_id HAVING n = 2;` (only the **legacy + canonical** duplicate shape is expected where cleanup deletes one row; any other two-row pattern needs Architect review)
+If your environment **cannot** run `stockbot-backup` (binary not shipped, path unavailable, or policy forbids live `VACUUM INTO`), treat **online WAL-safe snapshot** as **unmet** until Architect/operations selects an approved alternative (e.g. schedule maintenance + offline copy). Do **not** claim this gate met using only a stopped-process `.backup` recipe.
+
+**Optional integrity spot-check on a copy** (requires *some* SQLite-capable tool — often the same `stockbot-backup verify` flow, not necessarily the `sqlite3` CLI): `PRAGMA integrity_check;` must return a **single** row exactly `ok` ([`PRAGMA integrity_check`](https://sqlite.org/pragma.html#pragma_integrity_check)).
+
+**Non-secret inventory (read-only)** before merge/deploy — any non-zero unexpected count means **stop** and escalate (do not ship this cleanup until resolved):
+
+- `SELECT COUNT(*) FROM provider_connections WHERE id = 'user-1:kroger';`
+- `SELECT household_id, COUNT(*) AS n FROM provider_connections WHERE provider_id = 'kroger' GROUP BY household_id HAVING n > 2;` (must be empty)
+- `SELECT household_id, COUNT(*) AS n FROM provider_connections WHERE provider_id = 'kroger' GROUP BY household_id HAVING n = 2;` (only the **legacy + canonical** duplicate shape is expected where cleanup deletes one row)
 
 This runbook does **not** execute production steps in CI or in the cloud agent.
 
@@ -59,12 +64,7 @@ After the new binary starts successfully once (cleanup runs at startup):
 ## Rerun and rollback
 
 - **Rerun:** safe no-op once the flag is `1`.
-- **Rollback (stopped process, WAL-safe restore — documentation only):**
-  1. Stop the server (same requirement as backup: no open handles on the DB path).
-  2. Remove or rename the **current** main file and any `-wal` / `-shm` siblings beside that path (stale WAL from an old main file must not be reused).
-  3. Copy the verified snapshot file into the configured DB path with correct ownership and **private** permissions matching production policy.
-  4. Run `PRAGMA integrity_check;` on the restored path; require `ok`.
-  5. Install and start the **prior** server binary that was known good before this deploy (restore code and data together; do not run the new binary on rolled-back data unless Architect approves).
+- **Rollback (documentation only):** restore from the **verified** pre-deploy artifact (same process your backup pipeline uses for DR), then install and start the **prior** server binary. Remove stale `-wal` / `-shm` next to the DB path if you replace the main file so SQLite never pairs a new main file with an old WAL. Confirm `PRAGMA integrity_check` → `ok` on the restored path before start.
 
 No Kroger OAuth calls are required for rollback decisions. If your layout attaches auxiliary DBs or uses non-default paths, confirm the exact file set with **CJ / Network Engineering** before touching production disks.
 
