@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -948,8 +948,7 @@ describe('devices, pairing, and live hints', () => {
     expect(screen.getByText(/Scanner · Offline/)).toBeVisible();
   });
 
-  // QUARANTINED: flaky under load, see #522. Remove when the deferred-mock fix lands (due 2026-11-07).
-  it.skip('patches scanner settings with inline saving and success feedback', async () => {
+  it('patches scanner settings with inline saving and success feedback', async () => {
     let row = device({
       id: 'scan-1',
       label: 'Pantry pistol',
@@ -959,6 +958,7 @@ describe('devices, pairing, and live hints', () => {
       inactivityRevertSeconds: 300,
     });
     const patches: unknown[] = [];
+    const patchResolvers: Array<(value: Response) => void> = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (matchKrogerApp(url)) return Promise.resolve(krogerAppNotSetUp(true));
@@ -967,30 +967,74 @@ describe('devices, pairing, and live hints', () => {
         const body = JSON.parse(String(init.body));
         patches.push(body);
         row = { ...row, ...body };
-        return new Promise((resolve) => {
-          window.setTimeout(() => resolve(json(row)), 40);
+        return new Promise<Response>((resolve) => {
+          patchResolvers.push(resolve);
         });
       }
       return Promise.reject(new Error(url));
     }));
-    renderStage(<DevicesPage />, session('member'));
-    expect(await screen.findByText('Pantry pistol')).toBeVisible();
-    fireEvent.click(screen.getByRole('radio', { name: /Adjust stock immediately/ }));
-    expect(await screen.findByText('Saving…')).toBeVisible();
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanner settings saved.'));
-    expect(patches[0]).toEqual({ commitMode: 'immediate' });
 
-    fireEvent.click(screen.getByRole('radio', { name: /Stock in \(Scans add to stock\)/ }));
-    await waitFor(() => expect(patches.at(-1)).toEqual({ defaultDirection: 'stock_in' }));
+    const finishPendingPatches = () => {
+      while (patchResolvers.length > 0) {
+        const resolve = patchResolvers.shift();
+        resolve?.(json(row));
+      }
+    };
 
-    fireEvent.click(screen.getByRole('radio', { name: '1 minute' }));
-    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 60 }));
+    try {
+      renderStage(<DevicesPage />, session('member'));
+      expect(await screen.findByText('Pantry pistol')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('radio', { name: '3 minutes' }));
-    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 180 }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole('radio', { name: /Adjust stock immediately/ }));
+      });
+      expect(screen.getByText('Saving…')).toBeVisible();
+      expect(patchResolvers).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole('radio', { name: '10 minutes' }));
-    await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 600 }));
+      await act(async () => {
+        patchResolvers.shift()?.(json(row));
+      });
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Scanner settings saved.'));
+      expect(patches[0]).toEqual({ commitMode: 'immediate' });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('radio', { name: /Stock in \(Scans add to stock\)/ }));
+      });
+      expect(screen.getByText('Saving…')).toBeVisible();
+      await act(async () => {
+        patchResolvers.shift()?.(json(row));
+      });
+      await waitFor(() => expect(patches.at(-1)).toEqual({ defaultDirection: 'stock_in' }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('radio', { name: '1 minute' }));
+      });
+      expect(screen.getByText('Saving…')).toBeVisible();
+      await act(async () => {
+        patchResolvers.shift()?.(json(row));
+      });
+      await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 60 }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('radio', { name: '3 minutes' }));
+      });
+      expect(screen.getByText('Saving…')).toBeVisible();
+      await act(async () => {
+        patchResolvers.shift()?.(json(row));
+      });
+      await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 180 }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('radio', { name: '10 minutes' }));
+      });
+      expect(screen.getByText('Saving…')).toBeVisible();
+      await act(async () => {
+        patchResolvers.shift()?.(json(row));
+      });
+      await waitFor(() => expect(patches.at(-1)).toEqual({ inactivityRevertSeconds: 600 }));
+    } finally {
+      finishPendingPatches();
+    }
   });
 
   it('keeps scanner settings on patch failure and shows an inline alert', async () => {
