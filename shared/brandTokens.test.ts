@@ -10,10 +10,39 @@ import {
   tealScale,
 } from './brandTokens';
 
+const CONTRACT_TEAL_SCALE = [
+  '#f0fdfa',
+  '#ccfbf1',
+  '#99f6e4',
+  '#5eead4',
+  '#2dd4bf',
+  '#14b8a6',
+  '#0d9488',
+  '#0f766e',
+  '#115e59',
+  '#134e4a',
+] as const;
+
+const CONTRACT_AMBER_SCALE = [
+  '#fffbeb',
+  '#fef3c7',
+  '#fde68a',
+  '#fcd34d',
+  '#fbbf24',
+  '#f7b027',
+  '#f59e0b',
+  '#d97706',
+  '#b45309',
+  '#92400e',
+] as const;
+
 describe('shared brandTokens', () => {
-  it('keeps the locked 10-shade teal and amber scales', () => {
-    expect(tealScale).toHaveLength(10);
-    expect(amberScale).toHaveLength(10);
+  it('exports the full pre-unification teal and amber 10-shade scales', () => {
+    expect([...tealScale]).toEqual([...CONTRACT_TEAL_SCALE]);
+    expect([...amberScale]).toEqual([...CONTRACT_AMBER_SCALE]);
+  });
+
+  it('exports the locked brand, stock, nothing-on-hand, and accent edge values', () => {
     expect(brandTeal).toBe('#0d9488');
     expect(brandTealDeep).toBe('#115e59');
     expect(amberDeep).toBe('#92400e');
