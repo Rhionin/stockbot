@@ -318,6 +318,9 @@ type ProvisionLine struct {
 type ProvisionRequest struct {
 	Provider ProviderID
 	Lines    []ProvisionLine
+	// Modality is the household store-app modality for server_push when set.
+	// Providers fall back to their server default when empty.
+	Modality string
 }
 
 // ResultDisposition is the high-level outcome of a provisioning request.
