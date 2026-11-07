@@ -85,7 +85,7 @@ func TestRenderedScannerHelpPlaceholderInventory(t *testing.T) {
 	}
 
 	const wantFooter = `<p>Northwind Pantry · Scanner help · v1 (2026-11) · pantry.test/help/scanner</p>`
-	const wantNHeading = `<h3 id="saved-offline-and-n-waiting-to-send"><code>Saved offline</code> and {N} waiting to send</h3>`
+	const wantNHeading = `<h3 id="saved-offline-and-n-waiting-to-send"><code>Saved offline</code> and <code>{N} waiting to send</code></h3>`
 	if !strings.Contains(body, wantFooter) {
 		t.Fatalf("resolved footer fragment missing: want %q", wantFooter)
 	}

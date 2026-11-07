@@ -24,3 +24,11 @@ func TestRenderHelpMarkdownCodeAndBold(t *testing.T) {
 		t.Fatalf("bold missing: %s", frag)
 	}
 }
+
+func TestRenderHelpMarkdownSavedOfflineHeading(t *testing.T) {
+	frag := renderHelpMarkdown("### `Saved offline` and `{N} waiting to send`\n")
+	const want = `<h3 id="saved-offline-and-n-waiting-to-send"><code>Saved offline</code> and <code>{N} waiting to send</code></h3>`
+	if frag != want {
+		t.Fatalf("got %q, want %q", frag, want)
+	}
+}
