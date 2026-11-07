@@ -807,6 +807,8 @@ run_update() {
     PANTRY_TEST_SNAPSHOT_CP_FAIL_REL="${PANTRY_TEST_SNAPSHOT_CP_FAIL_REL:-}" \
     STUB_FIXTURE_ROOT="$ROOT/deploy/fixtures" \
     PANTRY_SYSTEMD_UNIT_DIR="${PANTRY_SYSTEMD_UNIT_DIR:-}" \
+    PANTRY_TEST_ENTRY_TRACE="${PANTRY_TEST_ENTRY_TRACE:-}" \
+    CHOWN_LOG="${CHOWN_LOG:-}" \
     PATH="$path_setting" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
@@ -3074,6 +3076,32 @@ have "$status_body" "reason=deploy_ok" "idempotent host refresh records deploy_o
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_lkg_snapshot" "$host_lkg_new" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
+
+# Entry reorder: deploy lock and flag gate precede publish-mode sourcing (#152).
+entry_order=$(mktemp -d)
+prepare_pantry "$entry_order"
+PANTRY_TEST_ENTRY_TRACE="$entry_order/entry-trace.log"
+: >"$PANTRY_TEST_ENTRY_TRACE"
+write_images "$entry_order/images.tsv" \
+  sha256:runpantry ghcr.io/rhionin/pantry@sha256:runpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+run_update "$entry_order"
+lock_line=$(grep -n '^deploy_lock$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+flags_line=$(grep -n '^host_flags_read$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+source_line=$(grep -n '^publish-mode-source$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+[[ -n "$lock_line" && -n "$flags_line" && -n "$source_line" ]] \
+  || fail "entry trace missing lock, flags, or publish-mode markers"
+[[ "$lock_line" -lt "$flags_line" && "$flags_line" -lt "$source_line" ]] \
+  || fail "publish-mode sourced before host lock/flag gate"
+[[ "$LAST_CHOWN" == *deploy-trigger* ]] || fail "deploy-trigger chown did not run"
+chown_seq=$(printf '%s\n' "$LAST_CHOWN" | grep -n 'deploy-trigger' | head -1 | cut -d: -f1 || true)
+trace_lines=$(wc -l <"$PANTRY_TEST_ENTRY_TRACE")
+[[ -n "$chown_seq" && "$source_line" -le "$trace_lines" ]] \
+  || fail "could not correlate deploy-trigger chown with entry trace"
+rm -rf "$entry_order"
+unset STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_TEST_ENTRY_TRACE
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

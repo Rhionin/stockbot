@@ -163,20 +163,16 @@ cleanup_update_state() {
 trap cleanup_update_state EXIT
 
 PANTRY_DIR=${PANTRY_DIR:-/opt/pantry}
-cd "$PANTRY_DIR"
-# shellcheck disable=SC1091
-source "$PANTRY_DIR/publish-mode.sh"
-
-compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
-mode_rc=0
-mode=$(publish_mode_from_env) || mode_rc=$?
-if [[ "$mode_rc" -eq 2 ]]; then
-  echo "Tunnel mode needs CLOUDFLARE_TUNNEL_TOKEN in ${PANTRY_DIR}/.env. The public proxy was left unchanged. Run: sudo ./setup.sh publish --tunnel" >&2
-  exit 1
-elif [[ "$mode_rc" -ne 0 ]]; then
-  echo "PUBLISH_MODE must be acme or tunnel. The public proxy was left unchanged." >&2
-  exit 1
-fi
+mode=""
+compose=()
+HOST_STATE_INITIALIZED=0
+HOST_STATE_CORRUPT=0
+HOST_STATE_BLOCKED=0
+HOST_FLAG_HOST_REFRESH=allow
+HOST_FLAG_AUTO_SETUP=off
+HOST_FLAG_ANY_INVALID=0
+HOST_RECOVERY_EXIT=0
+HOST_TXN_FATAL_RC=3
 
 # public_proxy_in_update is true when this run will manage the HTTPS proxy
 # (certificate or tunnel profile). LAN-only installs skip the session secret.
@@ -193,68 +189,417 @@ public_proxy_in_update() {
   return 1
 }
 
-if [[ "$mode" == tunnel ]]; then
-  if [[ ! -f "$PANTRY_DIR/docker-compose.tunnel.yml" || ! -f "$PANTRY_DIR/Caddyfile.tunnel" ]]; then
-    echo "CLOUDFLARE_TUNNEL_TOKEN is set but tunnel compose files are missing from ${PANTRY_DIR}; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
-  elif [[ -z "$(publish_env_value PUBLIC_HOST)" ]]; then
-    echo "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty; leaving the tunnel stopped. Set PUBLIC_HOST in ${PANTRY_DIR}/.env and run: sudo ./setup.sh publish --tunnel" >&2
-  else
-    compose+=(-f "$PANTRY_DIR/docker-compose.tunnel.yml" --profile tunnel)
+host_entry_trace() {
+  if [[ -n "${PANTRY_TEST_ENTRY_TRACE:-}" ]]; then
+    printf '%s\n' "$1" >> "$PANTRY_TEST_ENTRY_TRACE"
   fi
-elif [[ "$mode" == acme ]]; then
-  if [[ -n "$(publish_env_value PUBLIC_HOST)" && -f "$PANTRY_DIR/Caddyfile" ]]; then
-    compose+=(--profile public)
-  elif [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
-    echo "PUBLIC_HOST is set but ${PANTRY_DIR}/Caddyfile is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
-  fi
-fi
-while IFS= read -r arg; do
-  [[ -n "$arg" ]] && compose+=("$arg")
-done < <(grocy_compose_suffix)
+}
 
-# uid 65532 is the distroless nonroot user that writes the trigger file.
-mkdir -p "$PANTRY_DIR/deploy-trigger"
-if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
-  # The no-sudo test seam. A real timer runs this file as root and can chown.
-  if [[ "${PANTRY_SETUP_SKIP_ROOT:-}" == 1 ]]; then
-    echo "[warn] Could not give ${PANTRY_DIR}/deploy-trigger to uid 65532" >&2
+host_setup_state_dir() {
+  printf '%s/host-setup-state' "$PANTRY_DIR"
+}
+
+host_txn_target_rel() {
+  case "$1" in
+    1) printf '%s' "publish-mode.sh" ;;
+    2) printf '%s' "runtime-setup.sh" ;;
+    3) printf '%s' "vapid-env.sh" ;;
+    4) printf '%s' "systemd/pantry-backup.sh" ;;
+    *) return 1 ;;
+  esac
+}
+
+host_txn_target_dest() {
+  local id="$1" rel
+  rel=$(host_txn_target_rel "$id") || return 1
+  printf '%s/%s' "$PANTRY_DIR" "$rel"
+}
+
+host_embedded_env_value() {
+  local key="$1" line k v
+  [[ -f "$PANTRY_DIR/.env" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%%#*}
+    [[ "$line" == *"="* ]] || continue
+    k=${line%%=*}
+    k=${k//$' \t'/}
+    [[ "$k" == "$key" ]] || continue
+    v=${line#*=}
+    v=${v#"${v%%[![:space:]]*}"}
+    v=${v%"${v##*[![:space:]]}"}
+    if [[ "$v" == \"*\" && "$v" == *\" ]]; then
+      return 1
+    fi
+    if [[ "$v" == \'*\' && "$v" == *\' ]]; then
+      return 1
+    fi
+    printf '%s' "$v"
+    return 0
+  done < "$PANTRY_DIR/.env"
+  return 1
+}
+
+host_flags_read() {
+  local hr as env_as
+  hr=${HOST_REFRESH-${PANTRY_HOST_REFRESH:-}}
+  hr=${hr:-}
+  case "$hr" in
+    ''|on) HOST_FLAG_HOST_REFRESH=allow ;;
+    off) HOST_FLAG_HOST_REFRESH=deny ;;
+    *) HOST_FLAG_HOST_REFRESH=invalid; HOST_FLAG_ANY_INVALID=1 ;;
+  esac
+  if [[ -n "${AUTO_SETUP+x}" && -n "${AUTO_SETUP}" ]]; then
+    as=$AUTO_SETUP
+  elif env_as=$(host_embedded_env_value AUTO_SETUP); then
+    as=$env_as
+  elif env_as=$(host_embedded_env_value PANTRY_AUTO_SETUP); then
+    as=$env_as
   else
-    echo "Could not give ${PANTRY_DIR}/deploy-trigger to uid 65532" >&2
+    as=
+  fi
+  as=${as:-}
+  case "$as" in
+    ''|off) HOST_FLAG_AUTO_SETUP=off ;;
+    on) HOST_FLAG_AUTO_SETUP=on ;;
+    *) HOST_FLAG_AUTO_SETUP=invalid; HOST_FLAG_ANY_INVALID=1 ;;
+  esac
+  host_entry_trace "host_flags_read"
+}
+
+host_control_phase() {
+  local ctrl phase
+  ctrl="$(host_setup_state_dir)/control"
+  [[ -f "$ctrl" ]] || return 1
+  phase=$(awk -F= '$1 == "phase" { print $2; exit }' "$ctrl" 2>/dev/null || true)
+  [[ -n "$phase" ]] && printf '%s' "$phase"
+}
+
+host_state_validate() {
+  local root ctrl phase
+  HOST_STATE_INITIALIZED=0
+  HOST_STATE_CORRUPT=0
+  HOST_STATE_BLOCKED=0
+  root=$(host_setup_state_dir)
+  if [[ ! -e "$root" ]]; then
+    host_entry_trace "host_state_validate:uninitialized"
+    return 0
+  fi
+  if [[ ! -d "$root" ]]; then
+    HOST_STATE_CORRUPT=1
+    HOST_STATE_BLOCKED=1
+    echo "pantry update: host setup state is not a directory" >&2
+    return 1
+  fi
+  HOST_STATE_INITIALIZED=1
+  if [[ -L "$root" ]]; then
+    HOST_STATE_CORRUPT=1
+    HOST_STATE_BLOCKED=1
+    echo "pantry update: host setup state path is a symlink" >&2
+    return 1
+  fi
+  ctrl="$root/control"
+  if [[ -e "$root/control.tmp" && ! -f "$ctrl" ]]; then
+    HOST_STATE_CORRUPT=1
+    HOST_STATE_BLOCKED=1
+    echo "pantry update: host setup state has only control.tmp" >&2
+    return 1
+  fi
+  if [[ -f "$ctrl" ]]; then
+    if [[ -L "$ctrl" ]]; then
+      HOST_STATE_CORRUPT=1
+      HOST_STATE_BLOCKED=1
+      echo "pantry update: host setup control is a symlink" >&2
+      return 1
+    fi
+    phase=$(host_control_phase)
+    case "$phase" in
+      clean) ;;
+      recovered)
+        echo "pantry update: host setup recovered from a failed transaction; blocking until maintenance clears failed target"
+        HOST_STATE_BLOCKED=1
+        return 1
+        ;;
+      prepared|applying|restoring|committing|blocked)
+        host_entry_trace "host_state_validate:pending"
+        return 0
+        ;;
+      '')
+        HOST_STATE_CORRUPT=1
+        HOST_STATE_BLOCKED=1
+        echo "pantry update: host setup control has no phase" >&2
+        return 1
+        ;;
+      *)
+        HOST_STATE_CORRUPT=1
+        HOST_STATE_BLOCKED=1
+        echo "pantry update: host setup control has unknown phase ${phase}" >&2
+        return 1
+        ;;
+    esac
+  fi
+  host_entry_trace "host_state_validate:initialized"
+  return 0
+}
+
+host_restore_transaction() {
+  local id root lkg
+  root=$(host_setup_state_dir)
+  lkg="$root/lkg/files"
+  local rel dest src
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    dest=$(host_txn_target_dest "$id")
+    src="$lkg/$id"
+    if [[ -f "$src" ]]; then
+      if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+        continue
+      fi
+      local tmp
+      tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
+      cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+      chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
+      mv "$tmp" "$dest"
+    else
+      rm -f "$dest"
+    fi
+  done
+  return 0
+}
+
+host_recover_pending() {
+  local phase root ctrl
+  if [[ "${HOST_STATE_INITIALIZED:-0}" -ne 1 ]]; then
+    return 0
+  fi
+  phase=$(host_control_phase || true)
+  case "$phase" in
+    prepared|applying|restoring|committing|blocked)
+      host_entry_trace "host_recover_pending"
+      echo "pantry update: recovering pending host setup transaction (phase=${phase})"
+      if ! host_restore_transaction; then
+        echo "pantry update: host setup recovery restore failed" >&2
+        HOST_RECOVERY_EXIT=1
+        return 1
+      fi
+      root=$(host_setup_state_dir)
+      ctrl="$root/control"
+      if [[ -f "$ctrl" ]]; then
+        {
+          grep -v '^phase=' "$ctrl" || true
+          printf 'phase=recovered\n'
+        } > "${ctrl}.host-txn-v1.tmp" && mv "${ctrl}.host-txn-v1.tmp" "$ctrl"
+      fi
+      HOST_RECOVERY_EXIT=1
+      echo "pantry update: host setup recovery finished; original transaction failed"
+      return 2
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+host_guard_validate() {
+  local staged="$1" rel src dest
+  [[ -n "$staged" && -d "$staged" ]] || return 1
+  if [[ -f "$staged/systemd/pantry-update.sh" ]]; then
+    if [[ -f "$PANTRY_DIR/systemd/pantry-update.sh" ]] \
+      && ! cmp -s "$staged/systemd/pantry-update.sh" "$PANTRY_DIR/systemd/pantry-update.sh"; then
+      echo "pantry update: host refresh refused: candidate changes frozen pantry-update.sh coordinator" >&2
+      return 1
+    fi
+  fi
+  for rel in systemd/pantry-update.service systemd/pantry-update.timer systemd/pantry-update.path \
+    systemd/pantry-backup.service systemd/pantry-backup.timer; do
+    src="$staged/$rel"
+    dest="$PANTRY_DIR/$rel"
+    [[ -f "$src" && -f "$dest" ]] || continue
+    if ! cmp -s "$src" "$dest"; then
+      echo "pantry update: host refresh refused: candidate changes frozen unit ${rel}" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+host_subset_plan() {
+  local staged="$1" id rel src dest
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    src="$staged/$rel"
+    dest=$(host_txn_target_dest "$id")
+    [[ -f "$src" ]] && printf '%s\t%s\n' "$src" "$dest"
+  done
+}
+
+host_subset_validate() {
+  local staged="$1" id rel src
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    src="$staged/$rel"
+    if [[ ! -f "$src" ]]; then
+      echo "pantry update: host subset bundle is missing ${rel}" >&2
+      return 1
+    fi
+    if ! bash -n "$src"; then
+      echo "pantry update: host subset bundle failed bash -n for ${rel}" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+host_revision_allowed() {
+  local state="$1" revision prov_rc
+  prov_rc=0
+  host_bundle_provenance_ok "$state" || prov_rc=$?
+  [[ "$prov_rc" -eq 0 ]]
+}
+
+host_target_retry_allowed() {
+  local root ctrl target
+  [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]] || return 0
+  root=$(host_setup_state_dir)
+  ctrl="$root/control"
+  [[ -f "$ctrl" ]] || return 0
+  target=$(awk -F= '$1 == "failed_target" { print $2; exit }' "$ctrl" 2>/dev/null || true)
+  phase=$(host_control_phase || true)
+  if [[ "$phase" == recovered && -n "$target" ]]; then
+    echo "pantry update: host setup blocks retry for failed target ${target}" >&2
+    return 1
+  fi
+  return 0
+}
+
+host_retained_prior_present() {
+  local root
+  root=$(host_setup_state_dir)
+  [[ -d "$root/prior" ]]
+}
+
+host_apply_transaction() {
+  local staged="$1" src dest tmp
+  while IFS=$'\t' read -r src dest; do
+    [[ -z "$src" ]] && continue
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      continue
+    fi
+    tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
+    cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$dest"
+  done < <(host_subset_plan "$staged")
+  return 0
+}
+
+host_commit_transaction() {
+  return 0
+}
+
+host_subset_refresh_from_image() {
+  local state="$1" cid tmp staged
+  cid=$(container_id pantry)
+  if [[ -z "$cid" ]]; then
+    echo "pantry update: host script refresh failed: pantry container id is missing" >&2
+    return 1
+  fi
+  tmp=$(mktemp -d) || return 1
+  staged="$tmp/bundle"
+  mkdir -p "$staged"
+  if ! docker cp "${cid}:${HOST_BUNDLE_CONTAINER_PATH}/." "$staged"; then
+    rm -rf "$tmp"
+    echo "pantry update: host script refresh failed: could not read host scripts from the pantry container" >&2
+    return 1
+  fi
+  if ! host_guard_validate "$staged"; then
+    rm -rf "$tmp"
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_subset_validate "$staged"; then
+    rm -rf "$tmp"
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_target_retry_allowed; then
+    rm -rf "$tmp"
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if host_retained_prior_present; then
+    echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
+    rm -rf "$tmp"
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_apply_transaction "$staged"; then
+    host_restore_transaction || true
+    rm -rf "$tmp"
+    echo "pantry update: host subset transaction apply failed" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  rm -rf "$tmp"
+  echo "pantry update: refreshed host deploy scripts from the running image (subset transaction)"
+  return 0
+}
+
+host_acquire_deploy_lock() {
+  mkdir -p "$PANTRY_DIR/deploy-trigger"
+  exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
+  if ! flock -n 9; then
+    echo "pantry update: another update is running; waiting so this trigger is not dropped"
+    flock 9
+  fi
+  echo "pantry update: lock acquired"
+  host_entry_trace "deploy_lock"
+}
+
+host_prepare_deploy_trigger_dir() {
+  if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
+    if [[ "${PANTRY_SETUP_SKIP_ROOT:-}" == 1 ]]; then
+      echo "[warn] Could not give ${PANTRY_DIR}/deploy-trigger to uid 65532" >&2
+    else
+      echo "Could not give ${PANTRY_DIR}/deploy-trigger to uid 65532" >&2
+      return 1
+    fi
+  fi
+  chmod 755 "$PANTRY_DIR/deploy-trigger"
+}
+
+host_gate_before_operational() {
+  local gate_rc=0
+  host_state_validate || gate_rc=$?
+  if [[ "${HOST_STATE_BLOCKED:-0}" -eq 1 ]]; then
+    echo "pantry update: blocked by host setup state" >&2
     exit 1
   fi
-fi
-chmod 755 "$PANTRY_DIR/deploy-trigger"
-
-# stockbot-backup waits on this same file (flock -w 900) so a backup does not
-# snapshot while an update recreates the container.
-exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
-if ! flock -n 9; then
-  echo "pantry update: another update is running; waiting so this trigger is not dropped"
-  flock 9
-fi
-echo "pantry update: lock acquired"
-
-# shellcheck disable=SC1091
-source "$PANTRY_DIR/runtime-setup.sh"
-if ! prepare_setup_dir; then
-  echo "Could not prepare ${PANTRY_DIR}/setup for the setup code" >&2
-  exit 1
-fi
-if ! ensure_app_base_url; then
-  echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
-  exit 1
-fi
-if public_proxy_in_update; then
-  if ! ensure_session_secret; then
-    echo "Could not save the session secret; leaving containers unchanged." >&2
+  host_recover_pending || gate_rc=$?
+  if [[ "$gate_rc" -eq 2 ]]; then
+    exit "${HOST_RECOVERY_EXIT:-1}"
+  fi
+  if [[ "$gate_rc" -ne 0 ]]; then
+    echo "pantry update: host setup recovery failed" >&2
     exit 1
   fi
-fi
-# shellcheck disable=SC1091
-source "$PANTRY_DIR/vapid-env.sh"
-if ! ensure_vapid_keys; then
-  echo "Could not generate VAPID keys; scan alerts stay on an open tab until sudo ./setup.sh succeeds." >&2
-fi
+  host_flags_read
+  if [[ "${HOST_FLAG_ANY_INVALID:-0}" -eq 1 ]]; then
+    if [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]]; then
+      echo "pantry update: invalid host setup flags; refusing host writes" >&2
+    fi
+  fi
+  host_prepare_deploy_trigger_dir || exit 1
+}
+
+host_should_freeze_writes() {
+  if [[ "${HOST_FLAG_ANY_INVALID:-0}" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]]; then
+    if [[ "${HOST_FLAG_AUTO_SETUP:-off}" != on ]]; then
+      return 0
+    fi
+    if [[ "${HOST_FLAG_HOST_REFRESH:-allow}" == deny ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
 
 trigger_digest() {
   if [[ -f "$PANTRY_DIR/deploy-trigger/request" ]]; then
@@ -1899,13 +2244,33 @@ host_bundle_provenance_ok() {
 # container after a successful deploy. Returns non-zero when refresh fails.
 refresh_host_scripts_from_image() {
   local state="$1" cid tmp staged prov_rc
-  if [[ "${PANTRY_HOST_REFRESH:-}" == off ]]; then
+  if [[ "${HOST_STATE_BLOCKED:-0}" -eq 1 ]]; then
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if host_should_freeze_writes; then
+    if [[ "${HOST_FLAG_ANY_INVALID:-0}" -eq 1 ]]; then
+      return "$HOST_TXN_FATAL_RC"
+    fi
     return 0
+  fi
+  if [[ "${HOST_FLAG_HOST_REFRESH:-allow}" == deny ]]; then
+    return 0
+  fi
+  if [[ "${HOST_STATE_INITIALIZED:-0}" -eq 0 && "${HOST_FLAG_AUTO_SETUP:-off}" == on ]]; then
+    echo "pantry update: PANTRY_AUTO_SETUP requires approved initialization before host transactions" >&2
+    return "$HOST_TXN_FATAL_RC"
   fi
   prov_rc=0
   host_bundle_provenance_ok "$state" || prov_rc=$?
   if [[ "$prov_rc" -ne 0 ]]; then
     return "$prov_rc"
+  fi
+  if [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]]; then
+    if [[ "${HOST_FLAG_AUTO_SETUP:-off}" != on ]]; then
+      return 0
+    fi
+    host_subset_refresh_from_image "$state"
+    return $?
   fi
   cid=$(container_id pantry)
   if [[ -z "$cid" ]]; then
@@ -2145,11 +2510,19 @@ apply_compose() {
     fi
     rm -f "$PANTRY_DIR/.update-pending"
     revision=$(pantry_deploy_revision "$state")
-    if refresh_host_scripts_from_image "$state"; then
+    local refresh_rc=0
+    refresh_host_scripts_from_image "$state" || refresh_rc=$?
+    if [[ "$refresh_rc" -eq 0 ]]; then
       write_deploy_status success deploy_ok "$revision" || true
-    else
-      write_deploy_status success host_refresh_failed "$revision" || true
+      clear_state
+      return 0
     fi
+    if [[ "$refresh_rc" -eq "$HOST_TXN_FATAL_RC" ]]; then
+      write_deploy_status blocked host_setup_failed "$revision" || true
+      clear_state
+      return "$refresh_rc"
+    fi
+    write_deploy_status success host_refresh_failed "$revision" || true
     clear_state
     return 0
   fi
@@ -2166,24 +2539,96 @@ apply_compose() {
   exit 1
 }
 
-round=0
-while true; do
-  round=$((round + 1))
-  if [[ "$round" -gt 3 ]]; then
-    echo "pantry update: stopping after 3 pulls; the timer will retry"
-    exit 0
+pantry_update_main() {
+  local mode_rc round=0 before after compose_rc=0
+  cd "$PANTRY_DIR"
+  host_acquire_deploy_lock
+  host_gate_before_operational
+  host_entry_trace "publish-mode-source"
+  # shellcheck disable=SC1091
+  source "$PANTRY_DIR/publish-mode.sh"
+
+  compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+  mode_rc=0
+  mode=$(publish_mode_from_env) || mode_rc=$?
+  if [[ "$mode_rc" -eq 2 ]]; then
+    echo "Tunnel mode needs CLOUDFLARE_TUNNEL_TOKEN in ${PANTRY_DIR}/.env. The public proxy was left unchanged. Run: sudo ./setup.sh publish --tunnel" >&2
+    exit 1
+  elif [[ "$mode_rc" -ne 0 ]]; then
+    echo "PUBLISH_MODE must be acme or tunnel. The public proxy was left unchanged." >&2
+    exit 1
   fi
-  before=$(trigger_digest || true)
-  if [[ -n "$before" ]]; then
-    echo "pantry update: deploy trigger $(tr '\n' ' ' < "$PANTRY_DIR/deploy-trigger/request")"
-  else
-    echo "pantry update: scheduled pull"
+
+  if [[ "$mode" == tunnel ]]; then
+    if [[ ! -f "$PANTRY_DIR/docker-compose.tunnel.yml" || ! -f "$PANTRY_DIR/Caddyfile.tunnel" ]]; then
+      echo "CLOUDFLARE_TUNNEL_TOKEN is set but tunnel compose files are missing from ${PANTRY_DIR}; leaving the tunnel stopped. Run: sudo ./setup.sh publish --tunnel" >&2
+    elif [[ -z "$(publish_env_value PUBLIC_HOST)" ]]; then
+      echo "CLOUDFLARE_TUNNEL_TOKEN is set but PUBLIC_HOST is empty; leaving the tunnel stopped. Set PUBLIC_HOST in ${PANTRY_DIR}/.env and run: sudo ./setup.sh publish --tunnel" >&2
+    else
+      compose+=(-f "$PANTRY_DIR/docker-compose.tunnel.yml" --profile tunnel)
+    fi
+  elif [[ "$mode" == acme ]]; then
+    if [[ -n "$(publish_env_value PUBLIC_HOST)" && -f "$PANTRY_DIR/Caddyfile" ]]; then
+      compose+=(--profile public)
+    elif [[ -n "$(publish_env_value PUBLIC_HOST)" ]]; then
+      echo "PUBLIC_HOST is set but ${PANTRY_DIR}/Caddyfile is missing; leaving the public proxy stopped. Run: sudo ./setup.sh" >&2
+    fi
   fi
-  apply_compose
-  after=$(trigger_digest || true)
-  if [[ "$after" == "$before" ]]; then
-    echo "pantry update: finished"
-    break
+  while IFS= read -r arg; do
+    [[ -n "$arg" ]] && compose+=("$arg")
+  done < <(grocy_compose_suffix)
+
+  # shellcheck disable=SC1091
+  source "$PANTRY_DIR/runtime-setup.sh"
+  if ! prepare_setup_dir; then
+    echo "Could not prepare ${PANTRY_DIR}/setup for the setup code" >&2
+    exit 1
   fi
-  echo "pantry update: trigger changed during the pull; pulling again"
-done
+  if ! ensure_app_base_url; then
+    echo "Could not set APP_BASE_URL from PUBLIC_HOST; leaving containers unchanged." >&2
+    exit 1
+  fi
+  if public_proxy_in_update; then
+    if ! ensure_session_secret; then
+      echo "Could not save the session secret; leaving containers unchanged." >&2
+      exit 1
+    fi
+  fi
+  # shellcheck disable=SC1091
+  source "$PANTRY_DIR/vapid-env.sh"
+  if ! ensure_vapid_keys; then
+    echo "Could not generate VAPID keys; scan alerts stay on an open tab until sudo ./setup.sh succeeds." >&2
+  fi
+
+  while true; do
+    round=$((round + 1))
+    if [[ "$round" -gt 3 ]]; then
+      echo "pantry update: stopping after 3 pulls; the timer will retry"
+      exit 0
+    fi
+    before=$(trigger_digest || true)
+    if [[ -n "$before" ]]; then
+      echo "pantry update: deploy trigger $(tr '\n' ' ' < "$PANTRY_DIR/deploy-trigger/request")"
+    else
+      echo "pantry update: scheduled pull"
+    fi
+    compose_rc=0
+    apply_compose || compose_rc=$?
+    if [[ "$compose_rc" -eq "$HOST_TXN_FATAL_RC" ]]; then
+      exit "$compose_rc"
+    fi
+    if [[ "$compose_rc" -ne 0 ]]; then
+      exit "$compose_rc"
+    fi
+    after=$(trigger_digest || true)
+    if [[ "$after" == "$before" ]]; then
+      echo "pantry update: finished"
+      break
+    fi
+    echo "pantry update: trigger changed during the pull; pulling again"
+  done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  pantry_update_main
+fi
