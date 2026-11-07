@@ -57,11 +57,85 @@ func TestOTAManifestGoldenVectors(t *testing.T) {
 			if !v.Valid && err == nil {
 				t.Fatal("expected verification failure for invalid vector")
 			}
-			if !v.Valid && err != nil && !errors.Is(err, ErrValidation) && err.Error() != "manifest signature invalid" {
-				// crypto failures may be signature invalid or validation on wire parse
+			if !v.Valid {
+				wantValidation := mutationExpectsValidation(v.Name)
+				if wantValidation {
+					if !errors.Is(err, ErrValidation) {
+						t.Fatalf("want ErrValidation, got %v", err)
+					}
+				} else if err.Error() != "manifest signature invalid" {
+					t.Fatalf("want signature crypto failure, got %v", err)
+				}
 			}
 		})
 	}
+}
+
+func mutationExpectsValidation(name string) bool {
+	switch name {
+	case "mutate-product-byte", "mutate-target-byte", "mutate-keyId-byte":
+		return true
+	case "mutate-version-byte", "mutate-sha256-byte", "mutate-size-byte":
+		return false
+	default:
+		return true
+	}
+}
+
+// TestArchitectWireNOGO locks the four PR #565 wire defects (Architect report
+// 02e6905da495c7a56d3bb1674fbd74ea7a440521d00d72391a7f76fa456118ed).
+func TestArchitectWireNOGO(t *testing.T) {
+	t.Run("semver rejects non-SemVer2 forms", func(t *testing.T) {
+		valid := goldenVector(t).Fields
+		for _, ver := range []string{"01.0.0", "1.0.0-01", "1.0.0-rc..1"} {
+			f := valid
+			f.Version = ver
+			err := ValidateFields(f)
+			if err == nil || !errors.Is(err, ErrValidation) {
+				t.Fatalf("version %q: got %v", ver, err)
+			}
+		}
+	})
+	t.Run("size wire rejects plus prefix", func(t *testing.T) {
+		v := goldenVector(t)
+		wire := []byte(strings.Replace(v.Canonical, "size=1532416", "size=+1532416", 1))
+		err := VerifyCanonical(wire, v.SigB64, v.Fields.KeyID, allowlist(t, v))
+		if err == nil || !errors.Is(err, ErrValidation) {
+			t.Fatalf("want validation on non-canonical size text, got %v", err)
+		}
+	})
+	t.Run("strict signature base64 padding", func(t *testing.T) {
+		v := goldenVector(t)
+		bad := []byte(v.SigB64)
+		// Flip unused padding bits on the trailing '=' (RFC 4648 canonical padding).
+		if bad[len(bad)-1] != '=' {
+			t.Fatalf("expected padded signature ending in =, got %q", v.SigB64[len(v.SigB64)-3:])
+		}
+		bad[len(bad)-1] = '`' // 0x60 in base64 alphabet; invalid canonical padding symbol
+		err := VerifyCanonical([]byte(v.Canonical), string(bad), v.Fields.KeyID, allowlist(t, v))
+		if err == nil || !errors.Is(err, ErrValidation) {
+			t.Fatalf("want strict base64 rejection, got %v", err)
+		}
+	})
+	t.Run("caller keyId must match signed keyId", func(t *testing.T) {
+		v := goldenVector(t)
+		wire := []byte(strings.Replace(v.Canonical, "keyId=fw-2026-1", "keyId=fw-2026-2", 1))
+		seed := make([]byte, ed25519.SeedSize)
+		for i := range seed {
+			seed[i] = 0x3b
+		}
+		priv := ed25519.NewKeyFromSeed(seed)
+		sig := ed25519.Sign(priv, wire)
+		sigB64 := base64.StdEncoding.EncodeToString(sig)
+		allowlist := map[string]ed25519.PublicKey{
+			"fw-2026-1": priv.Public().(ed25519.PublicKey),
+			"fw-2026-2": priv.Public().(ed25519.PublicKey),
+		}
+		err := VerifyCanonical(wire, sigB64, "fw-2026-1", allowlist)
+		if err == nil || !errors.Is(err, ErrValidation) {
+			t.Fatalf("want keyId mismatch rejection, got %v", err)
+		}
+	})
 }
 
 func TestVerifyFieldsMatchesCanonical(t *testing.T) {
@@ -114,9 +188,13 @@ func TestValidateFieldsNegative(t *testing.T) {
 		{"unknown target", func(f Fields) Fields { f.Target = "unknown_target"; return f }},
 		{"version v-prefix", func(f Fields) Fields { f.Version = "v1.0.0"; return f }},
 		{"malformed semver", func(f Fields) Fields { f.Version = "1.0"; return f }},
+		{"semver leading zero core", func(f Fields) Fields { f.Version = "01.0.0"; return f }},
+		{"semver leading zero prerelease", func(f Fields) Fields { f.Version = "1.0.0-01"; return f }},
+		{"semver empty prerelease id", func(f Fields) Fields { f.Version = "1.0.0-rc..1"; return f }},
 		{"zero size", func(f Fields) Fields { f.Size = 0; return f }},
 		{"oversized", func(f Fields) Fields { f.Size = maxManifestSize + 1; return f }},
 		{"leading zero size wire", func(f Fields) Fields { return f }},
+		{"plus size wire", func(f Fields) Fields { return f }},
 		{"uppercase sha256", func(f Fields) Fields {
 			f.SHA256 = strings.ToUpper(f.SHA256)
 			return f
@@ -130,6 +208,15 @@ func TestValidateFieldsNegative(t *testing.T) {
 			if tc.name == "leading zero size wire" {
 				gv := goldenVector(t)
 				wire := []byte(strings.Replace(gv.Canonical, "size=1532416", "size=042", 1))
+				err := VerifyCanonical(wire, gv.SigB64, valid.KeyID, allowlist(t, gv))
+				if err == nil || !errors.Is(err, ErrValidation) {
+					t.Fatalf("got %v", err)
+				}
+				return
+			}
+			if tc.name == "plus size wire" {
+				gv := goldenVector(t)
+				wire := []byte(strings.Replace(gv.Canonical, "size=1532416", "size=+1532416", 1))
 				err := VerifyCanonical(wire, gv.SigB64, valid.KeyID, allowlist(t, gv))
 				if err == nil || !errors.Is(err, ErrValidation) {
 					t.Fatalf("got %v", err)
@@ -208,6 +295,53 @@ func TestCryptoAndAllowlistNegative(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+func TestSemVer2AcceptsDesignExamples(t *testing.T) {
+	valid := goldenVector(t).Fields
+	cases := []string{"1.0.2-rc.1", "1.0.0", "10.20.30+build.1"}
+	for _, ver := range cases {
+		f := valid
+		f.Version = ver
+		if err := ValidateFields(f); err != nil {
+			t.Fatalf("version %q: %v", ver, err)
+		}
+	}
+}
+
+func TestManifestFromWireParseErrors(t *testing.T) {
+	gv := goldenVector(t)
+	lines := strings.Split(gv.Canonical, "\n")
+	mutateLine := func(idx int, line string) []byte {
+		out := append([]string(nil), lines...)
+		out[idx] = line
+		return []byte(strings.Join(out, "\n"))
+	}
+	cases := []struct {
+		name string
+		b    []byte
+	}{
+		{"non-numeric size", mutateLine(4, "size=abc")},
+		{"missing product prefix", mutateLine(1, "prod=esp32_scanner")},
+		{"version plus only build", mutateLine(3, "version=1.0.0+")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := manifestFromWire(tc.b)
+			if err == nil || !errors.Is(err, ErrValidation) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodePublicKeyStrictPadding(t *testing.T) {
+	v := goldenVector(t)
+	bad := v.PublicKeyB64[:len(v.PublicKeyB64)-1] + "`"
+	_, err := DecodePublicKeyB64(bad)
+	if err == nil || !errors.Is(err, ErrValidation) {
+		t.Fatalf("got %v", err)
+	}
 }
 
 func TestAllowedTargets(t *testing.T) {

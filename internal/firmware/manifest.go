@@ -32,8 +32,9 @@ var allowedTargets = map[string]struct{}{
 }
 
 var (
-	keyIDPattern  = regexp.MustCompile(`^fw-[0-9]{4}-[0-9]+$`)
-	semverPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][-0-9A-Za-z.]*)?(?:\+[0-9A-Za-z][-0-9A-Za-z.]*)?$`)
+	keyIDPattern    = regexp.MustCompile(`^fw-[0-9]{4}-[0-9]+$`)
+	sizeWirePattern = regexp.MustCompile(`^[1-9][0-9]*$`)
+	strictB64       = base64.StdEncoding.Strict()
 )
 
 // Fields are the validated manifest field values. Callers that already hold raw
@@ -58,15 +59,11 @@ func ValidateFields(f Fields) error {
 	if _, ok := allowedTargets[f.Target]; !ok {
 		return fmt.Errorf("%w: target", ErrValidation)
 	}
-	if strings.HasPrefix(f.Version, "v") || !semverPattern.MatchString(f.Version) {
+	if !validateSemVer2(f.Version) {
 		return fmt.Errorf("%w: version", ErrValidation)
 	}
 	if f.Size <= 0 || f.Size > maxManifestSize {
 		return fmt.Errorf("%w: size", ErrValidation)
-	}
-	sizeText := strconv.FormatInt(f.Size, 10)
-	if len(sizeText) > 1 && sizeText[0] == '0' {
-		return fmt.Errorf("%w: size leading zero", ErrValidation)
 	}
 	if len(f.SHA256) != sha256HexLen || !isLowerHex(f.SHA256) {
 		return fmt.Errorf("%w: sha256", ErrValidation)
@@ -109,10 +106,14 @@ func VerifyFields(f Fields, sigB64 string, pubkeys map[string]ed25519.PublicKey)
 // VerifyCanonical checks raw manifest bytes and a detached signature. The bytes
 // must already be the exact signed form; this function does not parse or reorder.
 func VerifyCanonical(canonical []byte, sigB64, keyID string, pubkeys map[string]ed25519.PublicKey) error {
-	if err := assertCanonicalWire(canonical); err != nil {
+	f, err := manifestFromWire(canonical)
+	if err != nil {
 		return err
 	}
-	pub, ok := pubkeys[keyID]
+	if f.KeyID != keyID {
+		return fmt.Errorf("%w: keyId mismatch", ErrValidation)
+	}
+	pub, ok := pubkeys[f.KeyID]
 	if !ok {
 		return fmt.Errorf("%w: unknown keyId", ErrValidation)
 	}
@@ -131,7 +132,7 @@ func VerifyCanonical(canonical []byte, sigB64, keyID string, pubkeys map[string]
 
 // DecodePublicKeyB64 decodes a standard padded base64 Ed25519 public key (32 bytes).
 func DecodePublicKeyB64(b64 string) (ed25519.PublicKey, error) {
-	raw, err := base64.StdEncoding.DecodeString(b64)
+	raw, err := strictB64.DecodeString(b64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: public key base64", ErrValidation)
 	}
@@ -145,7 +146,7 @@ func decodeSigB64(b64 string) ([]byte, error) {
 	if len(b64) != ed25519SigB64Len {
 		return nil, fmt.Errorf("%w: signature base64 length", ErrValidation)
 	}
-	raw, err := base64.StdEncoding.DecodeString(b64)
+	raw, err := strictB64.DecodeString(b64)
 	if err != nil {
 		return nil, fmt.Errorf("%w: signature base64", ErrValidation)
 	}
@@ -155,41 +156,44 @@ func decodeSigB64(b64 string) ([]byte, error) {
 	return raw, nil
 }
 
-func assertCanonicalWire(canonical []byte) error {
+func manifestFromWire(canonical []byte) (Fields, error) {
 	if len(canonical) == 0 {
-		return fmt.Errorf("%w: empty manifest", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: empty manifest", ErrValidation)
 	}
 	if canonical[len(canonical)-1] == '\n' || canonical[len(canonical)-1] == '\r' {
-		return fmt.Errorf("%w: trailing newline", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: trailing newline", ErrValidation)
 	}
 	if strings.Contains(string(canonical), "\r") {
-		return fmt.Errorf("%w: crlf", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: crlf", ErrValidation)
 	}
 	text := string(canonical)
 	if !strings.HasPrefix(text, manifestHeader+"\n") {
-		return fmt.Errorf("%w: header", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: header", ErrValidation)
 	}
 	lines := strings.Split(text, "\n")
 	if len(lines) != 7 {
-		return fmt.Errorf("%w: line count", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: line count", ErrValidation)
 	}
 	if lines[0] != manifestHeader {
-		return fmt.Errorf("%w: header line", ErrValidation)
+		return Fields{}, fmt.Errorf("%w: header line", ErrValidation)
 	}
 	expectedKeys := []string{"product=", "target=", "version=", "size=", "sha256=", "keyId="}
 	for i, prefix := range expectedKeys {
 		if !strings.HasPrefix(lines[i+1], prefix) {
-			return fmt.Errorf("%w: field order", ErrValidation)
+			return Fields{}, fmt.Errorf("%w: field order", ErrValidation)
 		}
 		if strings.Contains(lines[i+1], " ") {
-			return fmt.Errorf("%w: spaces", ErrValidation)
+			return Fields{}, fmt.Errorf("%w: spaces", ErrValidation)
 		}
 	}
 	f, err := fieldsFromCanonicalLines(lines)
 	if err != nil {
-		return err
+		return Fields{}, err
 	}
-	return ValidateFields(f)
+	if err := ValidateFields(f); err != nil {
+		return Fields{}, err
+	}
+	return f, nil
 }
 
 func fieldsFromCanonicalLines(lines []string) (Fields, error) {
@@ -216,8 +220,8 @@ func fieldsFromCanonicalLines(lines []string) (Fields, error) {
 	if err != nil {
 		return Fields{}, err
 	}
-	if len(sizeText) > 1 && sizeText[0] == '0' {
-		return Fields{}, fmt.Errorf("%w: size leading zero", ErrValidation)
+	if !sizeWirePattern.MatchString(sizeText) {
+		return Fields{}, fmt.Errorf("%w: size", ErrValidation)
 	}
 	size, err := strconv.ParseInt(sizeText, 10, 64)
 	if err != nil {
@@ -239,6 +243,96 @@ func fieldsFromCanonicalLines(lines []string) (Fields, error) {
 		SHA256:  sha,
 		KeyID:   keyID,
 	}, nil
+}
+
+// validateSemVer2 checks SemVer 2.0.0 without a leading v (design §4).
+func validateSemVer2(v string) bool {
+	if v == "" || strings.HasPrefix(v, "v") {
+		return false
+	}
+	build := ""
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		build = v[i+1:]
+		v = v[:i]
+		if build == "" {
+			return false
+		}
+	}
+	pre := ""
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		pre = v[i+1:]
+		v = v[:i]
+		if pre == "" {
+			return false
+		}
+	}
+	core := strings.Split(v, ".")
+	if len(core) != 3 {
+		return false
+	}
+	for _, part := range core {
+		if !semverNumericID(part) {
+			return false
+		}
+	}
+	if pre != "" && !semverIdentifierList(pre) {
+		return false
+	}
+	if build != "" && !semverIdentifierList(build) {
+		return false
+	}
+	return true
+}
+
+func semverNumericID(s string) bool {
+	if s == "" {
+		return false
+	}
+	if len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func semverIdentifierList(s string) bool {
+	parts := strings.Split(s, ".")
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if isAllDigits(part) {
+			if !semverNumericID(part) {
+				return false
+			}
+		} else if !semverAlphanumericID(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func semverAlphanumericID(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isLowerHex(s string) bool {
