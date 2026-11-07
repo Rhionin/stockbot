@@ -26,6 +26,7 @@ import {
 } from '@stockbot/shared/contract';
 import { dismissUndo, showUndo } from '../restock/undo';
 import { clearOfflineNotice } from './offlineNotice';
+import { inventoryItemMatchesScanLinkSearch } from '@stockbot/shared/linkRowProductFilter';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '@stockbot/shared/types';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
@@ -115,15 +116,13 @@ const LinkProductSearch = ({
     };
   }, [reloadKey, userId]);
 
-  const matches = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
-    return items.filter((row) => {
-      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
-      if (normalized === '') return true;
-      const product = row.item.product;
-      return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
-    });
-  }, [excludeProductId, items, query]);
+  const matches = useMemo(() => items.filter((row) =>
+    inventoryItemMatchesScanLinkSearch(
+      row.item.productId,
+      row.item.product,
+      query,
+      excludeProductId,
+    )), [excludeProductId, items, query]);
 
   return (
     <div className="scan-link-search" ref={rootRef}>
