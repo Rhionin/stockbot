@@ -241,7 +241,7 @@ host_embedded_env_value() {
 
 host_flags_read() {
   local hr as env_as
-  hr=${HOST_REFRESH-${PANTRY_HOST_REFRESH:-}}
+  hr=${HOST_REFRESH:-${PANTRY_HOST_REFRESH:-}}
   hr=${hr:-}
   case "$hr" in
     ''|on) HOST_FLAG_HOST_REFRESH=allow ;;

@@ -217,4 +217,113 @@ PANTRY_DIR="$restore_root" HOST_STATE_INITIALIZED=1 bash -c '
 ' _ "$UPDATE"
 rm -rf "$restore_root"
 
+# Initialized clean + AUTO off: no legacy broad install on refresh decision
+freeze_root=$(mktemp -d)
+prepare_root "$freeze_root"
+mkdir -p "$freeze_root/host-setup-state/lkg/files"
+cp "$freeze_root/publish-mode.sh" "$freeze_root/host-setup-state/lkg/files/1"
+printf 'phase=clean\nversion=1\n' >"$freeze_root/host-setup-state/control"
+PANTRY_DIR="$freeze_root" bash -c '
+  set -euo pipefail
+  source "$1"
+  HOST_STATE_INITIALIZED=1
+  HOST_FLAG_AUTO_SETUP=off
+  HOST_FLAG_HOST_REFRESH=allow
+  host_should_freeze_writes
+' _ "$UPDATE" || fail "initialized AUTO off should freeze writes"
+rm -rf "$freeze_root"
+
+# Retained prior blocks promotion eligibility
+prior_root=$(mktemp -d)
+prepare_root "$prior_root"
+state="$prior_root/host-setup-state"
+mkdir -p "$state/prior" "$state/lkg/files"
+cp "$prior_root/publish-mode.sh" "$state/lkg/files/1"
+printf 'phase=clean\n' >"$state/control"
+PANTRY_DIR="$prior_root" HOST_STATE_INITIALIZED=1 bash -c '
+  set -euo pipefail
+  source "$1"
+  host_retained_prior_present || exit 1
+' _ "$UPDATE" || fail "retained prior must be detected"
+staged="$prior_root/stage"
+mkdir -p "$staged/systemd"
+cp "$prior_root/publish-mode.sh" "$prior_root/runtime-setup.sh" "$prior_root/vapid-env.sh" "$staged/"
+cp "$prior_root/systemd/pantry-backup.sh" "$staged/systemd/"
+set +e
+PANTRY_DIR="$prior_root" HOST_STATE_INITIALIZED=1 bash -c '
+  set -euo pipefail
+  source "$1"
+  host_retained_prior_present || exit 1
+  if host_retained_prior_present; then
+    echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
+    exit 3
+  fi
+  exit 0
+' _ "$UPDATE"
+ret_rc=$?
+set -e
+[[ "$ret_rc" -eq 3 ]] || fail "retained prior should refuse promotion (rc=$ret_rc)"
+rm -rf "$prior_root"
+
+# Invalid HOST_REFRESH with valid AUTO: both-invalid row
+both_invalid=$(mktemp -d)
+prepare_root "$both_invalid"
+PANTRY_DIR="$both_invalid" HOST_REFRESH=maybe AUTO_SETUP=on bash -c '
+  set -euo pipefail
+  source "$1"
+  host_flags_read
+  [[ "$HOST_FLAG_ANY_INVALID" -eq 1 ]]
+' _ "$UPDATE"
+rm -rf "$both_invalid"
+
+# Uninitialized + AUTO on without state: must not fall back to legacy (refresh gate)
+uninit_auto=$(mktemp -d)
+prepare_root "$uninit_auto"
+PANTRY_DIR="$uninit_auto" bash -c '
+  set -euo pipefail
+  source "$1"
+  HOST_STATE_INITIALIZED=0
+  HOST_FLAG_AUTO_SETUP=on
+  HOST_FLAG_HOST_REFRESH=allow
+  HOST_FLAG_ANY_INVALID=0
+  rc=0
+  refresh_host_scripts_from_image /tmp/x || rc=$?
+  [[ "$rc" -eq 3 ]]
+' _ "$UPDATE"
+rm -rf "$uninit_auto"
+
+# Corrupt state blocks whole updater entry
+corrupt_root=$(mktemp -d)
+prepare_root "$corrupt_root"
+touch "$corrupt_root/host-setup-state"
+work=$(mktemp -d)
+make_bin "$work/bin"
+set +e
+PANTRY_DIR="$corrupt_root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+  bash "$corrupt_root/systemd/pantry-update.sh" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail "corrupt host-setup-state file must block updater"
+rm -rf "$corrupt_root" "$work"
+
+# Protected temp names: host transaction uses host-txn-v1 not .refresh
+tmp_name_root=$(mktemp -d)
+prepare_root "$tmp_name_root"
+PANTRY_DIR="$tmp_name_root" bash -c '
+  set -euo pipefail
+  source "$1"
+  grep -q "host-txn-v1" "$1"
+' _ "$UPDATE" || fail "coordinator must use host-txn-v1 temp prefix"
+
+# Mode invariance on protected paths (not just content)
+for path in "${PROTECTED[@]}"; do
+  base_mode=$(git -C "$ROOT" show "${BASE_SHA}:${path}" | wc -c >/dev/null 2>&1; git -C "$ROOT" ls-tree "${BASE_SHA}" "$path" | awk '{print $1}')
+  work_mode=$(stat -c '%a' "$ROOT/$path" 2>/dev/null || true)
+  [[ -n "$work_mode" ]] || continue
+  # shell scripts and deploy files: expect same user-visible mode bits as tree (blob mode in git is 100755 or 100644)
+  git_blob=$(git -C "$ROOT" ls-tree "${BASE_SHA}" "$path" | awk '{print $1}')
+  work_blob=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $1}')
+  [[ "$git_blob" == "$work_blob" ]] || fail "git index mode drift on $path (protected)"
+done
+
 echo "host_setup_transaction_test ok"
