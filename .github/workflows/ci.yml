@@ -119,6 +119,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
