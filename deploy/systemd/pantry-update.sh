@@ -565,7 +565,7 @@ host_prepare_deploy_trigger_dir() {
 host_gate_before_operational() {
   local gate_rc=0
   host_state_validate || gate_rc=$?
-  if [[ "${HOST_STATE_BLOCKED:-0}" -eq 1 ]]; then
+  if [[ "${HOST_STATE_BLOCKED:-0}" -eq 1 || "${HOST_STATE_CORRUPT:-0}" -eq 1 ]]; then
     echo "pantry update: blocked by host setup state" >&2
     exit 1
   fi

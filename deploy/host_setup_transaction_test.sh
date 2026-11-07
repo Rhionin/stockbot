@@ -317,10 +317,6 @@ PANTRY_DIR="$tmp_name_root" bash -c '
 
 # Mode invariance on protected paths (not just content)
 for path in "${PROTECTED[@]}"; do
-  base_mode=$(git -C "$ROOT" show "${BASE_SHA}:${path}" | wc -c >/dev/null 2>&1; git -C "$ROOT" ls-tree "${BASE_SHA}" "$path" | awk '{print $1}')
-  work_mode=$(stat -c '%a' "$ROOT/$path" 2>/dev/null || true)
-  [[ -n "$work_mode" ]] || continue
-  # shell scripts and deploy files: expect same user-visible mode bits as tree (blob mode in git is 100755 or 100644)
   git_blob=$(git -C "$ROOT" ls-tree "${BASE_SHA}" "$path" | awk '{print $1}')
   work_blob=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $1}')
   [[ "$git_blob" == "$work_blob" ]] || fail "git index mode drift on $path (protected)"

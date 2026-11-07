@@ -808,7 +808,6 @@ run_update() {
     STUB_FIXTURE_ROOT="$ROOT/deploy/fixtures" \
     PANTRY_SYSTEMD_UNIT_DIR="${PANTRY_SYSTEMD_UNIT_DIR:-}" \
     PANTRY_TEST_ENTRY_TRACE="${PANTRY_TEST_ENTRY_TRACE:-}" \
-    CHOWN_LOG="${CHOWN_LOG:-}" \
     PATH="$path_setting" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
