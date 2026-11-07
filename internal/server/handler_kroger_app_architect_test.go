@@ -216,7 +216,19 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 		rec *httptest.ResponseRecorder
 	}
 	resultCh := make(chan replaceResult, 1)
+	replaceDone := make(chan struct{})
+	t.Cleanup(func() {
+		// If the test body already received from resultCh, the goroutine has exited
+		// and this returns immediately. On Fatalf before receive, bound the wait so
+		// we do not sit until the old 3s cleanup or leave work hanging for the package
+		// timeout when a DB tx is stuck.
+		select {
+		case <-replaceDone:
+		case <-time.After(400 * time.Millisecond):
+		}
+	})
 	go func() {
+		defer close(replaceDone)
 		rec := serveAuthedWithContext(caller, 2*time.Second, http.MethodPut, savePath, replaceBody)
 		resultCh <- replaceResult{rec: rec}
 	}()
@@ -233,16 +245,31 @@ func TestKrogerAppSaveAppReplaceRollsBackOnFailure(t *testing.T) {
 	if saveHookCalls != 2 {
 		t.Fatalf("save hook calls = %d, want 2 (initial save + failed replace)", saveHookCalls)
 	}
+
+	// Handler uses a request-scoped timeout; the goroutine must finish promptly after
+	// sending the response so successful tests do not sit in a long t.Cleanup sleep.
+	select {
+	case <-replaceDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("replace handler goroutine still running 200ms after response (possible leak)")
+	}
+
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelVerify()
 	var clientID string
-	if err := db.QueryRow(`SELECT client_id FROM provider_app_credentials WHERE household_id = ? AND provider_id = 'kroger'`, primary).Scan(&clientID); err != nil || clientID != "first-app" {
+	if err := db.QueryRowContext(verifyCtx, `SELECT client_id FROM provider_app_credentials WHERE household_id = ? AND provider_id = 'kroger'`, primary).Scan(&clientID); err != nil || clientID != "first-app" {
 		t.Fatalf("client_id=%q err=%v", clientID, err)
 	}
+	verifyCtx2, cancelVerify2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelVerify2()
 	var state string
-	if err := db.QueryRow(`SELECT state FROM provider_connections WHERE id = 'conn-replace'`).Scan(&state); err != nil || state != "connected" {
+	if err := db.QueryRowContext(verifyCtx2, `SELECT state FROM provider_connections WHERE id = 'conn-replace'`).Scan(&state); err != nil || state != "connected" {
 		t.Fatalf("state=%q err=%v", state, err)
 	}
+	verifyCtx3, cancelVerify3 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelVerify3()
 	var reauthRows int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger' AND state = 'reauth_required'`, primary).Scan(&reauthRows); err != nil || reauthRows != 0 {
+	if err := db.QueryRowContext(verifyCtx3, `SELECT COUNT(*) FROM provider_connections WHERE household_id = ? AND provider_id = 'kroger' AND state = 'reauth_required'`, primary).Scan(&reauthRows); err != nil || reauthRows != 0 {
 		t.Fatalf("reauth_required rows=%d err=%v, want rollback with no reauth", reauthRows, err)
 	}
 }

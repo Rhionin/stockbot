@@ -70,11 +70,14 @@ func (d *Directory) Read(ctx context.Context, scope tenant.Scope, provider strin
 		grantedScope sql.NullString
 	)
 
+	canonicalID := scope.HouseholdID() + ":" + provider
 	err := d.db.QueryRowContext(ctx,
 		`SELECT state, access_token, refresh_token, access_token_expires_at, auth_state, auth_state_at,
 		        app_key, auth_app_key, auth_return, granted_scope
 		 FROM provider_connections
-		 WHERE household_id = ? AND provider_id = ?`, scope.HouseholdID(), provider).Scan(
+		 WHERE household_id = ? AND provider_id = ?
+		 ORDER BY (id = ?) DESC, updated_at DESC, id ASC
+		 LIMIT 1`, scope.HouseholdID(), provider, canonicalID).Scan(
 		&state, &accessToken, &refreshToken, &expiresAt, &authState, &authStateAt,
 		&appKey, &authAppKey, &authReturn, &grantedScope)
 	if err == sql.ErrNoRows {
@@ -207,9 +210,13 @@ func (d *Directory) ConsumeAuthState(ctx context.Context, scope tenant.Scope, pr
 		storedAt    time.Time
 	)
 
+	canonicalID := scope.HouseholdID() + ":" + provider
 	err := d.db.QueryRowContext(ctx,
-		`SELECT auth_state, auth_state_at FROM provider_connections WHERE household_id = ? AND provider_id = ?`,
-		scope.HouseholdID(), provider).Scan(&storedState, &storedAt)
+		`SELECT auth_state, auth_state_at FROM provider_connections
+		 WHERE household_id = ? AND provider_id = ?
+		 ORDER BY (id = ?) DESC, updated_at DESC, id ASC
+		 LIMIT 1`,
+		scope.HouseholdID(), provider, canonicalID).Scan(&storedState, &storedAt)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
