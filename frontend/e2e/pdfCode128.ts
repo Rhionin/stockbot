@@ -172,3 +172,29 @@ export async function pdfContainsVisibleText(pdf: Buffer, needle: string): Promi
   const text = await pdfVisibleText(pdf)
   return text.includes(needle)
 }
+
+const PRINT_PAGE_HEIGHT_MM: Record<'Letter' | 'A4', number> = { Letter: 279.4, A4: 297 }
+const PRINT_PAGE_MARGIN_MM = 12.7
+
+/** Reject sheets whose ink extends past the bottom printable edge (overflow clipped or spilling to page 2). */
+export function assertPdfInkWithinPageMargins(pdf: Buffer, format: 'Letter' | 'A4'): void {
+  const png = PNG.sync.read(rasterizePdfFirstPagePng(pdf, PDF_RULER_RASTER_DPI))
+  const pageHeightPx = Math.round((PRINT_PAGE_HEIGHT_MM[format] / 25.4) * PDF_RULER_RASTER_DPI)
+  const marginPx = Math.round((PRINT_PAGE_MARGIN_MM / 25.4) * PDF_RULER_RASTER_DPI)
+  const maxInkRow = pageHeightPx - marginPx + Math.round(marginPx * 0.25)
+  let lowestInkRow = -1
+  for (let y = 0; y < png.height; y += 1) {
+    let darkSamples = 0
+    for (let x = marginPx; x < png.width - marginPx; x += 3) {
+      const offset = (y * png.width + x) * 4
+      const lum = (png.data[offset] + png.data[offset + 1] + png.data[offset + 2]) / 3
+      if (lum < 235) darkSamples += 1
+    }
+    if (darkSamples > 12) lowestInkRow = y
+  }
+  if (lowestInkRow > maxInkRow) {
+    throw new Error(
+      `PDF ink overflows bottom margin on ${format}: row ${lowestInkRow} > ${maxInkRow} (page ${pageHeightPx}px @ ${PDF_RULER_RASTER_DPI}dpi)`,
+    )
+  }
+}

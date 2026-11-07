@@ -22,7 +22,7 @@ describe('kit copy helpers (#456 table B)', () => {
       'No printer? Plug a USB keyboard into the hub, type this code, and press Enter: SBP-2345-6789-X',
     );
     expect(pairingKeyboardFallback('SBP-2345-6789-X', 'scanner')).toBe(
-      "Can't scan it? Open the app on your phone or computer and scan this barcode from the screen.",
+      "Can't scan it? Scan the same barcode from your phone or computer screen.",
     );
   });
 
@@ -46,6 +46,13 @@ describe('kit copy helpers (#456 table B)', () => {
     );
     expect(wallBarcodeStockInCopy(threeMin)).toBe(
       'Scan before you put groceries away. Goes back to Stock out 3 minutes after your last scan.',
+    );
+    const stockInDefault = { inactivityRevertSeconds: 300, defaultDirection: 'stock_in' as const };
+    expect(wallBarcodeStockOutCopy(stockInDefault)).toBe(
+      'Scan before you take things out. Goes back to Stock in 5 minutes after your last scan.',
+    );
+    expect(wallBarcodeStockInCopy(stockInDefault)).toBe(
+      'Scan before you put groceries away. This is the normal mode.',
     );
     expect(resolveWallBarcodeSettings([
       { kind: 'esp32_scanner', revokedAt: null, inactivityRevertSeconds: 180, defaultDirection: 'stock_out' },
