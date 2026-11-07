@@ -10,6 +10,10 @@ import { colors } from './theme';
 
 const page = '#FFFFFF';
 
+function normHex(color: string): string {
+  return color.startsWith('#') ? color.toLowerCase() : color;
+}
+
 describe('nothing on hand contrast', () => {
   it.each([
     { foreground: colors.nothingInk, background: colors.nothingWash, minimum: 4.5 },
@@ -23,10 +27,10 @@ describe('nothing on hand contrast', () => {
   });
 
   it('uses the amber ink already on the shelf mark', () => {
-    expect(colors.nothingInk).toBe('#92400E');
+    expect(normHex(colors.nothingInk)).toBe(normHex('#92400E'));
     expect(colors.using).toBe(colors.nothingInk);
-    expect(colors.nothingWash).toBe('#FFFBEB');
-    expect(colors.nothingBorder).toBe('#B45309');
+    expect(normHex(colors.nothingWash)).toBe(normHex('#FFFBEB'));
+    expect(normHex(colors.nothingBorder)).toBe(normHex('#B45309'));
   });
 });
 
