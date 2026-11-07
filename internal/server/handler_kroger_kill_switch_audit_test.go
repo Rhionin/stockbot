@@ -26,6 +26,16 @@ func (k *killSwitchHTTPSpy) RoundTrip(req *http.Request) (*http.Response, error)
 	return provisionTestJSONResponse(http.StatusOK, `{}`), nil
 }
 
+func withKillSwitchTimezones(t *testing.T, fn func(t *testing.T)) {
+	t.Helper()
+	for _, tz := range []string{"UTC", "America/Denver"} {
+		t.Run("TZ="+tz, func(t *testing.T) {
+			t.Setenv("TZ", tz)
+			fn(t)
+		})
+	}
+}
+
 func killSwitchExportFixture(spy *killSwitchHTTPSpy) func(env testEnv) {
 	return func(env testEnv) {
 		createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-kroger", "Kroger milk", "item-kroger")
@@ -53,25 +63,22 @@ func killSwitchExportFixture(spy *killSwitchHTTPSpy) func(env testEnv) {
 }
 
 func TestKillSwitchAuditExportProviderKrogerZeroCallsWhenDisabled(t *testing.T) {
-	for _, tz := range []string{"UTC", "America/Denver"} {
-		t.Run("TZ="+tz, func(t *testing.T) {
-			t.Setenv("TZ", tz)
-			spy := &killSwitchHTTPSpy{}
-			runHandlerTests(t, []handlerTestCase{{
-				name:    "export provider kroger disabled",
-				options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
-				setup:   killSwitchExportFixture(spy),
-				httpExchange: httpExchange{
-					method: "POST", path: "/api/shopping-list/export", body: `{"provider":"kroger"}`,
-					expectedStatus: http.StatusConflict,
-					assertions:     []assertion{{path: "$.code", value: "store_disabled"}},
-				},
-			}})
-			if spy.calls != 0 {
-				t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
-			}
-		})
-	}
+	withKillSwitchTimezones(t, func(t *testing.T) {
+		spy := &killSwitchHTTPSpy{}
+		runHandlerTests(t, []handlerTestCase{{
+			name:    "export provider kroger disabled",
+			options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
+			setup:   killSwitchExportFixture(spy),
+			httpExchange: httpExchange{
+				method: "POST", path: "/api/shopping-list/export", body: `{"provider":"kroger"}`,
+				expectedStatus: http.StatusConflict,
+				assertions:     []assertion{{path: "$.code", value: "store_disabled"}},
+			},
+		}})
+		if spy.calls != 0 {
+			t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
+		}
+	})
 }
 
 func TestKillSwitchAuditExportProviderKrogerEnabledControlReachesKroger(t *testing.T) {
@@ -90,25 +97,22 @@ func TestKillSwitchAuditExportProviderKrogerEnabledControlReachesKroger(t *testi
 }
 
 func TestKillSwitchAuditExportEmptyBodyZeroCallsWhenDisabled(t *testing.T) {
-	for _, tz := range []string{"UTC", "America/Denver"} {
-		t.Run("TZ="+tz, func(t *testing.T) {
-			t.Setenv("TZ", tz)
-			spy := &killSwitchHTTPSpy{}
-			runHandlerTests(t, []handlerTestCase{{
-				name:    "export empty body disabled",
-				options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
-				setup:   killSwitchExportFixture(spy),
-				httpExchange: httpExchange{
-					method: "POST", path: "/api/shopping-list/export", body: `{}`,
-					expectedStatus: http.StatusConflict,
-					assertions:     []assertion{{path: "$.code", value: "store_disabled"}},
-				},
-			}})
-			if spy.calls != 0 {
-				t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
-			}
-		})
-	}
+	withKillSwitchTimezones(t, func(t *testing.T) {
+		spy := &killSwitchHTTPSpy{}
+		runHandlerTests(t, []handlerTestCase{{
+			name:    "export empty body disabled",
+			options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
+			setup:   killSwitchExportFixture(spy),
+			httpExchange: httpExchange{
+				method: "POST", path: "/api/shopping-list/export", body: `{}`,
+				expectedStatus: http.StatusConflict,
+				assertions:     []assertion{{path: "$.code", value: "store_disabled"}},
+			},
+		}})
+		if spy.calls != 0 {
+			t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
+		}
+	})
 }
 
 func TestKillSwitchAuditExportEmptyBodyEnabledControlReachesKroger(t *testing.T) {
@@ -146,25 +150,22 @@ func killSwitchCallbackFixture(spy *killSwitchHTTPSpy) func(env testEnv) {
 }
 
 func TestKillSwitchAuditCallbackZeroCallsWhenDisabled(t *testing.T) {
-	for _, tz := range []string{"UTC", "America/Denver"} {
-		t.Run("TZ="+tz, func(t *testing.T) {
-			t.Setenv("TZ", tz)
-			spy := &killSwitchHTTPSpy{}
-			runHandlerTests(t, []handlerTestCase{{
-				name:    "callback disabled",
-				options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
-				setup:   killSwitchCallbackFixture(spy),
-				httpExchange: httpExchange{
-					method: http.MethodGet, path: "/api/providers/kroger/callback",
-					query:          map[string]string{"code": "c", "state": "ks-state"},
-					expectedStatus: http.StatusSeeOther,
-				},
-			}})
-			if spy.calls != 0 {
-				t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
-			}
-		})
-	}
+	withKillSwitchTimezones(t, func(t *testing.T) {
+		spy := &killSwitchHTTPSpy{}
+		runHandlerTests(t, []handlerTestCase{{
+			name:    "callback disabled",
+			options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
+			setup:   killSwitchCallbackFixture(spy),
+			httpExchange: httpExchange{
+				method: http.MethodGet, path: "/api/providers/kroger/callback",
+				query:          map[string]string{"code": "c", "state": "ks-state"},
+				expectedStatus: http.StatusSeeOther,
+			},
+		}})
+		if spy.calls != 0 {
+			t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
+		}
+	})
 }
 
 func TestKillSwitchAuditCallbackEnabledControlReachesKroger(t *testing.T) {
@@ -193,11 +194,11 @@ func TestKillSwitchAuditKrogerAppPutZeroCallsWhenDisabled(t *testing.T) {
 	put := caller.authed(http.MethodPut, path, map[string]string{
 		"clientId": "new-client", "clientSecret": "new-secret", "modality": "PICKUP",
 	})
-	if put.Code != http.StatusConflict || !strings.Contains(put.Body.String(), `"code":"store_disabled"`) {
-		t.Fatalf("PUT %d %s", put.Code, put.Body.String())
-	}
 	if spy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
+	}
+	if put.Code != http.StatusConflict || !strings.Contains(put.Body.String(), `"code":"store_disabled"`) {
+		t.Fatalf("PUT %d %s", put.Code, put.Body.String())
 	}
 }
 
@@ -224,11 +225,11 @@ func TestKillSwitchAuditKrogerAppTestZeroCallsWhenDisabled(t *testing.T) {
 	post := caller.authed(http.MethodPost, path, map[string]string{
 		"clientId": "new-client", "clientSecret": "new-secret",
 	})
-	if post.Code != http.StatusConflict || !strings.Contains(post.Body.String(), `"code":"store_disabled"`) {
-		t.Fatalf("POST test %d %s", post.Code, post.Body.String())
-	}
 	if spy.calls != 0 {
 		t.Fatalf("kroger HTTP calls=%d want 0 with DISABLE_KROGER", spy.calls)
+	}
+	if post.Code != http.StatusConflict || !strings.Contains(post.Body.String(), `"code":"store_disabled"`) {
+		t.Fatalf("POST test %d %s", post.Code, post.Body.String())
 	}
 }
 

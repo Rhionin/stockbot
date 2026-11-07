@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -169,6 +170,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 
 	// Batch resolved items into ProvisionRequests
 	batches := e.batchRequests(providerID, resolvedItems, caps)
+	pushModality := e.householdPushModality(ctx, scope, providerID)
 
 	// Get credential based on auth type
 	var cred Credential
@@ -196,6 +198,9 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	cartAuthRefreshRemaining := 1
 	for batchIdx := 0; batchIdx < len(batches); batchIdx++ {
 		req := batches[batchIdx]
+		if pushModality != "" {
+			req.Modality = pushModality
+		}
 		if haltRemaining {
 			outcomes = appendProvisionOutcomes(outcomes, req, OutcomeFailed, haltFailedReason, haltFailedDetail)
 			continue
@@ -545,6 +550,21 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 		})
 	}
 	return result, nil
+}
+
+func (e *Engine) householdPushModality(ctx context.Context, scope tenant.Scope, providerID ProviderID) string {
+	if e.credentialVault == nil {
+		return ""
+	}
+	saved, ok, err := e.credentialVault.Load(ctx, scope, string(providerID))
+	if err != nil || !ok {
+		return ""
+	}
+	mod := strings.ToUpper(strings.TrimSpace(saved.Modality))
+	if mod == "PICKUP" || mod == "DELIVERY" {
+		return mod
+	}
+	return ""
 }
 
 // exchangeRefresh asks the provider's OAuth flow for a new access token.
