@@ -26,8 +26,11 @@ export function formatPairingExpiryTime(
   });
 }
 
+export const PAIRING_SCANNER_SCREEN_FALLBACK =
+  "Can't scan it? Scan the same barcode from your phone or computer screen.";
+
 export function pairingScannerScreenFallback(): string {
-  return "Can't scan it? Open the app on your phone or computer and scan this barcode from the screen.";
+  return PAIRING_SCANNER_SCREEN_FALLBACK;
 }
 
 export const PAIRING_DIALOG_STEP_TWO =
@@ -146,15 +149,26 @@ export function stockDirectionLabel(direction: 'stock_in' | 'stock_out'): string
   return direction === 'stock_in' ? 'Stock in' : 'Stock out';
 }
 
+function wallBarcodeRevertSentence(settings: WallBarcodeSettings): string {
+  const duration = formatInactivityDuration(settings.inactivityRevertSeconds);
+  const revert = stockDirectionLabel(settings.defaultDirection);
+  return `Goes back to ${revert} ${duration} after your last scan.`;
+}
+
 export function wallBarcodeStockOutCopy(settings: WallBarcodeSettings): string {
-  void settings;
-  return 'Scan before you take things out. This is the normal mode.';
+  const lead = 'Scan before you take things out.';
+  if (settings.defaultDirection === 'stock_in') {
+    return `${lead} ${wallBarcodeRevertSentence(settings)}`;
+  }
+  return `${lead} This is the normal mode.`;
 }
 
 export function wallBarcodeStockInCopy(settings: WallBarcodeSettings): string {
-  const duration = formatInactivityDuration(settings.inactivityRevertSeconds);
-  const revert = stockDirectionLabel(settings.defaultDirection);
-  return `Scan before you put groceries away. Goes back to ${revert} ${duration} after your last scan.`;
+  const lead = 'Scan before you put groceries away.';
+  if (settings.defaultDirection === 'stock_out') {
+    return `${lead} ${wallBarcodeRevertSentence(settings)}`;
+  }
+  return `${lead} This is the normal mode.`;
 }
 
 export const SYMCODE_DISCLOSURE_LABEL = 'Using a Symcode handheld?';

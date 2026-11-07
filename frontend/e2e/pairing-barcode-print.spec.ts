@@ -9,13 +9,20 @@ import {
   stage,
   stubWindowPrint,
 } from './householdStageFixtures'
-import { pairingScannerScreenFallback, pairingDialogTitle } from '../src/components/household/kitCopy456'
+import {
+  PAIRING_SCANNER_SCREEN_FALLBACK,
+  pairingScannerScreenFallback,
+  pairingDialogTitle,
+} from '../src/components/household/kitCopy456'
 import {
   assertPdfDecodesCode128,
+  assertPdfInkWithinPageMargins,
   assertPdfRulerContinuousLineMm,
   pdfContainsVisibleText,
   pdfVisibleText,
 } from './pdfCode128'
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { PAIRING_CODE128_MIN_MODULE_DEVICE_PX } from '../src/components/household/pairingScreenCode128'
 
 const SCREEN_FALLBACK_COPY = pairingScannerScreenFallback()
@@ -24,6 +31,36 @@ const PAIRING_DIALOG_TITLE = pairingDialogTitle('scanner')
 const MOBILE_TOUCH_WIDTHS = [320, 390] as const
 const MIN_TOUCH_TARGET_CSS_PX = 44
 const RULER_CAPTION_SNIPPET = '50 mm (about 2 inches)'
+const PT_TO_CSS_PX = 96 / 72
+const SETUP_MIN_BODY_PT = 11
+const SETUP_MIN_BARCODE_CAPTION_PT = 12
+const SETUP_MIN_MODE_PT = 28
+
+async function assertSetupSheetPrintTypeMinimums(printRoot: import('@playwright/test').Locator) {
+  const readPt = async (selector: string) => {
+    const px = await printRoot.locator(selector).first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))
+    return px / PT_TO_CSS_PX
+  }
+  expect(await readPt('.kit-print-body-sm')).toBeGreaterThanOrEqual(SETUP_MIN_BODY_PT - 0.05)
+  expect(await readPt('.kit-wall-mode-word')).toBeGreaterThanOrEqual(SETUP_MIN_MODE_PT - 0.05)
+  expect(await readPt('.printable-barcode-caption')).toBeGreaterThanOrEqual(SETUP_MIN_BARCODE_CAPTION_PT - 0.05)
+  expect(await readPt('.kit-print-footer-instruction')).toBeGreaterThanOrEqual(SETUP_MIN_BODY_PT - 0.05)
+  const weight = await printRoot.locator('.kit-wall-mode-word').first().evaluate(
+    (el) => getComputedStyle(el).fontWeight,
+  )
+  expect(Number(weight)).toBeGreaterThanOrEqual(700)
+  const mono = await printRoot.locator('.printable-barcode-caption').first().evaluate(
+    (el) => getComputedStyle(el).fontFamily,
+  )
+  expect(mono.toLowerCase()).toMatch(/mono|consolas|menlo/)
+}
+
+function maybeWriteSetupPdfArtifact(format: 'Letter' | 'A4', pdf: Buffer) {
+  const dir = process.env.STOCKBOT_PRINT_ARTIFACTS_DIR
+  if (!dir) return
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `setup-sheet-${format}-556.pdf`), pdf)
+}
 
 const MOBILE_WIDTHS = [320, 360, 390, 412] as const
 const MATRIX_WIDTHS = [...MOBILE_WIDTHS, 1280] as const
@@ -425,6 +462,8 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
   expect(sheetText).toMatch(/STOCK-IN/)
   expect(sheetText).toMatch(new RegExp(PAIRING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   expect(sheetText).toMatch(/Print at Actual size/)
+  expect(sheetText).toContain(PAIRING_SCANNER_SCREEN_FALLBACK)
+  expect(SCREEN_FALLBACK_COPY).toBe(PAIRING_SCANNER_SCREEN_FALLBACK)
   for (const svg of await page.locator('.setup-kit-print-root svg[data-barcode]').all()) {
     const box = await svg.boundingBox()
     const barModules = Number(await svg.getAttribute('data-modules'))
@@ -432,6 +471,7 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
     expect(box).not.toBeNull()
     assertPrintBarcodeMetrics(box!, totalModules)
   }
+  await assertSetupSheetPrintTypeMinimums(printRoot)
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, ...PDF_PRINT_OPTIONS }))
     expect(pdf.length).toBeGreaterThan(5000)
@@ -439,6 +479,8 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
     await assertPdfDecodesCode128(pdf, [PAIRING, 'STOCK-OUT', 'STOCK-IN'])
     expect(await pdfContainsVisibleText(pdf, 'Print at Actual size')).toBe(true)
     await assertPdfRulerContinuousLineMm(pdf)
+    assertPdfInkWithinPageMargins(pdf, format)
+    maybeWriteSetupPdfArtifact(format, pdf)
     expect(await pdfVisibleText(pdf)).not.toMatch(/\bMenu\b/)
     await page.emulateMedia({ media: 'screen' })
     await stubWindowPrint(page)
