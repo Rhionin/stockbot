@@ -732,7 +732,7 @@ when those units are already installed). The running `pantry-update.sh`
 is not replaced in place; the refreshed script takes effect on the next
 timer or deploy-hook run. Rollback does not install the new image's host
 files. `setup.sh`, `.env`, secrets, and data are never touched. Set
-`HOST_REFRESH=off` or legacy `PANTRY_HOST_REFRESH=off` to skip the refresh.
+`PANTRY_HOST_REFRESH=off` to skip the refresh when other gates allow it.
 
 ### Partial #152 host setup transaction (not enabled by default)
 
@@ -760,12 +760,12 @@ continuing another pull round.
 
 | Variable | Source | Meaning |
 |---|---|---|
-| `HOST_REFRESH` / `PANTRY_HOST_REFRESH` | shell environment only | unset, empty, or `on` allows host refresh when other gates pass; `off` denies; other values are invalid and fail closed for new host writes |
-| `AUTO_SETUP` / `PANTRY_AUTO_SETUP` | nonempty process env, else first exact unquoted key in `.env` | `on` enables the guarded subset transaction when initialized state exists; unset, empty, or `off` disables it; invalid values fail closed |
+| `PANTRY_HOST_REFRESH` | shell environment only | unset, empty, or `on` allows host refresh when other gates pass; `off` denies; other values are invalid and fail closed for new host writes |
+| `PANTRY_AUTO_SETUP` | nonempty process env, else first exact unquoted `PANTRY_AUTO_SETUP` key in `.env` (embedded parser; never via publish-mode) | `on` enables the guarded subset transaction when initialized state exists; unset, empty, or `off` disables it; invalid values fail closed |
 
 Either flag invalid fails closed for new host writes regardless of the other flag.
 Until approved initialization exists on disk, only the legacy #455 whole-bundle
-refresh can run when `HOST_REFRESH` allows and `AUTO_SETUP` is off.
+refresh can run when `PANTRY_HOST_REFRESH` allows and `PANTRY_AUTO_SETUP` is off.
 
 **Operator prerequisites:** process-interruption recovery is supported; there is
 no promise of automatic recovery after power loss or storage reordering.

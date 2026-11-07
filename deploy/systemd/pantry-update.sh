@@ -173,6 +173,13 @@ HOST_FLAG_AUTO_SETUP=off
 HOST_FLAG_ANY_INVALID=0
 HOST_RECOVERY_EXIT=0
 HOST_TXN_FATAL_RC=3
+HOST_TXN_BUDGET_CMD=5
+HOST_TXN_BUDGET_VERIFY=15
+HOST_TXN_BUDGET_CURL=3
+HOST_TXN_BUDGET_HEALTH=15
+HOST_TXN_BUDGET_TXN=120
+HOST_TXN_BUDGET_RESTORE=60
+HOST_TXN_KILL_GRACE=2
 
 # prepare_setup_dir in pantry_update_main always runs before apply_compose recreates containers.
 
@@ -217,6 +224,244 @@ host_txn_target_dest() {
   printf '%s/%s' "$PANTRY_DIR" "$rel"
 }
 
+host_txn_guard_rels() {
+  printf '%s\n' \
+    systemd/pantry-update.sh \
+    systemd/pantry-update.service \
+    systemd/pantry-update.timer \
+    systemd/pantry-update.path \
+    systemd/pantry-backup.service \
+    systemd/pantry-backup.timer
+}
+
+host_txn_test_hook() {
+  local point="$1"
+  if [[ -n "${PANTRY_TEST_TRACE:-}" ]]; then
+    printf '%s\n' "$point" >>"$PANTRY_TEST_TRACE"
+  fi
+  if [[ -n "${PANTRY_TEST_INTERRUPT_AT:-}" && "$PANTRY_TEST_INTERRUPT_AT" == "$point" ]]; then
+    exit 42
+  fi
+  if [[ -n "${PANTRY_TEST_FAIL_AT:-}" && "$PANTRY_TEST_FAIL_AT" == "$point" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+host_run_bounded() {
+  local budget="$1"; shift
+  if [[ -n "${PANTRY_TEST_RUN_BOUNDED_RC+x}" ]]; then
+    return "${PANTRY_TEST_RUN_BOUNDED_RC:-0}"
+  fi
+  if [[ -n "${PANTRY_TEST_SKIP_HEALTH:-}" ]]; then
+    return 0
+  fi
+  local rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after="${HOST_TXN_KILL_GRACE}" "$budget" "$@" || rc=$?
+    if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+      return 1
+    fi
+    return "$rc"
+  fi
+  "$@" || rc=$?
+  return "$rc"
+}
+
+host_sha256_file() {
+  sha256sum "$1" | awk '{print $1}'
+}
+
+host_manifest_hash() {
+  host_sha256_file "$1"
+}
+
+host_manifest_mode_and_size() {
+  local path="$1" _mode _size
+  _mode=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%OLp' "$path")
+  _size=$(stat -c '%s' "$path" 2>/dev/null || stat -f '%z' "$path")
+  printf '%s\t%s' "$_mode" "$_size"
+}
+
+host_manifest_row_guard() {
+  local rel="$1" path="$2" ms mode size sha
+  if [[ -f "$path" ]]; then
+    ms=$(host_manifest_mode_and_size "$path")
+    mode=${ms%%$'\t'*}
+    size=${ms##*$'\t'}
+    sha=$(host_sha256_file "$path")
+    printf 'guard,%s,1,%s,0,0,%s,%s\n' "$rel" "$mode" "$size" "$sha"
+  else
+    printf 'guard,%s,0,0755,0,0,0,absent\n' "$rel"
+  fi
+}
+
+host_manifest_row_target() {
+  local id="$1" path="$2" ms mode size sha
+  if [[ -f "$path" ]]; then
+    ms=$(host_manifest_mode_and_size "$path")
+    mode=${ms%%$'\t'*}
+    size=${ms##*$'\t'}
+    sha=$(host_sha256_file "$path")
+    printf '%s,1,%s,0,0,%s,%s\n' "$id" "$mode" "$size" "$sha"
+  else
+    printf '%s,0,0755,0,0,0,absent\n' "$id"
+  fi
+}
+
+host_manifest_build_body() {
+  local revision="$1" staged="$2" installed_mode="$3"
+  local rel path id
+  revision=${revision,,}
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf 'version=1\nrevision=%s\n' "$revision"
+  while IFS= read -r rel || [[ -n "$rel" ]]; do
+    [[ -z "$rel" ]] && continue
+    if [[ "$installed_mode" == 1 ]]; then
+      path="$PANTRY_DIR/$rel"
+    else
+      path="$staged/$rel"
+    fi
+    host_manifest_row_guard "$rel" "$path" || return 1
+  done < <(host_txn_guard_rels)
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    if [[ "$installed_mode" == 1 ]]; then
+      path=$(host_txn_target_dest "$id")
+    else
+      path="$staged/$rel"
+    fi
+    host_manifest_row_target "$id" "$path" || return 1
+  done
+}
+
+host_manifest_build_staged() {
+  local staged="$1" revision="$2" out="$3"
+  host_manifest_build_body "$revision" "$staged" 0 >"$out"
+}
+
+host_manifest_build_installed() {
+  local revision="$1" out="$2"
+  host_manifest_build_body "$revision" "" 1 >"$out"
+}
+
+host_manifest_parse_validate() {
+  local man="$1" line rev seen_g seen_t
+  [[ -f "$man" ]] || return 1
+  rev=""
+  seen_g=0
+  seen_t=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == version=1 ]]; then
+      continue
+    fi
+    if [[ "$line" == revision=* ]]; then
+      rev=${line#revision=}
+      [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || return 1
+      continue
+    fi
+    if [[ "$line" == guard,* ]]; then
+      seen_g=$((seen_g + 1))
+      continue
+    fi
+    if [[ "$line" =~ ^[1-4], ]]; then
+      seen_t=$((seen_t + 1))
+      continue
+    fi
+    return 1
+  done <"$man"
+  [[ -n "$rev" && "$seen_g" -eq 6 && "$seen_t" -eq 4 ]]
+}
+
+host_snapshot_verify() {
+  local snap="$1" man line id present path rowpath sha expect
+  man="$snap/manifest"
+  host_manifest_parse_validate "$man" || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[1-4], ]] || continue
+    IFS=, read -r id present _mode _uid _gid _size sha <<<"$line"
+    rowpath="$snap/files/$id"
+    if [[ "$present" == 1 ]]; then
+      [[ -f "$rowpath" ]] || return 1
+      expect=$(host_sha256_file "$rowpath")
+      [[ "$sha" == "$expect" ]] || return 1
+    else
+      [[ ! -e "$rowpath" ]] || return 1
+    fi
+  done <"$man"
+}
+
+host_snapshot_build_from_staged() {
+  local snap="$1" staged="$2" revision="$3" id rel
+  rm -rf "$snap"
+  mkdir -p "$snap/files"
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    cp "$staged/$rel" "$snap/files/$id"
+    chmod 755 "$snap/files/$id"
+  done
+  host_manifest_build_staged "$staged" "$revision" "$snap/manifest"
+  host_snapshot_verify "$snap"
+}
+
+host_snapshot_select_by_hash() {
+  local want="$1" root name man h
+  root=$(host_setup_state_dir)
+  for name in lkg prior candidate; do
+    man="$root/$name/manifest"
+    [[ -f "$man" ]] || continue
+    h=$(host_manifest_hash "$man")
+    if [[ "$h" == "$want" ]]; then
+      printf '%s/%s' "$root" "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+host_control_path() {
+  printf '%s/control' "$(host_setup_state_dir)"
+}
+
+host_control_field() {
+  local key="$1" ctrl val
+  ctrl=$(host_control_path)
+  [[ -f "$ctrl" ]] || return 1
+  val=$(awk -F= -v k="$key" '$1 == k { print $2; exit }' "$ctrl" 2>/dev/null || true)
+  [[ -n "$val" ]] || return 1
+  printf '%s' "$val"
+}
+
+host_control_publish() {
+  local root tmp ctrl
+  root=$(host_setup_state_dir)
+  ctrl="$root/control"
+  tmp=$(mktemp "${root}/control.host-txn-v1.XXXXXX") || return 1
+  {
+    printf 'version=1\n'
+    printf 'phase=%s\n' "${HOST_CTRL_PHASE:-clean}"
+    printf 'committed_revision=%s\n' "${HOST_CTRL_COMMITTED:-none}"
+    printf 'target_revision=%s\n' "${HOST_CTRL_TARGET:-none}"
+    printf 'previous_manifest_sha256=%s\n' "${HOST_CTRL_PREV_MANIFEST:-none}"
+    printf 'candidate_manifest_sha256=%s\n' "${HOST_CTRL_CAND_MANIFEST:-none}"
+    printf 'original_reason=%s\n' "${HOST_CTRL_REASON:-none}"
+    printf 'failed_target_sha=%s\n' "${HOST_CTRL_FAILED_TARGET:-none}"
+  } >"$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$ctrl"
+}
+
+host_control_load_into_publish_vars() {
+  HOST_CTRL_PHASE=$(host_control_field phase || printf '%s' clean)
+  HOST_CTRL_COMMITTED=$(host_control_field committed_revision || printf '%s' none)
+  HOST_CTRL_TARGET=$(host_control_field target_revision || printf '%s' none)
+  HOST_CTRL_PREV_MANIFEST=$(host_control_field previous_manifest_sha256 || printf '%s' none)
+  HOST_CTRL_CAND_MANIFEST=$(host_control_field candidate_manifest_sha256 || printf '%s' none)
+  HOST_CTRL_REASON=$(host_control_field original_reason || printf '%s' none)
+  HOST_CTRL_FAILED_TARGET=$(host_control_field failed_target_sha || printf '%s' none)
+}
+
 host_embedded_env_value() {
   local key="$1" line k v
   [[ -f "$PANTRY_DIR/.env" ]] || return 1
@@ -243,17 +488,15 @@ host_embedded_env_value() {
 
 host_flags_read() {
   local hr as env_as
-  hr=${HOST_REFRESH:-${PANTRY_HOST_REFRESH:-}}
+  hr=${PANTRY_HOST_REFRESH:-}
   hr=${hr:-}
   case "$hr" in
     ''|on) HOST_FLAG_HOST_REFRESH=allow ;;
     off) HOST_FLAG_HOST_REFRESH=deny ;;
     *) HOST_FLAG_HOST_REFRESH=invalid; HOST_FLAG_ANY_INVALID=1 ;;
   esac
-  if [[ -n "${AUTO_SETUP+x}" && -n "${AUTO_SETUP}" ]]; then
-    as=$AUTO_SETUP
-  elif env_as=$(host_embedded_env_value AUTO_SETUP); then
-    as=$env_as
+  if [[ -n "${PANTRY_AUTO_SETUP+x}" && -n "${PANTRY_AUTO_SETUP}" ]]; then
+    as=$PANTRY_AUTO_SETUP
   elif env_as=$(host_embedded_env_value PANTRY_AUTO_SETUP); then
     as=$env_as
   else
@@ -277,7 +520,7 @@ host_control_phase() {
 }
 
 host_state_validate() {
-  local root ctrl phase
+  local root ctrl phase child base allowed lkg_man
   HOST_STATE_INITIALIZED=0
   HOST_STATE_CORRUPT=0
   HOST_STATE_BLOCKED=0
@@ -299,6 +542,20 @@ host_state_validate() {
     echo "pantry update: host setup state path is a symlink" >&2
     return 1
   fi
+  for child in "$root"/*; do
+    [[ -e "$child" ]] || continue
+    base=$(basename "$child")
+    allowed=0
+    case "$base" in
+      control|control.tmp|seed.tmp|lkg|candidate|prior) allowed=1 ;;
+    esac
+    if [[ "$allowed" -eq 0 ]]; then
+      HOST_STATE_CORRUPT=1
+      HOST_STATE_BLOCKED=1
+      echo "pantry update: host setup state has unexpected child ${base}" >&2
+      return 1
+    fi
+  done
   ctrl="$root/control"
   if [[ -e "$root/control.tmp" && ! -f "$ctrl" ]]; then
     HOST_STATE_CORRUPT=1
@@ -315,7 +572,15 @@ host_state_validate() {
     fi
     phase=$(host_control_phase)
     case "$phase" in
-      clean) ;;
+      clean)
+        lkg_man="$root/lkg/manifest"
+        if [[ -f "$lkg_man" ]] && ! host_manifest_parse_validate "$lkg_man"; then
+          HOST_STATE_CORRUPT=1
+          HOST_STATE_BLOCKED=1
+          echo "pantry update: host setup lkg manifest is invalid" >&2
+          return 1
+        fi
+        ;;
       recovered)
         echo "pantry update: host setup recovered from a failed transaction; blocking until maintenance clears failed target"
         HOST_STATE_BLOCKED=1
@@ -338,25 +603,29 @@ host_state_validate() {
         return 1
         ;;
     esac
+  elif [[ -d "$root/lkg" || -d "$root/seed.tmp" ]]; then
+    HOST_STATE_CORRUPT=1
+    HOST_STATE_BLOCKED=1
+    echo "pantry update: host setup state is missing control" >&2
+    return 1
   fi
   host_entry_trace "host_state_validate:initialized"
   return 0
 }
 
-host_restore_transaction() {
-  local id root lkg
-  root=$(host_setup_state_dir)
-  lkg="$root/lkg/files"
-  local rel dest src
-  for id in 1 2 3 4; do
-    rel=$(host_txn_target_rel "$id") || return 1
-    dest=$(host_txn_target_dest "$id")
-    src="$lkg/$id"
-    if [[ -f "$src" ]]; then
+host_restore_from_snapshot() {
+  local snap="$1" man line id present dest src tmp rel
+  man="$snap/manifest"
+  host_snapshot_verify "$snap" || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[1-4], ]] || continue
+    IFS=, read -r id present _mode _uid _gid _size _sha <<<"$line"
+    dest=$(host_txn_target_dest "$id") || return 1
+    src="$snap/files/$id"
+    if [[ "$present" == 1 ]]; then
       if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
         continue
       fi
-      local tmp
       tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
       cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
       chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
@@ -364,12 +633,25 @@ host_restore_transaction() {
     else
       rm -f "$dest"
     fi
-  done
+  done <"$man"
+  host_txn_test_hook restore-done || return 1
+  return 0
+}
+
+host_restore_transaction() {
+  local snap="${1:-}" start=$SECONDS
+  if [[ -z "$snap" ]]; then
+    snap="$(host_setup_state_dir)/lkg"
+  fi
+  host_restore_from_snapshot "$snap" || return 1
+  if [[ $((SECONDS - start)) -gt "$HOST_TXN_BUDGET_RESTORE" ]]; then
+    return 1
+  fi
   return 0
 }
 
 host_recover_pending() {
-  local phase root ctrl
+  local phase snap prev root reason failed
   if [[ "${HOST_STATE_INITIALIZED:-0}" -ne 1 ]]; then
     return 0
   fi
@@ -377,20 +659,32 @@ host_recover_pending() {
   case "$phase" in
     prepared|applying|restoring|committing|blocked)
       host_entry_trace "host_recover_pending"
+      host_txn_test_hook pending-recover
       echo "pantry update: recovering pending host setup transaction (phase=${phase})"
-      if ! host_restore_transaction; then
+      snap=""
+      if [[ "$phase" == committing ]]; then
+        prev=$(host_control_field previous_manifest_sha256 || true)
+        if [[ -n "$prev" && "$prev" != none ]]; then
+          snap=$(host_snapshot_select_by_hash "$prev" || true)
+        fi
+      fi
+      if [[ -z "$snap" ]]; then
+        snap="$(host_setup_state_dir)/lkg"
+      fi
+      if ! host_restore_transaction "$snap"; then
         echo "pantry update: host setup recovery restore failed" >&2
         HOST_RECOVERY_EXIT=1
         return 1
       fi
       root=$(host_setup_state_dir)
-      ctrl="$root/control"
-      if [[ -f "$ctrl" ]]; then
-        {
-          grep -v '^phase=' "$ctrl" || true
-          printf 'phase=recovered\n'
-        } > "${ctrl}.host-txn-v1.tmp" && mv "${ctrl}.host-txn-v1.tmp" "$ctrl"
-      fi
+      host_control_load_into_publish_vars
+      HOST_CTRL_PHASE=recovered
+      HOST_CTRL_REASON=$(host_control_field original_reason || printf '%s' interrupted)
+      HOST_CTRL_FAILED_TARGET=$(host_control_field failed_target_sha || printf '%s' none)
+      host_control_publish || {
+        HOST_RECOVERY_EXIT=1
+        return 1
+      }
       HOST_RECOVERY_EXIT=1
       echo "pantry update: host setup recovery finished; original transaction failed"
       return 2
@@ -399,6 +693,14 @@ host_recover_pending() {
       return 0
       ;;
   esac
+}
+
+host_seed_from_manifest() {
+  local _approved_manifest="$1"
+  [[ "${PANTRY_TEST_ALLOW_MANUAL_SEED:-}" == 1 ]] || return 1
+  [[ -n "$_approved_manifest" ]]
+  host_txn_test_hook seed
+  return 1
 }
 
 host_guard_validate() {
@@ -443,7 +745,7 @@ host_subset_validate() {
       echo "pantry update: host subset bundle is missing ${rel}" >&2
       return 1
     fi
-    if ! bash -n "$src"; then
+    if ! host_run_bounded "$HOST_TXN_BUDGET_CMD" bash -n "$src"; then
       echo "pantry update: host subset bundle failed bash -n for ${rel}" >&2
       return 1
     fi
@@ -459,17 +761,89 @@ host_revision_allowed() {
 }
 
 host_target_retry_allowed() {
-  local root ctrl target
+  local root ctrl target revision phase
   [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]] || return 0
   root=$(host_setup_state_dir)
   ctrl="$root/control"
   [[ -f "$ctrl" ]] || return 0
-  target=$(awk -F= '$1 == "failed_target" { print $2; exit }' "$ctrl" 2>/dev/null || true)
+  target=$(host_control_field failed_target_sha || true)
   phase=$(host_control_phase || true)
-  if [[ "$phase" == recovered && -n "$target" ]]; then
-    echo "pantry update: host setup blocks retry for failed target ${target}" >&2
+  if [[ "$phase" == recovered && -n "$target" && "$target" != none ]]; then
+    revision=$(host_control_field target_revision || true)
+    if [[ -n "$revision" && "$revision" == "$target" ]]; then
+      echo "pantry update: host setup blocks retry for failed target ${target}" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+host_installed_matches_lkg() {
+  local root="$1" revision tmp lkg
+  root=${root:-$(host_setup_state_dir)}
+  lkg="$root/lkg/manifest"
+  [[ -f "$lkg" ]] || return 1
+  tmp=$(mktemp)
+  host_manifest_build_installed "$revision" "$tmp" || { rm -f "$tmp"; return 1; }
+  cmp -s "$lkg" "$tmp" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  return 0
+}
+
+host_txn_post_apply_validate() {
+  local root revision tmp started
+  started=$SECONDS
+  root=$(host_setup_state_dir)
+  revision=$(host_control_field target_revision || printf '%s' none)
+  [[ "$revision" != none ]] || return 1
+  local id rel dest
+  for id in 1 2 3 4; do
+    rel=$(host_txn_target_rel "$id") || return 1
+    dest=$(host_txn_target_dest "$id")
+    host_run_bounded "$HOST_TXN_BUDGET_CMD" bash -n "$dest" || return 1
+  done
+  tmp=$(mktemp)
+  host_manifest_build_installed "$revision" "$tmp" || { rm -f "$tmp"; return 1; }
+  cmp -s "$root/candidate/manifest" "$tmp" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+  [[ $((SECONDS - started)) -le "$HOST_TXN_BUDGET_VERIFY" ]] || return 1
+  return 0
+}
+
+host_txn_health_validate() {
+  local state="$1" port rev body commit started
+  [[ -n "${PANTRY_TEST_SKIP_HEALTH:-}" ]] && return 0
+  started=$SECONDS
+  port=$(host_embedded_env_value HOST_PORT || true)
+  port=${port:-8080}
+  rev=$(pantry_deploy_revision "$state")
+  [[ -n "$rev" ]] || return 1
+  host_run_bounded "$HOST_TXN_BUDGET_CURL" curl -fsS --max-time "$HOST_TXN_BUDGET_CURL" \
+    "http://127.0.0.1:${port}/health" >/dev/null || return 1
+  if [[ $((SECONDS - started)) -gt "$HOST_TXN_BUDGET_HEALTH" ]]; then
     return 1
   fi
+  body=$(mktemp)
+  host_run_bounded "$HOST_TXN_BUDGET_CURL" curl -fsS --max-time "$HOST_TXN_BUDGET_CURL" \
+    "http://127.0.0.1:${port}/api/build" >"$body" || { rm -f "$body"; return 1; }
+  commit=$(json_string_field "$(<"$body")" commit)
+  rm -f "$body"
+  [[ "$commit" == "$rev" ]] || return 1
+  [[ $((SECONDS - started)) -le "$HOST_TXN_BUDGET_HEALTH" ]] || return 1
+  return 0
+}
+
+host_txn_abort_to_recovered() {
+  local reason="$1" failed_sha="$2" snap
+  snap="$(host_setup_state_dir)/lkg"
+  HOST_CTRL_PHASE=restoring
+  host_control_load_into_publish_vars
+  host_control_publish || true
+  host_restore_transaction "$snap" || return 1
+  HOST_CTRL_PHASE=recovered
+  HOST_CTRL_REASON=$reason
+  HOST_CTRL_FAILED_TARGET=${failed_sha:-none}
+  host_control_publish || return 1
   return 0
 }
 
@@ -480,63 +854,183 @@ host_retained_prior_present() {
 }
 
 host_apply_transaction() {
-  local staged="$1" src dest tmp
-  while IFS=$'\t' read -r src dest; do
-    [[ -z "$src" ]] && continue
-    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+  local snap="$1" id dest src tmp
+  host_txn_test_hook replace-start || return 1
+  for id in 1 2 3 4; do
+    host_txn_test_hook "replace-${id}" || return 1
+    if [[ -n "${PANTRY_TEST_APPLY_FAIL_ID:-}" && "$PANTRY_TEST_APPLY_FAIL_ID" == "$id" ]]; then
+      return 1
+    fi
+    dest=$(host_txn_target_dest "$id") || return 1
+    src="$snap/files/$id"
+    if [[ -f "$dest" ]] && [[ -f "$src" ]] && cmp -s "$src" "$dest"; then
       continue
     fi
     tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
     cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
     chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
     mv "$tmp" "$dest"
-  done < <(host_subset_plan "$staged")
+  done
+  host_txn_test_hook replace-done || return 1
   return 0
 }
 
 host_commit_transaction() {
+  local root prev_hash cand_hash revision
+  root=$(host_setup_state_dir)
+  host_txn_test_hook commit-start || return 1
+  prev_hash=$(host_manifest_hash "$root/lkg/manifest")
+  cand_hash=$(host_manifest_hash "$root/candidate/manifest")
+  revision=$(host_control_field target_revision || printf '%s' none)
+  HOST_CTRL_PHASE=committing
+  host_control_load_into_publish_vars
+  HOST_CTRL_PREV_MANIFEST=$prev_hash
+  HOST_CTRL_CAND_MANIFEST=$cand_hash
+  host_control_publish || return 1
+  host_txn_test_hook committing || return 1
+  if [[ -d "$root/prior" ]]; then
+    echo "pantry update: host setup prior snapshot already present" >&2
+    return 1
+  fi
+  mv "$root/lkg" "$root/prior"
+  mv "$root/candidate" "$root/lkg"
+  host_snapshot_verify "$root/lkg" || return 1
+  HOST_CTRL_PHASE=clean
+  HOST_CTRL_COMMITTED=$revision
+  HOST_CTRL_TARGET=none
+  HOST_CTRL_PREV_MANIFEST=$prev_hash
+  HOST_CTRL_CAND_MANIFEST=none
+  HOST_CTRL_REASON=none
+  HOST_CTRL_FAILED_TARGET=none
+  host_control_publish || return 1
+  host_txn_test_hook commit-done || return 1
   return 0
 }
 
 host_subset_refresh_from_image() {
-  local state="$1" cid tmp staged
+  local state="$1" cid work staged root revision cand_man lkg_hash man_tmp committed txn_start
+  txn_start=$SECONDS
+  root=$(host_setup_state_dir)
+  if host_retained_prior_present; then
+    echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_target_retry_allowed; then
+    return "$HOST_TXN_FATAL_RC"
+  fi
   cid=$(container_id pantry)
   if [[ -z "$cid" ]]; then
     echo "pantry update: host script refresh failed: pantry container id is missing" >&2
     return 1
   fi
-  tmp=$(mktemp -d) || return 1
-  staged="$tmp/bundle"
+  revision=$(pantry_deploy_revision "$state")
+  revision=${revision,,}
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "pantry update: host subset transaction needs a 40-character revision" >&2
+    return "$HOST_TXN_FATAL_RC"
+  }
+  if [[ "$(host_control_phase || true)" == clean ]] && [[ -f "$root/lkg/manifest" ]]; then
+    committed=$(host_control_field committed_revision || true)
+    committed=${committed:-$(awk -F= '$1=="revision"{print $2;exit}' "$root/lkg/manifest" 2>/dev/null || true)}
+    if ! host_installed_matches_lkg "$root" "${committed:-$revision}"; then
+      echo "pantry update: host setup installed scripts drift from lkg manifest" >&2
+      return "$HOST_TXN_FATAL_RC"
+    fi
+  fi
+  work=$(mktemp -d) || return 1
+  staged="$work/bundle"
   mkdir -p "$staged"
   if ! docker cp "${cid}:${HOST_BUNDLE_CONTAINER_PATH}/." "$staged"; then
-    rm -rf "$tmp"
+    rm -rf "$work"
     echo "pantry update: host script refresh failed: could not read host scripts from the pantry container" >&2
     return 1
   fi
   if ! host_guard_validate "$staged"; then
-    rm -rf "$tmp"
+    rm -rf "$work"
     return "$HOST_TXN_FATAL_RC"
   fi
   if ! host_subset_validate "$staged"; then
-    rm -rf "$tmp"
+    rm -rf "$work"
     return "$HOST_TXN_FATAL_RC"
   fi
-  if ! host_target_retry_allowed; then
-    rm -rf "$tmp"
+  if [[ -n "${PANTRY_TEST_VALIDATION_FAIL:-}" ]]; then
+    rm -rf "$work"
     return "$HOST_TXN_FATAL_RC"
   fi
-  if host_retained_prior_present; then
-    echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
-    rm -rf "$tmp"
+  if ! host_revision_allowed "$state"; then
+    rm -rf "$work"
+    return 1
+  fi
+  if [[ -f "$root/lkg/manifest" ]]; then
+    lkg_hash=$(host_manifest_hash "$root/lkg/manifest")
+    man_tmp=$(mktemp)
+    host_manifest_build_staged "$staged" "$revision" "$man_tmp" || { rm -f "$man_tmp"; rm -rf "$work"; return "$HOST_TXN_FATAL_RC"; }
+    cand_man=$(host_manifest_hash "$man_tmp")
+    rm -f "$man_tmp"
+    if [[ "$cand_man" == "$lkg_hash" ]]; then
+      host_snapshot_verify "$root/lkg" || {
+        rm -rf "$work"
+        return "$HOST_TXN_FATAL_RC"
+      }
+      rm -rf "$work"
+      echo "pantry update: host subset unchanged at revision ${revision}"
+      return 0
+    fi
+  fi
+  if ! host_snapshot_build_from_staged "$root/candidate" "$staged" "$revision"; then
+    rm -rf "$work"
+    echo "pantry update: host subset candidate snapshot failed" >&2
     return "$HOST_TXN_FATAL_RC"
   fi
-  if ! host_apply_transaction "$staged"; then
-    host_restore_transaction || true
-    rm -rf "$tmp"
+  cand_man=$(host_manifest_hash "$root/candidate/manifest")
+  lkg_hash=none
+  if [[ -f "$root/lkg/manifest" ]]; then
+    lkg_hash=$(host_manifest_hash "$root/lkg/manifest")
+  fi
+  HOST_CTRL_PHASE=prepared
+  HOST_CTRL_COMMITTED=$(host_control_field committed_revision || printf '%s' none)
+  if [[ "$HOST_CTRL_COMMITTED" == none && -f "$root/lkg/manifest" ]]; then
+    HOST_CTRL_COMMITTED=$(awk -F= '$1=="revision"{print $2;exit}' "$root/lkg/manifest" || printf '%s' none)
+  fi
+  HOST_CTRL_TARGET=$revision
+  HOST_CTRL_PREV_MANIFEST=$lkg_hash
+  HOST_CTRL_CAND_MANIFEST=$cand_man
+  HOST_CTRL_REASON=none
+  HOST_CTRL_FAILED_TARGET=none
+  host_control_publish || { rm -rf "$work"; return "$HOST_TXN_FATAL_RC"; }
+  host_txn_test_hook prepared || { rm -rf "$work"; return "$HOST_TXN_FATAL_RC"; }
+  HOST_CTRL_PHASE=applying
+  host_control_publish || { rm -rf "$work"; return "$HOST_TXN_FATAL_RC"; }
+  host_txn_test_hook applying || { rm -rf "$work"; return "$HOST_TXN_FATAL_RC"; }
+  if ! host_apply_transaction "$root/candidate"; then
+    host_txn_abort_to_recovered apply_failed "$revision" || true
+    rm -rf "$work"
     echo "pantry update: host subset transaction apply failed" >&2
     return "$HOST_TXN_FATAL_RC"
   fi
-  rm -rf "$tmp"
+  if ! host_txn_post_apply_validate; then
+    host_txn_abort_to_recovered validation_failed "$revision" || true
+    rm -rf "$work"
+    echo "pantry update: host subset post-apply validation failed" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_txn_health_validate "$state"; then
+    host_txn_abort_to_recovered health_failed "$revision" || true
+    rm -rf "$work"
+    echo "pantry update: host subset health validation failed" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  if ! host_commit_transaction; then
+    host_txn_abort_to_recovered recovery_failed "$revision" || true
+    rm -rf "$work"
+    echo "pantry update: host subset commit failed" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
+  rm -rf "$work"
+  if [[ $((SECONDS - txn_start)) -gt "$HOST_TXN_BUDGET_TXN" ]]; then
+    echo "pantry update: host subset transaction exceeded time budget" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
   echo "pantry update: refreshed host deploy scripts from the running image (subset transaction)"
   return 0
 }
