@@ -54,6 +54,8 @@ func TestRevokeDeviceForeignIDPrecedesRole(t *testing.T) {
 
 	expectCode(t, svc.RevokeDevice(ctx, member, alder, paired.DeviceID), CodeNotFound)
 	expectCode(t, svc.RevokeDevice(ctx, ownerID, alder, paired.DeviceID), CodeNotFound)
+	unknownID := newID()
+	expectCode(t, svc.RevokeDevice(ctx, ownerID, alder, unknownID), CodeNotFound)
 	expectCode(t, svc.RevokeDevice(ctx, member, alder, alderPaired.DeviceID), CodeForbiddenRole)
 	if err := svc.RevokeDevice(ctx, ownerID, alder, alderPaired.DeviceID); err != nil {
 		t.Fatal(err)
