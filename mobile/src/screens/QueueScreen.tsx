@@ -34,8 +34,8 @@ import {
   NOTHING_ON_HAND_TITLE,
   nothingOnHandPill,
   NO_CLOSE_MATCH,
-  shelfHasNothingOnHand,
 } from '@stockbot/shared/contract';
+import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
@@ -103,15 +103,8 @@ function readableInventory(rows: unknown): InventoryItem[] | null {
   return rows as InventoryItem[];
 }
 
-function isNothingOnHand(
-  entry: ScanEntry,
-  rows: InventoryItem[] | null,
-  pins: Map<string, NothingPin>,
-): boolean {
-  if (entry.direction !== 'stock_out' || entry.productId === null) return false;
-  if (pins.has(entry.id)) return true;
-  if (rows === null) return false;
-  return shelfHasNothingOnHand(shelfCount(rows, entry.productId));
+function isNothingOnHand(entry: ScanEntry, pins: Map<string, NothingPin>): boolean {
+  return mobileNothingOnHandCue(entry, pins.has(entry.id));
 }
 
 export interface QueueScreenProps {
@@ -491,7 +484,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }
 
   async function confirmAll() {
-    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, household, pins));
+    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, pins));
     if (confirmable.length === 0) return;
     refreshGeneration.current += 1;
     setRefreshing(false);
@@ -593,7 +586,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
-  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
+  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, pins)).length;
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
@@ -646,7 +639,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item }) => {
-            const blocked = isNothingOnHand(item, household, pins);
+            const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
             return (
             <View
