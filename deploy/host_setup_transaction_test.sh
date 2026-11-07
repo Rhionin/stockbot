@@ -50,7 +50,12 @@ ALLOWED_CHANGED=(
 )
 
 if [[ -n "${HOST_SETUP_ALLOWLIST_CHECK:-1}" ]]; then
-  changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}" 2>/dev/null || true)
+  # PR workflows often check out refs/pull/N/merge; diff against the branch tip (HEAD^2), not the merge tree.
+  diff_head=$(git -C "$ROOT" rev-parse HEAD)
+  if git -C "$ROOT" rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+    diff_head=$(git -C "$ROOT" rev-parse HEAD^2)
+  fi
+  changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}".."${diff_head}" 2>/dev/null || true)
   if [[ -n "$changed" ]]; then
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
