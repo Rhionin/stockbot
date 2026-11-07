@@ -30,10 +30,13 @@ func TestPublicScannerHelpPage(t *testing.T) {
 					"Contact the person who sent your invite",
 					"Stockbot · Scanner help · v1 (2026-11)",
 					"/help/scanner",
+					"{N} waiting to send",
 				},
 				bodyExcludes: []string{
 					placeholderMarker,
 					"NOT FOR PUBLISHING",
+					"PENDING",
+					"#453",
 					"private-admin",
 					"setup runbook",
 					"{App name}",
@@ -97,8 +100,8 @@ func TestScannerHelpResolvesConfiguredNames(t *testing.T) {
 	if !strings.Contains(body, "pantry.test/help/scanner") {
 		t.Fatalf("footer missing help host: %.120s...", body[len(body)-200:])
 	}
-	if !strings.Contains(body, `alt="Northwind Pantry"`) {
-		t.Fatal("logo alt should use configured app name")
+	if !strings.Contains(body, `alt=""`) {
+		t.Fatal("decorative logo alt should be empty; app name belongs in footer only")
 	}
 	if rec.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("signed-out help set cookie")

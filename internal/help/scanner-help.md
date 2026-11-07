@@ -22,8 +22,6 @@ The screen has three parts:
 
 The scanner has a trigger for scanning and a separate mode button.
 
-[PHOTO PENDING #453: scanner front with the mode button and trigger marked]
-
 ## Set up the scanner
 
 ### 1. Make your account
@@ -32,8 +30,6 @@ The scanner has a trigger for scanning and a separate mode button.
 2. Make your account and name your household.
 
 You'll see your new, empty household in the app.
-
-[SCREENSHOT PENDING #453]
 
 ### 2. Print the setup sheet
 
@@ -47,8 +43,6 @@ The pairing barcode works once. The sheet shows the time it stops working, 10 mi
 
 No printer? Leave the **Connect a scanner** window open. In step 4, scan the barcode right off your phone or computer screen.
 
-[SCREENSHOT PENDING #453]
-
 ### 3. Connect the scanner to Wi-Fi
 
 1. Put the scanner on its dock and plug the dock into the wall.
@@ -58,16 +52,12 @@ No printer? Leave the **Connect a scanner** window open. In step 4, scan the bar
 
 You'll see `CONNECT HOUSEHOLD` and `Scan the pairing barcode to connect` on the scanner.
 
-[PHOTO PENDING #453]
-
 ### 4. Connect the scanner to your household
 
 1. Hold the scanner 10 to 30 cm (4 to 12 in) from the pairing barcode.
 2. Pull the trigger.
 
 You'll hear a chime. The screen says `CONNECTED`, your household's name, and `Ready to scan`. In the app, the **Connect a scanner** window closes and the scanner shows **Online**.
-
-[PHOTO PENDING #453]
 
 ### 5. Try it, then choose how it works
 
@@ -82,8 +72,6 @@ You'll hear a chime. The screen says `CONNECTED`, your household's name, and `Re
 5. Cut out the wall card along the dashed line and tape it next to the scanner.
 
 The scanner starts in Stock out. After you switch to Stock in, it goes back to Stock out 5 minutes after your last scan. The bottom of the screen counts down, for example `Back to Stock out: 4:59`. To change the time, use **Return to default mode after** on the scanner's card.
-
-[PHOTO PENDING #453]
 
 ## If something looks wrong
 
@@ -143,8 +131,6 @@ Use this after a new router or a new Wi-Fi password. The scanner stays connected
 
 Let go while the screen says `HOLDING`. If you hold until the screen turns red and says `LET GO TO ERASE`, letting go erases the scanner.
 
-[PHOTO PENDING #453]
-
 ### Start over (erases the scanner)
 
 Do this only when nothing else works. It erases the scanner's Wi-Fi, its connection to your household, and any scans it hasn't sent.
@@ -152,8 +138,6 @@ Do this only when nothing else works. It erases the scanner's Wi-Fi, its connect
 1. Hold the mode button until the screen turns red and says `LET GO TO ERASE` (about 10 seconds).
 2. Let go. The screen says `READY TO SET UP`.
 3. Do steps 2, 3, and 4 again with a new setup sheet.
-
-[PHOTO PENDING #453]
 
 ## Printing tips
 

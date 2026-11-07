@@ -5,9 +5,22 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var headingSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+type listFrame struct {
+	kind  string // "ol" or "ul"
+	depth int
+}
+
+type mdRenderer struct {
+	out       strings.Builder
+	frames    []listFrame
+	paragraph []string
+	liOpen    bool
+}
 
 // renderHelpMarkdown turns household-safe scanner help into an HTML fragment.
 func renderHelpMarkdown(source string) string {
@@ -15,102 +28,168 @@ func renderHelpMarkdown(source string) string {
 	if source == "" {
 		return ""
 	}
-	lines := strings.Split(source, "\n")
-	var out strings.Builder
-	var listKind string // "ul", "ol", or ""
-	closeList := func() {
-		if listKind != "" {
-			out.WriteString("</" + listKind + ">")
-			listKind = ""
-		}
+	r := &mdRenderer{}
+	for _, raw := range strings.Split(source, "\n") {
+		r.renderLine(raw)
 	}
-	flushParagraph := func(p []string) {
-		if len(p) == 0 {
+	r.closeAllLists()
+	r.flushParagraph()
+	return r.out.String()
+}
+
+func (r *mdRenderer) renderLine(raw string) {
+	depth, line := lineDepth(raw)
+	if line == "" {
+		r.closeAllLists()
+		r.flushParagraph()
+		r.paragraph = nil
+		return
+	}
+	if strings.HasPrefix(line, "#") {
+		r.closeAllLists()
+		r.flushParagraph()
+		r.paragraph = nil
+		level := 0
+		for level < len(line) && line[level] == '#' {
+			level++
+		}
+		if level > len(line) || line[level] != ' ' {
+			r.paragraph = append(r.paragraph, line)
 			return
 		}
-		out.WriteString("<p>")
-		out.WriteString(inlineMarkup(strings.Join(p, " ")))
-		out.WriteString("</p>")
+		text := strings.TrimSpace(line[level:])
+		id := headingSlug.ReplaceAllString(strings.ToLower(text), "-")
+		id = strings.Trim(id, "-")
+		r.out.WriteString(fmt.Sprintf("<h%d id=%q>", level, html.EscapeString(id)))
+		r.out.WriteString(inlineMarkup(text))
+		r.out.WriteString(fmt.Sprintf("</h%d>", level))
+		return
 	}
-	var paragraph []string
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			closeList()
-			flushParagraph(paragraph)
-			paragraph = nil
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			closeList()
-			flushParagraph(paragraph)
-			paragraph = nil
-			level := 0
-			for level < len(line) && line[level] == '#' {
-				level++
-			}
-			if level > len(line) || line[level] != ' ' {
-				paragraph = append(paragraph, line)
-				continue
-			}
-			text := strings.TrimSpace(line[level:])
-			id := headingSlug.ReplaceAllString(strings.ToLower(text), "-")
-			id = strings.Trim(id, "-")
-			out.WriteString(fmt.Sprintf("<h%d id=%q>", level, html.EscapeString(id)))
-			out.WriteString(inlineMarkup(text))
-			out.WriteString(fmt.Sprintf("</h%d>", level))
-			continue
-		}
-		if strings.HasPrefix(line, "---") {
-			closeList()
-			flushParagraph(paragraph)
-			paragraph = nil
-			out.WriteString("<hr>")
-			continue
-		}
-		if strings.HasPrefix(line, "- ") {
-			flushParagraph(paragraph)
-			paragraph = nil
-			if listKind != "ul" {
-				closeList()
-				out.WriteString("<ul>")
-				listKind = "ul"
-			}
-			out.WriteString("<li>")
-			out.WriteString(inlineMarkup(strings.TrimSpace(strings.TrimPrefix(line, "- "))))
-			out.WriteString("</li>")
-			continue
-		}
-		if len(line) > 2 && line[0] >= '0' && line[0] <= '9' {
-			dot := strings.Index(line, ". ")
-			if dot > 0 {
-				flushParagraph(paragraph)
-				paragraph = nil
-				if listKind != "ol" {
-					closeList()
-					out.WriteString("<ol>")
-					listKind = "ol"
-				}
-				out.WriteString("<li>")
-				out.WriteString(inlineMarkup(strings.TrimSpace(line[dot+2:])))
-				out.WriteString("</li>")
-				continue
-			}
-		}
-		if strings.HasPrefix(line, "[PHOTO PENDING") || strings.HasPrefix(line, "[SCREENSHOT PENDING") {
-			closeList()
-			flushParagraph(paragraph)
-			paragraph = nil
-			out.WriteString("<p class=muted>")
-			out.WriteString(html.EscapeString(line))
-			out.WriteString("</p>")
-			continue
-		}
-		paragraph = append(paragraph, line)
+	if strings.HasPrefix(line, "---") {
+		r.closeAllLists()
+		r.flushParagraph()
+		r.paragraph = nil
+		r.out.WriteString("<hr>")
+		return
 	}
-	closeList()
-	flushParagraph(paragraph)
-	return out.String()
+	if strings.HasPrefix(line, "- ") {
+		r.flushParagraph()
+		r.paragraph = nil
+		text := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		r.writeListItem("ul", depth, text)
+		return
+	}
+	if n, ok := orderedPrefix(line); ok {
+		r.flushParagraph()
+		r.paragraph = nil
+		text := strings.TrimSpace(line[n:])
+		r.writeListItem("ol", depth, text)
+		return
+	}
+	if strings.HasPrefix(line, "[PHOTO PENDING") || strings.HasPrefix(line, "[SCREENSHOT PENDING") {
+		r.closeAllLists()
+		r.flushParagraph()
+		r.paragraph = nil
+		r.out.WriteString("<p class=muted>")
+		r.out.WriteString(html.EscapeString(line))
+		r.out.WriteString("</p>")
+		return
+	}
+	r.closeAllLists()
+	r.paragraph = append(r.paragraph, line)
+}
+
+func lineDepth(raw string) (int, string) {
+	spaces := 0
+	for spaces < len(raw) && raw[spaces] == ' ' {
+		spaces++
+	}
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return 0, ""
+	}
+	// Nested sub-bullets under ordered steps use three spaces in the source copy.
+	depth := spaces / 3
+	return depth, line
+}
+
+func orderedPrefix(line string) (int, bool) {
+	i := 0
+	for i < len(line) && unicode.IsDigit(rune(line[i])) {
+		i++
+	}
+	if i == 0 || i >= len(line) || line[i] != '.' {
+		return 0, false
+	}
+	if i+1 >= len(line) || line[i+1] != ' ' {
+		return 0, false
+	}
+	return i + 2, true
+}
+
+func (r *mdRenderer) closeLi() {
+	if r.liOpen {
+		r.out.WriteString("</li>")
+		r.liOpen = false
+	}
+}
+
+func (r *mdRenderer) closeListsAbove(depth int) {
+	for len(r.frames) > 0 && r.frames[len(r.frames)-1].depth > depth {
+		r.closeLi()
+		frame := r.frames[len(r.frames)-1]
+		r.out.WriteString("</" + frame.kind + ">")
+		r.frames = r.frames[:len(r.frames)-1]
+	}
+}
+
+func (r *mdRenderer) closeAllLists() {
+	for len(r.frames) > 0 {
+		r.closeLi()
+		frame := r.frames[len(r.frames)-1]
+		r.out.WriteString("</" + frame.kind + ">")
+		r.frames = r.frames[:len(r.frames)-1]
+	}
+}
+
+func (r *mdRenderer) ensureList(kind string, depth int) {
+	r.closeListsAbove(depth)
+	if len(r.frames) == 0 {
+		r.out.WriteString("<" + kind + ">")
+		r.frames = append(r.frames, listFrame{kind: kind, depth: depth})
+		return
+	}
+	top := r.frames[len(r.frames)-1]
+	if top.depth < depth {
+		r.out.WriteString("<" + kind + ">")
+		r.frames = append(r.frames, listFrame{kind: kind, depth: depth})
+		return
+	}
+	if top.depth == depth && top.kind != kind {
+		r.closeLi()
+		r.out.WriteString("</" + top.kind + ">")
+		r.frames[len(r.frames)-1].kind = kind
+		r.out.WriteString("<" + kind + ">")
+	}
+	if top.depth == depth && top.kind == kind {
+		r.closeLi()
+	}
+}
+
+func (r *mdRenderer) writeListItem(kind string, depth int, text string) {
+	r.ensureList(kind, depth)
+	r.out.WriteString("<li>")
+	r.out.WriteString(inlineMarkup(text))
+	r.liOpen = true
+}
+
+func (r *mdRenderer) flushParagraph() {
+	if len(r.paragraph) == 0 {
+		return
+	}
+	r.out.WriteString("<p>")
+	r.out.WriteString(inlineMarkup(strings.Join(r.paragraph, " ")))
+	r.out.WriteString("</p>")
 }
 
 func inlineMarkup(s string) string {
@@ -188,11 +267,7 @@ func inlineMarkup(s string) string {
 			}
 			href := strings.TrimSpace(rest[1:parenEnd])
 			b.WriteString("<a href=\"")
-			if strings.HasPrefix(href, "#") {
-				b.WriteString(html.EscapeString(href))
-			} else {
-				b.WriteString(html.EscapeString(href))
-			}
+			b.WriteString(html.EscapeString(href))
 			b.WriteString("\">")
 			b.WriteString(html.EscapeString(label))
 			b.WriteString("</a>")
