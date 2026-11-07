@@ -544,9 +544,6 @@ func (s *Service) mutableDevice(ctx context.Context, userID, householdID, device
 		}
 		return notFound()
 	}
-	if ownerOnly && role != "owner" {
-		return fail(CodeForbiddenRole, SentenceForbidden)
-	}
 	var kind, label string
 	err = s.db.QueryRowContext(ctx, `
 		SELECT kind, label FROM devices WHERE id = ? AND household_id = ?`, deviceID, householdID).Scan(&kind, &label)
@@ -555,6 +552,9 @@ func (s *Service) mutableDevice(ctx context.Context, userID, householdID, device
 	}
 	if kind == "direct" {
 		return notFound()
+	}
+	if ownerOnly && role != "owner" {
+		return fail(CodeForbiddenRole, SentenceForbidden)
 	}
 	return nil
 }
