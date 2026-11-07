@@ -13,7 +13,7 @@ const databasePath = join(tmpdir(), `pantry-playwright-${runId}.db`)
 const storageState = join(tmpdir(), `pantry-playwright-${runId}.auth.json`)
 
 // Path to the pre-built server binary, relative to this frontend directory.
-// CI builds it here (see the "Build server binary" step in .github/workflows/ci.yml)
+// CI builds it here (see web-checks.yml "Build server binary")
 // so Playwright launches an already-compiled binary instead of cold-compiling
 // `go run` under the default webServer timeout. It lives in the repo-root `bin/`
 // directory, which is git-ignored. Build locally with:
@@ -29,6 +29,7 @@ export default defineConfig({
   // in-flight scan, producing flaky failures. Raising the worker count safely
   // would first require per-worker server/DB isolation.
   workers: 1,
+  retries: 0,
   webServer: [
     {
       command: 'node e2e/authenticated-server.mjs',
