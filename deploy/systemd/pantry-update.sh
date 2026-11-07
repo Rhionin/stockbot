@@ -2696,6 +2696,13 @@ github_compare_top_status() {
 host_bundle_revision_on_master() {
   local revision="$1" url body status
   [[ -n "$revision" ]] || return 1
+  if [[ -n "${PANTRY_TEST_GITHUB_COMPARE_STATUS:-}" ]]; then
+    case "$PANTRY_TEST_GITHUB_COMPARE_STATUS" in
+      ahead|identical) return 0 ;;
+      unreachable) return 2 ;;
+      *) return 1 ;;
+    esac
+  fi
   url=$(host_bundle_github_compare_url "$revision")
   body=$(curl -fsS --max-time 15 "$url" 2>/dev/null) || return 2
   status=$(github_compare_top_status "$body")

@@ -583,6 +583,171 @@ test_protected_byte_and_mode_invariance_vs_frozen_base() {
   done
 }
 
+test_sigkill_simulation_second_entry_recovers_pending() {
+  local root work rc1 rc2
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' >"$root/host-setup-state/control"
+  printf '\n# mid-apply-drift\n' >>"$root/publish-mode.sh"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc1=$?
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc2=$?
+  set -e
+  [[ "$rc1" -ne 0 && "$rc2" -ne 0 ]] || fail "sigkill-sim entries must exit nonzero"
+  cmp -s "$root/host-setup-state/lkg/files/1" "$root/publish-mode.sh" \
+    || fail "recovery must converge publish-mode to lkg manifest"
+  rm -rf "$root" "$work"
+}
+
+test_ancestry_unreachable_defers_without_fatal() {
+  local root state rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  state=$(mktemp -d)
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_GITHUB_COMPARE_STATUS=unreachable bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_subset_refresh_from_image "'"$state"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]] || fail "unreachable ancestry should defer with rc 1 (got $rc)"
+  PANTRY_DIR="$root" bash -c 'source "$1"; [[ "$(host_control_field phase)" == clean ]]' _ "$UPDATE" \
+    || fail "unreachable ancestry must not publish prepared"
+  rm -rf "$root" "$state"
+}
+
+test_ancestry_not_on_master_refuses_without_poison() {
+  local root state rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  state=$(mktemp -d)
+  PANTRY_DIR="$root" PANTRY_TEST_GITHUB_COMPARE_STATUS=diverged bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_subset_refresh_from_image "'"$state"'" || rc=$?
+    [[ "$rc" -eq 1 ]]
+    [[ "$(host_control_field phase)" == clean ]]
+  ' _ "$UPDATE"
+  rm -rf "$root" "$state"
+}
+
+test_mixed_version_four_script_entry_recovery() {
+  local root work rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf '\n# candidate-mix\n' >"$root/host-setup-state/candidate/files/1"
+  cp "$root/runtime-setup.sh" "$root/host-setup-state/candidate/files/2"
+  printf 'version=1\nphase=applying\noriginal_reason=apply_failed\nfailed_target_sha=%s\n' "$TEST_REV" >"$root/host-setup-state/control"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "mixed-version pending must block normal exit 0"
+  cmp -s "$root/publish-mode.sh" "$root/host-setup-state/lkg/files/1" \
+    || fail "mixed-version recovery must restore lkg publish-mode"
+  rm -rf "$root" "$work"
+}
+
+test_interrupt_marker_committing_phase() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  cp "$root/host-setup-state/lkg/"{manifest,files/*} "$root/host-setup-state/candidate/" 2>/dev/null || true
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_INTERRUPT_AT=committing bash -c '
+    set -euo pipefail
+    source "$1"
+    HOST_CTRL_PHASE=committing
+    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    host_control_publish
+    host_txn_test_hook committing
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 42 ]] || fail "interrupt at committing expected rc 42"
+  rm -rf "$root"
+}
+
+test_invalid_flag_matrix_pantry_auto_setup_invalid() {
+  local root
+  root=$(mktemp -d)
+  prepare_root "$root"
+  PANTRY_DIR="$root" PANTRY_AUTO_SETUP=broken bash -c '
+    set -euo pipefail
+    source "$1"
+    host_flags_read
+    [[ "$HOST_FLAG_ANY_INVALID" -eq 1 ]]
+  ' _ "$UPDATE"
+  rm -rf "$root"
+}
+
+test_deploy_lock_uses_real_flock_serialization() {
+  local root lock pid rc
+  root=$(mktemp -d)
+  mkdir -p "$root/deploy-trigger"
+  lock="$root/deploy-trigger/.lock"
+  ( exec 9>"$lock"; flock -x 9; sleep 3; ) &
+  pid=$!
+  sleep 0.2
+  prepare_root "$root"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  rm -f "$work/bin/flock"
+  ln -sf "$(command -v flock)" "$work/bin/flock"
+  set +e
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    timeout 5 bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc=$?
+  set -e
+  wait "$pid" 2>/dev/null || true
+  [[ "$rc" -ne 0 ]] || fail "blocked lock holder should not finish healthy deploy quickly"
+  rm -rf "$root" "$work"
+}
+
+test_failed_target_sha_blocks_same_revision_retry() {
+  local root
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    HOST_CTRL_PHASE=recovered
+    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_FAILED_TARGET="'"$TEST_REV"'"
+    host_control_publish
+    host_target_retry_allowed && exit 1 || exit 0
+  ' _ "$UPDATE"
+  rm -rf "$root"
+}
+
 for fn in \
   entry_order_recovery_before_publish_mode_sources_and_flags \
   pending_recovery_exits_nonzero_before_image_work \
@@ -606,7 +771,15 @@ for fn in \
   manifest_parse_rejects_unknown_lines \
   host_seed_refused_without_test_allow_manual_seed \
   coordinator_temp_prefix_host_txn_v1 \
-  protected_byte_and_mode_invariance_vs_frozen_base
+  protected_byte_and_mode_invariance_vs_frozen_base \
+  sigkill_simulation_second_entry_recovers_pending \
+  ancestry_unreachable_defers_without_fatal \
+  ancestry_not_on_master_refuses_without_poison \
+  mixed_version_four_script_entry_recovery \
+  interrupt_marker_committing_phase \
+  invalid_flag_matrix_pantry_auto_setup_invalid \
+  deploy_lock_uses_real_flock_serialization \
+  failed_target_sha_blocks_same_revision_retry
 do
   run_case "$fn" "test_$fn"
 done
