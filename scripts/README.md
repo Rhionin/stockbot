@@ -75,6 +75,14 @@ A line with code and a trailing comment counts. A `//` inside a string on that s
 
 `.github/workflows/test-metrics.yml` runs this on pull requests (one sticky comment) and on a weekly schedule plus `workflow_dispatch` (the metrics JSON is uploaded as an artifact). On a pull request the head tree is the merge commit and the base tree is that commit's first parent, so other commits that landed on the base branch are not part of the delta. The workflow is not `ci.yml`, and a failure there does not fail the build. The metrics job itself fails when Vitest does not write `coverage-final.json`, so a missing web density is not a green job with a warning. `@vitest/coverage-v8` is installed at the vitest version in `frontend/package-lock.json`, which keeps it on the same release as vitest when Dependabot bumps the lockfile.
 
+### CI Go platform builds (Linux default)
+
+`ci.yml` always runs **Go build on ubuntu-latest**. **macOS** and **Windows** compile jobs are opt-in so ordinary PRs and the default release path stay Linux-only.
+
+To run cross-platform Go builds manually: **Actions → CI → Run workflow**, check **Also run Go compile checks on macOS and Windows**, then run. Manual runs default `publish_image` to **skip** and never enter `docker-publish` (no image push, moving tags, or deploy hook). Reusable callers (including `release.yml`) can pass `go_cross_platform: true` on the `workflow_call` input when needed.
+
+Contract checks: `python3 scripts/validate_ci_platform_matrix.py` and `python3 scripts/validate_ci_platform_matrix_test.py` (also run in the **Shell script linting** CI job).
+
 ## Usage Guidelines
 
 - Run `test-coverage.sh` after completing each task (required by AGENTS.md)

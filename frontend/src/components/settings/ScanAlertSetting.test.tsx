@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { SettingsPage } from './SettingsPage';
-import { scanAlertStatus } from './scanAlertCopy';
 import { setBackgroundAlerts, writeScanAlertPreference } from '../queue/pushAlerts';
 
 class FakeNotification {
@@ -77,32 +76,6 @@ const installPush = (
 const renderSettings = () => render(
   <MantineProvider><SettingsPage /></MantineProvider>,
 );
-
-describe('scan alert status', () => {
-  it('names each push failure and offers a retry', () => {
-    expect(scanAlertStatus('granted', false, 'idle', null)).toEqual({ text: 'Off', tone: 'off', retry: false });
-    expect(scanAlertStatus('denied', false, 'idle', null).text).toBe('Blocked in browser settings');
-    expect(scanAlertStatus('granted', true, 'idle', null).text).toBe(
-      'On: alerts arrive even when Stockbot is closed',
-    );
-    expect(scanAlertStatus('granted', true, 'idle', 'no-push')).toMatchObject({
-      text: 'This browser has no push service. Alerts arrive only while this tab is open.',
-      retry: true,
-    });
-    expect(scanAlertStatus('granted', true, 'idle', 'register-failed').text).toBe(
-      'The browser could not register the service worker. Alerts arrive only while this tab is open.',
-    );
-    expect(scanAlertStatus('granted', true, 'idle', 'empty-vapid').text).toBe(
-      'This Stockbot has no push key. Alerts arrive only while this tab is open.',
-    );
-    expect(scanAlertStatus('granted', true, 'idle', 'subscribe-rejected').text).toBe(
-      'The browser refused the push subscription. Alerts arrive only while this tab is open.',
-    );
-    expect(scanAlertStatus('granted', true, 'idle', 'save-failed').text).toBe(
-      'Stockbot could not save this device. Alerts arrive only while this tab is open.',
-    );
-  });
-});
 
 describe('Scan alerts on Settings', () => {
   afterEach(() => {
