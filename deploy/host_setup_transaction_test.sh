@@ -82,6 +82,21 @@ make_bin() {
   mkdir -p "$bin"
   cat > "$bin/docker" << 'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == cp && "$2" == *host-bundle* ]]; then
+  src=${STUB_HOST_BUNDLE_CP:-}
+  dest=$3
+  if [[ -n "$src" && -d "$src" ]]; then
+    mkdir -p "$dest"
+    cp -a "$src/." "$dest/"
+    exit 0
+  fi
+fi
+if [[ "$1" == inspect ]]; then
+  if [[ "${*: -2:1}" == pantry || "$*" == *' pantry '* ]]; then
+    printf 'cid-pantry\n'
+    exit 0
+  fi
+fi
 exit 0
 EOF
   cat > "$bin/curl" << 'EOF'
@@ -652,6 +667,7 @@ test_mixed_version_four_script_entry_recovery() {
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
   printf '\n# candidate-mix\n' >"$root/host-setup-state/candidate/files/1"
   cp "$root/runtime-setup.sh" "$root/host-setup-state/candidate/files/2"
   printf 'version=1\nphase=applying\noriginal_reason=apply_failed\nfailed_target_sha=%s\n' "$TEST_REV" >"$root/host-setup-state/control"
@@ -731,6 +747,171 @@ test_deploy_lock_uses_real_flock_serialization() {
   rm -rf "$root" "$work"
 }
 
+test_host_run_bounded_reaps_grandchild_ignoring_term() {
+  local root ign marker rc
+  root=$(mktemp -d)
+  marker="pantry-bounded-survivor-$$-RANDOM"
+  ign="$root/ignore-term.sh"
+  cat >"$ign" <<EOF
+#!/usr/bin/env bash
+( trap true TERM; exec -a "${marker}-child" sleep 300 ) &
+exec -a "${marker}-parent" sleep 300
+EOF
+  chmod +x "$ign"
+  set +e
+  PANTRY_DIR=/tmp bash -c '
+    set -euo pipefail
+    source "$1"
+    host_run_bounded 1 bash "'"$ign"'" || true
+  ' _ "$UPDATE"
+  rc=$?
+  sleep 0.2
+  if pgrep -f "$marker" >/dev/null 2>&1; then
+    rc=97
+  fi
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "bounded run left processes alive (rc=$rc)"
+  rm -rf "$root"
+}
+
+live_signal_fresh_entries_converge() {
+  local root="$1" work="$2" rc1 rc2
+  set +e
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc1=$?
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>&1
+  rc2=$?
+  set -e
+  [[ "$rc1" -ne 0 && "$rc2" -ne 0 ]] || return 1
+  cmp -s "$root/host-setup-state/lkg/files/1" "$root/publish-mode.sh"
+}
+
+test_live_signal_term_during_applying_recovery_converges() {
+  local root coord
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
+    >"$root/host-setup-state/control"
+  printf '\n# applying-live-signal-drift\n' >>"$root/publish-mode.sh"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=applying PANTRY_TEST_LIVE_SIGNAL=1 \
+    PATH="$work/bin:$PATH" \
+    bash -c 'set -euo pipefail; source "$1"; host_txn_test_hook applying' _ "$root/systemd/pantry-update.sh" &
+  coord=$!
+  sleep 0.35
+  kill -TERM "$coord" 2>/dev/null || true
+  sleep 0.1
+  kill -KILL "$coord" 2>/dev/null || true
+  wait "$coord" 2>/dev/null || true
+  set -e
+  live_signal_fresh_entries_converge "$root" "$work" \
+    || fail "live TERM during applying must recover to lkg bytes"
+  rm -rf "$work" "$root"
+}
+
+test_live_signal_int_during_applying_recovery_converges() {
+  local root coord work
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
+    >"$root/host-setup-state/control"
+  printf '\n# applying-int-drift\n' >>"$root/publish-mode.sh"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=applying PANTRY_TEST_LIVE_SIGNAL=1 \
+    PATH="$work/bin:$PATH" \
+    bash -c 'set -euo pipefail; source "$1"; host_txn_test_hook applying' _ "$root/systemd/pantry-update.sh" &
+  coord=$!
+  sleep 0.35
+  kill -INT "$coord" 2>/dev/null || true
+  sleep 0.1
+  kill -KILL "$coord" 2>/dev/null || true
+  wait "$coord" 2>/dev/null || true
+  set -e
+  live_signal_fresh_entries_converge "$root" "$work" \
+    || fail "live INT during applying must recover to lkg bytes"
+  rm -rf "$work" "$root"
+}
+
+test_live_signal_term_during_committing_recovery_converges() {
+  local root coord
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
+  printf '\n# commit-live-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
+  ' _ "$root/systemd/pantry-update.sh"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
+    >"$root/host-setup-state/control"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=committing PANTRY_TEST_LIVE_SIGNAL=1 \
+    PATH="$work/bin:$PATH" \
+    bash -c 'set -euo pipefail; source "$1"; host_commit_transaction' _ "$root/systemd/pantry-update.sh" &
+  coord=$!
+  sleep 0.35
+  kill -TERM "$coord" 2>/dev/null || true
+  sleep 0.1
+  kill -KILL "$coord" 2>/dev/null || true
+  wait "$coord" 2>/dev/null || true
+  set -e
+  live_signal_fresh_entries_converge "$root" "$work" \
+    || fail "live TERM during committing must recover to lkg bytes"
+  rm -rf "$work" "$root"
+}
+
+test_live_signal_int_during_committing_recovery_converges() {
+  local root coord
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
+  printf '\n# commit-int-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
+  ' _ "$root/systemd/pantry-update.sh"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
+    >"$root/host-setup-state/control"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=committing PANTRY_TEST_LIVE_SIGNAL=1 \
+    PATH="$work/bin:$PATH" \
+    bash -c 'set -euo pipefail; source "$1"; host_commit_transaction' _ "$root/systemd/pantry-update.sh" &
+  coord=$!
+  sleep 0.35
+  kill -INT "$coord" 2>/dev/null || true
+  sleep 0.1
+  kill -KILL "$coord" 2>/dev/null || true
+  wait "$coord" 2>/dev/null || true
+  set -e
+  live_signal_fresh_entries_converge "$root" "$work" \
+    || fail "live INT during committing must recover to lkg bytes"
+  rm -rf "$work" "$root"
+}
+
 test_failed_target_sha_blocks_same_revision_retry() {
   local root
   root=$(mktemp -d)
@@ -779,7 +960,12 @@ for fn in \
   interrupt_marker_committing_phase \
   invalid_flag_matrix_pantry_auto_setup_invalid \
   deploy_lock_uses_real_flock_serialization \
-  failed_target_sha_blocks_same_revision_retry
+  failed_target_sha_blocks_same_revision_retry \
+  host_run_bounded_reaps_grandchild_ignoring_term \
+  live_signal_term_during_applying_recovery_converges \
+  live_signal_int_during_applying_recovery_converges \
+  live_signal_term_during_committing_recovery_converges \
+  live_signal_int_during_committing_recovery_converges
 do
   run_case "$fn" "test_$fn"
 done

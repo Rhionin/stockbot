@@ -808,6 +808,9 @@ run_update() {
     STUB_FIXTURE_ROOT="$ROOT/deploy/fixtures" \
     PANTRY_SYSTEMD_UNIT_DIR="${PANTRY_SYSTEMD_UNIT_DIR:-}" \
     PANTRY_TEST_ENTRY_TRACE="${PANTRY_TEST_ENTRY_TRACE:-}" \
+    PANTRY_AUTO_SETUP="${PANTRY_AUTO_SETUP:-}" \
+    PANTRY_TEST_VALIDATION_FAIL="${PANTRY_TEST_VALIDATION_FAIL:-}" \
+    PANTRY_HOST_REFRESH="${PANTRY_HOST_REFRESH-}" \
     PATH="$path_setting" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
   LAST_RC=$?
@@ -2709,6 +2712,32 @@ lack "$LAST_OUT" "PANTRY UPDATE BLOCKED" "invalid mode fails before the backup r
 [[ ! -e "$backup_invalid/.update-pending" ]] || fail "invalid mode left a pending marker"
 unset BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
 
+init_initialized_host_subset_state() {
+  local pantry="$1"
+  local revision="${2:-$NEW_COMMIT}"
+  PANTRY_DIR="$pantry" bash -c '
+    set -euo pipefail
+    # shellcheck disable=SC1091
+    source "$1"
+    snap="$PANTRY_DIR/host-setup-state/lkg"
+    mkdir -p "$snap/files"
+    for id in 1 2 3 4; do
+      cp "$(host_txn_target_dest "$id")" "$snap/files/$id"
+    done
+    host_manifest_build_installed "'"$revision"'" "$snap/manifest"
+    host_snapshot_verify "$snap"
+    mkdir -p "$PANTRY_DIR/host-setup-state"
+    HOST_CTRL_PHASE=clean
+    HOST_CTRL_COMMITTED="'"$revision"'"
+    HOST_CTRL_TARGET=none
+    HOST_CTRL_PREV_MANIFEST=none
+    HOST_CTRL_CAND_MANIFEST=none
+    HOST_CTRL_REASON=none
+    HOST_CTRL_FAILED_TARGET=none
+    host_control_publish
+  ' _ "$UPDATE"
+}
+
 stage_host_bundle() {
   local dest="$1"
   mkdir -p "$dest/systemd"
@@ -3075,6 +3104,35 @@ have "$status_body" "reason=deploy_ok" "idempotent host refresh records deploy_o
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY
 
 rm -rf "$backup_warn" "$backup_required" "$backup_missing" "$backup_noexec" "$backup_optional" "$backup_off" "$backup_dotenv" "$backup_invalid" "$host_refresh" "$host_prov_realistic" "$host_prov_diverged" "$host_prov_fail" "$host_prov_digest" "$host_prov_empty_dig" "$host_lkg_mv" "$host_lkg_snapshot" "$host_lkg_new" "$host_prov_net" "$host_bundle_bad" "$host_no_refresh" "$host_idempotent"
+
+# Initialized host subset: fatal refresh rc stops the multi-pull loop (#152).
+host_fatal_multipull=$(mktemp -d)
+prepare_pantry "$host_fatal_multipull"
+printf 'PANTRY_AUTO_SETUP=on\n' >>"$host_fatal_multipull/.env"
+init_initialized_host_subset_state "$host_fatal_multipull"
+stage_host_bundle "$host_fatal_multipull/host-bundle-stub"
+printf '\n# host-fatal-subset-marker\n' >>"$host_fatal_multipull/host-bundle-stub/publish-mode.sh"
+STUB_HOST_BUNDLE="$host_fatal_multipull/host-bundle-stub"
+write_images "$host_fatal_multipull/images.tsv" \
+  sha256:newpantry ghcr.io/rhionin/pantry@sha256:newpantry \
+  sha256:runcaddy caddy@sha256:oldcaddy
+STUB_HEALTH_BODY='{"status":"ok"}'
+STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
+STUB_REWRITE_TRIGGER=1
+PANTRY_TEST_VALIDATION_FAIL=1
+PANTRY_AUTO_SETUP=on
+run_update "$host_fatal_multipull"
+[[ "$LAST_RC" -eq 3 ]] || fail "fatal host refresh should exit 3, got $LAST_RC: $LAST_OUT"
+status_body=$(cat "$host_fatal_multipull/last-deploy-status")
+have "$status_body" "result=blocked" "fatal host refresh records blocked"
+have "$status_body" "reason=host_setup_failed" "fatal host refresh records host_setup_failed"
+lack "$LAST_OUT" "pulling again" "fatal host refresh must not start another pull"
+lack "$LAST_OUT" "stopping after 3 pulls" "fatal host refresh must not hit pull cap"
+pulls=$(printf '%s\n' "$LAST_DOCKER" | grep -c ' pull' || true)
+[[ "$pulls" -eq 1 ]] || fail "fatal host refresh ran ${pulls} pull rounds (expected 1)"
+unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY STUB_REWRITE_TRIGGER \
+  PANTRY_TEST_VALIDATION_FAIL PANTRY_AUTO_SETUP
+rm -rf "$host_fatal_multipull"
 
 # Entry reorder: deploy lock and flag gate precede publish-mode sourcing (#152).
 entry_order=$(mktemp -d)

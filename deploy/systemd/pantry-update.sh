@@ -245,7 +245,48 @@ host_txn_test_hook() {
   if [[ -n "${PANTRY_TEST_FAIL_AT:-}" && "$PANTRY_TEST_FAIL_AT" == "$point" ]]; then
     return 1
   fi
+  if [[ -n "${PANTRY_TEST_HOLD_AT:-}" && "$PANTRY_TEST_HOLD_AT" == "$point" ]]; then
+    if [[ -n "${PANTRY_TEST_LIVE_SIGNAL:-}" ]]; then
+      while kill -0 "$$" 2>/dev/null; do
+        sleep 0.05
+      done
+    fi
+  fi
   return 0
+}
+
+host_descendant_pids() {
+  local root_pid="$1" pid child depth=0
+  local -a queue=()
+  [[ -n "$root_pid" && "$root_pid" =~ ^[0-9]+$ ]] || return 0
+  queue=("$root_pid")
+  while ((${#queue[@]})) && [[ "$depth" -lt 32 ]]; do
+    pid=${queue[0]}
+    queue=("${queue[@]:1}")
+    printf '%s\n' "$pid"
+    while read -r child; do
+      [[ -z "$child" ]] && continue
+      queue+=("$child")
+    done < <(ps -o pid= --ppid "$pid" 2>/dev/null || true)
+    depth=$((depth + 1))
+  done
+}
+
+host_reap_process_group() {
+  local pgid="$1" root_pid="$2" pid
+  while read -r pid; do
+    [[ -z "$pid" || "$pid" == "$$" ]] && continue
+    if kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done < <( {
+    if [[ -n "$pgid" && "$pgid" =~ ^[0-9]+$ ]]; then
+      ps -o pid= --pgid "$pgid" 2>/dev/null || true
+    fi
+    if [[ -n "$root_pid" && "$root_pid" =~ ^[0-9]+$ ]]; then
+      host_descendant_pids "$root_pid"
+    fi
+  } | sort -u)
 }
 
 host_run_bounded() {
@@ -256,15 +297,59 @@ host_run_bounded() {
   if [[ -n "${PANTRY_TEST_SKIP_HEALTH:-}" ]]; then
     return 0
   fi
-  local rc=0
-  if command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after="${HOST_TXN_KILL_GRACE}" "$budget" "$@" || rc=$?
-    if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
-      return 1
-    fi
-    return "$rc"
+  local supervisor_pid child_pg start rc=0 budget_kill_done=0 caller_pgid
+  start=$SECONDS
+  caller_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c 'exec "$@"' _ "$@" &
+  else
+    bash -c 'set -m; exec "$@"' _ "$@" &
   fi
-  "$@" || rc=$?
+  supervisor_pid=$!
+  sleep 0.02
+  child_pg=$(ps -o pgid= -p "$supervisor_pid" 2>/dev/null | tr -d ' ')
+  bounded_kill_group() {
+    [[ "$budget_kill_done" -eq 1 ]] && return
+    budget_kill_done=1
+    if [[ -n "$child_pg" && "$child_pg" != "$caller_pgid" ]]; then
+      kill -TERM -- "-$child_pg" 2>/dev/null || kill -TERM "$supervisor_pid" 2>/dev/null || true
+    else
+      kill -TERM "$supervisor_pid" 2>/dev/null || true
+    fi
+    local grace=0
+    while [[ "$grace" -lt "${HOST_TXN_KILL_GRACE}" ]]; do
+      if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+      grace=$((grace + 1))
+    done
+    if kill -0 "$supervisor_pid" 2>/dev/null; then
+      if [[ -n "$child_pg" && "$child_pg" != "$caller_pgid" ]]; then
+        kill -KILL -- "-$child_pg" 2>/dev/null || true
+      fi
+      while read -r pid; do
+        [[ -z "$pid" || "$pid" == "$$" ]] && continue
+        kill -KILL "$pid" 2>/dev/null || true
+      done < <(host_descendant_pids "$supervisor_pid")
+      kill -KILL "$supervisor_pid" 2>/dev/null || true
+    fi
+  }
+  while kill -0 "$supervisor_pid" 2>/dev/null; do
+    if [[ $((SECONDS - start)) -ge "$budget" ]]; then
+      bounded_kill_group
+      break
+    fi
+    sleep 0.05
+  done
+  wait "$supervisor_pid" 2>/dev/null || rc=$?
+  host_reap_process_group "$child_pg" "$supervisor_pid"
+  if [[ "$budget_kill_done" -eq 1 ]]; then
+    return 1
+  fi
+  if [[ "$rc" -eq 124 || "$rc" -eq 137 || "$rc" -eq 143 ]]; then
+    return 1
+  fi
   return "$rc"
 }
 
@@ -779,10 +864,11 @@ host_target_retry_allowed() {
 }
 
 host_installed_matches_lkg() {
-  local root="$1" revision tmp lkg
+  local root="$1" revision="${2:-}" tmp lkg
   root=${root:-$(host_setup_state_dir)}
   lkg="$root/lkg/manifest"
   [[ -f "$lkg" ]] || return 1
+  [[ -n "$revision" && "$revision" != none ]] || return 1
   tmp=$(mktemp)
   host_manifest_build_installed "$revision" "$tmp" || { rm -f "$tmp"; return 1; }
   cmp -s "$lkg" "$tmp" || { rm -f "$tmp"; return 1; }
