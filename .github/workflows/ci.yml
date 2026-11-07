@@ -3,16 +3,36 @@ name: CI
 on:
   pull_request:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      go_cross_platform:
+        description: >-
+          Also run Go compile checks on macOS and Windows. Linux always runs on
+          every trigger (PR, release, and manual runs).
+        type: boolean
+        required: false
+        default: false
+      publish_image:
+        description: Manual CI runs never publish images; leave at skip.
+        type: string
+        required: false
+        default: skip
   workflow_call:
     inputs:
-      # String, not boolean. On push and pull_request this input is unset, and
-      # a boolean's zero value is false, which would skip the only publisher.
-      # Release passes skip. Any other value, including unset, still publishes.
+      # String, not boolean. pull_request and workflow_dispatch set this via inputs
+      # (manual dispatch defaults to skip). workflow_call default is publish so
+      # release.yml can reuse this workflow without a with: block.
       publish_image:
         description: Pass skip to avoid building and pushing the container image.
         type: string
         required: false
         default: publish
+      go_cross_platform:
+        description: >-
+          Also run Go compile checks on macOS and Windows. Linux always runs.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -38,22 +58,58 @@ jobs:
       - name: Run Go tests with coverage
         run: ./scripts/test-coverage.sh
   
-  go-build-all-platforms:
-    name: Go build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  go-build-linux:
+    name: Go build on ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-      
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      
+
+      - name: Build all packages
+        run: go build ./...
+
+  go-build-macos:
+    name: Go build on macos-latest
+    # inputs is only defined for workflow_dispatch/workflow_call; never read it on pull_request.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (inputs.go_cross_platform == true || inputs.go_cross_platform == 'true')
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build all packages
+        run: go build ./...
+
+  go-build-windows:
+    name: Go build on windows-latest
+    if: >-
+      github.event_name != 'pull_request' &&
+      (inputs.go_cross_platform == true || inputs.go_cross_platform == 'true')
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Build all packages
         run: go build ./...
 
@@ -81,6 +137,9 @@ jobs:
 
       - name: Module path and names that stay pantry
         run: bash scripts/check-stockbot-names.sh
+
+      - name: Validate CI Linux-default platform matrix
+        run: python3 scripts/validate_ci_platform_matrix.py && python3 scripts/validate_ci_platform_matrix_test.py
 
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
@@ -393,7 +452,7 @@ jobs:
     # the docker job above so the image build does not wait on e2e.
     # Inside workflow_call, github.event_name is the caller's trigger (push from
     # release.yml), not the string workflow_call.
-    if: inputs.publish_image != 'skip' && github.event_name != 'pull_request'
+    if: inputs.publish_image != 'skip' && github.event_name == 'push'
     concurrency:
       group: ${{ github.ref == 'refs/heads/master' && 'deploy-master' || format('image-{0}', github.run_id) }}
       cancel-in-progress: false
