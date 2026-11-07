@@ -13,6 +13,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
+import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   inlineFailure,
@@ -154,14 +155,7 @@ function suggestionRows(suggestions: PantryLinkSuggestion[]): LinkRow[] {
 // typed query matches the name and category as one string. The list already
 // omits shelved rows. Zero on hand stays.
 function householdRows(rows: InventoryItem[], query: string, excludeProductId: string): LinkRow[] {
-  const normalized = query.trim().toLocaleLowerCase();
-  return rows
-    .filter((row) => {
-      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
-      if (normalized === '') return true;
-      const product = row.item.product;
-      return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
-    })
+  return filterInventoryForScanLinkSearch(rows, query, excludeProductId)
     .map((row) => ({
       key: row.item.id,
       name: row.item.product.name,
