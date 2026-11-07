@@ -506,7 +506,10 @@ func (s *serverPush) Add(ctx context.Context, cred cart.Credential, req cart.Pro
 	defer cancel()
 
 	// Build the request payload
-	_, _, _, modality := s.adapter.credentials()
+	modality := strings.ToUpper(strings.TrimSpace(req.Modality))
+	if modality != "PICKUP" && modality != "DELIVERY" {
+		_, _, _, modality = s.adapter.credentials()
+	}
 	payload := struct {
 		Items []struct {
 			UPC      string `json:"upc"`
