@@ -79,9 +79,9 @@ A line with code and a trailing comment counts. A `//` inside a string on that s
 
 `ci.yml` always runs **Go build on ubuntu-latest**. **macOS** and **Windows** compile jobs are opt-in so ordinary PRs and the default release path stay Linux-only.
 
-To run cross-platform Go builds manually: **Actions → CI → Run workflow**, check **Also run Go compile checks on macOS and Windows**, then run. Reusable callers (including `release.yml`) can pass `go_cross_platform: true` on the `workflow_call` input when needed.
+To run cross-platform Go builds manually: **Actions → CI → Run workflow**, check **Also run Go compile checks on macOS and Windows**, then run. Manual runs default `publish_image` to **skip** and never enter `docker-publish` (no image push, moving tags, or deploy hook). Reusable callers (including `release.yml`) can pass `go_cross_platform: true` on the `workflow_call` input when needed.
 
-Contract checks: `bash scripts/validate-ci-platform-matrix.sh` and `bash scripts/validate-ci-platform-matrix_test.sh` (also run in the **Shell script linting** CI job).
+Contract checks: `python3 scripts/validate_ci_platform_matrix.py` and `python3 scripts/validate_ci_platform_matrix_test.py` (also run in the **Shell script linting** CI job).
 
 ## Usage Guidelines
 

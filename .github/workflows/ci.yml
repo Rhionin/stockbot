@@ -12,6 +12,11 @@ on:
         type: boolean
         required: false
         default: false
+      publish_image:
+        description: Manual CI runs never publish images; leave at skip.
+        type: string
+        required: false
+        default: skip
   workflow_call:
     inputs:
       # String, not boolean. On push and pull_request this input is unset, and
@@ -134,7 +139,7 @@ jobs:
         run: bash scripts/check-stockbot-names.sh
 
       - name: Validate CI Linux-default platform matrix
-        run: bash scripts/validate-ci-platform-matrix.sh && bash scripts/validate-ci-platform-matrix_test.sh
+        run: python3 scripts/validate_ci_platform_matrix.py && python3 scripts/validate_ci_platform_matrix_test.py
 
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
@@ -447,7 +452,7 @@ jobs:
     # the docker job above so the image build does not wait on e2e.
     # Inside workflow_call, github.event_name is the caller's trigger (push from
     # release.yml), not the string workflow_call.
-    if: inputs.publish_image != 'skip' && github.event_name != 'pull_request'
+    if: inputs.publish_image != 'skip' && github.event_name == 'push'
     concurrency:
       group: ${{ github.ref == 'refs/heads/master' && 'deploy-master' || format('image-{0}', github.run_id) }}
       cancel-in-progress: false
