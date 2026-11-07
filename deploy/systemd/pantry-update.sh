@@ -174,6 +174,8 @@ HOST_FLAG_ANY_INVALID=0
 HOST_RECOVERY_EXIT=0
 HOST_TXN_FATAL_RC=3
 
+# prepare_setup_dir in pantry_update_main always runs before apply_compose recreates containers.
+
 # public_proxy_in_update is true when this run will manage the HTTPS proxy
 # (certificate or tunnel profile). LAN-only installs skip the session secret.
 public_proxy_in_update() {
