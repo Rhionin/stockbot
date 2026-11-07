@@ -13,6 +13,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/brand"
+	"github.com/Rhionin/stockbot/internal/help"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
@@ -237,6 +238,11 @@ func NewHandler(
 	// Exact public URLs. Registered before the SPA catch-all so /terms and
 	// /privacy are these pages, not the app shell.
 	brand.Register(root)
+	site := cfg.site
+	if site.AppName == "" {
+		site.AppName = app.DefaultAppName
+	}
+	help.Register(root, site)
 	root.Handle("/", webui.NewHandler())
 
 	var handler http.Handler = root
