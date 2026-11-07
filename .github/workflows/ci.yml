@@ -19,9 +19,9 @@ on:
         default: skip
   workflow_call:
     inputs:
-      # String, not boolean. On push and pull_request this input is unset, and
-      # a boolean's zero value is false, which would skip the only publisher.
-      # Release passes skip. Any other value, including unset, still publishes.
+      # String, not boolean. pull_request and workflow_dispatch set this via inputs
+      # (manual dispatch defaults to skip). workflow_call default is publish so
+      # release.yml can reuse this workflow without a with: block.
       publish_image:
         description: Pass skip to avoid building and pushing the container image.
         type: string
