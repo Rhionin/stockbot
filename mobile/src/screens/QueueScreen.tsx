@@ -242,22 +242,27 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   useEffect(() => {
     let active = true;
-    Promise.all([client.listPending(), loadHousehold()]).then(([next, rows]) => {
-      if (!active) return;
-      storeHousehold(rows, next);
-      shownIds.current = new Set(next.map((entry) => entry.id));
-      setEntries(next);
-      setError('');
-      setLoadError('');
-      setQueueUnloaded(false);
-      setLoading(false);
-    }).catch((requestError: unknown) => {
-      if (!active) return;
-      setLoading(false);
-      const message = inlineFailure(requestError, 'The queue did not load.');
-      if (message === null) setQueueUnloaded(true);
-      setLoadError(message ?? '');
-    });
+    void (async () => {
+      try {
+        const next = await client.listPending();
+        if (!active) return;
+        shownIds.current = new Set(next.map((entry) => entry.id));
+        setEntries(next);
+        setError('');
+        setLoadError('');
+        setQueueUnloaded(false);
+        setLoading(false);
+        const rows = await loadHousehold();
+        if (!active) return;
+        storeHousehold(rows, next);
+      } catch (requestError: unknown) {
+        if (!active) return;
+        setLoading(false);
+        const message = inlineFailure(requestError, 'The queue did not load.');
+        if (message === null) setQueueUnloaded(true);
+        setLoadError(message ?? '');
+      }
+    })();
     return () => {
       active = false;
     };

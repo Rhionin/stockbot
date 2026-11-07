@@ -6,10 +6,3 @@ export function mobileNothingOnHandCue(entry: ScanListEntry, pinned: boolean): b
   if (pinned) return true;
   return scanReportsNothingOnHand(entry);
 }
-
-/** Web queue amber (pending + stock_out + productId); preserved baseline for parity tests. */
-export function webNothingOnHandCue(entry: ScanListEntry, pinned: boolean): boolean {
-  if (entry.status !== 'pending' || entry.direction !== 'stock_out' || entry.productId === null) return false;
-  if (pinned) return true;
-  return scanReportsNothingOnHand(entry);
-}
