@@ -6,6 +6,7 @@ import {
   NOTHING_ON_HAND_TITLE,
   shelfHasNothingOnHand,
 } from '@stockbot/shared/contract';
+import { nothingOnHandLight } from '@stockbot/shared/brandTokens';
 import { colors } from './theme';
 
 const page = '#FFFFFF';
@@ -23,10 +24,10 @@ describe('nothing on hand contrast', () => {
   });
 
   it('uses the amber ink already on the shelf mark', () => {
-    expect(colors.nothingInk).toBe('#92400E');
+    expect(colors.nothingInk).toBe(nothingOnHandLight.ink);
     expect(colors.using).toBe(colors.nothingInk);
-    expect(colors.nothingWash).toBe('#FFFBEB');
-    expect(colors.nothingBorder).toBe('#B45309');
+    expect(colors.nothingWash).toBe(nothingOnHandLight.wash);
+    expect(colors.nothingBorder).toBe(nothingOnHandLight.border);
   });
 });
 

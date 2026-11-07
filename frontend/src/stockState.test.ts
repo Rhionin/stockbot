@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { stockColors as sharedStockColors } from '@stockbot/shared/brandTokens';
 import { groupStock, stockColors, stockState } from './stockState';
 
 describe('stockState', () => {
@@ -16,10 +17,6 @@ describe('stockState', () => {
   });
 
   it('locks the approved swatches', () => {
-    expect(stockColors).toEqual({
-      full: '#0d9488',
-      low: '#f59e0b',
-      out: '#ef4444',
-    });
+    expect(stockColors).toEqual(sharedStockColors);
   });
 });

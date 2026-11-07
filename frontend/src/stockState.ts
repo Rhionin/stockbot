@@ -1,11 +1,9 @@
+import { stockColors as sharedStockColors } from '@stockbot/shared/brandTokens';
+
 // Full is the calm teal. Amber and red show up only when stock needs attention.
 export type StockState = 'full' | 'low' | 'out';
 
-export const stockColors = {
-  full: '#0d9488',
-  low: '#f59e0b',
-  out: '#ef4444',
-} as const;
+export const stockColors = sharedStockColors;
 
 // Out wins over low: an empty shelf is empty, even when the buy rule would also flag it.
 // A group with no members is not an empty product, so callers pass memberCount.

@@ -8,35 +8,16 @@ import {
   type MantineTheme,
 } from '@mantine/core';
 import { flatten, readableLightShade, readableShade, towardContrast, contrastRatio, parseHex } from '@stockbot/shared/contrast';
+import { amberScale, tealScale, type ColorScale10 } from '@stockbot/shared/brandTokens';
 
 const UI_FOCUS_MIN = 3;
 
-const teal: MantineColorsTuple = [
-  '#f0fdfa',
-  '#ccfbf1',
-  '#99f6e4',
-  '#5eead4',
-  '#2dd4bf',
-  '#14b8a6',
-  '#0d9488',
-  '#0f766e',
-  '#115e59',
-  '#134e4a',
-];
+function mantineScale(scale: ColorScale10): MantineColorsTuple {
+  return [scale[0], scale[1], scale[2], scale[3], scale[4], scale[5], scale[6], scale[7], scale[8], scale[9]];
+}
 
-// Shade 6 is the filled Low amber (#F59E0B). Darker steps are for ink on light paper.
-const amber: MantineColorsTuple = [
-  '#fffbeb',
-  '#fef3c7',
-  '#fde68a',
-  '#fcd34d',
-  '#fbbf24',
-  '#f7b027',
-  '#f59e0b',
-  '#d97706',
-  '#b45309',
-  '#92400e',
-];
+const teal = mantineScale(tealScale);
+const amber = mantineScale(amberScale);
 
 const primaryShadeIndex = (theme: MantineTheme, scheme: 'light' | 'dark') =>
   typeof theme.primaryShade === 'number' ? theme.primaryShade : theme.primaryShade[scheme];
