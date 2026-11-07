@@ -1,16 +1,6 @@
-import { formatInactivityDuration, stockDirectionLabel, type WallBarcodeSettings } from './kitCopy456';
+import { type WallBarcodeSettings, wallBarcodeStockInCopy, wallBarcodeStockOutCopy } from './kitCopy456';
 import { PrintableBarcode } from './printableBarcode';
 import { KitPrintFooter } from './kitPrintFooter';
-
-function stockOutBody(): string {
-  return 'Scan before you take things out. This is the normal mode.';
-}
-
-function stockInBody(settings: WallBarcodeSettings): string {
-  const duration = formatInactivityDuration(settings.inactivityRevertSeconds);
-  const revert = stockDirectionLabel(settings.defaultDirection);
-  return `Scan before you put groceries away. Goes back to ${revert} ${duration} after your last scan.`;
-}
 
 export function SetupWallCardPanels({
   settings,
@@ -34,7 +24,7 @@ export function SetupWallCardPanels({
         </p>
         <h2 className="kit-wall-panel-title">Taking things off the shelf</h2>
         <PrintableBarcode value="STOCK-OUT" moduleMm={moduleMm} heightMm={heightMm} />
-        <p className="kit-wall-panel-copy">{stockOutBody()}</p>
+        <p className="kit-wall-panel-copy">{wallBarcodeStockOutCopy(settings)}</p>
       </section>
       <section className="kit-wall-panel kit-wall-panel-in">
         <p className="kit-wall-mode-word">
@@ -43,7 +33,7 @@ export function SetupWallCardPanels({
         </p>
         <h2 className="kit-wall-panel-title">Putting groceries away</h2>
         <PrintableBarcode value="STOCK-IN" moduleMm={moduleMm} heightMm={heightMm} />
-        <p className="kit-wall-panel-copy">{stockInBody(settings)}</p>
+        <p className="kit-wall-panel-copy">{wallBarcodeStockInCopy(settings)}</p>
       </section>
     </div>
   );

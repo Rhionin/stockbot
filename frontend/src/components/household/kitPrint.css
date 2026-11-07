@@ -31,9 +31,9 @@
 }
 
 .setup-kit-print-sheet .kit-print-body-sm {
-  font-size: 10pt;
-  line-height: 1.25;
-  margin: 0 0 3px;
+  font-size: 11pt;
+  line-height: 1.2;
+  margin: 0 0 2px;
 }
 
 .setup-kit-print-sheet .kit-print-expiry-line {
@@ -42,21 +42,22 @@
 }
 
 .setup-kit-print-sheet .kit-print-cutline {
-  margin: 6px 0 3px;
+  margin: 4px 0 2px;
 }
 
 .setup-kit-print-sheet .kit-wall-panels-row {
-  gap: 4mm;
+  gap: 3mm;
 }
 
 .setup-kit-print-sheet .kit-wall-panel {
-  padding: 5px 4mm;
+  padding: 4px 3mm;
 }
 
 .setup-kit-print-sheet .kit-wall-mode-word {
-  font-size: 20pt;
-  margin: 0 0 2px;
-  gap: 4px;
+  font-size: 28pt;
+  font-weight: 700;
+  margin: 0 0 1px;
+  gap: 3px;
 }
 
 .setup-kit-print-sheet .kit-wall-panel-title {
@@ -65,35 +66,36 @@
 }
 
 .setup-kit-print-sheet .kit-wall-panel-copy {
-  font-size: 10pt;
-  line-height: 1.2;
-  margin: 3px 0 0;
+  font-size: 11pt;
+  line-height: 1.15;
+  margin: 2px 0 0;
 }
 
 .setup-kit-print-sheet .printable-barcode-caption {
-  font-size: 10pt;
-  margin: 3px 0 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12pt;
+  margin: 2px 0 0;
 }
 
 .setup-kit-print-sheet .kit-print-footer {
-  margin-top: 3px;
+  margin-top: 2px;
 }
 
 .setup-kit-print-sheet .kit-print-footer-instruction,
 .setup-kit-print-sheet .kit-print-ruler-caption,
 .setup-kit-print-sheet .kit-print-footer-meta {
-  font-size: 10pt;
-  line-height: 1.15;
-  margin: 1px 0;
+  font-size: 11pt;
+  line-height: 1.1;
+  margin: 0;
 }
 
 .setup-kit-print-sheet .kit-print-footer-instruction {
-  margin-bottom: 3mm;
-  padding-bottom: 1mm;
+  margin-bottom: 2mm;
+  padding-bottom: 0.5mm;
 }
 
 .setup-kit-print-sheet .kit-print-ruler-wrap {
-  margin: 1mm 0 2px;
+  margin: 0.5mm 0 1px;
 }
 
 .wall-sheet-symcode-print {
