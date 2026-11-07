@@ -297,9 +297,93 @@ func TestCryptoAndAllowlistNegative(t *testing.T) {
 	})
 }
 
+func TestSemVer2BuildMetadataLeadingZero(t *testing.T) {
+	valid := goldenVector(t).Fields
+	valid.Version = "1.0.0+01"
+	if err := ValidateFields(valid); err != nil {
+		t.Fatalf("build metadata 01 should be valid: %v", err)
+	}
+	valid.Version = "1.0.0-01"
+	if err := ValidateFields(valid); err == nil || !errors.Is(err, ErrValidation) {
+		t.Fatalf("prerelease numeric 01 should be rejected, got %v", err)
+	}
+}
+
+func TestNonZeroPadBitsStrictVersusPermissive(t *testing.T) {
+	v := goldenVector(t)
+	sigMut, err := mutateInAlphabetNonzeroPadBits(v.SigB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubMut, err := mutateInAlphabetNonzeroPadBits(v.PublicKeyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sigMut, "`") || strings.Contains(pubMut, "`") {
+		t.Fatal("mutations must stay in the base64 alphabet")
+	}
+	origSig, _ := base64.StdEncoding.DecodeString(v.SigB64)
+	mutSig, errPerm := base64.StdEncoding.DecodeString(sigMut)
+	if errPerm != nil {
+		t.Fatalf("permissive sig decode: %v", errPerm)
+	}
+	if _, errStrict := base64.StdEncoding.Strict().DecodeString(sigMut); errStrict == nil {
+		t.Fatal("strict sig decoder should reject nonzero pad bits")
+	}
+	if string(mutSig) != string(origSig) {
+		t.Fatal("pad-bit mutation must not change decoded signature bytes")
+	}
+
+	origPub, _ := base64.StdEncoding.DecodeString(v.PublicKeyB64)
+	mutPub, errPerm := base64.StdEncoding.DecodeString(pubMut)
+	if errPerm != nil {
+		t.Fatalf("permissive pubkey decode: %v", errPerm)
+	}
+	if _, errStrict := base64.StdEncoding.Strict().DecodeString(pubMut); errStrict == nil {
+		t.Fatal("strict pubkey decoder should reject nonzero pad bits")
+	}
+	if string(mutPub) != string(origPub) {
+		t.Fatal("pad-bit mutation must not change decoded public key bytes")
+	}
+
+	err = VerifyCanonical([]byte(v.Canonical), sigMut, v.Fields.KeyID, allowlist(t, v))
+	if err == nil || !errors.Is(err, ErrValidation) {
+		t.Fatalf("VerifyCanonical should reject pad-bit sig, got %v", err)
+	}
+	_, err = DecodePublicKeyB64(pubMut)
+	if err == nil || !errors.Is(err, ErrValidation) {
+		t.Fatalf("DecodePublicKeyB64 should reject pad-bit pubkey, got %v", err)
+	}
+}
+
+func mutateInAlphabetNonzeroPadBits(b64 string) (string, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	orig, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i < len(b64); i++ {
+		if b64[i] == '=' {
+			continue
+		}
+		for _, nc := range []byte(alphabet) {
+			if nc == b64[i] {
+				continue
+			}
+			mutated := b64[:i] + string(nc) + b64[i+1:]
+			_, errStrict := base64.StdEncoding.Strict().DecodeString(mutated)
+			rawPerm, errPerm := base64.StdEncoding.DecodeString(mutated)
+			if errStrict != nil && errPerm == nil && len(rawPerm) == len(orig) && string(rawPerm) == string(orig) {
+				return mutated, nil
+			}
+		}
+	}
+	return "", errors.New("no in-alphabet nonzero pad-bit mutation found")
+}
+
 func TestSemVer2AcceptsDesignExamples(t *testing.T) {
 	valid := goldenVector(t).Fields
-	cases := []string{"1.0.2-rc.1", "1.0.0", "10.20.30+build.1"}
+	cases := []string{"1.0.2-rc.1", "1.0.0", "10.20.30+build.1", "1.0.0+01"}
 	for _, ver := range cases {
 		f := valid
 		f.Version = ver

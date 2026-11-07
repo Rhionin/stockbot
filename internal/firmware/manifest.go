@@ -275,10 +275,10 @@ func validateSemVer2(v string) bool {
 			return false
 		}
 	}
-	if pre != "" && !semverIdentifierList(pre) {
+	if pre != "" && !semverPrereleaseIdentifierList(pre) {
 		return false
 	}
-	if build != "" && !semverIdentifierList(build) {
+	if build != "" && !semverBuildIdentifierList(build) {
 		return false
 	}
 	return true
@@ -299,7 +299,7 @@ func semverNumericID(s string) bool {
 	return true
 }
 
-func semverIdentifierList(s string) bool {
+func semverPrereleaseIdentifierList(s string) bool {
 	parts := strings.Split(s, ".")
 	for _, part := range parts {
 		if part == "" {
@@ -310,6 +310,17 @@ func semverIdentifierList(s string) bool {
 				return false
 			}
 		} else if !semverAlphanumericID(part) {
+			return false
+		}
+	}
+	return true
+}
+
+// Build metadata allows leading zeros on numeric ids (SemVer 2.0.0 §10).
+func semverBuildIdentifierList(s string) bool {
+	parts := strings.Split(s, ".")
+	for _, part := range parts {
+		if part == "" || !semverAlphanumericID(part) {
 			return false
 		}
 	}
