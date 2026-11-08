@@ -78,8 +78,16 @@ if [[ -n "${HOST_SETUP_ALLOWLIST_CHECK:-1}" ]]; then
 fi
 
 make_bin() {
-  local bin="$1"
+  local bin="$1" analyze_fail="${2:-0}"
   mkdir -p "$bin"
+  cat > "$bin/systemd-analyze" << EOF
+#!/usr/bin/env bash
+if [[ "\$1" == verify* ]] || [[ "\$*" == *verify* ]]; then
+  [[ "$analyze_fail" -eq 1 ]] && exit 1
+fi
+exit 0
+EOF
+  chmod +x "$bin/systemd-analyze"
   cat > "$bin/docker" << 'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == cp && "$2" == *host-bundle* ]]; then
@@ -189,7 +197,7 @@ run_entry_trace() {
 
 assert_order_before_source() {
   local trace="$1"
-  local lock_line source_line flags_line
+  local lock_line source_line flags_line trigger_line
   lock_line=$(grep -n '^deploy_lock$' "$trace" | head -1 | cut -d: -f1 || true)
   source_line=$(grep -n '^publish-mode-source$' "$trace" | head -1 | cut -d: -f1 || true)
   [[ -n "$lock_line" && -n "$source_line" ]] || fail "missing lock or publish-mode trace markers"
@@ -197,6 +205,9 @@ assert_order_before_source() {
   flags_line=$(grep -n '^host_flags_read$' "$trace" | head -1 | cut -d: -f1 || true)
   [[ -n "$flags_line" && "$flags_line" -lt "$source_line" ]] \
     || fail "flags read after publish-mode source"
+  trigger_line=$(grep -n '^deploy_trigger_dir_ready$' "$trace" | head -1 | cut -d: -f1 || true)
+  [[ -n "$trigger_line" && "$flags_line" -lt "$trigger_line" && "$trigger_line" -lt "$source_line" ]] \
+    || fail "deploy-trigger mkdir must run after flags and before publish-mode source"
 }
 
 # --- fault-matrix cases (mapping comments in brief) ---
@@ -917,15 +928,178 @@ test_failed_target_sha_blocks_same_revision_retry() {
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
+  write_clean_control "$root"
   PANTRY_DIR="$root" bash -c '
     set -euo pipefail
     source "$1"
-    HOST_CTRL_PHASE=recovered
-    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_PHASE=clean
     HOST_CTRL_FAILED_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_TARGET="'"$TEST_REV"'"
     host_control_publish
     host_target_retry_allowed && exit 1 || exit 0
   ' _ "$UPDATE"
+  rm -rf "$root"
+}
+
+test_acquire_deploy_lock_does_not_mkdir_deploy_trigger() {
+  local body
+  body=$(sed -n '/^host_acquire_deploy_lock()/,/^}/p' "$UPDATE")
+  if [[ "$body" == *'mkdir -p "$PANTRY_DIR/deploy-trigger"'* ]]; then
+    fail "host_acquire_deploy_lock must not mkdir deploy-trigger"
+  fi
+}
+
+test_recovered_phase_normalizes_on_entry_and_continues() {
+  local root work rc trace
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf 'version=1\nphase=recovered\noriginal_reason=apply_failed\n' \
+    >"$root/host-setup-state/control"
+  printf 'failed_target_sha=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
+  printf 'target_revision=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  trace="$root/entry-trace.log"
+  : >"$trace"
+  set +e
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PANTRY_UPDATE_HEALTH_TIMEOUT=0 \
+    PANTRY_TEST_ENTRY_TRACE="$trace" \
+    PATH="$work/bin:$PATH" \
+    bash "$root/systemd/pantry-update.sh" >/dev/null 2>"$work/err"
+  set -e
+  grep -q 'blocked by host setup state' "$work/err" \
+    && fail "recovered state must not block the updater: $(cat "$work/err")"
+  [[ "$(awk -F= '$1=="phase"{print $2;exit}' "$root/host-setup-state/control")" == clean ]] \
+    || fail "recovered should normalize control to clean on entry"
+  grep -q '^host_normalize_recovered$' "$trace" \
+    || fail "recovered entry must run host_normalize_recovered"
+  grep -q '^publish-mode-source$' "$trace" \
+    || fail "recovered entry must pass gate and source publish-mode"
+  [[ "$(awk -F= '$1=="failed_target_sha"{print $2;exit}' "$root/host-setup-state/control")" == "$TEST_REV" ]] \
+    || fail "failed_target_sha must survive normalization"
+  rm -rf "$root" "$work"
+}
+
+test_pantry_auto_setup_quoted_in_dot_env_is_invalid() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  printf 'PANTRY_AUTO_SETUP="on"\n' >>"$root/.env"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_flags_read
+    [[ "$HOST_FLAG_ANY_INVALID" -eq 1 ]]
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "quoted PANTRY_AUTO_SETUP in .env must be invalid (rc=$rc)"
+  rm -rf "$root"
+}
+
+test_pantry_auto_setup_duplicate_dot_env_keys_are_invalid() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  printf 'PANTRY_AUTO_SETUP=on\nPANTRY_AUTO_SETUP=off\n' >>"$root/.env"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_flags_read
+    [[ "$HOST_FLAG_ANY_INVALID" -eq 1 ]]
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "duplicate PANTRY_AUTO_SETUP keys must be invalid (rc=$rc)"
+  rm -rf "$root"
+}
+
+test_uninitialized_quoted_auto_setup_blocks_legacy_refresh_on_entry() {
+  local root state rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  printf 'PANTRY_AUTO_SETUP="on"\n' >>"$root/.env"
+  state=$(mktemp -d)
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_flags_read
+    [[ "$HOST_FLAG_ANY_INVALID" -eq 1 ]]
+    rc=0
+    refresh_host_scripts_from_image "'"$state"'" || rc=$?
+    [[ "$rc" -eq 3 ]]
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "uninitialized quoted AUTO must fail closed at refresh (rc=$rc)"
+  rm -rf "$root" "$state"
+}
+
+test_systemd_analyze_verify_failure_blocks_subset_validate() {
+  local root stage work rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  stage="$root/stage"
+  mkdir -p "$stage/systemd"
+  cp "$root/publish-mode.sh" "$root/runtime-setup.sh" "$root/vapid-env.sh" "$stage/"
+  cp "$root/systemd/pantry-backup.sh" "$root/systemd/pantry-update.sh" "$stage/systemd/"
+  cp "$ROOT/deploy/systemd/pantry-update.service" "$ROOT/deploy/systemd/pantry-update.timer" \
+    "$ROOT/deploy/systemd/pantry-update.path" "$ROOT/deploy/systemd/pantry-backup.service" \
+    "$ROOT/deploy/systemd/pantry-backup.timer" "$stage/systemd/"
+  work=$(mktemp -d)
+  make_bin "$work/bin" 1
+  set +e
+  PANTRY_DIR="$root" PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_subset_validate "'"$stage"'"
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "systemd-analyze verify failure must fail host_subset_validate"
+  rm -rf "$root" "$work"
+}
+
+test_time_budget_before_commit_restores_lkg_not_clean() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
+  printf '\n# budget-commit-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_SKIP_HEALTH=1 PANTRY_TEST_TXN_START_ADJUST=121 bash -c '
+    set -euo pipefail
+    source "$1"
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
+    HOST_CTRL_PHASE=applying
+    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    host_control_publish
+    txn_start=$((SECONDS - PANTRY_TEST_TXN_START_ADJUST))
+    host_txn_health_validate /tmp/x
+    if [[ $((SECONDS - txn_start)) -gt "$HOST_TXN_BUDGET_TXN" ]]; then
+      host_txn_abort_to_recovered time_budget_exceeded "'"$TEST_REV"'" || exit 2
+      exit 3
+    fi
+    exit 0
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 3 ]] || fail "time budget overrun path must return rc 3 (got $rc)"
+  [[ "$(awk -F= '$1=="phase"{print $2;exit}' "$root/host-setup-state/control")" == recovered ]] \
+    || fail "budget overrun must land in recovered, not committed clean"
+  cmp -s "$root/host-setup-state/lkg/files/1" "$root/publish-mode.sh" \
+    || fail "budget overrun must restore installed scripts to lkg"
+  grep -q 'budget-commit-marker' "$root/publish-mode.sh" \
+    && fail "budget overrun must not leave candidate bytes on disk"
   rm -rf "$root"
 }
 
@@ -961,6 +1135,13 @@ for fn in \
   invalid_flag_matrix_pantry_auto_setup_invalid \
   deploy_lock_uses_real_flock_serialization \
   failed_target_sha_blocks_same_revision_retry \
+  acquire_deploy_lock_does_not_mkdir_deploy_trigger \
+  recovered_phase_normalizes_on_entry_and_continues \
+  pantry_auto_setup_quoted_in_dot_env_is_invalid \
+  pantry_auto_setup_duplicate_dot_env_keys_are_invalid \
+  uninitialized_quoted_auto_setup_blocks_legacy_refresh_on_entry \
+  systemd_analyze_verify_failure_blocks_subset_validate \
+  time_budget_before_commit_restores_lkg_not_clean \
   host_run_bounded_reaps_grandchild_ignoring_term \
   live_signal_term_during_applying_recovery_converges \
   live_signal_int_during_applying_recovery_converges \

@@ -670,7 +670,7 @@ EOF
 
 prepare_pantry() {
   local pantry="$1"
-  mkdir -p "$pantry/systemd"
+  mkdir -p "$pantry/systemd" "$pantry/deploy-trigger"
   cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/runtime-setup.sh" "$ROOT/deploy/vapid-env.sh" "$pantry/"
   cp "$ROOT/deploy/systemd/pantry-update.sh" \
     "$ROOT/deploy/systemd/pantry-backup.sh" \
@@ -3147,11 +3147,12 @@ STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 run_update "$entry_order"
 lock_line=$(grep -n '^deploy_lock$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
 flags_line=$(grep -n '^host_flags_read$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+trigger_line=$(grep -n '^deploy_trigger_dir_ready$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
 source_line=$(grep -n '^publish-mode-source$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
-[[ -n "$lock_line" && -n "$flags_line" && -n "$source_line" ]] \
-  || fail "entry trace missing lock, flags, or publish-mode markers"
-[[ "$lock_line" -lt "$flags_line" && "$flags_line" -lt "$source_line" ]] \
-  || fail "publish-mode sourced before host lock/flag gate"
+[[ -n "$lock_line" && -n "$flags_line" && -n "$trigger_line" && -n "$source_line" ]] \
+  || fail "entry trace missing lock, flags, deploy-trigger, or publish-mode markers"
+[[ "$lock_line" -lt "$flags_line" && "$flags_line" -lt "$trigger_line" && "$trigger_line" -lt "$source_line" ]] \
+  || fail "publish-mode sourced before host lock/flag/deploy-trigger gate"
 [[ "$LAST_CHOWN" == *deploy-trigger* ]] || fail "deploy-trigger chown did not run"
 chown_seq=$(printf '%s\n' "$LAST_CHOWN" | grep -n 'deploy-trigger' | head -1 | cut -d: -f1 || true)
 trace_lines=$(wc -l <"$PANTRY_TEST_ENTRY_TRACE")

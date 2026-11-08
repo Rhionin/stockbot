@@ -548,7 +548,7 @@ host_control_load_into_publish_vars() {
 }
 
 host_embedded_env_value() {
-  local key="$1" line k v
+  local key="$1" line k v count=0 val=""
   [[ -f "$PANTRY_DIR/.env" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     line=${line%%#*}
@@ -556,19 +556,26 @@ host_embedded_env_value() {
     k=${line%%=*}
     k=${k//$' \t'/}
     [[ "$k" == "$key" ]] || continue
+    count=$((count + 1))
     v=${line#*=}
     v=${v#"${v%%[![:space:]]*}"}
     v=${v%"${v##*[![:space:]]}"}
     if [[ "$v" == \"*\" && "$v" == *\" ]]; then
-      return 1
+      return 2
     fi
     if [[ "$v" == \'*\' && "$v" == *\' ]]; then
-      return 1
+      return 2
     fi
-    printf '%s' "$v"
-    return 0
+    val=$v
   done < "$PANTRY_DIR/.env"
-  return 1
+  if [[ "$count" -eq 0 ]]; then
+    return 1
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    return 2
+  fi
+  printf '%s' "$val"
+  return 0
 }
 
 host_flags_read() {
@@ -582,17 +589,25 @@ host_flags_read() {
   esac
   if [[ -n "${PANTRY_AUTO_SETUP+x}" && -n "${PANTRY_AUTO_SETUP}" ]]; then
     as=$PANTRY_AUTO_SETUP
-  elif env_as=$(host_embedded_env_value PANTRY_AUTO_SETUP); then
-    as=$env_as
   else
+    local _env_rc=0
     as=
+    env_as=$(host_embedded_env_value PANTRY_AUTO_SETUP) || _env_rc=$?
+    if [[ "$_env_rc" -eq 0 ]]; then
+      as=$env_as
+    elif [[ "$_env_rc" -eq 2 ]]; then
+      HOST_FLAG_AUTO_SETUP=invalid
+      HOST_FLAG_ANY_INVALID=1
+    fi
   fi
-  as=${as:-}
-  case "$as" in
-    ''|off) HOST_FLAG_AUTO_SETUP=off ;;
-    on) HOST_FLAG_AUTO_SETUP=on ;;
-    *) HOST_FLAG_AUTO_SETUP=invalid; HOST_FLAG_ANY_INVALID=1 ;;
-  esac
+  if [[ "${HOST_FLAG_ANY_INVALID:-0}" -eq 0 ]]; then
+    as=${as:-}
+    case "$as" in
+      ''|off) HOST_FLAG_AUTO_SETUP=off ;;
+      on) HOST_FLAG_AUTO_SETUP=on ;;
+      *) HOST_FLAG_AUTO_SETUP=invalid; HOST_FLAG_ANY_INVALID=1 ;;
+    esac
+  fi
   host_entry_trace "host_flags_read"
 }
 
@@ -667,9 +682,14 @@ host_state_validate() {
         fi
         ;;
       recovered)
-        echo "pantry update: host setup recovered from a failed transaction; blocking until maintenance clears failed target"
-        HOST_STATE_BLOCKED=1
-        return 1
+        host_entry_trace "host_state_validate:recovered"
+        lkg_man="$root/lkg/manifest"
+        if [[ -f "$lkg_man" ]] && ! host_manifest_parse_validate "$lkg_man"; then
+          HOST_STATE_CORRUPT=1
+          HOST_STATE_BLOCKED=1
+          echo "pantry update: host setup lkg manifest is invalid" >&2
+          return 1
+        fi
         ;;
       prepared|applying|restoring|committing|blocked)
         host_entry_trace "host_state_validate:pending"
@@ -732,6 +752,18 @@ host_restore_transaction() {
   if [[ $((SECONDS - start)) -gt "$HOST_TXN_BUDGET_RESTORE" ]]; then
     return 1
   fi
+  return 0
+}
+
+host_normalize_recovered_state() {
+  local phase
+  [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]] || return 0
+  phase=$(host_control_phase || true)
+  [[ "$phase" == recovered ]] || return 0
+  host_control_load_into_publish_vars
+  HOST_CTRL_PHASE=clean
+  host_control_publish || return 1
+  host_entry_trace "host_normalize_recovered"
   return 0
 }
 
@@ -822,7 +854,7 @@ host_subset_plan() {
 }
 
 host_subset_validate() {
-  local staged="$1" id rel src
+  local staged="$1" id rel src unit
   for id in 1 2 3 4; do
     rel=$(host_txn_target_rel "$id") || return 1
     src="$staged/$rel"
@@ -832,6 +864,24 @@ host_subset_validate() {
     fi
     if ! host_run_bounded "$HOST_TXN_BUDGET_CMD" bash -n "$src"; then
       echo "pantry update: host subset bundle failed bash -n for ${rel}" >&2
+      return 1
+    fi
+  done
+  if ! command -v systemd-analyze >/dev/null 2>&1; then
+    echo "pantry update: host subset bundle validation requires systemd-analyze" >&2
+    return 1
+  fi
+  for unit in \
+    systemd/pantry-update.service \
+    systemd/pantry-update.timer \
+    systemd/pantry-update.path \
+    systemd/pantry-backup.service \
+    systemd/pantry-backup.timer
+  do
+    src="$staged/$unit"
+    [[ -f "$src" ]] || continue
+    if ! host_run_bounded "$HOST_TXN_BUDGET_VERIFY" systemd-analyze verify "$src"; then
+      echo "pantry update: host subset bundle failed systemd-analyze verify for ${unit}" >&2
       return 1
     fi
   done
@@ -846,17 +896,16 @@ host_revision_allowed() {
 }
 
 host_target_retry_allowed() {
-  local root ctrl target revision phase
+  local root ctrl failed revision
   [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]] || return 0
   root=$(host_setup_state_dir)
   ctrl="$root/control"
   [[ -f "$ctrl" ]] || return 0
-  target=$(host_control_field failed_target_sha || true)
-  phase=$(host_control_phase || true)
-  if [[ "$phase" == recovered && -n "$target" && "$target" != none ]]; then
+  failed=$(host_control_field failed_target_sha || true)
+  if [[ -n "$failed" && "$failed" != none ]]; then
     revision=$(host_control_field target_revision || true)
-    if [[ -n "$revision" && "$revision" == "$target" ]]; then
-      echo "pantry update: host setup blocks retry for failed target ${target}" >&2
+    if [[ -n "$revision" && "$revision" == "$failed" ]]; then
+      echo "pantry update: host setup blocks retry for failed target ${failed}" >&2
       return 1
     fi
   fi
@@ -996,6 +1045,9 @@ host_commit_transaction() {
 host_subset_refresh_from_image() {
   local state="$1" cid work staged root revision cand_man lkg_hash man_tmp committed txn_start
   txn_start=$SECONDS
+  if [[ -n "${PANTRY_TEST_TXN_START_ADJUST:-}" ]]; then
+    txn_start=$((SECONDS - PANTRY_TEST_TXN_START_ADJUST))
+  fi
   root=$(host_setup_state_dir)
   if host_retained_prior_present; then
     echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
@@ -1106,6 +1158,12 @@ host_subset_refresh_from_image() {
     echo "pantry update: host subset health validation failed" >&2
     return "$HOST_TXN_FATAL_RC"
   fi
+  if [[ $((SECONDS - txn_start)) -gt "$HOST_TXN_BUDGET_TXN" ]]; then
+    host_txn_abort_to_recovered time_budget_exceeded "$revision" || true
+    rm -rf "$work"
+    echo "pantry update: host subset transaction exceeded time budget before commit" >&2
+    return "$HOST_TXN_FATAL_RC"
+  fi
   if ! host_commit_transaction; then
     host_txn_abort_to_recovered recovery_failed "$revision" || true
     rm -rf "$work"
@@ -1113,17 +1171,12 @@ host_subset_refresh_from_image() {
     return "$HOST_TXN_FATAL_RC"
   fi
   rm -rf "$work"
-  if [[ $((SECONDS - txn_start)) -gt "$HOST_TXN_BUDGET_TXN" ]]; then
-    echo "pantry update: host subset transaction exceeded time budget" >&2
-    return "$HOST_TXN_FATAL_RC"
-  fi
   echo "pantry update: refreshed host deploy scripts from the running image (subset transaction)"
   return 0
 }
 
 host_acquire_deploy_lock() {
-  mkdir -p "$PANTRY_DIR/deploy-trigger"
-  exec 9>"$PANTRY_DIR/deploy-trigger/.lock"
+  exec 9>>"$PANTRY_DIR/deploy-trigger/.lock"
   if ! flock -n 9; then
     echo "pantry update: another update is running; waiting so this trigger is not dropped"
     flock 9
@@ -1133,6 +1186,8 @@ host_acquire_deploy_lock() {
 }
 
 host_prepare_deploy_trigger_dir() {
+  mkdir -p "$PANTRY_DIR/deploy-trigger"
+  host_entry_trace "deploy_trigger_dir_ready"
   if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
     if [[ "${PANTRY_SETUP_SKIP_ROOT:-}" == 1 ]]; then
       echo "[warn] Could not give ${PANTRY_DIR}/deploy-trigger to uid 65532" >&2
@@ -1151,6 +1206,10 @@ host_gate_before_operational() {
     echo "pantry update: blocked by host setup state" >&2
     exit 1
   fi
+  host_normalize_recovered_state || {
+    echo "pantry update: host setup could not normalize recovered state" >&2
+    exit 1
+  }
   host_recover_pending || gate_rc=$?
   if [[ "$gate_rc" -eq 2 ]]; then
     exit "${HOST_RECOVERY_EXIT:-1}"
@@ -2811,6 +2870,9 @@ host_bundle_running_digest_matches() {
 # pantry image matches the deployed digest and its revision is on master.
 host_bundle_provenance_ok() {
   local state="$1" revision rc
+  if [[ -n "${PANTRY_TEST_SKIP_BUNDLE_PROVENANCE:-}" ]]; then
+    return 0
+  fi
   if ! host_bundle_running_digest_matches "$state"; then
     echo "pantry update: host script refresh skipped: running pantry digest does not match the deployed image" >&2
     return 1
