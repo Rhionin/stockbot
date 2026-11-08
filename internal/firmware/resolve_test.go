@@ -208,6 +208,31 @@ func TestResolvePolicies(t *testing.T) {
 	})
 }
 
+func TestResolveHugeCoreEqualCurrentWithBuildMetadata(t *testing.T) {
+	const tgt = "atoms3lite_u173_bench"
+	core := "10000000000000000000.0.0"
+	d := Device{Target: tgt, Version: core + "+meta.x", Channel: ChannelStable}
+	releases := []Release{{
+		ID: "rel", Target: tgt, Version: core + "+meta.y", Channel: ChannelStable,
+	}}
+	if Resolve(d, true, releases) != nil {
+		t.Fatal("equal huge-core precedence must suppress offer despite build metadata")
+	}
+}
+
+func TestResolveSelectsHighestHugeCoreSemVer(t *testing.T) {
+	const tgt = "atoms3lite_u173_bench"
+	d := Device{Target: tgt, Version: "1.0.0", Channel: ChannelStable}
+	releases := []Release{
+		{ID: "lower", Target: tgt, Version: "9999999999999999999.0.0", Channel: ChannelStable},
+		{ID: "higher", Target: tgt, Version: "10000000000000000000.0.0", Channel: ChannelStable},
+	}
+	got := Resolve(d, true, releases)
+	if got == nil || got.ID != "higher" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestCompareSemVerPrecedence(t *testing.T) {
 	cases := []struct {
 		a, b string

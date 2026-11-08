@@ -1,15 +1,12 @@
 package firmware
 
-import (
-	"strconv"
-	"strings"
-)
+import "strings"
 
 // semverPrec holds a version without build metadata for precedence comparison.
 type semverPrec struct {
-	major int64
-	minor int64
-	patch int64
+	major string
+	minor string
+	patch string
 	pre   []semverPrecID
 }
 
@@ -34,22 +31,12 @@ func parseSemVerPrecedence(v string) (semverPrec, bool) {
 	if len(parts) != 3 {
 		return semverPrec{}, false
 	}
-	parseNum := func(s string) (int64, bool) {
-		n, err := strconv.ParseInt(s, 10, 64)
-		return n, err == nil
+	for _, part := range parts {
+		if !semverNumericID(part) {
+			return semverPrec{}, false
+		}
 	}
-	maj, ok := parseNum(parts[0])
-	if !ok {
-		return semverPrec{}, false
-	}
-	min, ok := parseNum(parts[1])
-	if !ok {
-		return semverPrec{}, false
-	}
-	pat, ok := parseNum(parts[2])
-	if !ok {
-		return semverPrec{}, false
-	}
+	maj, min, pat := parts[0], parts[1], parts[2]
 	var ids []semverPrecID
 	if pre != "" {
 		for _, part := range strings.Split(pre, ".") {
@@ -71,31 +58,20 @@ func compareSemVerPrecedence(a, b string) int {
 	if !okA || !okB {
 		return strings.Compare(a, b)
 	}
-	if ap.major != bp.major {
-		return cmpInt64(ap.major, bp.major)
+	if c := compareNumericIdentifiers(ap.major, bp.major); c != 0 {
+		return c
 	}
-	if ap.minor != bp.minor {
-		return cmpInt64(ap.minor, bp.minor)
+	if c := compareNumericIdentifiers(ap.minor, bp.minor); c != 0 {
+		return c
 	}
-	if ap.patch != bp.patch {
-		return cmpInt64(ap.patch, bp.patch)
+	if c := compareNumericIdentifiers(ap.patch, bp.patch); c != 0 {
+		return c
 	}
 	return comparePrerelease(ap.pre, bp.pre)
 }
 
 func semverEqualPrecedence(a, b string) bool {
 	return compareSemVerPrecedence(a, b) == 0
-}
-
-func cmpInt64(a, b int64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
 }
 
 func comparePrerelease(a, b []semverPrecID) int {
@@ -143,7 +119,10 @@ func comparePrecID(a, b semverPrecID) int {
 // compareNumericIdentifiers orders numeric prerelease ids without int overflow.
 func compareNumericIdentifiers(a, b string) int {
 	if len(a) != len(b) {
-		return cmpInt64(int64(len(a)), int64(len(b)))
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
 	}
 	return strings.Compare(a, b)
 }
