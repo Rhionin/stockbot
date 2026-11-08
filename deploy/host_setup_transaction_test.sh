@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
 BASE_SHA="${HOST_SETUP_BASE_SHA:-3d265d5ce4f6ea7aa3c470b1cc3c5d610a6010f2}"
 TEST_REV=0123456789abcdef0123456789abcdef01234567
-TEST_OTHER_REV=abcdef0123456789abcdef0123456789abcdef0123
+TEST_OTHER_REV=fedcba9876543210fedcba9876543210fedcba98
 
 TEST_CASES=()
 
@@ -192,11 +192,26 @@ write_lkg_snapshot() {
     snap="$PANTRY_DIR/host-setup-state/lkg"
     mkdir -p "$snap/files"
     for id in 1 2 3 4; do
-      cp "$(host_txn_target_dest "$id")" "$snap/files/$id"
+      src="$(host_txn_target_dest "$id")"
+      cp "$src" "$snap/files/$id"
+      chmod "$(stat -c "%a" "$src" 2>/dev/null || stat -f "%OLp" "$src")" "$snap/files/$id"
     done
     host_manifest_build_installed "'"$revision"'" "$snap/manifest"
     host_snapshot_verify "$snap"
-  ' _ "$UPDATE"
+  ' _ "$UPDATE" || fail "write_lkg_snapshot failed (revision=${revision})"
+}
+
+write_pending_control_file() {
+  local root="$1" phase="${2:-applying}" reason="${3:-interrupted}" \
+    committed="${4:-$TEST_REV}" target="${5:-none}" failed="${6:-none}"
+  mkdir -p "$root/host-setup-state"
+  printf 'version=1\nphase=%s\noriginal_reason=%s\n' "$phase" "$reason" \
+    >"$root/host-setup-state/control"
+  printf 'committed_revision=%s\n' "$committed" >>"$root/host-setup-state/control"
+  printf 'target_revision=%s\n' "$target" >>"$root/host-setup-state/control"
+  printf 'previous_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'candidate_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'failed_target_sha=%s\n' "$failed" >>"$root/host-setup-state/control"
 }
 
 write_clean_control() {
@@ -224,13 +239,43 @@ write_deploy_state_dir() {
 }
 
 stage_host_bundle_for_subset() {
-  local src="$1"
+  local src="$1" omit_path="${2:-0}"
   mkdir -p "$src/systemd"
   cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/runtime-setup.sh" "$ROOT/deploy/vapid-env.sh" "$src/"
   cp "$ROOT/deploy/systemd/pantry-backup.sh" "$ROOT/deploy/systemd/pantry-update.sh" "$src/systemd/"
   cp "$ROOT/deploy/systemd/pantry-update.service" "$ROOT/deploy/systemd/pantry-update.timer" \
-    "$ROOT/deploy/systemd/pantry-update.path" "$ROOT/deploy/systemd/pantry-backup.service" \
+    "$ROOT/deploy/systemd/pantry-backup.service" \
     "$ROOT/deploy/systemd/pantry-backup.timer" "$src/systemd/"
+  if [[ "$omit_path" -eq 0 ]]; then
+    cp "$ROOT/deploy/systemd/pantry-update.path" "$src/systemd/"
+  fi
+}
+
+stat_mode_octal() {
+  local path="$1"
+  stat -c '%a' "$path" 2>/dev/null || stat -f '%OLp' "$path"
+}
+
+run_subset_refresh_case() {
+  local root="$1" state="$2" work="$3" stage="$4" image_rev="$5"
+  local skip_health="${6:-}" txn_start_adj="${7:-}"
+  # shellcheck disable=SC2086
+  PANTRY_DIR="$root" STUB_HOST_BUNDLE_CP="$stage" STUB_IMAGE_REVISION="$image_rev" \
+    STUB_IMAGE_ID=sha256:deadbeef STUB_REPO_DIGEST_LINE=ghcr.io/rhionin/pantry@sha256:deadbeef \
+    STUB_RUNNING_ROW_DIGEST=sha256:deadbeef STUB_RUNNING_IMAGE_ID=sha256:deadbeef \
+    PANTRY_TEST_GITHUB_COMPARE_STATUS=ahead \
+    ${skip_health:+PANTRY_TEST_SKIP_HEALTH="$skip_health"} \
+    ${txn_start_adj:+PANTRY_TEST_TXN_START_ADJUST="$txn_start_adj"} \
+    PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_flags_read
+    host_state_validate
+    rc=0
+    host_subset_refresh_from_image "'"$state"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE"
 }
 
 run_entry_trace() {
@@ -281,8 +326,8 @@ test_pending_recovery_exits_nonzero_before_image_work() {
   pend_root=$(mktemp -d)
   prepare_root "$pend_root"
   write_lkg_snapshot "$pend_root"
+  write_pending_control_file "$pend_root"
   state="$pend_root/host-setup-state"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' >"$state/control"
   work=$(mktemp -d)
   make_bin "$work/bin"
   set +e
@@ -611,7 +656,7 @@ test_interrupt_marker_pending_recovery() {
   prepare_root "$root"
   write_lkg_snapshot "$root"
   trace=$(mktemp)
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\n' >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   set +e
   PANTRY_DIR="$root" PANTRY_TEST_TRACE="$trace" bash -c '
     set -euo pipefail
@@ -669,7 +714,7 @@ test_sigkill_simulation_second_entry_recovers_pending() {
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   printf '\n# mid-apply-drift\n' >>"$root/publish-mode.sh"
   work=$(mktemp -d)
   make_bin "$work/bin"
@@ -736,7 +781,7 @@ test_mixed_version_four_script_entry_recovery() {
   mkdir -p "$root/host-setup-state/candidate/files"
   printf '\n# candidate-mix\n' >"$root/host-setup-state/candidate/files/1"
   cp "$root/runtime-setup.sh" "$root/host-setup-state/candidate/files/2"
-  printf 'version=1\nphase=applying\noriginal_reason=apply_failed\nfailed_target_sha=%s\n' "$TEST_REV" >"$root/host-setup-state/control"
+  write_pending_control_file "$root" applying apply_failed "$TEST_REV" "$TEST_REV" "$TEST_REV"
   work=$(mktemp -d)
   make_bin "$work/bin"
   set +e
@@ -859,8 +904,7 @@ test_live_signal_term_during_applying_recovery_converges() {
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
-    >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   printf '\n# applying-live-signal-drift\n' >>"$root/publish-mode.sh"
   work=$(mktemp -d)
   make_bin "$work/bin"
@@ -885,8 +929,7 @@ test_live_signal_int_during_applying_recovery_converges() {
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
-    >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   printf '\n# applying-int-drift\n' >>"$root/publish-mode.sh"
   work=$(mktemp -d)
   make_bin "$work/bin"
@@ -924,8 +967,7 @@ test_live_signal_term_during_committing_recovery_converges() {
     source "$1"
     host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
   ' _ "$root/systemd/pantry-update.sh"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
-    >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   set +e
   PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=committing PANTRY_TEST_LIVE_SIGNAL=1 \
     PATH="$work/bin:$PATH" \
@@ -960,8 +1002,7 @@ test_live_signal_int_during_committing_recovery_converges() {
     source "$1"
     host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
   ' _ "$root/systemd/pantry-update.sh"
-  printf 'version=1\nphase=applying\noriginal_reason=interrupted\nfailed_target_sha=none\n' \
-    >"$root/host-setup-state/control"
+  write_pending_control_file "$root"
   set +e
   PANTRY_DIR="$root" PANTRY_TEST_HOLD_AT=committing PANTRY_TEST_LIVE_SIGNAL=1 \
     PATH="$work/bin:$PATH" \
@@ -1113,8 +1154,11 @@ test_recovered_phase_normalizes_on_entry_and_continues() {
   write_lkg_snapshot "$root"
   printf 'version=1\nphase=recovered\noriginal_reason=apply_failed\n' \
     >"$root/host-setup-state/control"
-  printf 'failed_target_sha=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
+  printf 'committed_revision=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
   printf 'target_revision=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
+  printf 'previous_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'candidate_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'failed_target_sha=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
   work=$(mktemp -d)
   make_bin "$work/bin"
   trace="$root/entry-trace.log"
@@ -1222,42 +1266,408 @@ test_systemd_analyze_verify_failure_blocks_subset_validate() {
 }
 
 test_time_budget_before_commit_restores_lkg_not_clean() {
+  local root state work stage rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  printf 'PANTRY_AUTO_SETUP=on\n' >>"$root/.env"
+  write_lkg_snapshot "$root" "$TEST_OTHER_REV"
+  write_clean_control "$root" "$TEST_OTHER_REV"
+  state=$(mktemp -d)
+  write_deploy_state_dir "$state"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  stage="$work/budget-bundle"
+  stage_host_bundle_for_subset "$stage"
+  printf '\n# budget-commit-marker\n' >>"$stage/publish-mode.sh"
+  set +e
+  PANTRY_DIR="$root" STUB_HOST_BUNDLE_CP="$stage" STUB_IMAGE_REVISION="$TEST_OTHER_REV" \
+    STUB_IMAGE_ID=sha256:deadbeef STUB_REPO_DIGEST_LINE=ghcr.io/rhionin/pantry@sha256:deadbeef \
+    STUB_RUNNING_ROW_DIGEST=sha256:deadbeef STUB_RUNNING_IMAGE_ID=sha256:deadbeef \
+    PANTRY_TEST_GITHUB_COMPARE_STATUS=ahead PANTRY_TEST_SKIP_HEALTH=1 \
+    PANTRY_TEST_TXN_START_ADJUST=121 PATH="$work/bin:$PATH" \
+    bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_flags_read
+    host_state_validate
+    rc=0
+    host_subset_refresh_from_image "'"$state"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" >"$work/out" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 3 ]] || fail "subset refresh must exit 3 on time budget (rc=$rc): $(cat "$work/out")"
+  [[ "$(awk -F= '$1=="phase"{print $2;exit}' "$root/host-setup-state/control")" == recovered ]] \
+    || fail "budget overrun must land in recovered, not clean"
+  [[ "$(awk -F= '$1=="original_reason"{print $2;exit}' "$root/host-setup-state/control")" == time_budget_exceeded ]] \
+    || fail "budget overrun must record time_budget_exceeded"
+  cmp -s "$root/host-setup-state/lkg/files/1" "$root/publish-mode.sh" \
+    || fail "budget overrun must restore publish-mode to lkg"
+  grep -q 'budget-commit-marker' "$root/publish-mode.sh" \
+    && fail "budget overrun must not leave candidate bytes installed"
+  rm -rf "$root" "$state" "$work"
+}
+
+test_restore_preserves_vapid_env_manifest_mode_0644() {
+  local root mode
+  root=$(mktemp -d)
+  prepare_root "$root"
+  chmod 644 "$root/vapid-env.sh"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  chmod 755 "$root/vapid-env.sh"
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_state_validate
+    host_restore_transaction
+  ' _ "$UPDATE"
+  mode=$(stat_mode_octal "$root/vapid-env.sh")
+  [[ "$mode" == 644 ]] || fail "restore must apply manifest mode 0644 for vapid-env.sh (got $mode)"
+  mode=$(stat_mode_octal "$root/host-setup-state/lkg/files/3")
+  [[ "$mode" == 644 ]] || fail "lkg snapshot must retain vapid mode 0644 (got $mode)"
+  rm -rf "$root"
+}
+
+test_guard_rejects_missing_pantry_update_path_unit() {
+  local root stage rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  stage="$root/stage"
+  stage_host_bundle_for_subset "$stage" 1
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_state_validate
+    rc=0
+    host_guard_validate "'"$stage"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "guard must reject bundle missing pantry-update.path"
+  rm -rf "$root"
+}
+
+test_guard_rejects_frozen_unit_mode_only_difference() {
+  local root stage rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  stage="$root/stage"
+  stage_host_bundle_for_subset "$stage"
+  chmod 644 "$root/systemd/pantry-update.service"
+  chmod 600 "$stage/systemd/pantry-update.service"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_guard_validate "'"$stage"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "guard must reject mode-only difference on frozen unit"
+  rm -rf "$root"
+}
+
+test_subset_validate_rejects_missing_path_unit() {
+  local root stage work rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  stage="$root/stage"
+  stage_host_bundle_for_subset "$stage" 1
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_subset_validate "'"$stage"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "subset validate must reject missing pantry-update.path"
+  rm -rf "$root" "$work"
+}
+
+test_subset_validate_rejects_bad_pinned_service_fields() {
+  local root stage work rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  stage="$root/stage"
+  stage_host_bundle_for_subset "$stage"
+  sed -i 's|ExecStart=/opt/pantry/systemd/pantry-update.sh|ExecStart=/bin/false|' \
+    "$stage/systemd/pantry-update.service"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  set +e
+  PANTRY_DIR="$root" PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_subset_validate "'"$stage"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "subset validate must reject bad ExecStart pin"
+  rm -rf "$root" "$work"
+}
+
+test_host_state_validate_rejects_symlink_lkg_child() {
+  local root rc target
+  root=$(mktemp -d)
+  prepare_root "$root"
+  target=$(mktemp -d)
+  mkdir -p "$root/host-setup-state"
+  write_lkg_snapshot "$root"
+  rm -rf "$root/host-setup-state/lkg"
+  ln -s "$target" "$root/host-setup-state/lkg"
+  write_clean_control "$root"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_state_validate || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "host_state_validate must reject symlink lkg child"
+  rm -rf "$root" "$target"
+}
+
+test_host_state_validate_rejects_control_version_mismatch() {
   local root rc
   root=$(mktemp -d)
   prepare_root "$root"
+  mkdir -p "$root/host-setup-state"
   write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  sed -i 's/^version=1/version=2/' "$root/host-setup-state/control"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_state_validate || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "host_state_validate must reject unsupported control version"
+  rm -rf "$root"
+}
+
+test_host_state_validate_rejects_truncated_control_file() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  mkdir -p "$root/host-setup-state/lkg/files"
+  printf 'version=1\nphase=clean\n' >"$root/host-setup-state/control"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_state_validate || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "host_state_validate must reject truncated control"
+  rm -rf "$root"
+}
+
+test_apply_mv_failure_preserves_lkg_and_candidate_snapshots() {
+  local root rc before
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
   mkdir -p "$root/host-setup-state/candidate/files"
   for id in 1 2 3 4; do
     cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
   done
   cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
-  printf '\n# budget-commit-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  printf '\n# mv-fail-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  before=$(cat "$root/publish-mode.sh")
   set +e
-  PANTRY_DIR="$root" PANTRY_TEST_SKIP_HEALTH=1 PANTRY_TEST_TXN_START_ADJUST=121 bash -c '
+  PANTRY_DIR="$root" PANTRY_TEST_MV_FAIL_DEST=publish-mode.sh bash -c '
     set -euo pipefail
     source "$1"
-    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate"
-    HOST_CTRL_PHASE=applying
-    HOST_CTRL_TARGET="'"$TEST_REV"'"
-    host_control_publish
-    txn_start=$((SECONDS - PANTRY_TEST_TXN_START_ADJUST))
-    host_txn_health_validate /tmp/x
-    if [[ $((SECONDS - txn_start)) -gt "$HOST_TXN_BUDGET_TXN" ]]; then
-      host_txn_abort_to_recovered time_budget_exceeded "'"$TEST_REV"'" || exit 2
-      exit 3
-    fi
-    exit 0
-  ' _ "$UPDATE"
+    host_state_validate
+    rc=0
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
   rc=$?
   set -e
-  [[ "$rc" -eq 3 ]] || fail "time budget overrun path must return rc 3 (got $rc)"
-  [[ "$(awk -F= '$1=="phase"{print $2;exit}' "$root/host-setup-state/control")" == recovered ]] \
-    || fail "budget overrun must land in recovered, not committed clean"
-  cmp -s "$root/host-setup-state/lkg/files/1" "$root/publish-mode.sh" \
-    || fail "budget overrun must restore installed scripts to lkg"
-  grep -q 'budget-commit-marker' "$root/publish-mode.sh" \
-    && fail "budget overrun must not leave candidate bytes on disk"
+  [[ "$rc" -ne 0 ]] || fail "mv failure must fail apply"
+  [[ -f "$root/host-setup-state/lkg/manifest" && -f "$root/host-setup-state/candidate/manifest" ]] \
+    || fail "mv failure must not destroy lkg or candidate snapshots"
+  [[ "$(cat "$root/publish-mode.sh")" == "$before" ]] \
+    || fail "mv failure must not replace publish-mode on disk"
   rm -rf "$root"
+}
+
+test_apply_cp_failure_fails_without_touching_installed_targets() {
+  local root rc before
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  cp "$root/host-setup-state/lkg/manifest" "$root/host-setup-state/candidate/manifest"
+  printf '\n# cp-fail-marker\n' >>"$root/host-setup-state/candidate/files/2"
+  before=$(cat "$root/runtime-setup.sh")
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_CP_FAIL=runtime-setup.sh bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "cp failure must fail apply"
+  [[ "$(cat "$root/runtime-setup.sh")" == "$before" ]] \
+    || fail "cp failure must leave prior runtime-setup.sh bytes"
+  [[ -f "$root/host-setup-state/candidate/files/2" ]] || fail "candidate snapshot must remain"
+  rm -rf "$root"
+}
+
+test_apply_permission_chmod_failure_fails_closed() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  mkdir -p "$root/host-setup-state/candidate/files"
+  for id in 1 2 3 4; do
+    cp "$root/host-setup-state/lkg/files/$id" "$root/host-setup-state/candidate/files/$id"
+  done
+  printf '\n# chmod-fail-marker\n' >>"$root/host-setup-state/candidate/files/1"
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    host_manifest_build_installed "'"$TEST_OTHER_REV"'" "$PANTRY_DIR/host-setup-state/candidate/manifest"
+  ' _ "$UPDATE"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_CHMOD_FAIL=publish-mode.sh bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    host_apply_transaction "$PANTRY_DIR/host-setup-state/candidate" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "chmod failure must fail apply closed"
+  rm -rf "$root"
+}
+
+test_snapshot_loss_blocks_pending_recovery() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  printf 'version=1\nphase=applying\noriginal_reason=interrupted\n' >"$root/host-setup-state/control"
+  printf 'committed_revision=%s\n' "$TEST_REV" >>"$root/host-setup-state/control"
+  printf 'target_revision=%s\n' "$TEST_OTHER_REV" >>"$root/host-setup-state/control"
+  printf 'previous_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'candidate_manifest_sha256=none\n' >>"$root/host-setup-state/control"
+  printf 'failed_target_sha=none\n' >>"$root/host-setup-state/control"
+  truncate -s 0 "$root/host-setup-state/lkg/files/1"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    HOST_STATE_INITIALIZED=1
+    HOST_STATE_BLOCKED=0
+    rc=0
+    host_recover_pending || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "recovery must fail when lkg snapshot is damaged"
+  rm -rf "$root"
+}
+
+test_control_publish_rename_failure_leaves_prior_control() {
+  local root before rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  before=$(cat "$root/host-setup-state/control")
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_CONTROL_MV_FAIL=1 bash -c '
+    set -euo pipefail
+    source "$1"
+    HOST_CTRL_PHASE=prepared
+    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    rc=0
+    host_control_publish || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "control publish rename failure must return non-zero"
+  [[ "$(cat "$root/host-setup-state/control")" == "$before" ]] \
+    || fail "rename failure must keep the previous control file"
+  rm -rf "$root"
+}
+
+test_live_signal_term_during_target_replace_boundary_converges() {
+  local root state work stage rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  printf 'PANTRY_AUTO_SETUP=on\n' >>"$root/.env"
+  write_lkg_snapshot "$root" "$TEST_OTHER_REV"
+  write_clean_control "$root" "$TEST_OTHER_REV"
+  state=$(mktemp -d)
+  write_deploy_state_dir "$state"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  stage="$work/replace-bundle"
+  stage_host_bundle_for_subset "$stage"
+  printf '\n# replace-boundary-marker\n' >>"$stage/runtime-setup.sh"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_SKIP_HEALTH=1 PANTRY_TEST_HOLD_AT=replace-2 \
+    PANTRY_TEST_LIVE_SIGNAL=1 PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_flags_read
+    host_state_validate
+    host_subset_refresh_from_image "'"$state"'" || exit 99
+  ' _ "$UPDATE" >"$work/out" 2>&1 &
+  coord=$!
+  sleep 0.35
+  kill -TERM "$coord" 2>/dev/null || true
+  wait "$coord" 2>/dev/null || true
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PANTRY_UPDATE_HEALTH_TIMEOUT=0 \
+    PATH="$work/bin:$PATH" bash "$root/systemd/pantry-update.sh" >/dev/null 2>"$work/err" || true
+  PANTRY_DIR="$root" PANTRY_SETUP_SKIP_ROOT=1 PANTRY_UPDATE_HEALTH_TIMEOUT=0 \
+    PATH="$work/bin:$PATH" bash "$root/systemd/pantry-update.sh" >/dev/null 2>>"$work/err" || true
+  set -e
+  cmp -s "$root/host-setup-state/lkg/files/2" "$root/runtime-setup.sh" \
+    || fail "replace-boundary interrupt must converge runtime-setup to lkg"
+  grep -q 'replace-boundary-marker' "$root/runtime-setup.sh" \
+    && fail "replace-boundary interrupt must not leave candidate bytes on disk"
+  rm -rf "$root" "$state" "$work"
 }
 
 for fn in \
@@ -1302,6 +1712,20 @@ for fn in \
   uninitialized_quoted_auto_setup_blocks_legacy_refresh_on_entry \
   systemd_analyze_verify_failure_blocks_subset_validate \
   time_budget_before_commit_restores_lkg_not_clean \
+  restore_preserves_vapid_env_manifest_mode_0644 \
+  guard_rejects_missing_pantry_update_path_unit \
+  guard_rejects_frozen_unit_mode_only_difference \
+  subset_validate_rejects_missing_path_unit \
+  subset_validate_rejects_bad_pinned_service_fields \
+  host_state_validate_rejects_symlink_lkg_child \
+  host_state_validate_rejects_control_version_mismatch \
+  host_state_validate_rejects_truncated_control_file \
+  apply_mv_failure_preserves_lkg_and_candidate_snapshots \
+  apply_cp_failure_fails_without_touching_installed_targets \
+  apply_permission_chmod_failure_fails_closed \
+  snapshot_loss_blocks_pending_recovery \
+  control_publish_rename_failure_leaves_prior_control \
+  live_signal_term_during_target_replace_boundary_converges \
   host_run_bounded_reaps_grandchild_ignoring_term \
   live_signal_term_during_applying_recovery_converges \
   live_signal_int_during_applying_recovery_converges \

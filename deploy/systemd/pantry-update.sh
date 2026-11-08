@@ -368,6 +368,123 @@ host_manifest_mode_and_size() {
   printf '%s\t%s' "$_mode" "$_size"
 }
 
+host_file_mode_octal() {
+  local path="$1"
+  stat -c '%a' "$path" 2>/dev/null || stat -f '%OLp' "$path"
+}
+
+host_manifest_target_mode() {
+  local man="$1" id="$2" mode
+  mode=$(awk -F, -v id="$id" '$1 == id { print $3; exit }' "$man")
+  [[ -n "$mode" ]] || return 1
+  printf '%s' "$mode"
+}
+
+host_txn_mv_to_dest() {
+  local tmp="$1" dest="$2"
+  if [[ -n "${PANTRY_TEST_MV_FAIL_DEST:-}" ]]; then
+    if [[ "$dest" == *"$PANTRY_TEST_MV_FAIL_DEST"* ]] \
+      || [[ "$(basename "$dest")" == "$PANTRY_TEST_MV_FAIL_DEST" ]]; then
+      rm -f "$tmp"
+      echo "pantry update: host setup could not install ${dest}" >&2
+      return 1
+    fi
+  fi
+  mv "$tmp" "$dest"
+}
+
+host_txn_install_file() {
+  local src="$1" dest="$2" mode="$3" tmp base
+  tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
+  base=$(basename "$dest")
+  if [[ -n "${PANTRY_TEST_CP_FAIL:-}" && "$PANTRY_TEST_CP_FAIL" == "$base" ]]; then
+    rm -f "$tmp"
+    echo "pantry update: host setup could not copy ${dest}" >&2
+    return 1
+  fi
+  cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+  if [[ -n "${PANTRY_TEST_CHMOD_FAIL:-}" && "$PANTRY_TEST_CHMOD_FAIL" == "$base" ]]; then
+    rm -f "$tmp"
+    echo "pantry update: host setup could not set mode on ${dest}" >&2
+    return 1
+  fi
+  chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
+  host_txn_mv_to_dest "$tmp" "$dest"
+}
+
+host_guard_unit_paths() {
+  printf '%s\n' \
+    systemd/pantry-update.service \
+    systemd/pantry-update.timer \
+    systemd/pantry-update.path \
+    systemd/pantry-backup.service \
+    systemd/pantry-backup.timer
+}
+
+host_subset_unit_pin_ok() {
+  local staged="$1" unit="$2" src
+  src="$staged/$unit"
+  [[ -f "$src" ]] || return 1
+  case "$unit" in
+    systemd/pantry-update.service)
+      grep -Fq "ExecStart=${PANTRY_DIR}/systemd/pantry-update.sh" "$src" || return 1
+      grep -Fq "WorkingDirectory=${PANTRY_DIR}" "$src" || return 1
+      ;;
+    systemd/pantry-update.path)
+      grep -Fq "PathChanged=${PANTRY_DIR}/deploy-trigger/request" "$src" || return 1
+      grep -Fq 'Unit=pantry-update.service' "$src" || return 1
+      ;;
+    systemd/pantry-update.timer)
+      grep -Fq 'OnUnitActiveSec=1min' "$src" || return 1
+      grep -Fq 'Unit=pantry-update.service' "$src" || return 1
+      ;;
+  esac
+  return 0
+}
+
+host_control_validate_parsed() {
+  local ctrl="$1" ver key
+  [[ -s "$ctrl" ]] || {
+    echo "pantry update: host setup control is empty or truncated" >&2
+    return 1
+  }
+  ver=$(awk -F= '$1=="version"{print $2;exit}' "$ctrl" 2>/dev/null || true)
+  [[ "$ver" == 1 ]] || {
+    echo "pantry update: host setup control has unsupported version ${ver:-<missing>}" >&2
+    return 1
+  }
+  for key in phase committed_revision target_revision previous_manifest_sha256 \
+    candidate_manifest_sha256 original_reason failed_target_sha; do
+    host_control_field "$key" >/dev/null || {
+      echo "pantry update: host setup control is missing ${key}" >&2
+      return 1
+    }
+  done
+  return 0
+}
+
+host_state_reject_snapshot_symlinks() {
+  local root="$1" snapname child snapf
+  for snapname in lkg candidate prior; do
+    child="$root/$snapname"
+    [[ -e "$child" ]] || continue
+    if [[ -L "$child" ]]; then
+      echo "pantry update: host setup state child ${snapname} is a symlink" >&2
+      return 1
+    fi
+    if [[ -d "$child/files" ]]; then
+      for snapf in "$child/files"/*; do
+        [[ -e "$snapf" ]] || continue
+        if [[ -L "$snapf" ]]; then
+          echo "pantry update: host setup snapshot file is a symlink" >&2
+          return 1
+        fi
+      done
+    fi
+  done
+  return 0
+}
+
 host_manifest_row_guard() {
   local rel="$1" path="$2" ms mode size sha
   if [[ -f "$path" ]]; then
@@ -471,6 +588,7 @@ host_snapshot_verify() {
       [[ -f "$rowpath" ]] || return 1
       expect=$(host_sha256_file "$rowpath")
       [[ "$sha" == "$expect" ]] || return 1
+      [[ "$(host_file_mode_octal "$rowpath")" == "$_mode" ]] || return 1
     else
       [[ ! -e "$rowpath" ]] || return 1
     fi
@@ -482,9 +600,11 @@ host_snapshot_build_from_staged() {
   rm -rf "$snap"
   mkdir -p "$snap/files"
   for id in 1 2 3 4; do
+    local mode
     rel=$(host_txn_target_rel "$id") || return 1
     cp "$staged/$rel" "$snap/files/$id"
-    chmod 755 "$snap/files/$id"
+    mode=$(host_file_mode_octal "$staged/$rel")
+    chmod "$mode" "$snap/files/$id"
   done
   host_manifest_build_staged "$staged" "$revision" "$snap/manifest"
   host_snapshot_verify "$snap"
@@ -534,6 +654,11 @@ host_control_publish() {
     printf 'failed_target_sha=%s\n' "${HOST_CTRL_FAILED_TARGET:-none}"
   } >"$tmp"
   chmod 600 "$tmp" 2>/dev/null || true
+  if [[ -n "${PANTRY_TEST_CONTROL_MV_FAIL:-}" ]]; then
+    echo "pantry update: host setup control publish failed" >&2
+    rm -f "$tmp"
+    return 1
+  fi
   mv "$tmp" "$ctrl"
 }
 
@@ -663,11 +788,21 @@ host_state_validate() {
     echo "pantry update: host setup state has only control.tmp" >&2
     return 1
   fi
+  if ! host_state_reject_snapshot_symlinks "$root"; then
+    HOST_STATE_CORRUPT=1
+    HOST_STATE_BLOCKED=1
+    return 1
+  fi
   if [[ -f "$ctrl" ]]; then
     if [[ -L "$ctrl" ]]; then
       HOST_STATE_CORRUPT=1
       HOST_STATE_BLOCKED=1
       echo "pantry update: host setup control is a symlink" >&2
+      return 1
+    fi
+    if ! host_control_validate_parsed "$ctrl"; then
+      HOST_STATE_CORRUPT=1
+      HOST_STATE_BLOCKED=1
       return 1
     fi
     phase=$(host_control_phase)
@@ -728,13 +863,12 @@ host_restore_from_snapshot() {
     dest=$(host_txn_target_dest "$id") || return 1
     src="$snap/files/$id"
     if [[ "$present" == 1 ]]; then
-      if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      if [[ -f "$dest" ]] \
+        && cmp -s "$src" "$dest" \
+        && [[ "$(host_file_mode_octal "$dest")" == "$_mode" ]]; then
         continue
       fi
-      tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
-      cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
-      chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
-      mv "$tmp" "$dest"
+      host_txn_install_file "$src" "$dest" "$_mode" || return 1
     else
       rm -f "$dest"
     fi
@@ -830,16 +964,27 @@ host_guard_validate() {
       return 1
     fi
   fi
-  for rel in systemd/pantry-update.service systemd/pantry-update.timer systemd/pantry-update.path \
-    systemd/pantry-backup.service systemd/pantry-backup.timer; do
+  while IFS= read -r rel || [[ -n "$rel" ]]; do
+    [[ -z "$rel" ]] && continue
     src="$staged/$rel"
     dest="$PANTRY_DIR/$rel"
-    [[ -f "$src" && -f "$dest" ]] || continue
+    if [[ ! -f "$src" ]]; then
+      echo "pantry update: host refresh refused: candidate bundle is missing ${rel}" >&2
+      return 1
+    fi
+    if [[ ! -f "$dest" ]]; then
+      echo "pantry update: host refresh refused: installed bundle is missing ${rel}" >&2
+      return 1
+    fi
     if ! cmp -s "$src" "$dest"; then
       echo "pantry update: host refresh refused: candidate changes frozen unit ${rel}" >&2
       return 1
     fi
-  done
+    if [[ "$(host_file_mode_octal "$src")" != "$(host_file_mode_octal "$dest")" ]]; then
+      echo "pantry update: host refresh refused: candidate mode differs on frozen unit ${rel}" >&2
+      return 1
+    fi
+  done < <(host_guard_unit_paths)
   return 0
 }
 
@@ -871,20 +1016,26 @@ host_subset_validate() {
     echo "pantry update: host subset bundle validation requires systemd-analyze" >&2
     return 1
   fi
-  for unit in \
-    systemd/pantry-update.service \
-    systemd/pantry-update.timer \
-    systemd/pantry-update.path \
-    systemd/pantry-backup.service \
-    systemd/pantry-backup.timer
-  do
+  while IFS= read -r unit || [[ -n "$unit" ]]; do
+    [[ -z "$unit" ]] && continue
     src="$staged/$unit"
-    [[ -f "$src" ]] || continue
+    if [[ ! -f "$src" ]]; then
+      echo "pantry update: host subset bundle is missing ${unit}" >&2
+      return 1
+    fi
+    case "$unit" in
+      systemd/pantry-update.service|systemd/pantry-update.path|systemd/pantry-update.timer)
+        if ! host_subset_unit_pin_ok "$staged" "$unit"; then
+          echo "pantry update: host subset bundle failed pinned unit checks for ${unit}" >&2
+          return 1
+        fi
+        ;;
+    esac
     if ! host_run_bounded "$HOST_TXN_BUDGET_VERIFY" systemd-analyze verify "$src"; then
       echo "pantry update: host subset bundle failed systemd-analyze verify for ${unit}" >&2
       return 1
     fi
-  done
+  done < <(host_guard_unit_paths)
   return 0
 }
 
@@ -990,7 +1141,8 @@ host_retained_prior_present() {
 }
 
 host_apply_transaction() {
-  local snap="$1" id dest src tmp
+  local snap="$1" id dest src man mode
+  man="$snap/manifest"
   host_txn_test_hook replace-start || return 1
   for id in 1 2 3 4; do
     host_txn_test_hook "replace-${id}" || return 1
@@ -999,13 +1151,13 @@ host_apply_transaction() {
     fi
     dest=$(host_txn_target_dest "$id") || return 1
     src="$snap/files/$id"
-    if [[ -f "$dest" ]] && [[ -f "$src" ]] && cmp -s "$src" "$dest"; then
+    mode=$(host_manifest_target_mode "$man" "$id") || return 1
+    if [[ -f "$dest" ]] && [[ -f "$src" ]] \
+      && cmp -s "$src" "$dest" \
+      && [[ "$(host_file_mode_octal "$dest")" == "$mode" ]]; then
       continue
     fi
-    tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
-    cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
-    chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$dest"
+    host_txn_install_file "$src" "$dest" "$mode" || return 1
   done
   host_txn_test_hook replace-done || return 1
   return 0
