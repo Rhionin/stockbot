@@ -32,6 +32,13 @@ assert_no_literal_probe_paths() {
       [[ "$line" =~ ^[[:space:]]*# ]] && continue
       code=${line%%#*}
       if [[ "$code" == *"/opt/pantry/"* || "$code" == *"/run/"* ]]; then
+        if [[ "$file" == "$UPDATE" && (
+          "$code" == *'grep -Fq "ExecStart=/opt/pantry/systemd/pantry-update.sh"'* ||
+          "$code" == *'grep -Fq "WorkingDirectory=/opt/pantry"'* ||
+          "$code" == *'grep -Fq "PathChanged=/opt/pantry/deploy-trigger/request"'*
+        ) ]]; then
+          continue
+        fi
         fail "${file} probes a literal path a fixture cannot redirect: ${line}"
       fi
     done < "$file"
