@@ -768,6 +768,21 @@ run_update() {
     path_setting="$bin"
   fi
 
+  local -a updater_cmd
+  if [[ -n "${PANTRY_HARNESS_ENTRY_TRACE:-}" || -n "${PANTRY_HARNESS_SUBSET_VALIDATION_FAIL:-}" ]]; then
+    # shellcheck disable=SC2016
+    updater_cmd=(
+      bash -c "$(declare -f pantry_harness_trace_overrides pantry_harness_subset_validation_fail_override)
+        set -euo pipefail
+        source \"$pantry/systemd/pantry-update.sh\"
+        pantry_harness_trace_overrides
+        pantry_harness_subset_validation_fail_override
+        pantry_update_main"
+    )
+  else
+    updater_cmd=(bash "$pantry/systemd/pantry-update.sh")
+  fi
+
   set +e
   DOCKER_LOG="$work/docker.log" \
     CURL_LOG="$work/curl.log" \
@@ -838,8 +853,7 @@ run_update() {
     PANTRY_HOST_REFRESH="${PANTRY_HOST_REFRESH-}" \
     PATH="$path_setting" \
     "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" \
-    bash -c "$(declare -f pantry_harness_trace_overrides pantry_harness_subset_validation_fail_override); set -euo pipefail; source \"$pantry/systemd/pantry-update.sh\"; pantry_harness_trace_overrides; pantry_harness_subset_validation_fail_override; pantry_update_main" \
-    >"$out" 2>"$err"
+    "${updater_cmd[@]}" >"$out" 2>"$err"
   LAST_RC=$?
   set -e
 
