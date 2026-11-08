@@ -74,7 +74,7 @@ type Action = 'confirm' | 'all' | 'remove';
 function queue(action: Action, failure: unknown) {
   const stockOut = action === 'remove';
   let pending = stockOut
-    ? [entry({ direction: 'stock_out' })]
+    ? [entry({ direction: 'stock_out', onHand: 0 })]
     : [entry(), entry({ id: 'scan-2', barcode: '999', productId: 'prod-2', product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' } })];
   let open = true;
   const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
