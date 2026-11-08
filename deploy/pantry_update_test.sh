@@ -16,6 +16,17 @@ fail() {
   exit 1
 }
 
+pantry_harness_trace_overrides() {
+  if [[ -n "${PANTRY_HARNESS_ENTRY_TRACE:-}" ]]; then
+    host_entry_trace() { printf '%s\n' "$1" >>"$PANTRY_HARNESS_ENTRY_TRACE"; }
+  fi
+}
+
+pantry_harness_subset_validation_fail_override() {
+  [[ -n "${PANTRY_HARNESS_SUBSET_VALIDATION_FAIL:-}" ]] || return 0
+  host_subset_validate() { return 1; }
+}
+
 # File probes follow PANTRY_DIR. A literal /opt/pantry/ or /run/ path is a
 # file the fixture cannot move. The production default (PANTRY_DIR=${PANTRY_DIR:-/opt/pantry})
 # and publish-mode.sh's refusal to docker rm when PANTRY_DIR is not that
@@ -819,12 +830,14 @@ run_update() {
     PANTRY_TEST_SNAPSHOT_CP_FAIL_REL="${PANTRY_TEST_SNAPSHOT_CP_FAIL_REL:-}" \
     STUB_FIXTURE_ROOT="$ROOT/deploy/fixtures" \
     PANTRY_SYSTEMD_UNIT_DIR="${PANTRY_SYSTEMD_UNIT_DIR:-}" \
-    PANTRY_TEST_ENTRY_TRACE="${PANTRY_TEST_ENTRY_TRACE:-}" \
+    PANTRY_HARNESS_ENTRY_TRACE="${PANTRY_HARNESS_ENTRY_TRACE:-}" \
+    PANTRY_HARNESS_SUBSET_VALIDATION_FAIL="${PANTRY_HARNESS_SUBSET_VALIDATION_FAIL:-}" \
     PANTRY_AUTO_SETUP="${PANTRY_AUTO_SETUP:-}" \
-    PANTRY_TEST_VALIDATION_FAIL="${PANTRY_TEST_VALIDATION_FAIL:-}" \
     PANTRY_HOST_REFRESH="${PANTRY_HOST_REFRESH-}" \
     PATH="$path_setting" \
-    "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" bash "$pantry/systemd/pantry-update.sh" >"$out" 2>"$err"
+    "${deadline_cmd[@]}" env -u BACKUP_BEFORE_DEPLOY "${extra_env[@]}" \
+    bash -c "$(declare -f pantry_harness_trace_overrides pantry_harness_subset_validation_fail_override); set -euo pipefail; source \"$pantry/systemd/pantry-update.sh\"; pantry_harness_trace_overrides; pantry_harness_subset_validation_fail_override; pantry_update_main" \
+    >"$out" 2>"$err"
   LAST_RC=$?
   set -e
 
@@ -3131,7 +3144,7 @@ write_images "$host_fatal_multipull/images.tsv" \
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 STUB_REWRITE_TRIGGER=1
-PANTRY_TEST_VALIDATION_FAIL=1
+PANTRY_HARNESS_SUBSET_VALIDATION_FAIL=1
 PANTRY_AUTO_SETUP=on
 run_update "$host_fatal_multipull"
 [[ "$LAST_RC" -eq 3 ]] || fail "fatal host refresh should exit 3, got $LAST_RC: $LAST_OUT"
@@ -3143,35 +3156,35 @@ lack "$LAST_OUT" "stopping after 3 pulls" "fatal host refresh must not hit pull 
 pulls=$(printf '%s\n' "$LAST_DOCKER" | grep -c ' pull' || true)
 [[ "$pulls" -eq 1 ]] || fail "fatal host refresh ran ${pulls} pull rounds (expected 1)"
 unset STUB_HOST_BUNDLE STUB_HEALTH_BODY STUB_BUILD_BODY STUB_REWRITE_TRIGGER \
-  PANTRY_TEST_VALIDATION_FAIL PANTRY_AUTO_SETUP
+  PANTRY_HARNESS_SUBSET_VALIDATION_FAIL PANTRY_AUTO_SETUP
 rm -rf "$host_fatal_multipull"
 
 # Entry reorder: deploy lock and flag gate precede publish-mode sourcing (#152).
 entry_order=$(mktemp -d)
 prepare_pantry "$entry_order"
-PANTRY_TEST_ENTRY_TRACE="$entry_order/entry-trace.log"
-: >"$PANTRY_TEST_ENTRY_TRACE"
+PANTRY_HARNESS_ENTRY_TRACE="$entry_order/entry-trace.log"
+: >"$PANTRY_HARNESS_ENTRY_TRACE"
 write_images "$entry_order/images.tsv" \
   sha256:runpantry ghcr.io/rhionin/pantry@sha256:runpantry \
   sha256:runcaddy caddy@sha256:oldcaddy
 STUB_HEALTH_BODY='{"status":"ok"}'
 STUB_BUILD_BODY="{\"commit\":\"${NEW_COMMIT}\"}"
 run_update "$entry_order"
-lock_line=$(grep -n '^deploy_lock$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
-flags_line=$(grep -n '^host_flags_read$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
-trigger_line=$(grep -n '^deploy_trigger_dir_ready$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
-source_line=$(grep -n '^publish-mode-source$' "$PANTRY_TEST_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+lock_line=$(grep -n '^deploy_lock$' "$PANTRY_HARNESS_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+flags_line=$(grep -n '^host_flags_read$' "$PANTRY_HARNESS_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+trigger_line=$(grep -n '^deploy_trigger_dir_ready$' "$PANTRY_HARNESS_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
+source_line=$(grep -n '^publish-mode-source$' "$PANTRY_HARNESS_ENTRY_TRACE" | head -1 | cut -d: -f1 || true)
 [[ -n "$lock_line" && -n "$flags_line" && -n "$trigger_line" && -n "$source_line" ]] \
   || fail "entry trace missing lock, flags, deploy-trigger, or publish-mode markers"
 [[ "$lock_line" -lt "$flags_line" && "$flags_line" -lt "$trigger_line" && "$trigger_line" -lt "$source_line" ]] \
   || fail "publish-mode sourced before host lock/flag/deploy-trigger gate"
 [[ "$LAST_CHOWN" == *deploy-trigger* ]] || fail "deploy-trigger chown did not run"
 chown_seq=$(printf '%s\n' "$LAST_CHOWN" | grep -n 'deploy-trigger' | head -1 | cut -d: -f1 || true)
-trace_lines=$(wc -l <"$PANTRY_TEST_ENTRY_TRACE")
+trace_lines=$(wc -l <"$PANTRY_HARNESS_ENTRY_TRACE")
 [[ -n "$chown_seq" && "$source_line" -le "$trace_lines" ]] \
   || fail "could not correlate deploy-trigger chown with entry trace"
 rm -rf "$entry_order"
-unset STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_TEST_ENTRY_TRACE
+unset STUB_HEALTH_BODY STUB_BUILD_BODY PANTRY_HARNESS_ENTRY_TRACE
 
 rm -rf "$healthy" "$noop" "$mismatch" "$unhealthy" "$caddy_only" "$rollback_fail" "$unlabeled" "$polled" "$migrating" "$migr_cap" "$pending" "$exited" "$proxied" "$full_disk" "$orphan" "$cloud_down" "$cloud_stale" "$cloud_warn" "$crash" "$resumed" "$gone" "$degraded" "$snap" "$snap_old" "$rollback_unhealthy" "$unpinned" "$spill" "$flap" "$pantry_restart" "$caddy_fail" "$tunnel_ok" "$tunnel_skip" "$tunnel_bad" "$acme_same" "$tunnel_same" "$tunnel_refused" "$tunnel_commit" "$warned" "$caddy_keep" "$name_conflict" "$acme_regress" "$tunnel_regress" "$tunnel_hang" "$tunnel_late" "$tunnel_reset" "$caddy_exit" "$caddy_up_down" "$tunnel_restart" "$tunnel_502" "$tunnel_empty" "$marker_off" "$marker_cr" "$marker_clear" "$marker_park" "$proxy_grocy" "$reach_reset" "$caddy_newid" "$caddy_restarts" "$caddy_started" "$caddy_retry" "$probe_cap" "$proxy_mark" "$marker_deploy_clear" "$tunnel_mark" "$marker_no_auth" "$repull" "$wrong_project" "$blank_project" "$locked"
 echo "pantry_update_test ok"

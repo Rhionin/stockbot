@@ -199,9 +199,7 @@ public_proxy_in_update() {
 }
 
 host_entry_trace() {
-  if [[ -n "${PANTRY_TEST_ENTRY_TRACE:-}" ]]; then
-    printf '%s\n' "$1" >> "$PANTRY_TEST_ENTRY_TRACE"
-  fi
+  :
 }
 
 host_setup_state_dir() {
@@ -235,16 +233,6 @@ host_txn_guard_rels() {
 }
 
 host_txn_test_hook() {
-  local point="$1"
-  if [[ -n "${PANTRY_TEST_TRACE:-}" ]]; then
-    printf '%s\n' "$point" >>"$PANTRY_TEST_TRACE"
-  fi
-  if [[ -n "${PANTRY_TEST_INTERRUPT_AT:-}" && "$PANTRY_TEST_INTERRUPT_AT" == "$point" ]]; then
-    exit 42
-  fi
-  if [[ -n "${PANTRY_TEST_FAIL_AT:-}" && "$PANTRY_TEST_FAIL_AT" == "$point" ]]; then
-    return 1
-  fi
   return 0
 }
 
@@ -284,9 +272,6 @@ host_reap_process_group() {
 
 host_run_bounded() {
   local budget="$1"; shift
-  if [[ -n "${PANTRY_TEST_RUN_BOUNDED_RC+x}" ]]; then
-    return "${PANTRY_TEST_RUN_BOUNDED_RC:-0}"
-  fi
   local supervisor_pid child_pg start rc=0 budget_kill_done=0 caller_pgid
   start=$SECONDS
   caller_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
@@ -913,10 +898,6 @@ host_recover_pending() {
 }
 
 host_seed_from_manifest() {
-  local _approved_manifest="$1"
-  [[ "${PANTRY_TEST_ALLOW_MANUAL_SEED:-}" == 1 ]] || return 1
-  [[ -n "$_approved_manifest" ]]
-  host_txn_test_hook seed
   return 1
 }
 
@@ -1111,9 +1092,6 @@ host_apply_transaction() {
   host_txn_test_hook replace-start || return 1
   for id in 1 2 3 4; do
     host_txn_test_hook "replace-${id}" || return 1
-    if [[ -n "${PANTRY_TEST_APPLY_FAIL_ID:-}" && "$PANTRY_TEST_APPLY_FAIL_ID" == "$id" ]]; then
-      return 1
-    fi
     dest=$(host_txn_target_dest "$id") || return 1
     src="$snap/files/$id"
     mode=$(host_manifest_target_mode "$man" "$id") || return 1
@@ -1203,10 +1181,6 @@ host_subset_refresh_from_image() {
     return "$HOST_TXN_FATAL_RC"
   fi
   if ! host_subset_validate "$staged"; then
-    rm -rf "$work"
-    return "$HOST_TXN_FATAL_RC"
-  fi
-  if [[ -n "${PANTRY_TEST_VALIDATION_FAIL:-}" ]]; then
     rm -rf "$work"
     return "$HOST_TXN_FATAL_RC"
   fi
@@ -2956,13 +2930,6 @@ github_compare_top_status() {
 host_bundle_revision_on_master() {
   local revision="$1" url body status
   [[ -n "$revision" ]] || return 1
-  if [[ -n "${PANTRY_TEST_GITHUB_COMPARE_STATUS:-}" ]]; then
-    case "$PANTRY_TEST_GITHUB_COMPARE_STATUS" in
-      ahead|identical) return 0 ;;
-      unreachable) return 2 ;;
-      *) return 1 ;;
-    esac
-  fi
   url=$(host_bundle_github_compare_url "$revision")
   body=$(curl -fsS --max-time 15 "$url" 2>/dev/null) || return 2
   status=$(github_compare_top_status "$body")
