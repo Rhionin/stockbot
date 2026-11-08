@@ -245,13 +245,6 @@ host_txn_test_hook() {
   if [[ -n "${PANTRY_TEST_FAIL_AT:-}" && "$PANTRY_TEST_FAIL_AT" == "$point" ]]; then
     return 1
   fi
-  if [[ -n "${PANTRY_TEST_HOLD_AT:-}" && "$PANTRY_TEST_HOLD_AT" == "$point" ]]; then
-    if [[ -n "${PANTRY_TEST_LIVE_SIGNAL:-}" ]]; then
-      while kill -0 "$$" 2>/dev/null; do
-        sleep 0.05
-      done
-    fi
-  fi
   return 0
 }
 
@@ -293,9 +286,6 @@ host_run_bounded() {
   local budget="$1"; shift
   if [[ -n "${PANTRY_TEST_RUN_BOUNDED_RC+x}" ]]; then
     return "${PANTRY_TEST_RUN_BOUNDED_RC:-0}"
-  fi
-  if [[ -n "${PANTRY_TEST_SKIP_HEALTH:-}" ]]; then
-    return 0
   fi
   local supervisor_pid child_pg start rc=0 budget_kill_done=0 caller_pgid
   start=$SECONDS
@@ -382,32 +372,13 @@ host_manifest_target_mode() {
 
 host_txn_mv_to_dest() {
   local tmp="$1" dest="$2"
-  if [[ -n "${PANTRY_TEST_MV_FAIL_DEST:-}" ]]; then
-    if [[ "$dest" == *"$PANTRY_TEST_MV_FAIL_DEST"* ]] \
-      || [[ "$(basename "$dest")" == "$PANTRY_TEST_MV_FAIL_DEST" ]]; then
-      rm -f "$tmp"
-      echo "pantry update: host setup could not install ${dest}" >&2
-      return 1
-    fi
-  fi
   mv "$tmp" "$dest"
 }
 
 host_txn_install_file() {
-  local src="$1" dest="$2" mode="$3" tmp base
+  local src="$1" dest="$2" mode="$3" tmp
   tmp=$(mktemp "${dest}.host-txn-v1.XXXXXX") || return 1
-  base=$(basename "$dest")
-  if [[ -n "${PANTRY_TEST_CP_FAIL:-}" && "$PANTRY_TEST_CP_FAIL" == "$base" ]]; then
-    rm -f "$tmp"
-    echo "pantry update: host setup could not copy ${dest}" >&2
-    return 1
-  fi
   cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
-  if [[ -n "${PANTRY_TEST_CHMOD_FAIL:-}" && "$PANTRY_TEST_CHMOD_FAIL" == "$base" ]]; then
-    rm -f "$tmp"
-    echo "pantry update: host setup could not set mode on ${dest}" >&2
-    return 1
-  fi
   chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
   host_txn_mv_to_dest "$tmp" "$dest"
 }
@@ -427,11 +398,11 @@ host_subset_unit_pin_ok() {
   [[ -f "$src" ]] || return 1
   case "$unit" in
     systemd/pantry-update.service)
-      grep -Fq "ExecStart=${PANTRY_DIR}/systemd/pantry-update.sh" "$src" || return 1
-      grep -Fq "WorkingDirectory=${PANTRY_DIR}" "$src" || return 1
+      grep -Fq "ExecStart=/opt/pantry/systemd/pantry-update.sh" "$src" || return 1
+      grep -Fq "WorkingDirectory=/opt/pantry" "$src" || return 1
       ;;
     systemd/pantry-update.path)
-      grep -Fq "PathChanged=${PANTRY_DIR}/deploy-trigger/request" "$src" || return 1
+      grep -Fq "PathChanged=/opt/pantry/deploy-trigger/request" "$src" || return 1
       grep -Fq 'Unit=pantry-update.service' "$src" || return 1
       ;;
     systemd/pantry-update.timer)
@@ -654,11 +625,6 @@ host_control_publish() {
     printf 'failed_target_sha=%s\n' "${HOST_CTRL_FAILED_TARGET:-none}"
   } >"$tmp"
   chmod 600 "$tmp" 2>/dev/null || true
-  if [[ -n "${PANTRY_TEST_CONTROL_MV_FAIL:-}" ]]; then
-    echo "pantry update: host setup control publish failed" >&2
-    rm -f "$tmp"
-    return 1
-  fi
   mv "$tmp" "$ctrl"
 }
 
@@ -1099,7 +1065,6 @@ host_txn_post_apply_validate() {
 
 host_txn_health_validate() {
   local state="$1" port rev body commit started
-  [[ -n "${PANTRY_TEST_SKIP_HEALTH:-}" ]] && return 0
   started=$SECONDS
   port=$(host_embedded_env_value HOST_PORT || true)
   port=${port:-8080}
@@ -1198,9 +1163,6 @@ host_commit_transaction() {
 host_subset_refresh_from_image() {
   local state="$1" cid work staged root revision cand_man lkg_hash man_tmp committed txn_start
   txn_start=$SECONDS
-  if [[ -n "${PANTRY_TEST_TXN_START_ADJUST:-}" ]]; then
-    txn_start=$((SECONDS - PANTRY_TEST_TXN_START_ADJUST))
-  fi
   root=$(host_setup_state_dir)
   if host_retained_prior_present; then
     echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
