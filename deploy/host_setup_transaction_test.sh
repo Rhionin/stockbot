@@ -112,11 +112,14 @@ ALLOWED_CHANGED=(
 )
 
 if [[ -n "${HOST_SETUP_ALLOWLIST_CHECK:-1}" ]]; then
-  diff_head=$(git -C "$ROOT" rev-parse HEAD)
-  if git -C "$ROOT" rev-parse --verify HEAD^2 >/dev/null 2>&1; then
-    diff_head=$(git -C "$ROOT" rev-parse HEAD^1)
+  pr_base=$(git -C "$ROOT" merge-base HEAD origin/master 2>/dev/null \
+    || git -C "$ROOT" merge-base HEAD master 2>/dev/null \
+    || true)
+  if [[ -n "$pr_base" ]]; then
+    changed=$(git -C "$ROOT" diff --name-only "$pr_base"..HEAD 2>/dev/null || true)
+  else
+    changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}"..HEAD 2>/dev/null || true)
   fi
-  changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}".."${diff_head}" 2>/dev/null || true)
   if [[ -n "$changed" ]]; then
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
