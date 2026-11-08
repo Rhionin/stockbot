@@ -542,7 +542,7 @@ describe('QueueScreen', () => {
   ])('$name', async ({ status, code, sentence }) => {
     const oats = stocked('scan-a', 'Oats');
     const api = client({
-      listPending: jest.fn(async () => [oats]),
+      listPending: jest.fn(async () => [entry({ ...oats, onHand: 0 })]),
       cancelScan: jest.fn(async () => {
         throw new ApiError(status, sentence, code);
       }),
@@ -2186,23 +2186,63 @@ describe('QueueScreen', () => {
     expect(screen.queryByLabelText(/Link /)).toBeNull();
   });
 
+  it('P1: shows response-driven amber before household inventory resolves', async () => {
+    let releaseInventory: (rows: InventoryItem[]) => void = () => {};
+    const inventoryHeld = new Promise<InventoryItem[]>((resolve) => {
+      releaseInventory = resolve;
+    });
+    const getInventoryList = jest.fn(() => inventoryHeld);
+    const listPending = jest.fn(async () => [entry({
+      direction: 'stock_out',
+      onHand: 0,
+    })]);
+    const api = client({ listPending, getInventoryList });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    const card = within(await screen.findByTestId('scan-scan-1'));
+    expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
+    expect(listPending).toHaveBeenCalled();
+    expect(getInventoryList).toHaveBeenCalled();
+    releaseInventory([householdItem('Oat milk', 'prod-1', 5)]);
+    await waitFor(() => {
+      expect(getInventoryList).toHaveReturned();
+    });
+    expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+  });
+
+  it('P1: shows response-driven amber when household inventory never loads', async () => {
+    const getInventoryList = jest.fn(async () => {
+      throw new Error('The shelf did not load.');
+    });
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]),
+      getInventoryList,
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    const card = within(await screen.findByTestId('scan-scan-1'));
+    expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(getInventoryList).toHaveBeenCalled();
+  });
+
   it.each([
-    { label: 'never stocked', direction: 'stock_out' as const, productId: 'prod-new' as string | null, name: 'Quinoa', count: null as number | null, sentence: false },
-    { label: 'wiped', direction: 'stock_out' as const, productId: 'prod-wiped', name: 'Rice cakes', count: null, sentence: false },
-    { label: 'stocked', direction: 'stock_out' as const, productId: 'prod-oats', name: 'Oats', count: 2, sentence: false },
-    { label: 'zero on hand', direction: 'stock_out' as const, productId: 'prod-rice', name: 'Rice', count: 0, sentence: true },
-    { label: 'stock-in', direction: 'stock_in' as const, productId: 'prod-new', name: 'Quinoa', count: null, sentence: false },
-    { label: 'no product yet', direction: 'stock_out' as const, productId: null, name: '999', count: null, sentence: false },
-  ])('a $label card is amber when that stock-out has nothing on hand', async ({ direction, productId, name, count, sentence }) => {
+    { label: 'response zero with empty shelf', direction: 'stock_out' as const, productId: 'prod-rice' as string | null, name: 'Rice', onHand: 0 as number | undefined, invCount: 0 as number | null, sentence: true },
+    { label: 'inventory zero without response zero', direction: 'stock_out' as const, productId: 'prod-rice', name: 'Rice', onHand: undefined, invCount: 0, sentence: false },
+    { label: 'inventory zero with null response onHand', direction: 'stock_out' as const, productId: 'prod-rice', name: 'Rice', onHand: null as unknown as number, invCount: 0, sentence: false },
+    { label: 'inventory zero with positive response onHand', direction: 'stock_out' as const, productId: 'prod-rice', name: 'Rice', onHand: 2, invCount: 0, sentence: false },
+    { label: 'stocked shelf without response zero', direction: 'stock_out' as const, productId: 'prod-oats', name: 'Oats', onHand: undefined, invCount: 2, sentence: false },
+    { label: 'stock-in with response zero', direction: 'stock_in' as const, productId: 'prod-new', name: 'Quinoa', onHand: 0, invCount: null, sentence: false },
+    { label: 'no product yet', direction: 'stock_out' as const, productId: null, name: '999', onHand: 0, invCount: null, sentence: false },
+  ])('a $label card $sentence nothing-on-hand amber from the list response', async ({ direction, productId, name, onHand, invCount, sentence }) => {
     const api = client({
       listPending: jest.fn(async () => [entry({
         direction,
         productId,
+        onHand,
         barcode: '999',
         product: productId === null ? undefined : { id: productId, name, category: 'Pantry', unitOfMeasure: 'bag' },
       })]),
       getInventoryList: jest.fn(async () => (
-        count === null || productId === null ? [] : [householdItem(name, productId, count)]
+        invCount === null || productId === null ? [] : [householdItem(name, productId, invCount)]
       )),
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
@@ -2224,6 +2264,65 @@ describe('QueueScreen', () => {
       expect(screen.queryByText(/with nothing on hand/)).toBeNull();
     }
     expect(screen.queryByText('No inventory item is available for this product.')).toBeNull();
+  });
+
+  it.each([
+    { label: 'absent', onHand: undefined as number | undefined },
+    { label: 'null', onHand: null as unknown as number },
+    { label: 'positive', onHand: 2 },
+  ])('T5: 409 none_on_hand pin keeps amber when response onHand is $label', async ({ onHand }) => {
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out', onHand })]),
+      getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 5)]),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(409, NOTHING_ON_HAND_TITLE, 'none_on_hand');
+      }),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    expect(within(await screen.findByTestId('scan-scan-1')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+    const card = within(await screen.findByTestId('scan-scan-1'));
+    expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
+    expect(card.queryByLabelText('Confirm Oat milk')).toBeNull();
+    expect(screen.queryByText('Add it and take it out')).toBeNull();
+  });
+
+  it('T5: 409 pin keeps amber when a refresh still reports positive onHand', async () => {
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 2 })])
+      .mockResolvedValue([entry({ direction: 'stock_out', onHand: 2 })]);
+    const api = client({
+      listPending,
+      getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 5)]),
+      commitScan: jest.fn(async () => {
+        throw new ApiError(409, NOTHING_ON_HAND_TITLE, 'none_on_hand');
+      }),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
+    expect(await screen.findByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    await reloadQueue(screen);
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.queryByLabelText('Confirm Oat milk')).toBeNull();
+  });
+
+  it('P5: nothing-on-hand card keeps shared copy and colors without backfill', async () => {
+    const api = client({
+      listPending: jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]),
+      getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
+    });
+    const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+    const card = within(await screen.findByTestId('scan-scan-1'));
+    expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(card.getByText('!')).toBeTruthy();
+    expect(card.getByText(/Using up/)).toBeTruthy();
+    expect(screen.queryByText('Add it and take it out')).toBeNull();
+    expect(screen.queryByText('Putting away')).toBeNull();
+    const flat = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
+    expect(flat?.backgroundColor).toBe(colors.nothingWash);
+    expect(flat?.borderColor).toBe(colors.nothingBorder);
   });
 
   it('hides More while the link card is open', async () => {
@@ -2252,6 +2351,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-empty',
+      onHand: 0,
       product: { id: 'prod-empty', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const second = entry({
@@ -2259,6 +2359,7 @@ describe('QueueScreen', () => {
       barcode: '111',
       direction: 'stock_out',
       productId: 'prod-empty-2',
+      onHand: 0,
       product: { id: 'prod-empty-2', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
     });
     const stocked = entry({
@@ -2357,13 +2458,14 @@ describe('QueueScreen', () => {
   });
 
   it('clears a zero-stock card after a stock-in refresh shows some on hand', async () => {
-    const stockOut = entry({ id: 'scan-out', direction: 'stock_out' });
+    const stockOut = entry({ id: 'scan-out', direction: 'stock_out', onHand: 0 });
     const stockIn = entry({ id: 'scan-in', barcode: '222', direction: 'stock_in' });
-    const getInventoryList = jest.fn()
-      .mockResolvedValueOnce([householdItem('Oat milk', 'prod-1', 0)])
-      .mockResolvedValue([householdItem('Oat milk', 'prod-1', 1)]);
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([stockOut, stockIn])
+      .mockResolvedValue([entry({ ...stockOut, onHand: 2 })]);
+    const getInventoryList = jest.fn(async () => [householdItem('Oat milk', 'prod-1', 1)]);
     const api = client({
-      listPending: jest.fn(async () => [stockOut, stockIn]),
+      listPending,
       getInventoryList,
       commitScan: jest.fn(async () => entry({
         id: 'scan-in',
@@ -2384,7 +2486,12 @@ describe('QueueScreen', () => {
   it('removes a nothing-on-hand scan', async () => {
     const cancelScan = jest.fn(async () => entry({ status: 'cancelled' }));
     const listPending = jest.fn()
-      .mockResolvedValueOnce([entry({ direction: 'stock_out', productId: 'prod-missing', product: { id: 'prod-missing', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' } })])
+      .mockResolvedValueOnce([entry({
+        direction: 'stock_out',
+        productId: 'prod-missing',
+        onHand: 0,
+        product: { id: 'prod-missing', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
+      })])
       .mockResolvedValue([]);
     const api = client({
       listPending,
@@ -2412,6 +2519,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-rice',
+      onHand: 0,
       product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const listPending = jest.fn()
@@ -2456,6 +2564,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-rice',
+      onHand: 0,
       product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const tea = entry({
@@ -2463,6 +2572,7 @@ describe('QueueScreen', () => {
       barcode: '444',
       direction: 'stock_out',
       productId: 'prod-tea',
+      onHand: 0,
       product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
     });
     const listPending = jest.fn()
@@ -2518,6 +2628,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-rice',
+      onHand: 0,
       product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const oats = entry({
@@ -2555,6 +2666,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-rice',
+      onHand: 0,
       product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const tea = entry({
@@ -2562,6 +2674,7 @@ describe('QueueScreen', () => {
       barcode: '333',
       direction: 'stock_out',
       productId: 'prod-tea',
+      onHand: 0,
       product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
     });
     const batchCommit = jest.fn();
@@ -2592,6 +2705,7 @@ describe('QueueScreen', () => {
       barcode: '222',
       direction: 'stock_out',
       productId: 'prod-rice',
+      onHand: 0,
       product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
     const tea = entry({
@@ -2599,6 +2713,7 @@ describe('QueueScreen', () => {
       barcode: '333',
       direction: 'stock_out',
       productId: 'prod-tea',
+      onHand: 0,
       product: { id: 'prod-tea', name: 'Tea', category: 'Pantry', unitOfMeasure: 'box' },
     });
     const api = client({
@@ -2698,9 +2813,10 @@ describe('QueueScreen', () => {
     const rice = stocked('scan-b', 'Rice');
     const sentence = "That item isn't available anymore. Pick another.";
     const shelf = (count: number) => [oats, rice].map((card) => householdItem(card.product?.name ?? 'Item', card.productId ?? '', count));
+    const blockedOats = entry({ ...oats, onHand: 0 });
     const listPending = jest.fn()
       .mockResolvedValueOnce([oats, rice])
-      .mockResolvedValueOnce([oats])
+      .mockResolvedValueOnce([blockedOats])
       .mockRejectedValue(new Error('The queue did not load.'));
     const api = client({
       listPending,
@@ -2735,6 +2851,7 @@ describe('QueueScreen', () => {
         .mockResolvedValueOnce([entry({
           direction: 'stock_out',
           productId: 'prod-rice',
+          onHand: 0,
           product: { id: 'prod-rice', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' },
         })])
         .mockRejectedValue(new Error('The queue did not load.')),
@@ -2750,12 +2867,13 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('Some scans could not be confirmed.')).toBeNull();
   });
 
-  it('clears amber after the screen regains focus and the shelf has stock', async () => {
-    const getInventoryList = jest.fn()
-      .mockResolvedValueOnce([householdItem('Oat milk', 'prod-1', 0)])
-      .mockResolvedValue([householdItem('Oat milk', 'prod-1', 1)]);
+  it('clears amber after the screen regains focus and the list no longer reports zero on hand', async () => {
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
+      .mockResolvedValue([entry({ direction: 'stock_out', onHand: 2 })]);
+    const getInventoryList = jest.fn(async () => [householdItem('Oat milk', 'prod-1', 1)]);
     const api = client({
-      listPending: jest.fn(async () => [entry({ direction: 'stock_out' })]),
+      listPending,
       getInventoryList,
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" focused />);

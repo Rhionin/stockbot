@@ -13,6 +13,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
+import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   inlineFailure,
@@ -33,8 +34,8 @@ import {
   NOTHING_ON_HAND_TITLE,
   nothingOnHandPill,
   NO_CLOSE_MATCH,
-  shelfHasNothingOnHand,
 } from '@stockbot/shared/contract';
+import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
@@ -102,15 +103,8 @@ function readableInventory(rows: unknown): InventoryItem[] | null {
   return rows as InventoryItem[];
 }
 
-function isNothingOnHand(
-  entry: ScanEntry,
-  rows: InventoryItem[] | null,
-  pins: Map<string, NothingPin>,
-): boolean {
-  if (entry.direction !== 'stock_out' || entry.productId === null) return false;
-  if (pins.has(entry.id)) return true;
-  if (rows === null) return false;
-  return shelfHasNothingOnHand(shelfCount(rows, entry.productId));
+function isNothingOnHand(entry: ScanEntry, pins: Map<string, NothingPin>): boolean {
+  return mobileNothingOnHandCue(entry, pins.has(entry.id));
 }
 
 export interface QueueScreenProps {
@@ -154,14 +148,7 @@ function suggestionRows(suggestions: PantryLinkSuggestion[]): LinkRow[] {
 // typed query matches the name and category as one string. The list already
 // omits shelved rows. Zero on hand stays.
 function householdRows(rows: InventoryItem[], query: string, excludeProductId: string): LinkRow[] {
-  const normalized = query.trim().toLocaleLowerCase();
-  return rows
-    .filter((row) => {
-      if (excludeProductId !== '' && row.item.productId === excludeProductId) return false;
-      if (normalized === '') return true;
-      const product = row.item.product;
-      return `${product.name} ${product.category}`.toLocaleLowerCase().includes(normalized);
-    })
+  return filterInventoryForScanLinkSearch(rows, query, excludeProductId)
     .map((row) => ({
       key: row.item.id,
       name: row.item.product.name,
@@ -255,22 +242,27 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   useEffect(() => {
     let active = true;
-    Promise.all([client.listPending(), loadHousehold()]).then(([next, rows]) => {
-      if (!active) return;
-      storeHousehold(rows, next);
-      shownIds.current = new Set(next.map((entry) => entry.id));
-      setEntries(next);
-      setError('');
-      setLoadError('');
-      setQueueUnloaded(false);
-      setLoading(false);
-    }).catch((requestError: unknown) => {
-      if (!active) return;
-      setLoading(false);
-      const message = inlineFailure(requestError, 'The queue did not load.');
-      if (message === null) setQueueUnloaded(true);
-      setLoadError(message ?? '');
-    });
+    void (async () => {
+      try {
+        const next = await client.listPending();
+        if (!active) return;
+        shownIds.current = new Set(next.map((entry) => entry.id));
+        setEntries(next);
+        setError('');
+        setLoadError('');
+        setQueueUnloaded(false);
+        setLoading(false);
+        const rows = await loadHousehold();
+        if (!active) return;
+        storeHousehold(rows, next);
+      } catch (requestError: unknown) {
+        if (!active) return;
+        setLoading(false);
+        const message = inlineFailure(requestError, 'The queue did not load.');
+        if (message === null) setQueueUnloaded(true);
+        setLoadError(message ?? '');
+      }
+    })();
     return () => {
       active = false;
     };
@@ -497,7 +489,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }
 
   async function confirmAll() {
-    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, household, pins));
+    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, pins));
     if (confirmable.length === 0) return;
     refreshGeneration.current += 1;
     setRefreshing(false);
@@ -599,7 +591,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
-  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, household, pins)).length;
+  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, pins)).length;
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
@@ -652,7 +644,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item }) => {
-            const blocked = isNothingOnHand(item, household, pins);
+            const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
             return (
             <View
