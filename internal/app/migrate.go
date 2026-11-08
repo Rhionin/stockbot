@@ -137,10 +137,11 @@ func runMigrations(db *sql.DB, stopBefore string) error {
 		// transaction, so the snapshot above stays outside. Each of these
 		// files plus its schema_migrations row commit together, so a failure
 		// leaves neither the schema change nor a recorded migration.
-		// 030 adds nullable columns and new store tables. CJ approved B1 only when
-		// 030 runs in a single transaction (applyMigrationTx): every statement and
-		// the schema_migrations row commit together or roll back entirely.
-		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == multiStoreMigration {
+		// 029 adds firmware_releases and OTA columns on devices. 030 adds nullable
+		// columns and new store tables. Each runs in a single transaction
+		// (applyMigrationTx): every statement and the schema_migrations row commit
+		// together or roll back entirely.
+		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == firmwareOTAMigration || name == multiStoreMigration {
 			if err := applyMigrationTx(db, name, sqlText); err != nil {
 				return fmt.Errorf("apply migration %q: %w", name, err)
 			}
@@ -167,6 +168,9 @@ const householdKeyMigration = "024_household_keys.sql"
 
 // pushUserMigration lets a household-password subscription store a NULL user.
 const pushUserMigration = "027_push_user_nullable.sql"
+
+// firmwareOTAMigration adds firmware releases and device OTA columns (#452 T2).
+const firmwareOTAMigration = "029_firmware_ota.sql"
 
 // multiStoreMigration adds store tables and nullable Kroger/list columns (B1).
 const multiStoreMigration = "030_multi_store.sql"
