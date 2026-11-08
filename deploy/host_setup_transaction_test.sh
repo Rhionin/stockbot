@@ -23,6 +23,7 @@ fail() {
   exit 1
 }
 
+# shellcheck disable=SC2317,SC2329
 pantry_harness_trace_overrides() {
   if [[ -n "${PANTRY_HARNESS_ENTRY_TRACE:-}" ]]; then
     host_entry_trace() { printf '%s\n' "$1" >>"$PANTRY_HARNESS_ENTRY_TRACE"; }
@@ -37,6 +38,7 @@ pantry_harness_trace_overrides() {
   fi
 }
 
+# shellcheck disable=SC2317,SC2329
 pantry_harness_apply_fail_override() {
   [[ -n "${PANTRY_HARNESS_APPLY_FAIL_ID:-}" ]] || return 0
   host_apply_transaction() {
@@ -2041,6 +2043,7 @@ test_control_publish_rename_failure_leaves_prior_control() {
 }
 
 test_removed_pantry_test_env_hooks_are_inert_on_production_paths() {
+  # shellcheck disable=SC2016
   local root work stage state rc before
   local bash_count analyze_count health_curl_count compare_count real_bash
   root=$(mktemp -d)
@@ -2120,32 +2123,31 @@ EOF
   set -e
   [[ "$rc" -eq 0 ]] || fail "PANTRY_TEST_SKIP_HEALTH must not bypass subset health (rc=$rc)"
   run_inert_subset_bash_n() {
+    # shellcheck disable=SC2016
     local tag="$1"
     printf '0' >"$bash_count"
     rm -f "$work/subset-bash.err"
     set +e
     case "$tag" in
       native)
-        STUB_BASH_N_COUNT_FILE="$bash_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        STUB_BASH_N_COUNT_FILE="$bash_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-bash.err"
         ' _ "$UPDATE"
         ;;
       zero)
-        PANTRY_TEST_RUN_BOUNDED_RC=0 \
-          STUB_BASH_N_COUNT_FILE="$bash_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        PANTRY_TEST_RUN_BOUNDED_RC=0 STUB_BASH_N_COUNT_FILE="$bash_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-bash.err"
         ' _ "$UPDATE"
         ;;
       empty)
-        env PANTRY_TEST_RUN_BOUNDED_RC= \
-          STUB_BASH_N_COUNT_FILE="$bash_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        env PANTRY_TEST_RUN_BOUNDED_RC= STUB_BASH_N_COUNT_FILE="$bash_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-bash.err"
@@ -2166,32 +2168,31 @@ EOF
   run_inert_subset_bash_n empty
   stage_host_bundle_for_subset "$stage"
   run_inert_subset_systemd() {
+    # shellcheck disable=SC2016
     local tag="$1"
     printf '0' >"$analyze_count"
     rm -f "$work/subset-analyze.err"
     set +e
     case "$tag" in
       native)
-        STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-analyze.err"
         ' _ "$UPDATE"
         ;;
       zero)
-        PANTRY_TEST_RUN_BOUNDED_RC=0 \
-          STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        PANTRY_TEST_RUN_BOUNDED_RC=0 STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-analyze.err"
         ' _ "$UPDATE"
         ;;
       empty)
-        env PANTRY_TEST_RUN_BOUNDED_RC= \
-          STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" \
-          PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
+        # shellcheck disable=SC2016
+        env PANTRY_TEST_RUN_BOUNDED_RC= STUB_SYSTEMD_ANALYZE_COUNT_FILE="$analyze_count" PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
           host_subset_validate "'"$stage"'" 2>"'"$work"'/subset-analyze.err"
@@ -2211,14 +2212,14 @@ EOF
   run_inert_subset_systemd zero
   run_inert_subset_systemd empty
   run_inert_health_curl() {
+    # shellcheck disable=SC2016
     local tag="$1"
     printf '0' >"$health_curl_count"
     set +e
     case "$tag" in
       native)
-        STUB_CURL_COUNT_FILE="$health_curl_count" \
-          STUB_IMAGE_REVISION="$TEST_REV" \
-          STUB_IMAGE_ID=sha256:deadbeef \
+        # shellcheck disable=SC2016
+        STUB_CURL_COUNT_FILE="$health_curl_count" STUB_IMAGE_REVISION="$TEST_REV" STUB_IMAGE_ID=sha256:deadbeef \
           PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
@@ -2228,10 +2229,8 @@ EOF
         ' _ "$UPDATE" 2>/dev/null
         ;;
       zero)
-        PANTRY_TEST_RUN_BOUNDED_RC=0 \
-          STUB_CURL_COUNT_FILE="$health_curl_count" \
-          STUB_IMAGE_REVISION="$TEST_REV" \
-          STUB_IMAGE_ID=sha256:deadbeef \
+        # shellcheck disable=SC2016
+        PANTRY_TEST_RUN_BOUNDED_RC=0 STUB_CURL_COUNT_FILE="$health_curl_count" STUB_IMAGE_REVISION="$TEST_REV" STUB_IMAGE_ID=sha256:deadbeef \
           PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"
@@ -2241,10 +2240,8 @@ EOF
         ' _ "$UPDATE" 2>/dev/null
         ;;
       empty)
-        env PANTRY_TEST_RUN_BOUNDED_RC= \
-          STUB_CURL_COUNT_FILE="$health_curl_count" \
-          STUB_IMAGE_REVISION="$TEST_REV" \
-          STUB_IMAGE_ID=sha256:deadbeef \
+        # shellcheck disable=SC2016
+        env PANTRY_TEST_RUN_BOUNDED_RC= STUB_CURL_COUNT_FILE="$health_curl_count" STUB_IMAGE_REVISION="$TEST_REV" STUB_IMAGE_ID=sha256:deadbeef \
           PANTRY_DIR="$root" PATH="$work/bin:$PATH" /bin/bash -c '
           set -euo pipefail
           source "$1"

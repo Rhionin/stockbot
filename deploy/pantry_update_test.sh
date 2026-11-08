@@ -16,12 +16,14 @@ fail() {
   exit 1
 }
 
+# shellcheck disable=SC2317,SC2329
 pantry_harness_trace_overrides() {
   if [[ -n "${PANTRY_HARNESS_ENTRY_TRACE:-}" ]]; then
     host_entry_trace() { printf '%s\n' "$1" >>"$PANTRY_HARNESS_ENTRY_TRACE"; }
   fi
 }
 
+# shellcheck disable=SC2317,SC2329
 pantry_harness_subset_validation_fail_override() {
   [[ -n "${PANTRY_HARNESS_SUBSET_VALIDATION_FAIL:-}" ]] || return 0
   host_subset_validate() { return 1; }
