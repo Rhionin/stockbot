@@ -2041,7 +2041,7 @@ test_control_publish_rename_failure_leaves_prior_control() {
 }
 
 test_removed_pantry_test_env_hooks_are_inert_on_production_paths() {
-  local root work stage state rc before bounded_mode compare_mode
+  local root work stage state rc before
   local bash_count analyze_count health_curl_count compare_count real_bash
   root=$(mktemp -d)
   work=$(mktemp -d)
