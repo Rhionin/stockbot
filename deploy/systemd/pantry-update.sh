@@ -3073,7 +3073,7 @@ pre_deploy_backup() {
     return 0
   fi
   service_changed "$state" pantry || return 0
-  script="$(cd "$(dirname "$0")" && pwd)/pantry-backup.sh"
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pantry-backup.sh"
   revision=$(pantry_deploy_revision "$state")
   echo "pantry update: pre-deploy backup (${mode})"
   if [[ ! -f "$script" || ! -x "$script" ]]; then
