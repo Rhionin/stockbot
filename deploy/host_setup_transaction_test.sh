@@ -944,7 +944,8 @@ test_failed_target_sha_blocks_same_revision_retry() {
 test_acquire_deploy_lock_does_not_mkdir_deploy_trigger() {
   local body
   body=$(sed -n '/^host_acquire_deploy_lock()/,/^}/p' "$UPDATE")
-  if [[ "$body" == *'mkdir -p "$PANTRY_DIR/deploy-trigger"'* ]]; then
+  # shellcheck disable=SC2016
+  if grep -Fq 'mkdir -p "$PANTRY_DIR/deploy-trigger"' <<<"$body"; then
     fail "host_acquire_deploy_lock must not mkdir deploy-trigger"
   fi
 }
