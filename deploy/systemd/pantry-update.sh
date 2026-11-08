@@ -896,15 +896,16 @@ host_revision_allowed() {
 }
 
 host_target_retry_allowed() {
-  local root ctrl failed revision
+  local candidate="${1:-}" root ctrl failed
   [[ "${HOST_STATE_INITIALIZED:-0}" -eq 1 ]] || return 0
   root=$(host_setup_state_dir)
   ctrl="$root/control"
   [[ -f "$ctrl" ]] || return 0
   failed=$(host_control_field failed_target_sha || true)
   if [[ -n "$failed" && "$failed" != none ]]; then
-    revision=$(host_control_field target_revision || true)
-    if [[ -n "$revision" && "$revision" == "$failed" ]]; then
+    candidate=${candidate,,}
+    failed=${failed,,}
+    if [[ -n "$candidate" && "$candidate" == "$failed" ]]; then
       echo "pantry update: host setup blocks retry for failed target ${failed}" >&2
       return 1
     fi
@@ -1053,9 +1054,6 @@ host_subset_refresh_from_image() {
     echo "pantry update: host setup refuses another promotion while prior snapshot is retained" >&2
     return "$HOST_TXN_FATAL_RC"
   fi
-  if ! host_target_retry_allowed; then
-    return "$HOST_TXN_FATAL_RC"
-  fi
   cid=$(container_id pantry)
   if [[ -z "$cid" ]]; then
     echo "pantry update: host script refresh failed: pantry container id is missing" >&2
@@ -1067,6 +1065,9 @@ host_subset_refresh_from_image() {
     echo "pantry update: host subset transaction needs a 40-character revision" >&2
     return "$HOST_TXN_FATAL_RC"
   }
+  if ! host_target_retry_allowed "$revision"; then
+    return "$HOST_TXN_FATAL_RC"
+  fi
   if [[ "$(host_control_phase || true)" == clean ]] && [[ -f "$root/lkg/manifest" ]]; then
     committed=$(host_control_field committed_revision || true)
     committed=${committed:-$(awk -F= '$1=="revision"{print $2;exit}' "$root/lkg/manifest" 2>/dev/null || true)}
@@ -2870,9 +2871,6 @@ host_bundle_running_digest_matches() {
 # pantry image matches the deployed digest and its revision is on master.
 host_bundle_provenance_ok() {
   local state="$1" revision rc
-  if [[ -n "${PANTRY_TEST_SKIP_BUNDLE_PROVENANCE:-}" ]]; then
-    return 0
-  fi
   if ! host_bundle_running_digest_matches "$state"; then
     echo "pantry update: host script refresh skipped: running pantry digest does not match the deployed image" >&2
     return 1

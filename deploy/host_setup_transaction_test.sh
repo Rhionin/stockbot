@@ -7,6 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
 BASE_SHA="${HOST_SETUP_BASE_SHA:-3d265d5ce4f6ea7aa3c470b1cc3c5d610a6010f2}"
 TEST_REV=0123456789abcdef0123456789abcdef01234567
+TEST_OTHER_REV=abcdef0123456789abcdef0123456789abcdef0123
 
 TEST_CASES=()
 
@@ -90,6 +91,17 @@ EOF
   chmod +x "$bin/systemd-analyze"
   cat > "$bin/docker" << 'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == compose ]]; then
+  joined="$*"
+  if [[ "$joined" == *" ps "* ]]; then
+    svc=${*: -1}
+    if [[ "$svc" == pantry ]]; then
+      printf '%s\n' "${STUB_COMPOSE_CID:-cid-pantry}"
+    fi
+    exit 0
+  fi
+  exit 0
+fi
 if [[ "$1" == cp && "$2" == *host-bundle* ]]; then
   src=${STUB_HOST_BUNDLE_CP:-}
   dest=$3
@@ -99,9 +111,35 @@ if [[ "$1" == cp && "$2" == *host-bundle* ]]; then
     exit 0
   fi
 fi
-if [[ "$1" == inspect ]]; then
+if [[ "$1" == inspect || ( "$1" == image && "$2" == inspect ) ]]; then
+  if [[ "$*" == *org.opencontainers.image.revision* ]]; then
+    printf '%s\n' "${STUB_IMAGE_REVISION:-0123456789abcdef0123456789abcdef01234567}"
+    exit 0
+  fi
+  if [[ "$*" == *RepoDigests* ]]; then
+    printf '%s\n' "${STUB_REPO_DIGEST_LINE:-ghcr.io/rhionin/pantry@sha256:deadbeef}"
+    exit 0
+  fi
+  if [[ "$*" == *'.State.Running'* ]]; then
+    printf 'true %s\n' "${STUB_RUNNING_IMAGE_ID:-sha256:runpantry}"
+    exit 0
+  fi
   if [[ "${*: -2:1}" == pantry || "$*" == *' pantry '* ]]; then
     printf 'cid-pantry\n'
+    exit 0
+  fi
+  if [[ "$*" == *'.Id'* ]]; then
+    printf '%s\n' "${STUB_IMAGE_ID:-sha256:pullpantry}"
+    exit 0
+  fi
+fi
+if [[ "$1" == inspect ]]; then
+  if [[ "$*" == *RepoDigests* ]]; then
+    printf '%s\n' "${STUB_REPO_DIGEST_LINE:-ghcr.io/rhionin/pantry@sha256:deadbeef}"
+    exit 0
+  fi
+  if [[ "$*" == *'.State.Running'* ]]; then
+    printf 'true %s\n' "${STUB_RUNNING_IMAGE_ID:-sha256:runpantry}"
     exit 0
   fi
 fi
@@ -176,6 +214,23 @@ write_clean_control() {
     HOST_CTRL_FAILED_TARGET=none
     host_control_publish
   ' _ "$UPDATE"
+}
+
+write_deploy_state_dir() {
+  local state="$1"
+  mkdir -p "$state"
+  printf 'pantry\tghcr.io/rhionin/pantry:latest\n' >"$state/refs.tsv"
+  printf 'pantry\tcid-pantry\t%s\n' "${STUB_RUNNING_ROW_DIGEST:-sha256:deadbeef}" >"$state/running.tsv"
+}
+
+stage_host_bundle_for_subset() {
+  local src="$1"
+  mkdir -p "$src/systemd"
+  cp "$ROOT/deploy/publish-mode.sh" "$ROOT/deploy/runtime-setup.sh" "$ROOT/deploy/vapid-env.sh" "$src/"
+  cp "$ROOT/deploy/systemd/pantry-backup.sh" "$ROOT/deploy/systemd/pantry-update.sh" "$src/systemd/"
+  cp "$ROOT/deploy/systemd/pantry-update.service" "$ROOT/deploy/systemd/pantry-update.timer" \
+    "$ROOT/deploy/systemd/pantry-update.path" "$ROOT/deploy/systemd/pantry-backup.service" \
+    "$ROOT/deploy/systemd/pantry-backup.timer" "$src/systemd/"
 }
 
 run_entry_trace() {
@@ -924,7 +979,59 @@ test_live_signal_int_during_committing_recovery_converges() {
 }
 
 test_failed_target_sha_blocks_same_revision_retry() {
-  local root
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_state_validate
+    HOST_CTRL_PHASE=clean
+    HOST_CTRL_FAILED_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_TARGET=none
+    host_control_publish
+    rc=0
+    host_target_retry_allowed "'"$TEST_REV"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]] || fail "same failed target revision must be refused (rc=$rc)"
+  rm -rf "$root"
+}
+
+test_failed_target_sha_permits_different_candidate_revision() {
+  local root rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  write_lkg_snapshot "$root"
+  write_clean_control "$root"
+  set +e
+  PANTRY_DIR="$root" bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_state_validate
+    HOST_CTRL_PHASE=clean
+    HOST_CTRL_FAILED_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_TARGET=none
+    host_control_publish
+    rc=0
+    host_target_retry_allowed "'"$TEST_OTHER_REV"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "different candidate revision must pass retry guard (rc=$rc)"
+  rm -rf "$root"
+}
+
+test_failed_target_sha_subset_refresh_refuses_same_image_revision() {
+  local root state work stage rc
   root=$(mktemp -d)
   prepare_root "$root"
   write_lkg_snapshot "$root"
@@ -932,13 +1039,62 @@ test_failed_target_sha_blocks_same_revision_retry() {
   PANTRY_DIR="$root" bash -c '
     set -euo pipefail
     source "$1"
+    host_state_validate
     HOST_CTRL_PHASE=clean
     HOST_CTRL_FAILED_TARGET="'"$TEST_REV"'"
-    HOST_CTRL_TARGET="'"$TEST_REV"'"
+    HOST_CTRL_TARGET=none
     host_control_publish
-    host_target_retry_allowed && exit 1 || exit 0
   ' _ "$UPDATE"
-  rm -rf "$root"
+  state=$(mktemp -d)
+  write_deploy_state_dir "$state"
+  work=$(mktemp -d)
+  make_bin "$work/bin"
+  stage="$work/host-bundle"
+  stage_host_bundle_for_subset "$stage"
+  set +e
+  PANTRY_DIR="$root" STUB_HOST_BUNDLE_CP="$stage" STUB_IMAGE_REVISION="$TEST_REV" \
+    STUB_IMAGE_ID=sha256:deadbeef STUB_REPO_DIGEST_LINE=ghcr.io/rhionin/pantry@sha256:deadbeef \
+    STUB_RUNNING_ROW_DIGEST=sha256:deadbeef STUB_RUNNING_IMAGE_ID=sha256:deadbeef \
+    PATH="$work/bin:$PATH" bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    HOST_FLAG_AUTO_SETUP=on
+    host_flags_read
+    host_state_validate
+    rc=0
+    host_subset_refresh_from_image "'"$state"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" >"$work/out" 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -eq 3 ]] || fail "subset refresh must refuse same failed revision (rc=$rc): $(cat "$work/out")"
+  grep -q 'blocks retry for failed target' "$work/out" \
+    || fail "subset refresh must cite failed-target retry block: $(cat "$work/out")"
+  rm -rf "$root" "$state" "$work"
+}
+
+test_pantry_test_skip_bundle_provenance_does_not_bypass_production_script() {
+  local root state rc
+  root=$(mktemp -d)
+  prepare_root "$root"
+  state=$(mktemp -d)
+  write_deploy_state_dir "$state"
+  printf 'pantry\tcid-pantry\tsha256:mismatch\n' >"$state/running.tsv"
+  set +e
+  PANTRY_DIR="$root" PANTRY_TEST_SKIP_BUNDLE_PROVENANCE=1 PANTRY_TEST_GITHUB_COMPARE_STATUS=ahead bash -c '
+    set -euo pipefail
+    source "$1"
+    compose=(docker compose --project-directory "$PANTRY_DIR" -f "$PANTRY_DIR/docker-compose.yml")
+    host_state_validate
+    rc=0
+    host_bundle_provenance_ok "'"$state"'" || rc=$?
+    exit "$rc"
+  ' _ "$UPDATE" 2>/dev/null
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "PANTRY_TEST_SKIP_BUNDLE_PROVENANCE must not bypass host_bundle_provenance_ok"
+  rm -rf "$root" "$state"
 }
 
 test_acquire_deploy_lock_does_not_mkdir_deploy_trigger() {
@@ -1136,6 +1292,9 @@ for fn in \
   invalid_flag_matrix_pantry_auto_setup_invalid \
   deploy_lock_uses_real_flock_serialization \
   failed_target_sha_blocks_same_revision_retry \
+  failed_target_sha_permits_different_candidate_revision \
+  failed_target_sha_subset_refresh_refuses_same_image_revision \
+  pantry_test_skip_bundle_provenance_does_not_bypass_production_script \
   acquire_deploy_lock_does_not_mkdir_deploy_trigger \
   recovered_phase_normalizes_on_entry_and_continues \
   pantry_auto_setup_quoted_in_dot_env_is_invalid \
