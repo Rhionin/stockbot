@@ -46,6 +46,16 @@ func TestResolvePolicies(t *testing.T) {
 		}
 	})
 
+	t.Run("policy1 missing pin fallthrough auto on", func(t *testing.T) {
+		d := device("1.0.0", ChannelStable)
+		d.PinReleaseID = "gone"
+		releases := []Release{rel("channel-offer", "2.0.0", ChannelStable, false)}
+		got := Resolve(d, true, releases)
+		if got == nil || got.ID != "channel-offer" {
+			t.Fatalf("missing pin with auto on must fall through to channel selection, got %#v", got)
+		}
+	})
+
 	t.Run("policy1 yanked pin fallthrough", func(t *testing.T) {
 		d := device("1.0.0", ChannelStable)
 		d.PinReleaseID = "bad"
