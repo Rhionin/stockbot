@@ -20,23 +20,28 @@ fail() {
 # file the fixture cannot move. The production default (PANTRY_DIR=${PANTRY_DIR:-/opt/pantry})
 # and publish-mode.sh's refusal to docker rm when PANTRY_DIR is not that
 # directory stay literal on purpose: they do not open a path under it.
+frozen_systemd_unit_pin_line() {
+  local code="$1"
+  [[ "$code" == *'grep -Fq "ExecStart=/opt/pantry/systemd/pantry-update.sh"'* ]] && return 0
+  [[ "$code" == *'grep -Fq "WorkingDirectory=/opt/pantry"'* ]] && return 0
+  [[ "$code" == *'grep -Fq "PathChanged=/opt/pantry/deploy-trigger/request"'* ]] && return 0
+  return 1
+}
+
 assert_no_literal_probe_paths() {
-  local file line code
+  local file base line code
   for file in \
     "$UPDATE" \
     "$ROOT/deploy/publish-mode.sh" \
     "$ROOT/deploy/runtime-setup.sh" \
     "$ROOT/deploy/vapid-env.sh"
   do
+    base=$(basename "$file")
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ "$line" =~ ^[[:space:]]*# ]] && continue
       code=${line%%#*}
       if [[ "$code" == *"/opt/pantry/"* || "$code" == *"/run/"* ]]; then
-        if [[ "$file" == "$UPDATE" && (
-          "$code" == *'grep -Fq "ExecStart=/opt/pantry/systemd/pantry-update.sh"'* ||
-          "$code" == *'grep -Fq "WorkingDirectory=/opt/pantry"'* ||
-          "$code" == *'grep -Fq "PathChanged=/opt/pantry/deploy-trigger/request"'*
-        ) ]]; then
+        if [[ "$base" == pantry-update.sh ]] && frozen_systemd_unit_pin_line "$code"; then
           continue
         fi
         fail "${file} probes a literal path a fixture cannot redirect: ${line}"
