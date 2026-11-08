@@ -1,0 +1,114 @@
+[
+  {
+    "name": "golden-valid",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=atoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532416\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": true
+  },
+  {
+    "name": "mutate-product-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=Xsp32_scanner\ntarget=atoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532416\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  },
+  {
+    "name": "mutate-target-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=Xtoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532416\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  },
+  {
+    "name": "mutate-version-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=atoms3lite_u173_bench\nversion=9.0.2-rc.1\nsize=1532416\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  },
+  {
+    "name": "mutate-size-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=atoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532417\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  },
+  {
+    "name": "mutate-sha256-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=atoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532416\nsha256=ff1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=fw-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  },
+  {
+    "name": "mutate-keyId-byte",
+    "seedHex": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+    "publicKeyB64": "zxs36F3ACu6U8QEIs38VHio3s64qDK53Uh+DSI25xNc=",
+    "fields": {
+      "product": "esp32_scanner",
+      "target": "atoms3lite_u173_bench",
+      "version": "1.0.2-rc.1",
+      "size": 1532416,
+      "sha256": "3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+      "keyId": "fw-2026-1"
+    },
+    "canonical": "stockbot-fw-manifest-v1\nproduct=esp32_scanner\ntarget=atoms3lite_u173_bench\nversion=1.0.2-rc.1\nsize=1532416\nsha256=3f1c0a9e5b7d2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6\nkeyId=9w-2026-1",
+    "sigB64": "yKXCGzDm9B0XnH8+IOW1CkN7rHvSAhEApSwVuqCIS0JR3RIkHOoXz1DXlWrKga9YdTlxHVF5N6zoJqbj5OfWDg==",
+    "valid": false
+  }
+]
