@@ -167,50 +167,61 @@ func TestMigration029DefaultsAndConstraints(t *testing.T) {
 	}
 }
 
+// after029CreateComplete marks the end of the firmware_releases CREATE (not an
+// in-prefix split inside CREATE TABLE firmware_releases).
+const after029CreateComplete = "UNIQUE (target, version)\n);"
+
+const after029LastALTER = "ALTER TABLE devices ADD COLUMN ota_retry_release_id TEXT"
+
 func TestMigration029RollsBackOnFailure(t *testing.T) {
 	cases := []struct {
-		name              string
-		fileDB            bool
-		assertAfterALTERs bool
-		prepare           func(t *testing.T, conn *sql.DB)
+		name    string
+		fileDB  bool
+		prepare func(t *testing.T, conn *sql.DB)
 	}{
 		{
-			name: "mid migration in memory",
+			name: "after complete CREATE in memory",
 			prepare: func(t *testing.T, conn *sql.DB) {
 				t.Helper()
-				inject029FailAfter(t, "CREATE TABLE firmware_releases")
+				inject029FailAfter(t, after029CreateComplete)
 			},
 		},
 		{
-			name:              "after last ALTER in memory",
-			assertAfterALTERs: true,
+			name: "after complete CREATE on WAL file database",
+			fileDB: true,
 			prepare: func(t *testing.T, conn *sql.DB) {
 				t.Helper()
-				inject029FailAfter(t, "ALTER TABLE devices ADD COLUMN ota_retry_release_id TEXT")
+				inject029FailAfter(t, after029CreateComplete)
+			},
+		},
+		{
+			name: "after last ALTER in memory",
+			prepare: func(t *testing.T, conn *sql.DB) {
+				t.Helper()
+				inject029FailAfter(t, after029LastALTER)
+			},
+		},
+		{
+			name:   "after last ALTER on WAL file database",
+			fileDB: true,
+			prepare: func(t *testing.T, conn *sql.DB) {
+				t.Helper()
+				inject029FailAfter(t, after029LastALTER)
 			},
 		},
 		{
 			name: "schema_migrations insert in memory",
 			prepare: func(t *testing.T, conn *sql.DB) {
 				t.Helper()
-				if _, err := conn.Exec(`
-					CREATE TRIGGER migration029_block_version_insert
-					BEFORE INSERT ON schema_migrations
-					WHEN NEW.filename = '` + firmwareOTAMigration + `'
-					BEGIN
-						SELECT RAISE(ABORT, 'inject migration029 version insert failure');
-					END`); err != nil {
-					t.Fatal(err)
-				}
+				inject029BlockTrackingInsert(t, conn)
 			},
 		},
 		{
-			name:              "after last ALTER on WAL file database",
-			fileDB:            true,
-			assertAfterALTERs: true,
+			name:   "schema_migrations insert on WAL file database",
+			fileDB: true,
 			prepare: func(t *testing.T, conn *sql.DB) {
 				t.Helper()
-				inject029FailAfter(t, "ALTER TABLE devices ADD COLUMN ota_retry_release_id TEXT")
+				inject029BlockTrackingInsert(t, conn)
 			},
 		},
 	}
@@ -250,9 +261,8 @@ func TestMigration029RollsBackOnFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertTableRowCountsEqual(t, rowCountsBefore, rowCountsAfter)
-			if tc.assertAfterALTERs {
-				assert029SchemaAbsent(t, conn)
-			}
+			assert029SchemaAbsent(t, conn)
+			assert029TrackingAbsent(t, conn)
 			if err := RunMigrations(conn); err != nil {
 				t.Fatalf("rerun after rollback: %v", err)
 			}
@@ -310,7 +320,35 @@ func inject029FailAfter(t *testing.T, marker string) {
 			t.Fatalf("029 migration missing marker %q", marker)
 		}
 		end := idx + len(marker)
+		prefix := strings.TrimSpace(sqlText[:end])
+		if marker == after029CreateComplete && !strings.HasSuffix(prefix, ");") {
+			t.Fatalf("029 create injector prefix does not end with ); got %q", prefix[len(prefix)-min(40, len(prefix)):])
+		}
+		suffix := strings.TrimSpace(sqlText[end:])
+		if marker == after029CreateComplete && !strings.HasPrefix(suffix, "ALTER TABLE devices") {
+			t.Fatalf("029 create injector suffix should start with first ALTER, got %q", suffix[:min(40, len(suffix))])
+		}
 		return sqlText[:end] + ";\nCREATE TABLE migration029_fail_probe (x TEXT, x TEXT);\n" + sqlText[end:]
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func inject029BlockTrackingInsert(t *testing.T, conn *sql.DB) {
+	t.Helper()
+	if _, err := conn.Exec(`
+		CREATE TRIGGER migration029_block_version_insert
+		BEFORE INSERT ON schema_migrations
+		WHEN NEW.filename = '` + firmwareOTAMigration + `'
+		BEGIN
+			SELECT RAISE(ABORT, 'inject migration029 version insert failure');
+		END`); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -319,6 +357,17 @@ func cleanupMigration029TestArtifacts(t *testing.T, conn *sql.DB) {
 	prepareMigrationSQL = func(_ string, sqlText string) string { return sqlText }
 	if _, err := conn.Exec(`DROP TRIGGER IF EXISTS migration029_block_version_insert`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assert029TrackingAbsent(t *testing.T, conn *sql.DB) {
+	t.Helper()
+	var recorded int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, firmwareOTAMigration).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != 0 {
+		t.Fatalf("029 tracking row present after rollback: count %d", recorded)
 	}
 }
 
