@@ -78,6 +78,7 @@ func (h *ShoppingListExportHandler) registryConfiguredCount() int {
 
 type shoppingListExportRequest struct {
 	Provider   string            `json:"provider"`
+	ItemIDs    []string          `json:"itemIds"`
 	UseItemIDs map[string]string `json:"useItemIds"`
 }
 
@@ -134,7 +135,14 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		return nil, InternalError(err)
 	}
 	products := productIDByItemID(provision.Items)
-	scoped := exportScopeFromUseItemIDs(req.Body.UseItemIDs)
+	scoped := exportScopeFromItemIDs(req.Body.ItemIDs)
+
+	if err := validateExportItemIDs(provision, scoped); err != nil {
+		return nil, err
+	}
+	if err := validateUseItemIDsSwap(provision, req.Body.UseItemIDs); err != nil {
+		return nil, err
+	}
 
 	providerID := cart.ProviderID(req.Body.Provider)
 	if providerID == "" && h.Registry != nil {
@@ -142,11 +150,15 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 			providerID = id
 		}
 	}
+	gate := h.providerGate(req.Context, scope)
+	if err := validateScopedExportCart(provision, lineCtx, string(providerID), scoped, products, gate); err != nil {
+		return nil, err
+	}
 	if providerID == "kroger" && h.Env.Disabled {
 		return nil, StoreDisabled()
 	}
 
-	planned, err := planExportLines(provision, req.Body.UseItemIDs, lineCtx, string(providerID), products, scoped, registryRegistered(h.Registry))
+	planned, err := planExportLines(provision, lineCtx, string(providerID), products, scoped, gate)
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +215,6 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	if !configured {
 		return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 	}
-	registered := registryRegistered(h.Registry)
-	if err := validateScopedCartSend(provision, lineCtx, string(providerID), scoped, products, registered); err != nil {
-		return nil, err
-	}
 	caps := provider.Capabilities()
 	if caps.Auth != cart.AuthNone {
 		if h.Connections == nil {
@@ -226,7 +234,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		ScopedItemIDs: scoped,
 		CanSendToCart: func(itemID, productID string, runStoreID *string) bool {
 			row := shopping.ShoppingListItem{ItemID: itemID, RunStoreID: runStoreID}
-			return lineCanSendToCart(lineCtx, row, productID, targetProvider, nil, registered)
+			return lineCanSendToCart(lineCtx, row, productID, targetProvider, nil, gate)
 		},
 	})
 	report, err := h.Provisioner.Provision(exportCtx, scope, providerID)
@@ -276,19 +284,16 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 
 // planExportLines copies the staged lines. Naming a different product for a
 // line is refused; the group swap already changes the staged row itself.
-func planExportLines(provision shoppingProvision, useItemIDs map[string]string, lineCtx *store.LineStoreContext, providerID string, products map[string]string, scoped map[string]struct{}, registered store.ProviderRegistered) ([]exportedItemResponse, error) {
+func planExportLines(provision shoppingProvision, lineCtx *store.LineStoreContext, providerID string, products map[string]string, scoped map[string]struct{}, gate store.ProviderGate) ([]exportedItemResponse, error) {
 	planned := make([]exportedItemResponse, 0, len(provision.Rows))
 	for _, entry := range provision.Rows {
-		if useID := useItemIDs[entry.ItemID]; useID != "" && useID != entry.ItemID {
-			return nil, &HTTPError{Code: 422, Message: "Choose a product on this line."}
-		}
 		if scoped != nil {
 			if _, ok := scoped[entry.ItemID]; !ok {
 				continue
 			}
 		}
 		if providerID != "" {
-			if !lineCanSendToCart(lineCtx, entry, products[entry.ItemID], providerID, nil, registered) {
+			if !lineCanSendToCart(lineCtx, entry, products[entry.ItemID], providerID, nil, gate) {
 				continue
 			}
 		}

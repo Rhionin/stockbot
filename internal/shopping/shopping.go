@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,15 +69,13 @@ func (s *Store) hasRunStoreColumn(ctx context.Context) bool {
 	if s == nil || s.db == nil {
 		return false
 	}
-	if s.runStoreColumn != nil {
-		return *s.runStoreColumn
-	}
-	var name string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT name FROM pragma_table_info('shopping_list_items') WHERE name = 'run_store_id'`).Scan(&name)
-	has := err == nil
-	s.runStoreColumn = &has
-	return has
+	s.runStoreOnce.Do(func() {
+		var name string
+		err := s.db.QueryRowContext(ctx, `
+			SELECT name FROM pragma_table_info('shopping_list_items') WHERE name = 'run_store_id'`).Scan(&name)
+		s.runStoreColumn = err == nil
+	})
+	return s.runStoreColumn
 }
 
 type listHinter interface {
@@ -85,9 +84,10 @@ type listHinter interface {
 
 // Store provides data access for shopping list items.
 type Store struct {
-	db    *sql.DB
-	hints listHinter
-	runStoreColumn *bool
+	db             *sql.DB
+	hints          listHinter
+	runStoreOnce   sync.Once
+	runStoreColumn bool
 }
 
 // NewStore creates a new Store with the given database connection.

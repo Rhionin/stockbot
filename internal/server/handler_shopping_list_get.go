@@ -89,9 +89,10 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 		}
 	}
 
+	gate := providerGateFromRegistry(registry)
 	resp := make([]ShoppingListEntryResponse, 0, len(rows))
 	for _, row := range rows {
-		cartLine := lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, nil)
+		cartLine := lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, gate)
 		computed := row.Quantity
 		lineProvider := ""
 		if cartLine && providerID != "" {

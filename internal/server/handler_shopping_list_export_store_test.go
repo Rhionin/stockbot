@@ -58,7 +58,7 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         http.MethodPost,
 				path:           "/api/shopping-list/export",
-				body:           `{"provider":"` + exportStoreProvider + `","useItemIds":{"item-costco":"item-costco"}}`,
+				body:           `{"provider":"` + exportStoreProvider + `","itemIds":["item-costco"]}`,
 				expectedStatus: http.StatusUnprocessableEntity,
 				assertions: []assertion{
 					{path: "$.error", value: "This line is not for your online cart."},
@@ -68,6 +68,21 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 				if countCalls(recorder.Calls(), "Add") != 0 {
 					env.T.Fatalf("Add calls = %v, want none", recorder.Calls())
 				}
+			},
+		},
+		{
+			name: "unknown scoped itemIds returns 422",
+			setup: func(env testEnv) {
+				seedMixedStoreExportFixtures(env, nil)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"` + exportStoreProvider + `","itemIds":["item-missing"]}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				assertions: []assertion{
+					{path: "$.error", value: "That item isn't on your shopping list."},
+				},
 			},
 		},
 		{
@@ -82,6 +97,11 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 				expectedStatus: http.StatusOK,
 			},
 			afterRequest: func(env testEnv) {
+				scope := primaryScope(env.T, env.DB)
+				ledger := cart.NewLedger(env.DB)
+				if err := ledger.Advance(context.Background(), scope, cart.ProviderID(exportStoreProvider), "item-costco", 5); err != nil {
+					env.T.Fatal(err)
+				}
 				handler := handlerFromEnv(env)
 				raw := exchangeJSON(env.T, handler, http.MethodGet, "/api/shopping-list?provider="+exportStoreProvider, "", http.StatusOK)
 				var rows []map[string]any
@@ -93,22 +113,25 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 					byItem[row["itemId"].(string)] = row
 				}
 				costco := byItem["item-costco"]
-				if _, has := costco["provider"]; has && costco["provider"] != nil {
+				if _, has := costco["provider"]; has && costco["provider"] != nil && costco["provider"] != "" {
 					env.T.Fatalf("in-person provider = %#v, want absent", costco["provider"])
 				}
 				if costco["quantity"] != float64(2) {
-					env.T.Fatalf("in-person quantity = %#v, want 2", costco["quantity"])
+					env.T.Fatalf("in-person quantity = %#v, want 2 (ledger must not apply)", costco["quantity"])
 				}
 			},
 		},
 		{
-			name: "store-less line is not cart when no linked providers exist",
+			name: "store-less line sends when only unlinked in-person store exists",
 			setup: func(env testEnv) {
 				hid := primaryScope(env.T, env.DB).HouseholdID()
 				when := time.Now().UTC().Format(time.RFC3339Nano)
 				insertInPersonStoreRow(env.T, env.DB, hid, "store-costco-only", when)
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-only-inperson", "Snacks", "item-only-inperson")
 				insertManualShoppingItem(env.T, env.DB, "sli-only-inperson", "user-1", "item-only-inperson", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "884-snack", "prod-only-inperson", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
 				registerExportStoreFake(env, &recorder)
 			},
 			httpExchange: httpExchange{
@@ -118,8 +141,8 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 				expectedStatus: http.StatusOK,
 			},
 			afterRequest: func(env testEnv) {
-				if countCalls(recorder.Calls(), "Add") != 0 {
-					env.T.Fatalf("Add calls = %v, want none", recorder.Calls())
+				if countCalls(recorder.Calls(), "Add") != 1 {
+					env.T.Fatalf("Add calls = %v, want 1 (store-less with sole provider)", recorder.Calls())
 				}
 			},
 		},
@@ -165,12 +188,31 @@ func seedMixedStoreExportFixtures(env testEnv, calls *carttest.Calls) {
 	registerExportStoreFake(env, calls)
 }
 
+func registerKrogerForCartDisplay(env testEnv) {
+	if env.Registry == nil {
+		env.T.Fatal("registry required")
+	}
+	if _, ok := env.Registry.Get(cart.ProviderID(exportStoreProvider)); ok {
+		return
+	}
+	inner := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly,
+		Identity: cart.IdentityDerived,
+	}, carttest.NewScript())
+	if err := env.Registry.Register(krogerIDProvider{Provider: inner}, cart.WithCredentialsConfigured(true)); err != nil {
+		env.T.Fatal(err)
+	}
+	seedDefaultExportApp(env.T, env.DB, exportStoreProvider)
+}
+
 func registerExportStoreFake(env testEnv, calls *carttest.Calls) {
 	script := carttest.NewScript().
 		WithDispositions(cart.DispositionAccepted, cart.DispositionAccepted).
 		WithIdentityLookup("881-cart", cart.ProductIdentity("sku-cart")).
 		WithIdentityLookup("882-loose", cart.ProductIdentity("sku-loose")).
-		WithIdentityLookup("883-costco", cart.ProductIdentity("sku-costco"))
+		WithIdentityLookup("883-costco", cart.ProductIdentity("sku-costco")).
+		WithIdentityLookup("884-snack", cart.ProductIdentity("sku-snack"))
 	inner := carttest.NewFake(cart.Capabilities{
 		Auth:         cart.AuthNone,
 		Delivery:     cart.DeliveryServerPush,

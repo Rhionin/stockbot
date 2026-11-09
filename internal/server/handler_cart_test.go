@@ -250,6 +250,7 @@ func TestCartHTTP(t *testing.T) {
 		{
 			name: "adjustment is the provision quantity on the next list read",
 			setup: func(env testEnv) {
+				registerKrogerForCartDisplay(env)
 				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-adj-ok", "Beans", "item-adj-ok")
 				insertManualShoppingItem(env.T, env.DB, "sli-adj-ok", "user-1", "item-adj-ok", 2)
 			},

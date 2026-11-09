@@ -70,72 +70,56 @@ func (c *LineStoreContext) LineStore(runStoreID *string, productID string) strin
 // ProviderRegistered reports whether providerID is registered on this server.
 type ProviderRegistered func(providerID string) bool
 
+// ProviderGate collects registry and credential checks shared by GET and export.
+type ProviderGate struct {
+	Registered     ProviderRegistered
+	Configured     func(providerID string) bool
+	SoleConfigured func() (providerID string, ok bool)
+}
+
 // CanSendToCart reports whether a line resolved to storeID may use providerID
-// for cart ledger and provisioning. The line's store must be linked to providerID,
-// or the line is store-less and the household has exactly one linked provider.
-// Households with no store catalog keep the legacy behavior (every line may send).
-func CanSendToCart(c *LineStoreContext, storeID, providerID string) bool {
+// for cart ledger and provisioning. When the line's store is linked, it must
+// match providerID. Store-less lines send when exactly one store links to the
+// provider, or when no store is linked and the household has exactly one
+// configured, registered provider. Households with no store catalog keep
+// legacy behavior (every registered line may send).
+func CanSendToCart(c *LineStoreContext, storeID, providerID string, gate ProviderGate) bool {
 	if providerID == "" {
 		return false
 	}
-	if c == nil || !c.HasStores() {
-		return true
+	if gate.Registered == nil || !gate.Registered(providerID) {
+		return false
 	}
-	if storeID == "" {
-		linked := c.linkedProviders()
-		if len(linked) != 1 {
-			return false
-		}
-		return linked[0] == providerID
-	}
-	for _, st := range c.stores {
-		if st.id != storeID {
-			continue
-		}
-		return st.linked != nil && *st.linked == providerID
-	}
-	return false
-}
-
-// CanSendToCartForExport is CanSendToCart with a registered-provider guard for export.
-func CanSendToCartForExport(c *LineStoreContext, storeID, providerID string, registered ProviderRegistered) bool {
-	if providerID == "" || registered == nil || !registered(providerID) {
+	if gate.Configured != nil && !gate.Configured(providerID) {
 		return false
 	}
 	if c == nil || !c.HasStores() {
 		return true
 	}
-	if storeID == "" {
-		linked := c.registeredLinkedProviders(registered)
-		if len(linked) != 1 {
-			return false
+	if storeID != "" {
+		for _, st := range c.stores {
+			if st.id != storeID {
+				continue
+			}
+			if st.linked == nil {
+				return false
+			}
+			return *st.linked == providerID
 		}
+		return false
+	}
+	linked := c.registeredLinkedProviders(gate.Registered)
+	if len(linked) > 1 {
+		return false
+	}
+	if len(linked) == 1 {
 		return linked[0] == providerID
 	}
-	for _, st := range c.stores {
-		if st.id != storeID {
-			continue
-		}
-		return st.linked != nil && registered(*st.linked) && *st.linked == providerID
+	if gate.SoleConfigured == nil {
+		return false
 	}
-	return false
-}
-
-func (c *LineStoreContext) linkedProviders() []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, st := range c.stores {
-		if st.linked == nil {
-			continue
-		}
-		p := *st.linked
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
+	sole, ok := gate.SoleConfigured()
+	return ok && sole == providerID
 }
 
 func (c *LineStoreContext) registeredLinkedProviders(registered ProviderRegistered) []string {
@@ -146,7 +130,10 @@ func (c *LineStoreContext) registeredLinkedProviders(registered ProviderRegister
 			continue
 		}
 		p := *st.linked
-		if !registered(p) || seen[p] {
+		if registered != nil && !registered(p) {
+			continue
+		}
+		if seen[p] {
 			continue
 		}
 		seen[p] = true

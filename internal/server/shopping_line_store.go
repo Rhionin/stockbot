@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/inventory"
@@ -19,13 +20,20 @@ func productIDByItemID(items []inventory.Item) map[string]string {
 	return out
 }
 
-func exportScopeFromUseItemIDs(useItemIDs map[string]string) map[string]struct{} {
-	if len(useItemIDs) == 0 {
+func exportScopeFromItemIDs(itemIDs []string) map[string]struct{} {
+	if len(itemIDs) == 0 {
 		return nil
 	}
-	out := make(map[string]struct{}, len(useItemIDs))
-	for itemID := range useItemIDs {
+	out := make(map[string]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			continue
+		}
 		out[itemID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -40,8 +48,80 @@ func registryRegistered(registry *cart.Registry) store.ProviderRegistered {
 	}
 }
 
-func validateScopedCartSend(provision shoppingProvision, lineCtx *store.LineStoreContext, providerID string, scope map[string]struct{}, products map[string]string, registered store.ProviderRegistered) error {
-	if scope == nil || lineCtx == nil {
+func providerGateFromRegistry(registry *cart.Registry) store.ProviderGate {
+	reg := registryRegistered(registry)
+	configured := func(id string) bool {
+		return registry != nil && registry.CredentialsConfigured(cart.ProviderID(id))
+	}
+	sole := func() (string, bool) {
+		if registry == nil {
+			return "", false
+		}
+		id, ok := registry.SoleConfigured()
+		if !ok || !configured(string(id)) {
+			return "", false
+		}
+		return string(id), true
+	}
+	return store.ProviderGate{Registered: reg, Configured: configured, SoleConfigured: sole}
+}
+
+func (h *ShoppingListExportHandler) providerGate(ctx context.Context, scope tenant.Scope) store.ProviderGate {
+	reg := registryRegistered(h.Registry)
+	configured := func(id string) bool {
+		if h.Registry == nil || !h.Registry.CredentialsConfigured(cart.ProviderID(id)) {
+			return false
+		}
+		ok, err := h.householdCredentialsConfigured(ctx, scope, cart.ProviderID(id))
+		return err == nil && ok
+	}
+	sole := func() (string, bool) {
+		if h.Registry == nil {
+			return "", false
+		}
+		id, ok := h.Registry.SoleConfigured()
+		if !ok {
+			return "", false
+		}
+		sid := string(id)
+		if !configured(sid) {
+			return "", false
+		}
+		return sid, true
+	}
+	return store.ProviderGate{Registered: reg, Configured: configured, SoleConfigured: sole}
+}
+
+func validateExportItemIDs(provision shoppingProvision, scope map[string]struct{}) error {
+	if scope == nil {
+		return nil
+	}
+	known := make(map[string]struct{}, len(provision.Rows))
+	for _, row := range provision.Rows {
+		known[row.ItemID] = struct{}{}
+	}
+	for itemID := range scope {
+		if _, ok := known[itemID]; !ok {
+			return &HTTPError{Code: 422, Message: "That item isn't on your shopping list."}
+		}
+	}
+	return nil
+}
+
+func validateUseItemIDsSwap(provision shoppingProvision, useItemIDs map[string]string) error {
+	if len(useItemIDs) == 0 {
+		return nil
+	}
+	for _, entry := range provision.Rows {
+		if useID := useItemIDs[entry.ItemID]; useID != "" && useID != entry.ItemID {
+			return &HTTPError{Code: 422, Message: "Choose a product on this line."}
+		}
+	}
+	return nil
+}
+
+func validateScopedExportCart(provision shoppingProvision, lineCtx *store.LineStoreContext, providerID string, scope map[string]struct{}, products map[string]string, gate store.ProviderGate) error {
+	if scope == nil {
 		return nil
 	}
 	rowsByItem := map[string]shopping.ShoppingListItem{}
@@ -49,19 +129,19 @@ func validateScopedCartSend(provision shoppingProvision, lineCtx *store.LineStor
 		rowsByItem[row.ItemID] = row
 	}
 	for itemID := range scope {
-		row, ok := rowsByItem[itemID]
-		if !ok {
-			continue
+		row := rowsByItem[itemID]
+		storeID := ""
+		if lineCtx != nil {
+			storeID = lineCtx.LineStore(row.RunStoreID, products[itemID])
 		}
-		storeID := lineCtx.LineStore(row.RunStoreID, products[itemID])
-		if !store.CanSendToCartForExport(lineCtx, storeID, providerID, registered) {
+		if !store.CanSendToCart(lineCtx, storeID, providerID, gate) {
 			return &HTTPError{Code: 422, Message: "This line is not for your online cart."}
 		}
 	}
 	return nil
 }
 
-func lineCanSendToCart(lineCtx *store.LineStoreContext, row shopping.ShoppingListItem, productID, providerID string, scope map[string]struct{}, registered store.ProviderRegistered) bool {
+func lineCanSendToCart(lineCtx *store.LineStoreContext, row shopping.ShoppingListItem, productID, providerID string, scope map[string]struct{}, gate store.ProviderGate) bool {
 	if scope != nil {
 		if _, ok := scope[row.ItemID]; !ok {
 			return false
@@ -71,10 +151,7 @@ func lineCanSendToCart(lineCtx *store.LineStoreContext, row shopping.ShoppingLis
 	if lineCtx != nil {
 		storeID = lineCtx.LineStore(row.RunStoreID, productID)
 	}
-	if registered != nil {
-		return store.CanSendToCartForExport(lineCtx, storeID, providerID, registered)
-	}
-	return store.CanSendToCart(lineCtx, storeID, providerID)
+	return store.CanSendToCart(lineCtx, storeID, providerID, gate)
 }
 
 func loadLineStoreContext(ctx context.Context, db *sql.DB, scope tenant.Scope) (*store.LineStoreContext, error) {
